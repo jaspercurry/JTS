@@ -4,6 +4,7 @@ import asyncio
 import logging
 import signal
 import sys
+from enum import Enum
 
 from .audio_io import MicCapture, TtsPlayout
 from .camilla import CamillaController, Ducker
@@ -27,6 +28,16 @@ SYSTEM_INSTRUCTION = (
     "before answering questions about the current track."
 )
 
+# Brief refractory after a session ends before the wake detector is re-armed.
+# Catches mic frames that contain the tail of the model's TTS bleeding through
+# the speakers (XVF3800 AEC handles most but not all of it).
+WAKE_REFRACTORY_SEC = 1.0
+
+
+class State(Enum):
+    WAKE = "wake"
+    SESSION = "session"
+
 
 def _make_session(cfg: Config) -> VoiceSession:
     if cfg.voice_provider == "gemini":
@@ -46,64 +57,13 @@ def _build_registry(cfg: Config, camilla: CamillaController, moode: MoodeClient)
     return registry
 
 
-async def _run_session(
-    cfg: Config,
-    registry: ToolRegistry,
-    mic: MicCapture,
-    tts: TtsPlayout,
-    ducker: Ducker,
-    usage_store: UsageStore,
-) -> None:
-    """One wake → talk → respond → idle cycle."""
-    session = _make_session(cfg)
-    session_id = usage_store.open_session()
-    await ducker.duck()
-
-    try:
-        await session.connect(registry, SYSTEM_INSTRUCTION)
-        playback_task = asyncio.create_task(_play_responses(session, tts))
-        idle_task = asyncio.create_task(_idle_watchdog(session, cfg.idle_timeout_sec))
-        capture_task = asyncio.create_task(_pump_mic(session, mic, idle_task))
-        done, pending = await asyncio.wait(
-            {playback_task, idle_task, capture_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        for t in pending:
-            t.cancel()
-        for t in pending:
-            try:
-                await t
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
-    finally:
-        try:
-            await asyncio.wait_for(session.end_input(), timeout=2.0)
-        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-            logger.debug("end_input ignored: %s", e)
-        await session.close()
-        await ducker.restore()
-        tokens = session.usage_tokens()
-        cost = usage_store.close_session(
-            session_id, tokens["input_tokens"], tokens["output_tokens"]
-        )
-        logger.info("session ended: %s tokens, est $%.4f", tokens, cost)
-
-
 async def _play_responses(session: VoiceSession, tts: TtsPlayout) -> None:
     async for chunk in session.audio_out():
         await tts.write(chunk)
 
 
-async def _pump_mic(session: VoiceSession, mic: MicCapture, idle_task: asyncio.Task) -> None:
-    """Send mic frames to the session until the idle watchdog fires."""
-    async for frame in mic.frames():
-        if idle_task.done():
-            return
-        await session.send_audio(frame.tobytes())
-
-
 async def _idle_watchdog(session: VoiceSession, timeout: int) -> None:
-    """End the session after `timeout` seconds with no new model turn."""
+    """Fire after `timeout` seconds with no new model turn."""
     last_turn = asyncio.get_event_loop().time()
     last_count = session.turn_count()
     while True:
@@ -115,6 +75,144 @@ async def _idle_watchdog(session: VoiceSession, timeout: int) -> None:
         elif asyncio.get_event_loop().time() - last_turn > timeout:
             logger.info("idle timeout, closing session")
             return
+
+
+class WakeLoop:
+    """Single mic consumer. Dispatches each frame to either the wake-word
+    detector (WAKE state) or the live session (SESSION state). No second
+    consumer iterating over mic.frames() — eliminates the implicit
+    frame-ownership coupling between wake-listen and active-session paths.
+    """
+
+    def __init__(
+        self,
+        cfg: Config,
+        mic: MicCapture,
+        tts: TtsPlayout,
+        detector: WakeWordDetector,
+        registry: ToolRegistry,
+        ducker: Ducker,
+        usage_store: UsageStore,
+        spend_cap: SpendCap,
+        stop_event: asyncio.Event,
+    ) -> None:
+        self._cfg = cfg
+        self._mic = mic
+        self._tts = tts
+        self._detector = detector
+        self._registry = registry
+        self._ducker = ducker
+        self._usage_store = usage_store
+        self._spend_cap = spend_cap
+        self._stop_event = stop_event
+
+        self._state = State.WAKE
+        self._session: VoiceSession | None = None
+        self._session_id: int | None = None
+        self._bg_tasks: set[asyncio.Task] = set()
+        self._refractory_until: float = 0.0
+
+    async def run(self) -> None:
+        async for frame in self._mic.frames():
+            if self._stop_event.is_set():
+                if self._state is State.SESSION:
+                    await self._end_session()
+                return
+
+            if self._state is State.WAKE:
+                await self._handle_wake_frame(frame)
+            else:
+                await self._handle_session_frame(frame)
+
+    async def _handle_wake_frame(self, frame) -> None:
+        # During refractory, swallow frames so TTS bleed doesn't self-trigger.
+        if asyncio.get_event_loop().time() < self._refractory_until:
+            return
+        if not self._detector.feed(frame):
+            return
+
+        logger.info("wake detected")
+        if not self._spend_cap.allowed():
+            logger.warning("daily spend cap reached; voice disabled until rollover")
+            return
+
+        try:
+            await self._begin_session()
+        except Exception as e:  # noqa: BLE001
+            logger.exception("session begin failed: %s", e)
+            await self._cleanup_after_failed_begin()
+
+    async def _handle_session_frame(self, frame) -> None:
+        # If any background task ended, the session is over. Cleanup, then
+        # this frame is silently consumed (no double-dispatch into detector).
+        if any(t.done() for t in self._bg_tasks):
+            await self._end_session()
+            return
+
+        assert self._session is not None
+        try:
+            await self._session.send_audio(frame.tobytes())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("send_audio failed (will end session): %s", e)
+            await self._end_session()
+
+    async def _begin_session(self) -> None:
+        self._session = _make_session(self._cfg)
+        self._session_id = self._usage_store.open_session()
+        await self._ducker.duck()
+        await self._session.connect(self._registry, SYSTEM_INSTRUCTION)
+        playback = asyncio.create_task(_play_responses(self._session, self._tts))
+        idle = asyncio.create_task(_idle_watchdog(self._session, self._cfg.idle_timeout_sec))
+        self._bg_tasks = {playback, idle}
+        self._state = State.SESSION
+
+    async def _cleanup_after_failed_begin(self) -> None:
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception:  # noqa: BLE001
+                pass
+        await self._ducker.restore()
+        if self._session_id is not None:
+            self._usage_store.close_session(self._session_id, 0, 0)
+        self._session = None
+        self._session_id = None
+        self._bg_tasks = set()
+        self._state = State.WAKE
+        self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
+
+    async def _end_session(self) -> None:
+        for t in self._bg_tasks:
+            t.cancel()
+        for t in self._bg_tasks:
+            try:
+                await t
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        self._bg_tasks = set()
+
+        if self._session is not None:
+            try:
+                await asyncio.wait_for(self._session.end_input(), timeout=2.0)
+            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+                logger.debug("end_input ignored: %s", e)
+            try:
+                await self._session.close()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("session close error (ignored): %s", e)
+
+            tokens = self._session.usage_tokens()
+            assert self._session_id is not None
+            cost = self._usage_store.close_session(
+                self._session_id, tokens["input_tokens"], tokens["output_tokens"]
+            )
+            logger.info("session ended: %s tokens, est $%.4f", tokens, cost)
+
+        await self._ducker.restore()
+        self._session = None
+        self._session_id = None
+        self._state = State.WAKE
+        self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
 
 async def run() -> None:
@@ -148,39 +246,13 @@ async def run() -> None:
 
     try:
         async with MicCapture(cfg.mic_device) as mic, TtsPlayout(cfg.tts_device) as tts:
-            await _wake_loop(cfg, mic, tts, detector, registry, ducker, usage_store, spend_cap, stop_event)
+            wake_loop = WakeLoop(
+                cfg, mic, tts, detector, registry, ducker,
+                usage_store, spend_cap, stop_event,
+            )
+            await wake_loop.run()
     finally:
         await moode.aclose()
-
-
-async def _wake_loop(
-    cfg: Config,
-    mic: MicCapture,
-    tts: TtsPlayout,
-    detector: WakeWordDetector,
-    registry: ToolRegistry,
-    ducker: Ducker,
-    usage_store: UsageStore,
-    spend_cap: SpendCap,
-    stop_event: asyncio.Event,
-) -> None:
-    async for frame in mic.frames():
-        if stop_event.is_set():
-            return
-        if not detector.feed(frame):
-            continue
-        logger.info("wake detected")
-        if not spend_cap.allowed():
-            logger.warning("daily spend cap reached; voice disabled until rollover")
-            continue
-        try:
-            await _run_session(cfg, registry, mic, tts, ducker, usage_store)
-        except Exception as e:  # noqa: BLE001
-            logger.exception("session crashed: %s", e)
-        # Drop frames captured during the session so the wake detector
-        # doesn't trigger on buffered conversation audio.
-        dropped = mic.drain()
-        logger.debug("drained %d post-session mic frames", dropped)
 
 
 def main() -> None:

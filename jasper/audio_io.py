@@ -32,8 +32,14 @@ class MicCapture:
             return
         # int16 mono frame; copy because PortAudio reuses the buffer
         chunk = indata[:, 0].astype(np.int16, copy=True)
+        # call_soon_threadsafe schedules _enqueue to run on the loop thread,
+        # which is the only place asyncio.Queue.put_nowait can raise
+        # QueueFull. Catching it here in the callback would never fire.
+        self._loop.call_soon_threadsafe(self._enqueue, chunk)
+
+    def _enqueue(self, chunk: np.ndarray) -> None:
         try:
-            self._loop.call_soon_threadsafe(self._queue.put_nowait, chunk)
+            self._queue.put_nowait(chunk)
         except asyncio.QueueFull:
             logger.warning("mic queue full, dropping frame")
 
@@ -59,18 +65,6 @@ class MicCapture:
     async def frames(self):
         while True:
             yield await self._queue.get()
-
-    def drain(self) -> int:
-        """Discard any frames sitting in the queue. Call after a voice
-        session ends so the wake detector doesn't re-trigger on buffered
-        conversation audio. Returns count of dropped frames."""
-        dropped = 0
-        while True:
-            try:
-                self._queue.get_nowait()
-                dropped += 1
-            except asyncio.QueueEmpty:
-                return dropped
 
 
 class TtsPlayout:

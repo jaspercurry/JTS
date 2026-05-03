@@ -153,7 +153,7 @@ class GeminiLiveSession(VoiceSession):
             tool = self._registry.get(fc.name)
             args = dict(fc.args or {})
             if tool is None:
-                result = {"error": f"unknown tool {fc.name}"}
+                payload: dict = {"error": f"unknown tool {fc.name}"}
                 logger.warning("tool call %s(%s) → unknown tool", fc.name, args)
             else:
                 logger.info("tool call %s(%s)", fc.name, args)
@@ -161,17 +161,19 @@ class GeminiLiveSession(VoiceSession):
                     out = tool.fn(**args)
                     if asyncio.iscoroutine(out):
                         out = await asyncio.wait_for(out, timeout=5.0)
-                    result = out if isinstance(out, dict) else {"result": out}
-                    logger.info("tool call %s → %s", fc.name, result)
+                    # Pass dict outputs straight through; only wrap scalars
+                    # so the model doesn't see {"result": {"ok": true}}.
+                    payload = out if isinstance(out, dict) else {"value": out}
+                    logger.info("tool call %s → %s", fc.name, payload)
                 except asyncio.TimeoutError:
-                    result = {"error": f"{fc.name} timed out"}
+                    payload = {"error": f"{fc.name} timed out"}
                     logger.warning("tool call %s timed out", fc.name)
                 except Exception as e:  # noqa: BLE001
-                    result = {"error": str(e)}
+                    payload = {"error": str(e)}
                     logger.warning("tool call %s raised: %s", fc.name, e)
             responses.append(
                 types.FunctionResponse(
-                    id=fc.id, name=fc.name, response={"result": result}
+                    id=fc.id, name=fc.name, response=payload
                 )
             )
         if self._session is not None:

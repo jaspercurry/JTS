@@ -64,6 +64,22 @@ install_camilladsp() {
     install -m 0644 "${REPO_DIR}/deploy/camilladsp/v1.yml" "${CAMILLA_CONF}/v1.yml"
 }
 
+detect_card() {
+    # detect_card "<aplay|arecord>" "<grep regex>" "<fallback>"
+    local tool="$1" regex="$2" fallback="$3"
+    local card
+    card=$("$tool" -L 2>/dev/null \
+        | grep -B1 -iE "$regex" \
+        | grep -oE 'CARD=[^,]+' \
+        | head -1 \
+        | sed 's/CARD=//')
+    if [[ -n "$card" ]]; then
+        echo "$card"
+    else
+        echo "$fallback"
+    fi
+}
+
 install_alsa() {
     install -d -m 0755 /etc/modules-load.d
     install -m 0644 \
@@ -71,16 +87,24 @@ install_alsa() {
         /etc/modules-load.d/snd-aloop.conf
     modprobe snd-aloop || true
 
-    # Install /root/.asoundrc so CamillaDSP and jasper-voice both see the
-    # shared dmix `jasper_dongle` device. moOde/MPD is unaffected (different
-    # uid). If a /root/.asoundrc already exists, back it up rather than
-    # clobbering — operator may have customised it.
+    # Detect Apple USB-C dongle card name. Falls back to "A" (the literal
+    # default on PiOS Trixie). If the dongle isn't plugged in at install
+    # time, the fallback is fine — jasper-doctor will catch a real mismatch.
+    local dongle_card
+    dongle_card=$(detect_card aplay 'usb-c to 3.5mm' 'A')
+    echo "  Apple dongle: CARD=${dongle_card}"
+
+    # Render /root/.asoundrc from template with detected card name.
+    # /root/.asoundrc is read by CamillaDSP + jasper-voice (both run as
+    # root via systemd). moOde/MPD runs as a different uid, unaffected.
     if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
-        if ! cmp -s "${REPO_DIR}/deploy/alsa/asoundrc.jasper" /root/.asoundrc; then
+        if ! grep -q "jasper_dongle" /root/.asoundrc; then
             cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
         fi
     fi
-    install -m 0600 "${REPO_DIR}/deploy/alsa/asoundrc.jasper" /root/.asoundrc
+    sed "s/__DONGLE_CARD__/${dongle_card}/g" \
+        "${REPO_DIR}/deploy/alsa/asoundrc.jasper" > /root/.asoundrc
+    chmod 0600 /root/.asoundrc
 }
 
 install_jasper() {
@@ -107,7 +131,14 @@ install_jasper() {
         "import openwakeword.utils as u; u.download_models()"
 
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
-        install -m 0640 "${REPO_DIR}/.env.example" "${ENV_DIR}/jasper.env"
+        # Detect ReSpeaker XVF3800 card name. Default "Array" (PiOS literal
+        # name; product description matches).
+        local mic_card
+        mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
+        echo "  ReSpeaker mic: CARD=${mic_card}"
+        sed "s|JASPER_MIC_DEVICE=plughw:CARD=Array|JASPER_MIC_DEVICE=plughw:CARD=${mic_card}|" \
+            "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
+        chmod 0640 "${ENV_DIR}/jasper.env"
         echo
         echo "Created ${ENV_DIR}/jasper.env from template."
         echo "Edit it and set GEMINI_API_KEY before starting jasper-voice."

@@ -167,23 +167,18 @@ Loopback.
    bit depth **16**, channels **2**.
 4. Click **Set** + restart MPD when prompted.
 
-If your moOde version doesn't expose Loopback in the Audio output dropdown,
-the manual fallback is `/etc/mpd.conf`:
+**Don't hand-edit `/etc/mpd.conf`** — moOde regenerates it from its UI
+state on restart and on every moOde upgrade, so manual edits silently
+revert (often hours later, looks like a random regression). If Loopback
+isn't in moOde's dropdown:
 
-```conf
-audio_output {
-    type           "alsa"
-    name           "JasperLoopback"
-    device         "plughw:CARD=Loopback,DEV=0"
-    format         "48000:16:2"
-    auto_resample  "no"
-    auto_format    "no"
-    auto_channels  "no"
-}
-```
-
-Then `sudo systemctl restart mpd` and verify the new output is selected
-in moOde's UI.
+1. First check that `lsmod | grep snd_aloop` shows the module loaded —
+   if not, `sudo modprobe snd-aloop && sudo systemctl restart mpd` and
+   reload the moOde page.
+2. Confirm moOde version is 10.0.0 or newer (`cat /var/local/www/footer.txt`).
+3. If the dropdown still doesn't list Loopback, post to the moOde forum
+   with your version and `aplay -L` output — there's no robust manual
+   workaround that survives moOde's config regeneration.
 
 ### B6.1. AirPlay rate caveat
 
