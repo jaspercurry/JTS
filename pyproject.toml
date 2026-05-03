@@ -1,0 +1,38 @@
+[project]
+name = "jasper-speaker"
+version = "0.1.0"
+description = "Open smart-speaker voice daemon for Pi 5 + moOde + CamillaDSP"
+requires-python = ">=3.11"
+dependencies = [
+    "google-genai==1.13.0",
+    "pycamilladsp==3.0.0",
+    "openwakeword==0.6.0",
+    "sounddevice==0.5.1",
+    "numpy>=1.26,<3",
+    "spotipy==2.24.0",
+    "python-mpd2==3.1.1",
+    "httpx==0.28.1",
+    "onnxruntime>=1.17",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+jasper-voice = "jasper.voice_daemon:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["jasper*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+asyncio_mode = "auto"

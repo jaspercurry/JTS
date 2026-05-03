@@ -1,0 +1,18 @@
+[Unit]
+Description=Jasper voice daemon (wake word + Gemini Live + tools)
+After=jasper-camilla.service network-online.target mpd.service
+Wants=network-online.target
+Requires=jasper-camilla.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-voice
+WorkingDirectory=/opt/jasper
+Restart=on-failure
+RestartSec=2
+StateDirectory=jasper
+StateDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

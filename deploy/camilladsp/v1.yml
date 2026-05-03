@@ -1,0 +1,58 @@
+---
+# CamillaDSP 4.x v1 passthrough config.
+# Capture: ALSA Loopback (moOde writes here). Playback: Apple USB-C dongle.
+# Single master_gain mixer per channel so the daemon can SetVolume for ducking
+# without reloading the YAML (Reload glitches audio).
+#
+# All rates pinned at 48 kHz — Apple dongle is 48 kHz only on Linux, and
+# Loopback locks rate at first opener.
+
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  capture:
+    type: Alsa
+    channels: 2
+    device: "hw:Loopback,1,0"
+    format: S32LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "plughw:CARD=Headset"
+    format: S16LE
+
+filters:
+  flat:
+    type: Gain
+    parameters:
+      gain: 0.0
+      inverted: false
+      mute: false
+
+mixers:
+  master_gain:
+    channels:
+      in: 2
+      out: 2
+    mapping:
+      - dest: 0
+        sources:
+          - channel: 0
+            gain: 0
+            inverted: false
+      - dest: 1
+        sources:
+          - channel: 1
+            gain: 0
+            inverted: false
+
+pipeline:
+  - type: Mixer
+    name: master_gain
+  - type: Filter
+    channel: 0
+    names: [flat]
+  - type: Filter
+    channel: 1
+    names: [flat]

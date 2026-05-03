@@ -1,0 +1,20 @@
+[Unit]
+Description=CamillaDSP (always-on, v1 passthrough + master_gain ducking node)
+After=sound.target network.target
+Wants=sound.target
+
+[Service]
+Type=simple
+ExecStart=/opt/camilladsp/camilladsp \
+    -p 1234 -a 127.0.0.1 \
+    /etc/camilladsp/v1.yml
+Restart=on-failure
+RestartSec=2
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

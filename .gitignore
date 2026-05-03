@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+*.onnx
+*.tflite
+.vscode/
+.idea/
+.DS_Store
