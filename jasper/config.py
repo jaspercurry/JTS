@@ -58,6 +58,7 @@ class Config:
     spotify_client_secret: str
     spotify_redirect_uri: str
     spotify_cache_path: str
+    spotify_device_name: str
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -88,6 +89,11 @@ class Config:
             spotify_cache_path=_env(
                 "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"
             ),
+            # Substring (case-insensitive) matched against
+            # `sp.devices()[].name` to find the Pi's librespot endpoint.
+            # moOde defaults to "Moode <hostname>". Change if you renamed
+            # your moOde Spotify Connect device.
+            spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "moode"),
         ))
 
     @property

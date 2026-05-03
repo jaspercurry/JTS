@@ -11,6 +11,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_VOICE_PROVIDER", "JASPER_GEMINI_MODEL", "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
+        "JASPER_SPOTIFY_DEVICE_NAME",
         "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
     ]:
         monkeypatch.delenv(var, raising=False)
@@ -26,6 +27,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
     assert cfg.mic_device == "plughw:CARD=Array"
     assert cfg.tts_device == "plug:jasper_dongle"
+    assert cfg.spotify_device_name == "moode"
     assert cfg.spotify_enabled is False
 
 

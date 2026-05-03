@@ -52,7 +52,7 @@ def _build_registry(cfg: Config, camilla: CamillaController, moode: MoodeClient)
     for fn in make_transport_tools(moode):
         registry.register(fn)
     sp = build_spotify(cfg)
-    for fn in make_spotify_tools(sp):
+    for fn in make_spotify_tools(sp, moode, cfg.spotify_device_name):
         registry.register(fn)
     return registry
 

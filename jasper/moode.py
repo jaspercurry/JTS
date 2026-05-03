@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from typing import Any
 
 import httpx
 from mpd.asyncio import MPDClient
 
 logger = logging.getLogger(__name__)
+
+MOODE_DB = "/var/local/www/db/moode-sqlite3.db"
+RENDERER_FLAGS = ("aplactive", "btactive", "spotactive", "slactive", "rbactive")
 
 
 class MoodeClient:
@@ -77,6 +81,32 @@ class MoodeClient:
 
     async def status(self) -> dict[str, Any]:
         return dict(await self._mpd_call("status"))
+
+    async def disable_renderer(self, name: str) -> None:
+        """Stop a moOde renderer (airplay, bluetooth, spotify, squeezelite, …).
+
+        moOde's REST endpoint is `cmd=renderer_onoff --<name> off`. The
+        flag-style argument is preserved exactly as moOde expects it.
+        """
+        await self._rest(f"renderer_onoff --{name} off")
+
+    async def active_renderers(self) -> dict[str, bool]:
+        """Read moOde's SQLite cfg_system table to get definitive renderer
+        state. Returns a dict like {'aplactive': True, 'btactive': False, ...}.
+        Falls back to all-False if the DB is unreachable (e.g. running off-Pi)."""
+        def _read() -> dict[str, bool]:
+            placeholders = ",".join("?" for _ in RENDERER_FLAGS)
+            try:
+                with sqlite3.connect(f"file:{MOODE_DB}?mode=ro", uri=True) as conn:
+                    rows = conn.execute(
+                        f"SELECT param, value FROM cfg_system WHERE param IN ({placeholders})",
+                        RENDERER_FLAGS,
+                    ).fetchall()
+                return {p: v == "1" for p, v in rows}
+            except sqlite3.Error as e:
+                logger.debug("active_renderers sqlite error: %s", e)
+                return {}
+        return await asyncio.to_thread(_read)
 
     async def aclose(self) -> None:
         await self._http.aclose()
