@@ -14,10 +14,12 @@ from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
 from .tools.spotify import build_spotify, make_spotify_tools
 from .tools.transport import make_transport_tools
+from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore
 from .voice.gemini_session import GeminiLiveSession
 from .voice.session import VoiceSession
 from .wake import WakeWordDetector
+from .weather import WeatherClient
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,9 @@ SYSTEM_INSTRUCTION = (
     "You are Jasper, a concise voice assistant living in a smart speaker. "
     "Speak briefly. When the user asks to control music or volume, call the "
     "appropriate tool — don't ask for confirmation first. Use get_now_playing "
-    "before answering questions about the current track."
+    "before answering questions about the current track. Use get_weather for "
+    "any weather, temperature, or rain question; if the user doesn't name a "
+    "city, pass an empty location string and the tool will use the default."
 )
 
 # Brief refractory after a session ends before the wake detector is re-armed.
@@ -45,7 +49,12 @@ def _make_session(cfg: Config) -> VoiceSession:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
-def _build_registry(cfg: Config, camilla: CamillaController, moode: MoodeClient) -> ToolRegistry:
+def _build_registry(
+    cfg: Config,
+    camilla: CamillaController,
+    moode: MoodeClient,
+    weather: WeatherClient,
+) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(camilla):
         registry.register(fn)
@@ -53,6 +62,8 @@ def _build_registry(cfg: Config, camilla: CamillaController, moode: MoodeClient)
         registry.register(fn)
     sp = build_spotify(cfg)
     for fn in make_spotify_tools(sp, moode, cfg.spotify_device_name):
+        registry.register(fn)
+    for fn in make_weather_tools(weather):
         registry.register(fn)
     return registry
 
@@ -224,9 +235,10 @@ async def run() -> None:
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     moode = MoodeClient(cfg.moode_base_url, cfg.mpd_host, cfg.mpd_port)
+    weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
     ducker = Ducker(camilla, cfg.duck_db)
 
-    registry = _build_registry(cfg, camilla, moode)
+    registry = _build_registry(cfg, camilla, moode, weather)
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()
@@ -253,6 +265,7 @@ async def run() -> None:
             await wake_loop.run()
     finally:
         await moode.aclose()
+        await weather.aclose()
 
 
 def main() -> None:

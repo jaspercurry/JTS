@@ -58,25 +58,22 @@ def _normalise(s: str) -> str:
 
 
 def _match_track(airplay_song: dict, spotify_playback: dict | None) -> bool:
-    """True iff the AirPlay-reported metadata matches the Spotify-reported
-    currently-playing track. Conservative: title AND artist must both align,
-    Spotify must be is_playing, both fields non-empty."""
+    """True iff the AirPlay-reported title matches Spotify's currently-playing
+    title. Title-only on purpose: artist strings get butchered across services
+    (collaborations, "Various Artists", remaster suffixes), so requiring artist
+    match produced too many false negatives. Two simultaneously-playing
+    sessions of the same song title are vanishingly rare, and the
+    `is_playing=True` guard already eliminates stale paused-session
+    coincidences."""
     if not spotify_playback or not spotify_playback.get("is_playing"):
         return False
     item = spotify_playback.get("item") or {}
     sp_title = item.get("name", "")
-    sp_artists = item.get("artists") or []
-    sp_artist = sp_artists[0].get("name", "") if sp_artists else ""
-
     ap_title = airplay_song.get("title") or airplay_song.get("Title") or ""
-    ap_artist = airplay_song.get("artist") or airplay_song.get("Artist") or ""
 
-    if not (sp_title and sp_artist and ap_title and ap_artist):
+    if not (sp_title and ap_title):
         return False
-    return (
-        _normalise(sp_title) == _normalise(ap_title)
-        and _normalise(sp_artist) == _normalise(ap_artist)
-    )
+    return _normalise(sp_title) == _normalise(ap_title)
 
 
 def _find_librespot_id(devices: list[dict], name_pattern: str) -> str | None:

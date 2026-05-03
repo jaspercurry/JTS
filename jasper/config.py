@@ -60,6 +60,9 @@ class Config:
     spotify_cache_path: str
     spotify_device_name: str
 
+    weather_default_location: str
+    weather_units: str
+
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
@@ -94,6 +97,10 @@ class Config:
             # moOde defaults to "Moode <hostname>". Change if you renamed
             # your moOde Spotify Connect device.
             spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "moode"),
+            # Default location for "Hey Jarvis, what's the weather?" with
+            # no city specified. Empty = require explicit location each time.
+            weather_default_location=_env("JASPER_DEFAULT_LOCATION", ""),
+            weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
         ))
 
     @property

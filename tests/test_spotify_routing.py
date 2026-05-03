@@ -25,13 +25,21 @@ def test_match_track_exact_match():
     assert _match_track(airplay, spotify) is True
 
 
-def test_match_track_normalisation():
-    """Different capitalisation, punctuation, and articles should still match."""
-    airplay = {"title": "the BEATLES", "artist": "hey jude"}
-    spotify = _spotify("Hey Jude", "Beatles")
-    # Note: title and artist are mismatched in this contrived test —
-    # ensures the matcher actually compares title-to-title.
-    assert _match_track(airplay, spotify) is False
+def test_match_track_normalisation_title_only():
+    """Title comparison is case/punctuation-insensitive after normalisation.
+    Artist disagreement is OK now — title-only matching."""
+    airplay = {"title": "HEY JUDE!", "artist": "Some Cover Band"}
+    spotify = _spotify("Hey Jude", "The Beatles")
+    assert _match_track(airplay, spotify) is True
+
+
+def test_match_track_remaster_suffix_still_matches():
+    """Real-world: AirPlay reports the album-version title with no suffix,
+    Spotify reports the same track from a remastered release. Title-only
+    matching tolerates this; both-must-match would have false-negatived."""
+    airplay = {"title": "Hey Jude", "artist": "The Beatles"}
+    spotify = _spotify("Hey Jude", "The Beatles - Remastered 2015")
+    assert _match_track(airplay, spotify) is True
 
 
 def test_match_track_different_song_returns_false():
@@ -43,7 +51,7 @@ def test_match_track_different_song_returns_false():
 def test_match_track_spotify_paused_returns_false():
     """Spotify session exists but is_playing=False should not match — the
     user might be AirPlaying something else and have a stale paused
-    Spotify session."""
+    Spotify session with the same song title coincidentally."""
     airplay = {"title": "Hey Jude", "artist": "The Beatles"}
     spotify = _spotify("Hey Jude", "The Beatles", is_playing=False)
     assert _match_track(airplay, spotify) is False
@@ -64,7 +72,7 @@ def test_match_track_spotify_no_playback_returns_false():
 
 def test_match_track_handles_capital_field_keys():
     """moOde is known to vary key casing across versions."""
-    airplay = {"Title": "Hey Jude", "Artist": "The Beatles"}
+    airplay = {"Title": "Hey Jude"}
     spotify = _spotify("Hey Jude", "The Beatles")
     assert _match_track(airplay, spotify) is True
 
