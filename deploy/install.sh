@@ -37,7 +37,7 @@ install_deps() {
     apt-get install -y --no-install-recommends \
         python3 python3-venv python3-dev \
         build-essential libasound2-dev libasound2 portaudio19-dev \
-        libsndfile1 curl ca-certificates
+        libsndfile1 curl ca-certificates rsync
 }
 
 install_camilladsp() {

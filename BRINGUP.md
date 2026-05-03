@@ -103,7 +103,7 @@ what it's doing:
 ```sh
 ssh pi@jasper.local
 sudo apt-get install -y git
-git clone http://github.com/jaspercurry/JTS.git /home/pi/jts
+git clone https://github.com/jaspercurry/JTS.git /home/pi/jts
 cd /home/pi/jts
 git checkout claude/camilla-dsp-voice-plan-QRdsE
 ```
