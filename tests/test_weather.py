@@ -56,50 +56,109 @@ def test_will_rain_handles_none():
 # --- response transformation ---
 
 
-def _open_meteo_response(
-    cur_temp: float,
-    cur_code: int,
-    high: float,
-    low: float,
-    daily_code: int,
-    precip_prob: int,
-) -> dict:
-    """Shape mirrors Open-Meteo's actual JSON for forecast_days=1."""
+def _hourly_block(date: str, start_hour: int, count: int) -> dict:
+    """Build a parallel-arrays hourly block starting at <date>T<HH>:00,
+    `count` entries long, with predictable values for assertions."""
+    times = [f"{date}T{(start_hour + i) % 24:02d}:00" for i in range(count)]
     return {
-        "current": {"temperature_2m": cur_temp, "weather_code": cur_code},
-        "daily": {
-            "temperature_2m_max": [high],
-            "temperature_2m_min": [low],
-            "weather_code": [daily_code],
-            "precipitation_probability_max": [precip_prob],
-        },
+        "time": times,
+        "temperature_2m": [10.0 + i * 0.1 for i in range(count)],
+        "weather_code": [0 for _ in range(count)],
+        "precipitation_probability": [10 + i for i in range(count)],
     }
 
 
-def test_build_summary_full_response():
-    forecast = _open_meteo_response(
-        cur_temp=18.5, cur_code=2, high=22.1, low=14.3,
-        daily_code=63, precip_prob=70,
-    )
-    s = _build_summary(forecast, "Toronto, Ontario", "celsius")
+def _open_meteo_response(
+    cur_temp: float = 18.5,
+    cur_code: int = 2,
+    cur_time: str = "2024-05-15T14:30",
+    today_high: float = 22.1,
+    today_low: float = 14.3,
+    today_code: int = 63,
+    today_prob: int = 70,
+    tomorrow_high: float = 24.0,
+    tomorrow_low: float = 16.0,
+    tomorrow_code: int = 1,
+    tomorrow_prob: int = 10,
+    hourly: dict | None = None,
+) -> dict:
+    """Shape mirrors Open-Meteo's actual JSON for forecast_days=2 with
+    hourly variables enabled."""
+    if hourly is None:
+        # 48 entries: today 00:00..23:00 + tomorrow 00:00..23:00.
+        today_hours = _hourly_block("2024-05-15", 0, 24)
+        tomorrow_hours = _hourly_block("2024-05-16", 0, 24)
+        hourly = {
+            "time": today_hours["time"] + tomorrow_hours["time"],
+            "temperature_2m": today_hours["temperature_2m"] + tomorrow_hours["temperature_2m"],
+            "weather_code": today_hours["weather_code"] + tomorrow_hours["weather_code"],
+            "precipitation_probability": (
+                today_hours["precipitation_probability"]
+                + tomorrow_hours["precipitation_probability"]
+            ),
+        }
+    return {
+        "current": {
+            "temperature_2m": cur_temp,
+            "weather_code": cur_code,
+            "time": cur_time,
+        },
+        "daily": {
+            "temperature_2m_max": [today_high, tomorrow_high],
+            "temperature_2m_min": [today_low, tomorrow_low],
+            "weather_code": [today_code, tomorrow_code],
+            "precipitation_probability_max": [today_prob, tomorrow_prob],
+        },
+        "hourly": hourly,
+    }
+
+
+def test_build_summary_now_today_tomorrow_blocks():
+    s = _build_summary(_open_meteo_response(), "Toronto, Ontario", "celsius")
     assert s["location"] == "Toronto, Ontario"
-    assert s["temperature_now"] == 18.5
-    assert s["temperature_high_today"] == 22.1
-    assert s["temperature_low_today"] == 14.3
-    assert s["condition_now"] == "partly cloudy"
-    assert s["condition_today"] == "moderate rain"
-    assert s["precipitation_probability_today"] == 70
-    assert s["will_rain_today"] is True
     assert s["units"] == "°C"
+    assert s["current_local_time"] == "2024-05-15T14:30"
+    assert s["now"] == {"temperature": 18.5, "condition": "partly cloudy"}
+    assert s["today"]["temperature_high"] == 22.1
+    assert s["today"]["temperature_low"] == 14.3
+    assert s["today"]["condition"] == "moderate rain"
+    assert s["today"]["precipitation_probability"] == 70
+    assert s["today"]["will_rain"] is True
+    assert s["tomorrow"]["temperature_high"] == 24.0
+    assert s["tomorrow"]["temperature_low"] == 16.0
+    assert s["tomorrow"]["condition"] == "mainly clear"
+    assert s["tomorrow"]["precipitation_probability"] == 10
+    assert s["tomorrow"]["will_rain"] is False
+
+
+def test_build_summary_hourly_starts_at_current_hour():
+    s = _build_summary(_open_meteo_response(cur_time="2024-05-15T14:30"),
+                       "Toronto", "celsius")
+    hours = s["hourly_next_24h"]
+    assert len(hours) == 24
+    # First entry should be the 14:00 slot of today (current local hour).
+    assert hours[0]["time"] == "2024-05-15T14:00"
+    # Should span past midnight into tomorrow.
+    assert hours[-1]["time"].startswith("2024-05-16")
+    # Each entry has the expected fields.
+    assert "temperature" in hours[0]
+    assert "condition" in hours[0]
+    assert "precipitation_probability" in hours[0]
+
+
+def test_build_summary_hourly_starts_at_zero_when_current_time_unknown():
+    s = _build_summary(_open_meteo_response(cur_time=None),
+                       "Toronto", "celsius")
+    hours = s["hourly_next_24h"]
+    assert len(hours) == 24
+    assert hours[0]["time"] == "2024-05-15T00:00"
 
 
 def test_build_summary_fahrenheit_units():
-    forecast = _open_meteo_response(
-        cur_temp=65.3, cur_code=0, high=72, low=58, daily_code=0, precip_prob=0,
-    )
-    s = _build_summary(forecast, "Austin, Texas", "fahrenheit")
+    s = _build_summary(_open_meteo_response(today_code=0, today_prob=0),
+                       "Austin, Texas", "fahrenheit")
     assert s["units"] == "°F"
-    assert s["will_rain_today"] is False
+    assert s["today"]["will_rain"] is False
 
 
 def test_build_summary_handles_empty_response():
@@ -108,9 +167,11 @@ def test_build_summary_handles_empty_response():
     erroring out of a tool call."""
     s = _build_summary({}, "Nowhere", "celsius")
     assert s["location"] == "Nowhere"
-    assert s["temperature_now"] is None
-    assert s["condition_now"] == "unknown"
-    assert s["will_rain_today"] is False
+    assert s["now"]["temperature"] is None
+    assert s["now"]["condition"] == "unknown"
+    assert s["today"]["will_rain"] is False
+    assert s["tomorrow"]["will_rain"] is False
+    assert s["hourly_next_24h"] == []
 
 
 # --- WeatherClient with mock transport ---
@@ -136,8 +197,8 @@ async def test_get_weather_uses_default_location_when_empty():
             })
         captured_forecast_query.append(dict(request.url.params))
         return httpx.Response(200, json=_open_meteo_response(
-            cur_temp=18.5, cur_code=2, high=22, low=14,
-            daily_code=2, precip_prob=10,
+            cur_temp=18.5, cur_code=2,
+            today_high=22, today_low=14, today_code=2, today_prob=10,
         ))
 
     http = httpx.AsyncClient(transport=_mock_transport(handler))
@@ -163,7 +224,8 @@ async def test_get_weather_explicit_location_overrides_default():
                 }],
             })
         return httpx.Response(200, json=_open_meteo_response(
-            cur_temp=15, cur_code=3, high=18, low=12, daily_code=3, precip_prob=20,
+            cur_temp=15, cur_code=3,
+            today_high=18, today_low=12, today_code=3, today_prob=20,
         ))
 
     http = httpx.AsyncClient(transport=_mock_transport(handler))
@@ -189,7 +251,8 @@ async def test_get_weather_caches_geocode():
                 }],
             })
         return httpx.Response(200, json=_open_meteo_response(
-            cur_temp=18, cur_code=0, high=22, low=14, daily_code=0, precip_prob=0,
+            cur_temp=18, cur_code=0,
+            today_high=22, today_low=14, today_code=0, today_prob=0,
         ))
 
     http = httpx.AsyncClient(transport=_mock_transport(handler))

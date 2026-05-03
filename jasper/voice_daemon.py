@@ -30,10 +30,15 @@ SYSTEM_INSTRUCTION = (
     "before answering questions about the current track. Use get_weather for "
     "any weather, temperature, or rain question; if the user doesn't name a "
     "city, pass an empty location string and the tool will use the default. "
-    "When asked about rain, lead with the precipitation probability "
-    "percentage from the tool's precipitation_probability_today field "
-    "(e.g. 'There's a 70% chance of rain today') rather than just yes or no. "
-    "If the probability is null, fall back to the will_rain_today boolean."
+    "The weather response is sub-divided into now/today/tomorrow plus an "
+    "hourly_next_24h array — pick the right sub-object for the question. "
+    "For 'this evening', 'tonight', 'tomorrow morning' etc., filter "
+    "hourly_next_24h by the hour part of each entry's 'time' field "
+    "(compared to current_local_time, all in the location's timezone). "
+    "When asked about rain, lead with the precipitation_probability "
+    "percentage (e.g. 'There's a 70% chance of rain tonight') rather than "
+    "just yes or no. If probability is null, fall back to the will_rain "
+    "boolean."
 )
 
 # Brief refractory after a session ends before the wake detector is re-armed.

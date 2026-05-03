@@ -86,33 +86,90 @@ def _will_rain(daily_code: int | None, precip_prob: int | None) -> bool:
     return False
 
 
+def _hourly_next_24h(hourly: dict, current_time: str | None) -> list[dict]:
+    """Slice the hourly forecast to the next 24 hours starting from the
+    current local hour. Open-Meteo's hourly array starts at 00:00 today
+    (location-local) and extends through the forecast period; we match
+    by 'YYYY-MM-DDTHH' prefix to find the current hour and take the
+    next 24 entries."""
+    times = hourly.get("time") or []
+    temps = hourly.get("temperature_2m") or []
+    codes = hourly.get("weather_code") or []
+    probs = hourly.get("precipitation_probability") or []
+    if not times:
+        return []
+
+    start_idx = 0
+    if current_time:
+        # current_time looks like "2024-05-15T14:30"; hourly times are
+        # "2024-05-15T14:00". Match on the "YYYY-MM-DDTHH" prefix.
+        prefix = current_time[:13]
+        for i, t in enumerate(times):
+            if isinstance(t, str) and t.startswith(prefix):
+                start_idx = i
+                break
+
+    end_idx = min(start_idx + 24, len(times))
+    out = []
+    for i in range(start_idx, end_idx):
+        out.append({
+            "time": times[i],
+            "temperature": temps[i] if i < len(temps) else None,
+            "condition": _describe(codes[i] if i < len(codes) else None),
+            "precipitation_probability": probs[i] if i < len(probs) else None,
+        })
+    return out
+
+
+def _daily_summary(daily: dict, idx: int) -> dict:
+    """Pull one day's worth of summary out of Open-Meteo's parallel arrays."""
+    def _at(key):
+        v = daily.get(key) or []
+        return v[idx] if len(v) > idx else None
+
+    code = _at("weather_code")
+    prob = _at("precipitation_probability_max")
+    return {
+        "temperature_high": _at("temperature_2m_max"),
+        "temperature_low": _at("temperature_2m_min"),
+        "condition": _describe(code),
+        "precipitation_probability": prob,
+        "will_rain": _will_rain(code, prob),
+    }
+
+
 def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
     """Transform Open-Meteo's response shape into the dict shape the voice
-    model expects. Defensive about missing fields — Open-Meteo's
-    response schema is stable but a malformed/empty one shouldn't crash."""
+    model expects. Nested by time horizon so the model picks the relevant
+    sub-object based on the user's question:
+
+      'what's the weather now?'         → response['now']
+      'what's the weather today?'       → response['today']
+      'what's the weather tomorrow?'    → response['tomorrow']
+      'this evening?' / 'tonight?' /
+      'tomorrow morning?'               → response['hourly_next_24h'],
+                                          filter by hour vs current_local_time
+
+    Defensive about missing fields — Open-Meteo's response schema is
+    stable but a malformed/empty one shouldn't crash."""
     cur = forecast.get("current") or {}
     daily = forecast.get("daily") or {}
-
-    def _first(key):
-        v = daily.get(key) or []
-        return v[0] if v else None
+    hourly = forecast.get("hourly") or {}
 
     cur_code = cur.get("weather_code")
-    daily_code = _first("weather_code")
-    precip_prob = _first("precipitation_probability_max")
-
-    unit_label = "°F" if units == "fahrenheit" else "°C"
+    cur_time = cur.get("time")
 
     return {
         "location": location_name,
-        "temperature_now": cur.get("temperature_2m"),
-        "temperature_high_today": _first("temperature_2m_max"),
-        "temperature_low_today": _first("temperature_2m_min"),
-        "condition_now": _describe(cur_code),
-        "condition_today": _describe(daily_code),
-        "precipitation_probability_today": precip_prob,
-        "will_rain_today": _will_rain(daily_code, precip_prob),
-        "units": unit_label,
+        "current_local_time": cur_time,
+        "units": "°F" if units == "fahrenheit" else "°C",
+        "now": {
+            "temperature": cur.get("temperature_2m"),
+            "condition": _describe(cur_code),
+        },
+        "today": _daily_summary(daily, 0),
+        "tomorrow": _daily_summary(daily, 1),
+        "hourly_next_24h": _hourly_next_24h(hourly, cur_time),
     }
 
 
@@ -170,13 +227,16 @@ class WeatherClient:
                 "latitude": loc.lat,
                 "longitude": loc.lon,
                 "current": "temperature_2m,weather_code",
+                "hourly": (
+                    "temperature_2m,weather_code,precipitation_probability"
+                ),
                 "daily": (
                     "temperature_2m_max,temperature_2m_min,"
                     "precipitation_probability_max,weather_code"
                 ),
                 "temperature_unit": self._units,
                 "timezone": "auto",
-                "forecast_days": 1,
+                "forecast_days": 2,
             },
             timeout=5.0,
         )
