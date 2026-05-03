@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 jasper-voice = "jasper.voice_daemon:main"
+jasper-spotify-auth = "jasper.cli.spotify_auth:main"
 
 [build-system]
 requires = ["setuptools>=68"]

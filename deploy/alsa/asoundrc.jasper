@@ -1,0 +1,36 @@
+# /root/.asoundrc — installed by deploy/install.sh.
+#
+# Why: CamillaDSP outputs to the Apple USB-C dongle (CardId "Headset"), and
+# the voice daemon also needs to play TTS to the same dongle. ALSA only
+# allows one opener per hw: device, so we wrap the dongle in a dmix slave
+# that both processes share. Music goes through CamillaDSP (and gets ducked
+# via SetVolume on master_gain); voice TTS goes straight through plug:
+# (resamples 24 kHz mono → 48 kHz stereo) at full volume.
+#
+# This file is only seen by processes that read /root/.asoundrc, i.e. the
+# CamillaDSP and jasper-voice systemd units (which run as root). moOde's
+# MPD runs as user `mpd` and is unaffected — it writes into the Loopback
+# device the moOde web UI selects.
+
+pcm.jasper_dongle {
+    type dmix
+    ipc_key 7777
+    ipc_perm 0666
+    slave {
+        pcm "hw:CARD=Headset,DEV=0"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.jasper_dongle {
+    type hw
+    card Headset
+}

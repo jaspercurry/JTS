@@ -20,6 +20,11 @@ ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
 SYSTEMD_DIR="/etc/systemd/system"
 
+CAMILLA_VERSION="v4.1.3"
+CAMILLA_TARBALL="camilladsp-linux-aarch64.tar.gz"
+CAMILLA_SHA256="d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a"
+CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_VERSION}/${CAMILLA_TARBALL}"
+
 require_root() {
     if [[ $EUID -ne 0 ]]; then
         echo "this script must be run as root (use sudo)" >&2
@@ -31,27 +36,43 @@ install_deps() {
     apt-get update
     apt-get install -y --no-install-recommends \
         python3 python3-venv python3-dev \
-        build-essential libasound2-dev portaudio19-dev \
-        libsndfile1
+        build-essential libasound2-dev libasound2 portaudio19-dev \
+        libsndfile1 curl ca-certificates
 }
 
 install_camilladsp() {
+    install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
-        echo "CamillaDSP binary not found at ${CAMILLA_DIR}/camilladsp."
-        echo "Download v4.1.3 from https://github.com/HEnquist/camilladsp/releases"
-        echo "and place the binary at ${CAMILLA_DIR}/camilladsp before re-running."
-        exit 1
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        echo "Fetching CamillaDSP ${CAMILLA_VERSION}..."
+        curl -fsSL -o "${tmpdir}/${CAMILLA_TARBALL}" "${CAMILLA_URL}"
+        echo "${CAMILLA_SHA256}  ${tmpdir}/${CAMILLA_TARBALL}" | sha256sum -c -
+        tar -xzf "${tmpdir}/${CAMILLA_TARBALL}" -C "${CAMILLA_DIR}" camilladsp
+        chmod +x "${CAMILLA_DIR}/camilladsp"
+        rm -rf "${tmpdir}"
+        echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
-    install -d -m 0755 "${CAMILLA_CONF}"
     install -m 0644 "${REPO_DIR}/deploy/camilladsp/v1.yml" "${CAMILLA_CONF}/v1.yml"
 }
 
-install_alsa_loopback() {
+install_alsa() {
     install -d -m 0755 /etc/modules-load.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
     modprobe snd-aloop || true
+
+    # Install /root/.asoundrc so CamillaDSP and jasper-voice both see the
+    # shared dmix `jasper_dongle` device. moOde/MPD is unaffected (different
+    # uid). If a /root/.asoundrc already exists, back it up rather than
+    # clobbering — operator may have customised it.
+    if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
+        if ! cmp -s "${REPO_DIR}/deploy/alsa/asoundrc.jasper" /root/.asoundrc; then
+            cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
+        fi
+    fi
+    install -m 0600 "${REPO_DIR}/deploy/alsa/asoundrc.jasper" /root/.asoundrc
 }
 
 install_jasper() {
@@ -97,7 +118,7 @@ main() {
     require_root
     install_deps
     install_camilladsp
-    install_alsa_loopback
+    install_alsa
     install_jasper
     install_systemd_units
 }

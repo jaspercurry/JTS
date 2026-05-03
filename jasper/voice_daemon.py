@@ -76,6 +76,10 @@ async def _run_session(
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
     finally:
+        try:
+            await asyncio.wait_for(session.end_input(), timeout=2.0)
+        except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
+            logger.debug("end_input ignored: %s", e)
         await session.close()
         await ducker.restore()
         tokens = session.usage_tokens()
@@ -99,11 +103,14 @@ async def _pump_mic(session: VoiceSession, mic: MicCapture, idle_task: asyncio.T
 
 
 async def _idle_watchdog(session: VoiceSession, timeout: int) -> None:
-    """End the session after `timeout` seconds without a model turn."""
+    """End the session after `timeout` seconds with no new model turn."""
     last_turn = asyncio.get_event_loop().time()
+    last_count = session.turn_count()
     while True:
         await asyncio.sleep(1.0)
-        if session.turn_complete():
+        cur_count = session.turn_count()
+        if cur_count > last_count:
+            last_count = cur_count
             last_turn = asyncio.get_event_loop().time()
         elif asyncio.get_event_loop().time() - last_turn > timeout:
             logger.info("idle timeout, closing session")
@@ -170,7 +177,10 @@ async def _wake_loop(
             await _run_session(cfg, registry, mic, tts, ducker, usage_store)
         except Exception as e:  # noqa: BLE001
             logger.exception("session crashed: %s", e)
-        detector.reset()
+        # Drop frames captured during the session so the wake detector
+        # doesn't trigger on buffered conversation audio.
+        dropped = mic.drain()
+        logger.debug("drained %d post-session mic frames", dropped)
 
 
 def main() -> None:

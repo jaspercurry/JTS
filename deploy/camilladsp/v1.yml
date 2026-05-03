@@ -19,7 +19,7 @@ devices:
   playback:
     type: Alsa
     channels: 2
-    device: "plughw:CARD=Headset"
+    device: "jasper_dongle"
     format: S16LE
 
 filters:

@@ -17,14 +17,13 @@ class GeminiLiveSession(VoiceSession):
     """Gemini 3.1 Flash Live adapter.
 
     Audio shape: input 16-bit PCM @ 16 kHz mono, output 16-bit PCM @ 24 kHz
-    mono. Server VAD detects end-of-turn from the audio stream — we don't
-    need to send an explicit audio_stream_end. Tool calls arrive on
-    response.tool_call; we dispatch to the registered callable and reply
-    with send_tool_response.
+    mono. Tool calls arrive on response.tool_call; we dispatch the registered
+    callable and reply with send_tool_response.
 
-    NOTE: google-genai Live is still Preview. Surface fields like
-    usage_metadata and server_content.turn_complete are guarded so an SDK
-    bump that renames them degrades to a warning rather than a crash.
+    Lifecycle: turn_count() returns the number of completed turns observed
+    (so the idle watchdog can detect "model just finished a turn"). When the
+    daemon ends input it calls end_input() which fires audio_stream_end=True
+    so the server flushes any cached audio.
     """
 
     INPUT_MIME = "audio/pcm;rate=16000"
@@ -38,22 +37,22 @@ class GeminiLiveSession(VoiceSession):
         self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._receive_task: asyncio.Task | None = None
         self._usage = {"input_tokens": 0, "output_tokens": 0}
-        self._turn_complete = False
+        self._turn_count = 0
+        self._interrupted = False
 
     async def connect(self, registry: ToolRegistry, system_instruction: str) -> None:
         self._registry = registry
-        config: dict = {"response_modalities": ["AUDIO"]}
-        if system_instruction:
-            config["system_instruction"] = system_instruction
         decls = registry.function_declarations()
-        if decls:
-            config["tools"] = [{"function_declarations": decls}]
-
+        config = types.LiveConnectConfig(
+            response_modalities=["AUDIO"],
+            system_instruction=system_instruction or None,
+            tools=[types.Tool(function_declarations=decls)] if decls else None,
+        )
         self._session_cm = self._client.aio.live.connect(
             model=self._model, config=config
         )
         self._session = await self._session_cm.__aenter__()
-        self._turn_complete = False
+        self._turn_count = 0
         self._receive_task = asyncio.create_task(self._receive_loop())
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
@@ -64,10 +63,9 @@ class GeminiLiveSession(VoiceSession):
         )
 
     async def end_input(self) -> None:
-        # Server VAD handles end-of-turn; nothing to do client-side. Kept on
-        # the interface so an OpenAI adapter (which DOES need an explicit
-        # commit) can override.
-        return None
+        if self._session is None:
+            return
+        await self._session.send_realtime_input(audio_stream_end=True)
 
     async def audio_out(self) -> AsyncIterator[bytes]:
         while True:
@@ -84,11 +82,16 @@ class GeminiLiveSession(VoiceSession):
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._receive_task = None
+        if self._session is not None:
+            try:
+                await self._session.close()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("session.close() error (ignored): %s", e)
         if self._session_cm is not None:
             try:
                 await self._session_cm.__aexit__(None, None, None)
             except Exception as e:  # noqa: BLE001
-                logger.debug("session close error (ignored): %s", e)
+                logger.debug("session __aexit__ error (ignored): %s", e)
             self._session_cm = None
             self._session = None
         await self._audio_q.put(None)
@@ -96,8 +99,11 @@ class GeminiLiveSession(VoiceSession):
     def usage_tokens(self) -> dict[str, int]:
         return dict(self._usage)
 
-    def turn_complete(self) -> bool:
-        return self._turn_complete
+    def turn_count(self) -> int:
+        return self._turn_count
+
+    def interrupted(self) -> bool:
+        return self._interrupted
 
     async def _receive_loop(self) -> None:
         assert self._session is not None
@@ -122,13 +128,15 @@ class GeminiLiveSession(VoiceSession):
         if tool_call is not None:
             await self._handle_tool_call(tool_call)
 
-        # Server content: text transcripts, turn_complete signal.
+        # Server content: turn_complete + interrupted.
         sc = getattr(response, "server_content", None)
-        if sc is not None and getattr(sc, "turn_complete", False):
-            self._turn_complete = True
+        if sc is not None:
+            if getattr(sc, "turn_complete", False):
+                self._turn_count += 1
+            if getattr(sc, "interrupted", False):
+                self._interrupted = True
 
-        # Usage metadata: present on some responses, fields named with
-        # token_count suffixes. Guarded since SDK is still Preview.
+        # Usage metadata: guarded since field names can shift on Preview.
         usage = getattr(response, "usage_metadata", None)
         if usage is not None:
             in_tok = getattr(usage, "prompt_token_count", None)

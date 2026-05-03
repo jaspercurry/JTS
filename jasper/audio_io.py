@@ -60,6 +60,18 @@ class MicCapture:
         while True:
             yield await self._queue.get()
 
+    def drain(self) -> int:
+        """Discard any frames sitting in the queue. Call after a voice
+        session ends so the wake detector doesn't re-trigger on buffered
+        conversation audio. Returns count of dropped frames."""
+        dropped = 0
+        while True:
+            try:
+                self._queue.get_nowait()
+                dropped += 1
+            except asyncio.QueueEmpty:
+                return dropped
+
 
 class TtsPlayout:
     """Plays Gemini's 24 kHz int16 PCM stream out to an ALSA device."""

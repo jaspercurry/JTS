@@ -32,5 +32,10 @@ class VoiceSession(Protocol):
     def usage_tokens(self) -> dict[str, int]:
         ...
 
-    def turn_complete(self) -> bool:
+    def turn_count(self) -> int:
+        """Return the number of completed model turns observed."""
+        ...
+
+    def interrupted(self) -> bool:
+        """True if the model reported being interrupted by user audio."""
         ...

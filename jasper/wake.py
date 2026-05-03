@@ -34,6 +34,3 @@ class WakeWordDetector:
         scores = self._model.predict(frame)
         score = float(scores.get(self._key, 0.0))
         return score >= self._threshold
-
-    def reset(self) -> None:
-        self._model.reset()
