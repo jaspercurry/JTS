@@ -15,3 +15,7 @@ dist/
 .vscode/
 .idea/
 .DS_Store
+# Pi log fetches — never commit log dumps (may contain transient
+# state / device serial numbers etc.)
+logs/*
+!logs/.gitkeep

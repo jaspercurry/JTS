@@ -423,6 +423,28 @@ sudo systemctl restart jasper-voice
 
 ---
 
+## Diagnostics
+
+When something's wrong:
+
+```sh
+# On the Pi — runs every smoke test from this runbook as code:
+sudo -E /opt/jasper/.venv/bin/jasper-doctor
+```
+
+When asking Claude Code on your laptop for help:
+
+```sh
+# Pulls journals + configs + ALSA state into ./logs/ for inspection:
+bash scripts/fetch-pi-logs.sh
+# Live tail:
+bash scripts/tail-pi-logs.sh
+```
+
+Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
+`SINCE` env vars. The fetch script redacts `GEMINI_API_KEY` and
+`SPOTIFY_CLIENT_SECRET` server-side before writing.
+
 ## Common failure modes
 
 | Symptom | Cause | Fix |
