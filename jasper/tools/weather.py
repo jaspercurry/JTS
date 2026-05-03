@@ -11,10 +11,17 @@ def make_weather_tools(weather):
 
     @tool()
     async def get_weather(location: str = "") -> dict:
-        """Return current weather plus today's forecast (high/low, condition,
-        will it rain). location is optional — if empty, uses the
-        speaker's default location. Use this for any weather question:
-        temperature, conditions, rain forecast, etc."""
+        """Return current weather plus today's forecast. location is
+        optional — if empty, uses the speaker's default location.
+
+        Response fields:
+          - temperature_now / _high_today / _low_today (numbers)
+          - condition_now / condition_today (e.g. 'partly cloudy', 'light rain')
+          - precipitation_probability_today (0-100 percent — prefer this when
+            answering rain questions: 'There's a 60% chance of rain today.')
+          - will_rain_today (boolean fallback when probability is null)
+          - units ('°C' or '°F')
+        """
         return await weather.get_weather(location)
 
     return [get_weather]
