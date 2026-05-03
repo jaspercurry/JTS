@@ -122,7 +122,9 @@ def _hourly_next_24h(hourly: dict, current_time: str | None) -> list[dict]:
 
 
 def _daily_summary(daily: dict, idx: int) -> dict:
-    """Pull one day's worth of summary out of Open-Meteo's parallel arrays."""
+    """Pull one day's worth of summary out of Open-Meteo's parallel arrays.
+    Includes ISO date so the model can compute day-of-week for 'this week'
+    / 'next week' / 'on Friday' style questions."""
     def _at(key):
         v = daily.get(key) or []
         return v[idx] if len(v) > idx else None
@@ -130,12 +132,21 @@ def _daily_summary(daily: dict, idx: int) -> dict:
     code = _at("weather_code")
     prob = _at("precipitation_probability_max")
     return {
+        "date": _at("time"),
         "temperature_high": _at("temperature_2m_max"),
         "temperature_low": _at("temperature_2m_min"),
         "condition": _describe(code),
         "precipitation_probability": prob,
         "will_rain": _will_rain(code, prob),
     }
+
+
+def _daily_array(daily: dict, max_days: int = 14) -> list[dict]:
+    """Build a list of daily summaries for the next N days (capped by what
+    Open-Meteo returned). Each entry is the same shape as today/tomorrow."""
+    times = daily.get("time") or []
+    n = min(len(times), max_days)
+    return [_daily_summary(daily, i) for i in range(n)]
 
 
 def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
@@ -170,6 +181,9 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
         "today": _daily_summary(daily, 0),
         "tomorrow": _daily_summary(daily, 1),
         "hourly_next_24h": _hourly_next_24h(hourly, cur_time),
+        # Indexed 0..13 starting today. For 'this week' / 'next week' /
+        # 'on Friday' questions, slice this by the date field.
+        "daily_next_14d": _daily_array(daily, 14),
     }
 
 
@@ -236,7 +250,7 @@ class WeatherClient:
                 ),
                 "temperature_unit": self._units,
                 "timezone": "auto",
-                "forecast_days": 2,
+                "forecast_days": 14,
             },
             timeout=5.0,
         )

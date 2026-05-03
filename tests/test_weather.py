@@ -80,12 +80,13 @@ def _open_meteo_response(
     tomorrow_low: float = 16.0,
     tomorrow_code: int = 1,
     tomorrow_prob: int = 10,
+    days: int = 14,
     hourly: dict | None = None,
 ) -> dict:
-    """Shape mirrors Open-Meteo's actual JSON for forecast_days=2 with
-    hourly variables enabled."""
+    """Shape mirrors Open-Meteo's actual JSON for forecast_days=N with
+    hourly variables enabled. Defaults to the production 14-day shape;
+    pass days=2 for legacy/short-forecast scenarios."""
     if hourly is None:
-        # 48 entries: today 00:00..23:00 + tomorrow 00:00..23:00.
         today_hours = _hourly_block("2024-05-15", 0, 24)
         tomorrow_hours = _hourly_block("2024-05-16", 0, 24)
         hourly = {
@@ -97,6 +98,13 @@ def _open_meteo_response(
                 + tomorrow_hours["precipitation_probability"]
             ),
         }
+    # Build daily arrays of length `days`. Index 0 uses today_*, index 1
+    # uses tomorrow_*, indices 2..days-1 are filler with predictable values.
+    dates = [f"2024-05-{15 + i:02d}" for i in range(days)]
+    highs = [today_high, tomorrow_high] + [20.0 + i for i in range(days - 2)]
+    lows = [today_low, tomorrow_low] + [10.0 + i for i in range(days - 2)]
+    codes = [today_code, tomorrow_code] + [0 for _ in range(days - 2)]
+    probs = [today_prob, tomorrow_prob] + [0 for _ in range(days - 2)]
     return {
         "current": {
             "temperature_2m": cur_temp,
@@ -104,10 +112,11 @@ def _open_meteo_response(
             "time": cur_time,
         },
         "daily": {
-            "temperature_2m_max": [today_high, tomorrow_high],
-            "temperature_2m_min": [today_low, tomorrow_low],
-            "weather_code": [today_code, tomorrow_code],
-            "precipitation_probability_max": [today_prob, tomorrow_prob],
+            "time": dates[:days],
+            "temperature_2m_max": highs[:days],
+            "temperature_2m_min": lows[:days],
+            "weather_code": codes[:days],
+            "precipitation_probability_max": probs[:days],
         },
         "hourly": hourly,
     }
@@ -172,6 +181,36 @@ def test_build_summary_handles_empty_response():
     assert s["today"]["will_rain"] is False
     assert s["tomorrow"]["will_rain"] is False
     assert s["hourly_next_24h"] == []
+    assert s["daily_next_14d"] == []
+
+
+def test_build_summary_daily_next_14d_full_two_weeks():
+    s = _build_summary(_open_meteo_response(days=14), "Toronto", "celsius")
+    days = s["daily_next_14d"]
+    assert len(days) == 14
+    # Index 0 is today, dates increase by one each entry.
+    assert days[0]["date"] == "2024-05-15"
+    assert days[1]["date"] == "2024-05-16"
+    assert days[13]["date"] == "2024-05-28"
+    # Each entry has the same shape as today/tomorrow.
+    for d in days:
+        assert {"date", "temperature_high", "temperature_low",
+                "condition", "precipitation_probability", "will_rain"} <= d.keys()
+
+
+def test_build_summary_daily_next_14d_first_two_match_today_tomorrow():
+    """Convenience fields today/tomorrow must agree with daily_next_14d[0:2]
+    so the model can use either path interchangeably."""
+    s = _build_summary(_open_meteo_response(days=14), "Toronto", "celsius")
+    assert s["daily_next_14d"][0] == s["today"]
+    assert s["daily_next_14d"][1] == s["tomorrow"]
+
+
+def test_build_summary_daily_next_14d_caps_at_returned_length():
+    """If Open-Meteo returns fewer days than requested, daily_next_14d
+    truncates to what's actually available (no None-padding)."""
+    s = _build_summary(_open_meteo_response(days=3), "Toronto", "celsius")
+    assert len(s["daily_next_14d"]) == 3
 
 
 # --- WeatherClient with mock transport ---

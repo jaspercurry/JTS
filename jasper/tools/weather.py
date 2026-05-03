@@ -11,30 +11,40 @@ def make_weather_tools(weather):
 
     @tool()
     async def get_weather(location: str = "") -> dict:
-        """Return current conditions plus today's and tomorrow's forecasts
-        plus the next 24 hourly slots. location is optional — if empty,
-        uses the speaker's default location.
+        """Return current conditions, today/tomorrow forecasts, the next 24
+        hourly slots, and daily summaries for the next 14 days. location
+        is optional — if empty, uses the speaker's default location.
 
         Response shape:
           location, current_local_time, units ('°C' or '°F')
           now: {temperature, condition}
-          today: {temperature_high, temperature_low, condition,
+          today: {date, temperature_high, temperature_low, condition,
                   precipitation_probability, will_rain}
           tomorrow: same shape as today
           hourly_next_24h: list of {time, temperature, condition,
                   precipitation_probability} starting at the current hour
+          daily_next_14d: list of 14 daily summaries (same shape as
+                  today), index 0 = today, index 13 = today + 13 days
 
         Pick the relevant sub-object based on the user's question:
-          'now' / 'right now'        → response.now
-          'today' / 'is it raining'  → response.today
-          'tomorrow'                 → response.tomorrow
+          'now' / 'right now'             → response.now
+          'today' / 'is it raining'       → response.today
+          'tomorrow'                      → response.tomorrow
           'this evening' / 'tonight' /
-          'tomorrow morning' / etc.  → filter response.hourly_next_24h
-                                       by hour-of-day in 'time' field
-                                       (compared to current_local_time)
+          'tomorrow morning' / etc.       → filter hourly_next_24h
+                                            by hour-of-day in 'time'
+          'this week'                     → daily_next_14d[0:7], summarise
+                                            (highs, lows, rainy days)
+          'next week'                     → daily_next_14d[7:14], summarise
+          'on Friday' / 'this weekend'    → filter daily_next_14d by date
 
         For rain questions, lead with the precipitation_probability
         percentage (e.g. 'There's a 70% chance of rain tonight').
+
+        Week-scope answers should be brief: lead with high/low ranges
+        and call out any rainy days. Example: 'Highs in the low 70s,
+        lows around 55. Mostly sunny except Thursday with a 60%
+        chance of rain.'
         """
         return await weather.get_weather(location)
 
