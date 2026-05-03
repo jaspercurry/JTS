@@ -42,3 +42,18 @@ def test_spotify_enabled_when_both_creds_present(monkeypatch):
     monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "def")
     cfg = Config.from_env()
     assert cfg.spotify_enabled is True
+
+
+@pytest.mark.parametrize(
+    ("name", "value", "expected"),
+    [
+        ("JASPER_WAKE_THRESHOLD", "1.2", "JASPER_WAKE_THRESHOLD"),
+        ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
+        ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
+    ],
+)
+def test_invalid_numeric_env_values_raise(monkeypatch, name, value, expected):
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv(name, value)
+    with pytest.raises(RuntimeError, match=expected):
+        Config.from_env()

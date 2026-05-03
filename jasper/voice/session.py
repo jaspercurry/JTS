@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import AsyncIterator, Protocol, runtime_checkable
 
 from ..tools import ToolRegistry
 

@@ -21,6 +21,16 @@ def _env_int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
+def _validate(cfg: "Config") -> "Config":
+    if not 0.0 <= cfg.wake_threshold <= 1.0:
+        raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
+    if cfg.idle_timeout_sec <= 0:
+        raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    if cfg.daily_spend_cap_usd < 0:
+        raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+    return cfg
+
+
 @dataclass(frozen=True)
 class Config:
     voice_provider: str
@@ -53,7 +63,7 @@ class Config:
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
-        return cls(
+        return _validate(cls(
             voice_provider=provider,
             gemini_api_key=gemini_key,
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
@@ -78,7 +88,7 @@ class Config:
             spotify_cache_path=_env(
                 "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"
             ),
-        )
+        ))
 
     @property
     def spotify_enabled(self) -> bool:
