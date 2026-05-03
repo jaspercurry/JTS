@@ -71,6 +71,8 @@ def make_spotify_tools(sp: spotipy.Spotify | None):
         if not items:
             return {"error": f"no track found for: {query}"}
         device_id = await _active_device_id()
+        if not device_id:
+            return {"error": "no active spotify device"}
         await _to_thread(sp.add_to_queue, items[0]["uri"], device_id=device_id)
         return {"ok": True, "queued": items[0].get("name", query)}
 

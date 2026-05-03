@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -72,6 +73,27 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
         f"no ALSA device with CARD={name} found in `{kind} -L`. "
         f"Plug in the device or fix the configured name.",
     )
+
+
+def _extract_card_name(device_str: str) -> str | None:
+    """Pull CARD=name out of an ALSA device string like 'plughw:CARD=Array'."""
+    m = re.search(r"CARD=([^,\s]+)", device_str or "")
+    return m.group(1) if m else None
+
+
+def check_mic_card_matches_config(cfg: Config) -> CheckResult:
+    """Validate the card actually configured in JASPER_MIC_DEVICE — not a
+    hardcoded literal. install.sh autodetects the card name on the Pi, so
+    the literal may differ from 'Array'."""
+    card = _extract_card_name(cfg.mic_device)
+    if card is None:
+        return CheckResult(
+            "mic ALSA card",
+            "warn",
+            f"JASPER_MIC_DEVICE='{cfg.mic_device}' has no CARD= component; "
+            "skipping name check (open test will still run)",
+        )
+    return check_alsa_card(card, "arecord", f"mic ALSA card (CARD={card})")
 
 
 def check_loopback() -> CheckResult:
@@ -296,8 +318,12 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
         lambda: check_gemini_key(cfg),
-        lambda: check_alsa_card("A", "aplay", "Apple dongle (CARD=A)"),
-        lambda: check_alsa_card("Array", "arecord", "ReSpeaker XVF3800 (CARD=Array)"),
+        # Derive the mic card from cfg, not a literal — install.sh
+        # autodetects the actual card name on the Pi. The dongle path
+        # is fully exercised by check_tts_open below (opens
+        # plug:jasper_dongle which goes dmix → hw:CARD=...), so a
+        # separate literal check would just duplicate-fail.
+        lambda: check_mic_card_matches_config(cfg),
         check_loopback,
         lambda: check_mic_capture(cfg),
         lambda: check_tts_open(cfg),

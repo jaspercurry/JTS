@@ -37,4 +37,6 @@ include = ["jasper*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-asyncio_mode = "auto"
+# No asyncio_mode here yet — current tests are sync. Add it back along
+# with pytest-asyncio in the test environment when the first async test
+# lands.
