@@ -137,7 +137,7 @@ This is the structurally important step. Default moOde mode is `alsa_cdsp` — C
 4. Write a minimal v1 YAML at `/etc/camilladsp/v1.yml`:
    - Capture: `hw:Loopback,1,0` @ 48 kHz, S32LE, 2ch
    - A single mixer named `master_gain` with one biquad (flat / Gain 0 dB) per channel — this gives us a node we can `SetVolume` against without doing any DSP yet
-   - Playback: `hw:CARD=Headset` (the Apple dongle) @ 48 kHz, S16LE, 2ch
+   - Playback: `jasper_dongle` (a dmix-shared device wrapping the Apple dongle, `hw:CARD=A,DEV=0` on Pi OS Trixie) @ 48 kHz, S16LE, 2ch — see `deploy/alsa/asoundrc.jasper`
 5. Run CamillaDSP as a systemd service launched with `-p 1234 -a 127.0.0.1` so the websocket binds locally. No auth on the websocket — keep it on loopback.
 6. From a Python REPL, connect with `pycamilladsp`, send `GetVolume`, `SetVolume(-10)`, `SetVolume(0)`, observe the change in real time during playback.
 

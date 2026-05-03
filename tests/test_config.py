@@ -10,6 +10,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     for var in [
         "JASPER_VOICE_PROVIDER", "JASPER_GEMINI_MODEL", "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
+        "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
         "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
     ]:
         monkeypatch.delenv(var, raising=False)
@@ -21,6 +22,10 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -15.0
     assert cfg.daily_spend_cap_usd == 1.0
+    # ALSA defaults must match the templates in /root/.asoundrc and the
+    # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
+    assert cfg.mic_device == "plughw:CARD=Array"
+    assert cfg.tts_device == "plug:jasper_dongle"
     assert cfg.spotify_enabled is False
 
 
