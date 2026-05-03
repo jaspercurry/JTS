@@ -11,10 +11,14 @@ devices:
   samplerate: 48000
   chunksize: 1024
   queuelimit: 4
+  enable_rate_adjust: true
   capture:
+    # plughw lets ALSA convert if MPD writes a narrower format (e.g. S16LE).
+    # Loopback locks RATE at the writer's rate though — moOde must be
+    # configured to output 48 kHz to Loopback (BRINGUP.md Phase 1B).
     type: Alsa
     channels: 2
-    device: "hw:Loopback,1,0"
+    device: "plughw:CARD=Loopback,DEV=1,SUBDEV=0"
     format: S32LE
   playback:
     type: Alsa

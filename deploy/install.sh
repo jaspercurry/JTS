@@ -41,6 +41,14 @@ install_deps() {
 }
 
 install_camilladsp() {
+    # moOde 10.1.2 ships CamillaDSP 3.0.1 as `camilladsp.service`. In Custom
+    # CamillaDSP mode it should be stopped — but be belt-and-suspenders so a
+    # previously-enabled instance doesn't fight ours over /etc/asoundrc or
+    # the dmix lock. Errors are ignored (service may not exist on this
+    # moOde version).
+    systemctl stop camilladsp.service 2>/dev/null || true
+    systemctl disable camilladsp.service 2>/dev/null || true
+
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
         local tmpdir
@@ -91,6 +99,12 @@ install_jasper() {
     fi
     "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip wheel
     "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
+
+    # openWakeWord stock models (hey_jarvis + required feature models)
+    # don't auto-download on first model load. Pull them now so the daemon
+    # starts cleanly. Idempotent — re-running is fine.
+    "${INSTALL_DIR}/.venv/bin/python" -c \
+        "import openwakeword.utils as u; u.download_models()"
 
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
         install -m 0640 "${REPO_DIR}/.env.example" "${ENV_DIR}/jasper.env"

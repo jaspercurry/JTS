@@ -17,7 +17,7 @@ pcm.jasper_dongle {
     ipc_key 7777
     ipc_perm 0666
     slave {
-        pcm "hw:CARD=Headset,DEV=0"
+        pcm "hw:CARD=A,DEV=0"
         rate 48000
         channels 2
         format S16_LE
@@ -32,5 +32,5 @@ pcm.jasper_dongle {
 
 ctl.jasper_dongle {
     type hw
-    card Headset
+    card A
 }

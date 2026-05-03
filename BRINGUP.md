@@ -128,38 +128,81 @@ This script will:
 
 ### B5. Verify ALSA device names match what we assumed
 
-This is the **single most likely thing to be wrong** because `arecord -L`
-output depends on what's plugged in.
+This is the **single most likely thing to be wrong** — confirm before
+restarting any services.
 
 ```sh
-aplay -L | grep -A2 -i headset
-arecord -L | grep -A2 -i xvf3800
-aplay -L | grep -A2 -i loopback
+aplay -L | grep -B1 -i 'usb-c to 3.5mm'    # the Apple dongle
+arecord -L | grep -B1 -i 'xvf3800\|array'  # the ReSpeaker
+aplay -L | grep -i loopback                 # the snd-aloop module
 ```
 
-The defaults in `/etc/jasper/jasper.env` assume:
-- Apple dongle's ALSA card name is `Headset` → used by `pcm.jasper_dongle`
-- XVF3800's ALSA card name is `XVF3800` → used as `JASPER_MIC_DEVICE`
-- Loopback is `Loopback` → used in `v1.yml`
+The defaults assume (verified against community forum posts, May 2026):
 
-If `arecord -L` shows the XVF3800 with a different name (e.g. `Array`), edit
-`JASPER_MIC_DEVICE` in `/etc/jasper/jasper.env` and restart. If the dongle
-card name isn't `Headset`, edit `/etc/camilladsp/v1.yml` (`playback.device:
-"jasper_dongle"` is fine because dmix routes via the asoundrc; edit
-`/root/.asoundrc` so the `slave.pcm` line matches the actual hw:CARD=...
-name).
+| Component | Card name | Where referenced |
+|---|---|---|
+| Apple USB-C → 3.5mm dongle | **`A`** (literally the letter A; the device description is "USB-C to 3.5mm Headphone Jack A") | `/root/.asoundrc` slave.pcm `hw:CARD=A,DEV=0` and `ctl.jasper_dongle.card A` |
+| ReSpeaker XVF3800 | **`Array`** (literally; description "reSpeaker XVF3800 4-Mic Array") | `/etc/jasper/jasper.env` `JASPER_MIC_DEVICE=plughw:CARD=Array` |
+| snd-aloop | **`Loopback`** (kernel-fixed) | `/etc/camilladsp/v1.yml` capture device |
 
-### B6. Configure moOde to write to Loopback
+If your `aplay -L` / `arecord -L` shows different names, edit the relevant
+file and `systemctl restart jasper-camilla` (and/or `jasper-voice`).
 
-Critical: now that CamillaDSP is going to capture from Loopback, moOde
-needs to stop writing to the dongle and start writing to Loopback.
+### B6. Configure moOde to write to Loopback at 48 kHz
 
-1. moOde web UI → Configure → Audio → MPD options → **Audio output**:
-   select `Loopback (snd-aloop)` from the dropdown. (If the dropdown shows
-   it as `Loopback,0` or `Loop:0,0` — pick the one corresponding to
-   subdevice 0, the playback side.)
-2. **Resampling**: still Off.
-3. **Set** + restart MPD.
+Critical: CamillaDSP captures from Loopback at 48 kHz. snd-aloop **does
+not resample** — whatever rate the writer uses locks the capture rate.
+AirPlay sources are 44.1 kHz natively, so without resampling on moOde's
+side, the rate flips between 48 kHz and 44.1 kHz across track changes
+and CamillaDSP throws "broken pipe" (CamillaDSP issues #311 / #315).
+Fix: tell moOde to resample everything to 48 kHz before writing to
+Loopback.
+
+1. moOde web UI → **Configure → Audio → MPD options**.
+2. **Audio output**: pick the entry whose device path looks like
+   `hw:CARD=Loopback,DEV=0`. moOde 10.x's exact label for this entry isn't
+   publicly documented and may vary — look for "Loopback", "snd-aloop", or
+   "Loop:0,0" in the dropdown; pick the playback side (subdevice 0).
+3. **Resampling**: enable **SoX resampling**. Output rate **48000 Hz**,
+   bit depth **16**, channels **2**.
+4. Click **Set** + restart MPD when prompted.
+
+If your moOde version doesn't expose Loopback in the Audio output dropdown,
+the manual fallback is `/etc/mpd.conf`:
+
+```conf
+audio_output {
+    type           "alsa"
+    name           "JasperLoopback"
+    device         "plughw:CARD=Loopback,DEV=0"
+    format         "48000:16:2"
+    auto_resample  "no"
+    auto_format    "no"
+    auto_channels  "no"
+}
+```
+
+Then `sudo systemctl restart mpd` and verify the new output is selected
+in moOde's UI.
+
+### B6.1. AirPlay rate caveat
+
+AirPlay (shairport-sync) is a separate renderer that bypasses MPD. Its
+output rate is configured in `/etc/shairport-sync.conf`. If AirPlay is
+your primary streaming source AND you hit "broken pipe" issues on
+CamillaDSP after Phase 2 starts, the fix is:
+
+```sh
+sudo nano /etc/shairport-sync.conf
+# In the `general` block, set:
+#     output_format = "S16_LE";
+#     output_rate = 48000;
+# Save, then:
+sudo systemctl restart shairport-sync
+```
+
+For v1, document this only if you actually hit the issue — it doesn't
+always trigger because moOde's plughw layer often masks rate transitions.
 
 ### B7. Start CamillaDSP and verify
 
@@ -196,15 +239,19 @@ works, Phase 1B is done.**
 
 ### A1. Plug in the XVF3800
 
-Plug into a Pi 5 USB-A port. Confirm:
+The XVF3800 has a USB-C port on the device side; you'll need a USB-C → USB-A
+cable (Pi 5's USB-A ports are best for peripherals; the Pi 5 USB-C is
+power-only). Plug it into a USB-A port. Confirm:
 
 ```sh
-arecord -L | grep -i xvf
-arecord -d 5 -f S16_LE -r 16000 -c 1 -D plughw:CARD=XVF3800 /tmp/test.wav
+arecord -L | grep -B1 -i 'xvf3800\|array'
+arecord -d 5 -f S16_LE -r 16000 -c 1 -D plughw:CARD=Array /tmp/test.wav
 aplay /tmp/test.wav
 ```
 
-Speak during the recording. You should hear yourself back.
+Speak during the recording. You should hear yourself back. If the card
+name isn't `Array`, edit `JASPER_MIC_DEVICE` in `/etc/jasper/jasper.env`
+and swap the `-D` flag above.
 
 ### A2. Hardware AEC sanity check
 
@@ -225,7 +272,7 @@ buf = []
 def cb(indata, frames, t, status):
     buf.append(indata[:,0].astype(np.int16, copy=True))
 print('say \"Hey Jarvis\" within 5 seconds...')
-with sd.InputStream(device='plughw:CARD=XVF3800', samplerate=16000, channels=1, dtype='int16', blocksize=1280, callback=cb):
+with sd.InputStream(device='plughw:CARD=Array', samplerate=16000, channels=1, dtype='int16', blocksize=1280, callback=cb):
     sd.sleep(5000)
 import numpy as np
 audio = np.concatenate(buf)
@@ -267,15 +314,27 @@ sudo nano /etc/jasper/jasper.env
 sudo chmod 0600 /etc/jasper/jasper.env
 ```
 
-### B3. (Optional) Spotify OAuth
+### B3. (Optional) Spotify Web API for voice control
 
-Skip this if you only want AirPlay/Bluetooth; it's only required for
-voice-driven Spotify search ("Hey Jarvis, play Bohemian Rhapsody").
+Two different Spotify integrations exist in this build — don't conflate them:
+
+| | Spotify Connect (built into moOde) | Spotify Web API (this section) |
+|---|---|---|
+| Purpose | Makes the speaker show up as a target in Spotify's app | Lets the voice daemon search for and start tracks via tool calls |
+| Setup | None — moOde 10.x bundles librespot 0.8.0; the Pi auto-advertises via zeroconf as "Moode jasper" | Requires a Spotify Developer app + OAuth |
+| Account | Premium required for use, but no developer registration | Premium required + your own Developer app |
+| What you can do | Play any track from Spotify's app to the speaker | "Hey Jarvis, play Bohemian Rhapsody" |
+
+Skip this section entirely if you don't want voice-driven Spotify search;
+moOde's Spotify Connect already works without any setup — open Spotify on
+your phone, tap the device icon, pick the moOde unit. Done.
+
+To enable voice-driven Spotify control:
 
 1. Create a Spotify Developer app at
    <https://developer.spotify.com/dashboard>.
 2. **Redirect URI**: `http://127.0.0.1:8765/callback` exactly. Spotify
-   rejects `localhost` — must be the literal `127.0.0.1`.
+   rejects `localhost` since April 2025 — must be the literal `127.0.0.1`.
 3. Copy Client ID + Client Secret into `/etc/jasper/jasper.env`.
 4. On the Pi, run:
 
@@ -283,15 +342,16 @@ voice-driven Spotify search ("Hey Jarvis, play Bohemian Rhapsody").
    sudo -E /opt/jasper/.venv/bin/jasper-spotify-auth
    ```
 
-   It prints an authorize URL. Open it on your phone. Grant access. Your
-   phone redirects to `http://127.0.0.1:8765/callback?code=...` which
-   fails to load — that's fine. **Copy the FULL URL from the address bar**
-   (must include `?code=...`) and paste it back into the SSH terminal.
-   The refresh token is cached at `/var/lib/jasper/.spotify-cache`.
+   It prints an authorize URL. Open it on your phone or laptop. Grant
+   access. Your phone redirects to `http://127.0.0.1:8765/callback?code=...`
+   which fails to load — that's fine. **Copy the FULL URL from the address
+   bar** (must include `?code=...`) and paste it back into the SSH
+   terminal. The refresh token is cached at `/var/lib/jasper/.spotify-cache`.
 
-   Spotify control requires Spotify Premium. The Pi must be a Spotify
-   Connect target (which moOde provides) for `start_playback` to find a
-   device.
+5. The voice daemon's `spotify_play()` tool needs an active Spotify Connect
+   target. Open Spotify on your phone once and pick the moOde unit so
+   librespot starts; from then on `start_playback` from the daemon will
+   find it.
 
 ### B4. Start the voice daemon
 
@@ -379,31 +439,49 @@ sudo systemctl restart jasper-voice
 
 ---
 
-## What I am genuinely uncertain about
+## What I am still uncertain about
 
-Honest tally — these are the things to verify with real hardware first:
+A second cold-review pass closed several earlier uncertainties. What's
+left to confirm on real hardware:
 
-1. **moOde's audio-output dropdown labels for Loopback subdevs.** moOde's
-   UI labelling has changed across versions; the exact dropdown entry name
-   may not be "Loopback (snd-aloop)" verbatim. Pick the entry whose device
-   string looks like `hw:CARD=Loopback,DEV=0`.
-2. **XVF3800 ALSA card name.** Probably `XVF3800` or `XMOS-XVF3800`. Verify
-   with `arecord -L` and adjust `JASPER_MIC_DEVICE` accordingly.
-3. **Apple dongle ALSA card name.** Almost certainly `Headset` on Pi 5
-   Bookworm/Trixie, but confirm via `aplay -L`. If different, edit
-   `/root/.asoundrc` `slave.pcm` line.
-4. **`google-genai` SDK Preview churn.** Live API is still Preview as of
+1. **moOde 10.x Audio Output dropdown label for the Loopback entry.**
+   moOde's docs don't publicly specify the exact UI string. Pick the entry
+   whose underlying device path is `hw:CARD=Loopback,DEV=0`. If the
+   dropdown doesn't include Loopback at all, use the `/etc/mpd.conf`
+   manual fallback in B6.
+2. **AirPlay (shairport-sync) rate handling under Custom CamillaDSP mode.**
+   moOde's audio infrastructure uses `plughw:Loopback` on the writer side,
+   which usually masks rate transitions. But shairport-sync configures its
+   output independently of moOde's MPD resampler. If you hit "broken pipe"
+   in `journalctl -u jasper-camilla` immediately after starting AirPlay,
+   apply the shairport-sync fix in B6.1.
+3. **`google-genai` SDK Preview churn.** Live API is still Preview as of
    May 2026. If Google ships a breaking change to `LiveConnectConfig` or
    `send_realtime_input` between when this was written and when you build,
-   pin `google-genai==1.13.0` in `pyproject.toml` and the existing code
-   should still work; later upgrade requires reading the changelog.
-5. **`turn_complete` semantics under interruption.** I treat any
-   `server_content.turn_complete = True` as "model finished a turn." If
-   Google later changes this so partial turns also flip the flag, the
-   idle watchdog might close the session prematurely. Guard with logging:
-   `journalctl -u jasper-voice` will show "idle timeout" lines and the
-   token usage will tell you if sessions are too short.
-6. **dmix interaction with CamillaDSP's chunksize.** `chunksize: 1024` in
+   the pinned `google-genai==1.13.0` should keep things working; later
+   upgrade requires reading the changelog. The `VoiceSession` interface
+   contains the blast radius to one adapter file.
+4. **dmix interaction with CamillaDSP's chunksize.** `chunksize: 1024` in
    `v1.yml` is matched to dmix `period_size 1024`. If you see clicks or
    xruns in `journalctl -u jasper-camilla`, try `chunksize: 2048` and
-   `period_size 2048` (must be changed in BOTH places).
+   `period_size 2048` (change in BOTH places).
+5. **moOde's bundled CamillaDSP 3.0.1 vs our 4.1.3.** install.sh stops and
+   disables `camilladsp.service` to avoid contention, but if a future
+   moOde release renames that unit, our disable becomes a no-op. Watch
+   for two camilladsp processes in `ps auxf | grep camilladsp` after a
+   moOde upgrade.
+
+### Resolved since first draft
+
+- ALSA card names confirmed: dongle = `A`, ReSpeaker = `Array`.
+- pycamilladsp pinned at `4.0.0` (matches our CamillaDSP 4.1.3 binary;
+  3.0.0 would have been ABI-mismatched).
+- openWakeWord stock models don't auto-download — install.sh now calls
+  `download_models()` explicitly.
+- Gemini Live audio shapes confirmed: 16 kHz int16 PCM in,
+  24 kHz int16 PCM out, mono.
+- `audio_stream_end=True` is a real SDK signal — daemon now sends it on
+  end of input.
+- Loopback rate-locking is a real risk — moOde Resampling at 48 kHz is
+  now a documented requirement, not optional.
+- `mpd.service` is the correct systemd unit name in moOde 10.

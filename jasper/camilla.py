@@ -51,23 +51,28 @@ class CamillaController:
 
 
 class Ducker:
-    """Save/restore volume around a voice session."""
+    """Additive duck/restore around a voice session.
+
+    Apply duck_db (negative number) on duck, reverse it on restore. Done
+    additively so mid-session volume changes by the user (set_volume tool)
+    persist after the session ends.
+    """
 
     def __init__(self, camilla: CamillaController, duck_db: float) -> None:
         self._camilla = camilla
         self._duck_db = duck_db
-        self._saved: float | None = None
+        self._ducked = False
 
     async def duck(self) -> None:
-        if self._saved is not None:
+        if self._ducked:
             return
-        self._saved = await self._camilla.get_volume_db()
-        await self._camilla.set_volume_db(self._saved + self._duck_db)
+        self._ducked = True
+        await self._camilla.adjust_volume_db(self._duck_db)
 
     async def restore(self) -> None:
-        if self._saved is None:
+        if not self._ducked:
             return
         try:
-            await self._camilla.set_volume_db(self._saved)
+            await self._camilla.adjust_volume_db(-self._duck_db)
         finally:
-            self._saved = None
+            self._ducked = False
