@@ -18,7 +18,14 @@ class WakeWordDetector:
     def __init__(self, model_name: str, threshold: float = 0.5) -> None:
         # model_name can be a stock name like "hey_jarvis" (resolved by
         # openWakeWord's bundled models) or a path to a custom .onnx file.
-        self._model = Model(wakeword_models=[model_name])
+        # inference_framework="onnx" is required: openwakeword 0.6.0 defaults
+        # to "tflite", but tflite-runtime has no Python 3.13 wheel (see
+        # deploy/install.sh comment) and isn't installed here. We use the
+        # bundled .onnx model files exclusively.
+        self._model = Model(
+            wakeword_models=[model_name],
+            inference_framework="onnx",
+        )
         self._threshold = threshold
         self._key = self._resolve_score_key(model_name)
 
