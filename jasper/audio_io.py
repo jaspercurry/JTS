@@ -125,6 +125,7 @@ class TtsPlayout:
         self,
         device: str | int,
         output_rate: int = INPUT_RATE,
+        gain_db: float = 0.0,
     ) -> None:
         if output_rate < self.INPUT_RATE:
             raise RuntimeError(
@@ -138,6 +139,10 @@ class TtsPlayout:
         self._device = device
         self._output_rate = output_rate
         self._upsample = output_rate // self.INPUT_RATE
+        # Static gain applied to TTS PCM before resample/write. Gemini
+        # outputs at consistent level — no gain stage between us and the
+        # dongle without this. gain_db<0 attenuates; gain_db=0 passthrough.
+        self._gain_linear = float(10 ** (gain_db / 20.0)) if gain_db != 0.0 else 1.0
         self._stream: sd.RawOutputStream | None = None
 
     async def __aenter__(self) -> "TtsPlayout":
@@ -159,18 +164,23 @@ class TtsPlayout:
     async def write(self, pcm: bytes) -> None:
         if self._stream is None:
             return
-        if self._upsample == 1:
+        # Fast path: no gain, no resample
+        if self._upsample == 1 and self._gain_linear == 1.0:
             await asyncio.to_thread(self._stream.write, pcm)
             return
-        # Upsample int16 mono PCM from INPUT_RATE → output_rate via
-        # polyphase. Same reasoning as MicCapture's downsampler — naive
-        # zero-stuff would create high-frequency images; resample_poly
-        # has a built-in low-pass.
-        from scipy.signal import resample_poly  # local: keep startup fast
-        arr = np.frombuffer(pcm, dtype=np.int16)
-        up = resample_poly(arr.astype(np.float32), up=self._upsample, down=1)
-        up_i16 = np.clip(up, -32768, 32767).astype(np.int16)
-        await asyncio.to_thread(self._stream.write, up_i16.tobytes())
+        # Apply gain (if non-passthrough) and/or upsample. Both share a
+        # float32 intermediate so we only do one int16 cast at the end.
+        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if self._gain_linear != 1.0:
+            arr = arr * self._gain_linear
+        if self._upsample > 1:
+            # Polyphase resample with built-in anti-alias filter. Same
+            # reasoning as MicCapture's downsampler — naive zero-stuff
+            # would create high-frequency images.
+            from scipy.signal import resample_poly  # local: keep startup fast
+            arr = resample_poly(arr, up=self._upsample, down=1)
+        out_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
+        await asyncio.to_thread(self._stream.write, out_i16.tobytes())
 
     async def flush(self) -> None:
         """Drop any audio currently buffered inside sounddevice / ALSA so

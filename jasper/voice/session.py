@@ -36,6 +36,32 @@ class VoiceSession(Protocol):
         """Return the number of completed model turns observed."""
         ...
 
+    def last_activity_at(self) -> float:
+        """Loop time (asyncio.get_event_loop().time()) of the most recent
+        observed model activity — either an audio chunk or turn_complete.
+        Returns the session-start time if neither has happened yet. The
+        idle watchdog uses this so it doesn't kill a session while the
+        model is still streaming TTS."""
+        ...
+
+    def last_chunk_at(self) -> float:
+        """Loop time of the most recent audio chunk specifically (not
+        tool calls / turn_complete). Used by the daemon's barge-in gate
+        to detect when the model is currently producing TTS."""
+        ...
+
+    def bytes_sent(self) -> int:
+        """Total bytes of audio sent to the server during this session.
+        Used together with chunks_received() to detect the silent-failure
+        mode where Gemini Live accepts the connection but never produces
+        any output (quota exhausted, service degraded, etc)."""
+        ...
+
+    def chunks_received(self) -> int:
+        """Total audio response chunks received from the server during
+        this session."""
+        ...
+
     def interrupted(self) -> bool:
         """True if the model reported being interrupted by user audio.
         Cleared by clear_interrupted() once the daemon has flushed

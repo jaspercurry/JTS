@@ -28,6 +28,11 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+    if cfg.aec_mode not in ("hardware", "software"):
+        raise RuntimeError(
+            f"JASPER_AEC_MODE must be 'hardware' or 'software', got "
+            f"'{cfg.aec_mode}'"
+        )
     return cfg
 
 
@@ -36,6 +41,7 @@ class Config:
     voice_provider: str
     gemini_api_key: str
     gemini_model: str
+    gemini_voice: str
 
     wake_model: str
     wake_threshold: float
@@ -44,6 +50,9 @@ class Config:
     mic_capture_channels: int
     tts_device: str
     tts_output_rate: int
+    tts_gain_db: float
+    aec_mode: str
+    vad_barge_in_threshold: float
 
     camilla_host: str
     camilla_port: int
@@ -78,6 +87,11 @@ class Config:
             voice_provider=provider,
             gemini_api_key=gemini_key,
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+            # Pin the TTS voice so it's consistent across sessions.
+            # Available prebuilt voices on Gemini 3.1 Live Preview
+            # include Aoede, Charon, Fenrir, Kore, Puck, Leda, Orus,
+            # Zephyr. Without this, the server picks one per session.
+            gemini_voice=_env("JASPER_GEMINI_VOICE", "Aoede"),
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
             wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
             # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not
@@ -93,16 +107,48 @@ class Config:
             # MicCapture polyphase-downsamples to 16 kHz mono internally.
             mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
-            # JASPER_TTS_DEVICE: same PortAudio rules as the mic — bare
-            # ALSA pcm names like `jasper_dongle` (defined in
-            # /root/.asoundrc) work; `plug:jasper_dongle` doesn't because
-            # PortAudio doesn't enumerate `plug:` aliases.
-            tts_device=_env("JASPER_TTS_DEVICE", "jasper_dongle"),
-            # jasper_dongle is a dmix at fixed 48 kHz; PortAudio rejects
-            # 24 kHz writes against it. TtsPlayout polyphase-upsamples
-            # 24 kHz mono (Gemini's output) to JASPER_TTS_OUTPUT_RATE
-            # before writing. Set to 48000 for the jasper_dongle dmix.
-            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
+            # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
+            # name from /root/.asoundrc — `plug:` aliases aren't
+            # enumerated by PortAudio). Pick `jasper_xvf` for hardware
+            # AEC mode (XVF3800 jack), `jasper_dongle` for software AEC
+            # mode (Apple dongle).
+            tts_device=_env("JASPER_TTS_DEVICE", "jasper_xvf"),
+            # 24 kHz = Gemini's native output. With the `jasper_xvf`
+            # plug wrapper this works directly (plug downsamples to the
+            # 16 kHz dmix slave). For `jasper_dongle` (48 kHz dmix), set
+            # JASPER_TTS_OUTPUT_RATE=48000 so TtsPlayout polyphase-
+            # upsamples 24 → 48 kHz before writing (must be integer
+            # multiple of 24000).
+            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 24000),
+            # Static attenuation applied to TTS PCM before write. Gemini
+            # outputs raw PCM at consistent level (peaks ~-3 dBFS); with
+            # no gain stage between Gemini and the dongle this comes out
+            # quite loud vs. user's music volume. -8 dB is a comfortable
+            # default that's audible above ducked music but doesn't
+            # dominate. Long-term fix: route TTS through CamillaDSP so
+            # it tracks user's master_gain (TODO).
+            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", -8.0),
+            # JASPER_AEC_MODE — how echo cancellation is achieved:
+            #   hardware: XVF3800 chip's built-in AEC. Speakers plug
+            #             into the XVF3800's 3.5mm jack; CamillaDSP
+            #             playback → jasper_xvf; chip subtracts the
+            #             playback signal from the mic capture using
+            #             USB-IN as the AEC reference. No software
+            #             gating needed; real barge-in works.
+            #   software: NOT YET IMPLEMENTED — will gate mic-to-Gemini
+            #             via local Silero VAD so any mic (UMIK-2,
+            #             cheap USB mic) can be used. Speakers plug
+            #             into the Apple dongle (or any DAC).
+            aec_mode=_env("JASPER_AEC_MODE", "hardware"),
+            # Silero VAD probability threshold for barge-in gating.
+            # While the model is producing TTS, mic frames are only
+            # forwarded to Gemini if Silero says speech_prob >= this.
+            # 0.5 = standard Silero default; raise to 0.7 if music
+            # bleed false-triggers barge-in, lower if real speech
+            # is being missed.
+            vad_barge_in_threshold=_env_float(
+                "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
+            ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -15.0),
