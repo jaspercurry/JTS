@@ -1,25 +1,123 @@
 # /root/.asoundrc — installed by deploy/install.sh.
 #
-# Defines two named PCMs that processes share via dmix:
+# Single fan-out architecture. Both jasper-camilla (music chain) and
+# jasper-voice (TTS) write to ONE shared PCM, `pcm.jasper_out`, which
+# duplicates the stream to BOTH the Apple USB-C dongle (the actual
+# speaker) AND the XVF3800's USB-IN endpoint (the AEC reference).
 #
-#   pcm.jasper_dongle — output to the Apple USB-C dongle. Used in
-#     `JASPER_AEC_MODE=software` (where there's no hardware AEC and
-#     the daemon does software VAD-gating instead — TODO).
+# Why fan out instead of letting the XVF3800 do everything itself:
+# the XVF3800 has an onboard DAC with its own 3.5mm jack, but its
+# analog output is unacceptably hissy on this setup. Speakers are
+# physically wired to the Apple dongle. The XVF3800 chip is used
+# only for its mic array + onboard hardware AEC; its DAC is unused.
 #
-#   pcm.jasper_xvf — output to the XVF3800's USB-playback endpoint.
-#     The chip plays this on its 3.5mm jack AND uses it as the AEC
-#     reference signal, producing a clean post-AEC mic stream.
-#     Used in `JASPER_AEC_MODE=hardware` — the recommended config
-#     for XVF3800 owners. Speakers plug into the XVF3800's 3.5mm jack.
+# Why the XVF3800 USB-IN still has to receive audio: the chip's
+# hardware AEC subtracts a *reference signal* from its mic capture
+# to cancel echo. That reference is the audio written to the chip's
+# USB-IN endpoint (XMOS XVF3800 datasheet: "AEC reference is the
+# left channel of USB input"). For AEC to cancel what the speakers
+# are emitting, the chip must receive THE SAME signal that's hitting
+# the dongle. Hence the fan-out: one stream, two destinations, both
+# identical content.
 #
-# Both dmixes coexist (different ipc_keys) so changing JASPER_AEC_MODE
-# is just an env flip + service restart, no asoundrc rewrite.
+# Pipeline:
 #
-# This file is only seen by processes that read /root/.asoundrc, i.e.
-# the CamillaDSP and jasper-voice systemd units (which run as root).
-# moOde's MPD runs as user `mpd` and is unaffected — it writes into
-# the Loopback device the zz-jts-loopback.conf override redirects to.
+#   jasper-camilla, jasper-voice TTS
+#                  │
+#                  ▼
+#   pcm.jasper_out  (top: type plug — accepts whatever the writer
+#                    sends, normalizes to 48 kHz S32_LE stereo)
+#                  │
+#                  ▼
+#   pcm.jasper_route (route plugin: stereo → 4 channels by
+#                     duplicating L→ch0+ch2, R→ch1+ch3)
+#                  │
+#                  ▼
+#   pcm.jasper_multi (multi plugin: splits 4 ch into two 2-ch
+#                     slaves — ch0,1 → dongle leg; ch2,3 → XVF leg)
+#                  │
+#         ┌────────┴─────────┐
+#         ▼                  ▼
+#   plug:jasper_dongle  plug:jasper_xvfin
+#   (rate/fmt convert)  (rate/fmt convert; downsamples 48→16 kHz)
+#         │                  │
+#         ▼                  ▼
+#   pcm.jasper_dongle   pcm.jasper_xvfin
+#   (dmix on dongle hw, (dmix on XVF3800 USB-IN hw, 16 kHz S16_LE
+#    48 kHz S16_LE 2ch)  2ch — chip's native USB-playback format)
+#         │                  │
+#         ▼                  ▼
+#   hw:CARD=__DONGLE_   hw:CARD=__MIC_CARD__
+#   CARD__,DEV=0        ,DEV=0
+#   (Apple dongle DAC   (XVF3800 USB-IN; chip uses left
+#    → amp → speakers)   channel as AEC reference)
+#
+# A dmix is on each *physical* leg (one per device, different
+# ipc_keys) so jasper-camilla and jasper-voice can both write to
+# `pcm.jasper_out` simultaneously without fighting for the hw
+# device — each writer's pipeline runs through `multi` to the
+# dmix-on-each-device, which serializes writers per device.
+#
+# Rate convention:
+#   - Top-level `pcm.jasper_out` operates at 48 kHz (the dongle's
+#     native, also CamillaDSP's chunk rate). TTS upsamples Gemini's
+#     24 kHz to 48 kHz before write (JASPER_TTS_OUTPUT_RATE=48000).
+#   - Dongle dmix is 48 kHz (no leg-level conversion).
+#   - XVF dmix is 16 kHz (XVF3800's native USB-IN rate). The
+#     `plug:jasper_xvfin` wrapper between `multi` and the XVF
+#     dmix downsamples 48→16 kHz on the way in.
+#
+# This file is read by the CamillaDSP and jasper-voice systemd
+# units (both run as root). moOde's MPD runs as user `mpd` and
+# is unaffected — MPD writes into Loopback via the
+# zz-jts-loopback.conf hijack; jasper-camilla captures from
+# Loopback and writes the processed result into pcm.jasper_out.
 
+pcm.jasper_out {
+    type plug
+    slave.pcm "jasper_route"
+}
+
+# Route stereo input → 4-channel output, duplicating L,R into
+# both the (0,1) pair (dongle) and the (2,3) pair (XVF USB-IN).
+# ttable[in_channel][out_channel] = gain (1 = unity, 0 = none).
+pcm.jasper_route {
+    type route
+    slave.pcm "jasper_multi"
+    slave.channels 4
+    ttable.0.0 1
+    ttable.1.1 1
+    ttable.0.2 1
+    ttable.1.3 1
+}
+
+# Fan out the 4-channel stream: channels 0,1 → dongle leg;
+# channels 2,3 → XVF USB-IN leg. Each leg is `plug`-wrapped so
+# it can convert rate/format independently down to its dmix's
+# slave constraints.
+pcm.jasper_multi {
+    type multi
+    slaves.a {
+        pcm "plug:jasper_dongle"
+        channels 2
+    }
+    slaves.b {
+        pcm "plug:jasper_xvfin"
+        channels 2
+    }
+    bindings.0.slave a
+    bindings.0.channel 0
+    bindings.1.slave a
+    bindings.1.channel 1
+    bindings.2.slave b
+    bindings.2.channel 0
+    bindings.3.slave b
+    bindings.3.channel 1
+}
+
+# Dmix on the Apple USB-C dongle. 48 kHz is the dongle's native
+# rate on Linux. ipc_key 7777 — distinct from jasper_xvfin's so
+# the two dmix instances coexist.
 pcm.jasper_dongle {
     type dmix
     ipc_key 7777
@@ -43,25 +141,13 @@ ctl.jasper_dongle {
     card __DONGLE_CARD__
 }
 
-# pcm.jasper_xvf — dmix on the XVF3800 USB-playback endpoint, used in
-# `JASPER_AEC_MODE=hardware`. Audio sent here goes out the chip's 3.5mm
-# jack AND is used by the chip's firmware as the AEC reference signal
-# (XMOS datasheet: "AEC reference is the left channel of USB input").
-# Speakers plug into the XVF3800's 3.5mm jack; the chip's mic capture
-# comes back post-AEC. ipc_key differs from jasper_dongle so the two
-# dmixes coexist and either can be selected via JASPER_TTS_DEVICE
-# without touching the other.
-#
-# Plug wrapper handles rate/format/channel conversion: CamillaDSP
-# typically writes 48 kHz stereo S16/S32; TtsPlayout writes Gemini's
-# 24 kHz mono. The dmix slave is at 16 kHz stereo S16_LE (the XVF3800's
-# native playback format). Plug downsamples on the way in.
-pcm.jasper_xvf {
-    type plug
-    slave.pcm "jasper_xvf_dmix"
-}
-
-pcm.jasper_xvf_dmix {
+# Dmix on the XVF3800 USB-IN endpoint. 16 kHz S16_LE 2ch is the
+# chip's native USB-playback format. The chip uses the LEFT channel
+# of this stream as its AEC reference; we duplicate the same stereo
+# content that hits the dongle into here. The chip's onboard DAC's
+# analog output is NOT used (speakers are on the dongle, not on the
+# XVF3800's 3.5mm jack). ipc_key 7780 — distinct from jasper_dongle.
+pcm.jasper_xvfin {
     type dmix
     ipc_key 7780
     ipc_perm 0666

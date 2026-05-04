@@ -1,11 +1,20 @@
 ---
 # CamillaDSP 4.x v1 passthrough config.
-# Capture: ALSA Loopback (moOde writes here). Playback: Apple USB-C dongle.
-# Single master_gain mixer per channel so the daemon can SetVolume for ducking
-# without reloading the YAML (Reload glitches audio).
+# Capture: ALSA Loopback (moOde renderers write here via the
+# pcm._audioout hijack). Playback: pcm.jasper_out — the fan-out
+# PCM defined in /root/.asoundrc that duplicates the processed
+# stream to BOTH the Apple USB-C dongle (the actual speaker) AND
+# the XVF3800's USB-IN endpoint (the AEC reference). See the
+# header comment in deploy/alsa/asoundrc.jasper for the full
+# rationale on why we fan out instead of using the chip's DAC.
 #
-# All rates pinned at 48 kHz — Apple dongle is 48 kHz only on Linux, and
-# Loopback locks rate at first opener.
+# Single master_gain mixer per channel so the daemon can SetVolume
+# for ducking without reloading the YAML (Reload glitches audio).
+#
+# All rates pinned at 48 kHz — Apple dongle is 48 kHz only on
+# Linux, and Loopback locks rate at first opener. The XVF leg
+# downsamples 48→16 kHz inside the plug wrapper at the asoundrc
+# level; CamillaDSP doesn't see that.
 
 devices:
   samplerate: 48000
@@ -21,17 +30,14 @@ devices:
     device: "plughw:CARD=Loopback,DEV=1,SUBDEV=0"
     format: S32_LE
   playback:
-    # __PLAYBACK_DEVICE__ is substituted by deploy/install.sh based on
-    # JASPER_AEC_MODE in /etc/jasper/jasper.env:
-    #   hardware → "jasper_xvf"     (XVF3800 jack as speaker; chip's
-    #                                 hardware AEC active)
-    #   software → "jasper_dongle"  (Apple dongle / any DAC; daemon
-    #                                 uses Silero VAD gating — TODO)
-    # Both PCMs are defined in /root/.asoundrc and coexist; switching
-    # modes is JASPER_AEC_MODE flip + re-run install.sh + restart.
+    # pcm.jasper_out fans the stream out to the dongle + XVF USB-IN.
+    # See /root/.asoundrc for the route → multi → per-device dmix
+    # topology. Format S16_LE because the XVF leg's USB-IN endpoint
+    # only accepts S16_LE 16 kHz; the route+multi pipeline carries
+    # S16_LE through to both legs.
     type: Alsa
     channels: 2
-    device: "__PLAYBACK_DEVICE__"
+    device: "jasper_out"
     format: S16_LE
 
 filters:

@@ -31,10 +31,9 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_device == "Array"
     assert cfg.mic_capture_rate == 16000
     assert cfg.mic_capture_channels == 1
-    assert cfg.tts_device == "jasper_xvf"
-    assert cfg.tts_output_rate == 24000
+    assert cfg.tts_device == "jasper_out"
+    assert cfg.tts_output_rate == 48000
     assert cfg.tts_gain_db == -8.0
-    assert cfg.aec_mode == "hardware"
     assert cfg.gemini_voice == "Aoede"
     assert cfg.vad_barge_in_threshold == 0.5
     assert cfg.spotify_device_name == "moode"

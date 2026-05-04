@@ -114,12 +114,29 @@ phone → AirPlay/Spotify/MPD → pcm._audioout (our override)
      → hw:Loopback,0,0 (snd-aloop kernel)
      → hw:Loopback,1,0 capture (jasper-camilla reads here)
      → master_gain mixer + flat filter (passthrough at 0 dB)
-     → jasper_dongle dmix → Apple USB-C dongle → amp → speakers
+     → pcm.jasper_out (fan-out: route → multi)
+                             │
+                  ┌──────────┴──────────┐
+                  ▼                     ▼
+       Apple USB-C dongle       XVF3800 USB-IN
+       (48 kHz, the actual      (16 kHz, the AEC
+        speaker → amp →          reference for the
+        speakers)                chip's hardware AEC)
 ```
 
-CamillaDSP is the single owner of the dongle. The voice daemon ducks
-audio by calling `SetVolume` on the `master_gain` mixer over CamillaDSP's
-websocket on port 1234.
+`pcm.jasper_out` duplicates whatever's written to it onto BOTH the
+dongle AND the XVF3800 USB-IN endpoint, so the chip's onboard AEC
+sees the same signal that's hitting the speakers and can subtract
+it from its mic capture. The chip's onboard DAC's analog output is
+unused — speakers are physically wired to the dongle, not to the
+XVF3800's 3.5mm jack. See `deploy/alsa/asoundrc.jasper` header for
+the full topology.
+
+CamillaDSP is the single owner of `pcm.jasper_out` for the music
+chain; jasper-voice's TTS writes to the same pcm directly. The
+two coexist because each leg of the fan-out has a per-device
+dmix. The voice daemon ducks audio by calling `SetVolume` on the
+`master_gain` mixer over CamillaDSP's websocket on port 1234.
 
 ### B1. moOde UI — CamillaDSP Off + Volume type Software
 
@@ -200,8 +217,10 @@ This script will:
 - Drop **`/etc/alsa/conf.d/zz-jts-loopback.conf`** — the
   `pcm._audioout` override that hijacks moOde's renderers into
   snd-aloop Loopback (see "Why this is more involved" above)
-- Drop `/root/.asoundrc` (defines `pcm.jasper_dongle` dmix device for
-  CamillaDSP playback to the dongle)
+- Drop `/root/.asoundrc` (defines `pcm.jasper_out` — the fan-out PCM
+  that duplicates writes to BOTH the Apple dongle and the XVF3800
+  USB-IN endpoint, so the chip's hardware AEC has the playback signal
+  as reference)
 - Drop **`/etc/systemd/system/shairport-sync.service.d/jts-output.conf`**
   drop-in forcing systemd-launched shairport-sync to write to `_audioout`
   (without this, shairport-sync writes to ALSA `default` and bypasses
@@ -230,8 +249,8 @@ The defaults assume (verified against community forum posts, May 2026):
 
 | Component | Card name | Where referenced |
 |---|---|---|
-| Apple USB-C → 3.5mm dongle | **`A`** (literally the letter A; the device description is "USB-C to 3.5mm Headphone Jack A") | `/root/.asoundrc` slave.pcm `hw:CARD=A,DEV=0` and `ctl.jasper_dongle.card A` |
-| ReSpeaker XVF3800 | **`Array`** (literal ALSA card; PortAudio surfaces as "Array: USB Audio (hw:N,0)") | `/etc/jasper/jasper.env` `JASPER_MIC_DEVICE=Array` (PortAudio substring — NOT `plughw:` — see jasper/config.py) |
+| Apple USB-C → 3.5mm dongle | **`A`** (literally the letter A; the device description is "USB-C to 3.5mm Headphone Jack A") | `/root/.asoundrc` `pcm.jasper_dongle` slave + `ctl.jasper_dongle.card A` |
+| ReSpeaker XVF3800 | **`Array`** (literal ALSA card; PortAudio surfaces as "Array: USB Audio (hw:N,0)") | `/etc/jasper/jasper.env` `JASPER_MIC_DEVICE=Array` (PortAudio substring — NOT `plughw:` — see jasper/config.py); also `/root/.asoundrc` `pcm.jasper_xvfin` slave (the chip's USB-IN endpoint, used as AEC reference) |
 | MiniDSP UMIK-2 (alt) | **`UMIK2`** ALSA / PortAudio name "UMIK-2: USB Audio (hw:N,0)" | `JASPER_MIC_DEVICE=UMIK-2`, **`JASPER_MIC_CAPTURE_RATE=48000`**, **`JASPER_MIC_CAPTURE_CHANNELS=2`** (no native 16 kHz support — MicCapture downsamples) |
 | snd-aloop | **`Loopback`** (kernel-fixed) | `/etc/camilladsp/v1.yml` capture device |
 
@@ -301,7 +320,13 @@ phone → AirPlay → shairport-sync (-d _audioout)
      → hw:Loopback,0,0 (snd-aloop kernel)
      → hw:Loopback,1,0 capture
      → jasper-camilla (master_gain + flat passthrough)
-     → jasper_dongle dmix → Apple USB-C dongle → amp → speakers
+     → pcm.jasper_out (route + multi fan-out)
+                              │
+                  ┌───────────┴────────────┐
+                  ▼                        ▼
+       jasper_dongle dmix → A      jasper_xvfin dmix → Array
+       (Apple dongle, 48 kHz       (XVF3800 USB-IN, 16 kHz —
+        → amp → speakers)           AEC reference; not audible)
 ```
 
 Sanity-check the chain is fully wired (each should show `state: RUNNING`):
@@ -309,7 +334,8 @@ Sanity-check the chain is fully wired (each should show `state: RUNNING`):
 ```sh
 cat /proc/asound/Loopback/pcm0p/sub0/status   # shairport writing
 cat /proc/asound/Loopback/pcm1c/sub0/status   # jasper-camilla reading
-cat /proc/asound/A/pcm0p/sub0/status          # jasper-camilla → dongle
+cat /proc/asound/A/pcm0p/sub0/status          # jasper-camilla → dongle leg
+cat /proc/asound/Array/pcm0p/sub0/status      # jasper-camilla → XVF USB-IN leg
 ```
 
 ### B8. Verify SetVolume works
@@ -352,7 +378,8 @@ Confirm capture works (substitute `UMIK2` or `Array` for the card):
 ```sh
 arecord -L | grep -B1 -iE 'umik|xvf3800|array'
 arecord -d 5 -f S16_LE -r 16000 -c 1 -D plughw:CARD=Array /tmp/test.wav
-sudo aplay -D plug:jasper_dongle /tmp/test.wav   # play via CamillaDSP-shared dongle
+sudo aplay -D plug:jasper_out /tmp/test.wav      # play via the fan-out;
+                                                 # speakers + XVF USB-IN
 ```
 
 (Note: `arecord` accepts ALSA `plughw:` strings and resamples — the
@@ -364,10 +391,84 @@ CAPTURE_RATE plumbing above.)
 While AirPlaying loud music, repeat the recording. The XVF3800 should
 attenuate the music heavily (you should hear yourself clearly above the
 nearly-silent music). If the music dominates the recording, AEC isn't
-working — check the XVF3800 firmware version, USB cable, USB port.
+working — check, in this order:
+
+1. **Fan-out is wired.** `cat /proc/asound/Array/pcm0p/sub0/status`
+   should show `state: RUNNING` while music plays. If it shows
+   `state: CLOSED`, the `pcm.jasper_xvfin` dmix isn't receiving the
+   fan-out — the chip has no AEC reference, so it can't cancel
+   anything. Check `/root/.asoundrc` and that jasper-camilla is
+   running. (See Phase 1B B7 chain check.)
+2. **`AUDIO_MGR_SYS_DELAY` is tuned.** The chip needs to know the
+   round-trip latency between reference signal in and mic capturing
+   the speaker. Default is approximate — for a real install, tune
+   it. See Phase 2A.5 below.
+3. **XVF3800 firmware version.** Older firmware has a weaker AEC.
+4. **USB cable / port.** A USB 2.0 hub on the same controller as the
+   Apple dongle can drop frames; try a different port.
 
 The UMIK-2 has no AEC — wake-word reliability degrades during loud
 music; this is expected, not a bug.
+
+### A2.5. Tune `AUDIO_MGR_SYS_DELAY` on the XVF3800
+
+The XVF3800's hardware AEC subtracts the reference signal (what we
+write to its USB-IN) from the mic capture. For the subtraction to
+cancel echo, the chip must align the two streams in time — which
+means it must know the *round-trip latency* from the moment a sample
+arrives at the chip's USB-IN to the moment that same sample comes
+back into the chip's mic from the speaker (via dongle → amp →
+speaker → air → mic).
+
+The chip exposes this as the `AUDIO_MGR_SYS_DELAY` parameter (units:
+samples at 16 kHz, the AEC's internal rate). Default firmware
+ships with a generic value that's typically wrong for a real install
+because the dongle's USB latency, amp's input buffering, and
+speaker-to-mic geometry all contribute and vary per setup.
+
+**Target:** with the AEC on and music playing, residual echo at
+the mic should be ≥25 dB below the playback level. If it's only
+10–15 dB, AEC is mistimed.
+
+**Procedure (impulse method):**
+
+1. Plug the XVF3800 USB-A control cable into the laptop (the chip
+   exposes a USB-CDC control interface separately from its USB-Audio
+   interface). Install the XMOS XVF3800 SDK / `vfctrl` tool from
+   <https://www.xmos.com/products/voice/xvf3800> (vendor login
+   required; some versions of the SDK are gated).
+2. With music paused, generate a short impulse (a click or
+   short sine burst — `aplay /tmp/click.wav -D plug:jasper_out`).
+   Record the chip's mic output (`arecord -D plughw:CARD=Array`).
+3. The mic recording shows the impulse twice: once via the
+   reference path (instant, internal to the chip), once via the
+   acoustic path (delayed by round-trip). Measure the delay
+   between the two in samples at 16 kHz.
+4. Set `AUDIO_MGR_SYS_DELAY` to the measured sample count using
+   `vfctrl SET_AUDIO_MGR_SYS_DELAY <samples>` (the exact command
+   name is in the SDK; consult the parameter reference).
+5. Re-record music + your voice. Residual music should drop to
+   the −25 dB target. Iterate ±10 samples until it does.
+
+**Alternative (white-noise + cross-correlation):** play 5 seconds
+of white noise via `pcm.jasper_out`, capture the chip's mic
+output, cross-correlate the two with numpy:
+
+```python
+import numpy as np, wave
+ref = np.frombuffer(open('/tmp/ref.raw','rb').read(), dtype=np.int16)
+mic = np.frombuffer(open('/tmp/mic.raw','rb').read(), dtype=np.int16)
+xc = np.correlate(mic.astype(float), ref.astype(float), mode='full')
+peak = np.argmax(xc) - (len(ref) - 1)
+print(f"round-trip: {peak} samples @ 16 kHz = {peak/16:.1f} ms")
+```
+
+The peak lag in samples is the value to write to
+`AUDIO_MGR_SYS_DELAY`. Typical figures for a Pi 5 + Apple dongle +
+amp + speakers at ~1 m: 200–500 samples (12–30 ms).
+
+This step is **required** — without it the AEC works in name only
+and the wake word fires on the speaker's own playback during music.
 
 ### A3. Wake-word smoke test
 
@@ -521,7 +622,9 @@ sudo systemctl restart jasper-voice
 /etc/modules-load.d/snd-aloop.conf          # snd-aloop loaded at boot
 /etc/alsa/conf.d/zz-jts-loopback.conf       # pcm._audioout override
                                             #   redirecting to Loopback
-/root/.asoundrc                             # pcm.jasper_dongle (dmix)
+/root/.asoundrc                             # pcm.jasper_out fan-out
+                                            #   (route → multi → per-device
+                                            #   dmix on dongle + XVF USB-IN)
 /opt/jasper/                                # Python pkg (managed by install.sh)
   .venv/                                    # virtualenv
   jasper/                                   # source
@@ -570,7 +673,7 @@ Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
 | `journalctl -u jasper-camilla` shows "unknown variant `S16LE`" or "unknown field `channel`" | CamillaDSP 4.x schema mismatch; old YAML has 3.x-style format names or pipeline filter keys | Edit `/etc/camilladsp/v1.yml`: format `S16LE`/`S32LE` → `S16_LE`/`S32_LE`; pipeline filter `channel: N` → `channels: [N]` |
 | TTS plays but music doesn't | dmix conflict — both processes opened the dongle at incompatible rates | Confirm `slave.rate 48000` in `/root/.asoundrc`; `aplay -v` shows actual rate |
 | Wake word never fires | Mic device wrong, or model file missing, or threshold too high | `arecord -d 5 ... | aplay` to confirm mic; lower `JASPER_WAKE_THRESHOLD` to 0.4 temporarily |
-| Wake word fires constantly during music | XVF3800 AEC not working; or threshold too low | Verify XVF3800 firmware; raise threshold to 0.65 |
+| Wake word fires constantly during music | XVF3800 AEC not working — likely AEC reference not reaching the chip's USB-IN, or `AUDIO_MGR_SYS_DELAY` mistimed | Verify `cat /proc/asound/Array/pcm0p/sub0/status` shows `state: RUNNING` while music plays (the fan-out leg is delivering); tune `AUDIO_MGR_SYS_DELAY` per Phase 2A.5; verify XVF3800 firmware; raise `JASPER_WAKE_THRESHOLD` to 0.65 as a stop-gap |
 | "GEMINI_API_KEY not found" on daemon start | Env file not loaded by systemd | Confirm `EnvironmentFile=/etc/jasper/jasper.env` in unit; `systemctl daemon-reload` |
 | Spotify tool returns "no active spotify device" | moOde's Spotify Connect endpoint isn't running, or another phone took over | moOde web UI → Configure → Audio → Spotify Connect → Enable. Disconnect any other devices controlling Spotify. |
 | Voice ducking doesn't restore | CamillaDSP websocket disconnected mid-session | Check `journalctl -u jasper-voice` for "camilla call failed"; restart `jasper-camilla` |
