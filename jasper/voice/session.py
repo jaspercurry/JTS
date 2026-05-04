@@ -37,5 +37,18 @@ class VoiceSession(Protocol):
         ...
 
     def interrupted(self) -> bool:
-        """True if the model reported being interrupted by user audio."""
+        """True if the model reported being interrupted by user audio.
+        Cleared by clear_interrupted() once the daemon has flushed
+        playback in response."""
+        ...
+
+    async def wait_for_interrupt(self) -> None:
+        """Resolve when the model signals the user interrupted its speech.
+        Used by the playback path to race write-current-chunk against
+        flush-immediately."""
+        ...
+
+    def clear_interrupted(self) -> None:
+        """Reset the interrupted flag/event after the playback path has
+        flushed its output in response."""
         ...

@@ -39,6 +39,10 @@ class GeminiLiveSession(VoiceSession):
         self._usage = {"input_tokens": 0, "output_tokens": 0}
         self._turn_count = 0
         self._interrupted = False
+        # Set when the model signals user-interrupted-our-speech, so the
+        # playback task can race writing-current-chunk against
+        # something-just-changed and flush its output buffer ASAP.
+        self._interrupt_event = asyncio.Event()
 
     async def connect(self, registry: ToolRegistry, system_instruction: str) -> None:
         self._registry = registry
@@ -105,6 +109,16 @@ class GeminiLiveSession(VoiceSession):
     def interrupted(self) -> bool:
         return self._interrupted
 
+    async def wait_for_interrupt(self) -> None:
+        """Block until the model reports the user interrupted its speech.
+        Returns immediately if an interrupt has fired since the last
+        clear_interrupted() call."""
+        await self._interrupt_event.wait()
+
+    def clear_interrupted(self) -> None:
+        self._interrupted = False
+        self._interrupt_event.clear()
+
     async def _receive_loop(self) -> None:
         assert self._session is not None
         try:
@@ -134,7 +148,16 @@ class GeminiLiveSession(VoiceSession):
             if getattr(sc, "turn_complete", False):
                 self._turn_count += 1
             if getattr(sc, "interrupted", False):
+                # Drop any audio chunks queued ahead of this point — they
+                # are pre-interrupt and should NOT be played to the user.
+                while True:
+                    try:
+                        self._audio_q.get_nowait()
+                    except asyncio.QueueEmpty:
+                        break
                 self._interrupted = True
+                self._interrupt_event.set()
+                logger.info("model interrupted by user")
 
         # Usage metadata: guarded since field names can shift on Preview.
         usage = getattr(response, "usage_metadata", None)

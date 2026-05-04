@@ -92,8 +92,31 @@ def _build_registry(
 
 
 async def _play_responses(session: VoiceSession, tts: TtsPlayout) -> None:
+    """Drain session.audio_out() to the speaker. Barge-in handling: race
+    each write against an interrupt signal so a user-interrupted-the-model
+    event immediately cancels in-flight playback and flushes the audio
+    buffer. Without this, ALSA/sounddevice buffering causes 100-300ms of
+    overrun where the model talks over the user."""
+    interrupt_task: asyncio.Task | None = None
     async for chunk in session.audio_out():
-        await tts.write(chunk)
+        if interrupt_task is None or interrupt_task.done():
+            interrupt_task = asyncio.create_task(session.wait_for_interrupt())
+        write_task = asyncio.create_task(tts.write(chunk))
+        done, _ = await asyncio.wait(
+            {write_task, interrupt_task},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if interrupt_task in done:
+            write_task.cancel()
+            try:
+                await write_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            await tts.flush()
+            session.clear_interrupted()
+            interrupt_task = None
+    if interrupt_task is not None:
+        interrupt_task.cancel()
 
 
 async def _idle_watchdog(session: VoiceSession, timeout: int) -> None:

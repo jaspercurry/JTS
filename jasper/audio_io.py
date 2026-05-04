@@ -96,3 +96,21 @@ class TtsPlayout:
         if self._stream is None:
             return
         await asyncio.to_thread(self._stream.write, pcm)
+
+    async def flush(self) -> None:
+        """Drop any audio currently buffered inside sounddevice / ALSA so
+        the speaker goes silent immediately. Used for barge-in: when the
+        user interrupts the model, we want sub-50ms cutoff, not the
+        100-300ms tail you'd get from waiting for buffered samples to
+        finish playing.
+
+        sounddevice's abort() stops the stream and discards pending
+        samples (vs. stop() which finishes them). Restart with start()
+        so the next write() works immediately."""
+        if self._stream is None:
+            return
+        try:
+            await asyncio.to_thread(self._stream.abort)
+            await asyncio.to_thread(self._stream.start)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("tts flush failed: %s", e)
