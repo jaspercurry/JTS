@@ -78,25 +78,78 @@ voice daemon depends on this working.
 
 ---
 
-## Phase 1B — Always-on CamillaDSP via ALSA Loopback (45 min)
+## Phase 1B — Always-on CamillaDSP via `_audioout` override (45 min)
 
-### B1. Switch moOde to Custom CamillaDSP mode
+### Why this is more involved than picking "Loopback" in moOde
 
-1. moOde web UI → Configure → Audio → **CamillaDSP**.
-2. Mode: select **Custom**. (This stops moOde from auto-managing CamillaDSP
-   per-stream; we want one always-on instance we control.)
-3. Click **Set** + restart MPD.
+Two moOde 10.x realities make the naive approach ("just pick Loopback as
+Output device in moOde's UI, set CamillaDSP to Custom") not work — these
+were both painful surprises and the runbook walks around them now:
 
-### B2. Load the ALSA Loopback kernel module + reroute MPD output
+1. **moOde's "Custom" CamillaDSP mode is NOT externally-managed.** It
+   means "you supply the YAML, but moOde still owns spawning + routing."
+   In any non-`off` mode (Default OR Custom), moOde rewrites the
+   `pcm._audioout` ALSA symbol to point at its own `pcm.camilladsp`
+   ioplug — which spawns a fresh CamillaDSP child process per stream
+   and kills it when the stream closes. (See `www/inc/audio.php:213-214`
+   and `www/snd-config.php:487` in github.com/moode-player/moode.) That
+   would fight our long-lived `jasper-camilla` over the DAC. Set
+   moOde CamillaDSP to **Off**.
 
-We'll deploy this via the install script (next step), but you should know
-what it's doing:
+2. **moOde's UI refuses to select Loopback as Output device.** Picking it
+   raises "Device is reserved and cannot be selected for output" — moOde
+   reserves Loopback for its own ALSA Loopback *toggle* feature
+   (a sniff target). We sidestep at the ALSA conf.d layer instead: drop
+   `/etc/alsa/conf.d/zz-jts-loopback.conf` redefining `pcm._audioout`
+   to route into snd-aloop. moOde's `_audioout.conf` keeps pointing at
+   the physical DAC for moOde's own bookkeeping; our `zz-` file loads
+   later in alphabetical order and the `pcm.!_audioout` force-redefine
+   wins. (Filename matters: digit prefixes load BEFORE underscore — use
+   `zz-` to load AFTER `_audioout.conf` in ASCII collation.)
 
-- `snd-aloop` kernel module gets loaded at boot.
-- moOde's MPD writes audio to `hw:Loopback,0,0` (capture side: `hw:Loopback,1,0`).
-- A new always-on CamillaDSP instance captures from `hw:Loopback,1,0`,
-  applies a master_gain mixer (passthrough at 0 dB), and writes to a shared
-  dmix device (`jasper_dongle`) wrapping the Apple dongle.
+The end-to-end pipeline:
+
+```
+phone → AirPlay/Spotify/MPD → pcm._audioout (our override)
+     → hw:Loopback,0,0 (snd-aloop kernel)
+     → hw:Loopback,1,0 capture (jasper-camilla reads here)
+     → master_gain mixer + flat filter (passthrough at 0 dB)
+     → jasper_dongle dmix → Apple USB-C dongle → amp → speakers
+```
+
+CamillaDSP is the single owner of the dongle. The voice daemon ducks
+audio by calling `SetVolume` on the `master_gain` mixer over CamillaDSP's
+websocket on port 1234.
+
+### B1. moOde UI — CamillaDSP Off + Volume type Software
+
+1. moOde web UI → Configure → Audio → CamillaDSP section.
+2. **Mode: Off.** (Custom mode would re-route `_audioout` through moOde's
+   `pcm.camilladsp` ioplug — see "Why" above.)
+3. SET, restart MPD when prompted.
+4. Back on Configure → Audio:
+   - **Volume type: Software** (or PCM/Hardware — anything but
+     CamillaDSP, which becomes unavailable when CamillaDSP=Off;
+     `jasper-camilla` owns ducking via the master_gain mixer).
+   - **Output device: leave as the USB-C dongle** (`2: USB-C to 3.5mm H...`).
+     Irrelevant — our ALSA override hijacks `_audioout` regardless of
+     what moOde sets here. moOde just wants *some* physical device picked.
+   - **Loopback toggle (in ALSA Options): OFF.** That toggle creates a
+     `multi` slave that mirrors output to a sniff target — we don't want
+     it; it would define its own `pcm.!_audioout` and conflict with ours.
+5. SET, restart MPD.
+
+### B2. moOde UI — MPD SoX Resampling at 48 kHz
+
+Critical: snd-aloop locks rate at first opener. AirPlay sources are
+44.1 kHz natively; without resampling, the Loopback rate can flip on
+track changes and CamillaDSP throws "broken pipe" (CamillaDSP issues
+#311 / #315).
+
+1. moOde web UI → Configure → Audio → MPD options.
+2. **SoX Resampling: Enabled.**
+3. **Sample rate: 48000 Hz**, **Bit depth: 16**, **Channels: 2**.
+4. SAVE, restart MPD.
 
 ### B3. Get the repo onto the Pi
 
@@ -140,13 +193,27 @@ This script will:
 - Install Python 3, venv, build deps, libasound2, portaudio
 - Download CamillaDSP `v4.1.3` aarch64 to `/opt/camilladsp/`
   (sha256-verified)
-- Drop `/etc/camilladsp/v1.yml` (passthrough + master_gain mixer)
+- Drop `/etc/camilladsp/v1.yml` (passthrough + master_gain mixer,
+  CamillaDSP 4.x schema with `S16_LE`/`S32_LE` formats and
+  `channels: [N]` pipeline filters)
 - Drop `/etc/modules-load.d/snd-aloop.conf` and `modprobe` it now
-- Drop `/root/.asoundrc` (defines `pcm.jasper_dongle` dmix device)
+- Drop **`/etc/alsa/conf.d/zz-jts-loopback.conf`** — the
+  `pcm._audioout` override that hijacks moOde's renderers into
+  snd-aloop Loopback (see "Why this is more involved" above)
+- Drop `/root/.asoundrc` (defines `pcm.jasper_dongle` dmix device for
+  CamillaDSP playback to the dongle)
+- Drop **`/etc/systemd/system/shairport-sync.service.d/jts-output.conf`**
+  drop-in forcing systemd-launched shairport-sync to write to `_audioout`
+  (without this, shairport-sync writes to ALSA `default` and bypasses
+  our hijack)
 - Create `/opt/jasper/` Python venv and install the daemon
+  (`openwakeword` is installed via `--no-deps` because its declared
+  `tflite-runtime` dep has no Python 3.13 wheel; we use ONNX models
+  exclusively)
 - Create `/etc/jasper/jasper.env` from the template
 - Drop `/etc/systemd/system/jasper-camilla.service` and
-  `jasper-voice.service` and enable them
+  `jasper-voice.service` and enable them (does NOT auto-start — see B7)
+- Restart `shairport-sync.service` so it picks up the drop-in
 
 ### B5. Verify ALSA device names match what we assumed
 
@@ -170,58 +237,48 @@ The defaults assume (verified against community forum posts, May 2026):
 If your `aplay -L` / `arecord -L` shows different names, edit the relevant
 file and `systemctl restart jasper-camilla` (and/or `jasper-voice`).
 
-### B6. Configure moOde to write to Loopback at 48 kHz
+### B6. Verify the `_audioout` override is hijacking to Loopback
 
-Critical: CamillaDSP captures from Loopback at 48 kHz. snd-aloop **does
-not resample** — whatever rate the writer uses locks the capture rate.
-AirPlay sources are 44.1 kHz natively, so without resampling on moOde's
-side, the rate flips between 48 kHz and 44.1 kHz across track changes
-and CamillaDSP throws "broken pipe" (CamillaDSP issues #311 / #315).
-Fix: tell moOde to resample everything to 48 kHz before writing to
-Loopback.
+```sh
+sudo aplay -v -D _audioout /usr/share/sounds/alsa/Front_Center.wav 2>&1 | head
+```
 
-1. moOde web UI → **Configure → Audio → MPD options**.
-2. **Audio output**: pick the entry whose device path looks like
-   `hw:CARD=Loopback,DEV=0`. moOde 10.x's exact label for this entry isn't
-   publicly documented and may vary — look for "Loopback", "snd-aloop", or
-   "Loop:0,0" in the dropdown; pick the playback side (subdevice 0).
-3. **Resampling**: enable **SoX resampling**. Output rate **48000 Hz**,
-   bit depth **16**, channels **2**.
-4. Click **Set** + restart MPD when prompted.
+Expected output contains:
 
-**Don't hand-edit `/etc/mpd.conf`** — moOde regenerates it from its UI
-state on restart and on every moOde upgrade, so manual edits silently
-revert (often hours later, looks like a random regression). If Loopback
-isn't in moOde's dropdown:
+```
+Plug PCM: Hardware PCM card N 'Loopback' device 0 subdevice 0
+```
 
-1. First check that `lsmod | grep snd_aloop` shows the module loaded —
-   if not, `sudo modprobe snd-aloop && sudo systemctl restart mpd` and
-   reload the moOde page.
-2. Confirm moOde version is 10.0.0 or newer (`cat /var/local/www/footer.txt`).
-3. If the dropdown still doesn't list Loopback, post to the moOde forum
-   with your version and `aplay -L` output — there's no robust manual
-   workaround that survives moOde's config regeneration.
+(where `N` is whatever ALSA assigns Loopback — usually 3.) If it shows
+the dongle (`'USB-C to 3.5mm Headphone Jack A'`) instead, our override
+isn't loading. Sanity-check:
 
-### B6.1. AirPlay rate caveat
+1. `/etc/alsa/conf.d/zz-jts-loopback.conf` exists and has
+   `pcm.!_audioout { type plug; slave.pcm "hw:Loopback,0,0" }`
+2. `LC_ALL=C ls /etc/alsa/conf.d/` shows `zz-jts-loopback.conf`
+   alphabetically AFTER `_audioout.conf` (digit prefixes load BEFORE
+   underscore in ASCII collation — that's why `99-` doesn't work)
+3. moOde Loopback toggle (Configure → Audio → ALSA Options → Loopback)
+   is OFF (toggle ON would create its own `pcm.!_audioout` and conflict)
 
-AirPlay (shairport-sync) is a separate renderer that bypasses MPD. Its
-output rate is configured in `/etc/shairport-sync.conf`. If AirPlay is
-your primary streaming source AND you hit "broken pipe" issues on
-CamillaDSP after Phase 2 starts, the fix is:
+### B6.1. shairport-sync rate caveat
+
+If AirPlay is your primary streaming source AND you hit "broken pipe"
+errors in `journalctl -u jasper-camilla` after Phase 2 starts, force
+shairport-sync to 48 kHz:
 
 ```sh
 sudo nano /etc/shairport-sync.conf
-# In the `general` block, set:
+# In the alsa block (uncomment and set):
 #     output_format = "S16_LE";
 #     output_rate = 48000;
-# Save, then:
 sudo systemctl restart shairport-sync
 ```
 
-For v1, document this only if you actually hit the issue — it doesn't
-always trigger because moOde's plughw layer often masks rate transitions.
+Doesn't always trigger — moOde's `type plug` wrapping of `_audioout`
+often masks rate transitions. Document only if hit.
 
-### B7. Start CamillaDSP and verify
+### B7. Start jasper-camilla and verify the chain
 
 ```sh
 sudo systemctl start jasper-camilla
@@ -229,10 +286,30 @@ sudo systemctl status jasper-camilla     # should be "active (running)"
 journalctl -u jasper-camilla -n 30 --no-pager
 ```
 
-Now from your phone, AirPlay a track. You should hear it through the dongle
-again. The signal path is now:
+Look for these log lines:
+- `CamillaDSP version 4.1.3 ...` (startup)
+- `Capture device supports rate adjust`
+- `PB: Starting playback from Prepared state`
 
-  phone → AirPlay → moOde → Loopback → CamillaDSP → dmix → dongle → amp
+Now from your phone, AirPlay a track to the device named `Jasper`. You
+should hear it through the dongle. The signal path is:
+
+```
+phone → AirPlay → shairport-sync (-d _audioout)
+     → pcm._audioout (zz-jts-loopback.conf override)
+     → hw:Loopback,0,0 (snd-aloop kernel)
+     → hw:Loopback,1,0 capture
+     → jasper-camilla (master_gain + flat passthrough)
+     → jasper_dongle dmix → Apple USB-C dongle → amp → speakers
+```
+
+Sanity-check the chain is fully wired (each should show `state: RUNNING`):
+
+```sh
+cat /proc/asound/Loopback/pcm0p/sub0/status   # shairport writing
+cat /proc/asound/Loopback/pcm1c/sub0/status   # jasper-camilla reading
+cat /proc/asound/A/pcm0p/sub0/status          # jasper-camilla → dongle
+```
 
 ### B8. Verify SetVolume works
 
@@ -425,7 +502,10 @@ sudo systemctl restart jasper-voice
 ```
 /opt/camilladsp/camilladsp                  # 4.1.3 binary
 /etc/camilladsp/v1.yml                      # passthrough + master_gain
+                                            #   (CamillaDSP 4.x schema)
 /etc/modules-load.d/snd-aloop.conf          # snd-aloop loaded at boot
+/etc/alsa/conf.d/zz-jts-loopback.conf       # pcm._audioout override
+                                            #   redirecting to Loopback
 /root/.asoundrc                             # pcm.jasper_dongle (dmix)
 /opt/jasper/                                # Python pkg (managed by install.sh)
   .venv/                                    # virtualenv
@@ -436,6 +516,9 @@ sudo systemctl restart jasper-voice
   .spotify-cache                            # Spotify refresh token
 /etc/systemd/system/jasper-camilla.service
 /etc/systemd/system/jasper-voice.service
+/etc/systemd/system/shairport-sync.service.d/jts-output.conf
+                                            # drop-in: shairport-sync
+                                            #   writes to _audioout
 ```
 
 ---
@@ -467,7 +550,9 @@ Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
 | Symptom | Cause | Fix |
 |---|---|---|
 | `journalctl -u jasper-camilla` shows "Cannot open device" | ALSA device names in `/etc/camilladsp/v1.yml` don't match reality | Run `aplay -L` / `arecord -L`, edit `/etc/camilladsp/v1.yml` and `/root/.asoundrc`, `systemctl restart jasper-camilla` |
-| Music plays via dongle bypassing CamillaDSP | moOde audio output still set to `Headset` instead of `Loopback` | moOde web UI → Configure → Audio → MPD output → switch to Loopback |
+| Music plays via dongle bypassing CamillaDSP | `pcm._audioout` override not loading, OR moOde CamillaDSP set to a non-`off` mode rerouting `_audioout` to its own ioplug | `sudo aplay -v -D _audioout /usr/share/sounds/alsa/Front_Center.wav` should show `'Loopback'` as the slave; if it shows the dongle, check `/etc/alsa/conf.d/zz-jts-loopback.conf` exists and that moOde CamillaDSP=Off |
+| AirPlay music plays through Pi but no sound from speakers | Systemd shairport-sync writing to ALSA `default` instead of `_audioout` | Verify `pgrep -a shairport-sync` shows `-- -d _audioout` on the cmdline; if not, check the systemd drop-in `/etc/systemd/system/shairport-sync.service.d/jts-output.conf` exists and `systemctl daemon-reload && systemctl restart shairport-sync` |
+| `journalctl -u jasper-camilla` shows "unknown variant `S16LE`" or "unknown field `channel`" | CamillaDSP 4.x schema mismatch; old YAML has 3.x-style format names or pipeline filter keys | Edit `/etc/camilladsp/v1.yml`: format `S16LE`/`S32LE` → `S16_LE`/`S32_LE`; pipeline filter `channel: N` → `channels: [N]` |
 | TTS plays but music doesn't | dmix conflict — both processes opened the dongle at incompatible rates | Confirm `slave.rate 48000` in `/root/.asoundrc`; `aplay -v` shows actual rate |
 | Wake word never fires | Mic device wrong, or model file missing, or threshold too high | `arecord -d 5 ... | aplay` to confirm mic; lower `JASPER_WAKE_THRESHOLD` to 0.4 temporarily |
 | Wake word fires constantly during music | XVF3800 AEC not working; or threshold too low | Verify XVF3800 firmware; raise threshold to 0.65 |
@@ -480,35 +565,35 @@ Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
 
 ## What I am still uncertain about
 
-A second cold-review pass closed several earlier uncertainties. What's
-left to confirm on real hardware:
+Live items still to validate on real hardware:
 
-1. **moOde 10.x Audio Output dropdown label for the Loopback entry.**
-   moOde's docs don't publicly specify the exact UI string. Pick the entry
-   whose underlying device path is `hw:CARD=Loopback,DEV=0`. If the
-   dropdown doesn't include Loopback at all, use the `/etc/mpd.conf`
-   manual fallback in B6.
-2. **AirPlay (shairport-sync) rate handling under Custom CamillaDSP mode.**
-   moOde's audio infrastructure uses `plughw:Loopback` on the writer side,
-   which usually masks rate transitions. But shairport-sync configures its
-   output independently of moOde's MPD resampler. If you hit "broken pipe"
-   in `journalctl -u jasper-camilla` immediately after starting AirPlay,
-   apply the shairport-sync fix in B6.1.
-3. **`google-genai` SDK Preview churn.** Live API is still Preview as of
+1. **`google-genai` SDK Preview churn.** Live API is still Preview as of
    May 2026. If Google ships a breaking change to `LiveConnectConfig` or
    `send_realtime_input` between when this was written and when you build,
    the pinned `google-genai==1.13.0` should keep things working; later
    upgrade requires reading the changelog. The `VoiceSession` interface
    contains the blast radius to one adapter file.
-4. **dmix interaction with CamillaDSP's chunksize.** `chunksize: 1024` in
+2. **dmix interaction with CamillaDSP's chunksize.** `chunksize: 1024` in
    `v1.yml` is matched to dmix `period_size 1024`. If you see clicks or
    xruns in `journalctl -u jasper-camilla`, try `chunksize: 2048` and
    `period_size 2048` (change in BOTH places).
-5. **moOde's bundled CamillaDSP 3.0.1 vs our 4.1.3.** install.sh stops and
+3. **moOde's bundled CamillaDSP 3.0.1 vs our 4.1.3.** install.sh stops and
    disables `camilladsp.service` to avoid contention, but if a future
    moOde release renames that unit, our disable becomes a no-op. Watch
    for two camilladsp processes in `ps auxf | grep camilladsp` after a
-   moOde upgrade.
+   moOde upgrade. Bigger risk: a future moOde may regenerate
+   `_audioout.conf` in a way that conflicts with our `zz-jts-loopback.conf`
+   override (e.g. moves to `99-` numeric prefix to load even later than
+   conf.d alphabetics). Re-verify B6 after any moOde upgrade.
+4. **shairport-sync `mpd2cdspvolume` volume bridging.** moOde's stock
+   setup translates AirPlay/Spotify volume slider events to CamillaDSP
+   `SetVolume` websocket calls via `mpd2cdspvolume`. With our setup
+   (CamillaDSP=Off in moOde), that bridge isn't running. AirPlay/Spotify
+   volume from your phone will adjust the source's own software volume
+   only — it won't move CamillaDSP's master_gain. Volume from the moOde
+   web UI uses moOde's "Software" volume type which works in MPD
+   directly but not for shairport/librespot. If volume control from
+   non-MPD sources matters, plumb a bridge later.
 
 ### Resolved since first draft
 
@@ -516,6 +601,9 @@ left to confirm on real hardware:
 - CamillaDSP Python client (`camilladsp`, despite the GitHub repo being
   named `pycamilladsp`) is installed from git at `v4.0.0` — it's not on
   PyPI. Matches our CamillaDSP 4.1.3 binary.
+- CamillaDSP **4.x schema** uses `S16_LE`/`S32_LE` (was `S16LE`/`S32LE`
+  in 3.x) and pipeline filter steps use `channels: [N]` (was
+  `channel: N`). Our `v1.yml` is on the 4.x schema.
 - openWakeWord stock models don't auto-download — install.sh now calls
   `download_models()` explicitly.
 - `openwakeword==0.6.0` hard-pins `tflite-runtime`, which has no Python
@@ -523,6 +611,22 @@ left to confirm on real hardware:
   apt). install.sh installs openwakeword via `--no-deps` plus its
   non-tflite runtime deps (requests/tqdm/scipy/scikit-learn) explicitly;
   we use ONNX models exclusively, so tflite is never imported at runtime.
+- **moOde 10.x "Custom" CamillaDSP mode is NOT externally-managed.** It
+  still spawns CamillaDSP per-stream via the `pcm.camilladsp` ioplug.
+  For long-lived externally-managed CamillaDSP, set moOde CamillaDSP to
+  **Off** and route via the ALSA `_audioout` override (B1, B6).
+- **moOde won't let you select Loopback as Output device** ("Device is
+  reserved" alert). Workaround: ALSA conf.d override redefines
+  `pcm._audioout` to point at `hw:Loopback,0,0`, bypassing the moOde
+  UI guard. Filename must sort AFTER `_audioout.conf` in ASCII order —
+  digit prefixes (e.g. `99-`) sort BEFORE underscore and don't work;
+  use `zz-` (lowercase) instead.
+- **systemd-launched shairport-sync writes to ALSA `default`, not
+  `_audioout`** — moOde's stock `/etc/shairport-sync.conf` has the alsa
+  block fully commented out and `DAEMON_ARGS=""`. We drop in
+  `/etc/systemd/system/shairport-sync.service.d/jts-output.conf` with
+  `ExecStart=/usr/bin/shairport-sync -- -d _audioout` so AirPlay routes
+  through our hijack.
 - Gemini Live audio shapes confirmed: 16 kHz int16 PCM in,
   24 kHz int16 PCM out, mono.
 - `audio_stream_end=True` is a real SDK signal — daemon now sends it on

@@ -81,11 +81,24 @@ detect_card() {
 }
 
 install_alsa() {
-    install -d -m 0755 /etc/modules-load.d
+    install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
     modprobe snd-aloop || true
+
+    # Hijack moOde's pcm._audioout symbol to redirect all renderers
+    # (MPD/shairport/librespot/bluealsa) into snd-aloop Loopback instead
+    # of the physical DAC. moOde's UI blocks selecting Loopback directly
+    # ("Device is reserved"); the ALSA-layer override sidesteps that.
+    # See header comment in the conf file for the full rationale + the
+    # required moOde UI settings.
+    # Clean up older 99- prefix from earlier iterations — that prefix
+    # loaded BEFORE _audioout.conf in ASCII order and didn't override.
+    rm -f /etc/alsa/conf.d/99-jts-loopback.conf
+    install -m 0644 \
+        "${REPO_DIR}/deploy/alsa/zz-jts-loopback.conf" \
+        /etc/alsa/conf.d/zz-jts-loopback.conf
 
     # Detect Apple USB-C dongle card name. Falls back to "A" (the literal
     # default on PiOS Trixie). If the dongle isn't plugged in at install
@@ -166,8 +179,31 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
+
+    # Drop-in override forcing the system shairport-sync.service onto
+    # moOde's `_audioout` ALSA symbol. Without this it writes to ALSA
+    # `default` and bypasses our zz-jts-loopback.conf hijack — see header
+    # comment in shairport-sync-jts-output.conf for the full rationale.
+    install -d -m 0755 "${SYSTEMD_DIR}/shairport-sync.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/shairport-sync-jts-output.conf" \
+        "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service
+
+    # On a fresh moOde, shairport-sync is spawned outside systemd by
+    # moOde's startup mechanism (with its own ALSA args, and root-uid).
+    # That instance is holding port 7000, so a `systemctl restart` of
+    # the systemd unit would fail to bind. Kill any non-systemd
+    # shairport-sync first, reset any prior failed state, then start
+    # the systemd-managed instance (which inherits our drop-in's
+    # `-- -d _audioout` ExecStart).
+    pkill -x shairport-sync 2>/dev/null || true
+    sleep 1
+    systemctl reset-failed shairport-sync.service 2>/dev/null || true
+    systemctl restart shairport-sync.service 2>/dev/null || true
+
     echo
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }

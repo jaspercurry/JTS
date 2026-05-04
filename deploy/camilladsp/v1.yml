@@ -19,12 +19,12 @@ devices:
     type: Alsa
     channels: 2
     device: "plughw:CARD=Loopback,DEV=1,SUBDEV=0"
-    format: S32LE
+    format: S32_LE
   playback:
     type: Alsa
     channels: 2
     device: "jasper_dongle"
-    format: S16LE
+    format: S16_LE
 
 filters:
   flat:
@@ -55,8 +55,8 @@ pipeline:
   - type: Mixer
     name: master_gain
   - type: Filter
-    channel: 0
+    channels: [0]
     names: [flat]
   - type: Filter
-    channel: 1
+    channels: [1]
     names: [flat]
