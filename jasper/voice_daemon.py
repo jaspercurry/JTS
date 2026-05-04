@@ -311,7 +311,14 @@ async def run() -> None:
     )
 
     try:
-        async with MicCapture(cfg.mic_device) as mic, TtsPlayout(cfg.tts_device) as tts:
+        async with MicCapture(
+            cfg.mic_device,
+            capture_rate=cfg.mic_capture_rate,
+            capture_channels=cfg.mic_capture_channels,
+        ) as mic, TtsPlayout(
+            cfg.tts_device,
+            output_rate=cfg.tts_output_rate,
+        ) as tts:
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, registry, ducker,
                 usage_store, spend_cap, stop_event,

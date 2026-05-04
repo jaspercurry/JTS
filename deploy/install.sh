@@ -158,11 +158,14 @@ install_jasper() {
 
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
         # Detect ReSpeaker XVF3800 card name. Default "Array" (PiOS literal
-        # name; product description matches).
+        # name; product description matches and it's also a substring of
+        # PortAudio's enumerated name "Array: USB Audio (hw:N,0)").
+        # JASPER_MIC_DEVICE format is a PortAudio device name/substring,
+        # NOT an ALSA pcm string — see jasper/config.py for the rationale.
         local mic_card
         mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
-        echo "  ReSpeaker mic: CARD=${mic_card}"
-        sed "s|JASPER_MIC_DEVICE=plughw:CARD=Array|JASPER_MIC_DEVICE=plughw:CARD=${mic_card}|" \
+        echo "  ReSpeaker mic: ${mic_card}"
+        sed "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo

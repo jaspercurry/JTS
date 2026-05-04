@@ -76,24 +76,35 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
 
 
 def _extract_card_name(device_str: str) -> str | None:
-    """Pull CARD=name out of an ALSA device string like 'plughw:CARD=Array'."""
-    m = re.search(r"CARD=([^,\s]+)", device_str or "")
-    return m.group(1) if m else None
+    """Best-effort card name from JASPER_MIC_DEVICE for the arecord -L lookup.
+
+    Accepts both legacy ALSA pcm strings (`plughw:CARD=Array`) and the
+    current PortAudio-substring format (`Array`, `UMIK-2`, etc.). Returns
+    None if the input is empty or an integer index — those skip the
+    name-match check (the open test still runs)."""
+    if not device_str or device_str.isdigit():
+        return None
+    m = re.search(r"CARD=([^,\s]+)", device_str)
+    if m:
+        return m.group(1)
+    # PortAudio substring form — return as-is; check_alsa_card greps
+    # arecord -L output for substring presence.
+    return device_str
 
 
 def check_mic_card_matches_config(cfg: Config) -> CheckResult:
-    """Validate the card actually configured in JASPER_MIC_DEVICE — not a
-    hardcoded literal. install.sh autodetects the card name on the Pi, so
-    the literal may differ from 'Array'."""
+    """Validate the card configured in JASPER_MIC_DEVICE is actually
+    present according to `arecord -L`. install.sh autodetects on the Pi,
+    so the literal may differ from 'Array'."""
     card = _extract_card_name(cfg.mic_device)
     if card is None:
         return CheckResult(
             "mic ALSA card",
             "warn",
-            f"JASPER_MIC_DEVICE='{cfg.mic_device}' has no CARD= component; "
+            f"JASPER_MIC_DEVICE='{cfg.mic_device}' is empty or numeric; "
             "skipping name check (open test will still run)",
         )
-    return check_alsa_card(card, "arecord", f"mic ALSA card (CARD={card})")
+    return check_alsa_card(card, "arecord", f"mic ALSA card ({card})")
 
 
 def check_loopback() -> CheckResult:
@@ -129,8 +140,14 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     try:
         import numpy as np
         import sounddevice as sd
+        # Open at the device's configured native rate/channels — PortAudio
+        # rejects rates the device doesn't support. MicCapture downsamples
+        # to 16 kHz at runtime; for the doctor's purposes we just need a
+        # half-second read to confirm the device produces non-silent audio.
         rec = sd.rec(
-            int(0.5 * 16000), samplerate=16000, channels=1,
+            int(0.5 * cfg.mic_capture_rate),
+            samplerate=cfg.mic_capture_rate,
+            channels=cfg.mic_capture_channels,
             dtype="int16", device=cfg.mic_device, blocking=True,
         )
         peak = int(np.abs(rec).max())
@@ -152,14 +169,20 @@ def check_mic_capture(cfg: Config) -> CheckResult:
 def check_tts_open(cfg: Config) -> CheckResult:
     try:
         import sounddevice as sd
-        # Just open + close — playing audio would surprise the user.
+        # Open at the configured output_rate (TtsPlayout upsamples
+        # Gemini's 24 kHz to that). Just open + close — playing audio
+        # would surprise the user.
         s = sd.RawOutputStream(
-            device=cfg.tts_device, samplerate=24000, channels=1, dtype="int16",
+            device=cfg.tts_device, samplerate=cfg.tts_output_rate,
+            channels=1, dtype="int16",
         )
         s.start()
         s.stop()
         s.close()
-        return CheckResult("tts output", "ok", cfg.tts_device)
+        return CheckResult(
+            "tts output", "ok",
+            f"{cfg.tts_device} @ {cfg.tts_output_rate} Hz",
+        )
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             "tts output", "fail",

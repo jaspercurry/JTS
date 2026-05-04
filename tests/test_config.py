@@ -28,8 +28,11 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.daily_spend_cap_usd == 1.0
     # ALSA defaults must match the templates in /root/.asoundrc and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
-    assert cfg.mic_device == "plughw:CARD=Array"
-    assert cfg.tts_device == "plug:jasper_dongle"
+    assert cfg.mic_device == "Array"
+    assert cfg.mic_capture_rate == 16000
+    assert cfg.mic_capture_channels == 1
+    assert cfg.tts_device == "jasper_dongle"
+    assert cfg.tts_output_rate == 48000
     assert cfg.spotify_device_name == "moode"
     assert cfg.weather_default_location == ""
     assert cfg.weather_units == "celsius"

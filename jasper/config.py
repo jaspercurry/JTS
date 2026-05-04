@@ -40,7 +40,10 @@ class Config:
     wake_model: str
     wake_threshold: float
     mic_device: str
+    mic_capture_rate: int
+    mic_capture_channels: int
     tts_device: str
+    tts_output_rate: int
 
     camilla_host: str
     camilla_port: int
@@ -77,8 +80,29 @@ class Config:
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
             wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
-            mic_device=_env("JASPER_MIC_DEVICE", "plughw:CARD=Array"),
-            tts_device=_env("JASPER_TTS_DEVICE", "plug:jasper_dongle"),
+            # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not
+            # an ALSA pcm string — PortAudio rejects "plughw:" syntax.
+            # Accepts an integer index (`sd.query_devices()`), or a
+            # substring of the PortAudio device name (e.g. "Array" matches
+            # the XVF3800's "Array: USB Audio (hw:N,0)"; "UMIK-2" matches
+            # the MiniDSP UMIK-2). Empty/absent → PortAudio default.
+            mic_device=_env("JASPER_MIC_DEVICE", "Array"),
+            # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
+            # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
+            # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;
+            # MicCapture polyphase-downsamples to 16 kHz mono internally.
+            mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
+            mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
+            # JASPER_TTS_DEVICE: same PortAudio rules as the mic — bare
+            # ALSA pcm names like `jasper_dongle` (defined in
+            # /root/.asoundrc) work; `plug:jasper_dongle` doesn't because
+            # PortAudio doesn't enumerate `plug:` aliases.
+            tts_device=_env("JASPER_TTS_DEVICE", "jasper_dongle"),
+            # jasper_dongle is a dmix at fixed 48 kHz; PortAudio rejects
+            # 24 kHz writes against it. TtsPlayout polyphase-upsamples
+            # 24 kHz mono (Gemini's output) to JASPER_TTS_OUTPUT_RATE
+            # before writing. Set to 48000 for the jasper_dongle dmix.
+            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -15.0),

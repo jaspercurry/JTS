@@ -4,6 +4,16 @@ Custom voice daemon on top of moOde 10.x + always-on CamillaDSP, running
 on a Pi 5 (2GB). Voice via Gemini 3.1 Flash Live. See `BRINGUP.md` for the
 full hardware bringup runbook and `PLAN.md` for the master plan.
 
+## Model constraint — read this first
+
+**This project uses `gemini-3.1-flash-live-preview`. Period.** Do NOT
+suggest, fall back to, or test against Gemini 2.5 (`gemini-2.5-flash`,
+`gemini-2.5-flash-native-audio-*`, etc.) — 2.5 is older and out of scope.
+If 3.1 Live appears broken, debug 3.1 Live: read the official Live API
+docs (https://ai.google.dev/gemini-api/docs/live), check status
+(https://status.cloud.google.com), check whether the API key's project
+needs billing or Vertex-AI access for 3.1 Live. Do not pivot models.
+
 ## What this repo is for
 
 The Pi runs the daemon. This repo is developed on a laptop. The deploy

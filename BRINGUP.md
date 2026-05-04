@@ -231,7 +231,8 @@ The defaults assume (verified against community forum posts, May 2026):
 | Component | Card name | Where referenced |
 |---|---|---|
 | Apple USB-C → 3.5mm dongle | **`A`** (literally the letter A; the device description is "USB-C to 3.5mm Headphone Jack A") | `/root/.asoundrc` slave.pcm `hw:CARD=A,DEV=0` and `ctl.jasper_dongle.card A` |
-| ReSpeaker XVF3800 | **`Array`** (literally; description "reSpeaker XVF3800 4-Mic Array") | `/etc/jasper/jasper.env` `JASPER_MIC_DEVICE=plughw:CARD=Array` |
+| ReSpeaker XVF3800 | **`Array`** (literal ALSA card; PortAudio surfaces as "Array: USB Audio (hw:N,0)") | `/etc/jasper/jasper.env` `JASPER_MIC_DEVICE=Array` (PortAudio substring — NOT `plughw:` — see jasper/config.py) |
+| MiniDSP UMIK-2 (alt) | **`UMIK2`** ALSA / PortAudio name "UMIK-2: USB Audio (hw:N,0)" | `JASPER_MIC_DEVICE=UMIK-2`, **`JASPER_MIC_CAPTURE_RATE=48000`**, **`JASPER_MIC_CAPTURE_CHANNELS=2`** (no native 16 kHz support — MicCapture downsamples) |
 | snd-aloop | **`Loopback`** (kernel-fixed) | `/etc/camilladsp/v1.yml` capture device |
 
 If your `aplay -L` / `arecord -L` shows different names, edit the relevant
@@ -331,50 +332,64 @@ works, Phase 1B is done.**
 
 ## Phase 2A — Mic + wake word (30 min)
 
-### A1. Plug in the XVF3800
+### A1. Plug in the mic
 
-The XVF3800 has a USB-C port on the device side; you'll need a USB-C → USB-A
-cable (Pi 5's USB-A ports are best for peripherals; the Pi 5 USB-C is
-power-only). Plug it into a USB-A port. Confirm:
+**XVF3800 (intended):** USB-C port on the device; needs USB-C → USB-A
+cable (Pi 5's USB-A is for peripherals; Pi 5 USB-C is power-only). Plug
+into a USB-A port.
+
+**UMIK-2 (alt; bring-up only — no AEC):** plug the USB-C cable into any
+Pi 5 USB-A port. Then in `/etc/jasper/jasper.env`:
+```
+JASPER_MIC_DEVICE=UMIK-2
+JASPER_MIC_CAPTURE_RATE=48000
+JASPER_MIC_CAPTURE_CHANNELS=2
+```
+MicCapture polyphase-downsamples 48 kHz stereo → 16 kHz mono internally.
+
+Confirm capture works (substitute `UMIK2` or `Array` for the card):
 
 ```sh
-arecord -L | grep -B1 -i 'xvf3800\|array'
+arecord -L | grep -B1 -iE 'umik|xvf3800|array'
 arecord -d 5 -f S16_LE -r 16000 -c 1 -D plughw:CARD=Array /tmp/test.wav
-aplay /tmp/test.wav
+sudo aplay -D plug:jasper_dongle /tmp/test.wav   # play via CamillaDSP-shared dongle
 ```
 
-Speak during the recording. You should hear yourself back. If the card
-name isn't `Array`, edit `JASPER_MIC_DEVICE` in `/etc/jasper/jasper.env`
-and swap the `-D` flag above.
+(Note: `arecord` accepts ALSA `plughw:` strings and resamples — the
+daemon goes through sounddevice/PortAudio which doesn't, hence the
+CAPTURE_RATE plumbing above.)
 
-### A2. Hardware AEC sanity check
+### A2. Hardware AEC sanity check (XVF3800 only)
 
 While AirPlaying loud music, repeat the recording. The XVF3800 should
 attenuate the music heavily (you should hear yourself clearly above the
 nearly-silent music). If the music dominates the recording, AEC isn't
 working — check the XVF3800 firmware version, USB cable, USB port.
 
+The UMIK-2 has no AEC — wake-word reliability degrades during loud
+music; this is expected, not a bug.
+
 ### A3. Wake-word smoke test
 
+PortAudio doesn't accept ALSA `plughw:` strings, and many mics
+(including UMIK-2) don't natively support 16 kHz capture. The simplest
+smoke test uses arecord (which DOES handle plughw + resampling) to
+record, then loads the WAV into openwakeword:
+
 ```sh
-/opt/jasper/.venv/bin/python -c "
-import sounddevice as sd
-import numpy as np
+ssh pi@jasper.local
+arecord -d 10 -f S16_LE -r 16000 -c 1 -D plughw:CARD=UMIK2 /tmp/wake.wav
+# (substitute Array for XVF3800)
+# Say "Hey Jarvis" 2-3 times during the 10 sec recording.
+/opt/jasper/.venv/bin/python <<'PY'
+import wave, numpy as np
 from openwakeword.model import Model
-m = Model(wakeword_models=['hey_jarvis'])
-buf = []
-def cb(indata, frames, t, status):
-    buf.append(indata[:,0].astype(np.int16, copy=True))
-print('say \"Hey Jarvis\" within 5 seconds...')
-with sd.InputStream(device='plughw:CARD=Array', samplerate=16000, channels=1, dtype='int16', blocksize=1280, callback=cb):
-    sd.sleep(5000)
-import numpy as np
-audio = np.concatenate(buf)
-# scan in 80 ms windows
-import numpy as np
-peak = max(m.predict(audio[i:i+1280]).get('hey_jarvis', 0) for i in range(0, len(audio)-1280, 1280))
-print(f'peak score: {peak:.3f}  (>= 0.5 means detected)')
-"
+with wave.open('/tmp/wake.wav','rb') as w:
+    audio = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+m = Model(wakeword_models=['hey_jarvis'], inference_framework='onnx')
+scores = [max(m.predict(audio[i:i+1280]).values()) for i in range(0, len(audio)-1280, 1280)]
+print(f'peak: {max(scores):.3f}  ({"DETECTED" if max(scores) >= 0.5 else "NO"})')
+PY
 ```
 
 If peak score is < 0.5 with music quiet, raise the mic gain or move the
