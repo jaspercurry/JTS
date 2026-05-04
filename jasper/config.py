@@ -26,6 +26,8 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    if cfg.live_context_reset_sec <= 0:
+        raise RuntimeError("JASPER_LIVE_CONTEXT_RESET_SEC must be > 0")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
     return cfg
@@ -52,6 +54,7 @@ class Config:
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
+    live_context_reset_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
@@ -133,6 +136,14 @@ class Config:
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -15.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
+            # After this many seconds with no turns, the persistent live
+            # connection drops its sessionResumption handle and reopens
+            # with a fresh session — so conversational context from a
+            # query hours earlier doesn't leak into the next one
+            # ("what's the weather" at 9am should NOT influence "what
+            # time is it" at 5pm). 5 min default = long enough to keep
+            # multi-turn dialogues coherent, short enough to feel fresh.
+            live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
             moode_base_url=_env("MOODE_BASE_URL", "http://127.0.0.1"),

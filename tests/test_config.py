@@ -25,6 +25,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.gemini_model == "gemini-3.1-flash-live-preview"
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -15.0
+    assert cfg.live_context_reset_sec == 300
     assert cfg.daily_spend_cap_usd == 1.0
     # ALSA defaults must match the templates in /root/.asoundrc and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
@@ -66,6 +67,7 @@ def test_spotify_enabled_when_both_creds_present(monkeypatch):
     [
         ("JASPER_WAKE_THRESHOLD", "1.2", "JASPER_WAKE_THRESHOLD"),
         ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
+        ("JASPER_LIVE_CONTEXT_RESET_SEC", "0", "JASPER_LIVE_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
     ],
 )
