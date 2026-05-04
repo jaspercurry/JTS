@@ -42,10 +42,14 @@ SYSTEM_INSTRUCTION = (
     "with a 60% chance of rain.' For rain questions, lead with the "
     "precipitation_probability percentage rather than just yes/no. If "
     "probability is null, fall back to the will_rain boolean. "
-    "For subway questions ('when's the next D train', 'next train toward "
-    "Coney'), call get_subway_arrivals with the line letter and an "
-    "optional direction phrase. Voice answer style: 'Next uptown D trains "
-    "at 9 Av in 5, 12, and 19 minutes.'"
+    "For subway questions ('when's the next train', 'when's the next D', "
+    "'next train toward Coney'), call get_subway_arrivals. Both line and "
+    "direction are optional — at a single-line station the line defaults "
+    "to that line and direction defaults to the speaker's home direction, "
+    "so a bare 'when's the next train' should pass empty strings. Voice "
+    "answer style: 'Next uptown D trains at 9 Av in 5, 12, and 19 "
+    "minutes.' or, when the station/line are obvious from context, just "
+    "'Next train in 4 minutes, then 11 and 17.'"
 )
 
 # Brief refractory after a session ends before the wake detector is re-armed.

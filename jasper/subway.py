@@ -237,6 +237,18 @@ class SubwayClient:
                 ),
             }
         line = (line or "").strip().upper()
+        if not line:
+            # Empty line → default to the single configured line, if there
+            # is only one. At a multi-line station we can't safely guess.
+            if len(self._lines) == 1:
+                line = self._lines[0]
+            else:
+                served = ", ".join(self._lines) or "(none configured)"
+                return {
+                    "error": (
+                        f"which line? {self.station_name} serves: {served}"
+                    ),
+                }
         if line not in LINE_TO_FEED:
             return {"error": f"unknown subway line: {line}"}
         if self._lines and line not in self._lines:

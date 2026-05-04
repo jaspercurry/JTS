@@ -431,3 +431,44 @@ def test_unrecognised_direction_returns_helpful_error():
     assert "error" in result
     assert "Manhattan" in result["error"]
     assert "Coney Island" in result["error"]
+
+
+def test_bare_question_at_single_line_station_uses_default_line_and_direction():
+    """'Hey Jarvis, when's the next train?' → tool gets ('', '') → at a
+    single-line station with default direction 'uptown', resolves to
+    the only line + N. Critical for the user's 90% common case."""
+    now = datetime(2024, 1, 1, 12, 0, 0)
+    ref_ts = int(now.timestamp())
+    sn = _sn_response(ref_ts=ref_ts, north_trips=[("D", 4 * 60)])
+    client = _client(now, sn_response=sn, lines=["D"])
+    result = client.get_arrivals("", "")
+    assert "error" not in result
+    assert result["line"] == "D"
+    assert result["direction"] == "N"
+    assert result["next_arrivals_minutes"] == [4]
+
+
+def test_bare_question_at_multi_line_station_asks_which_line():
+    """At a station with multiple lines, an empty `line` should produce a
+    helpful error listing the served lines rather than picking one
+    arbitrarily."""
+    now = datetime(2024, 1, 1, 12, 0, 0)
+    client = _client(now, lines=["B", "D", "N", "Q", "R"])
+    result = client.get_arrivals("", "")
+    assert "error" in result
+    assert "which line" in result["error"].lower()
+    for served in ["B", "D", "N", "Q", "R"]:
+        assert served in result["error"]
+
+
+def test_explicit_line_still_works_at_single_line_station():
+    """Sanity: providing the line explicitly should give the same answer
+    as omitting it at a single-line station."""
+    now = datetime(2024, 1, 1, 12, 0, 0)
+    ref_ts = int(now.timestamp())
+    sn = _sn_response(ref_ts=ref_ts, north_trips=[("D", 6 * 60)])
+    client = _client(now, sn_response=sn, lines=["D"])
+    bare = client.get_arrivals("", "")
+    explicit = client.get_arrivals("D", "uptown")
+    assert bare["next_arrivals_minutes"] == explicit["next_arrivals_minutes"]
+    assert bare["line"] == explicit["line"]
