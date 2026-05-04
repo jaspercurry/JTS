@@ -63,6 +63,10 @@ class Config:
     weather_default_location: str
     weather_units: str
 
+    subway_station_id: str
+    subway_default_direction: str
+    subway_lines: tuple[str, ...]
+
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
@@ -101,7 +105,21 @@ class Config:
             # no city specified. Empty = require explicit location each time.
             weather_default_location=_env("JASPER_DEFAULT_LOCATION", ""),
             weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
+            # NYC MTA subway. Empty station_id disables the tool.
+            # Find your stop_id at data.ny.gov/dataset/...subway-stations
+            # (column: "GTFS Stop ID"). 9 Av on the West End line is "B16".
+            subway_station_id=_env("JASPER_SUBWAY_STATION_ID", ""),
+            subway_default_direction=_env(
+                "JASPER_SUBWAY_DEFAULT_DIRECTION", "uptown",
+            ),
+            subway_lines=tuple(
+                t for t in _env("JASPER_SUBWAY_LINES", "").replace(",", " ").split()
+            ),
         ))
+
+    @property
+    def subway_enabled(self) -> bool:
+        return bool(self.subway_station_id)
 
     @property
     def spotify_enabled(self) -> bool:

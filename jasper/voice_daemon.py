@@ -10,9 +10,11 @@ from .audio_io import MicCapture, TtsPlayout
 from .camilla import CamillaController, Ducker
 from .config import Config
 from .moode import MoodeClient
+from .subway import SubwayClient
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
 from .tools.spotify import build_spotify, make_spotify_tools
+from .tools.subway import make_subway_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore
@@ -39,7 +41,11 @@ SYSTEM_INSTRUCTION = (
     "'Highs in the low 70s, lows around 55. Mostly sunny except Thursday "
     "with a 60% chance of rain.' For rain questions, lead with the "
     "precipitation_probability percentage rather than just yes/no. If "
-    "probability is null, fall back to the will_rain boolean."
+    "probability is null, fall back to the will_rain boolean. "
+    "For subway questions ('when's the next D train', 'next train toward "
+    "Coney'), call get_subway_arrivals with the line letter and an "
+    "optional direction phrase. Voice answer style: 'Next uptown D trains "
+    "at 9 Av in 5, 12, and 19 minutes.'"
 )
 
 # Brief refractory after a session ends before the wake detector is re-armed.
@@ -64,6 +70,7 @@ def _build_registry(
     camilla: CamillaController,
     moode: MoodeClient,
     weather: WeatherClient,
+    subway: SubwayClient | None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(camilla):
@@ -74,6 +81,8 @@ def _build_registry(
     for fn in make_spotify_tools(sp, moode, cfg.spotify_device_name):
         registry.register(fn)
     for fn in make_weather_tools(weather):
+        registry.register(fn)
+    for fn in make_subway_tools(subway):
         registry.register(fn)
     return registry
 
@@ -246,9 +255,17 @@ async def run() -> None:
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     moode = MoodeClient(cfg.moode_base_url, cfg.mpd_host, cfg.mpd_port)
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
+    subway = (
+        SubwayClient(
+            cfg.subway_station_id,
+            cfg.subway_default_direction,
+            list(cfg.subway_lines) or None,
+        )
+        if cfg.subway_enabled else None
+    )
     ducker = Ducker(camilla, cfg.duck_db)
 
-    registry = _build_registry(cfg, camilla, moode, weather)
+    registry = _build_registry(cfg, camilla, moode, weather, subway)
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()

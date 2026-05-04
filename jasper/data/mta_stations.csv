@@ -1,0 +1,13 @@
+# Seed station data. Each row is one MTA subway station's parent stop_id.
+# stop_id is the GTFS parent (3-char form like B16); platforms are <id>N
+# (railroad-north / typically uptown) and <id>S (railroad-south / typically
+# downtown). north_label / south_label are MTA's official platform-direction
+# labels for that station — used to humanise voice answers and to alias
+# direction terms ("toward Manhattan" → N at this station).
+#
+# This file ships with only verified entries. To add your own stations,
+# look up the parent stop_id from MTA's "Subway Stations and Complexes"
+# dataset: https://data.ny.gov/Transportation/MTA-Subway-Stations-and-Complexes/5f5g-n3cz
+# Or run scripts/build-mta-stations.sh on a machine with internet (v1.1).
+stop_id,stop_name,borough,lines,north_label,south_label
+B16,9 Av,Bk,D,Manhattan,Coney Island
