@@ -575,6 +575,7 @@ Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
 | Spotify tool returns "no active spotify device" | moOde's Spotify Connect endpoint isn't running, or another phone took over | moOde web UI → Configure → Audio → Spotify Connect → Enable. Disconnect any other devices controlling Spotify. |
 | Voice ducking doesn't restore | CamillaDSP websocket disconnected mid-session | Check `journalctl -u jasper-voice` for "camilla call failed"; restart `jasper-camilla` |
 | Daemon OOM on 1GB Pi 5 | Stack peaks above 750 MB at runtime | Switch to 2GB Pi 5 (the recommended SKU for v1) |
+| Wake fires, ducks, but no model response (sessions ending with `SILENT FAILURE: sent N bytes... received 0 chunks`) | `gemini-3.1-flash-live-preview` is silently degraded for your project (server accepts WS, accepts audio, sends nothing back — not a 409, not a quota error in the SDK). Confirmed by direct text-turn probe returning 0 responses while `gemini-2.5-flash-native-audio-preview-12-2025` works on the same key | Run `bash scripts/switch-gemini-model.sh 2.5` from the laptop. Same-class Live API model (Google explicitly published it as 3.1's predecessor); same code path, same voices, same SDK. Run `switch-gemini-model.sh 3.1` to flip back when 3.1 unsticks. |
 
 ---
 

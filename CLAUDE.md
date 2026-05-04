@@ -4,15 +4,46 @@ Custom voice daemon on top of moOde 10.x + always-on CamillaDSP, running
 on a Pi 5 (2GB). Voice via Gemini 3.1 Flash Live. See `BRINGUP.md` for the
 full hardware bringup runbook and `PLAN.md` for the master plan.
 
-## Model constraint — read this first
+## Model & switching — read this first
 
-**This project uses `gemini-3.1-flash-live-preview`. Period.** Do NOT
-suggest, fall back to, or test against Gemini 2.5 (`gemini-2.5-flash`,
-`gemini-2.5-flash-native-audio-*`, etc.) — 2.5 is older and out of scope.
-If 3.1 Live appears broken, debug 3.1 Live: read the official Live API
-docs (https://ai.google.dev/gemini-api/docs/live), check status
-(https://status.cloud.google.com), check whether the API key's project
-needs billing or Vertex-AI access for 3.1 Live. Do not pivot models.
+**Preferred model: `gemini-3.1-flash-live-preview`** (latest Live API
+model). Do NOT use the plain `gemini-2.5-flash` (it's not a Live model
+— `Live API: Not supported` per
+https://ai.google.dev/gemini-api/docs/models/gemini-2.5-flash).
+
+**Acceptable fallback: `gemini-2.5-flash-native-audio-preview-12-2025`**
+— Google's docs explicitly position 3.1 Flash Live as the *successor*
+of 2.5 native-audio (see "Migrating from Gemini 2.5 Flash Live" section
+at https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview).
+Same Live API, same `client.aio.live.connect()` SDK path, same prebuilt
+voice catalog, same `send_realtime_input(audio=Blob)` shape. Use it when
+3.1 Live Preview is silently failing for the project (a real Google-side
+condition we've hit — server accepts the WebSocket, accepts audio,
+sends nothing back; not surfaced as an error in the SDK).
+
+**Switch command** (laptop-side wrapper, SSHs to the Pi):
+
+```sh
+bash scripts/switch-gemini-model.sh        # show current model
+bash scripts/switch-gemini-model.sh 3.1    # → gemini-3.1-flash-live-preview
+bash scripts/switch-gemini-model.sh 2.5    # → gemini-2.5-flash-native-audio-preview-12-2025
+```
+
+The script just flips `JASPER_GEMINI_MODEL` in `/etc/jasper/jasper.env`
+and restarts `jasper-voice`. No code changes needed because the daemon
+treats the model as opaque-string config.
+
+**Symptoms that mean "Gemini Live is silently broken, switch to 2.5"**:
+
+- Sessions repeatedly end with `0 input_tokens / 0 output_tokens` AND
+  the daemon's `SILENT FAILURE: sent N bytes... received 0 chunks back`
+  warning is firing.
+- Direct probe (text turn via `send_client_content`) returns no
+  responses within 15s and no exception.
+- Same-key non-Live `client.models.generate_content(...)` works
+  (rules out auth/key issue).
+
+When 3.1 Live unsticks, run `switch-gemini-model.sh 3.1` to flip back.
 
 ## What this repo is for
 
