@@ -61,7 +61,30 @@ install_camilladsp() {
         rm -rf "${tmpdir}"
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
-    install -m 0644 "${REPO_DIR}/deploy/camilladsp/v1.yml" "${CAMILLA_CONF}/v1.yml"
+
+    # Render v1.yml with playback device chosen by JASPER_AEC_MODE.
+    # Reads existing /etc/jasper/jasper.env if present (re-install path),
+    # else defaults to "hardware" — XVF3800 jack as speaker. Either
+    # value renders to a valid pcm name in /root/.asoundrc.
+    local aec_mode="hardware"
+    if [[ -f "${ENV_DIR}/jasper.env" ]]; then
+        aec_mode=$(grep -E '^JASPER_AEC_MODE=' "${ENV_DIR}/jasper.env" 2>/dev/null \
+                   | tail -1 | cut -d= -f2- | tr -d ' "' || true)
+        [[ -z "$aec_mode" ]] && aec_mode="hardware"
+    fi
+    local playback_device
+    case "$aec_mode" in
+        hardware) playback_device="jasper_xvf" ;;
+        software) playback_device="jasper_dongle" ;;
+        *)
+            echo "  WARN: unknown JASPER_AEC_MODE='${aec_mode}', defaulting to 'hardware'"
+            playback_device="jasper_xvf"
+            ;;
+    esac
+    echo "  CamillaDSP playback device (AEC mode '${aec_mode}'): ${playback_device}"
+    sed "s|__PLAYBACK_DEVICE__|${playback_device}|g" \
+        "${REPO_DIR}/deploy/camilladsp/v1.yml" > "${CAMILLA_CONF}/v1.yml"
+    chmod 0644 "${CAMILLA_CONF}/v1.yml"
 }
 
 detect_card() {
@@ -107,7 +130,13 @@ install_alsa() {
     dongle_card=$(detect_card aplay 'usb-c to 3.5mm' 'A')
     echo "  Apple dongle: CARD=${dongle_card}"
 
-    # Render /root/.asoundrc from template with detected card name.
+    # Detect XVF3800 / ReSpeaker card name for the jasper_xvf dmix slave.
+    # Falls back to "Array" (PiOS literal). Used by JASPER_AEC_MODE=hardware.
+    local mic_card
+    mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
+    echo "  XVF3800 (AEC playback target): CARD=${mic_card}"
+
+    # Render /root/.asoundrc from template with detected card names.
     # /root/.asoundrc is read by CamillaDSP + jasper-voice (both run as
     # root via systemd). moOde/MPD runs as a different uid, unaffected.
     if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
@@ -115,7 +144,8 @@ install_alsa() {
             cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
         fi
     fi
-    sed "s/__DONGLE_CARD__/${dongle_card}/g" \
+    sed -e "s/__DONGLE_CARD__/${dongle_card}/g" \
+        -e "s/__MIC_CARD__/${mic_card}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" > /root/.asoundrc
     chmod 0600 /root/.asoundrc
 }

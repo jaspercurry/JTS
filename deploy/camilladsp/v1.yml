@@ -21,9 +21,17 @@ devices:
     device: "plughw:CARD=Loopback,DEV=1,SUBDEV=0"
     format: S32_LE
   playback:
+    # __PLAYBACK_DEVICE__ is substituted by deploy/install.sh based on
+    # JASPER_AEC_MODE in /etc/jasper/jasper.env:
+    #   hardware → "jasper_xvf"     (XVF3800 jack as speaker; chip's
+    #                                 hardware AEC active)
+    #   software → "jasper_dongle"  (Apple dongle / any DAC; daemon
+    #                                 uses Silero VAD gating — TODO)
+    # Both PCMs are defined in /root/.asoundrc and coexist; switching
+    # modes is JASPER_AEC_MODE flip + re-run install.sh + restart.
     type: Alsa
     channels: 2
-    device: "jasper_dongle"
+    device: "__PLAYBACK_DEVICE__"
     format: S16_LE
 
 filters:
