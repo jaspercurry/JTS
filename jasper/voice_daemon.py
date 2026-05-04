@@ -217,7 +217,21 @@ class WakeLoop:
         self._session = _make_session(self._cfg)
         self._session_id = self._usage_store.open_session()
         await self._ducker.duck()
-        await self._session.connect(self._registry, SYSTEM_INSTRUCTION)
+        # Inject current local time into the system instruction. Without
+        # this, Gemini either guesses time from training data (badly) or
+        # asks the user for it. There's no get_time tool because per-
+        # session injection is fine for our <60s session lengths and
+        # doesn't burn a tool-call round-trip.
+        from datetime import datetime
+        now_local = datetime.now().astimezone()
+        time_addendum = (
+            f" Right now it is {now_local.strftime('%A, %B %-d %Y, %-I:%M %p %Z')}"
+            f" ({now_local.tzname()}). Use this directly for time/date "
+            "questions — do not ask the user."
+        )
+        await self._session.connect(
+            self._registry, SYSTEM_INSTRUCTION + time_addendum,
+        )
         playback = asyncio.create_task(_play_responses(self._session, self._tts))
         idle = asyncio.create_task(_idle_watchdog(self._session, self._cfg.idle_timeout_sec))
         self._bg_tasks = {playback, idle}

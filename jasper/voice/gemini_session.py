@@ -51,6 +51,19 @@ class GeminiLiveSession(VoiceSession):
             response_modalities=["AUDIO"],
             system_instruction=system_instruction or None,
             tools=[types.Tool(function_declarations=decls)] if decls else None,
+            # Without proper hardware AEC reference wired into the
+            # XVF3800, the mic picks up the speakers' TTS as "user
+            # speaking", and Gemini's server-side VAD fires
+            # `interrupted=True` ~1 second into every response. Tell the
+            # server NOT to treat user activity as an interrupt — the
+            # model will finish its turn regardless of mic input. Cost:
+            # we lose true barge-in (user can't intentionally interrupt
+            # the model). When XVF3800 AEC reference is wired up, switch
+            # back to ActivityHandling.START_OF_ACTIVITY_INTERRUPTS (or
+            # remove this field — that's the SDK default).
+            realtime_input_config=types.RealtimeInputConfig(
+                activity_handling=types.ActivityHandling.NO_INTERRUPTION,
+            ),
         )
         self._session_cm = self._client.aio.live.connect(
             model=self._model, config=config
