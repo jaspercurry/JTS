@@ -5,8 +5,11 @@ description = "Open smart-speaker voice daemon for Pi 5 + moOde + CamillaDSP"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai==1.13.0",
-    "pycamilladsp==4.0.0",
-    "openwakeword==0.6.0",
+    "camilladsp @ git+https://github.com/HEnquist/pycamilladsp@v4.0.0",
+    # openwakeword==0.6.0 is installed by deploy/install.sh with --no-deps
+    # because its transitive tflite-runtime dep has no Python 3.13 wheel
+    # (PiOS Trixie's default python). We use ONNX models exclusively, so
+    # tflite-runtime is never imported at runtime. See install.sh.
     "sounddevice==0.5.5",
     "numpy>=1.26,<3",
     "spotipy==2.24.0",

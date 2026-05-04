@@ -100,6 +100,28 @@ what it's doing:
 
 ### B3. Get the repo onto the Pi
 
+The simplest path is to rsync from your laptop checkout — works regardless
+of whether the GitHub repo is private. Set up passwordless SSH first so
+the rest of bringup doesn't prompt every command:
+
+```sh
+# from your laptop, one-time:
+ssh-copy-id pi@jasper.local
+ssh pi@jasper.local sudo apt-get install -y rsync
+```
+
+Then push the working tree:
+
+```sh
+# from the JTS repo root on your laptop:
+rsync -avz --delete \
+    --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
+    ./ pi@jasper.local:/home/pi/jts/
+```
+
+Alternatively, if the repo is public on GitHub (or you've configured a
+deploy key on the Pi), clone directly:
+
 ```sh
 ssh pi@jasper.local
 sudo apt-get install -y git
@@ -491,10 +513,16 @@ left to confirm on real hardware:
 ### Resolved since first draft
 
 - ALSA card names confirmed: dongle = `A`, ReSpeaker = `Array`.
-- pycamilladsp pinned at `4.0.0` (matches our CamillaDSP 4.1.3 binary;
-  3.0.0 would have been ABI-mismatched).
+- CamillaDSP Python client (`camilladsp`, despite the GitHub repo being
+  named `pycamilladsp`) is installed from git at `v4.0.0` — it's not on
+  PyPI. Matches our CamillaDSP 4.1.3 binary.
 - openWakeWord stock models don't auto-download — install.sh now calls
   `download_models()` explicitly.
+- `openwakeword==0.6.0` hard-pins `tflite-runtime`, which has no Python
+  3.13 wheel (PiOS Trixie's default — and Trixie has no python3.12 in
+  apt). install.sh installs openwakeword via `--no-deps` plus its
+  non-tflite runtime deps (requests/tqdm/scipy/scikit-learn) explicitly;
+  we use ONNX models exclusively, so tflite is never imported at runtime.
 - Gemini Live audio shapes confirmed: 16 kHz int16 PCM in,
   24 kHz int16 PCM out, mono.
 - `audio_stream_end=True` is a real SDK signal — daemon now sends it on

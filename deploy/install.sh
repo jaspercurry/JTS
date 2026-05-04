@@ -122,6 +122,19 @@ install_jasper() {
         python3 -m venv "${INSTALL_DIR}/.venv"
     fi
     "${INSTALL_DIR}/.venv/bin/pip" install --upgrade pip wheel
+
+    # openwakeword 0.6.0 hard-requires tflite-runtime on Linux, but
+    # tflite-runtime has no Python 3.13 wheel (and PiOS Trixie ships
+    # python3.13 only — no python3.12 in apt). We use ONNX models
+    # exclusively (onnxruntime is already in pyproject.toml), so
+    # tflite-runtime is never imported at runtime. Pre-install
+    # openwakeword without its declared deps, then install its non-tflite
+    # runtime deps explicitly. The subsequent editable install of
+    # jasper-speaker sees openwakeword==0.6.0 already satisfied.
+    "${INSTALL_DIR}/.venv/bin/pip" install --no-deps openwakeword==0.6.0
+    "${INSTALL_DIR}/.venv/bin/pip" install \
+        requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
+
     "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
 
     # openWakeWord stock models (hey_jarvis + required feature models)
