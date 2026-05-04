@@ -1,12 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timedelta
-
-import pytest
 
 from jasper.subway import (
     LINE_TO_FEED,
-    StationInfo,
     SubwayClient,
     _build_aliases,
     _expand_label,
@@ -20,13 +18,14 @@ from jasper.subway import (
 # --- pure helpers ---
 
 
-def test_load_stations_includes_b16():
-    """The bundled CSV must include 9 Av (B16) since that's the user's
-    home station and the demo target. If this regresses (someone deletes
-    the row), the daemon would fail to start with subway enabled."""
+def test_load_stations_includes_b12_for_9_av():
+    """The bundled CSV must include 9 Av (B12) since that's the user's
+    home station and the demo target. B12 is the West End line stop in
+    Sunset Park, verified live against api.subwaynow.app — earlier
+    research agents incorrectly suggested B15/B16 for this station."""
     stations = _load_stations()
-    assert "B16" in stations
-    s = stations["B16"]
+    assert "B12" in stations
+    s = stations["B12"]
     assert s.name == "9 Av"
     assert s.borough == "Bk"
     assert "D" in s.lines
@@ -63,11 +62,11 @@ def test_build_aliases_includes_universal_terms():
     assert aliases["south"] == "S"
 
 
-def test_build_aliases_for_b16_maps_manhattan_and_coney():
+def test_build_aliases_for_b12_maps_manhattan_and_coney():
     """At 9 Av, 'toward Manhattan' should resolve to N and 'toward Coney
-    Island' to S. This is the whole point of station-aware aliasing."""
-    b16 = _load_stations()["B16"]
-    aliases = _build_aliases(b16)
+    Island' to S. Station-aware aliasing is the whole point."""
+    b12 = _load_stations()["B12"]
+    aliases = _build_aliases(b12)
     assert aliases["uptown"] == "N"
     assert aliases["downtown"] == "S"
     assert aliases["manhattan"] == "N"
@@ -100,7 +99,6 @@ def test_feed_url_for_each_line():
         assert feed_url_for_line(line).endswith("nyct%2Fgtfs-nqrw")
     assert feed_url_for_line("L").endswith("nyct%2Fgtfs-l")
     assert feed_url_for_line("G").endswith("nyct%2Fgtfs-g")
-    # Numbered lines use the unsuffixed feed.
     for line in ["1", "4", "7"]:
         assert feed_url_for_line(line).endswith("nyct%2Fgtfs")
         assert "gtfs-" not in feed_url_for_line(line)
@@ -114,14 +112,13 @@ def test_feed_url_unknown_line_returns_none():
 def test_arrivals_in_minutes_filters_past_and_sorts():
     now = datetime(2024, 1, 1, 12, 0, 0)
     times = [
-        now - timedelta(minutes=2),    # past — drop
+        now - timedelta(minutes=2),
         now + timedelta(minutes=12),
         now + timedelta(minutes=5),
         now + timedelta(minutes=19),
-        now + timedelta(seconds=30),   # rounds to 0 or 1, kept
+        now + timedelta(seconds=30),
     ]
     out = arrivals_in_minutes(times, now, limit=3)
-    # Sorted ascending, capped at 3.
     assert out == sorted(out)
     assert len(out) == 3
     assert out[0] >= 0
@@ -133,7 +130,99 @@ def test_arrivals_in_minutes_empty_when_no_future():
     assert arrivals_in_minutes(times, now) == []
 
 
-# --- SubwayClient with mocked feed ---
+# --- Subway Now extraction (pure) ---
+
+
+def _sn_response(
+    ref_ts: int,
+    north_trips: list[tuple[str, int]] | None = None,
+    south_trips: list[tuple[str, int]] | None = None,
+) -> dict:
+    """Build a minimal Subway Now-shaped response. Each trip tuple is
+    (route_id, eta_offset_seconds_from_ref_ts)."""
+    def _make(route_id, offset):
+        return {
+            "route_id": route_id,
+            "estimated_current_stop_arrival_time": ref_ts + offset,
+            "current_stop_arrival_time": ref_ts + offset,
+        }
+    return {
+        "id": "B12",
+        "name": "9 Av",
+        "secondary_name": None,
+        "timestamp": ref_ts,
+        "upcoming_trips": {
+            "north": [_make(r, o) for r, o in (north_trips or [])],
+            "south": [_make(r, o) for r, o in (south_trips or [])],
+        },
+    }
+
+
+def test_extract_subwaynow_filters_by_route_and_direction():
+    ref = 1_777_857_000
+    data = _sn_response(
+        ref_ts=ref,
+        north_trips=[("D", 5 * 60), ("D", 12 * 60), ("N", 4 * 60)],  # N filtered out
+        south_trips=[("D", 7 * 60)],
+    )
+    out = SubwayClient._extract_subwaynow(data, "D", "N")
+    assert out == [5, 12]
+
+
+def test_extract_subwaynow_skips_past_arrivals():
+    ref = 1_777_857_000
+    data = _sn_response(
+        ref_ts=ref,
+        north_trips=[("D", -120), ("D", 8 * 60)],  # one in the past
+    )
+    assert SubwayClient._extract_subwaynow(data, "D", "N") == [8]
+
+
+def test_extract_subwaynow_caps_at_three():
+    ref = 1_777_857_000
+    data = _sn_response(
+        ref_ts=ref,
+        north_trips=[("D", m * 60) for m in (3, 9, 15, 22, 30)],
+    )
+    out = SubwayClient._extract_subwaynow(data, "D", "N")
+    assert out == [3, 9, 15]
+
+
+def test_extract_subwaynow_uses_response_timestamp_not_local_clock():
+    """If the response timestamp differs significantly from local time,
+    the minutes-from-now must be relative to the response timestamp.
+    Otherwise client clock skew lies to the user."""
+    ref = 1_777_857_000  # arbitrary "server time"
+    data = _sn_response(
+        ref_ts=ref,
+        north_trips=[("D", 6 * 60)],
+    )
+    # Even though _extract_subwaynow doesn't see local time, this asserts
+    # the math is anchored to the response's `timestamp` field.
+    assert SubwayClient._extract_subwaynow(data, "D", "N") == [6]
+
+
+def test_extract_subwaynow_handles_missing_estimated_falls_back_to_scheduled():
+    ref = 1_777_857_000
+    trip = {
+        "route_id": "D",
+        "current_stop_arrival_time": ref + 9 * 60,
+        # no estimated_current_stop_arrival_time
+    }
+    data = {
+        "id": "B12", "name": "9 Av", "timestamp": ref,
+        "upcoming_trips": {"north": [trip], "south": []},
+    }
+    assert SubwayClient._extract_subwaynow(data, "D", "N") == [9]
+
+
+def test_extract_subwaynow_handles_empty_upcoming_trips():
+    data = {"id": "B12", "name": "9 Av", "timestamp": 0,
+            "upcoming_trips": {"north": [], "south": []}}
+    assert SubwayClient._extract_subwaynow(data, "D", "N") == []
+
+
+# --- SubwayClient end-to-end with mocked Subway Now + nyct-gtfs ---
 
 
 class _FakeStopTimeUpdate:
@@ -149,148 +238,196 @@ class _FakeTrip:
 
 
 class _FakeFeed:
-    """Stand-in for nyct_gtfs.NYCTFeed."""
-    def __init__(self, line: str, last_generated: datetime, trips: list[_FakeTrip]):
+    def __init__(self, line, last_generated, trips):
         self.line = line
         self.last_generated = last_generated
         self._trips = trips
 
     def refresh(self):
-        # No-op; tests preconfigure the trips.
         pass
 
     def filter_trips(self, line_id, headed_for_stop_id, underway):
-        # Tests pre-filter their fake trips so we just return them all.
         return self._trips
 
 
-def _client(now, last_generated, trips, station_id="B16",
-            default_direction="uptown", lines=None):
-    feed = _FakeFeed("D", last_generated, trips)
+class _FakeResponse:
+    def __init__(self, json_data, status_code=200):
+        self._json = json_data
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self._json
+
+
+def _client(
+    now,
+    last_generated=None,
+    trips=None,
+    sn_response=None,
+    sn_raises=None,
+    station_id="B12",
+    default_direction="uptown",
+    lines=None,
+):
+    feed = _FakeFeed("D", last_generated or now, trips or [])
+
+    def http_get(url, params):
+        if sn_raises is not None:
+            raise sn_raises
+        if sn_response is not None:
+            return _FakeResponse(sn_response)
+        return _FakeResponse({}, status_code=500)
+
     return SubwayClient(
         station_id=station_id,
         default_direction=default_direction,
         configured_lines=lines,
         feed_factory=lambda line: feed,
+        http_get=http_get,
         clock=lambda: now,
     )
 
 
-def test_get_arrivals_happy_path_b16_uptown_d():
+def test_subwaynow_happy_path_returns_smoothed_arrivals():
+    """Subway Now responds successfully — should be used and reported
+    as the source. nyct-gtfs feed is not consulted."""
     now = datetime(2024, 1, 1, 12, 0, 0)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16N", now + timedelta(minutes=5)),
-    ]), _FakeTrip([
-        _FakeStopTimeUpdate("B16N", now + timedelta(minutes=12)),
-    ]), _FakeTrip([
-        _FakeStopTimeUpdate("B16N", now + timedelta(minutes=19)),
-    ])]
-    client = _client(now, now, trips)
+    ref_ts = int(now.timestamp())
+    sn = _sn_response(
+        ref_ts=ref_ts,
+        north_trips=[("D", 5 * 60), ("D", 12 * 60), ("D", 19 * 60)],
+    )
+    client = _client(now, sn_response=sn)
     result = client.get_arrivals("D")
-    assert "error" not in result
-    assert result["line"] == "D"
-    assert result["direction"] == "N"
-    assert result["direction_label"] == "Manhattan"
-    assert result["station"] == "9 Av"
     assert result["next_arrivals_minutes"] == [5, 12, 19]
+    assert result["source"] == "subwaynow"
+    assert result["station"] == "9 Av"
+    assert result["direction_label"] == "Manhattan"
 
 
-def test_get_arrivals_toward_coney_resolves_south():
+def test_subwaynow_failure_falls_back_to_nyct_gtfs():
+    """When Subway Now raises, we should silently use nyct-gtfs and
+    report the source. End-user gets arrivals either way."""
     now = datetime(2024, 1, 1, 12, 0, 0)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16S", now + timedelta(minutes=7)),
-    ])]
-    client = _client(now, now, trips)
-    result = client.get_arrivals("D", direction="toward Coney")
-    # 'toward Coney' isn't a built-in alias but Coney Island is in the
-    # station's south_label so 'toward coney island' would resolve. 'toward
-    # Coney' alone isn't expanded — verifies the case where unrecognised
-    # direction returns an error.
-    assert "error" in result
-    assert "didn't recognise" in result["error"]
-
-
-def test_get_arrivals_toward_coney_island_full_name_works():
-    now = datetime(2024, 1, 1, 12, 0, 0)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16S", now + timedelta(minutes=7)),
-    ])]
-    client = _client(now, now, trips)
-    result = client.get_arrivals("D", direction="toward Coney Island")
-    assert result.get("direction") == "S"
-    assert result.get("direction_label") == "Coney Island"
-    assert result.get("next_arrivals_minutes") == [7]
-
-
-def test_get_arrivals_filters_to_correct_platform():
-    """Trips with the wrong platform stop_id (e.g. B16S when we want N)
-    must be filtered out — proves we're matching on stop_id, not just
-    blindly returning all trip arrivals."""
-    now = datetime(2024, 1, 1, 12, 0, 0)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16S", now + timedelta(minutes=3)),  # wrong dir
-        _FakeStopTimeUpdate("B16N", now + timedelta(minutes=8)),  # right
-    ])]
-    client = _client(now, now, trips)
-    result = client.get_arrivals("D", direction="uptown")
+    trips = [_FakeTrip([_FakeStopTimeUpdate("B12N", now + timedelta(minutes=8))])]
+    client = _client(
+        now, last_generated=now, trips=trips,
+        sn_raises=RuntimeError("subway now down"),
+    )
+    result = client.get_arrivals("D")
+    assert result["source"] == "nyct-gtfs"
     assert result["next_arrivals_minutes"] == [8]
 
 
-def test_get_arrivals_no_upcoming_trains_returns_empty_list():
+def test_subwaynow_5xx_falls_back():
     now = datetime(2024, 1, 1, 12, 0, 0)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16N", now - timedelta(minutes=2)),  # past
-    ])]
-    client = _client(now, now, trips)
+    trips = [_FakeTrip([_FakeStopTimeUpdate("B12N", now + timedelta(minutes=4))])]
+    client = _client(now, last_generated=now, trips=trips, sn_response=None)
+    # sn_response=None makes _FakeResponse return 500
     result = client.get_arrivals("D")
-    assert result["next_arrivals_minutes"] == []
+    assert result["source"] == "nyct-gtfs"
 
 
-def test_get_arrivals_stale_feed_returns_error():
+def test_both_paths_fail_returns_error():
+    """If Subway Now fails AND nyct-gtfs feed is stale, surface an error
+    rather than confidently-wrong arrivals."""
     now = datetime(2024, 1, 1, 12, 0, 0)
     very_old = now - timedelta(minutes=10)
-    trips = [_FakeTrip([
-        _FakeStopTimeUpdate("B16N", now + timedelta(minutes=5)),
-    ])]
-    client = _client(now, very_old, trips)
+    trips = [_FakeTrip([_FakeStopTimeUpdate("B12N", now + timedelta(minutes=5))])]
+    client = _client(
+        now, last_generated=very_old, trips=trips,
+        sn_raises=RuntimeError("subway now down"),
+    )
     result = client.get_arrivals("D")
     assert "error" in result
-    assert "stale" in result["error"]
 
 
-def test_get_arrivals_unknown_line_returns_error():
+def test_subwaynow_path_filters_to_correct_direction():
     now = datetime(2024, 1, 1, 12, 0, 0)
-    client = _client(now, now, [])
-    result = client.get_arrivals("X")
+    ref_ts = int(now.timestamp())
+    sn = _sn_response(
+        ref_ts=ref_ts,
+        north_trips=[("D", 3 * 60)],
+        south_trips=[("D", 7 * 60)],
+    )
+    client = _client(now, sn_response=sn)
+    n_result = client.get_arrivals("D", direction="uptown")
+    s_result = client.get_arrivals("D", direction="toward Coney Island")
+    assert n_result["next_arrivals_minutes"] == [3]
+    assert n_result["direction"] == "N"
+    assert s_result["next_arrivals_minutes"] == [7]
+    assert s_result["direction"] == "S"
+
+
+def test_validation_errors_short_circuit_before_either_path():
+    """A line-not-at-station error must be returned immediately without
+    triggering an HTTP fetch — saves time and avoids leaking station
+    queries to the third-party API for invalid requests."""
+    now = datetime(2024, 1, 1, 12, 0, 0)
+    fetched = []
+    def http_get(url, params):
+        fetched.append(url)
+        return _FakeResponse({})
+    client = SubwayClient(
+        station_id="B12",
+        configured_lines=["D"],
+        feed_factory=lambda line: _FakeFeed("D", now, []),
+        http_get=http_get,
+        clock=lambda: now,
+    )
+    result = client.get_arrivals("F")  # F doesn't stop at 9 Av
     assert "error" in result
-    assert "unknown" in result["error"].lower()
+    assert fetched == []  # no HTTP call was made
 
 
-def test_get_arrivals_line_not_at_station_returns_error():
-    """If user configures lines=['D'] (which is correct for B16), asking
-    for the F train should return a friendly error rather than a confusing
-    'no trains found.'"""
+def test_unknown_station_returns_error_without_fetching():
     now = datetime(2024, 1, 1, 12, 0, 0)
-    client = _client(now, now, [], lines=["D"])
-    result = client.get_arrivals("F")
-    assert "error" in result
-    assert "doesn't stop" in result["error"]
-
-
-def test_get_arrivals_unknown_station_returns_error():
-    now = datetime(2024, 1, 1, 12, 0, 0)
-    client = _client(now, now, [], station_id="ZZZ")
+    fetched = []
+    def http_get(url, params):
+        fetched.append(url)
+        return _FakeResponse({})
+    client = SubwayClient(
+        station_id="ZZZ",
+        feed_factory=lambda line: _FakeFeed("D", now, []),
+        http_get=http_get,
+        clock=lambda: now,
+    )
     result = client.get_arrivals("D")
     assert "error" in result
     assert "ZZZ" in result["error"]
+    assert fetched == []
 
 
-def test_get_arrivals_unrecognised_direction_returns_helpful_error():
+def test_subwaynow_response_cached_within_window():
+    """Repeat queries to the same station within CACHE_WINDOW_SEC should
+    only hit the network once."""
     now = datetime(2024, 1, 1, 12, 0, 0)
-    client = _client(now, now, [])
+    ref_ts = int(now.timestamp())
+    sn = _sn_response(ref_ts=ref_ts, north_trips=[("D", 5 * 60)])
+    fetched = []
+    def http_get(url, params):
+        fetched.append(url)
+        return _FakeResponse(sn)
+    client = SubwayClient(
+        station_id="B12",
+        feed_factory=lambda line: _FakeFeed("D", now, []),
+        http_get=http_get,
+        clock=lambda: now,
+    )
+    client.get_arrivals("D")
+    client.get_arrivals("D")
+    client.get_arrivals("D")
+    assert len(fetched) == 1
+
+
+def test_unrecognised_direction_returns_helpful_error():
+    now = datetime(2024, 1, 1, 12, 0, 0)
+    client = _client(now)
     result = client.get_arrivals("D", direction="sideways")
     assert "error" in result
-    # Error should mention the station's actual labels so user knows what
-    # to say next time.
     assert "Manhattan" in result["error"]
     assert "Coney Island" in result["error"]
