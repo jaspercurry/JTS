@@ -30,14 +30,30 @@ def _db_to_percent(db: float) -> int:
     return max(0, min(100, round(p)))
 
 
-def make_audio_tools(camilla):
+def make_audio_tools(camilla, persistence=None):
+    """Build the volume-control tool surface.
+
+    `persistence` (optional VolumePersistence) hooks the user-facing
+    set/adjust/mute/unmute actions to disk so the speaker comes up at
+    its last commanded level after a restart. None disables persistence
+    (used in unit tests that don't want to touch disk).
+    """
     # Closure state for mute/unmute. Stores the pre-mute percent so
     # unmute restores the prior level. None = not currently muted.
     mute_state: dict[str, int | None] = {"saved": None}
 
+    def _persist(db: float) -> None:
+        if persistence is not None:
+            persistence.save_now(db)
+
     @tool()
     async def get_volume() -> dict:
-        """Return the current speaker volume as a percentage 0-100."""
+        """Return the current speaker volume as a percentage 0-100.
+        This is the speaker's own volume setting (CamillaDSP main fader),
+        not a measure of how loud the room currently sounds — upstream
+        attenuators like the iPhone's AirPlay slider can make audio play
+        quieter than this number suggests, but that's a separate slider
+        the user controls on their device."""
         db = await camilla.get_volume_db()
         return {"percent": _db_to_percent(db)}
 
@@ -47,6 +63,7 @@ def make_audio_tools(camilla):
         target_db = _percent_to_db(percent)
         await camilla.set_volume_db(target_db)
         mute_state["saved"] = None
+        _persist(target_db)
         return {"ok": True, "percent": _db_to_percent(target_db)}
 
     @tool()
@@ -55,8 +72,10 @@ def make_audio_tools(camilla):
         current_db = await camilla.get_volume_db()
         current_pct = _db_to_percent(current_db)
         new_pct = max(0, min(100, current_pct + int(delta_percent)))
-        await camilla.set_volume_db(_percent_to_db(new_pct))
+        new_db = _percent_to_db(new_pct)
+        await camilla.set_volume_db(new_db)
         mute_state["saved"] = None
+        _persist(new_db)
         return {"ok": True, "percent": new_pct}
 
     @tool()
@@ -66,6 +85,11 @@ def make_audio_tools(camilla):
         if current_pct > 0:
             mute_state["saved"] = current_pct
         await camilla.set_volume_db(VOLUME_MIN_DB)
+        # Don't persist a mute as the canonical volume — if the user
+        # mutes and the daemon restarts, we'd come up silent forever.
+        # The pre-mute level (mute_state["saved"]) was last persisted
+        # at its time of being set, which is what we want a restart to
+        # restore to.
         return {"ok": True, "muted": True}
 
     @tool()
@@ -73,7 +97,9 @@ def make_audio_tools(camilla):
         """Restore speaker to its pre-mute level (50% if nothing saved)."""
         target_pct = mute_state["saved"] or 50
         mute_state["saved"] = None
-        await camilla.set_volume_db(_percent_to_db(target_pct))
+        target_db = _percent_to_db(target_pct)
+        await camilla.set_volume_db(target_db)
+        _persist(target_db)
         return {"ok": True, "percent": target_pct}
 
     return [get_volume, set_volume, adjust_volume, mute, unmute]

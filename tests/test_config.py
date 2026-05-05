@@ -38,6 +38,11 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.tts_music_headroom_db == 12.0
     assert cfg.tts_silence_threshold_dbfs == -50.0
     assert cfg.tts_music_window_sec == 8.0
+    assert cfg.volume_state_path == "/var/lib/jasper/speaker_volume.json"
+    assert cfg.volume_regress_after_sec == 1800.0
+    assert cfg.volume_regress_safe_low_pct == 20
+    assert cfg.volume_regress_safe_high_pct == 70
+    assert cfg.volume_first_boot_default_pct == 50
     assert cfg.gemini_voice == "Aoede"
     assert cfg.vad_barge_in_threshold == 0.5
     assert cfg.spotify_device_name == "moode"
@@ -78,6 +83,10 @@ def test_spotify_enabled_when_both_creds_present(monkeypatch):
         ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "5", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
         ("JASPER_TTS_MUSIC_WINDOW_SEC", "0", "JASPER_TTS_MUSIC_WINDOW_SEC"),
         ("JASPER_TTS_MUSIC_WINDOW_SEC", "-5", "JASPER_TTS_MUSIC_WINDOW_SEC"),
+        ("JASPER_VOLUME_REGRESS_AFTER_SEC", "0", "JASPER_VOLUME_REGRESS_AFTER_SEC"),
+        ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
+        ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),
+        ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", "200", "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT"),
     ],
 )
 def test_invalid_numeric_env_values_raise(monkeypatch, name, value, expected):

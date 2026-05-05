@@ -24,6 +24,7 @@ from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore
 from .voice.gemini_session import GeminiLiveConnection
 from .voice.session import LiveConnection, LiveTurn
+from .volume_persistence import VolumePersistence, regress_if_stale
 from .wake import WakeWordDetector
 from .weather import WeatherClient
 
@@ -256,6 +257,7 @@ class TtsVolumeTracker:
         music_headroom_db: float,
         silence_threshold_dbfs: float,
         music_window_sec: float,
+        volume_persistence: VolumePersistence | None = None,
     ) -> None:
         self._camilla = camilla
         self._tts = tts
@@ -268,6 +270,11 @@ class TtsVolumeTracker:
         self._paused = False
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
+        # Optional disk persistence: every poll reads main_volume; we
+        # opportunistically debounce-write it so external changes (moOde
+        # web UI volume slider, mpc, hardware knob) get captured even
+        # though they don't go through our voice tools.
+        self._volume_persistence = volume_persistence
 
     def pause(self) -> None:
         self._paused = True
@@ -358,6 +365,12 @@ class TtsVolumeTracker:
             if muted:
                 self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
                 continue
+            # Debounced persistence catches external main_volume changes
+            # (moOde UI, mpc, hardware knob, anything that bypasses our
+            # voice tools). Voice-tool-driven changes already persist
+            # immediately via tools/audio.py; this is the catch-all.
+            if self._volume_persistence is not None:
+                self._volume_persistence.maybe_save(vol_db)
             try:
                 l, r = await self._camilla.get_playback_rms()
                 rms = max(l, r)
@@ -425,9 +438,10 @@ def _build_registry(
     moode: MoodeClient,
     weather: WeatherClient,
     subway: SubwayClient | None,
+    volume_persistence: VolumePersistence | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    for fn in make_audio_tools(camilla):
+    for fn in make_audio_tools(camilla, volume_persistence):
         registry.register(fn)
     router = _build_router(cfg)
     for fn in make_transport_tools(moode, router):
@@ -906,7 +920,38 @@ async def run() -> None:
     )
     ducker = Ducker(camilla, cfg.duck_db)
 
-    registry = _build_registry(cfg, camilla, moode, weather, subway)
+    # Volume persistence: read the last-saved main_volume from disk
+    # and restore it before anything plays. Soft-regression clamps
+    # extreme values into [safe_low, safe_high] if the saved record
+    # is older than `regress_after_sec` (default 30 min). First boot
+    # / corrupt file → 50% default. Within-session restarts (deploys,
+    # crash recovery seconds later) preserve the exact level.
+    volume_persistence = VolumePersistence(cfg.volume_state_path)
+    record = volume_persistence.load()
+    restored_db, reason = regress_if_stale(
+        record,
+        stale_after_sec=cfg.volume_regress_after_sec,
+        safe_low_pct=cfg.volume_regress_safe_low_pct,
+        safe_high_pct=cfg.volume_regress_safe_high_pct,
+        first_boot_default_pct=cfg.volume_first_boot_default_pct,
+    )
+    try:
+        await camilla.set_volume_db(restored_db)
+        # Always re-persist after restore so the file's updated_at
+        # reflects this boot — protects against runaway "stale by 6
+        # months" scenarios where the disk anchor never refreshes.
+        volume_persistence.save_now(restored_db)
+        logger.info("volume persistence: %s → %.1f dB", reason, restored_db)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "volume persistence: could not restore main_volume to %.1f dB: %s",
+            restored_db, e,
+        )
+
+    registry = _build_registry(
+        cfg, camilla, moode, weather, subway,
+        volume_persistence=volume_persistence,
+    )
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()
@@ -955,6 +1000,7 @@ async def run() -> None:
                 music_headroom_db=cfg.tts_music_headroom_db,
                 silence_threshold_dbfs=cfg.tts_silence_threshold_dbfs,
                 music_window_sec=cfg.tts_music_window_sec,
+                volume_persistence=volume_persistence,
             )
             await tts_volume_tracker.start()
             wake_loop = WakeLoop(

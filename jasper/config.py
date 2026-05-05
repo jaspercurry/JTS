@@ -50,6 +50,19 @@ def _validate(cfg: "Config") -> "Config":
         )
     if cfg.tts_music_window_sec <= 0:
         raise RuntimeError("JASPER_TTS_MUSIC_WINDOW_SEC must be > 0")
+    if cfg.volume_regress_after_sec <= 0:
+        raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
+    for name, value in [
+        ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", cfg.volume_regress_safe_low_pct),
+        ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", cfg.volume_regress_safe_high_pct),
+        ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", cfg.volume_first_boot_default_pct),
+    ]:
+        if not 0 <= value <= 100:
+            raise RuntimeError(f"{name} must be between 0 and 100 (got {value})")
+    if cfg.volume_regress_safe_low_pct >= cfg.volume_regress_safe_high_pct:
+        raise RuntimeError(
+            "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT must be < SAFE_HIGH_PCT"
+        )
     return cfg
 
 
@@ -102,6 +115,12 @@ class Config:
     subway_station_id: str
     subway_default_direction: str
     subway_lines: tuple[str, ...]
+
+    volume_state_path: str
+    volume_regress_after_sec: float
+    volume_regress_safe_low_pct: int
+    volume_regress_safe_high_pct: int
+    volume_first_boot_default_pct: int
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -272,6 +291,34 @@ class Config:
             ),
             subway_lines=tuple(
                 t for t in _env("JASPER_SUBWAY_LINES", "").replace(",", " ").split()
+            ),
+            # Persistent speaker-volume file. Read at boot to restore
+            # CamillaDSP main_volume, written on every change.
+            volume_state_path=_env(
+                "JASPER_VOLUME_STATE_PATH",
+                "/var/lib/jasper/speaker_volume.json",
+            ),
+            # If the persisted volume is older than this at boot AND
+            # outside [safe_low, safe_high], clamp it into that band.
+            # Within-session restarts (deploys, fast crash recovery)
+            # preserve continuity. Yesterday's late-night 90% gets
+            # clamped to safe_high so the morning isn't a blast.
+            volume_regress_after_sec=_env_float(
+                "JASPER_VOLUME_REGRESS_AFTER_SEC", 1800.0,
+            ),
+            # Hard floors and ceilings used by the boot-time regression.
+            # Inside [safe_low, safe_high], the saved value is preserved
+            # regardless of age — only "extreme" values get nudged.
+            volume_regress_safe_low_pct=_env_int(
+                "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", 20,
+            ),
+            volume_regress_safe_high_pct=_env_int(
+                "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", 70,
+            ),
+            # Used when no persisted record exists (first boot, or the
+            # state file got deleted / corrupted).
+            volume_first_boot_default_pct=_env_int(
+                "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
             ),
         ))
 
