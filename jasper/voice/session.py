@@ -76,6 +76,13 @@ class LiveTurn(Protocol):
         daemon should treat this like "turn ended" but log the loss."""
         ...
 
+    def server_turn_complete(self) -> bool:
+        """True once the server has emitted server_content.turn_complete
+        for this turn — the canonical 'model is done speaking' signal.
+        The daemon's idle watchdog uses this to close the turn promptly
+        without racing mid-response chunk gaps that look like idleness."""
+        ...
+
     def interrupted(self) -> bool:
         """True if the model reported being interrupted by user audio.
         Cleared by clear_interrupted() once the daemon has flushed

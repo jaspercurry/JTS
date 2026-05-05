@@ -28,6 +28,17 @@ RECONNECT_BACKOFF_SCHEDULE = (1.0, 2.0, 4.0, 8.0)
 # 4 min gives 6+ min headroom even if the keepalive task lags briefly.
 KEEPALIVE_PERIOD_SEC = 240.0
 
+# Age-out window for un-acked `activity_end`s. If the server hasn't
+# returned a `turn_complete` within this many seconds of our send, we
+# assume the server silently dropped the turn (a known Gemini Live
+# behaviour — it accepts the audio, returns nothing, never finalises)
+# and stop counting that activity_end as "still pending". Without
+# this, silent-failure turns leak the un-ack counter forever, which
+# eventually wedges the receive loop into dropping every legitimate
+# response from subsequent turns as "stale from a prior turn".
+# 30 s is a couple x the worst observed first-chunk latency.
+UNACK_AGE_OUT_SEC = 30.0
+
 
 class ConnectionState(Enum):
     """States for the persistent Gemini Live connection state machine.
@@ -90,6 +101,11 @@ class GeminiLiveTurn(LiveTurn):
         self._activity_end_sent = False
         self._released = False
         self._turn_lost = False
+        # Set when the server emits server_content.turn_complete — the
+        # explicit "model is done speaking" signal. Used by the daemon's
+        # idle watchdog to close the turn promptly without racing
+        # mid-response chunk gaps.
+        self._server_turn_complete = False
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost:
@@ -160,6 +176,13 @@ class GeminiLiveTurn(LiveTurn):
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
 
+    def server_turn_complete(self) -> bool:
+        """True once the server has emitted server_content.turn_complete
+        — the canonical 'model is done speaking' signal. The daemon's
+        idle watchdog uses this to close out a turn promptly without
+        racing mid-response chunk gaps that look like idleness."""
+        return self._server_turn_complete
+
     def bytes_sent(self) -> int:
         return self._bytes_sent
 
@@ -214,6 +237,7 @@ class GeminiLiveTurn(LiveTurn):
             if getattr(sc, "turn_complete", False):
                 self._turn_count += 1
                 self._last_activity_at = asyncio.get_event_loop().time()
+                self._server_turn_complete = True
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
@@ -290,8 +314,18 @@ class GeminiLiveConnection(LiveConnection):
         # accurate across the daemon's lifetime — the connection lives
         # for hours but reopens on every context-reset (default 5 min idle).
         self._system_instruction_provider: Callable[[], str] | None = None
+        # Initial state set directly (no log) — _set_state requires
+        # self._state to already exist. Subsequent transitions go
+        # through _set_state for logging.
         self._state = ConnectionState.IDLE_INIT
         self._state_lock = asyncio.Lock()
+        # Transitions log filter: WAKE/SESSION cycling produces
+        # CONNECTED ↔ IN_TURN constantly and floods the journal at INFO;
+        # everything else is rare and worth logging.
+        self._noisy_transitions = frozenset({
+            (ConnectionState.CONNECTED, ConnectionState.IN_TURN),
+            (ConnectionState.IN_TURN, ConnectionState.CONNECTED),
+        })
 
         # Active SDK session + context manager (cleared during reconnect).
         self._session = None
@@ -310,6 +344,11 @@ class GeminiLiveConnection(LiveConnection):
         self._active_turn: GeminiLiveTurn | None = None
         self._turn_lock = asyncio.Lock()
 
+        # Timestamps of `activity_end`s sent to the server that haven't
+        # yet been matched by a server-side `turn_complete`. See the
+        # docstring on _prune_unack_activity_ends for the design.
+        self._unack_activity_end_times: list[float] = []
+
         # Background tasks: receive loop, keepalive, reconnect supervisor.
         self._receive_task: asyncio.Task | None = None
         self._keepalive_task: asyncio.Task | None = None
@@ -321,6 +360,25 @@ class GeminiLiveConnection(LiveConnection):
         # Pause turn acquisition while a reconnect is in progress so
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
+
+    def _set_state(self, new_state: "ConnectionState") -> None:
+        """Update connection state with structured logging.
+
+        Caller is expected to already hold _state_lock when ordering
+        of state changes matters. This helper *only* updates the
+        state field and logs the transition — it must NOT touch any
+        other instance attributes (an earlier refactor accidentally
+        re-initialised the entire connection on every transition,
+        causing self._session=None and a wedged daemon)."""
+        old = self._state
+        if old is new_state:
+            return
+        self._state = new_state
+        if (old, new_state) not in self._noisy_transitions:
+            logger.info(
+                "live connection state: %s → %s",
+                old.value, new_state.value,
+            )
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
@@ -375,7 +433,7 @@ class GeminiLiveConnection(LiveConnection):
             self._active_turn._on_connection_lost()
             self._active_turn = None
         async with self._state_lock:
-            self._state = ConnectionState.CLOSED
+            self._set_state(ConnectionState.CLOSED)
 
     async def acquire_turn(self) -> LiveTurn:
         if self._state is ConnectionState.FAILED:
@@ -413,7 +471,7 @@ class GeminiLiveConnection(LiveConnection):
             await self._send_activity_start()
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
-                    self._state = ConnectionState.IN_TURN
+                    self._set_state(ConnectionState.IN_TURN)
             logger.info("live turn: started (activity_start sent)")
             return turn
 
@@ -429,17 +487,67 @@ class GeminiLiveConnection(LiveConnection):
     # ------------------------------------------------------------------
 
     async def _send_activity_start(self) -> None:
+        # Manual VAD requires the client to bracket each turn with
+        # activity_start / activity_end markers. acquire_turn() calls
+        # this on every wake.
         if self._session is None:
             return
+        # Prune any aged-out un-ack entries before reporting.
+        self._prune_unack_activity_ends()
         await self._session.send_realtime_input(activity_start=types.ActivityStart())
+        logger.info(
+            "activity_start sent (unack_activity_ends=%d before send)",
+            len(self._unack_activity_end_times),
+        )
+
+    def _prune_unack_activity_ends(self) -> None:
+        """Drop un-ack timestamps older than UNACK_AGE_OUT_SEC.
+
+        Server silent-failure mode: the server accepts our audio +
+        activity_end but never sends turn_complete. Without aging the
+        un-ack list, those silent-fail turns leak entries forever and
+        eventually wedge the stale-response drop logic into discarding
+        every subsequent turn's response as 'belongs to a prior turn'."""
+        if not self._unack_activity_end_times:
+            return
+        cutoff = asyncio.get_event_loop().time() - UNACK_AGE_OUT_SEC
+        before = len(self._unack_activity_end_times)
+        self._unack_activity_end_times = [
+            t for t in self._unack_activity_end_times if t >= cutoff
+        ]
+        dropped = before - len(self._unack_activity_end_times)
+        if dropped > 0:
+            logger.warning(
+                "live connection: aged out %d un-ack activity_end(s) "
+                "(server silent-failure on prior turn); unack now=%d",
+                dropped, len(self._unack_activity_end_times),
+            )
 
     async def _send_activity_end(self) -> None:
+        # Sent the moment the daemon's Silero user-silence detector
+        # sees ~1.2 s of silence after the user has spoken. The server
+        # uses this marker (not audio energy) to know the user's
+        # utterance is complete and it can begin generating a response.
+        # Required for multi-turn: each turn ends with this marker;
+        # the next turn opens with a fresh activity_start.
         if self._session is None:
             return
         await self._session.send_realtime_input(activity_end=types.ActivityEnd())
+        self._unack_activity_end_times.append(asyncio.get_event_loop().time())
+        logger.info(
+            "activity_end sent (unack_activity_ends=%d)",
+            len(self._unack_activity_end_times),
+        )
 
     async def _send_audio_blob(self, pcm: bytes) -> None:
         if self._session is None:
+            logger.warning(
+                "live connection: _send_audio_blob called with self._session=None "
+                "(state=%s, connected_event=%s, receive_task=%s)",
+                self._state.value,
+                self._connected_event.is_set(),
+                "running" if self._receive_task and not self._receive_task.done() else "done/none",
+            )
             raise RuntimeError("live connection: no active session")
         await self._session.send_realtime_input(
             audio=types.Blob(data=pcm, mime_type=self.INPUT_MIME)
@@ -452,7 +560,7 @@ class GeminiLiveConnection(LiveConnection):
                 self._last_turn_end_at = asyncio.get_event_loop().time()
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
-                self._state = ConnectionState.CONNECTED
+                self._set_state(ConnectionState.CONNECTED)
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
@@ -467,10 +575,36 @@ class GeminiLiveConnection(LiveConnection):
             if self._system_instruction_provider is not None
             else ""
         )
+        # Brevity levers. The system instruction does the heavy lifting
+        # ("answer in 1-2 sentences, never ask follow-ups", with
+        # few-shot examples). These two config knobs shape the model's
+        # tendencies without imposing a hard length cap that could
+        # truncate mid-sentence:
+        #   - temperature 0.3: low enough to suppress creative tangents,
+        #     high enough that responses don't feel robotic.
+        #   - thinking_config low: minimal hidden reasoning. The default
+        #     for Gemini 3.x is reasoning-leaning; for our use case
+        #     (smart-speaker, low-latency, simple intents) we want the
+        #     fast path.
+        # Deliberately NOT setting max_output_tokens — let the model
+        # finish its sentence cleanly. If the system instruction is
+        # well-tuned, runaway responses shouldn't happen; if they do,
+        # they're a signal the prompt needs work, not that we should
+        # mid-sentence-chop.
+        # Built defensively: SDK 1.13.0 rejects unknown fields outright
+        # (pydantic extra_forbidden), so optional ones go through a
+        # construct-then-add try block.
+        gen_kwargs: dict = {}
+        try:
+            gen_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level="low")
+        except Exception:  # noqa: BLE001
+            pass
         return types.LiveConnectConfig(
             response_modalities=["AUDIO"],
             system_instruction=instruction or None,
             tools=[types.Tool(function_declarations=decls)] if decls else None,
+            temperature=0.3,
+            **gen_kwargs,
             # Pin the prebuilt voice so it's consistent across sessions
             # (without this the server picks a different voice each time).
             speech_config=types.SpeechConfig(
@@ -499,25 +633,48 @@ class GeminiLiveConnection(LiveConnection):
             # Trade-off: real barge-in is disabled. Fix path is hardware
             # AEC — XVF3800 USB-IN as AEC reference, requires CamillaDSP-
             # routed playback architecture (TODO: future work).
+            # Manual VAD: client owns turn boundaries via activity_start
+            # / activity_end markers. This is the canonical multi-turn
+            # pattern on a persistent connection — each pair is one
+            # turn, and the server uses them as the unambiguous turn
+            # signal. Auto VAD with pause-resume (stop streaming
+            # between turns) silently breaks on turn 2: the server
+            # never sees a clean turn boundary so it drops turn-2's
+            # audio entirely (0 input_tokens, 0 chunks back).
+            # Sending audio_stream_end instead of activity_end is also
+            # wrong here — that's auto-VAD's "stream paused" signal,
+            # observed to also leave turn 2 silently failing.
+            # The user-silence detector in voice_daemon.py
+            # (END_OF_UTTERANCE_SILENCE_SEC) calls turn.end_input()
+            # the moment Silero sees ~1.2 s of silence after the user
+            # has spoken; that fires the activity_end marker so the
+            # server can process the utterance and begin generating.
             realtime_input_config=types.RealtimeInputConfig(
                 automatic_activity_detection=types.AutomaticActivityDetection(
                     disabled=True,
                 ),
                 activity_handling=types.ActivityHandling.NO_INTERRUPTION,
             ),
-            # sessionResumption is how the persistent-single pattern
-            # survives the server's 15-min audio cap. On every connect
-            # the server sends `session_resumption_update.new_handle`
-            # which we cache; on reconnect we pass it back so the
-            # conversation context resumes seamlessly.
-            session_resumption=types.SessionResumptionConfig(
-                handle=self._resumption_handle,
-            ),
+            session_resumption=self._build_session_resumption(),
         )
+
+    def _build_session_resumption(self) -> "types.SessionResumptionConfig | None":
+        # Only include sessionResumption when we actually have a cached
+        # handle (i.e. on a reconnect after the server gave us a
+        # new_handle). On the first connect, NONE of Google's reference
+        # demos send this field — sending `SessionResumptionConfig(
+        # handle=None)` on a fresh connect is semantically odd ("resume
+        # session None") and may put the server into a state where
+        # subsequent turns silently fail. Verified against the four
+        # GoogleCloudPlatform/generative-ai live-API demos: zero of
+        # them set this field at all.
+        if self._resumption_handle is None:
+            return None
+        return types.SessionResumptionConfig(handle=self._resumption_handle)
 
     async def _do_initial_connect(self) -> None:
         async with self._state_lock:
-            self._state = ConnectionState.CONNECTING
+            self._set_state(ConnectionState.CONNECTING)
         last_exc: Exception | None = None
         # 409 Conflict on connect = concurrent-session-limit exceeded
         # on Google's side (Tier 0=3, Tier 1=50, Tier 2=1000 per
@@ -545,7 +702,7 @@ class GeminiLiveConnection(LiveConnection):
                 is_409 = status == 409 or "409" in str(e) or "Conflict" in str(e)
                 if not is_409:
                     async with self._state_lock:
-                        self._state = ConnectionState.FAILED
+                        self._set_state(ConnectionState.FAILED)
                     raise
                 logger.warning(
                     "live connection: connect 409 Conflict (status=%s ws=%s); will retry",
@@ -553,7 +710,7 @@ class GeminiLiveConnection(LiveConnection):
                 )
         # Exhausted retries.
         async with self._state_lock:
-            self._state = ConnectionState.FAILED
+            self._set_state(ConnectionState.FAILED)
         raise RuntimeError(
             f"live connection: connect failed after retries; last error: {last_exc}"
         )
@@ -561,6 +718,10 @@ class GeminiLiveConnection(LiveConnection):
     async def _open_session(self) -> None:
         """Open a fresh SDK session against the current config and start
         the receive loop. Raises if the connect fails."""
+        # Reset the stale-response counter — server-side state is fresh
+        # on a new session, so any prior pending turn_completes from
+        # the old session are no longer relevant.
+        self._unack_activity_end_times = []
         config = self._build_config()
         connect_call = (
             self._connect_factory
@@ -568,8 +729,25 @@ class GeminiLiveConnection(LiveConnection):
             else self._client.aio.live.connect
         )
         t0 = _time.monotonic()
-        self._session_cm = connect_call(model=self._model, config=config)
-        self._session = await self._session_cm.__aenter__()
+        cm = connect_call(model=self._model, config=config)
+        try:
+            session = await cm.__aenter__()
+        except Exception:
+            # __aenter__ failed (e.g. 409, network error). The CM is in
+            # an indeterminate state; don't leak the reference. Don't
+            # set self._session_cm at all so the supervisor's next
+            # retry / shutdown's teardown sees no stale handle.
+            try:
+                await cm.__aexit__(None, None, None)
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self._session_cm = cm
+        self._session = session
+        logger.info(
+            "live connection: self._session SET (id=%s) by _open_session",
+            id(session),
+        )
         connect_ms = (_time.monotonic() - t0) * 1000
         handle_short = (self._resumption_handle or "")[:8] or "<new>"
         logger.info(
@@ -577,35 +755,64 @@ class GeminiLiveConnection(LiveConnection):
             connect_ms, handle_short,
         )
         self._reconnect_event.clear()
+        # Verify self._session is still what we set right before
+        # creating the receive task — instrumentation to chase a
+        # bug where receive_loop sees None at start.
+        logger.info(
+            "live connection: pre-create_task check — self._session id=%s, target id=%s",
+            id(self._session) if self._session is not None else None,
+            id(session),
+        )
         self._receive_task = asyncio.create_task(self._receive_loop())
         async with self._state_lock:
-            self._state = ConnectionState.CONNECTED
+            self._set_state(ConnectionState.CONNECTED)
         self._connected_event.set()
 
     async def _teardown_session(self) -> None:
         """Tear down whatever's currently open — session + receive task —
         without affecting the supervisor. Used both on normal close and
-        as a step in reconnect."""
+        as a step in reconnect.
+
+        Bounded awaits everywhere: we WANT to give the WS close
+        handshake time to complete server-side (so the next connect
+        doesn't conflict with a session that's still cleaning up —
+        this is suspected to contribute to 409s in Cloud Logging),
+        but we don't want a misbehaving close to hang the daemon.
+        Each step gets a 3 s ceiling, with the entire teardown
+        bounded by the daemon's systemd TimeoutStopSec (90 s default)
+        on shutdown."""
+        t0 = _time.monotonic()
         if self._receive_task is not None:
             self._receive_task.cancel()
             try:
-                await self._receive_task
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                await asyncio.wait_for(self._receive_task, timeout=3.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):  # noqa: BLE001
                 pass
             self._receive_task = None
         if self._session is not None:
             try:
-                await self._session.close()
-            except Exception as e:  # noqa: BLE001
+                # Send close frame and wait for server ack so the
+                # server-side session is actually torn down before
+                # we (or anyone else) opens a new WS.
+                await asyncio.wait_for(self._session.close(), timeout=3.0)
+            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
                 logger.debug("live connection: session.close() error (ignored): %s", e)
         if self._session_cm is not None:
             try:
-                await self._session_cm.__aexit__(None, None, None)
-            except Exception as e:  # noqa: BLE001
+                await asyncio.wait_for(
+                    self._session_cm.__aexit__(None, None, None), timeout=3.0,
+                )
+            except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
                 logger.debug("live connection: session __aexit__ error (ignored): %s", e)
         self._session_cm = None
+        prior_session_id = id(self._session) if self._session is not None else None
         self._session = None
         self._connected_event.clear()
+        teardown_ms = (_time.monotonic() - t0) * 1000
+        logger.info(
+            "live connection: session torn down in %.0fms (cleared session id=%s)",
+            teardown_ms, prior_session_id,
+        )
 
     async def _supervisor_loop(self) -> None:
         """Run for the connection's lifetime. Wakes on `_reconnect_event`,
@@ -624,7 +831,7 @@ class GeminiLiveConnection(LiveConnection):
 
     async def _reconnect_with_backoff(self) -> None:
         async with self._state_lock:
-            self._state = ConnectionState.RECONNECTING
+            self._set_state(ConnectionState.RECONNECTING)
         # Tear down the old session before opening a new one so we don't
         # leak a half-open WS through the SDK.
         await self._teardown_session()
@@ -644,7 +851,7 @@ class GeminiLiveConnection(LiveConnection):
             if self._stopping.is_set():
                 return
             async with self._state_lock:
-                self._state = ConnectionState.PAUSED_FOR_BACKOFF
+                self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
             logger.info(
                 "live connection: reconnect attempt %d after %.1fs backoff", attempt, delay,
             )
@@ -662,23 +869,64 @@ class GeminiLiveConnection(LiveConnection):
                 )
         # Exhausted retries.
         async with self._state_lock:
-            self._state = ConnectionState.FAILED
+            self._set_state(ConnectionState.FAILED)
         logger.error(
             "live connection: failed after %d retries; daemon will pause. Last error: %s",
             len(self._backoff_schedule), last_exc,
         )
 
     async def _receive_loop(self) -> None:
-        """Iterate the SDK's `session.receive()` and route messages.
+        """Iterate the SDK's lower-level `session._receive()` and route
+        messages.
+
+        We deliberately avoid the public `session.receive()` async
+        generator: it `break`s out of its loop the moment the first
+        `turn_complete` arrives (see python-genai #2244 — the SDK's
+        `live.py:455-460` does `if result.server_content.turn_complete:
+        yield result; break`). On a persistent multi-turn connection
+        that means everything from turn 2 onward is silently dropped:
+        zero audio chunks delivered, zero input/output tokens, no
+        exception. Calling `_receive()` directly in a `while` loop
+        bypasses the early-break and gives us every message for the
+        connection's lifetime, exactly what we need.
 
         Audio chunks / tool calls / turn_complete / interrupted go to
         the active turn (if any). Connection-level messages
         (`session_resumption_update`, `go_away`) update connection
         state directly. On any exception the receive loop wakes the
         supervisor to drive a reconnect."""
-        assert self._session is not None
+        logger.info(
+            "live connection: receive_loop ENTERED — self._session id=%s, conn id=%s",
+            id(self._session) if self._session is not None else None,
+            id(self),
+        )
+        # Capture the session once, locally — if the connection is
+        # torn down (and `self._session` is reassigned to None or to
+        # a brand-new session), this loop stays bound to the session
+        # it was started for, so cancellation can complete cleanly
+        # without splicing two sessions' message streams together.
+        session = self._session
+        if session is None:
+            logger.warning(
+                "live connection: receive_loop started with self._session=None; "
+                "exiting (likely a stale cancelled task post-teardown)"
+            )
+            return
+        logger.info(
+            "live connection: receive_loop bound to session id=%s",
+            id(session),
+        )
         try:
-            async for response in self._session.receive():
+            while True:
+                response = await session._receive()
+                if response is None:
+                    # Underlying connection closed cleanly — let the
+                    # supervisor drive a reconnect.
+                    logger.warning(
+                        "live connection: _receive returned None (clean close), reconnecting"
+                    )
+                    self._reconnect_event.set()
+                    return
                 # Connection-level: session resumption handle.
                 sru = getattr(response, "session_resumption_update", None)
                 if sru is not None:
@@ -696,12 +944,48 @@ class GeminiLiveConnection(LiveConnection):
                         "live connection: GoAway received, time_left=%s, will reconnect",
                         time_left,
                     )
-                    # Don't break here; let the server-side close drive
-                    # the receive loop's exit. But pre-warm the supervisor
-                    # so the backoff timer starts ticking now.
                     self._reconnect_event.set()
                     continue
-                # Per-turn: route everything else to the active turn.
+                # Per-turn routing — but first check whether this
+                # response is "stale" from a prior turn that we sent
+                # an activity_end for and then moved past locally
+                # (e.g. via the no-speech abort path) before the
+                # server's response landed.
+                #
+                # Bookkeeping (after pruning aged-out entries):
+                #   unack == 0  → we haven't ended any turn on the wire
+                #     yet. Anything coming back must be unrelated
+                #     session-level state (rare). Route.
+                #   unack == 1  → exactly one turn is pending a server
+                #     turn_complete. That's the current active turn.
+                #     Route normally.
+                #   unack >  1  → multiple turns are pending. Anything
+                #     on the wire belongs to one of the older ones.
+                #     Drop. When we see the next turn_complete,
+                #     decrement (pop oldest); once we're back to 1
+                #     (or 0), routing resumes.
+                self._prune_unack_activity_ends()
+                sc = getattr(response, "server_content", None)
+                turn_complete_in_msg = bool(
+                    sc is not None and getattr(sc, "turn_complete", False)
+                )
+                if len(self._unack_activity_end_times) > 1:
+                    if turn_complete_in_msg:
+                        # Pop oldest pending entry — this turn_complete
+                        # belongs to the earliest-still-pending turn.
+                        self._unack_activity_end_times.pop(0)
+                        logger.info(
+                            "dropped stale turn_complete from prior turn "
+                            "(unack_activity_ends=%d remaining)",
+                            len(self._unack_activity_end_times),
+                        )
+                    else:
+                        # Stale audio / tool_call / etc. — drop silently.
+                        # (Logging every chunk would flood the journal.)
+                        pass
+                    continue
+                if turn_complete_in_msg and self._unack_activity_end_times:
+                    self._unack_activity_end_times.pop(0)
                 turn = self._active_turn
                 if turn is not None:
                     await turn._on_response(response)
@@ -739,22 +1023,25 @@ class GeminiLiveConnection(LiveConnection):
                     ConnectionState.FAILED,
                 ):
                     continue
-                try:
-                    # Sending an empty audio blob with stream-end-False
-                    # is a cheap way to keep the WS hot. We don't want
-                    # to send activity_start/end here as that would race
-                    # with the daemon's manual VAD.
-                    await self._session.send_realtime_input(
-                        audio=types.Blob(data=b"", mime_type=self.INPUT_MIME)
-                    )
-                    logger.debug("live connection: keepalive sent")
-                except Exception as e:  # noqa: BLE001
-                    # If keepalive fails the WS is already broken — let
-                    # the receive loop trigger reconnect. Don't double-trip.
-                    logger.debug(
-                        "live connection: keepalive send failed (%s: %s)",
-                        type(e).__name__, e,
-                    )
+                # No-op: with manual VAD enabled (the only mode we run
+                # in), sending audio outside an active turn (i.e. without
+                # being bracketed by activity_start / activity_end) is
+                # protocol-invalid and at best silently ignored, at worst
+                # logged server-side as a conflict / state-machine
+                # violation — strongly suspected as a contributor to
+                # 409 conflict entries in Cloud Logging despite our
+                # daemon's WebSocket staying up. The websockets library
+                # under genai already sends WS-level PING frames every
+                # ~20 s by default, which keeps the underlying TCP
+                # connection healthy. If Vertex's *application*-level
+                # 10-min idle timeout ever fires while we're in this
+                # state, the receive loop will see the close and the
+                # supervisor will reconnect cleanly. For our smart-
+                # speaker use case (frequent wakes), the 10-min timeout
+                # is unlikely to ever hit.
+                logger.debug(
+                    "live connection: keepalive tick (no-op; rely on WS-level pings)"
+                )
         except asyncio.CancelledError:
             raise
 
