@@ -4,9 +4,9 @@ The speaker is a household device. More than one person may want to
 issue voice commands and have those commands hit the right Spotify
 account. Spotify's auth model is per-account — there is no shared
 family token. So we maintain one OAuth refresh token per household
-member and route commands to the right one based on the AirPlay
-sender's `ClientName` (when AirPlay is active) or which account
-shows is_playing in the Spotify Web API (when it isn't).
+member and route commands to the right one by cross-referencing the
+AirPlay-pushed track title against each account's currently-playing
+Spotify track (see `jasper.spotify_router`).
 
 State layout on disk:
 
@@ -22,7 +22,6 @@ State layout on disk:
       "accounts": [
         {
           "name": "jasper",
-          "client_name_patterns": ["Jasper's iPhone", "Jasper's Mac Studio"],
           "cache_path": "/var/lib/jasper/spotify/caches/jasper.json"
         },
         ...
@@ -33,6 +32,11 @@ Naming intentionally generic. "jasper" is the speaker project codename;
 account names here are whatever each household member calls themselves.
 A second household using this code might have accounts named "alice"
 and "bob" — no code change needed.
+
+Older registry files may carry a `client_name_patterns` field. It's
+ignored — the title-match resolver supersedes the pattern model — but
+left in JSON files in place so out-of-band tooling that wrote it
+doesn't have to be updated immediately.
 """
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -56,30 +60,24 @@ LEGACY_CACHE_PATH = "/var/lib/jasper/.spotify-cache"
 @dataclass
 class Account:
     name: str
-    client_name_patterns: list[str] = field(default_factory=list)
     cache_path: str = ""
-
-    def matches_client_name(self, client_name: str) -> bool:
-        """True if any of this account's patterns appears (case-insensitive,
-        smart-quote-normalized) inside the AirPlay ClientName."""
-        if not client_name or not self.client_name_patterns:
-            return False
-        normalized = _normalize(client_name)
-        return any(_normalize(p) in normalized for p in self.client_name_patterns)
-
-
-_SMART_QUOTE = re.compile("[‘’‚‛]")
-
-
-def _normalize(s: str) -> str:
-    return _SMART_QUOTE.sub("'", s).strip().lower()
 
 
 @dataclass
 class Registry:
-    accounts: list[Account] = field(default_factory=list)
-    default_name: str = ""
-    path: str = DEFAULT_REGISTRY_PATH
+    accounts: list[Account]
+    default_name: str
+    path: str
+
+    def __init__(
+        self,
+        accounts: list[Account] | None = None,
+        default_name: str = "",
+        path: str = DEFAULT_REGISTRY_PATH,
+    ) -> None:
+        self.accounts = accounts if accounts is not None else []
+        self.default_name = default_name
+        self.path = path
 
     @classmethod
     def load(cls, path: str = DEFAULT_REGISTRY_PATH) -> "Registry":
@@ -96,11 +94,7 @@ class Registry:
             logger.warning("accounts registry %s unreadable (%s); starting empty", path, e)
             return cls(path=path)
         accounts = [
-            Account(
-                name=a["name"],
-                client_name_patterns=list(a.get("client_name_patterns", [])),
-                cache_path=a.get("cache_path", ""),
-            )
+            Account(name=a["name"], cache_path=a.get("cache_path", ""))
             for a in data.get("accounts", [])
         ]
         return cls(accounts=accounts, default_name=data.get("default", ""), path=path)
@@ -130,16 +124,9 @@ class Registry:
                 return d
         return self.accounts[0] if self.accounts else None
 
-    def match_client_name(self, client_name: str) -> Account | None:
-        for a in self.accounts:
-            if a.matches_client_name(client_name):
-                return a
-        return None
-
     def add_or_update(self, account: Account, *, make_default: bool = False) -> None:
         existing = self.get(account.name)
         if existing is not None:
-            existing.client_name_patterns = list(account.client_name_patterns)
             if account.cache_path:
                 existing.cache_path = account.cache_path
         else:
@@ -183,11 +170,7 @@ def maybe_migrate_legacy(
         logger.warning("legacy cache migration failed: %s", e)
         return False
     registry.add_or_update(
-        Account(
-            name=default_name,
-            client_name_patterns=[],
-            cache_path=new_cache,
-        ),
+        Account(name=default_name, cache_path=new_cache),
         make_default=True,
     )
     registry.save()

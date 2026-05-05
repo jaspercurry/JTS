@@ -5,6 +5,7 @@ import logging
 import re
 
 from . import tool
+from ..spotify_router import airplay_client_name
 
 logger = logging.getLogger(__name__)
 
@@ -125,25 +126,26 @@ async def _detect_source(moode) -> str:
 def make_transport_tools(moode, router):
     """Source-aware transport tools.
 
-    Routing logic (most-specific first):
+    Routing logic for AirPlay (the interesting case):
 
-      - **AirPlay sender matches a known household account** → call
-        the matched account's Spotify Web API targeting their active
-        device. iOS Spotify (and any other Spotify-on-iPhone-via-
-        AirPlay session) is controllable via this path; iOS 17.4+
-        broke the DACP/MPRIS path for AirPlay 2 (shairport-sync
-        issue #1822), making Spotify Web API the canonical answer.
-      - **AirPlay sender unmatched, but exposes DACP** → MPRIS
-        Next/Previous/Pause/Play via shairport's dbus interface.
-        Works for legacy AirPlay 1 senders and older iOS / Apple
-        Music app builds.
-      - **AirPlay sender unmatched and no DACP** → tell the user to
-        use the controls on the device they're casting from.
-      - **Spotify Connect (no AirPlay)** → router picks the right
-        account by is_playing or default; spotipy targets that
-        account's active device.
-      - **MPD** → MoodeClient methods for radio / local files.
-      - **Bluetooth** → not yet implemented.
+      - Cross-reference shairport's MPRIS `xesam:title` against each
+        configured account's `current_playback.item.name`. If exactly
+        one matches, that's the AirPlay sender — route Next/Previous/
+        Pause/Play to that account via the Spotify Web API.
+      - If no Spotify account is playing the AirPlay-pushed track,
+        the sender is something else (Apple Music, podcast, browser
+        tab). Try DACP via shairport's MPRIS — works for legacy
+        AirPlay 1 and older Apple Music builds; silently no-ops on
+        iOS 17.4+ Spotify (shairport-sync #1822), but those will
+        have hit the title-match path above.
+      - If DACP isn't available either, tell the user to use the
+        controls on the device they're casting from.
+
+    Spotify Connect (no AirPlay): router picks the active or default
+    account; spotipy targets that account's active device.
+
+    MPD / Bluetooth: same as before — moOde for MPD, "not supported"
+    for Bluetooth.
     """
 
     async def _spotify_active_device_id(sp) -> str | None:
@@ -166,15 +168,30 @@ def make_transport_tools(moode, router):
         }[action]
         await asyncio.to_thread(fn, device_id=device_id)
 
+    async def _resolve_airplay_account():
+        """Cross-reference MPRIS title with each account's
+        current_playback. Returns None if router unconfigured or no
+        title-match found."""
+        if router is None:
+            return None
+        client_name = await airplay_client_name()
+        if not client_name:
+            return None
+        try:
+            metadata = await _mpris_now_playing()
+        except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
+            return None
+        title = metadata.get("title", "")
+        if not title:
+            return None
+        return await router.resolve_for_transport(client_name, title)
+
     async def _dispatch(action: str) -> dict:
         source = await _detect_source(moode)
         logger.info("transport dispatch: action=%s source=%s", action, source)
         try:
             if source == "airplay":
-                # 1) Try the matched-account Spotify Web API path.
-                matched = (
-                    await router.resolve_airplay() if router is not None else None
-                )
+                matched = await _resolve_airplay_account()
                 if matched is not None:
                     device_id = await _spotify_active_device_id(matched.sp)
                     await _spotify_call(matched.sp, action, device_id)
@@ -187,14 +204,15 @@ def make_transport_tools(moode, router):
                         "source": "airplay+spotify",
                         "account": matched.account.name,
                     }
-                # 2) Try DACP via MPRIS for senders that expose it.
+                # No Spotify account playing the AirPlay track — try
+                # DACP for non-Spotify senders that expose it.
                 if not await _airplay_remote_available():
                     return {
-                        "error": "the airplay sender isn't a recognized "
-                        "household account, and the device doesn't accept "
-                        "remote control. tell the user to use the controls "
-                        "on the device they're casting from, or to set up "
-                        "their spotify account at jasper.local/spotify.",
+                        "error": "the airplay sender isn't playing a track "
+                        "from any configured spotify account, and the device "
+                        "doesn't accept remote control. tell the user to use "
+                        "the controls on the device they're casting from, or "
+                        "to link their spotify account at jasper.local/spotify.",
                         "source": "airplay",
                     }
                 method = {
@@ -261,12 +279,7 @@ def make_transport_tools(moode, router):
         source = await _detect_source(moode)
         try:
             if source == "airplay":
-                # Prefer matched-account Spotify metadata when possible
-                # — iOS Spotify doesn't push usable metadata over the
-                # AirPlay channel, but the Web API has it.
-                matched = (
-                    await router.resolve_airplay() if router is not None else None
-                )
+                matched = await _resolve_airplay_account()
                 if matched is not None:
                     playback = await asyncio.to_thread(matched.sp.current_playback)
                     if playback and playback.get("item"):

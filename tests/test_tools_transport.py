@@ -3,8 +3,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from jasper.tools.transport import _detect_source, make_transport_tools
 
 
@@ -44,8 +42,32 @@ class FakeSpotify:
         return None
 
 
+class FakeAccountClient:
+    """Stand-in for an AccountClient — same .account.name and .sp attrs."""
+    def __init__(self, name: str, sp) -> None:
+        self.account = MagicMock()
+        self.account.name = name
+        self.sp = sp
+
+
+class FakeRouter:
+    def __init__(self, transport_match=None, active_account=None) -> None:
+        self._transport_match = transport_match
+        self._active_account = active_account
+        self.clients = {}
+
+    async def resolve_for_transport(self, client_name: str, title: str):
+        return self._transport_match
+
+    async def active(self, *, airplay_active: bool):
+        return self._active_account
+
+
 def _by_name(tools):
     return {f.__name__: f for f in tools}
+
+
+# --- _detect_source ---
 
 
 def test_detect_source_airplay():
@@ -73,63 +95,135 @@ def test_detect_source_airplay_wins_over_others():
     assert asyncio.run(_detect_source(moode)) == "airplay"
 
 
-def test_dispatch_airplay_calls_mpris_when_remote_available():
+# --- AirPlay dispatch: title-match path ---
+
+
+def test_dispatch_airplay_title_match_routes_to_account():
     moode = FakeMoode(renderers={"aplactive": True})
     sp = FakeSpotify()
-    tools = _by_name(make_transport_tools(moode, sp))
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(transport_match=matched)
+    tools = _by_name(make_transport_tools(moode, router))
 
     with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Jasper's Mac Studio"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude", "artist": "X", "album": "Y"}),
+    ):
+        result = asyncio.run(tools["next_track"]())
+
+    sp.next_track.assert_called_once_with(device_id="dev1")
+    assert result == {"ok": True, "source": "airplay+spotify", "account": "jasper"}
+
+
+def test_dispatch_airplay_pause_routes_to_account():
+    moode = FakeMoode(renderers={"aplactive": True})
+    sp = FakeSpotify()
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(transport_match=matched)
+    tools = _by_name(make_transport_tools(moode, router))
+
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Jasper's iPhone"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude"}),
+    ):
+        asyncio.run(tools["pause"]())
+    sp.pause_playback.assert_called_once_with(device_id="dev1")
+
+
+# --- AirPlay dispatch: no title match → DACP fallback ---
+
+
+def test_dispatch_airplay_no_match_falls_back_to_dacp_when_available():
+    moode = FakeMoode(renderers={"aplactive": True})
+    router = FakeRouter(transport_match=None)
+    tools = _by_name(make_transport_tools(moode, router))
+
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Some Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Apple Music Track"}),
+    ), patch(
         "jasper.tools.transport._airplay_remote_available",
         new=AsyncMock(return_value=True),
-    ), patch("jasper.tools.transport._mpris_call", new=AsyncMock()) as mpris:
+    ), patch(
+        "jasper.tools.transport._mpris_call", new=AsyncMock(),
+    ) as mpris:
         result = asyncio.run(tools["next_track"]())
     mpris.assert_awaited_once_with("Next")
     assert result == {"ok": True, "source": "airplay"}
 
 
-def test_dispatch_airplay_pause_maps_to_mpris_pause():
+def test_dispatch_airplay_no_match_no_dacp_returns_error():
     moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
-    with patch(
-        "jasper.tools.transport._airplay_remote_available",
-        new=AsyncMock(return_value=True),
-    ), patch("jasper.tools.transport._mpris_call", new=AsyncMock()) as mpris:
-        asyncio.run(tools["pause"]())
-    mpris.assert_awaited_once_with("Pause")
+    router = FakeRouter(transport_match=None)
+    tools = _by_name(make_transport_tools(moode, router))
 
-
-def test_dispatch_airplay_remote_unavailable_returns_error():
-    moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
     with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Some Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Mystery Track"}),
+    ), patch(
         "jasper.tools.transport._airplay_remote_available",
         new=AsyncMock(return_value=False),
-    ), patch("jasper.tools.transport._mpris_call", new=AsyncMock()) as mpris:
+    ), patch(
+        "jasper.tools.transport._mpris_call", new=AsyncMock(),
+    ) as mpris:
         result = asyncio.run(tools["next_track"]())
     mpris.assert_not_awaited()
     assert "error" in result
-    assert "remote control" in result["error"].lower()
+    assert "spotify" in result["error"].lower()
+
+
+def test_dispatch_airplay_no_router_falls_back_to_dacp():
+    moode = FakeMoode(renderers={"aplactive": True})
+    tools = _by_name(make_transport_tools(moode, None))
+
+    with patch(
+        "jasper.tools.transport._airplay_remote_available",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "jasper.tools.transport._mpris_call", new=AsyncMock(),
+    ) as mpris:
+        result = asyncio.run(tools["next_track"]())
+    mpris.assert_awaited_once_with("Next")
+    assert result == {"ok": True, "source": "airplay"}
+
+
+# --- Other source dispatches ---
 
 
 def test_dispatch_spotify_targets_active_device():
     moode = FakeMoode(renderers={"spotactive": True})
     sp = FakeSpotify(active_id="dev1")
-    tools = _by_name(make_transport_tools(moode, sp))
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    tools = _by_name(make_transport_tools(moode, router))
+
     result = asyncio.run(tools["next_track"]())
     sp.next_track.assert_called_once_with(device_id="dev1")
-    assert result == {"ok": True, "source": "spotify"}
+    assert result == {"ok": True, "source": "spotify", "account": "jasper"}
 
 
 def test_dispatch_mpd_uses_moode_methods():
     moode = FakeMoode(renderers={})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
+    tools = _by_name(make_transport_tools(moode, None))
     asyncio.run(tools["pause"]())
     moode.pause.assert_awaited_once()
 
 
 def test_dispatch_bluetooth_returns_unsupported_error():
     moode = FakeMoode(renderers={"btactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
+    tools = _by_name(make_transport_tools(moode, None))
     result = asyncio.run(tools["pause"]())
     assert "error" in result
     assert "bluetooth" in result["error"].lower()
@@ -137,16 +231,51 @@ def test_dispatch_bluetooth_returns_unsupported_error():
 
 def test_resume_aliases_play_action():
     moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
-    with patch("jasper.tools.transport._mpris_call", new=AsyncMock()) as mpris:
-        asyncio.run(tools["resume"]())
-    mpris.assert_awaited_once_with("Play")
+    sp = FakeSpotify()
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(transport_match=matched)
+    tools = _by_name(make_transport_tools(moode, router))
 
-
-def test_get_now_playing_routes_to_airplay_mpris():
-    moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
     with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Jasper's Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude"}),
+    ):
+        asyncio.run(tools["resume"]())
+    sp.start_playback.assert_called_once_with(device_id="dev1")
+
+
+def test_dispatch_failures_return_error_dict():
+    moode = FakeMoode(renderers={"aplactive": True})
+    sp = FakeSpotify()
+    sp.next_track = MagicMock(side_effect=RuntimeError("network down"))
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(transport_match=matched)
+    tools = _by_name(make_transport_tools(moode, router))
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Jasper's Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude"}),
+    ):
+        result = asyncio.run(tools["next_track"]())
+    assert "error" in result
+
+
+# --- get_now_playing ---
+
+
+def test_get_now_playing_routes_to_airplay_mpris_when_no_match():
+    moode = FakeMoode(renderers={"aplactive": True})
+    router = FakeRouter(transport_match=None)
+    tools = _by_name(make_transport_tools(moode, router))
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Some Mac"),
+    ), patch(
         "jasper.tools.transport._mpris_now_playing",
         new=AsyncMock(return_value={"title": "T", "artist": "A", "album": "B"}),
     ):
@@ -159,18 +288,7 @@ def test_get_now_playing_routes_to_mpd_when_no_renderer():
         renderers={},
         currentsong={"title": "Local Song", "artist": "Local Artist", "album": "X"},
     )
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
+    tools = _by_name(make_transport_tools(moode, None))
     result = asyncio.run(tools["get_now_playing"]())
     assert result["title"] == "Local Song"
     assert result["source"] == "mpd"
-
-
-def test_dispatch_failures_return_error_dict():
-    moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, FakeSpotify()))
-    with patch(
-        "jasper.tools.transport._mpris_call",
-        new=AsyncMock(side_effect=RuntimeError("dbus down")),
-    ):
-        result = asyncio.run(tools["pause"]())
-    assert "error" in result

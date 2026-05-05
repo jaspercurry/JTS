@@ -38,8 +38,6 @@ from ..spotify_router import SPOTIFY_SCOPE
 
 logger = logging.getLogger(__name__)
 
-_PATTERN_SPLIT = re.compile(r"\s*[,\n]\s*")
-
 
 def _html(title: str, body: str, *, status_msg: str = "") -> bytes:
     return f"""<!doctype html>
@@ -84,18 +82,16 @@ def _html(title: str, body: str, *, status_msg: str = "") -> bytes:
 </html>""".encode()
 
 
-def _index_html(registry: Registry, *, current_client_name: str = "", status_msg: str = "") -> bytes:
+def _index_html(registry: Registry, *, status_msg: str = "") -> bytes:
     accounts_html = ""
     if registry.accounts:
         items = []
         for a in registry.accounts:
             is_default = a.name == registry.default_name
-            patterns = ", ".join(a.client_name_patterns) if a.client_name_patterns else "(no device patterns)"
             items.append(f"""
               <li>
                 <span class="name">{html.escape(a.name)}</span>
                 {'<span class="badge">default</span>' if is_default else ''}
-                <span class="pat">{html.escape(patterns)}</span>
                 <form method="post" action="default" style="margin:0">
                   <input type="hidden" name="name" value="{html.escape(a.name)}">
                   <button class="secondary" type="submit" {'disabled' if is_default else ''}>Set default</button>
@@ -110,18 +106,8 @@ def _index_html(registry: Registry, *, current_client_name: str = "", status_msg
     else:
         accounts_html = "<p class='sub'>No accounts yet — add the first household member's Spotify below.</p>"
 
-    auto_pattern = (
-        f'value="{html.escape(current_client_name)}"'
-        if current_client_name else 'placeholder="e.g. Brittany&apos;s iPhone"'
-    )
-    auto_hint = (
-        f'<small>Auto-detected from your current AirPlay session: <strong>{html.escape(current_client_name)}</strong>. Edit if wrong.</small>'
-        if current_client_name else
-        '<small>Comma-separated. Match the device name shown in your iPhone&apos;s Settings → General → About → Name. Multiple devices? List them all.</small>'
-    )
-
     body = f"""
-<p class="sub">Each household member links their own Spotify account once. The speaker routes voice commands to the right account based on who&apos;s AirPlaying.</p>
+<p class="sub">Each household member links their own Spotify account once. The speaker identifies the active listener by cross-referencing the AirPlay-pushed track title with each account&apos;s currently-playing Spotify track — no per-device setup needed.</p>
 
 <h2>Accounts</h2>
 {accounts_html}
@@ -132,10 +118,6 @@ def _index_html(registry: Registry, *, current_client_name: str = "", status_msg
   <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
          placeholder="brittany" autocapitalize="off" autocorrect="off">
   <small>Lowercase, no spaces. This is just an internal label — pick anything.</small>
-
-  <label for="patterns">Your device name(s) for AirPlay</label>
-  <input id="patterns" name="patterns" type="text" required {auto_pattern}>
-  {auto_hint}
 
   <p style="margin-top:1em">
     <button type="submit">Continue with Spotify →</button>
@@ -150,10 +132,6 @@ def _read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     length = int(handler.headers.get("Content-Length") or "0")
     raw = handler.rfile.read(length).decode("utf-8") if length else ""
     return {k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()}
-
-
-def _split_patterns(s: str) -> list[str]:
-    return [p.strip() for p in _PATTERN_SPLIT.split(s) if p.strip()]
 
 
 def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
@@ -183,19 +161,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             qs = urllib.parse.parse_qs(url.query)
 
             if path == "/":
-                # Auto-detect current AirPlay sender for convenience.
-                # Best-effort — if dbus-send isn't around we just don't pre-fill.
-                client_name = ""
-                try:
-                    import asyncio
-                    from ..spotify_router import airplay_client_name
-                    client_name = asyncio.run(airplay_client_name())
-                except Exception:  # noqa: BLE001
-                    client_name = ""
                 registry = Registry.load(cfg["registry_path"])
                 self._send_html(_index_html(
-                    registry, current_client_name=client_name,
-                    status_msg=qs.get("msg", [""])[0],
+                    registry, status_msg=qs.get("msg", [""])[0],
                 ))
                 return
 
@@ -227,18 +195,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             if path == "/start":
                 name = form.get("name", "").strip()
-                patterns = _split_patterns(form.get("patterns", ""))
                 if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
                     self._redirect("./?msg=Invalid+name+(letters/digits/_-+only)")
                     return
-                if not patterns:
-                    self._redirect("./?msg=At+least+one+device+name+is+required")
-                    return
                 registry = Registry.load(cfg["registry_path"])
                 cache_path = default_cache_path_for(name)
-                registry.add_or_update(Account(
-                    name=name, client_name_patterns=patterns, cache_path=cache_path,
-                ))
+                registry.add_or_update(Account(name=name, cache_path=cache_path))
                 registry.save()
                 from spotipy.oauth2 import SpotifyOAuth
                 auth = SpotifyOAuth(
