@@ -66,10 +66,26 @@ def percent_to_db(percent: float) -> float:
     return VOLUME_MIN_DB + span * p / 100.0
 
 
+# Default loudness anchor when no record exists yet (first boot, file
+# deleted, etc). -30 dBFS RMS maps to 40% on the linear dB scale —
+# combined with the headroom formula in TtsVolumeTracker, gives an
+# effective TTS output around -18 dBFS, a normal conversational level.
+# Conservative on purpose: blasting on first boot is the bad failure
+# mode, so the default sits comfortably below "loud."
+DEFAULT_ANCHOR_DBFS = -30.0
+
+
 @dataclass(frozen=True)
 class VolumeRecord:
     main_volume_db: float
     updated_at: datetime
+    # NEW: last observed playback RMS while music was playing. None
+    # means "never recorded" → callers should fall back to
+    # DEFAULT_ANCHOR_DBFS. Persists across restarts WITHOUT expiry.
+    # The Pi doesn't move; the user's room context doesn't change
+    # often enough to warrant time-based invalidation.
+    loudness_anchor_dbfs: float | None = None
+    anchor_updated_at: datetime | None = None
 
 
 class VolumePersistence:
@@ -94,6 +110,16 @@ class VolumePersistence:
         self._path = Path(path or self.DEFAULT_PATH)
         self._last_written_db: float | None = None
         self._last_written_at_mono: float = 0.0
+        # Mirror state for the anchor field — independent debounce
+        # so a busy music session doesn't trigger flash writes for
+        # every tiny RMS fluctuation.
+        self._last_written_anchor: float | None = None
+        self._last_written_anchor_at_mono: float = 0.0
+        # In-memory copy of all persisted fields, so we can write the
+        # full record whenever any single field changes (avoids losing
+        # main_volume when only anchor changes, and vice-versa).
+        self._current_main_volume_db: float | None = None
+        self._current_anchor_dbfs: float | None = None
 
     @property
     def path(self) -> Path:
@@ -101,7 +127,12 @@ class VolumePersistence:
 
     def load(self) -> VolumeRecord | None:
         """Read the persisted record. Returns None on missing /
-        corrupt / out-of-range values (caller decides default)."""
+        corrupt / out-of-range main_volume (caller decides default).
+
+        The loudness_anchor field is optional — older files written
+        before the anchor feature have no anchor field; we tolerate
+        that and return None for the anchor so the caller can apply
+        the conservative default."""
         try:
             raw = self._path.read_text(encoding="utf-8")
         except FileNotFoundError:
@@ -128,17 +159,59 @@ class VolumePersistence:
                 db,
             )
             return None
-        return VolumeRecord(main_volume_db=db, updated_at=updated_at)
+        # Optional anchor fields. Tolerant of missing / malformed:
+        # if anything looks off, treat as "no anchor recorded" and let
+        # the caller fall back to DEFAULT_ANCHOR_DBFS.
+        anchor: float | None = None
+        anchor_ts: datetime | None = None
+        try:
+            raw_anchor = data.get("loudness_anchor_dbfs")
+            if raw_anchor is not None:
+                a = float(raw_anchor)
+                # Sanity bound: -120 dBFS to 0 dBFS. Anything outside
+                # this is a malformed write or an attacker editing the
+                # file; either way we don't trust it.
+                if -120.0 <= a <= 0.0:
+                    anchor = a
+                else:
+                    logger.warning(
+                        "volume persistence: stored anchor=%.1f dBFS out of range; ignoring",
+                        a,
+                    )
+        except (TypeError, ValueError):
+            anchor = None
+        try:
+            raw_anchor_ts = data.get("loudness_anchor_updated_at")
+            if raw_anchor_ts is not None:
+                anchor_ts = datetime.fromisoformat(
+                    raw_anchor_ts.replace("Z", "+00:00")
+                )
+        except (TypeError, ValueError, AttributeError):
+            anchor_ts = None
+        # Cache loaded values so subsequent partial-update writes
+        # (only main_volume, only anchor) don't lose the other field.
+        self._current_main_volume_db = db
+        self._current_anchor_dbfs = anchor
+        return VolumeRecord(
+            main_volume_db=db,
+            updated_at=updated_at,
+            loudness_anchor_dbfs=anchor,
+            anchor_updated_at=anchor_ts,
+        )
 
     def save_now(self, main_volume_db: float) -> None:
-        """Force-write to disk immediately. Used for explicit user
-        actions (set_volume voice tool, mute) where we want the new
-        level captured before any restart could lose it."""
-        self._write(float(main_volume_db))
+        """Force-write main_volume to disk immediately. Used for
+        explicit user actions (set_volume voice tool, mute) where we
+        want the new level captured before any restart could lose it.
+        Anchor (if any) is preserved as-is from in-memory state."""
+        self._current_main_volume_db = float(main_volume_db)
+        self._write_full()
+        self._last_written_db = self._current_main_volume_db
+        self._last_written_at_mono = time.monotonic()
 
     def maybe_save(self, main_volume_db: float) -> bool:
-        """Debounced write — for poll-driven detection of external
-        changes (moOde UI, mpc, etc). Returns True if we wrote."""
+        """Debounced main_volume write — for poll-driven detection of
+        external changes (moOde UI, mpc, etc). Returns True if we wrote."""
         db = float(main_volume_db)
         now = time.monotonic()
         last_db = self._last_written_db
@@ -147,10 +220,34 @@ class VolumePersistence:
                 return False
             if now - self._last_written_at_mono < self.DEBOUNCE_SEC:
                 return False
-        self._write(db)
+        self._current_main_volume_db = db
+        self._write_full()
+        self._last_written_db = db
+        self._last_written_at_mono = now
         return True
 
-    def _write(self, main_volume_db: float) -> None:
+    def maybe_save_anchor(self, anchor_dbfs: float) -> bool:
+        """Debounced anchor write. The anchor moves continuously while
+        music plays; we don't want to write to flash on every poll.
+        Returns True if we wrote."""
+        a = float(anchor_dbfs)
+        now = time.monotonic()
+        last_a = self._last_written_anchor
+        if last_a is not None:
+            if abs(a - last_a) < self.MIN_DELTA_DB:
+                return False
+            if now - self._last_written_anchor_at_mono < self.DEBOUNCE_SEC:
+                return False
+        self._current_anchor_dbfs = a
+        self._write_full()
+        self._last_written_anchor = a
+        self._last_written_anchor_at_mono = now
+        return True
+
+    def _write_full(self) -> None:
+        """Write the current in-memory state to disk atomically.
+        Always writes both main_volume and anchor if known, so a
+        partial update doesn't lose the other field."""
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
         except OSError as e:
@@ -159,13 +256,26 @@ class VolumePersistence:
                 self._path.parent, e,
             )
             return
+        if self._current_main_volume_db is None:
+            # Shouldn't happen — caller should always set main_volume
+            # before any anchor-only save. Defensive: skip.
+            logger.debug(
+                "volume persistence: skipping write (no main_volume in memory)",
+            )
+            return
+        now_iso = datetime.now(timezone.utc).isoformat(
+            timespec="seconds",
+        ).replace("+00:00", "Z")
         payload = {
             "version": 1,
-            "main_volume_db": round(main_volume_db, 2),
-            "updated_at": datetime.now(timezone.utc).isoformat(
-                timespec="seconds",
-            ).replace("+00:00", "Z"),
+            "main_volume_db": round(self._current_main_volume_db, 2),
+            "updated_at": now_iso,
         }
+        if self._current_anchor_dbfs is not None:
+            payload["loudness_anchor_dbfs"] = round(
+                self._current_anchor_dbfs, 2,
+            )
+            payload["loudness_anchor_updated_at"] = now_iso
         body = json.dumps(payload, indent=2)
         try:
             # Atomic write: write to a tmp file in the same directory,
@@ -193,12 +303,21 @@ class VolumePersistence:
                 self._path, e,
             )
             return
-        self._last_written_db = main_volume_db
-        self._last_written_at_mono = time.monotonic()
-        logger.info(
-            "volume persistence: saved main_volume=%.1f dB (%d%%)",
-            main_volume_db, db_to_percent(main_volume_db),
-        )
+        if self._current_anchor_dbfs is not None:
+            logger.info(
+                "volume persistence: saved main_volume=%.1f dB (%d%%) "
+                "anchor=%.1f dBFS",
+                self._current_main_volume_db,
+                db_to_percent(self._current_main_volume_db),
+                self._current_anchor_dbfs,
+            )
+        else:
+            logger.info(
+                "volume persistence: saved main_volume=%.1f dB (%d%%) "
+                "(no anchor yet)",
+                self._current_main_volume_db,
+                db_to_percent(self._current_main_volume_db),
+            )
 
 
 def regress_if_stale(

@@ -64,13 +64,19 @@ def _tracker(
     headroom_db: float = 12.0,
     silence_threshold_dbfs: float = -50.0,
     window_sec: float = 8.0,
+    initial_anchor_dbfs: float = -120.0,
 ) -> TtsVolumeTracker:
+    """Default initial anchor is -120 dBFS so the silence-fallback
+    branch reverts to legacy `master + offset` behavior in tests
+    that don't explicitly exercise the anchor path. Tests that DO
+    exercise the anchor path pass an explicit value."""
     return TtsVolumeTracker(
         cam, tts,
         offset_db=offset_db,
         music_headroom_db=headroom_db,
         silence_threshold_dbfs=silence_threshold_dbfs,
         music_window_sec=window_sec,
+        initial_anchor_dbfs=initial_anchor_dbfs,
     )
 
 
@@ -271,3 +277,115 @@ async def test_target_quantized_to_1db():
     await tracker.apply_now()
     # -10.4 + -8 = -18.4 → round to nearest int = -18
     assert tts.gain_db == -18.0
+
+
+# --- loudness anchor branch ----------------------------------------------
+
+@pytest.mark.asyncio
+async def test_anchor_used_during_silence():
+    """No music currently playing, but we have an anchor → use it.
+    This is the iPhone-disconnect fix: anchor=-30, headroom=12,
+    gemini=-3 → target = -30 + 12 - (-3) = -15.
+    master=-5, ceiling=-13. min(-15, -13) = -15."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-30.0)
+    await tracker.apply_now()
+    assert tts.gain_db == -15.0
+
+
+@pytest.mark.asyncio
+async def test_anchor_capped_by_master_ceiling():
+    """Even with a loud anchor, master_volume + offset ALWAYS binds
+    as the absolute upper bound. anchor=-15 (loud) would compute
+    target=0; ceiling=master+offset=-25-8=-33 binds."""
+    cam = _FakeCamilla(volume_db=-25.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-15.0)
+    await tracker.apply_now()
+    assert tts.gain_db == -33.0
+
+
+@pytest.mark.asyncio
+async def test_anchor_iphone_at_low_scenario():
+    """The motivating scenario: master at 60% (-20), iPhone at 20%.
+    Music played at -42 dBFS RMS; anchor caught that. Music stops.
+    User asks Jarvis: target = -42+12+3 = -27. Ceiling = -20-8 = -28.
+    min(-27, -28) = -28 → ceiling binds (anchor would push slightly
+    above ceiling). With even quieter anchor, anchor would bind."""
+    cam = _FakeCamilla(volume_db=-20.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-42.0)
+    await tracker.apply_now()
+    assert tts.gain_db == -28.0
+
+
+@pytest.mark.asyncio
+async def test_anchor_quieter_than_ceiling():
+    """Anchor at -50 dBFS (very quiet music at iPhone=10%).
+    target = -50+12+3 = -35. ceiling = -5-8 = -13.
+    min(-35, -13) = -35. TTS plays at -35 dB."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-50.0)
+    await tracker.apply_now()
+    assert tts.gain_db == -35.0
+
+
+@pytest.mark.asyncio
+async def test_anchor_updates_when_music_plays():
+    """While music is playing, anchor follows windowed RMS so it
+    stays current. After music stops, anchor stays at last value."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-30.0, -30.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-60.0)
+    # Music playing — anchor should update from -60 to -30.
+    await tracker.apply_now()
+    assert tracker._anchor_dbfs == -30.0  # type: ignore[attr-defined]
+    # Music stops — anchor stays at -30.
+    cam.playback_rms = (-80.0, -80.0)
+    await tracker.apply_now()
+    assert tracker._anchor_dbfs == -30.0  # type: ignore[attr-defined]
+    # Silence-fallback uses anchor: target = -30+12+3 = -15.
+    # ceiling = -5-8 = -13. min(-15, -13) = -15.
+    assert tts.gain_db == -15.0
+
+
+@pytest.mark.asyncio
+async def test_anchor_persists_during_silence_doesnt_decay():
+    """The anchor must not decay or get reset just because music
+    paused. It only updates UPWARD (in the sense of getting refreshed)
+    when actual music is detected."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-25.0, -25.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-60.0)
+    await tracker.apply_now()  # music → anchor = -25
+    cam.playback_rms = (-80.0, -80.0)
+    for _ in range(5):
+        await tracker.apply_now()
+    # 5 silent polls — anchor unchanged.
+    assert tracker._anchor_dbfs == -25.0  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_no_anchor_recorded_falls_back_to_master_offset():
+    """When initial_anchor_dbfs is the sentinel -120 (effectively
+    'no anchor'), silence-fallback reverts to legacy master+offset.
+    Defensive backstop in case the persisted anchor was never set."""
+    cam = _FakeCamilla(volume_db=-10.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-120.0)
+    await tracker.apply_now()
+    assert tts.gain_db == -18.0  # -10 + -8
+
+
+@pytest.mark.asyncio
+async def test_anchor_does_not_update_during_silence():
+    """Sanity: silent reading must not become the new anchor.
+    Only readings above silence_threshold_dbfs count."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=-8.0, initial_anchor_dbfs=-30.0)
+    await tracker.apply_now()
+    # Anchor unchanged from initial -30; not updated to -80.
+    assert tracker._anchor_dbfs == -30.0  # type: ignore[attr-defined]

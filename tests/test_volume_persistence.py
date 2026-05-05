@@ -203,3 +203,83 @@ def test_regress_threshold_exact_boundary():
     )
     db, _ = regress_if_stale(rec, now=NOW, stale_after_sec=1800.0)
     assert db_to_percent(db) == 70
+
+
+# ---------- anchor persistence -------------------------------------------
+
+def test_save_and_load_anchor_round_trip(tmp_path):
+    p = VolumePersistence(_path(tmp_path))
+    p.save_now(-22.0)
+    p.maybe_save_anchor(-25.5)
+    rec = p.load()
+    assert rec is not None
+    assert rec.main_volume_db == -22.0
+    assert rec.loudness_anchor_dbfs == -25.5
+    assert rec.anchor_updated_at is not None
+
+
+def test_load_legacy_file_without_anchor(tmp_path):
+    """Files written before the anchor feature have no anchor field;
+    load should tolerate them and report None for the anchor."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "main_volume_db": -20.0,
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    assert rec.main_volume_db == -20.0
+    assert rec.loudness_anchor_dbfs is None
+
+
+def test_partial_update_preserves_other_field(tmp_path):
+    """Saving only the anchor must not lose main_volume, and vice
+    versa. Both fields are independent state, written as one record."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_now(-22.0)
+    # Wait debounce by using save_now which always writes.
+    p.maybe_save_anchor(-25.0)  # may not write (debounce)
+    p._last_written_anchor_at_mono = 0  # type: ignore[attr-defined]
+    p.maybe_save_anchor(-30.0)
+    rec = p.load()
+    assert rec is not None
+    assert rec.main_volume_db == -22.0  # preserved
+    assert rec.loudness_anchor_dbfs == -30.0
+
+
+def test_anchor_debounce_skips_micro_changes(tmp_path):
+    p = VolumePersistence(_path(tmp_path))
+    p.save_now(-20.0)
+    p.maybe_save_anchor(-25.0)
+    # Tiny change → no write.
+    assert p.maybe_save_anchor(-25.1) is False
+
+
+def test_anchor_out_of_range_rejected(tmp_path):
+    """A file with anchor outside reasonable bounds is treated as
+    'no anchor recorded'. Defends against hand-edits / corruption."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "main_volume_db": -20.0,
+        "loudness_anchor_dbfs": 50.0,  # absurd: above 0 dBFS
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    assert rec.main_volume_db == -20.0
+    assert rec.loudness_anchor_dbfs is None  # rejected
+
+
+def test_anchor_garbage_type_rejected(tmp_path):
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "main_volume_db": -20.0,
+        "loudness_anchor_dbfs": "not a number",
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    assert rec.loudness_anchor_dbfs is None

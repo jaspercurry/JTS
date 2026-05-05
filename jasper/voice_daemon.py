@@ -24,7 +24,11 @@ from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore
 from .voice.gemini_session import GeminiLiveConnection
 from .voice.session import LiveConnection, LiveTurn
-from .volume_persistence import VolumePersistence, regress_if_stale
+from .volume_persistence import (
+    DEFAULT_ANCHOR_DBFS,
+    VolumePersistence,
+    regress_if_stale,
+)
 from .wake import WakeWordDetector
 from .weather import WeatherClient
 
@@ -258,6 +262,7 @@ class TtsVolumeTracker:
         silence_threshold_dbfs: float,
         music_window_sec: float,
         volume_persistence: VolumePersistence | None = None,
+        initial_anchor_dbfs: float = DEFAULT_ANCHOR_DBFS,
     ) -> None:
         self._camilla = camilla
         self._tts = tts
@@ -273,8 +278,17 @@ class TtsVolumeTracker:
         # Optional disk persistence: every poll reads main_volume; we
         # opportunistically debounce-write it so external changes (moOde
         # web UI volume slider, mpc, hardware knob) get captured even
-        # though they don't go through our voice tools.
+        # though they don't go through our voice tools. The same path
+        # also persists the loudness anchor as it updates.
         self._volume_persistence = volume_persistence
+        # Loudness anchor: the last observed playback RMS while music
+        # was actually playing, used as TTS's reference during silence
+        # so TTS doesn't get loud just because main_volume is high
+        # while iPhone (or whatever upstream attenuator) is low.
+        # Initialized from disk at boot, or DEFAULT_ANCHOR_DBFS for
+        # first-boot. Updated continuously while music plays. Never
+        # expires — the Pi doesn't move, the room context is stable.
+        self._anchor_dbfs: float = float(initial_anchor_dbfs)
 
     def pause(self) -> None:
         self._paused = True
@@ -293,19 +307,49 @@ class TtsVolumeTracker:
 
     def _compute_gain(self, vol_db: float, windowed_rms: float) -> float:
         """Pure: given current main_volume and windowed RMS peak,
-        return target gain. The user's master_volume + offset is the
-        absolute ceiling (master_volume controls "max possible TTS
-        loudness" no matter what music level is doing)."""
+        return target gain.
+
+        Three branches:
+          1. Music currently playing (windowed_rms above threshold) →
+             match observed loudness directly.
+          2. Silence, but we have a loudness anchor (the last-known
+             music level, possibly from a previous session) → target
+             that level. This is what fixes the "TTS too loud during
+             silence when iPhone is at 20%" problem: anchor reflects
+             actual perceived output regardless of upstream attenuators.
+          3. Otherwise → main_volume + offset (legacy fallback). With
+             initial_anchor_dbfs defaulting to DEFAULT_ANCHOR_DBFS
+             (-30 dBFS = 40%), branch 3 is rarely hit in practice; it's
+             a backstop.
+
+        master_volume + offset is the ABSOLUTE CEILING in all branches.
+        Anchor can only push gain DOWN from that ceiling, never up."""
         ceiling = vol_db + self._offset_db
-        if windowed_rms <= self._silence_threshold_dbfs:
-            target = ceiling
-        else:
+        if windowed_rms > self._silence_threshold_dbfs:
             target = (
                 windowed_rms + self._headroom_db - self.GEMINI_SOURCE_PEAK_DBFS
             )
+        elif self._anchor_dbfs > -120.0:
+            target = (
+                self._anchor_dbfs + self._headroom_db
+                - self.GEMINI_SOURCE_PEAK_DBFS
+            )
+        else:
+            target = ceiling
         # Quantize to 1 dB to avoid log spam and rapid micro-adjustments
         # below human-perceivable change (~3 dB JND for loudness).
         return round(min(target, ceiling))
+
+    def _maybe_update_anchor(self, windowed_rms: float) -> None:
+        """If music is currently playing (above silence threshold),
+        update the in-memory anchor and opportunistically persist it.
+        During silence, the anchor stays frozen at the last recorded
+        music level — that's the whole point."""
+        if windowed_rms <= self._silence_threshold_dbfs:
+            return
+        self._anchor_dbfs = windowed_rms
+        if self._volume_persistence is not None:
+            self._volume_persistence.maybe_save_anchor(windowed_rms)
 
     async def apply_now(self) -> None:
         try:
@@ -330,6 +374,7 @@ class TtsVolumeTracker:
             )
             rms = float("-inf")
         windowed = self._record_rms(rms)
+        self._maybe_update_anchor(windowed)
         self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
 
     async def start(self) -> None:
@@ -377,6 +422,7 @@ class TtsVolumeTracker:
             except Exception:  # noqa: BLE001
                 rms = float("-inf")
             windowed = self._record_rms(rms)
+            self._maybe_update_anchor(windowed)
             self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
 
 
@@ -935,6 +981,20 @@ async def run() -> None:
         safe_high_pct=cfg.volume_regress_safe_high_pct,
         first_boot_default_pct=cfg.volume_first_boot_default_pct,
     )
+    # Loudness anchor: never expires. If the file has one, use it
+    # exactly. Otherwise fall to DEFAULT_ANCHOR_DBFS (-30 dBFS = 40%
+    # equivalent), which gives a conservative conversational-level TTS
+    # output — neither blasting nor inaudible.
+    if record is not None and record.loudness_anchor_dbfs is not None:
+        initial_anchor = record.loudness_anchor_dbfs
+        anchor_reason = "restored from disk"
+    else:
+        initial_anchor = DEFAULT_ANCHOR_DBFS
+        anchor_reason = "first-boot default"
+    logger.info(
+        "tts loudness anchor: %s = %.1f dBFS",
+        anchor_reason, initial_anchor,
+    )
     try:
         await camilla.set_volume_db(restored_db)
         # Always re-persist after restore so the file's updated_at
@@ -1001,6 +1061,7 @@ async def run() -> None:
                 silence_threshold_dbfs=cfg.tts_silence_threshold_dbfs,
                 music_window_sec=cfg.tts_music_window_sec,
                 volume_persistence=volume_persistence,
+                initial_anchor_dbfs=initial_anchor,
             )
             await tts_volume_tracker.start()
             wake_loop = WakeLoop(
