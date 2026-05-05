@@ -11,34 +11,33 @@ issue voice commands and have those commands hit *their* Spotify
 account, not somebody else's. There's no shared family token in
 Spotify's world — every API call is scoped to one OAuth refresh
 token. So we maintain one token per household member and pick the
-right one based on who's currently using the speaker.
+right one based on **what's actually playing right now**.
 
-The keystone signal: **AirPlay's `ClientName`** (e.g. `"Brittany's
-iPhone"`), which shairport-sync exposes via DBus on every active
-session. The router matches that against per-account "device name"
-patterns to decide who to route a command to. With no AirPlay active,
-it falls back to `is_playing` polled across each account's Spotify
-Web API session, then to a configured default.
+The keystone signal: the **track title pushed over AirPlay**, read
+from shairport-sync's MPRIS `xesam:title`. The router cross-references
+that against each account's Spotify Web API `current_playback.item.name`
+and routes to whoever's playing the same song. No per-device setup,
+no fragile name-matching.
 
 ```
-┌──────────────────────┐       ┌──────────────────────┐
-│  shairport-sync      │       │  Spotify Web API     │
-│  ClientName=         │       │  current_playback    │
-│   "Brittany's iPhone"│       │  per account         │
-└──────────┬───────────┘       └──────────┬───────────┘
-           │                              │
-           └──────────┐         ┌─────────┘
-                     ▼         ▼
-              ┌──────────────────────┐
-              │  Router.active()     │
-              │  1. ClientName match │
-              │  2. is_playing       │
-              │  3. default account  │
-              └──────────┬───────────┘
-                         ▼
-              transport / spotify_play tools
-              issue commands against that
-              account's spotipy client
+┌──────────────────────────┐       ┌──────────────────────────┐
+│  shairport-sync MPRIS    │       │  Spotify Web API         │
+│  xesam:title =           │       │  current_playback.item   │
+│   "Hey Jude"             │       │   .name (per account)    │
+└──────────────┬───────────┘       └──────────────┬───────────┘
+               │                                  │
+               └─────────────┐         ┌──────────┘
+                             ▼         ▼
+                  ┌──────────────────────────────┐
+                  │  Router.resolve_for_         │
+                  │   transport(client, title)   │
+                  │  → the account whose         │
+                  │    current track matches     │
+                  └──────────────┬───────────────┘
+                                 ▼
+                    transport / spotify_play tools
+                    issue commands against that
+                    account's spotipy client
 ```
 
 State lives at:
@@ -49,8 +48,6 @@ State lives at:
 ```
 
 ## Setup, end-to-end
-
-This is one-time-per-household-member work.
 
 ### 1. Spotify Developer App (one human, one time, ever)
 
@@ -80,20 +77,18 @@ developer dashboard.
 
 Each person, on their own phone:
 
-1. Connect to AirPlay on the Pi (helps the form auto-detect their
-   device name — not required, but convenient).
-2. Open `https://jasper.local/spotify` in their browser.
-3. **Click through the cert warning.** Self-signed certs trip
+1. Open `https://jasper.local/spotify` in their browser.
+2. **Click through the cert warning.** Self-signed certs trip
    "connection not private" warnings. iOS Safari: tap "Show details"
    → "visit anyway." Chrome: "Advanced" → "Proceed." This is
-   one-time-per-device — the browser remembers. (To avoid the
-   warning entirely, install the cert on the device.)
-4. Pick a label name — a short identifier the speaker uses
+   one-time-per-device — the browser remembers.
+3. Pick a label name — a short identifier the speaker uses
    internally. Lowercase, no spaces. Not a display name.
-5. Confirm/edit the device-name pattern (auto-detected if AirPlay is
-   active right now). See **Device-name matching** below.
-6. "Continue with Spotify" → Spotify login → "Agree" → bounced back
+4. "Continue with Spotify" → Spotify login → "Agree" → bounced back
    to the speaker page. Account now appears in the list.
+
+That's it. No per-device setup. No "what's the AirPlay name on this
+device" form to fill in.
 
 ### 3. Restart `jasper-voice` once
 
@@ -104,76 +99,102 @@ the new accounts:
 sudo systemctl restart jasper-voice
 ```
 Subsequent additions don't strictly need a restart — the router will
-notice the missing client and skip routing to that account until next
-restart — but a restart is the cleanest way to make a freshly-added
-account fully active.
+just skip routing to a freshly-added account until next restart, since
+its OAuth token isn't loaded into the in-memory client map yet. A
+restart is the cleanest way to make a new account fully active.
 
-## Device-name matching
+## How routing actually works
 
-This is the part that's easy to get wrong and worth understanding.
+When you say "next song" / "previous" / "pause" / "resume":
 
-The router looks at shairport's `ClientName` for the active AirPlay
-session and matches it against each account's `client_name_patterns`
-list. The match is **case-insensitive substring with smart-quote
-normalisation**:
+1. `_detect_source` reads moOde's renderer flags and figures out the
+   active source: `airplay`, `spotify` (Connect), `bluetooth`, or `mpd`.
+2. For **AirPlay**: read shairport's MPRIS `xesam:title` and the
+   AirPlay `ClientName`. Then call
+   `Router.resolve_for_transport(client_name, mpris_title)`:
+   - For each configured account, fetch `current_playback.item.name`
+     in parallel.
+   - The account whose normalized title equals the MPRIS title
+     wins.
+   - If multiple accounts queue the same track, prefer the one with
+     `is_playing=True` (that's the AirPlay sender; others are paused
+     or stalled). Still tied → default account.
+   - Cache the decision, keyed on `(client_name, normalized_title)`.
+     Re-resolve on track change, sender change, or 1h TTL.
+3. If a Spotify account matched → call Next/Previous/Pause/Play on
+   that account's Web API targeting its active device. iOS Spotify
+   (and any other Spotify-AirPlay session) is controllable via this
+   path; iOS 17.4+ broke the DACP/MPRIS path for AirPlay 2 (shairport
+   #1822), making Spotify Web API the canonical answer.
+4. If no account matched (AirPlay sender is Apple Music, a podcast
+   app, a browser tab, etc.) → fall back to DACP via shairport's
+   MPRIS `Next/Previous/Pause/Play`. Works for legacy AirPlay 1 and
+   older Apple Music builds; silently no-ops on iOS 17.4+ for non-
+   Spotify senders.
+5. If DACP isn't available either → tell the user to use the controls
+   on their device, or to link their account at jasper.local/spotify.
 
-| Pattern stored | ClientName seen | Match? |
-|---|---|---|
-| `Jasper's iPhone` | `Jasper's iPhone` | ✓ (smart `’` ↔ regular `'`) |
-| `JASPER` | `Jasper's iPhone` | ✓ (case-insensitive) |
-| `iPhone` | `Jasper's iPhone` | ✓ (substring) |
-| `Jasper` | `Jasper's iPhone 15 Pro Max` | ✓ |
-| `Jasper's iPad` | `Jasper's iPhone` | ✗ (no overlap) |
-| `Curry` | `Jasper's iPhone` | ✗ |
+For **Spotify Connect** (no AirPlay) and `spotify_play` cold-starts,
+the title cross-reference doesn't apply (no track to match) — fall
+through to whichever account reports `is_playing=true`, then to the
+configured default.
 
-So you can be loose. The simplest robust pattern is just your first
-name — it'll match `Jasper's iPhone`, `Jasper's Mac Studio`, future
-`Jasper's iPad Pro` without re-editing.
+## Why the router cross-references titles instead of device names
 
-Multiple patterns per account are fine and stored as a list. The
-web form accepts comma-separated input:
+The first iteration of this used per-device-name patterns ("Jasper's
+iPhone" → account `jasper`). It broke in three ways:
 
-```
-Jasper's iPhone, Jasper's Mac Studio
-```
+- Same person, different device. AirPlaying from your Mac when only
+  your iPhone was registered → no match → command refused.
+- Devices get renamed. iOS lets you rename your phone freely; macOS
+  device names drift over time. Patterns went stale silently.
+- Speaker owner is out of the house, guest is AirPlaying. Pattern
+  matched no account → command refused. Even though there's exactly
+  one Spotify account currently playing, we couldn't route.
 
-If two accounts' patterns both match the same ClientName, the FIRST
-account in the registry wins. Don't make ambiguous patterns
-(`iPhone` would match every iPhone — bad). Anchor on first names.
-
-**To check what shairport reports right now**, while AirPlay is
-active:
-```
-dbus-send --system --print-reply \
-    --dest=org.gnome.ShairportSync /org/gnome/ShairportSync \
-    org.freedesktop.DBus.Properties.Get \
-    string:org.gnome.ShairportSync.RemoteControl string:ClientName
-```
-
-**To check what was matched on the most recent voice command**, look
-for `router:` lines in the daemon log:
-```
-journalctl -u jasper-voice -n 50 | grep -E "router:"
-```
-You'll see one of:
-- `router: airplay sender 'Jasper's iPhone' matched account jasper`
-- `router: airplay sender 'Alex's iPhone' matched no configured account`
-- `router: account jasper reports is_playing=true`
-- `router: falling back to default account jasper`
+Title cross-reference fixes all three: who you are doesn't matter,
+what device you're on doesn't matter, only what you're playing right
+now. Self-correcting on every track change. The only real failure
+mode is two household members listening to the exact same song at
+the exact same instant on different devices, which is rare enough to
+ignore (and tiebroken by `is_playing` then default-account in any
+case).
 
 ## What gets routed where
 
 | Voice command | When AirPlay is active | When AirPlay isn't active |
 |---|---|---|
-| "Next song" / "Skip" / "Previous" / "Pause" / "Resume" | Matched account's Spotify Web API → that user's active device. iOS Spotify is the iPhone's app receiving the command; track changes; AirPlay stream content updates seamlessly. | Active account's Web API → its active device (Pi librespot or wherever) |
-| "Play Kanye" / "Play [song]" / etc. | Matched account's account searches + start_playback on its active device | Active account searches + start_playback (target resolved by `spotify_routing`) |
+| "Next song" / "Skip" / "Previous" / "Pause" / "Resume" | `resolve_for_transport` matches sender's track to an account → that account's Spotify Web API. AirPlay stream content updates seamlessly. | Active account's Web API → its active device |
+| "Play [song]" / etc. | Title-match resolves the active listener; falls back to is_playing → default | Active account searches + start_playback (target resolved by `spotify_routing`) |
 | "What's playing?" | Matched account's `current_playback` (proper title/artist) | Active account's `current_playback` |
 | Volume / mute | Source-agnostic — always CamillaDSP main fader. Doesn't touch Spotify. | Same |
 
-If AirPlay is active but the sender doesn't match any account, the
-router falls through to DACP (which is dead on iOS 17.4+ for any
-sender, see `audit-pending-followups.md`) and ultimately tells the
-user to set up their account at `https://jasper.local/spotify`.
+## Verifying a route landed correctly
+
+Look for `router:` lines in the daemon log:
+```
+journalctl -u jasper-voice -n 50 | grep -E "router:"
+```
+You'll see one of:
+- `router: airplay sender 'Jasper's Mac Studio' playing 'Hey Jude' matched account jasper (1 title-matches, 1 playing)`
+- `router: airplay sender 'Jasper's iPhone' playing 'Hey Jude' matched no account (0 of 2 accounts have this title)`
+- `router: account jasper reports is_playing=true` (cold-start path)
+- `router: falling back to default account jasper`
+
+To inspect the AirPlay state directly:
+```
+# Sender ClientName
+dbus-send --system --print-reply \
+    --dest=org.gnome.ShairportSync /org/gnome/ShairportSync \
+    org.freedesktop.DBus.Properties.Get \
+    string:org.gnome.ShairportSync.RemoteControl string:ClientName
+
+# Currently-playing track (xesam:title shows what we cross-reference against)
+dbus-send --system --print-reply \
+    --dest=org.mpris.MediaPlayer2.ShairportSync /org/mpris/MediaPlayer2 \
+    org.freedesktop.DBus.Properties.Get \
+    string:org.mpris.MediaPlayer2.Player string:Metadata
+```
 
 ## Why iOS Spotify needs the Web API path (not just DACP)
 
@@ -188,14 +209,21 @@ end" in [issue #1822](https://github.com/mikebrady/shairport-sync/issues/1822).
 So shairport's DBus `Next` is a silent no-op for any modern iOS
 session. HomePods sidestep this via Apple's proprietary MRP-over-
 AirPlay-2 protocol, which is closed-source and not implemented in
-shairport. The Web API path is the only working alternative for
-controlling iOS Spotify from the receiver side.
+shairport. The title-match-then-Web-API path is the only working
+alternative for controlling iOS Spotify from the receiver side.
 
-The legacy DACP/MPRIS path is still wired up as a fallback for
+DACP/MPRIS is still wired up as a fallback for non-Spotify AirPlay
 sources that DO expose it (older iOS, Apple Music app on macOS pre-
 14.4, some non-Apple AirPlay senders), so the speaker degrades
-gracefully when somebody's casting from an unrecognised device —
-it'll work for them as long as they're not on iOS 17.4+ Spotify.
+gracefully when somebody's casting a podcast or YouTube tab — it'll
+work for them as long as they're not on iOS 17.4+ Spotify (and if
+they are, they're already on the title-match path anyway).
+
+**Note on MPRIS metadata reliability:** shairport's MPRIS
+`xesam:title` is populated by both Mac Spotify and iOS Spotify (verified
+on iOS 18 / Spotify 9.x as of 2026-05). Earlier versions of these
+docs incorrectly conflated DACP-broken-on-iOS with MPRIS-metadata-
+broken-on-iOS; only DACP is broken. Metadata flows fine.
 
 ## TLS / self-signed cert
 
@@ -223,11 +251,12 @@ the install script.
 ## Adding / removing accounts
 
 `https://jasper.local/spotify`:
-- Add: fill the form, OAuth, done.
+- Add: enter a label, OAuth, done.
 - Remove: click "Remove" next to the account. Wipes the cache file
   and removes the registry entry.
 - Set default: click "Set default" — picked when no AirPlay is
-  active and no other account is `is_playing`.
+  active and no other account is `is_playing` (cold-start commands
+  like "play Beyoncé" from silence).
 
 After any change, restart `jasper-voice` to rebuild the in-memory
 router:
@@ -250,8 +279,9 @@ sudo systemctl restart jasper-voice
 
 Code:
 ```
-jasper/accounts.py          Registry / Account / smart-quote-aware matching
-jasper/spotify_router.py    Router.resolve_airplay() / Router.active()
+jasper/accounts.py          Registry / Account
+jasper/spotify_router.py    Router.resolve_for_transport / Router.active
+jasper/spotify_routing.py   resolve_target (cold-start device picker, title _normalise)
 jasper/web/spotify_setup.py jasper-web HTTP service
 jasper/tools/transport.py   AirPlay / Spotify / MPD / Bluetooth dispatch
 jasper/tools/spotify.py     spotify_play / spotify_queue (router-aware)

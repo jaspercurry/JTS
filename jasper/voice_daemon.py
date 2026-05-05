@@ -186,22 +186,32 @@ NO_SPEECH_ABORT_SEC = 5.0
 # instead of holding the duck for ~10 s of dead air.
 POST_RESPONSE_IDLE_TIMEOUT_SEC = 1.5
 
-# Grace period after a turn starts before end-of-utterance / speech
-# detection counts. The wake word's trailing tail can still appear in
-# the first frames of the turn (the detector consumed the firing
-# frames but the audio momentum lingers); Silero would score that as
-# speech and either trip a premature silence-timer arm, or — when
-# combined with a thinking-pause — let `_user_speech_seen` flip on
-# wake-tail alone. We need to discount that early window.
+# Sustained-speech threshold for arming the end-of-utterance silence
+# detector. After wake fires, we wait for Silero to report ≥ THRESHOLD
+# speech-probability for at least this many seconds *continuously*
+# before flipping `_user_speech_seen`. Then — and only then — does
+# trailing silence start counting toward end-of-utterance.
 #
-# Originally 1.5 s, but that was too long: it filtered out legitimate
-# quick utterances ("Hey Jarvis, what time is it?") whose entire
-# spoken content fit inside the grace window — Silero saw the speech
-# but it didn't count toward `_user_speech_seen`, so the no-speech
-# abort fired even though max-silero was 1.00 within the turn. Wake-
-# word tail is realistically ~200-400 ms; 0.5 s is a tight margin
-# above that.
-END_OF_UTTERANCE_GRACE_SEC = 0.5
+# This replaces an earlier "fixed 500 ms grace window" approach that
+# discarded ALL Silero detections in the first 500 ms (to filter the
+# wake-word's audio tail). That broke fast talkers who said the wake
+# word immediately followed by a command ("Hey Jarvis volume up", no
+# pause): the entire command landed inside the grace window and was
+# discarded — Silero saw it, but `_user_speech_seen` never flipped,
+# and the 5 s no-speech abort fired even though the user clearly
+# spoke. The grace was sized for slow talkers' thinking-pauses, not
+# for the no-pause case.
+#
+# Switching to a sustained-speech requirement handles both cases with
+# one primitive: wake-tail audio is too short (~100-200 ms of mic
+# residual) to ever hit 200 ms continuous, so it can't false-arm; a
+# real spoken command — fast or slow — easily clears it. Pattern
+# borrowed from OpenVoiceOS's dinkum-listener (`speech_begin`
+# parameter, default 0.3 s); see ovos-dinkum-listener voice_loop.py.
+# We use 200 ms instead of 300 ms because our short single-word
+# commands ("next", "pause") only span ~250 ms of audio, and 300 ms
+# would miss them.
+SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
 
 
 class State(Enum):
@@ -640,6 +650,11 @@ class WakeLoop:
         self._input_ended: bool = False
         self._turn_started_at_loop: float = 0.0
         self._max_silero_score_in_turn: float = 0.0
+        # Anchor timestamp for the current run of continuous speech.
+        # Resets to 0 on any sub-threshold frame; once `now -
+        # _speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC`,
+        # arm the silence detector.
+        self._speech_run_started_at: float = 0.0
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -717,18 +732,21 @@ class WakeLoop:
         if self._input_ended:
             return
 
-        # End-of-utterance detection: run Silero VAD on the frame, track
-        # consecutive-silence-after-speech, and fire activity_end when
-        # the silence window crosses the threshold AND the grace period
-        # since turn start has elapsed. The grace period prevents the
-        # wake-word tail from triggering a premature end-of-utterance
-        # before the user has even started their actual question.
+        # End-of-utterance detection: run Silero VAD on the frame and
+        # arm the silence detector once the user has been speaking
+        # continuously for SUSTAINED_SPEECH_TO_ARM_SEC. Wake-word tail
+        # (the brief mic residual after openWakeWord fires) is too
+        # short to clear that bar, so it can't false-arm. A real
+        # spoken command — even one delivered immediately after the
+        # wake word with no pause — clears it within ~200 ms and arms
+        # normally. See SUSTAINED_SPEECH_TO_ARM_SEC for the design
+        # note on why this replaced an earlier fixed-grace-window
+        # scheme.
         speech_prob = self._vad.predict(frame)
         if speech_prob > self._max_silero_score_in_turn:
             self._max_silero_score_in_turn = speech_prob
         now = asyncio.get_event_loop().time()
         elapsed = now - self._turn_started_at_loop
-        in_grace = elapsed < END_OF_UTTERANCE_GRACE_SEC
 
         # Bail out fast if no real speech has been detected within the
         # abort window. Avoids the "ducked the music for 10 s and then
@@ -767,36 +785,39 @@ class WakeLoop:
             return
 
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
-            # Only count post-grace speech as "user has actually
-            # spoken" — wake-word tail audio in the grace window
-            # doesn't qualify, so it can't kick off the silence timer.
-            if not in_grace and not self._user_speech_seen:
+            if self._speech_run_started_at == 0.0:
+                self._speech_run_started_at = now
+            sustained = now - self._speech_run_started_at
+            if not self._user_speech_seen and sustained >= SUSTAINED_SPEECH_TO_ARM_SEC:
                 logger.info(
-                    "user speech detected (silero=%.2f) — silence detector armed",
-                    speech_prob,
+                    "user speech detected (sustained=%.0fms, silero=%.2f) — silence detector armed",
+                    sustained * 1000, speech_prob,
                 )
-                self._user_speech_seen = True
-            elif not in_grace:
                 self._user_speech_seen = True
             self._silence_started_at = 0.0
-        elif self._user_speech_seen and not in_grace:
-            if self._silence_started_at == 0.0:
-                self._silence_started_at = now
-            elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
-                silence_ms = (now - self._silence_started_at) * 1000
-                logger.info(
-                    "end-of-utterance: %.0fms user silence; sending activity_end",
-                    silence_ms,
-                )
-                self._input_ended = True
-                try:
-                    await self._turn.end_input()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "end_input failed (will end turn): %s", e,
+        else:
+            # Sub-threshold frame breaks the run. Wake-tail residual
+            # never reaches ~200 ms continuous, so this is what keeps
+            # it from arming.
+            self._speech_run_started_at = 0.0
+            if self._user_speech_seen:
+                if self._silence_started_at == 0.0:
+                    self._silence_started_at = now
+                elif now - self._silence_started_at >= END_OF_UTTERANCE_SILENCE_SEC:
+                    silence_ms = (now - self._silence_started_at) * 1000
+                    logger.info(
+                        "end-of-utterance: %.0fms user silence; sending activity_end",
+                        silence_ms,
                     )
-                    await self._end_turn()
-                return
+                    self._input_ended = True
+                    try:
+                        await self._turn.end_input()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "end_input failed (will end turn): %s", e,
+                        )
+                        await self._end_turn()
+                    return
 
         try:
             await self._turn.send_audio(frame.tobytes())
@@ -811,13 +832,15 @@ class WakeLoop:
         # state from a previous turn doesn't leak into this one.
         self._vad.reset()
         # Reset end-of-utterance tracking. _input_ended must be False
-        # so we resume forwarding mic frames; _user_speech_seen and
-        # _silence_started_at must be cleared so the silence detector
-        # doesn't fire on prior-turn state. _turn_started_at_loop
-        # anchors the grace-period window — measured here on the
-        # asyncio loop clock to match what the silence detector reads.
+        # so we resume forwarding mic frames; _user_speech_seen,
+        # _silence_started_at, and _speech_run_started_at must be
+        # cleared so the silence detector doesn't fire on prior-turn
+        # state. _turn_started_at_loop anchors NO_SPEECH_ABORT_SEC and
+        # HARD_RECORDING_CAP_SEC — measured here on the asyncio loop
+        # clock to match what the silence detector reads.
         self._user_speech_seen = False
         self._silence_started_at = 0.0
+        self._speech_run_started_at = 0.0
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0

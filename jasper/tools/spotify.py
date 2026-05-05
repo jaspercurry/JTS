@@ -12,34 +12,42 @@ logger = logging.getLogger(__name__)
 def make_spotify_tools(router, moode, librespot_name: str):
     """Multi-account-aware Spotify tools.
 
-    `router` is a `jasper.spotify_router.Router` that picks the right
-    household member's spotipy client for the current voice command:
-
-      - When AirPlay is active and the sender's `ClientName` matches a
-        configured account → that account's client.
-      - Otherwise, whichever account's Web API session reports
-        is_playing=true.
-      - Otherwise, the registry's default account.
+    `router` is a `jasper.spotify_router.Router`. When AirPlay is
+    streaming a track right now, the same title cross-reference
+    transport uses picks whose account this is — so "play Beyoncé"
+    while a guest is AirPlaying lands on the guest's account, not
+    the speaker owner's. When no AirPlay session is in flight (cold
+    start), we fall back to whichever account is currently is_playing,
+    then to the registry's default.
 
     Returns an empty tool list if no accounts are configured (fresh
     install, nobody has visited jasper.local/spotify yet)."""
     if router is None or not router.clients:
         return []
 
+    from ..spotify_router import airplay_client_name
+    from .transport import _mpris_now_playing
+
     async def _resolve_for_play() -> "tuple[object, str | None, list[str], str] | None":
         """Pick the active account and decide where to start_playback.
         Returns (sp, device_id, stop_renderers, account_name) or None
         if no account / device combination can be reached."""
-        # Pick the account first. If AirPlay is active and matches a
-        # household account, we use THAT — so the user who is
-        # AirPlaying gets their own Spotify content.
         renderers = await moode.active_renderers()
         airplay_active = bool(renderers.get("aplactive"))
-        ac = await router.active(airplay_active=airplay_active)
+        ac = None
+        if airplay_active:
+            client_name = await airplay_client_name()
+            try:
+                metadata = await _mpris_now_playing()
+                title = metadata.get("title", "")
+            except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
+                title = ""
+            if client_name and title:
+                ac = await router.resolve_for_transport(client_name, title)
+        if ac is None:
+            ac = await router.active(airplay_active=airplay_active)
         if ac is None:
             return None
-        # Use existing resolver for device targeting + renderer
-        # cleanup. Operates on this account's spotipy client.
         resolution = await resolve_target(ac.sp, moode, librespot_name)
         return ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name
 
