@@ -220,6 +220,9 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
 
 
 def check_moode_http(cfg: Config) -> CheckResult:
+    # The transport tools (toggle_play_pause, skip_next, get_now_playing)
+    # are always registered, so a broken moOde REST means voice commands
+    # like "Hey Jasper, pause" silently fail. Treat as fail, not warn.
     try:
         import httpx
         r = httpx.get(
@@ -230,9 +233,9 @@ def check_moode_http(cfg: Config) -> CheckResult:
         return CheckResult("moOde REST", "ok", f"GET {cfg.moode_base_url}")
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            "moOde REST", "warn",
-            f"can't reach {cfg.moode_base_url}: {e} "
-            f"(non-critical — voice transport tools won't work)",
+            "moOde REST", "fail",
+            f"can't reach {cfg.moode_base_url}: {e}. "
+            f"Music transport tools (pause, skip, now playing) won't work.",
         )
 
 
@@ -247,9 +250,10 @@ async def check_mpd(cfg: Config) -> CheckResult:
         return CheckResult("MPD", "ok", f"{cfg.mpd_host}:{cfg.mpd_port} state={state}")
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            "MPD", "warn",
-            f"can't connect to {cfg.mpd_host}:{cfg.mpd_port}: {e} "
-            f"(non-critical for v1 — moOde may not be running)",
+            "MPD", "fail",
+            f"can't connect to {cfg.mpd_host}:{cfg.mpd_port}: {e}. "
+            f"Music transport tools depend on this; the assistant will "
+            f"fail any play/pause/skip command.",
         )
 
 
