@@ -41,3 +41,27 @@ class WakeWordDetector:
         scores = self._model.predict(frame)
         score = float(scores.get(self._key, 0.0))
         return score >= self._threshold
+
+    def reset(self) -> None:
+        """Reset internal model state after a wake fires.
+
+        openWakeWord's prediction smoothing keeps recent-activation
+        state across calls — once the model has scored a wake-word
+        spike, its baseline stays elevated for several seconds, so
+        anything speech-shaped (music vocals, TTS-tail bleed) can
+        more easily push past the threshold and false-fire on the
+        next pass through WAKE state. Calling this between a wake
+        firing and the next listening window clears that bias.
+
+        Implementation note: openWakeWord exposes
+        `model.reset()` which clears per-model prediction-buffer
+        history. The deque-style internal buffers and any model-
+        level smoothing both get zeroed.
+        """
+        try:
+            self._model.reset()
+        except Exception as e:  # noqa: BLE001
+            # Older openwakeword versions might not expose reset();
+            # don't crash if it's not there — the symptom (post-wake
+            # false-fires) is annoying but not catastrophic.
+            logger.debug("wake detector reset() not available: %s", e)

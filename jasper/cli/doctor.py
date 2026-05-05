@@ -344,7 +344,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # Derive the mic card from cfg, not a literal — install.sh
         # autodetects the actual card name on the Pi. The dongle path
         # is fully exercised by check_tts_open below (opens
-        # plug:jasper_dongle which goes dmix → hw:CARD=...), so a
+        # jasper_out which fans out through dmix → hw:CARD=...), so a
         # separate literal check would just duplicate-fail.
         lambda: check_mic_card_matches_config(cfg),
         check_loopback,

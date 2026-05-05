@@ -44,6 +44,7 @@ include = ["jasper*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-# No asyncio_mode here yet — current tests are sync. Add it back along
-# with pytest-asyncio in the test environment when the first async test
-# lands.
+# `auto` mode applies @pytest.mark.asyncio implicitly to every async
+# def test, so we don't have to repeat the marker on every test.
+# Required by tests/test_gemini_session.py and tests/test_gemini_connection.py.
+asyncio_mode = "auto"

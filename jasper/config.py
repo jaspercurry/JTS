@@ -26,13 +26,10 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    if cfg.live_context_reset_sec <= 0:
+        raise RuntimeError("JASPER_LIVE_CONTEXT_RESET_SEC must be > 0")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
-    if cfg.aec_mode not in ("hardware", "software"):
-        raise RuntimeError(
-            f"JASPER_AEC_MODE must be 'hardware' or 'software', got "
-            f"'{cfg.aec_mode}'"
-        )
     return cfg
 
 
@@ -51,13 +48,13 @@ class Config:
     tts_device: str
     tts_output_rate: int
     tts_gain_db: float
-    aec_mode: str
     vad_barge_in_threshold: float
 
     camilla_host: str
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
+    live_context_reset_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
@@ -109,17 +106,15 @@ class Config:
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
             # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
             # name from /root/.asoundrc — `plug:` aliases aren't
-            # enumerated by PortAudio). Pick `jasper_xvf` for hardware
-            # AEC mode (XVF3800 jack), `jasper_dongle` for software AEC
-            # mode (Apple dongle).
-            tts_device=_env("JASPER_TTS_DEVICE", "jasper_xvf"),
-            # 24 kHz = Gemini's native output. With the `jasper_xvf`
-            # plug wrapper this works directly (plug downsamples to the
-            # 16 kHz dmix slave). For `jasper_dongle` (48 kHz dmix), set
-            # JASPER_TTS_OUTPUT_RATE=48000 so TtsPlayout polyphase-
-            # upsamples 24 → 48 kHz before writing (must be integer
-            # multiple of 24000).
-            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 24000),
+            # enumerated by PortAudio). `jasper_out` is the fan-out PCM
+            # that duplicates writes to BOTH the Apple dongle (speaker)
+            # AND the XVF3800 USB-IN (AEC reference).
+            tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
+            # Top-level pcm.jasper_out runs at 48 kHz (matches the
+            # dongle's native rate and CamillaDSP's chunk rate).
+            # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
+            # before write (factor 2, exact integer ratio).
+            tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
             # Static attenuation applied to TTS PCM before write. Gemini
             # outputs raw PCM at consistent level (peaks ~-3 dBFS); with
             # no gain stage between Gemini and the dongle this comes out
@@ -128,18 +123,6 @@ class Config:
             # dominate. Long-term fix: route TTS through CamillaDSP so
             # it tracks user's master_gain (TODO).
             tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", -8.0),
-            # JASPER_AEC_MODE — how echo cancellation is achieved:
-            #   hardware: XVF3800 chip's built-in AEC. Speakers plug
-            #             into the XVF3800's 3.5mm jack; CamillaDSP
-            #             playback → jasper_xvf; chip subtracts the
-            #             playback signal from the mic capture using
-            #             USB-IN as the AEC reference. No software
-            #             gating needed; real barge-in works.
-            #   software: NOT YET IMPLEMENTED — will gate mic-to-Gemini
-            #             via local Silero VAD so any mic (UMIK-2,
-            #             cheap USB mic) can be used. Speakers plug
-            #             into the Apple dongle (or any DAC).
-            aec_mode=_env("JASPER_AEC_MODE", "hardware"),
             # Silero VAD probability threshold for barge-in gating.
             # While the model is producing TTS, mic frames are only
             # forwarded to Gemini if Silero says speech_prob >= this.
@@ -153,6 +136,14 @@ class Config:
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -15.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
+            # After this many seconds with no turns, the persistent live
+            # connection drops its sessionResumption handle and reopens
+            # with a fresh session — so conversational context from a
+            # query hours earlier doesn't leak into the next one
+            # ("what's the weather" at 9am should NOT influence "what
+            # time is it" at 5pm). 5 min default = long enough to keep
+            # multi-turn dialogues coherent, short enough to feel fresh.
+            live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
             moode_base_url=_env("MOODE_BASE_URL", "http://127.0.0.1"),
