@@ -96,11 +96,26 @@ class _FakeSession:
         self.sent_tool_responses.append(function_responses)
 
     async def receive(self):
+        # Legacy async-generator path — preserved for any out-of-tree
+        # consumers; the persistent-connection receive_loop calls
+        # `_receive()` (below) directly to bypass python-genai #2244.
         while True:
             item = await self._inbox.get()
             if isinstance(item, Exception):
                 raise item
             yield item
+
+    async def _receive(self):
+        """Match production's lower-level call: returns one response
+        per call, raises on error. The persistent-connection
+        ``_receive_loop`` calls this in a ``while True`` loop instead
+        of iterating the public ``receive()`` generator (which
+        early-breaks on every ``turn_complete`` per python-genai
+        bug #2244)."""
+        item = await self._inbox.get()
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     async def close(self) -> None:
         self.closed = True
@@ -259,9 +274,12 @@ async def test_session_resumption_handle_used_on_reconnect():
     registry = ToolRegistry()
     await conn.start(registry, "system")
     try:
-        # First config has no handle.
+        # First config has no session_resumption field at all — production
+        # code deliberately omits it on the initial connect (Google's
+        # reference demos never set it, and sending handle=None has
+        # been observed to put the server into a silent-failure state).
         first_config = factory.configs[0]
-        assert first_config.session_resumption.handle is None
+        assert first_config.session_resumption is None
 
         sess = factory.sessions[0]
         # Server reports a resumption handle.
@@ -421,7 +439,9 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         # New session was opened.
         assert len(factory.sessions) == 2
         # New session opened with NO resumption handle (fresh context).
-        assert factory.configs[1].session_resumption.handle is None
+        # Production code omits the field entirely when there's no
+        # handle — see _build_session_resumption().
+        assert factory.configs[1].session_resumption is None
         # The connection cleared the cached handle.
         assert conn._resumption_handle is None
         await turn2.release()
@@ -537,6 +557,226 @@ async def test_send_audio_routes_through_active_turn():
         assert len(audio_sends) == 2
         assert turn.bytes_sent() == 640
         await turn.release()
+    finally:
+        await conn.stop()
+
+
+def _make_websockets_409() -> Exception:
+    """Build an exception that mirrors the real SDK 409 shape.
+
+    google-genai 1.13.x raises ``websockets.legacy.exceptions.
+    InvalidStatusCode`` on a 409 from Google's edge, which carries
+    the code on ``e.status_code`` directly (NOT on ``e.response.
+    status_code`` like httpx errors). The fake here replicates that
+    shape so ``_is_409_conflict`` is exercised on the realistic
+    attribute path."""
+    class _WSInvalidStatusCode(Exception):
+        status_code = 409
+
+        def __init__(self):
+            super().__init__("server rejected WebSocket connection: HTTP 409")
+
+    return _WSInvalidStatusCode()
+
+
+def _make_httpx_409() -> Exception:
+    """Build an exception that mirrors the legacy httpx-style 409 shape
+    used in the existing test_409_on_initial_connect_retries test —
+    kept here so both attribute paths get coverage."""
+    class _HttpxConflict(Exception):
+        def __init__(self):
+            super().__init__("409 Conflict")
+            class _Resp:
+                status_code = 409
+            self.response = _Resp()
+
+    return _HttpxConflict()
+
+
+async def test_409_detected_via_websockets_status_code_attribute():
+    """The real SDK raises ``websockets.legacy.exceptions.
+    InvalidStatusCode``, which carries the status on
+    ``exc.status_code`` (not ``exc.response.status_code``). The
+    pre-fix detection used only ``e.response.status_code`` and so
+    relied entirely on the substring fallback for every real 409 —
+    which would silently break on a websockets release that reformats
+    the error message. This test pins the websockets-shape detection
+    path explicitly."""
+    factory = _FakeConnect()
+    factory.next_exceptions = [_make_websockets_409()]
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        voice="Aoede",
+        context_reset_sec=9999.0,
+        keepalive_period_sec=9999.0,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    # Should retry past the websockets-shaped 409 and end up CONNECTED.
+    await asyncio.wait_for(conn.start(registry, "system"), timeout=5.0)
+    try:
+        assert conn._state is ConnectionState.CONNECTED
+    finally:
+        await conn.stop()
+
+
+async def test_reconnect_409_drops_resumption_handle_and_retries_fresh():
+    """The single most damaging pre-fix bug: a stale resumption handle
+    (server-invalidated by ABORTED close, expiry, or being redeemed
+    elsewhere) caused every reconnect attempt to 409 against the same
+    handle until the backoff budget was exhausted and the connection
+    went FAILED. The fix drops the handle on the first 409, so the
+    next attempt connects fresh.
+
+    Drives this by: open succeeds, a handle gets cached, the WS
+    drops, the supervisor's first reconnect attempt 409s, the
+    second attempt is allowed to succeed (no queued exception).
+    Asserts: handle was cleared on the connection AND the second
+    config carries no resumption handle."""
+    # Two backoff steps so we have one "first attempt" and one "retry".
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess = factory.sessions[0]
+        # Cache a resumption handle.
+        sess.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stale")))
+        await _wait_until(lambda: conn._resumption_handle == "hndl-stale")
+
+        # Drop the WS. Queue ONE 409 for the first reconnect attempt;
+        # the second attempt will succeed (no queued exception).
+        factory.next_exceptions = [_make_websockets_409()]
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal"
+            rcvd = _Rcvd()
+        sess.feed_error(_Drop())
+
+        # Reconnect should succeed on the second attempt after the
+        # 409-on-first-attempt forces a handle drop.
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        # Handle was cleared.
+        assert conn._resumption_handle is None
+        # Successful reconnect's config carries NO handle (reconnected
+        # fresh, not with the stale handle). _build_session_resumption()
+        # omits the field entirely when there's no handle.
+        assert factory.configs[1].session_resumption is None
+    finally:
+        await conn.stop()
+
+
+async def test_reconnect_409_with_no_cached_handle_just_retries():
+    """If a 409 fires during reconnect AND there's no cached handle,
+    the retry path should still proceed (handle-drop is a no-op,
+    backoff still gives the server room to release). Pre-fix this
+    case wasn't even special-cased — proves the new code doesn't
+    regress it."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess = factory.sessions[0]
+        # No resumption handle is ever cached for this test.
+        assert conn._resumption_handle is None
+
+        factory.next_exceptions = [_make_websockets_409()]
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+            rcvd = _Rcvd()
+        sess.feed_error(_Drop())
+
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        assert conn._resumption_handle is None
+    finally:
+        await conn.stop()
+
+
+async def test_context_reset_reopen_recovers_from_409():
+    """Pre-fix the bare ``await self._open_session()`` inside
+    ``_maybe_reset_context`` had no retry — a single 409 from the
+    post-teardown race put the connection into an indeterminate
+    state and crashed the wake handler.
+
+    This test: idle past the context-reset window, then on the next
+    acquire_turn the post-teardown reopen 409s once, retries, and
+    succeeds. The turn should be acquirable without raising."""
+    conn, factory = _make_conn(context_reset_sec=0.01)
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        # First turn so context-reset has something to reset.
+        turn1 = await conn.acquire_turn()
+        await turn1.release()
+        await asyncio.sleep(0.05)  # past the 0.01s reset window.
+
+        # Queue a 409 for the FIRST post-teardown open. The retry
+        # (1.0s into the schedule) will succeed since no second
+        # exception is queued.
+        factory.next_exceptions = [_make_websockets_409()]
+
+        # The acquire_turn should succeed despite the 409 transient.
+        # 5s timeout: 1.0s sleep before the retry attempt + slack.
+        turn2 = await asyncio.wait_for(conn.acquire_turn(), timeout=5.0)
+        assert len(factory.sessions) == 2  # post-teardown + retry → one new session
+        await turn2.release()
+    finally:
+        await conn.stop()
+
+
+async def test_context_reset_hard_fail_triggers_supervisor():
+    """If every retry on the context-reset reopen path fails, the
+    connection used to be left wedged: no session, supervisor
+    never woken, ``_connected_event`` cleared, every subsequent
+    wake hung for 20s before timing out. The fix sets
+    ``_reconnect_event`` so the supervisor takes over recovery.
+
+    Verified by counting that on hard failure, the supervisor's
+    reconnect loop kicks in (factory sessions count keeps growing
+    even after the original acquire_turn raised)."""
+    factory = _FakeConnect()
+    conn = GeminiLiveConnection(
+        api_key="fake",
+        model="fake-model",
+        voice="Aoede",
+        context_reset_sec=0.01,
+        keepalive_period_sec=9999.0,
+        backoff_schedule=(0.0, 0.0),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        # First turn so context reset has something to reset.
+        turn1 = await conn.acquire_turn()
+        await turn1.release()
+        await asyncio.sleep(0.05)
+
+        # Queue MANY 409s — exhausts the context-reset retry schedule
+        # AND every supervisor reconnect attempt. The point is to
+        # observe the supervisor being woken at all.
+        factory.next_exceptions = [_make_websockets_409() for _ in range(20)]
+
+        # acquire_turn raises once context-reset retries are exhausted.
+        with pytest.raises(Exception):
+            await asyncio.wait_for(conn.acquire_turn(), timeout=20.0)
+
+        # Supervisor was triggered: the reconnect_event was set and
+        # the supervisor consumed at least one of the queued 409s
+        # in its own backoff loop (drained next_exceptions further
+        # than the context-reset path alone would have).
+        await _wait_until(
+            lambda: conn._reconnect_event.is_set()
+            or conn._state is ConnectionState.FAILED
+            or conn._state is ConnectionState.RECONNECTING
+            or conn._state is ConnectionState.PAUSED_FOR_BACKOFF,
+            timeout=3.0,
+        )
     finally:
         await conn.stop()
 
