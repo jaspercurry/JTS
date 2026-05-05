@@ -50,6 +50,26 @@ When 3.1 Live unsticks, run `switch-gemini-model.sh 3.1` to flip back.
 The Pi runs the daemon. This repo is developed on a laptop. The deploy
 target is `/opt/jasper/` on the Pi via `deploy/install.sh`.
 
+## Multi-user Spotify
+
+Two-or-more household members share one speaker with separate
+Spotify accounts. Routing is via shairport's AirPlay `ClientName`
+matched against per-account device-name patterns; falls back to
+which account's Spotify Web API shows `is_playing=true`, then to a
+configured default. iOS 17.4+ broke DACP for every AirPlay sender
+(see shairport #1822), so iOS Spotify transport goes through the
+account's Web API targeting the iPhone's device — not via
+shairport's MPRIS interface, which silently no-ops on modern iOS.
+
+Setup is a web flow at `https://jasper.local/spotify` (HTTPS via a
+self-signed cert; phones click through "not private" once). One
+Spotify Developer App registered by the speaker owner; each
+household member OAuths their personal account against it. The
+detail-level docs live in [`docs/multi-user-spotify.md`](docs/multi-user-spotify.md)
+including the device-name matching rules (case-insensitive
+substring, smart-quote-tolerant) and how to verify a route landed
+correctly via the daemon's `router:` log lines.
+
 ## Debugging Pi behaviour from this repo
 
 When the user reports "it doesn't work" or asks about Pi-side behaviour,

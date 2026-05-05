@@ -7,15 +7,17 @@ import sys
 from collections import deque
 from enum import Enum
 
+from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
 from .moode import MoodeClient
+from .spotify_router import Router, build_clients
 from .subway import SubwayClient
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
-from .tools.spotify import build_spotify, make_spotify_tools
+from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
@@ -46,9 +48,15 @@ SYSTEM_INSTRUCTION = (
     "Examples of correct style:\n"
     "  User: 'What time is it?'      → 'It's 9:47.'\n"
     "  User: 'What's the weather?'   → '62 and partly cloudy. Rain by Thursday.'\n"
-    "  User: 'Pause the music.'      → [pause tool] 'Paused.'\n"
-    "  User: 'Play some jazz.'       → [spotify_play tool] 'Playing jazz.'\n"
-    "  User: 'Turn the volume down.' → [volume tool] 'Done.'\n"
+    "  User: 'Pause.' / 'Stop.'      → [pause] 'Done.'\n"
+    "  User: 'Skip.' / 'Next song.'  → [next_track] 'Done.'\n"
+    "  User: 'Go back.'              → [previous_track] 'Done.'\n"
+    "  User: 'Resume.' / 'Play.'     → [resume] 'Done.'\n"
+    "  User: 'Play some jazz.'       → [spotify_play 'jazz'] 'Done.'\n"
+    "  User: 'Volume up.'            → [adjust_volume +10] 'Done.'\n"
+    "  User: 'Turn it down a lot.'   → [adjust_volume -25] 'Done.'\n"
+    "  User: 'Set volume to 30.'     → [set_volume 30] 'Done.'\n"
+    "  User: 'Mute.'                 → [mute] 'Done.'\n"
     "  User: 'Who won the game?'     → 'Sorry, I don't have sports scores.'\n"
     "Examples of INCORRECT style (do not produce these):\n"
     "  'Sure! It's 9:47. Anything else I can help you with?'\n"
@@ -56,8 +64,16 @@ SYSTEM_INSTRUCTION = (
     "  'Pausing now. Let me know when you'd like me to resume!'\n"
     # Tool-use rules (existing).
     "When the user asks to control music or volume, call the appropriate "
-    "tool — don't ask for confirmation first. Use get_now_playing before "
-    "answering questions about the current track. "
+    "tool — don't ask for confirmation first. After a volume or transport "
+    "tool call, reply with the single word 'Done.' and stop — "
+    "never narrate the action ('Setting volume to 30…') and never "
+    "ask a follow-up. Use the default step of 10% for 'volume up'/'volume "
+    "down'; pass a larger delta (±20-30) for 'a lot louder/quieter'. "
+    "For bare 'play' / 'resume' / 'keep playing' (no song or artist named), "
+    "call resume — that un-pauses paused music. ONLY call spotify_play when "
+    "the user names a song, artist, album, or playlist (e.g. 'play Kanye', "
+    "'play Bohemian Rhapsody', 'play my workout playlist'). "
+    "Use get_now_playing before answering questions about the current track. "
     "Use get_weather for any weather, temperature, or rain question; if "
     "the user doesn't name a city, pass an empty location string and the "
     "tool will use the default. The weather response has now/today/tomorrow "
@@ -71,12 +87,17 @@ SYSTEM_INSTRUCTION = (
     "precipitation_probability percentage; if it's null, fall back to "
     "will_rain. "
     "For subway questions ('when's the next train', 'when's the next D', "
-    "'next train toward Coney'), call get_subway_arrivals. Both line and "
-    "direction are optional — at a single-line station the line defaults "
-    "to that line and direction defaults to the speaker's home direction, "
-    "so a bare 'when's the next train' passes empty strings. Voice answer "
-    "style: 'Next uptown D trains in 5, 12, and 19 minutes.' or, when "
-    "station/line are obvious, just 'Next train in 4 minutes, then 11 and 17.'"
+    "'next train toward Coney'), call get_subway_arrivals. ALWAYS call "
+    "the tool fresh on every train question — never reuse a prior "
+    "result, even if the user just asked seconds ago. Train arrivals "
+    "are real-time; minutes counted down since the last call, and "
+    "trains have come and gone. Repeating a stale answer is wrong. "
+    "Both line and direction are optional — at a single-line station "
+    "the line defaults to that line and direction defaults to the "
+    "speaker's home direction, so a bare 'when's the next train' "
+    "passes empty strings. Voice answer style: 'Next uptown D trains "
+    "in 5, 12, and 19 minutes.' or, when station/line are obvious, "
+    "just 'Next train in 4 minutes, then 11 and 17.'"
 )
 
 # Refractory after a turn ends before the wake detector is re-armed.
@@ -136,7 +157,13 @@ PRE_ROLL_FRAMES = 7
 # strict to avoid TTS-bleed false-positives in the barge-in gate;
 # this one is tuned LOOSE so soft / quiet speech still flips
 # `_user_speech_seen` so the silence detector arms.
-END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.1
+# 0.10 was too loose: AirPlay music vocals scored 0.13 and flipped
+# the flag, which let a wake-word false-fire run all the way through
+# end-of-utterance and hit the model with garbage audio (which it
+# then narrated via get_now_playing). Real user speech in the same
+# session bottomed out at 0.19, so 0.15 sits comfortably between
+# music transients and the softest real speech observed.
+END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.15
 
 # If `_user_speech_seen` never flips within this window (user said
 # the wake word and then nothing, or spoke too quietly for Silero
@@ -177,6 +204,169 @@ class State(Enum):
     SESSION = "session"
 
 
+class TtsVolumeTracker:
+    """Keeps TtsPlayout's gain matched to the actual loudness of music
+    playing through the speaker, regardless of where the music's
+    attenuation came from.
+
+    Why measure rather than guess. There are several volume stages on
+    the music chain that TTS bypasses:
+
+        track_loudness × airplay_sender_vol × spotify_connect_vol
+            × mpd_vol × camilla_main_volume × room_correction → DAC
+
+    Adding TTS gain = `main_volume + offset` only matches the LAST
+    stage. If the user's iPhone AirPlay slider is at 50%, music plays
+    ~6 dB quieter than `main_volume` implies; TTS at the legacy fixed
+    offset comes out audibly louder than music in that exact scenario.
+
+    What we do. Poll CamillaDSP's `levels.playback_rms()` — the signal
+    AFTER every attenuation stage, immediately before the DAC. Maintain
+    a windowed peak (max RMS over MUSIC_WINDOW_SEC) so quick quiet
+    passages don't let TTS climb between phrases. Set TTS gain so that
+    Gemini's source-peak ends up `music_headroom_db` above the windowed
+    music RMS:
+
+        tts_gain_db = (windowed_rms + headroom) - GEMINI_SOURCE_PEAK
+
+    Always capped at the user's master_volume + offset (the legacy
+    formula remains as a hard ceiling — playback_rms can only make TTS
+    quieter, never louder). When playback_rms < silence_threshold the
+    tracker falls back to the legacy formula directly.
+
+    Hearing-safety belt is in TtsPlayout.set_gain_db (MIN/MAX clamp).
+    This class is defense-in-depth on top of that.
+
+    Pause/resume around voice sessions so duck-induced volume changes
+    don't pull TTS down DURING the very turn TTS is playing.
+    """
+
+    POLL_INTERVAL_SEC = 0.25
+    # Approximate peak of Gemini Live's TTS PCM output (dBFS). Voice
+    # is dynamic but consistent across sessions/utterances per the
+    # source library; observed peaks cluster around -3 dBFS. Used to
+    # convert "where do we want TTS to sit" → "what gain to apply".
+    GEMINI_SOURCE_PEAK_DBFS = -3.0
+
+    def __init__(
+        self,
+        camilla: CamillaController,
+        tts: TtsPlayout,
+        offset_db: float,
+        music_headroom_db: float,
+        silence_threshold_dbfs: float,
+        music_window_sec: float,
+    ) -> None:
+        self._camilla = camilla
+        self._tts = tts
+        self._offset_db = float(offset_db)
+        self._headroom_db = float(music_headroom_db)
+        self._silence_threshold_dbfs = float(silence_threshold_dbfs)
+        self._window_sec = float(music_window_sec)
+        # (monotonic_time, max(L_rms, R_rms)) entries, oldest first.
+        self._peak_buffer: deque[tuple[float, float]] = deque()
+        self._paused = False
+        self._task: asyncio.Task | None = None
+        self._stop_event = asyncio.Event()
+
+    def pause(self) -> None:
+        self._paused = True
+
+    def resume(self) -> None:
+        self._paused = False
+
+    def _record_rms(self, rms_dbfs: float) -> float:
+        """Append latest RMS reading and return windowed peak."""
+        now = asyncio.get_event_loop().time()
+        self._peak_buffer.append((now, rms_dbfs))
+        cutoff = now - self._window_sec
+        while self._peak_buffer and self._peak_buffer[0][0] < cutoff:
+            self._peak_buffer.popleft()
+        return max(p for _, p in self._peak_buffer)
+
+    def _compute_gain(self, vol_db: float, windowed_rms: float) -> float:
+        """Pure: given current main_volume and windowed RMS peak,
+        return target gain. The user's master_volume + offset is the
+        absolute ceiling (master_volume controls "max possible TTS
+        loudness" no matter what music level is doing)."""
+        ceiling = vol_db + self._offset_db
+        if windowed_rms <= self._silence_threshold_dbfs:
+            target = ceiling
+        else:
+            target = (
+                windowed_rms + self._headroom_db - self.GEMINI_SOURCE_PEAK_DBFS
+            )
+        # Quantize to 1 dB to avoid log spam and rapid micro-adjustments
+        # below human-perceivable change (~3 dB JND for loudness).
+        return round(min(target, ceiling))
+
+    async def apply_now(self) -> None:
+        try:
+            vol_db, muted = await self._camilla.get_volume_and_mute()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "tts volume tracker: read failed (%s); falling to silent gain",
+                e,
+            )
+            self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
+            return
+        if muted:
+            self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
+            return
+        try:
+            l, r = await self._camilla.get_playback_rms()
+            rms = max(l, r)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(
+                "playback_rms read failed (%s); using silence fallback",
+                e,
+            )
+            rms = float("-inf")
+        windowed = self._record_rms(rms)
+        self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
+
+    async def start(self) -> None:
+        await self.apply_now()
+        self._task = asyncio.create_task(self._loop())
+
+    async def stop(self) -> None:
+        self._stop_event.set()
+        if self._task is not None:
+            self._task.cancel()
+            try:
+                await self._task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._task = None
+
+    async def _loop(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+            except asyncio.CancelledError:
+                return
+            if self._paused:
+                continue
+            try:
+                vol_db, muted = await self._camilla.get_volume_and_mute()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "tts volume tracker poll: read failed (%s), holding last gain",
+                    e,
+                )
+                continue
+            if muted:
+                self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
+                continue
+            try:
+                l, r = await self._camilla.get_playback_rms()
+                rms = max(l, r)
+            except Exception:  # noqa: BLE001
+                rms = float("-inf")
+            windowed = self._record_rms(rms)
+            self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
+
+
 def _build_system_instruction() -> str:
     """Return the system instruction with current local time injected.
 
@@ -204,6 +394,31 @@ def _make_connection(cfg: Config) -> LiveConnection:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
+def _build_router(cfg: Config) -> Router | None:
+    """Build the multi-account spotify router, or None if Spotify
+    isn't configured at the env level."""
+    if not cfg.spotify_enabled:
+        return None
+    accounts = Registry.load(cfg.spotify_accounts_path)
+    # First-run migration: if there's a legacy single-user OAuth cache
+    # and no accounts registered yet, wrap that cache as a "default"
+    # account so existing installs keep working without re-auth.
+    maybe_migrate_legacy(accounts, cfg.spotify_cache_path, default_name="default")
+    clients = build_clients(
+        accounts,
+        client_id=cfg.spotify_client_id,
+        client_secret=cfg.spotify_client_secret,
+        redirect_uri=cfg.spotify_redirect_uri,
+    )
+    if not clients:
+        logger.info(
+            "spotify: no accounts have OAuth tokens; tools disabled until "
+            "someone visits %s",
+            cfg.spotify_setup_url,
+        )
+    return Router(clients=clients, default_name=accounts.default_name)
+
+
 def _build_registry(
     cfg: Config,
     camilla: CamillaController,
@@ -214,10 +429,10 @@ def _build_registry(
     registry = ToolRegistry()
     for fn in make_audio_tools(camilla):
         registry.register(fn)
-    for fn in make_transport_tools(moode):
+    router = _build_router(cfg)
+    for fn in make_transport_tools(moode, router):
         registry.register(fn)
-    sp = build_spotify(cfg)
-    for fn in make_spotify_tools(sp, moode, cfg.spotify_device_name):
+    for fn in make_spotify_tools(router, moode, cfg.spotify_device_name):
         registry.register(fn)
     for fn in make_weather_tools(weather):
         registry.register(fn)
@@ -322,6 +537,7 @@ class WakeLoop:
         detector: WakeWordDetector,
         connection: LiveConnection,
         ducker: Ducker,
+        tts_volume_tracker: TtsVolumeTracker,
         usage_store: UsageStore,
         spend_cap: SpendCap,
         stop_event: asyncio.Event,
@@ -332,6 +548,7 @@ class WakeLoop:
         self._detector = detector
         self._connection = connection
         self._ducker = ducker
+        self._tts_volume_tracker = tts_volume_tracker
         self._usage_store = usage_store
         self._spend_cap = spend_cap
         self._stop_event = stop_event
@@ -390,7 +607,8 @@ class WakeLoop:
         # During refractory, swallow frames so TTS bleed doesn't self-trigger.
         if asyncio.get_event_loop().time() < self._refractory_until:
             return
-        if not self._detector.feed(frame):
+        score = self._detector.feed(frame)
+        if score is None:
             return
 
         # Reset openWakeWord's internal smoothing/state right after a
@@ -403,7 +621,7 @@ class WakeLoop:
         # bias so the next WAKE pass is judged fresh.
         self._detector.reset()
 
-        logger.info("wake detected")
+        logger.info("wake detected (score=%.2f, threshold=%.2f)", score, self._detector.threshold)
         if not self._spend_cap.allowed():
             logger.warning("daily spend cap reached; voice disabled until rollover")
             return
@@ -543,6 +761,15 @@ class WakeLoop:
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0
+        # Pin TTS gain to the user's pre-duck master volume + offset
+        # BEFORE ducking. The duck about to fire will drop main_volume
+        # by JASPER_DUCK_DB; if we let the tracker observe that drop,
+        # TTS would go quiet for the response we're about to play —
+        # exactly backward (we duck music so the user can hear TTS).
+        # Pause the tracker for the lifetime of the turn so it doesn't
+        # re-read main_volume mid-turn.
+        await self._tts_volume_tracker.apply_now()
+        self._tts_volume_tracker.pause()
         await self._ducker.duck()
         self._session_id = self._usage_store.open_session()
         self._turn = await self._connection.acquire_turn()
@@ -583,6 +810,7 @@ class WakeLoop:
             except Exception:  # noqa: BLE001
                 pass
         await self._ducker.restore()
+        self._tts_volume_tracker.resume()
         if self._session_id is not None:
             self._usage_store.close_session(self._session_id, 0, 0)
         self._turn = None
@@ -641,6 +869,10 @@ class WakeLoop:
             )
 
         await self._ducker.restore()
+        # Resume the TTS volume tracker AFTER the duck has been
+        # restored, so the next poll reads the user's actual master
+        # volume, not the still-ducked one.
+        self._tts_volume_tracker.resume()
         self._turn = None
         self._session_id = None
         self._state = State.WAKE
@@ -698,6 +930,7 @@ async def run() -> None:
     # time-injection inside it stays accurate across context resets and
     # reconnects — the connection re-renders it on every fresh open.
     connection = _make_connection(cfg)
+    tts_volume_tracker: TtsVolumeTracker | None = None
     try:
         await connection.start(registry, _build_system_instruction)
         async with MicCapture(
@@ -707,14 +940,30 @@ async def run() -> None:
         ) as mic, TtsPlayout(
             cfg.tts_device,
             output_rate=cfg.tts_output_rate,
+            # Constructor gain doesn't matter at runtime — TtsPlayout
+            # initializes at its silent floor and the volume tracker's
+            # first-tick read sets the real value before the first
+            # turn can play. We pass cfg.tts_gain_db so a startup
+            # before the tracker first applies (e.g. Camilla down at
+            # boot) still has a sane fallback.
             gain_db=cfg.tts_gain_db,
         ) as tts:
+            tts_volume_tracker = TtsVolumeTracker(
+                camilla, tts,
+                offset_db=cfg.tts_gain_db,
+                music_headroom_db=cfg.tts_music_headroom_db,
+                silence_threshold_dbfs=cfg.tts_silence_threshold_dbfs,
+                music_window_sec=cfg.tts_music_window_sec,
+            )
+            await tts_volume_tracker.start()
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
-                usage_store, spend_cap, stop_event,
+                tts_volume_tracker, usage_store, spend_cap, stop_event,
             )
             await wake_loop.run()
     finally:
+        if tts_volume_tracker is not None:
+            await tts_volume_tracker.stop()
         await connection.stop()
         await moode.aclose()
         await weather.aclose()

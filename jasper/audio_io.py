@@ -117,9 +117,27 @@ class TtsPlayout:
     and PortAudio doesn't go through ALSA's `plug` layer for rate
     conversion. So we let the caller configure an `output_rate` and
     polyphase-upsample 24 kHz → output_rate inside `write()`.
+
+    Hearing-safety bounds on gain. TTS bypasses CamillaDSP's master_gain
+    mixer, so its level is set by us alone. A bug, malformed env value,
+    or stale main_volume reading must NEVER be allowed to play TTS at
+    a level that could damage hearing. `set_gain_db` clamps every input
+    to [MIN_TTS_GAIN_DB, MAX_TTS_GAIN_DB]; the cap exists even if every
+    other check upstream fails. -6 dB ceiling means TTS peaks max out
+    around -9 dBFS at the dongle (Gemini's source peaks ~-3 dBFS), well
+    below the dongle's reference output level.
     """
 
     INPUT_RATE = 24000
+
+    # Absolute ceiling on TTS gain. Even if main_volume + offset would
+    # push higher (positive offset, runaway, etc.), we clamp here. The
+    # whole point: never let TTS get loud enough to hurt.
+    MAX_TTS_GAIN_DB = -6.0
+    # Floor — below this, TTS is effectively silent. Used when the
+    # user mutes, when Camilla is unreachable at startup, or when a
+    # volume reading looks malformed.
+    MIN_TTS_GAIN_DB = -60.0
 
     def __init__(
         self,
@@ -139,11 +157,53 @@ class TtsPlayout:
         self._device = device
         self._output_rate = output_rate
         self._upsample = output_rate // self.INPUT_RATE
-        # Static gain applied to TTS PCM before resample/write. Gemini
-        # outputs at consistent level — no gain stage between us and the
-        # dongle without this. gain_db<0 attenuates; gain_db=0 passthrough.
-        self._gain_linear = float(10 ** (gain_db / 20.0)) if gain_db != 0.0 else 1.0
+        # Linear gain factor applied before resample/write. Updated at
+        # runtime via set_gain_db so TTS tracks Camilla's main_volume.
+        # Initial value is the floor (effectively silent) so the daemon
+        # cannot accidentally play TTS loud during the brief window
+        # between TtsPlayout construction and the first volume read.
+        # The volume tracker's first tick sets a real value; until then
+        # we'd rather have inaudible TTS than blast.
+        self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
+        self._gain_db = self.MIN_TTS_GAIN_DB
         self._stream: sd.RawOutputStream | None = None
+        # Apply the constructor's gain_db through the same clamp +
+        # validation path as runtime updates. If a caller passes the
+        # legacy "-8.0 fixed gain" value, this becomes the active
+        # level. Live tracking will overwrite it on the first tick.
+        self.set_gain_db(gain_db)
+
+    def set_gain_db(self, db: float) -> None:
+        """Update TTS gain. Clamped to [MIN, MAX]; non-finite or
+        out-of-range inputs are rejected (prior gain held). Single-
+        float assignment is atomic under the GIL, so no lock is
+        needed for the read path in write()."""
+        try:
+            db = float(db)
+        except (TypeError, ValueError):
+            logger.warning("tts gain rejected (not a number): %r", db)
+            return
+        if db != db or db in (float("inf"), float("-inf")):
+            logger.warning("tts gain rejected (non-finite): %r", db)
+            return
+        clamped = max(self.MIN_TTS_GAIN_DB, min(self.MAX_TTS_GAIN_DB, db))
+        if clamped == self._gain_db:
+            return
+        # 0.0 dB → 1.0 linear; floor → ~0.001 linear. Computed once
+        # per change, not per write.
+        self._gain_linear = float(10 ** (clamped / 20.0))
+        self._gain_db = clamped
+        if clamped != db:
+            logger.info(
+                "tts gain set: requested %.1f dB → clamped to %.1f dB",
+                db, clamped,
+            )
+        else:
+            logger.info("tts gain set: %.1f dB", clamped)
+
+    @property
+    def gain_db(self) -> float:
+        return self._gain_db
 
     async def __aenter__(self) -> "TtsPlayout":
         self._stream = sd.RawOutputStream(

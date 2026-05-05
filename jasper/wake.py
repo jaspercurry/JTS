@@ -29,6 +29,10 @@ class WakeWordDetector:
         self._threshold = threshold
         self._key = self._resolve_score_key(model_name)
 
+    @property
+    def threshold(self) -> float:
+        return self._threshold
+
     @staticmethod
     def _resolve_score_key(model_name: str) -> str:
         # openWakeWord keys predictions by the bare model basename.
@@ -37,10 +41,14 @@ class WakeWordDetector:
             return base.rsplit(".", 1)[0]
         return model_name
 
-    def feed(self, frame: np.ndarray) -> bool:
+    def feed(self, frame: np.ndarray) -> float | None:
+        """Score one frame. Returns the wake score if the threshold was
+        crossed (so the caller can log it for tuning), else None."""
         scores = self._model.predict(frame)
         score = float(scores.get(self._key, 0.0))
-        return score >= self._threshold
+        if score >= self._threshold:
+            return score
+        return None
 
     def reset(self) -> None:
         """Reset internal model state after a wake fires.

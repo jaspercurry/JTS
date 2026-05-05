@@ -191,6 +191,72 @@ evidence to deviate from**:
   the chosen Stage 1 trade-off in the absence of working AEC. Wakes
   up automatically the moment we drop NO_INTERRUPTION (Tier 2).
 
+## Phase-2 transport / playback follow-ons
+
+The May 2026 voice-music-control phase landed:
+
+- **Volume:** percent-based `set_volume` / `adjust_volume` / `mute` /
+  `unmute` against CamillaDSP's main fader (works regardless of which
+  renderer is active — moOde's HTTP `set_volume` is gated whenever a
+  renderer is up, so it's the wrong target for voice).
+- **Transport:** source-aware `next_track` / `previous_track` /
+  `pause` / `resume` / `get_now_playing`. AirPlay routes via shairport-
+  sync's MPRIS interface (`org.mpris.MediaPlayer2.ShairportSync` on
+  the system bus → DACP → sender), Spotify Connect routes via spotipy
+  against the active device, MPD routes via existing `MoodeClient`.
+
+These follow-ons are explicitly in scope for the next phase:
+
+### `play_song` / `play_artist` / `play_album` / `play_playlist`
+
+Spotify Web API search + start_playback, exposed as separate tools so
+the LLM doesn't have to choose `kind=` from a free-form query. The
+existing `spotify_play(query, kind=…)` plumbing handles the API call
+shape; the new tools are thin aliases that pin `kind` and clean up the
+system-instruction few-shots.
+
+The interesting bit is **device targeting in the AirPlay-carrying-Spotify
+case** (the canonical iPhone use case from the original handoff):
+
+- User has iPhone Spotify casting via AirPlay to the Pi.
+- moOde reports `aplactive=1`. To the Pi, AirPlay is the source.
+- User says "play Kanye West."
+- Correct behaviour: target the **iPhone's** Spotify Connect device,
+  not the Pi's librespot. The iPhone's Spotify app receives the
+  start_playback, changes track, AirPlay stream content updates
+  seamlessly — no source switch on the Pi side.
+
+`spotify_routing.resolve_target` already handles this — it uses
+`_match_track` (title-only fuzzy match between AirPlay metadata and
+Spotify currently-playing) to detect "AirPlay is carrying Spotify."
+The new tools just need to call into `resolve_target` like
+`spotify_play` already does. Lean on the existing logic; do not
+reimplement it.
+
+The deferred-non-goal: **starting** a Spotify-via-iPhone-via-AirPlay
+session from cold (nothing playing on the iPhone, nothing AirPlay'd,
+"play Kanye"). The phone has to be sending AirPlay for that case to
+work, and the user has explicitly said this is out of scope.
+
+### Bluetooth transport (AVRCP)
+
+When `btactive=1`, transport routes to bluez's MediaPlayer1 interface
+via DBus. Object path is dynamic — something like
+`/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF/player0`. Discovery: enumerate
+under `/org/bluez/hci0` for objects implementing
+`org.bluez.MediaPlayer1`. Methods are the standard MPRIS-shaped set
+(`Play`, `Pause`, `Next`, `Previous`). Easy follow-on once the
+A2DP path is exercised; see `bluez/doc/mediaapi.txt` for the contract.
+
+### `get_now_playing` is now source-aware
+
+Was MPD-only before, which is why an AirPlay-active false-trigger
+returned `{title: '', artist: '', album: ''}` and Gemini happily
+narrated "I can't tell what's playing." It now reads MPRIS `Metadata`
+when AirPlay is the source and `sp.current_playback` for Spotify
+Connect. Follow-on: also expose `is_playing` / playback position so
+"how much of this song is left?" can be answered without re-querying.
+
 ## Highest-leverage gating change
 
 Almost everything in Tier 2 unlocks at once when **the dual-output
@@ -285,3 +351,45 @@ feedback that "we heard you, you can stop talking now." Today
 the audio cue is the duck-restore at end-of-turn, which lags by
 the entire model-response duration. Quicker feedback closes the
 mental loop for the user.
+
+### Earcons for tool-call confirmation (replace verbal "Done.")
+
+Today, after a volume / transport tool call we have Gemini say
+"Done." The verbal ack works but adds 3–5 s of model-response
+latency before the duck restores, and the spoken word feels
+heavy for what is essentially a button-press confirmation.
+
+Replace it with a local earcon — a short pre-synthesised tone
+played by the daemon the moment the tool returns:
+
+- **Ascending sweep** (e.g. 600→900 Hz, 200 ms) on success.
+- **Descending sweep** (900→600 Hz, 200 ms) on failure / no-op
+  (e.g. transport command when nothing is playing).
+
+Implementation sketch: synthesise the two waveforms once at
+daemon startup (`numpy.sin` over the right sample-count, fade
+in/out 5 ms to avoid clicks), keep them in memory as `bytes`,
+play through the existing `TtsPlayout` instance the moment the
+tool's `fn done` log line fires. Suppress Gemini's verbal reply
+for tool-acknowledged commands by removing "reply with 'Done.'"
+from the system instruction and instead instructing it to stay
+silent after volume / transport tools — the earcon IS the
+acknowledgment.
+
+Caveat: when we tried the "(silent)" pattern in the system
+instruction, Gemini sometimes produced output_tokens > 0 with
+zero audio chunks AND no `turn_complete`, which left the duck
+held until the 10 s idle timeout. Two ways to avoid that:
+
+1. Have Gemini still emit a tiny audio token (e.g. a single
+   "mm." that we discard locally before playback) so the model
+   still produces audio + turn_complete.
+2. Detect the no-audio-after-tool-call pattern and force-close
+   the turn after a short timeout (e.g. 1.5 s) once the tool
+   has returned and `turn_complete` hasn't fired — bypassing
+   the 10 s pre-response idle window.
+
+Option 2 is the cleaner architectural fix and pairs well with
+the un-duck-on-`turn_complete` UX item above. ~30–40 lines of
+code total: the synth, the trigger, the timeout adjustment, and
+the system-instruction tweak.

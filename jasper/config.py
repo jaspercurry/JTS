@@ -30,6 +30,26 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_LIVE_CONTEXT_RESET_SEC must be > 0")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+    # Hearing-safety: TTS gain is now an OFFSET applied on top of
+    # CamillaDSP's main_volume (negative attenuates from master,
+    # zero matches it). A positive value would push TTS above master
+    # and risk loud/clipping output. Refuse at startup rather than
+    # discover the bug at speaker-blasting time.
+    if cfg.tts_gain_db > 0.0:
+        raise RuntimeError(
+            f"JASPER_TTS_GAIN_DB must be <= 0 (got {cfg.tts_gain_db}); "
+            "it is now an offset relative to main_volume — positive "
+            "values would push TTS above the user's master and risk "
+            "blasting the speaker"
+        )
+    # Silence threshold must sit somewhere in "no music" territory.
+    # 0 dBFS or higher is meaningless (nothing is louder than full-scale).
+    if cfg.tts_silence_threshold_dbfs >= 0.0:
+        raise RuntimeError(
+            "JASPER_TTS_SILENCE_THRESHOLD_DBFS must be < 0 dBFS"
+        )
+    if cfg.tts_music_window_sec <= 0:
+        raise RuntimeError("JASPER_TTS_MUSIC_WINDOW_SEC must be > 0")
     return cfg
 
 
@@ -48,6 +68,9 @@ class Config:
     tts_device: str
     tts_output_rate: int
     tts_gain_db: float
+    tts_music_headroom_db: float
+    tts_silence_threshold_dbfs: float
+    tts_music_window_sec: float
     vad_barge_in_threshold: float
 
     camilla_host: str
@@ -68,6 +91,10 @@ class Config:
     spotify_redirect_uri: str
     spotify_cache_path: str
     spotify_device_name: str
+    spotify_accounts_path: str
+    spotify_setup_url: str
+    spotify_web_bind_host: str
+    spotify_web_bind_port: int
 
     weather_default_location: str
     weather_units: str
@@ -115,14 +142,52 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # Static attenuation applied to TTS PCM before write. Gemini
-            # outputs raw PCM at consistent level (peaks ~-3 dBFS); with
-            # no gain stage between Gemini and the dongle this comes out
-            # quite loud vs. user's music volume. -8 dB is a comfortable
-            # default that's audible above ducked music but doesn't
-            # dominate. Long-term fix: route TTS through CamillaDSP so
-            # it tracks user's master_gain (TODO).
+            # OFFSET (dB) applied on top of CamillaDSP's main_volume
+            # to set the TTS playback level. TTS bypasses CamillaDSP
+            # — a background tracker in voice_daemon polls main_volume
+            # every 0.5 s and updates TtsPlayout's gain to
+            # `main_volume + tts_gain_db`, clamped to TtsPlayout's
+            # MIN/MAX safety bounds. Negative values keep TTS quieter
+            # than music at the same nominal level (helps intelligibility
+            # over louder source material); -8 dB is the previous fixed
+            # default and remains a sensible offset. MUST be <= 0 — the
+            # config validator enforces this so a fat-fingered "+8"
+            # cannot blast the speaker.
             tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", -8.0),
+            # When music is playing, TtsVolumeTracker sizes TTS to a
+            # headroom above the windowed RMS of CamillaDSP's playback
+            # signal — so TTS scales with whatever music is actually
+            # coming out of the speaker, accounting for renderer-side
+            # volume sliders (AirPlay sender, Spotify Connect, MPD,
+            # etc.) that don't touch CamillaDSP's main_volume.
+            # Headroom is added on top of the windowed music RMS to
+            # produce the TTS effective output peak target. Bigger →
+            # TTS dominates the music more clearly. 12 dB ≈ TTS source
+            # peaks land around music's typical peak level (since
+            # music peak-to-RMS is ~12-15 dB for typical content),
+            # which is "intelligible above music without being shouty".
+            tts_music_headroom_db=_env_float(
+                "JASPER_TTS_MUSIC_HEADROOM_DB", 12.0,
+            ),
+            # Below this windowed RMS, the tracker treats the room as
+            # silent and falls back to the legacy "main_volume +
+            # tts_gain_db" formula. Camilla reports very negative
+            # dBFS during silence (we've measured -53 dBFS noise
+            # floor); -50 dBFS is comfortably above that and well
+            # below any audible music level.
+            tts_silence_threshold_dbfs=_env_float(
+                "JASPER_TTS_SILENCE_THRESHOLD_DBFS", -50.0,
+            ),
+            # Seconds of playback RMS to keep in the windowed-peak
+            # buffer. Long enough to ride through quiet passages
+            # and inter-track silences without flapping back to
+            # the silence-fallback (a typical pop song has 2-3 s
+            # quiet intros / outros); short enough that pause →
+            # ask Jarvis a question feels responsive and TTS
+            # actually gets quieter.
+            tts_music_window_sec=_env_float(
+                "JASPER_TTS_MUSIC_WINDOW_SEC", 8.0,
+            ),
             # Silero VAD probability threshold for barge-in gating.
             # While the model is producing TTS, mic frames are only
             # forwarded to Gemini if Silero says speech_prob >= this.
@@ -151,9 +216,19 @@ class Config:
             mpd_port=_env_int("MPD_PORT", 6600),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
             spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),
+            # The redirect URI is the URL Spotify bounces the OAuth
+            # code back to. It must be an exact match for one of the
+            # URIs registered in the user's Spotify Developer App.
+            # In multi-user installs this is the public-facing URL
+            # (jasper.local/spotify/callback) reverse-proxied by nginx
+            # to the local jasper-web service.
             spotify_redirect_uri=_env(
-                "SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8765/callback"
+                "SPOTIFY_REDIRECT_URI", "https://jasper.local/spotify/callback"
             ),
+            # Legacy single-user cache. Read once at startup for the
+            # one-shot migration into the new multi-account layout
+            # (see jasper.accounts.maybe_migrate_legacy); after the
+            # migration runs once, this path is no longer touched.
             spotify_cache_path=_env(
                 "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"
             ),
@@ -162,13 +237,35 @@ class Config:
             # moOde defaults to "Moode <hostname>". Change if you renamed
             # your moOde Spotify Connect device.
             spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "moode"),
+            # Multi-account registry: one record per household member,
+            # mapping AirPlay ClientName patterns to per-user OAuth
+            # caches. See jasper.accounts module-doc for shape.
+            spotify_accounts_path=_env(
+                "JASPER_SPOTIFY_ACCOUNTS_PATH",
+                "/var/lib/jasper/spotify/accounts.json",
+            ),
+            # Public URL household members visit to add their Spotify
+            # account. Surfaced in error messages so the voice
+            # assistant can tell unrecognized users where to go.
+            spotify_setup_url=_env(
+                "JASPER_SPOTIFY_SETUP_URL", "https://jasper.local/spotify"
+            ),
+            # Where the jasper-web service listens. Reverse-proxied
+            # from nginx's port 80 — the public surface stays at
+            # jasper.local/spotify regardless.
+            spotify_web_bind_host=_env(
+                "JASPER_SPOTIFY_WEB_HOST", "127.0.0.1"
+            ),
+            spotify_web_bind_port=_env_int(
+                "JASPER_SPOTIFY_WEB_PORT", 8765
+            ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.
             weather_default_location=_env("JASPER_DEFAULT_LOCATION", ""),
             weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
             # NYC MTA subway. Empty station_id disables the tool.
             # Find your stop_id at data.ny.gov/dataset/...subway-stations
-            # (column: "GTFS Stop ID"). 9 Av on the West End line is "B16".
+            # (column: "GTFS Stop ID"). 9 Av on the West End line is "B12".
             subway_station_id=_env("JASPER_SUBWAY_STATION_ID", ""),
             subway_default_direction=_env(
                 "JASPER_SUBWAY_DEFAULT_DIRECTION", "uptown",

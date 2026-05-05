@@ -1,0 +1,22 @@
+[Unit]
+Description=Jasper smart-speaker web setup service (multi-user Spotify onboarding)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
+Restart=on-failure
+RestartSec=2
+
+# Hardening — this process only needs to read /etc/jasper/jasper.env,
+# read+write /var/lib/jasper/spotify/, and bind 127.0.0.1:8765.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/jasper
+
+[Install]
+WantedBy=multi-user.target

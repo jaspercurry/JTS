@@ -196,6 +196,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-voice.service" \
         "${SYSTEMD_DIR}/jasper-voice.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-web.service" \
+        "${SYSTEMD_DIR}/jasper-web.service"
 
     # Drop-in override forcing the system shairport-sync.service onto
     # moOde's `_audioout` ALSA symbol. Without this it writes to ALSA
@@ -207,7 +210,7 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
 
     systemctl daemon-reload
-    systemctl enable jasper-camilla.service jasper-voice.service
+    systemctl enable jasper-camilla.service jasper-voice.service jasper-web.service
 
     # On a fresh moOde, shairport-sync is spawned outside systemd by
     # moOde's startup mechanism (with its own ALSA args, and root-uid).
@@ -225,6 +228,95 @@ install_systemd_units() {
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
 
+install_self_signed_cert() {
+    # Self-signed cert for https://jasper.local — required because
+    # Spotify (post-2024) rejects HTTP redirect URIs unless they're
+    # the loopback exception (127.0.0.1). Each phone clicks through
+    # the cert warning once. 10-year validity so we don't have to
+    # think about renewal in our hobby-project lifespan.
+    local crt="/etc/nginx/ssl/jasper.crt"
+    local key="/etc/nginx/ssl/jasper.key"
+    install -d -m 0755 /etc/nginx/ssl
+    if [[ -f "${crt}" && -f "${key}" ]]; then
+        echo "  (TLS cert already present at ${crt})"
+        return 0
+    fi
+    openssl req -x509 -nodes -days 3650 \
+        -newkey rsa:2048 \
+        -keyout "${key}" \
+        -out "${crt}" \
+        -subj "/CN=jasper.local" \
+        -addext "subjectAltName=DNS:jasper.local,DNS:jasper,IP:127.0.0.1" \
+        2>/dev/null
+    chmod 0644 "${crt}"
+    chmod 0640 "${key}"
+    chgrp www-data "${key}" 2>/dev/null || true
+    echo "  Generated self-signed cert at ${crt}"
+}
+
+install_nginx_proxy() {
+    # Reverse-proxy /spotify/ → http://127.0.0.1:8765/ so household
+    # members can hit https://jasper.local/spotify on their phone to
+    # link their Spotify account.
+    #
+    # Two pieces:
+    # 1. /etc/nginx/jasper-locations.conf — the actual location block.
+    # 2. include directive added idempotently to moOde's HTTP site
+    #    AND a separate sites-enabled/jasper-https.conf serving on 443.
+    #
+    # We DO NOT replace moOde's nginx site config — it owns the host's
+    # web surface. We add ONE line to its HTTP site (the include) and
+    # we add a NEW site for HTTPS that doesn't touch moOde's files.
+
+    local moode_site="/etc/nginx/sites-enabled/moode-http.conf"
+    local jasper_locs="/etc/nginx/jasper-locations.conf"
+    local jasper_https="/etc/nginx/sites-enabled/jasper-https.conf"
+    local include_line='include /etc/nginx/jasper-locations.conf;'
+
+    if [[ ! -f "${moode_site}" ]]; then
+        echo "  (skipping nginx setup — moOde site config not found at ${moode_site})"
+        return 0
+    fi
+
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-jasper.conf" \
+        "${jasper_locs}"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-jasper-https.conf" \
+        "${jasper_https}"
+
+    if ! grep -qF "jasper-locations.conf" "${moode_site}"; then
+        # Insert the include just before the server block's closing brace.
+        # awk acts on the LAST `}` line (the server's close). The backup
+        # MUST go outside /etc/nginx/sites-enabled/ — nginx auto-loads
+        # everything there as a server block, and a backup *.conf file
+        # would trigger a duplicate-default-server error.
+        install -d -m 0755 /etc/nginx/backups
+        cp "${moode_site}" "/etc/nginx/backups/moode-http.conf.pre-jasper.$(date +%s)"
+        awk -v line="	${include_line}" '
+            { lines[NR] = $0 }
+            END {
+                for (i = NR; i >= 1; i--) {
+                    if (lines[i] ~ /^[[:space:]]*}[[:space:]]*$/) { last = i; break }
+                }
+                for (i = 1; i <= NR; i++) {
+                    if (i == last) print line
+                    print lines[i]
+                }
+            }
+        ' "${moode_site}" > "${moode_site}.tmp"
+        mv "${moode_site}.tmp" "${moode_site}"
+        echo "  Added include directive to ${moode_site}"
+    fi
+
+    if nginx -t 2>/dev/null; then
+        systemctl reload nginx
+        echo "  nginx reloaded — jasper.local/spotify is live (after jasper-web starts)"
+    else
+        echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
+    fi
+}
+
 main() {
     require_root
     install_deps
@@ -232,6 +324,8 @@ main() {
     install_alsa
     install_jasper
     install_systemd_units
+    install_self_signed_cert
+    install_nginx_proxy
 }
 
 main "$@"

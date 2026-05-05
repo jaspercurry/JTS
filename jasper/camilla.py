@@ -40,6 +40,34 @@ class CamillaController:
     async def get_volume_db(self) -> float:
         return float(await self._call(lambda c: c.volume.main_volume()))
 
+    async def get_volume_and_mute(self) -> tuple[float, bool]:
+        """Single round-trip read of main_volume + main_mute. Used by the
+        TTS-gain tracker, which needs to honor mute as well as volume —
+        if the user has muted the speaker, TTS shouldn't talk over the
+        silence they asked for."""
+        def read(c):
+            return float(c.volume.main_volume()), bool(c.volume.main_mute())
+        return await self._call(read)
+
+    async def get_playback_rms(self) -> tuple[float, float]:
+        """Per-channel RMS of CamillaDSP's playback signal in dBFS — the
+        level just before the DAC, AFTER every attenuation stage on the
+        music chain (source track loudness, AirPlay sender volume,
+        Spotify Connect sender volume, MPD volume, Camilla main_volume,
+        room correction filters, etc). This is what the TTS gain
+        tracker uses to size TTS to the actual perceived music level
+        instead of guessing at any single attenuation stage.
+
+        Returns (left_db, right_db). Returns (-inf, -inf) on silence
+        — pycamilladsp may report None / very negative numbers when
+        the chunk has no signal."""
+        def read(c):
+            levels = c.levels.playback_rms()
+            l = float(levels[0]) if levels and levels[0] is not None else float("-inf")
+            r = float(levels[1]) if len(levels) > 1 and levels[1] is not None else l
+            return l, r
+        return await self._call(read)
+
     async def set_volume_db(self, db: float) -> None:
         await self._call(lambda c: c.volume.set_main_volume(float(db)))
 

@@ -1089,30 +1089,50 @@ class GeminiLiveConnection(LiveConnection):
                     self._reconnect_event.set()
                     continue
                 # Per-turn routing — but first check whether this
-                # response is "stale" from a prior turn that we sent
-                # an activity_end for and then moved past locally
-                # (e.g. via the no-speech abort path) before the
-                # server's response landed.
+                # response is "stale" from a prior turn we already
+                # moved past locally (e.g. via the no-speech abort
+                # path) before the server's response landed.
                 #
                 # Bookkeeping (after pruning aged-out entries):
-                #   unack == 0  → we haven't ended any turn on the wire
-                #     yet. Anything coming back must be unrelated
-                #     session-level state (rare). Route.
-                #   unack == 1  → exactly one turn is pending a server
-                #     turn_complete. That's the current active turn.
-                #     Route normally.
-                #   unack >  1  → multiple turns are pending. Anything
-                #     on the wire belongs to one of the older ones.
-                #     Drop. When we see the next turn_complete,
-                #     decrement (pop oldest); once we're back to 1
-                #     (or 0), routing resumes.
+                #   unack == 0  → no turn-ends are pending an ack from
+                #     the server. Audio/tool_call/etc. for the active
+                #     turn flows freely.
+                #   unack == 1  AND active turn HAS sent activity_end
+                #     → the one pending entry IS this turn's. Route.
+                #   unack == 1  AND active turn has NOT sent
+                #     activity_end → the pending entry must be from
+                #     an EARLIER turn (the server can't be turn-
+                #     completing the active turn before we tell it
+                #     the user is done). Any turn_complete arriving
+                #     here is the prior turn's belated ack — pop it
+                #     but DO NOT mark the active turn as completed.
+                #     This is the bugfix: previously a belated
+                #     turn_complete from turn N-1 (typically arriving
+                #     30 ms after we sent activity_start for turn N)
+                #     was routed to turn N, setting
+                #     server_turn_complete=True and causing the idle
+                #     watchdog to close turn N 1.5 s later — before
+                #     turn N's real response could land.
+                #   unack >  1  → multiple turns are pending. Same
+                #     stale treatment as the unack==1+!ended case.
                 self._prune_unack_activity_ends()
                 sc = getattr(response, "server_content", None)
                 turn_complete_in_msg = bool(
                     sc is not None and getattr(sc, "turn_complete", False)
                 )
-                if len(self._unack_activity_end_times) > 1:
-                    if turn_complete_in_msg:
+                turn = self._active_turn
+                active_has_ended_input = (
+                    turn is not None and turn._activity_end_sent
+                )
+                is_stale = (
+                    len(self._unack_activity_end_times) > 1
+                    or (
+                        len(self._unack_activity_end_times) >= 1
+                        and not active_has_ended_input
+                    )
+                )
+                if is_stale:
+                    if turn_complete_in_msg and self._unack_activity_end_times:
                         # Pop oldest pending entry — this turn_complete
                         # belongs to the earliest-still-pending turn.
                         self._unack_activity_end_times.pop(0)
@@ -1121,14 +1141,9 @@ class GeminiLiveConnection(LiveConnection):
                             "(unack_activity_ends=%d remaining)",
                             len(self._unack_activity_end_times),
                         )
-                    else:
-                        # Stale audio / tool_call / etc. — drop silently.
-                        # (Logging every chunk would flood the journal.)
-                        pass
                     continue
                 if turn_complete_in_msg and self._unack_activity_end_times:
                     self._unack_activity_end_times.pop(0)
-                turn = self._active_turn
                 if turn is not None:
                     await turn._on_response(response)
         except asyncio.CancelledError:

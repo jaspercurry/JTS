@@ -35,6 +35,9 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_output_rate == 48000
     assert cfg.tts_gain_db == -8.0
+    assert cfg.tts_music_headroom_db == 12.0
+    assert cfg.tts_silence_threshold_dbfs == -50.0
+    assert cfg.tts_music_window_sec == 8.0
     assert cfg.gemini_voice == "Aoede"
     assert cfg.vad_barge_in_threshold == 0.5
     assert cfg.spotify_device_name == "moode"
@@ -69,6 +72,12 @@ def test_spotify_enabled_when_both_creds_present(monkeypatch):
         ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
         ("JASPER_LIVE_CONTEXT_RESET_SEC", "0", "JASPER_LIVE_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
+        ("JASPER_TTS_GAIN_DB", "8", "JASPER_TTS_GAIN_DB"),
+        ("JASPER_TTS_GAIN_DB", "0.5", "JASPER_TTS_GAIN_DB"),
+        ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "0", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
+        ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "5", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
+        ("JASPER_TTS_MUSIC_WINDOW_SEC", "0", "JASPER_TTS_MUSIC_WINDOW_SEC"),
+        ("JASPER_TTS_MUSIC_WINDOW_SEC", "-5", "JASPER_TTS_MUSIC_WINDOW_SEC"),
     ],
 )
 def test_invalid_numeric_env_values_raise(monkeypatch, name, value, expected):
@@ -76,3 +85,12 @@ def test_invalid_numeric_env_values_raise(monkeypatch, name, value, expected):
     monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match=expected):
         Config.from_env()
+
+
+def test_tts_gain_db_zero_is_allowed(monkeypatch):
+    """The boundary: zero offset is fine (TTS at master level), only
+    positive values risk pushing TTS above the user's master."""
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "0")
+    cfg = Config.from_env()
+    assert cfg.tts_gain_db == 0.0
