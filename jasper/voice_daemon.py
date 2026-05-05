@@ -101,27 +101,27 @@ SYSTEM_INSTRUCTION = (
 )
 
 # Refractory after a turn ends before the wake detector is re-armed.
-# Covers two transients that easily false-fire the wake-word model:
-#   1. TTS tail still in the playback buffer for a few hundred ms
-#   2. Music ramping back from ducked level (-40 dB → 0 dB) — the
-#      instant "loudness wave" looks speech-like to openWakeWord
-# Without proper hardware AEC reference wired into the XVF3800, music
-# itself can also false-fire wake at higher levels (vocals especially).
-# 5 sec is a defensive setting: with the persistent-connection rework,
-# false-fires no longer cost a Gemini Live concurrent-session slot
-# (the connection stays open across wakes), but they still burn a turn
-# and any audio sent during the spurious turn counts against quota.
-# Real fix: hardware AEC reference signal (TODO).
-# Compromise window: long enough that the TTS playback tail and any
-# music bleed at turn end doesn't self-trigger the wake detector,
-# short enough that real follow-up commands feel responsive. 10 s
-# was the original setting — too long once the SDK multi-turn bug
-# (#2244) is fixed and turns reliably complete; 2 s was too short
-# and let openWakeWord false-fire on music vocals during the
-# bleed-heavy post-TTS window. 5 s is roughly the playback tail of
-# an average response plus a small margin for the wake detector to
-# settle.
-WAKE_REFRACTORY_SEC = 5.0
+# Strictly bounds the one transient that's a self-loop risk: TTS
+# audio still in the ALSA dmix playout buffer when _end_turn runs.
+# The dongle dmix is configured at 4096 frames @ 48 kHz ≈ 85 ms
+# of buffering; 700 ms gives ~8x margin for any drain stragglers.
+#
+# What this is NOT for:
+#   - Music false-firing wake. Music plays continuously, refractory
+#     or not — the detector has to handle music interference during
+#     normal listening anyway. Extending refractory only postpones
+#     the same risk. Real fix: AEC reference (TODO).
+#   - Music un-duck transient. Camilla's restore is a single-step
+#     volume jump but the change happens in the music chain, after
+#     the wake-word capture path's perspective on what's happening
+#     in the room, so it doesn't add detector bias beyond what
+#     normal listening produces.
+#
+# Earlier values: 5 s (defensive but felt like a 15-20 s dead zone
+# end-to-end once detector buffer warmup was added), 10 s (original,
+# pre-persistent-connection era when each wake cost a Live slot).
+# Both were over-correcting for a problem refractory can't solve.
+WAKE_REFRACTORY_SEC = 0.7
 
 # End-of-utterance: fire activity_end once the user has been silent
 # for this long AFTER they spoke. With manual VAD on the server
@@ -876,12 +876,13 @@ class WakeLoop:
         self._turn = None
         self._session_id = None
         self._state = State.WAKE
-        # Belt-and-suspenders: also reset right before re-arming
-        # WAKE listening, so any state that built up during the
-        # turn (the detector wasn't fed during SESSION but still has
-        # its prior internal state) doesn't bias the next listening
-        # window. Cheap to call.
-        self._detector.reset()
+        # No detector.reset() here. The detector was already reset in
+        # _handle_wake_frame the moment the wake fired (line ~622),
+        # and it has not been fed any frames since (state was SESSION
+        # for the duration of the turn). Calling reset() again is a
+        # no-op for the model state. Skipping it lets the detector
+        # buffer start filling immediately when refractory expires,
+        # which keeps post-turn wake responsiveness fast.
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
 
