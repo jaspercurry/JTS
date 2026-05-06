@@ -1,16 +1,43 @@
 #!/usr/bin/env bash
-# Install jasper voice daemon + always-on CamillaDSP on a Pi running moOde.
-# Run on the Pi after Phase 1A is verified working (moOde plays via dongle).
+# Install jasper voice daemon + always-on CamillaDSP on a Raspberry Pi.
+#
+# Two backends supported:
+#   --backend=moode  (default): assumes moOde 10.1.2+ is already
+#       running. Hijacks moOde's pcm._audioout to redirect renderers
+#       into snd-aloop, then bridges to CamillaDSP. The historical
+#       baseline.
+#   --backend=debian: stock Debian Trixie Lite, no moOde. Source-builds
+#       shairport-sync (AirPlay 2) + nqptp + go-librespot + bluez-alsa
+#       + bt-agent, owns the full systemd unit per renderer, no
+#       _audioout hijack. Validated on jts.local 2026-05-06.
 #
 # Idempotent: re-running upgrades the venv and re-applies configs.
 #
-# Pre-reqs the operator handles by hand (see PLAN.md):
-#   - moOde 10.1.2+ flashed and on the network
-#   - Apple USB-C dongle plugged in, selected as moOde output, 48 kHz
-#   - moOde "Custom" CamillaDSP mode enabled in the moOde web UI
-#   - /etc/jasper/jasper.env populated from .env.example
+# Pre-reqs the operator handles by hand:
+#   moOde backend (see PLAN.md):
+#     - moOde 10.1.2+ flashed and on the network
+#     - Apple USB-C dongle plugged in, selected as moOde output, 48 kHz
+#     - moOde "Custom" CamillaDSP mode enabled in the moOde web UI
+#   debian backend (see deploy/debian-stack/README.md):
+#     - Raspberry Pi OS Lite (Trixie, 64-bit) on a Pi 5 (2GB recommended,
+#       1GB also fits). SSH + Wi-Fi pre-configured via Imager.
+#     - Apple USB-C dongle plugged in. Speakers connected and the amp
+#       turned on.
+#   Both: /etc/jasper/jasper.env populated from .env.example,
+#         GEMINI_API_KEY set.
 
 set -euo pipefail
+
+# Parse --backend= flag. Default to moode for backward compat.
+BACKEND="moode"
+for arg in "$@"; do
+    case "$arg" in
+        --backend=moode)  BACKEND="moode" ;;
+        --backend=debian) BACKEND="debian" ;;
+        --backend=*) echo "unknown backend: ${arg#--backend=}" >&2; exit 2 ;;
+    esac
+done
+echo "==> install.sh starting (backend=${BACKEND})"
 
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 INSTALL_DIR="/opt/jasper"
@@ -19,11 +46,19 @@ CAMILLA_CONF="/etc/camilladsp"
 ENV_DIR="/etc/jasper"
 STATE_DIR="/var/lib/jasper"
 SYSTEMD_DIR="/etc/systemd/system"
+DEBIAN_STACK_DIR="${REPO_DIR}/deploy/debian-stack"
 
 CAMILLA_VERSION="v4.1.3"
 CAMILLA_TARBALL="camilladsp-linux-aarch64.tar.gz"
 CAMILLA_SHA256="d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a"
 CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_VERSION}/${CAMILLA_TARBALL}"
+
+# Versions for source builds (debian backend only).
+GO_LIBRESPOT_VERSION="v0.7.1"
+GO_LIBRESPOT_URL="https://github.com/devgianlu/go-librespot/releases/download/${GO_LIBRESPOT_VERSION}/go-librespot_linux_arm64.tar.gz"
+SHAIRPORT_SYNC_VERSION="4.3.7"
+NQPTP_REPO="https://github.com/mikebrady/nqptp.git"
+SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -40,6 +75,20 @@ install_deps() {
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
         libspeexdsp-dev libspeexdsp1 swig
+
+    if [[ "$BACKEND" == "debian" ]]; then
+        # Source-build deps for shairport-sync (AirPlay 2) + nqptp,
+        # plus the bluez-alsa userspace and the bt-agent helper.
+        # All of these are absent on a stock Trixie Lite image.
+        apt-get install -y --no-install-recommends \
+            autoconf automake libtool pkg-config \
+            libpopt-dev libconfig-dev libavahi-client-dev \
+            libssl-dev libsoxr-dev libplist-dev libsodium-dev \
+            libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
+            libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
+            xxd \
+            bluez-alsa-utils bluez-tools avahi-utils
+    fi
 }
 
 install_camilladsp() {
@@ -47,7 +96,7 @@ install_camilladsp() {
     # CamillaDSP mode it should be stopped — but be belt-and-suspenders so a
     # previously-enabled instance doesn't fight ours over /etc/asoundrc or
     # the dmix lock. Errors are ignored (service may not exist on this
-    # moOde version).
+    # moOde version, and on debian backend it never exists).
     systemctl stop camilladsp.service 2>/dev/null || true
     systemctl disable camilladsp.service 2>/dev/null || true
 
@@ -64,12 +113,26 @@ install_camilladsp() {
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
 
-    # v1.yml has no substitutions — CamillaDSP plays unconditionally
-    # to pcm.jasper_out (defined in /root/.asoundrc), which fans the
-    # stream out to the dongle + XVF3800 USB-IN. Just copy.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/camilladsp/v1.yml" \
-        "${CAMILLA_CONF}/v1.yml"
+    if [[ "$BACKEND" == "debian" ]]; then
+        # Debian-stack config captures from plughw:Loopback,1,0 and
+        # writes to plughw:CARD=__DONGLE_CARD__ — no jasper_capture/
+        # jasper_out PCMs (those need /root/.asoundrc which the debian
+        # backend doesn't install). Substitute the dongle card in
+        # place; install_alsa_debian() exports DONGLE_CARD for us.
+        local dongle="${DONGLE_CARD:-A}"
+        sed "s/__DONGLE_CARD__/${dongle}/g" \
+            "${DEBIAN_STACK_DIR}/etc/camilladsp/v1.yml" \
+            > "${CAMILLA_CONF}/v1.yml"
+        chmod 0644 "${CAMILLA_CONF}/v1.yml"
+    else
+        # moOde-stack config: CamillaDSP plays unconditionally to
+        # pcm.jasper_out (defined in /root/.asoundrc), which fans
+        # the stream out to the dongle + XVF3800 USB-IN. No
+        # substitution — the asoundrc has the substitution.
+        install -m 0644 \
+            "${REPO_DIR}/deploy/camilladsp/v1.yml" \
+            "${CAMILLA_CONF}/v1.yml"
+    fi
 
     # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
     # now a Python software AEC daemon (jasper-aec-bridge, see
@@ -103,40 +166,55 @@ install_alsa() {
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
-    # Two snd-aloop cards: card 0 'Loopback' for the music chain,
-    # card 1 'LoopbackAEC' for the AEC bridge → jasper-voice mic
-    # path. Without the second card, PortAudio (no substream
-    # selection) would address sub0 of the only loopback, which
-    # collides with the music chain.
-    install -m 0644 \
-        "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
-        /etc/modprobe.d/snd-aloop.conf
+
+    if [[ "$BACKEND" == "debian" ]]; then
+        # debian-stack snd-aloop options: index=6,7 (clears HDMI which
+        # claims 0,1 on a fresh Pi OS Lite). The moOde variant uses
+        # index=0,5 because moOde's kernel module ordering disables
+        # HDMI audio early.
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/etc/modprobe.d/snd-aloop.conf" \
+            /etc/modprobe.d/snd-aloop.conf
+    else
+        install -m 0644 \
+            "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
+            /etc/modprobe.d/snd-aloop.conf
+    fi
     # Reload module so the new card config takes effect (idempotent).
     rmmod snd_aloop 2>/dev/null || true
     modprobe snd-aloop || true
+
+    # Detect Apple USB-C dongle card name. Falls back to "A" (the
+    # literal default on PiOS Trixie). If the dongle isn't plugged
+    # in at install time, the fallback is fine — jasper-doctor will
+    # catch a real mismatch. Exported so install_camilladsp can pick
+    # it up for __DONGLE_CARD__ substitution.
+    DONGLE_CARD=$(detect_card aplay 'usb-c to 3.5mm' 'A')
+    echo "  Apple dongle: CARD=${DONGLE_CARD}"
+    export DONGLE_CARD
+
+    if [[ "$BACKEND" == "debian" ]]; then
+        # No _audioout hijack — we own each renderer and point them
+        # directly at hw:Loopback,0,0. No /root/.asoundrc — CamillaDSP
+        # captures via plughw on the loopback (no jasper_capture
+        # dsnoop fan-out needed until AEC bridge is reintroduced).
+        # Future-work TODO: when AEC bridge is added back to the
+        # debian stack, restore /root/.asoundrc with jasper_capture.
+        rm -f /etc/alsa/conf.d/zz-jts-loopback.conf  # remove if leftover from moOde install
+        echo "  (debian backend — skipping _audioout hijack and /root/.asoundrc)"
+        return 0
+    fi
+
+    # ---- moOde-stack only below this line ----
 
     # Hijack moOde's pcm._audioout symbol to redirect all renderers
     # (MPD/shairport/librespot/bluealsa) into snd-aloop Loopback instead
     # of the physical DAC. moOde's UI blocks selecting Loopback directly
     # ("Device is reserved"); the ALSA-layer override sidesteps that.
-    # See header comment in the conf file for the full rationale + the
-    # required moOde UI settings.
-    # Clean up older 99- prefix from earlier iterations — that prefix
-    # loaded BEFORE _audioout.conf in ASCII order and didn't override.
     rm -f /etc/alsa/conf.d/99-jts-loopback.conf
     install -m 0644 \
         "${REPO_DIR}/deploy/alsa/zz-jts-loopback.conf" \
         /etc/alsa/conf.d/zz-jts-loopback.conf
-
-    # Detect Apple USB-C dongle card name. Falls back to "A" (the
-    # literal default on PiOS Trixie). If the dongle isn't plugged
-    # in at install time, the fallback is fine — jasper-doctor will
-    # catch a real mismatch. The XVF3800's card name ("Array") is
-    # hardcoded in deploy/camilladsp/aec-bridge.yml because the AEC
-    # bridge is only meaningful with the XVF (UMIK has no AEC).
-    local dongle_card
-    dongle_card=$(detect_card aplay 'usb-c to 3.5mm' 'A')
-    echo "  Apple dongle: CARD=${dongle_card}"
 
     # Render /root/.asoundrc from template with detected dongle name.
     # /root/.asoundrc is read by CamillaDSP + jasper-voice (both run
@@ -147,9 +225,110 @@ install_alsa() {
             cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
         fi
     fi
-    sed -e "s/__DONGLE_CARD__/${dongle_card}/g" \
+    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" > /root/.asoundrc
     chmod 0600 /root/.asoundrc
+}
+
+# Source-build go-librespot, nqptp, shairport-sync (AirPlay 2). Run
+# only on debian backend. Each is idempotent — checks for the
+# installed binary and skips the build if present.
+install_debian_renderers() {
+    # ---- go-librespot ----
+    if [[ ! -x /usr/local/bin/go-librespot ]]; then
+        echo "Fetching go-librespot ${GO_LIBRESPOT_VERSION}..."
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        curl -fsSL -o "${tmpdir}/glr.tar.gz" "${GO_LIBRESPOT_URL}"
+        tar -xzf "${tmpdir}/glr.tar.gz" -C "${tmpdir}" go-librespot
+        install -m 0755 "${tmpdir}/go-librespot" /usr/local/bin/go-librespot
+        rm -rf "${tmpdir}"
+        echo "  Installed /usr/local/bin/go-librespot"
+    fi
+    install -d -m 0755 /etc/go-librespot
+    install -m 0644 \
+        "${DEBIAN_STACK_DIR}/etc/go-librespot/config.yml" \
+        /etc/go-librespot/config.yml
+    chown -R pi:pi /etc/go-librespot 2>/dev/null || true
+
+    # ---- nqptp ----
+    if [[ ! -x /usr/local/bin/nqptp ]]; then
+        echo "Building nqptp from source..."
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        git clone --depth 1 "${NQPTP_REPO}" "${tmpdir}/nqptp"
+        (
+            cd "${tmpdir}/nqptp"
+            autoreconf -fi
+            ./configure --with-systemd-startup
+            make -j4
+            make install
+        )
+        rm -rf "${tmpdir}"
+        echo "  Installed /usr/local/bin/nqptp"
+    fi
+
+    # ---- shairport-sync (AirPlay 2) ----
+    # Trixie's apt package ships AirPlay 1 only. Source-build with
+    # --with-airplay-2 for AP2. The version output (`shairport-sync -V`)
+    # should contain "AirPlay2" if the build worked; we pattern-match
+    # to detect a stale apt install and rebuild.
+    local need_build=0
+    if [[ ! -x /usr/local/bin/shairport-sync ]]; then
+        need_build=1
+    elif ! /usr/local/bin/shairport-sync -V 2>&1 | grep -q "AirPlay2"; then
+        need_build=1
+    fi
+    if [[ "$need_build" == "1" ]]; then
+        echo "Building shairport-sync ${SHAIRPORT_SYNC_VERSION} with AirPlay 2..."
+        # Remove apt-installed AP1 build if present. Keep
+        # /etc/shairport-sync.conf — apt remove preserves it; apt
+        # purge doesn't, so we use remove.
+        systemctl stop shairport-sync 2>/dev/null || true
+        apt-get remove -y shairport-sync 2>/dev/null || true
+        local tmpdir
+        tmpdir="$(mktemp -d)"
+        git clone --depth 1 --branch "${SHAIRPORT_SYNC_VERSION}" \
+            "${SHAIRPORT_SYNC_REPO}" "${tmpdir}/sps"
+        (
+            cd "${tmpdir}/sps"
+            autoreconf -fi
+            ./configure --sysconfdir=/etc \
+                --with-alsa --with-soxr --with-avahi \
+                --with-ssl=openssl --with-systemd \
+                --with-airplay-2 \
+                --with-metadata --with-dbus-interface \
+                --with-mpris-interface
+            make -j4
+            # `make install` may fail at the systemd step due to an
+            # `install` flag mismatch on Trixie — the binary lands fine
+            # at /usr/local/bin/shairport-sync. We deploy our own unit
+            # file below regardless, so an install-systemd failure
+            # is OK.
+            make install || true
+        )
+        rm -rf "${tmpdir}"
+        echo "  Installed /usr/local/bin/shairport-sync"
+    fi
+
+    # shairport-sync needs a dedicated user (the configure-time default
+    # is shairport-sync:shairport-sync); apt's package would have
+    # created it but we may not have apt-installed first.
+    if ! getent group shairport-sync >/dev/null 2>&1; then
+        groupadd -r shairport-sync
+    fi
+    if ! getent passwd shairport-sync >/dev/null 2>&1; then
+        useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio shairport-sync
+    fi
+
+    install -m 0644 \
+        "${DEBIAN_STACK_DIR}/etc/shairport-sync.conf" \
+        /etc/shairport-sync.conf
+
+    # bluez-alsa-utils + bluez-tools were apt-installed in install_deps.
+    # Configure /etc/bluetooth/main.conf for speaker-mode (Just Works
+    # pairing, audio-class device).
+    bash "${DEBIAN_STACK_DIR}/configure-bluez.sh"
 }
 
 install_jasper() {
@@ -253,18 +432,63 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/jasper-aec-init.service" \
         "${SYSTEMD_DIR}/jasper-aec-init.service"
 
-    # Drop-in override forcing the system shairport-sync.service onto
-    # moOde's `_audioout` ALSA symbol. Without this it writes to ALSA
-    # `default` and bypasses our zz-jts-loopback.conf hijack — see header
-    # comment in shairport-sync-jts-output.conf for the full rationale.
-    install -d -m 0755 "${SYSTEMD_DIR}/shairport-sync.service.d"
-    install -m 0644 \
-        "${REPO_DIR}/deploy/systemd/shairport-sync-jts-output.conf" \
-        "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+    if [[ "$BACKEND" == "debian" ]]; then
+        # We own the full systemd units for each renderer + nqptp +
+        # bt-agent. No drop-in override on shairport-sync — it's our
+        # unit pointing at our binary at /usr/local/bin/shairport-sync.
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/go-librespot.service" \
+            "${SYSTEMD_DIR}/go-librespot.service"
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/shairport-sync.service" \
+            "${SYSTEMD_DIR}/shairport-sync.service"
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/nqptp.service" \
+            "${SYSTEMD_DIR}/nqptp.service"
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/bt-agent.service" \
+            "${SYSTEMD_DIR}/bt-agent.service"
+        # Drop-in routing bluealsa-aplay's output into the JTS loopback
+        # instead of ALSA default (HDMI on a fresh Pi).
+        install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/bluealsa-aplay.service.d/jts-output.conf" \
+            "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
+    else
+        # Drop-in override forcing the system shairport-sync.service onto
+        # moOde's `_audioout` ALSA symbol. Without this it writes to ALSA
+        # `default` and bypasses our zz-jts-loopback.conf hijack — see header
+        # comment in shairport-sync-jts-output.conf for the full rationale.
+        install -d -m 0755 "${SYSTEMD_DIR}/shairport-sync.service.d"
+        install -m 0644 \
+            "${REPO_DIR}/deploy/systemd/shairport-sync-jts-output.conf" \
+            "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+    fi
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
         jasper-web.service jasper-control.service
+
+    if [[ "$BACKEND" == "debian" ]]; then
+        systemctl enable nqptp.service shairport-sync.service \
+            go-librespot.service bt-agent.service
+        systemctl restart bluealsa-aplay.service 2>/dev/null || true
+        systemctl restart nqptp.service shairport-sync.service \
+            go-librespot.service bt-agent.service 2>/dev/null || true
+    else
+        # On a fresh moOde, shairport-sync is spawned outside systemd by
+        # moOde's startup mechanism (with its own ALSA args, and root-uid).
+        # That instance is holding port 7000, so a `systemctl restart` of
+        # the systemd unit would fail to bind. Kill any non-systemd
+        # shairport-sync first, reset any prior failed state, then start
+        # the systemd-managed instance (which inherits our drop-in's
+        # `-- -d _audioout` ExecStart).
+        pkill -x shairport-sync 2>/dev/null || true
+        sleep 1
+        systemctl reset-failed shairport-sync.service 2>/dev/null || true
+        systemctl restart shairport-sync.service 2>/dev/null || true
+    fi
+
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
     # "Acoustic echo cancellation" section for the on/off procedure
@@ -274,18 +498,6 @@ install_systemd_units() {
     #   sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
     #       /etc/jasper/jasper.env
     #   systemctl restart jasper-voice
-
-    # On a fresh moOde, shairport-sync is spawned outside systemd by
-    # moOde's startup mechanism (with its own ALSA args, and root-uid).
-    # That instance is holding port 7000, so a `systemctl restart` of
-    # the systemd unit would fail to bind. Kill any non-systemd
-    # shairport-sync first, reset any prior failed state, then start
-    # the systemd-managed instance (which inherits our drop-in's
-    # `-- -d _audioout` ExecStart).
-    pkill -x shairport-sync 2>/dev/null || true
-    sleep 1
-    systemctl reset-failed shairport-sync.service 2>/dev/null || true
-    systemctl restart shairport-sync.service 2>/dev/null || true
 
     echo
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
@@ -383,12 +595,24 @@ install_nginx_proxy() {
 main() {
     require_root
     install_deps
+    install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
-    install_alsa
+    if [[ "$BACKEND" == "debian" ]]; then
+        install_debian_renderers
+    fi
     install_jasper
     install_systemd_units
     install_self_signed_cert
-    install_nginx_proxy
+    if [[ "$BACKEND" == "moode" ]]; then
+        install_nginx_proxy
+    else
+        # TODO(debian-stack): write a stand-alone nginx site for
+        # https://jts.local/spotify (no moOde site to edit). Until
+        # then, household members can hit https://jts.local:8765/spotify
+        # directly (jasper-web's bound port; HTTPS via the self-signed
+        # cert).
+        echo "  (debian backend — skipping moOde nginx integration; see TODO)"
+    fi
 }
 
 main "$@"
