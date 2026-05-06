@@ -18,6 +18,54 @@ agent file). Keep both in sync when editing.
 
 ---
 
+## Renderer backend — moode vs debian
+
+JTS supports two deployment targets, picked at install time:
+
+```sh
+sudo bash deploy/install.sh --backend=moode    # default; existing
+sudo bash deploy/install.sh --backend=debian   # no moOde
+```
+
+**moode** (default, what jasper.local runs): assumes moOde audio
+10.1.2+ is already up. Hijacks moOde's `pcm._audioout` ALSA symbol
+to redirect renderers into snd-aloop. `jasper/moode.py` polls
+moOde's REST + SQLite for renderer state.
+
+**debian** (validated on jts.local 2026-05-06): stock Raspberry Pi OS
+Lite, no moOde. Source-builds shairport-sync with AirPlay 2 +
+nqptp, drops in go-librespot + bluez-alsa + bt-agent, owns the full
+systemd unit per renderer. `jasper/renderer.py:DebianBackend`
+polls go-librespot HTTP, shairport-sync MPRIS, and bluez-alsa
+directly. `jasper-mux.service` does latest-source-wins preemption
+(moOde's worker.php replacement).
+
+Backend selection is via `JASPER_RENDERER_BACKEND=moode|debian`
+in `/etc/jasper/jasper.env` (default "moode" for backward compat).
+`jasper.renderer.make_backend()` is the single entry point;
+voice_daemon and jasper-control both go through it.
+
+**Things that differ between backends:**
+
+| Aspect | moode | debian |
+|---|---|---|
+| `/root/.asoundrc` | jasper_capture (dsnoop) + jasper_out (dmix) | jasper_out only (no AEC bridge yet) |
+| `/etc/alsa/conf.d/zz-jts-loopback.conf` | hijacks `_audioout` | not installed |
+| `/etc/modprobe.d/snd-aloop.conf` | `index=0,5` | `index=6,7` (HDMI claims 0,1 on fresh Pi OS Lite) |
+| Renderer daemons | provided by moOde | source-built or apt-installed by `install.sh` |
+| Renderer state polling | moOde REST + SQLite | each daemon's own surface |
+| Source preemption | moOde's worker.php | `jasper-mux` daemon |
+
+**For voice testing on the debian backend** (jts.local), the XVF3800
+mic array still needs to be physically present on that Pi. As of
+the migration date, the mic was on jasper.local and not yet moved.
+Voice end-to-end on the debian stack is the next milestone.
+
+The full debian-stack file map and source-build deps are in
+[`deploy/debian-stack/README.md`](deploy/debian-stack/README.md).
+
+---
+
 ## Gemini model switching — read first
 
 **Preferred model: `gemini-3.1-flash-live-preview`** (latest Live

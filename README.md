@@ -113,6 +113,14 @@ to consume. Disabled by default — see § below.
 - 🔄 ESP32 rotary dial: phase 1 landed (volume); phase 2/3
   (play/pause click + hold-to-talk) and phase 5 (LVGL display) pending.
   See "Rotary dial controller" in [CLAUDE.md](CLAUDE.md).
+- 🔄 No-moOde install option: `migrate/no-moode` branch validated
+  on a 2GB Pi 5 with Raspberry Pi OS Lite (Trixie). Source-builds
+  shairport-sync with AirPlay 2 + nqptp, drops in go-librespot,
+  bluez-alsa, and a `jasper-mux` daemon for "latest-source-wins"
+  preemption. Total daemon RAM ~76 MB; system idle ~273 MiB used
+  (vs 600-800 MiB on moOde). Run `install.sh --backend=debian`. See
+  [deploy/debian-stack/README.md](deploy/debian-stack/README.md) and
+  the "Renderer backend" section of [CLAUDE.md](CLAUDE.md).
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the

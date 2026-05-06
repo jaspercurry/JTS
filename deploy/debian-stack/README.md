@@ -19,12 +19,14 @@ of truth for a one-command install on a blank Trixie box.
 | `etc/go-librespot/config.yml` | `/etc/go-librespot/config.yml` | go-librespot |
 | `etc/shairport-sync.conf` | `/etc/shairport-sync.conf` | shairport-sync (source-built) |
 | `etc/modprobe.d/snd-aloop.conf` | `/etc/modprobe.d/snd-aloop.conf` | kernel module |
+| `etc/asoundrc-jasper.template` | `/root/.asoundrc` (with `__DONGLE_CARD__` substituted) | jasper-camilla + jasper-voice |
 | `etc/camilladsp/v1.yml` | `/etc/camilladsp/v1.yml` | jasper-camilla |
 | `systemd/go-librespot.service` | `/etc/systemd/system/go-librespot.service` | systemd |
 | `systemd/shairport-sync.service` | `/etc/systemd/system/shairport-sync.service` | systemd |
 | `systemd/nqptp.service` | `/etc/systemd/system/nqptp.service` | systemd |
 | `systemd/bt-agent.service` | `/etc/systemd/system/bt-agent.service` | systemd |
 | `systemd/bluealsa-aplay.service.d/jts-output.conf` | `/etc/systemd/system/bluealsa-aplay.service.d/jts-output.conf` | systemd drop-in |
+| `systemd/jasper-mux.service` | `/etc/systemd/system/jasper-mux.service` | systemd |
 | `configure-bluez.sh` | run once during install | sudo |
 
 ## Topology
@@ -36,12 +38,23 @@ iPhone (Bluetooth) ─┘                        (master_gain mixer,            
                                               flat filters; ducking surface)
 ```
 
-All three renderers write to the same snd-aloop substream (sub 0). They
-serialize via "first writer wins" — the previous renderer's
-`session_timeout` releases the device after idle and the next can grab
-it. Multi-renderer concurrent playback is not yet designed; that's a
-follow-up architectural decision (separate substreams vs dmix vs
-session-timeout-only).
+All three renderers write to the same snd-aloop substream (sub 0).
+The `jasper-mux` daemon (this stack's replacement for moOde's
+`worker.php`) polls each renderer at 1 Hz and, when a new source
+transitions to playing while another is already playing, pauses
+the older one — implementing "latest source wins" UX:
+
+- Spotify (go-librespot): pause via HTTP `POST /player/pause`
+- AirPlay (shairport-sync): pause via MPRIS `Pause` over busctl
+- Bluetooth (bluez-alsa): no graceful pause API on the receiver
+  side — best-effort, brief audio-mixing window until the user
+  pauses on their phone.
+
+CamillaDSP captures from `plughw:Loopback,1,0` (which absorbs each
+renderer's native rate/format via the plug layer) and writes to
+`pcm.jasper_out` — a dmix in `/root/.asoundrc` that fans the
+processed music + jasper-voice TTS into one stream before the
+Apple USB-C dongle. dmix sums multiple writers sample-wise.
 
 ## What's NOT in apt
 
@@ -68,8 +81,20 @@ will be codified in the adapted `install.sh`.
 
 ## What's still missing
 
-- jasper-voice not yet installed on the new Pi (next phase)
-- `jasper/moode.py` still references moOde-specific REST and SQLite
-  (refactor to `RendererBackend` ABC pending)
-- Multi-renderer concurrent-playback architecture
-- jasper-doctor checks for the new daemons
+- **Voice end-to-end on jts.local** — needs the XVF3800 mic
+  physically moved over from `jasper.local` (or a duplicate). The
+  `jasper-voice` service is installed and enabled; it just won't
+  fire wake-word detection without the mic plugged in.
+- **AEC bridge on debian** — software AEC works on the moOde stack
+  via a `jasper_capture` dsnoop block in /root/.asoundrc. The
+  debian asoundrc only defines `jasper_out`; adding `jasper_capture`
+  is a one-file edit when the user wants AEC there.
+- **Standalone HTTPS for jasper-web** — the moOde install patches
+  moOde's nginx site to add `/spotify` reverse-proxying. On debian
+  this step is skipped (`install.sh` logs a TODO). Until that's
+  built, household members can hit `https://jts.local:8765/spotify`
+  directly (jasper-web's bound port + the install.sh-generated
+  self-signed cert on port 443 isn't wired yet).
+- **Bluetooth graceful pause** — bluez-alsa doesn't expose a
+  pause API on the A2DP-sink side. `jasper-mux` logs a no-op when
+  asked to preempt BT; phone-side pause is the workaround.
