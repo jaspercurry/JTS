@@ -245,25 +245,37 @@ def check_moode_http(cfg: Config) -> CheckResult:
 
 def check_go_librespot_http(cfg: Config) -> CheckResult:
     """Verify go-librespot's HTTP API is reachable and the daemon is
-    serving Spotify Connect. The /status endpoint returns 200 even
-    when nothing's playing, so this catches "daemon is up" without
-    requiring an active Spotify session."""
+    serving Spotify Connect. /status returns 200+JSON when a session
+    is live and 204 No Content when idle (no Spotify client connected
+    yet). Both are healthy; only network/transport errors are real
+    failures."""
     try:
         import httpx
         r = httpx.get(f"{cfg.go_librespot_url.rstrip('/')}/status", timeout=2.0)
         r.raise_for_status()
-        data = r.json()
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             "go-librespot HTTP", "fail",
             f"can't reach {cfg.go_librespot_url}: {e}. "
             f"Check: systemctl status go-librespot",
         )
-    name = data.get("device_name", "?")
-    return CheckResult(
-        "go-librespot HTTP", "ok",
-        f"{cfg.go_librespot_url} (device={name})",
-    )
+    if r.status_code == 204 or not r.content:
+        return CheckResult(
+            "go-librespot HTTP", "ok",
+            f"{cfg.go_librespot_url} (idle — no Spotify client connected)",
+        )
+    try:
+        data = r.json()
+        name = data.get("device_name", "?")
+        return CheckResult(
+            "go-librespot HTTP", "ok",
+            f"{cfg.go_librespot_url} (device={name})",
+        )
+    except ValueError:
+        return CheckResult(
+            "go-librespot HTTP", "warn",
+            f"{cfg.go_librespot_url} reachable but returned non-JSON",
+        )
 
 
 def check_shairport_sync_ap2() -> CheckResult:
