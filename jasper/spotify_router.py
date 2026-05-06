@@ -41,7 +41,8 @@ logger = logging.getLogger(__name__)
 
 SPOTIFY_SCOPE = (
     "user-modify-playback-state user-read-playback-state "
-    "user-read-currently-playing user-read-private"
+    "user-read-currently-playing user-read-private "
+    "playlist-read-private playlist-read-collaborative"
 )
 
 # Re-resolve a cached AirPlay-session→account decision after this many
