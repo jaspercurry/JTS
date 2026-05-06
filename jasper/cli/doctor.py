@@ -239,6 +239,94 @@ def check_moode_http(cfg: Config) -> CheckResult:
         )
 
 
+# ----------------------------------------------------------------------
+# debian-stack equivalents — each renderer's own surface, not moOde's.
+# ----------------------------------------------------------------------
+
+def check_go_librespot_http(cfg: Config) -> CheckResult:
+    """Verify go-librespot's HTTP API is reachable and the daemon is
+    serving Spotify Connect. The /status endpoint returns 200 even
+    when nothing's playing, so this catches "daemon is up" without
+    requiring an active Spotify session."""
+    try:
+        import httpx
+        r = httpx.get(f"{cfg.go_librespot_url.rstrip('/')}/status", timeout=2.0)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(
+            "go-librespot HTTP", "fail",
+            f"can't reach {cfg.go_librespot_url}: {e}. "
+            f"Check: systemctl status go-librespot",
+        )
+    name = data.get("device_name", "?")
+    return CheckResult(
+        "go-librespot HTTP", "ok",
+        f"{cfg.go_librespot_url} (device={name})",
+    )
+
+
+def check_shairport_sync_ap2() -> CheckResult:
+    """Verify shairport-sync is installed with AirPlay 2 support
+    AND the systemd unit is active. The Debian Trixie apt package
+    is AP1-only; the migration's source-build emits a binary whose
+    `-V` output contains 'AirPlay2'."""
+    if shutil.which("shairport-sync") is None:
+        return CheckResult(
+            "shairport-sync AP2", "fail",
+            "binary not found. Source-build per deploy/debian-stack/README.md",
+        )
+    p = _run(["shairport-sync", "-V"])
+    out = (p.stdout + p.stderr).strip().split("\n")[0]
+    if "AirPlay2" not in out:
+        return CheckResult(
+            "shairport-sync AP2", "fail",
+            f"binary lacks --with-airplay-2 (got: {out!r}). "
+            f"Apt's package is AP1-only; rebuild from source.",
+        )
+    p2 = _run(["systemctl", "is-active", "shairport-sync.service"])
+    state = p2.stdout.strip()
+    if state != "active":
+        return CheckResult(
+            "shairport-sync AP2", "fail",
+            f"binary OK but systemd state={state}. "
+            f"Check: journalctl -u shairport-sync",
+        )
+    return CheckResult("shairport-sync AP2", "ok", out)
+
+
+def check_nqptp_running() -> CheckResult:
+    """nqptp is required for AirPlay 2 timing. Without it,
+    shairport-sync's AP2 path silently fails to handshake."""
+    p = _run(["systemctl", "is-active", "nqptp.service"])
+    state = p.stdout.strip()
+    if state == "active":
+        return CheckResult("nqptp", "ok", "active (UDP 319/320)")
+    return CheckResult(
+        "nqptp", "fail",
+        f"state={state}. shairport-sync AP2 will not handshake "
+        f"without nqptp running.",
+    )
+
+
+def check_bluealsa() -> CheckResult:
+    """bluealsa daemon registers the A2DP profile with bluez;
+    bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
+    must be active for "phone-as-Bluetooth-source → speaker"
+    to work end-to-end."""
+    p1 = _run(["systemctl", "is-active", "bluealsa.service"])
+    p2 = _run(["systemctl", "is-active", "bluealsa-aplay.service"])
+    s1 = p1.stdout.strip()
+    s2 = p2.stdout.strip()
+    if s1 == "active" and s2 == "active":
+        return CheckResult("bluealsa", "ok", "daemon + aplay active")
+    return CheckResult(
+        "bluealsa", "fail",
+        f"bluealsa={s1}, bluealsa-aplay={s2}. "
+        f"Check: journalctl -u bluealsa",
+    )
+
+
 async def check_mpd(cfg: Config) -> CheckResult:
     try:
         from mpd.asyncio import MPDClient
@@ -626,23 +714,37 @@ def render(results: list[CheckResult]) -> int:
 
 
 async def run_async(cfg: Config) -> list[CheckResult]:
+    # Backend-agnostic checks (env, GEMINI key, ALSA cards, AEC,
+    # CamillaDSP, MPD-if-present, etc.) run regardless. The renderer
+    # checks branch on cfg.renderer_backend.
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
         lambda: check_gemini_key(cfg),
-        # Derive the mic card from cfg, not a literal — install.sh
-        # autodetects the actual card name on the Pi. The dongle path
-        # is fully exercised by check_tts_open below (opens
-        # jasper_out which fans out through dmix → hw:CARD=...), so a
-        # separate literal check would just duplicate-fail.
         lambda: check_mic_card_matches_config(cfg),
         check_loopback,
         lambda: check_mic_capture(cfg),
         lambda: check_tts_open(cfg),
         lambda: check_openwakeword_model(cfg),
-        lambda: check_moode_http(cfg),
-        lambda: check_spotify_cache(cfg),
-        lambda: check_spotify_connect_device(cfg),
-        check_airplay_renderer,
+    ]
+    if cfg.renderer_backend == "debian":
+        # Direct-daemon checks. No moOde REST, no SQLite. Spotify auth
+        # / cache checks still run (Spotify Web API is the same surface
+        # regardless of which backend handles Connect playback).
+        sync_checks += [
+            lambda: check_go_librespot_http(cfg),
+            check_shairport_sync_ap2,
+            check_nqptp_running,
+            check_bluealsa,
+            lambda: check_spotify_cache(cfg),
+        ]
+    else:
+        sync_checks += [
+            lambda: check_moode_http(cfg),
+            lambda: check_spotify_cache(cfg),
+            lambda: check_spotify_connect_device(cfg),
+            check_airplay_renderer,
+        ]
+    sync_checks += [
         lambda: check_state_dir(cfg),
         check_ram,
         lambda: check_spend_cap(cfg),
@@ -652,7 +754,11 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     ]
     results = [c() for c in sync_checks]
     results.append(await check_camilla_websocket(cfg))
-    results.append(await check_mpd(cfg))
+    if cfg.renderer_backend == "moode":
+        # MPD is part of moOde's stack and is a hard dep there.
+        # On debian it's optional (only if user installed it for
+        # local files / radio); skip the check to avoid noise.
+        results.append(await check_mpd(cfg))
     return results
 
 
