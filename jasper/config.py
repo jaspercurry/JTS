@@ -99,6 +99,14 @@ class Config:
     mpd_host: str
     mpd_port: int
 
+    # Renderer backend selection. "moode" (default) routes through
+    # moOde's REST API + SQLite for renderer state. "debian" uses
+    # each daemon's own surface (go-librespot HTTP, shairport-sync
+    # MPRIS, bluez-alsa) and is the no-moOde stack on Trixie Lite.
+    # See jasper.renderer.make_backend.
+    renderer_backend: str
+    go_librespot_url: str
+
     spotify_client_id: str
     spotify_client_secret: str
     spotify_redirect_uri: str
@@ -235,6 +243,10 @@ class Config:
             moode_base_url=_env("MOODE_BASE_URL", "http://127.0.0.1"),
             mpd_host=_env("MPD_HOST", "127.0.0.1"),
             mpd_port=_env_int("MPD_PORT", 6600),
+            renderer_backend=_env("JASPER_RENDERER_BACKEND", "moode"),
+            go_librespot_url=_env(
+                "JASPER_GO_LIBRESPOT_URL", "http://127.0.0.1:3678",
+            ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
             spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),
             # The redirect URI is the URL Spotify bounces the OAuth

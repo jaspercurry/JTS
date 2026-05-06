@@ -13,7 +13,7 @@ from .audio_io import MicCapture, TtsPlayout
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
-from .moode import MoodeClient
+from .renderer import RendererBackend, make_backend
 from .spotify_router import Router, build_clients
 from .subway import SubwayClient
 from .tools import ToolRegistry
@@ -498,7 +498,7 @@ def _build_router(cfg: Config) -> Router | None:
 def _build_registry(
     cfg: Config,
     camilla: CamillaController,
-    moode: MoodeClient,
+    moode: RendererBackend,
     weather: WeatherClient,
     subway: SubwayClient | None,
     volume_persistence: VolumePersistence | None = None,
@@ -1099,7 +1099,13 @@ async def run() -> None:
     spend_cap = SpendCap(usage_store, cfg.daily_spend_cap_usd)
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
-    moode = MoodeClient(cfg.moode_base_url, cfg.mpd_host, cfg.mpd_port)
+    moode = make_backend(
+        moode_base_url=cfg.moode_base_url,
+        mpd_host=cfg.mpd_host,
+        mpd_port=cfg.mpd_port,
+        go_librespot_url=cfg.go_librespot_url,
+        backend_name=cfg.renderer_backend,
+    )
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
     subway = (
         SubwayClient(

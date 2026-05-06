@@ -139,14 +139,21 @@ async def _toggle_transport() -> dict:
     # Import inside the function so jasper-control doesn't import the
     # full voice-daemon dependency tree at startup.
     from ..accounts import Registry, maybe_migrate_legacy
-    from ..moode import MoodeClient
+    from ..renderer import make_backend
     from ..spotify_router import Router, build_clients
     from ..tools.transport import make_transport_dispatcher
 
-    moode = MoodeClient(
-        base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
+    # Variable kept named `moode` for parity with the rest of the
+    # codebase (transport.py, spotify_routing.py); make_backend
+    # returns a MoodeClient or DebianBackend depending on
+    # JASPER_RENDERER_BACKEND.
+    moode = make_backend(
+        moode_base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
         mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
         mpd_port=int(os.environ.get("MPD_PORT", "6600")),
+        go_librespot_url=os.environ.get(
+            "JASPER_GO_LIBRESPOT_URL", "http://127.0.0.1:3678",
+        ),
     )
     router: Router | None = None
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
