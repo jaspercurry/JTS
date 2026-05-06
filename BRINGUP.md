@@ -448,11 +448,55 @@ the user speaks. Empirically:
   master_gain ducking on wake.
 
 If you find wake-word reliability inadequate during music, the
-opt-in software AEC bridge is a tested fallback — see CLAUDE.md
-"Acoustic echo cancellation" for the toggle commands and
-`docs/HANDOFF-aec.md` for the trade-off. It costs ~110 MB RAM and
-delivers ~−2 to −8 dB attenuation. Not transformative; sometimes
-worth the cost on a 2GB Pi.
+opt-in software AEC bridge is a tested fallback. It costs ~110 MB
+RAM (significant on a 1GB Pi 5; comfortable on 2GB) and delivers
+~−2 to −8 dB attenuation — modest, and not measured end-to-end
+against wake-word reliability yet. See `docs/HANDOFF-aec.md` for
+the full trade-off analysis.
+
+**To enable software AEC:**
+
+```sh
+# 1. Make sure the XVF chip is on 6-channel firmware (required —
+#    the bridge reads raw mic 0 from channel 2 of the chip's USB
+#    capture). One-shot DFU flash, fully reversible — see Phase
+#    2A.5 below.
+
+# 2. Switch jasper-voice's mic source to the bridge's output.
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
+    /etc/jasper/jasper.env
+
+# 3. Enable + start the bridge (and chip-init dependency).
+sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
+
+# 4. Restart jasper-voice so it picks up the new mic device.
+sudo systemctl restart jasper-voice
+
+# 5. Verify everything is alive.
+sudo /opt/jasper/.venv/bin/jasper-doctor
+```
+
+`hw:5,1` is the LoopbackAEC card (snd-aloop card index 5 per
+`/etc/modprobe.d/snd-aloop.conf`) — PortAudio names all snd-aloop
+instances identically as "Loopback: PCM (hw:N,M)" so we use the
+unique `hw:N,M` substring to address it. The bridge writes AEC'd
+mono to `hw:5,0` and jasper-voice reads from `hw:5,1`.
+
+**To disable software AEC** (revert to default):
+
+```sh
+sudo systemctl disable --now jasper-aec-bridge jasper-aec-init
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=Array|' \
+    /etc/jasper/jasper.env
+sudo systemctl restart jasper-voice
+```
+
+Frees ~110 MB RAM. jasper-voice goes back to reading the chip's
+processed conference channel directly.
+
+The CLAUDE.md "Acoustic echo cancellation" section duplicates
+these toggle commands for AI-session reference. Keep both files
+in sync if anything changes.
 
 The **chip's on-chip AEC is structurally not usable** in our
 external-DAC topology — see `docs/HANDOFF-aec.md` for the full
