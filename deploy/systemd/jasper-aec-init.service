@@ -1,0 +1,21 @@
+[Unit]
+Description=Apply AEC tuning to XVF3800 (REBOOT + AUDIO_MGR_SYS_DELAY)
+# Runs once at boot, before the bridge tries to write reference
+# audio. The chip needs a clean state (REBOOT 1) and the persisted
+# AUDIO_MGR_SYS_DELAY value applied — we never call
+# SAVE_CONFIGURATION because firmware 2.0.6 has a brick hazard on
+# that op (respeaker repo issue #8). Re-applying at boot is cheap
+# and guaranteed safe.
+After=sound.target dev-snd-controlC4.device
+Before=jasper-aec-bridge.service jasper-camilla.service
+Requires=sound.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/jasper/.venv/bin/jasper-aec-init
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

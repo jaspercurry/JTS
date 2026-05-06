@@ -1,0 +1,81 @@
+---
+# CamillaDSP AEC reference bridge.
+#
+# Captures the 48 kHz stereo stream that pcm.jasper_out's `multi`
+# fans out to snd-aloop (sub1), folds L+R to mono on the left
+# channel (the XVF3800 only reads left for AEC reference; right
+# is ignored), resamples 48 → 16 kHz with AsyncSinc, and writes
+# the result to the XVF3800's USB-IN endpoint.
+#
+# enable_rate_adjust: true is critical here. CamillaDSP slaves
+# the snd-aloop's virtual clock to the playback (XVF) clock by
+# nudging the resampling ratio every adjust_period seconds. This
+# eliminates long-term drift between AEC reference timing and the
+# XVF's mic capture timing — without it, the AEC's bulk delay
+# tuning would slowly walk out of the chip's 40-sample window.
+#
+# Format S16_LE on both ends matches what the XVF firmware
+# advertises (`/proc/asound/Array/stream0` shows
+# Rates: 16000, Format: S16_LE, Channels: 2). Bits in the right
+# channel of playback are wasted but cost nothing.
+
+devices:
+  # samplerate is the output/processing rate. capture_samplerate is
+  # what we open the loopback substream at — snd-aloop locks rate at
+  # first opener (here, the asoundrc dmix on Loopback,0,sub1 at 48k),
+  # so the capture-side substream is also 48k. CamillaDSP handles the
+  # 48 → 16 kHz conversion via the AsyncSinc resampler.
+  samplerate: 16000
+  capture_samplerate: 48000
+  chunksize: 320
+  queuelimit: 4
+  enable_rate_adjust: true
+  adjust_period: 5
+  target_level: 240
+  resampler:
+    type: AsyncSinc
+    profile: Balanced
+  capture:
+    # Capture from the shared dsnoop on the moOde→camilla loopback
+    # (pcm.jasper_capture, defined in /root/.asoundrc). The main
+    # jasper-camilla also captures from this same dsnoop — dsnoop
+    # gives each reader an independent copy.
+    type: Alsa
+    channels: 2
+    device: "jasper_capture"
+    format: S16_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "hw:CARD=Array,DEV=0"
+    format: S16_LE
+
+mixers:
+  fold_to_left:
+    channels:
+      in: 2
+      out: 2
+    mapping:
+      # Channel 0 (left) carries the AEC reference: avg of input L+R.
+      # XVF firmware reads left only.
+      - dest: 0
+        sources:
+          - channel: 0
+            gain: -6.0
+            inverted: false
+          - channel: 1
+            gain: -6.0
+            inverted: false
+      # Channel 1 (right) carries silence — mute. Avoids polluting
+      # the wasted right channel with anything that might confuse
+      # the chip if a future firmware revision starts using it.
+      - dest: 1
+        sources:
+          - channel: 0
+            gain: -120.0
+            inverted: false
+            mute: true
+
+pipeline:
+  - type: Mixer
+    name: fold_to_left

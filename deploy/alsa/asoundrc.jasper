@@ -1,50 +1,94 @@
 # /root/.asoundrc — installed by deploy/install.sh.
 #
-# Both jasper-camilla (music chain) and jasper-voice (TTS) write to
-# `pcm.jasper_out` — a dmix on the Apple USB-C dongle (the speaker).
-# Multiple writers to the same dmix are exactly what dmix is for; it
-# mixes them sample-by-sample.
+# Topology: capture-side fan-out for hardware AEC via dsnoop.
 #
-# Why the dongle is the speaker: the XVF3800 has its own onboard DAC
-# with a 3.5mm jack, but its analog output is unacceptably hissy on
-# this setup. Speakers are physically wired to the Apple dongle. The
-# XVF3800 chip is used only for its mic array + onboard hardware AEC.
+#   moOde renderers (MPD/shairport/librespot/bluealsa)
+#     │  via pcm._audioout (zz-jts-loopback.conf hijack)
+#     ▼
+#   hw:Loopback,0,0  (snd-aloop, sub0 — single writer)
+#     │
+#     ▼
+#   hw:Loopback,1,0  (capture)
+#     │
+#     ▼
+#   pcm.jasper_capture  (type dsnoop — capture-side fan-out:
+#                        multiple readers share this single
+#                        capture device)
+#     │
+#     ├──► reader A: jasper-camilla
+#     │      - master_gain ducking
+#     │      - flat passthrough filter
+#     │      - playback → pcm.jasper_out → Apple dongle
+#     │      → audible path (speakers)
+#     │
+#     └──► reader B: jasper-aec-bridge
+#            - AsyncSinc resample 48 → 16 kHz
+#            - L+R → mono on left
+#            - playback → hw:Array (XVF3800 USB-IN)
+#            → XVF chip's hardware-AEC reference
 #
-# AEC reference plumbing — TODO. The chip's hardware AEC needs a
-# reference signal written to its USB-IN endpoint (XMOS XVF3800
-# datasheet: "AEC reference is the left channel of USB input"). The
-# clean solution would be to fan `jasper_out` out to BOTH the dongle
-# AND the XVF3800 USB-IN so the chip can subtract what the speakers
-# are emitting. We tried `route → multi → 2x[plug→dmix]` with the
-# dongle leg @ 48 kHz and the XVF leg @ 16 kHz; CDSP got `Invalid
-# argument` from `snd_pcm_hw_params_any`, almost certainly because
-# `multi` can't negotiate a common period_size across slaves with
-# different inner rates. Until we sort out the dual-output topology,
-# `NO_INTERRUPTION` in the Gemini config keeps the model from
-# self-interrupting on TTS bleed; the AEC just isn't doing anything
-# (no reference reaches the chip). `pcm.jasper_aec_ref` below is
-# the dmix endpoint we'll write into once the topology is fixed.
+# Why dsnoop instead of dmix-on-playback or multi:
+#  - dsnoop is the capture-side analog of dmix (multiple readers
+#    share one capture device). Built-in ALSA primitive, well
+#    tested.
+#  - Multi-writer on playback (multi → 2x[hw or dmix]) was tested
+#    and silently dropped writes to slaves beyond the first —
+#    appl_ptr on sub1/sub2 advanced but the data was zero on the
+#    capture side. Switching the fan-out to the capture side
+#    sidesteps multi entirely.
+#  - With this shape, jasper-camilla and jasper-aec-bridge each
+#    open `pcm.jasper_capture` and get an independent copy of the
+#    same audio, both clocked off the snd-aloop substream — no
+#    drift between them.
 #
-# Pipeline (current, single-output):
+# pcm.jasper_out is now JUST the dongle dmix — a single
+# destination since there's no fan-out needed at the playback
+# side. Multiple writers (jasper-camilla music + jasper-voice TTS)
+# both write to it; dmix sums them sample-wise.
 #
-#   jasper-camilla, jasper-voice TTS
-#                  │
-#                  ▼
-#   pcm.jasper_out (dmix on dongle hw, 48 kHz S16_LE 2ch — both
-#                   writers' streams summed sample-wise)
-#                  │
-#                  ▼
-#   hw:CARD=__DONGLE_CARD__,DEV=0 → Apple dongle DAC → amp → speakers
+# Why the dongle is the speaker, not the chip's onboard DAC:
+#  Speakers are physically wired to the Apple dongle. The XVF3800
+#  has its own onboard DAC (AIC3104 → 3.5mm jack / JST connector)
+#  but its analog output is unused — nothing connected. The chip
+#  happily drives a disconnected output; only the AEC reference
+#  signal path matters for our purposes.
 #
-# This file is read by the CamillaDSP and jasper-voice systemd
-# units (both run as root). moOde's MPD runs as user `mpd` and is
-# unaffected — MPD writes into Loopback via the zz-jts-loopback.conf
-# hijack; jasper-camilla captures from Loopback and writes the
-# processed result into pcm.jasper_out.
+# moOde owns /etc/asound.conf, conf.d/_audioout.conf, etc.; we own
+# /root/.asoundrc and /etc/alsa/conf.d/zz-jts-loopback.conf only.
 
-# Dmix on the Apple USB-C dongle. 48 kHz is the dongle's native
-# rate on Linux. Both jasper-camilla and jasper-voice TTS write
-# here; dmix sums them.
+# Capture-side fan-out: shared snoop over the moOde→camilla
+# loopback. Both jasper-camilla and jasper-aec-bridge capture
+# from this device, each getting an independent stream.
+#
+# Wrapped in `type plug` so each reader can request its own format
+# (jasper-camilla wants S32_LE, jasper-aec-bridge wants S16_LE) —
+# plug converts on each side, dsnoop's own slave is fixed to S16_LE
+# matching what moOde's MPD writes at (48 kHz, 16-bit per
+# BRINGUP.md SoX resampling settings).
+pcm.jasper_capture {
+    type plug
+    slave.pcm {
+        type dsnoop
+        ipc_key 7782
+        ipc_perm 0666
+        slave {
+            pcm "hw:CARD=Loopback,DEV=1,SUBDEV=0"
+            rate 48000
+            channels 2
+            format S16_LE
+            period_size 1024
+            buffer_size 4096
+        }
+        bindings {
+            0 0
+            1 1
+        }
+    }
+}
+
+# Dmix on the Apple USB-C dongle. Single audible destination.
+# Two writers (jasper-camilla music + jasper-voice TTS) — dmix
+# sums them sample-wise. 48 kHz is the dongle's native rate.
 pcm.jasper_out {
     type dmix
     ipc_key 7777
@@ -63,37 +107,7 @@ pcm.jasper_out {
     }
 }
 
-# Required for PortAudio to enumerate `pcm.jasper_out` and let
-# the daemon's TtsPlayout open it by name.
 ctl.jasper_out {
     type hw
     card __DONGLE_CARD__
-}
-
-# Dmix on the XVF3800 USB-IN endpoint. Defined but not yet wired
-# into the playback path — see "AEC reference plumbing" in the
-# header. Once the dual-output topology is sorted out, jasper-camilla
-# and jasper-voice will tee to this dmix as well so the chip's
-# AEC sees the speaker signal.
-pcm.jasper_aec_ref {
-    type dmix
-    ipc_key 7780
-    ipc_perm 0666
-    slave {
-        pcm "hw:CARD=__MIC_CARD__,DEV=0"
-        rate 16000
-        channels 2
-        format S16_LE
-        period_size 320
-        buffer_size 1280
-    }
-    bindings {
-        0 0
-        1 1
-    }
-}
-
-ctl.jasper_aec_ref {
-    type hw
-    card __MIC_CARD__
 }

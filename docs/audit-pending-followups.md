@@ -30,15 +30,30 @@ These confirm what our codebase does well — should not regress:
   state flip to SESSION + 5 s refractory covers the multi-fire-on-long-
   wake-phrase concern.
 
-## Tier 2 — gated on hardware AEC working
+## Tier 2 — gated on hardware AEC working (Phase A LANDED, awaiting hardware verification)
 
-These are the highest-value improvements we **cannot adopt yet** because
-they require a working AEC reference signal flowing to the XVF3800. The
-current ALSA topology (single dmix on dongle, no fan-out to XVF USB-IN)
-makes the chip's onboard hardware AEC inert. The dual-output topology
-attempt (`route → multi → 2x[plug → dmix]` with heterogeneous rates)
-failed with `snd_pcm_hw_params_any: EINVAL`; resolving that is the
-gating change for this whole tier.
+These are the highest-value improvements that became possible once the
+AEC reference signal flowed to the XVF3800. Phase A landed the dual-
+output ALSA topology as a `type plug → type multi → [dongle, snd-aloop
+sub1]` fan-out with both legs at 48 kHz, plus a second CamillaDSP
+instance (`jasper-aec-bridge.service`) that captures from
+`hw:Loopback,1,sub1`, resamples 48 → 16 kHz with AsyncSinc, and writes
+to the XVF3800's USB-IN endpoint. The previous failure
+(`snd_pcm_hw_params_any: EINVAL`) was misdiagnosed as a rate-mismatch
+problem — the actual cause was `multi`'s linked `period_size` constraint
+across slaves with different default period sizes. Pinning identical
+`period_size 1024` / `buffer_size 4096` on both leaves resolved it.
+
+`jasper-aec-tune` calibrates `AUDIO_MGR_SYS_DELAY` via white-noise
+cross-correlation; `jasper-aec-init.service` re-applies the persisted
+delay at every boot (firmware 2.0.6's `SAVE_CONFIGURATION` has a brick
+hazard per respeaker repo issue #8, so we don't persist on-chip).
+
+**Hardware verification still pending.** The Tier 2 follow-ups below
+unlock once `jasper-aec-tune` produces a sane delay value AND
+`AEC_AECCONVERGED` reads `1` while music plays AND a recorded mic
+sample shows ≥25 dB of music attenuation. Until then, treat them as
+"ready to drop, awaiting confirmation."
 
 ### Drop `NO_INTERRUPTION` once AEC is verified
 
@@ -257,34 +272,26 @@ when AirPlay is the source and `sp.current_playback` for Spotify
 Connect. Follow-on: also expose `is_playing` / playback position so
 "how much of this song is left?" can be answered without re-querying.
 
-## Highest-leverage gating change
+## Highest-leverage gating change — RESOLVED in Phase A
 
-Almost everything in Tier 2 unlocks at once when **the dual-output
-ALSA topology works** — i.e. when the XVF3800 chip receives a
-reference signal of what the speakers are emitting, so its on-chip
-AEC can cancel the echo. Until then we're effectively running the
-report's "Stage 1" (mute-mic-during-TTS via `NO_INTERRUPTION`).
+The dual-output ALSA topology now works (`deploy/alsa/asoundrc.jasper`).
+What landed: combined approaches 1 + 2 + 4 from the original list.
+Match rates at 48 kHz (approach 1) at the `multi` boundary so
+period_size negotiation succeeds. Use `snd-aloop` sub1 (approach 2)
+as the intermediate timing domain for the AEC leg. Use a second
+CamillaDSP instance (approach 4) as the rate-conversion bridge that
+slaves the loopback's virtual clock to the XVF's USB clock via
+`enable_rate_adjust: true` + AsyncSinc.
 
-The previous attempt at the topology used `route → multi → 2x[plug →
-dmix]` with heterogeneous inner rates (dongle 48 kHz, XVF 16 kHz) and
-failed with `snd_pcm_hw_params_any: EINVAL` — `multi` couldn't
-negotiate a common period_size across the rate mismatch. Possible
-next approaches to try:
+The XVF3800 USB firmware does NOT accept 48 kHz on its UAC2
+playback endpoint (verified via `cat /proc/asound/Array/stream0` —
+locked at 16 kHz S16_LE 2ch FL+FR, single Altset, SYNC iso, no
+feedback EP). So approach 1 alone wasn't sufficient — needed the
+bridge.
 
-1. Match rates: run both legs at 48 kHz (let the XVF chip's USB-IN
-   accept 48 kHz with internal downsampling, if the firmware does).
-2. Use `snd-aloop` as an intermediate ALSA loopback so the XVF leg
-   gets a separate, fully-independent timing domain.
-3. Use a small userspace `tee` daemon (e.g. `alsa_in`/`alsa_out`)
-   instead of ALSA's `multi` plugin.
-4. Run a second instance of CamillaDSP that captures the dongle
-   signal and writes to the XVF USB-IN, providing the reference
-   signal that way.
-
-Any of these would unlock real barge-in, drop refractory to 2-3 s,
-allow `NO_INTERRUPTION` removal, and enable the HA Voice PE-style
-mid-TTS "stop" wake-word path. Highest single architectural unlock
-remaining in the system.
+The remaining work that unlocks Tier 2 is hardware verification of
+AEC convergence + measurable music attenuation. See "Tier 2 — gated
+on hardware AEC working" above for the post-verification action items.
 
 ## Future UX work (post-AEC)
 

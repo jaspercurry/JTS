@@ -1,0 +1,29 @@
+[Unit]
+Description=Software AEC bridge — SpeexDSP cancels speaker echo from XVF raw mic
+# Captures from pcm.jasper_capture (host-clocked dsnoop on
+# moOde→camilla loopback, the AEC reference) AND from
+# hw:CARD=Array,DEV=0 channel 2 (raw mic 0, exposed by 6-ch
+# firmware variant 2.0.8). Outputs the AEC'd mono mic to
+# hw:Loopback,0,sub3 for jasper-voice to read at hw:Loopback,1,sub3.
+#
+# REPLACES the previous CamillaDSP-based bridge that was trying to
+# feed the XVF chip's USB-IN as far-end reference. The chip's AEC
+# turned out to be architecturally incompatible with our external-
+# DAC topology — see jasper/cli/aec_bridge.py header for the
+# detailed analysis.
+After=jasper-camilla.service sound.target
+Requires=jasper-camilla.service
+
+[Service]
+Type=simple
+ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
+Restart=on-failure
+RestartSec=2
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
+LimitRTPRIO=99
+LimitMEMLOCK=infinity
+
+[Install]
+WantedBy=multi-user.target

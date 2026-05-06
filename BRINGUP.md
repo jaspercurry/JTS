@@ -111,32 +111,73 @@ The end-to-end pipeline:
 
 ```
 phone → AirPlay/Spotify/MPD → pcm._audioout (our override)
-     → hw:Loopback,0,0 (snd-aloop kernel)
+     → hw:Loopback,0,0 (snd-aloop kernel, sub0)
      → hw:Loopback,1,0 capture (jasper-camilla reads here)
      → master_gain mixer + flat filter (passthrough at 0 dB)
-     → pcm.jasper_out (fan-out: route → multi)
+     → pcm.jasper_out (type plug → type multi)
                              │
-                  ┌──────────┴──────────┐
-                  ▼                     ▼
-       Apple USB-C dongle       XVF3800 USB-IN
-       (48 kHz, the actual      (16 kHz, the AEC
-        speaker → amp →          reference for the
-        speakers)                chip's hardware AEC)
+            ┌────────────────┴────────────────┐
+            ▼                                 ▼
+       jasper_dongle dmix                jasper_aec_loopback dmix
+       (48 kHz, hw:A,0)                  (48 kHz, hw:Loopback,0,sub1)
+            │                                 │
+            ▼                                 ▼
+       Apple USB-C dongle                hw:Loopback,1,sub1
+       → amp → speakers                       │
+       (audible path)                         ▼
+                                       jasper-aec-bridge
+                                       (CamillaDSP #2: capture
+                                        48 k stereo, fold L+R →
+                                        mono on left, AsyncSinc
+                                        resample 48 → 16 kHz,
+                                        enable_rate_adjust slaves
+                                        loopback's virtual clock
+                                        to XVF's USB clock)
+                                              │
+                                              ▼
+                                       hw:Array,0
+                                       (XVF3800 USB-IN, 16 kHz
+                                        S16_LE 2ch — the chip's
+                                        hardware-AEC reference)
+                                              │
+                                              ▼
+                                       XVF3800 hardware AEC
+                                       + beamformer + NS
+                                              │
+                                              ▼
+                                       jasper-voice mic capture
+                                       (post-AEC clean signal)
 ```
 
-`pcm.jasper_out` duplicates whatever's written to it onto BOTH the
-dongle AND the XVF3800 USB-IN endpoint, so the chip's onboard AEC
-sees the same signal that's hitting the speakers and can subtract
-it from its mic capture. The chip's onboard DAC's analog output is
-unused — speakers are physically wired to the dongle, not to the
-XVF3800's 3.5mm jack. See `deploy/alsa/asoundrc.jasper` header for
-the full topology.
+`pcm.jasper_out` duplicates whatever's written to it onto BOTH
+legs sample-for-sample via `type multi`. The dongle leg is the
+audible path; the AEC-ref leg goes through a snd-aloop substream
+into a second CamillaDSP instance (`jasper-aec-bridge`) which
+resamples 48 kHz → 16 kHz (the chip's USB-IN endpoint is locked
+at 16 kHz in the stock firmware) and writes the result to the
+XVF3800. The two-stage pattern is required because ALSA `multi`
+needs identical period_size across slaves — pinning both legs at
+48 kHz at the multi boundary lets the negotiation succeed; the
+rate conversion happens after the loopback in the bridge.
+
+The chip's onboard DAC's analog output is unused — speakers are
+physically wired to the dongle, not to the XVF3800's 3.5mm jack.
+The chip happily drives a disconnected output. See
+`deploy/alsa/asoundrc.jasper` header and `deploy/camilladsp/aec-bridge.yml`
+for the full topology.
 
 CamillaDSP is the single owner of `pcm.jasper_out` for the music
 chain; jasper-voice's TTS writes to the same pcm directly. The
 two coexist because each leg of the fan-out has a per-device
 dmix. The voice daemon ducks audio by calling `SetVolume` on the
 `master_gain` mixer over CamillaDSP's websocket on port 1234.
+
+`AUDIO_MGR_SYS_DELAY` (the chip's bulk-delay parameter that
+compensates for round-trip latency between USB-IN reference and
+mic capture) is calibrated by `jasper-aec-tune` (Phase 2A.5),
+persisted to `/var/lib/jasper/aec_delay.txt`, and re-applied at
+boot by `jasper-aec-init` because firmware 2.0.6 has a brick
+hazard on `SAVE_CONFIGURATION` (respeaker repo issue #8).
 
 ### B1. moOde UI — CamillaDSP Off + Volume type Software
 
@@ -217,10 +258,12 @@ This script will:
 - Drop **`/etc/alsa/conf.d/zz-jts-loopback.conf`** — the
   `pcm._audioout` override that hijacks moOde's renderers into
   snd-aloop Loopback (see "Why this is more involved" above)
-- Drop `/root/.asoundrc` (defines `pcm.jasper_out` — the fan-out PCM
-  that duplicates writes to BOTH the Apple dongle and the XVF3800
-  USB-IN endpoint, so the chip's hardware AEC has the playback signal
-  as reference)
+- Drop `/root/.asoundrc` (defines `pcm.jasper_out` — the
+  `type plug → type multi` fan-out PCM that duplicates writes to
+  the dongle dmix AND a snd-aloop substream feeding the AEC bridge)
+- Drop `/etc/camilladsp/aec-bridge.yml` (second CamillaDSP instance
+  config: capture from snd-aloop sub1 at 48k, resample 48→16k,
+  write to XVF3800 USB-IN as AEC reference)
 - Drop **`/etc/systemd/system/shairport-sync.service.d/jts-output.conf`**
   drop-in forcing systemd-launched shairport-sync to write to `_audioout`
   (without this, shairport-sync writes to ALSA `default` and bypasses
@@ -228,10 +271,11 @@ This script will:
 - Create `/opt/jasper/` Python venv and install the daemon
   (`openwakeword` is installed via `--no-deps` because its declared
   `tflite-runtime` dep has no Python 3.13 wheel; we use ONNX models
-  exclusively)
+  exclusively). pyusb + libusb_package are pulled in for `jasper-aec-init`
+  / `jasper-aec-tune` to talk to the XVF3800 over USB vendor control.
 - Create `/etc/jasper/jasper.env` from the template
-- Drop `/etc/systemd/system/jasper-camilla.service` and
-  `jasper-voice.service` and enable them (does NOT auto-start — see B7)
+- Drop `/etc/systemd/system/jasper-{camilla,voice,aec-bridge,aec-init}.service`
+  and enable them (does NOT auto-start — see B7)
 - Restart `shairport-sync.service` so it picks up the drop-in
 
 ### B5. Verify ALSA device names match what we assumed
@@ -311,32 +355,58 @@ Look for these log lines:
 - `Capture device supports rate adjust`
 - `PB: Starting playback from Prepared state`
 
-Now from your phone, AirPlay a track to the device named `Jasper`. You
-should hear it through the dongle. The signal path is:
+Now start the AEC bridge too, then AirPlay a track from your phone:
+
+```sh
+sudo systemctl start jasper-aec-bridge
+sudo systemctl status jasper-aec-bridge      # should be "active (running)"
+journalctl -u jasper-aec-bridge -n 30 --no-pager
+```
+
+You should hear it through the dongle. The signal path is:
 
 ```
 phone → AirPlay → shairport-sync (-d _audioout)
      → pcm._audioout (zz-jts-loopback.conf override)
-     → hw:Loopback,0,0 (snd-aloop kernel)
+     → hw:Loopback,0,0 (snd-aloop kernel, sub0)
      → hw:Loopback,1,0 capture
      → jasper-camilla (master_gain + flat passthrough)
-     → pcm.jasper_out (route + multi fan-out)
+     → pcm.jasper_out (type plug → type multi)
                               │
                   ┌───────────┴────────────┐
                   ▼                        ▼
-       jasper_dongle dmix → A      jasper_xvfin dmix → Array
-       (Apple dongle, 48 kHz       (XVF3800 USB-IN, 16 kHz —
-        → amp → speakers)           AEC reference; not audible)
+        jasper_dongle dmix          jasper_aec_loopback dmix
+        → hw:A,0                    → hw:Loopback,0,sub1
+        (audible: dongle             │
+         → amp → speakers)           ▼
+                                hw:Loopback,1,sub1
+                                     │
+                                     ▼
+                              jasper-aec-bridge (CamillaDSP #2:
+                              capture 48k stereo, fold L+R → mono
+                              on left, AsyncSinc resample 48 → 16k,
+                              enable_rate_adjust slaves loopback's
+                              virtual clock to XVF's USB clock)
+                                     │
+                                     ▼
+                              hw:Array,0 (XVF3800 USB-IN, 16 kHz)
+                              → chip's hardware AEC reference
 ```
 
-Sanity-check the chain is fully wired (each should show `state: RUNNING`):
+Sanity-check every leg of the chain (each should show `state: RUNNING`):
 
 ```sh
 cat /proc/asound/Loopback/pcm0p/sub0/status   # shairport writing
 cat /proc/asound/Loopback/pcm1c/sub0/status   # jasper-camilla reading
 cat /proc/asound/A/pcm0p/sub0/status          # jasper-camilla → dongle leg
-cat /proc/asound/Array/pcm0p/sub0/status      # jasper-camilla → XVF USB-IN leg
+cat /proc/asound/Loopback/pcm0p/sub1/status   # jasper-camilla → AEC loopback
+cat /proc/asound/Loopback/pcm1c/sub1/status   # jasper-aec-bridge reading
+cat /proc/asound/Array/pcm0p/sub0/status      # jasper-aec-bridge → XVF USB-IN
 ```
+
+The last one is the smoking-gun for AEC reference reaching the chip. If
+it shows `closed` while music is playing, the bridge isn't writing — check
+`journalctl -u jasper-aec-bridge`.
 
 ### B8. Verify SetVolume works
 
@@ -393,75 +463,86 @@ attenuate the music heavily (you should hear yourself clearly above the
 nearly-silent music). If the music dominates the recording, AEC isn't
 working — check, in this order:
 
-1. **Fan-out is wired.** `cat /proc/asound/Array/pcm0p/sub0/status`
-   should show `state: RUNNING` while music plays. If it shows
-   `state: CLOSED`, the `pcm.jasper_xvfin` dmix isn't receiving the
-   fan-out — the chip has no AEC reference, so it can't cancel
-   anything. Check `/root/.asoundrc` and that jasper-camilla is
-   running. (See Phase 1B B7 chain check.)
+1. **AEC reference is reaching the chip.**
+   `cat /proc/asound/Array/pcm0p/sub0/status` should show
+   `state: RUNNING` while music plays. If it shows `state: closed`,
+   the `jasper-aec-bridge` service isn't writing to the chip — the
+   chip has no AEC reference, so it can't cancel anything. Check
+   `journalctl -u jasper-aec-bridge`. The full chain
+   (Loopback,0,sub1 → Loopback,1,sub1 → bridge → Array) is verified
+   in Phase 1B B7's chain check.
 2. **`AUDIO_MGR_SYS_DELAY` is tuned.** The chip needs to know the
    round-trip latency between reference signal in and mic capturing
-   the speaker. Default is approximate — for a real install, tune
-   it. See Phase 2A.5 below.
-3. **XVF3800 firmware version.** Older firmware has a weaker AEC.
-4. **USB cable / port.** A USB 2.0 hub on the same controller as the
-   Apple dongle can drop frames; try a different port.
+   the speaker. Stock firmware default (12 samples) is essentially
+   guaranteed wrong for any real install — see Phase 2A.5 below.
+3. **XVF3800 firmware version.** Confirm with
+   `sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host VERSION`.
+   Firmware 2.0.6 has a brick hazard on `SAVE_CONFIGURATION`
+   (respeaker repo issue #8) — `jasper-aec-init` re-applies
+   tuning at boot rather than persisting on-chip; do not call
+   `xvf_host SAVE_CONFIGURATION 1` manually.
+4. **USB controller.** Both the dongle and XVF3800 should be on
+   xHCI (USB 3.0). `lsusb -t` should show both under
+   `xhci-hcd`. EHCI ports cause URB-stall bugs on some Pi 5
+   firmware combinations.
 
 The UMIK-2 has no AEC — wake-word reliability degrades during loud
 music; this is expected, not a bug.
 
-### A2.5. Tune `AUDIO_MGR_SYS_DELAY` on the XVF3800
+### A2.5. Calibrate `AUDIO_MGR_SYS_DELAY` with `jasper-aec-tune`
 
-The XVF3800's hardware AEC subtracts the reference signal (what we
-write to its USB-IN) from the mic capture. For the subtraction to
-cancel echo, the chip must align the two streams in time — which
-means it must know the *round-trip latency* from the moment a sample
-arrives at the chip's USB-IN to the moment that same sample comes
-back into the chip's mic from the speaker (via dongle → amp →
-speaker → air → mic).
+The XVF3800's hardware AEC aligns its 16 kHz USB-IN reference
+against the mic capture, then subtracts. The internal adaptive
+filter handles ±40 samples (≈2.5 ms) of residual after compensation;
+beyond that, AEC fails to converge. `AUDIO_MGR_SYS_DELAY` is the
+chip's bulk-delay knob to absorb the round-trip latency from
+USB-IN → bridge → dongle → amp → speakers → air → mic.
 
-The chip exposes this as the `AUDIO_MGR_SYS_DELAY` parameter (units:
-samples at 16 kHz, the AEC's internal rate). Default firmware
-ships with a generic value that's typically wrong for a real install
-because the dongle's USB latency, amp's input buffering, and
-speaker-to-mic geometry all contribute and vary per setup.
+**Run the tuner once after install, and again whenever the room
+geometry, speaker position, or amp setup changes:**
 
-**Target:** with the AEC on and music playing, residual echo at
-the mic should be ≥25 dB below the playback level. If it's only
-10–15 dB, AEC is mistimed.
-
-**Procedure (impulse method):**
-
-1. Plug the XVF3800 USB-A control cable into the laptop (the chip
-   exposes a USB-CDC control interface separately from its USB-Audio
-   interface). Install the XMOS XVF3800 SDK / `vfctrl` tool from
-   <https://www.xmos.com/products/voice/xvf3800> (vendor login
-   required; some versions of the SDK are gated).
-2. With music paused, generate a short impulse (a click or
-   short sine burst — `aplay /tmp/click.wav -D plug:jasper_out`).
-   Record the chip's mic output (`arecord -D plughw:CARD=Array`).
-3. The mic recording shows the impulse twice: once via the
-   reference path (instant, internal to the chip), once via the
-   acoustic path (delayed by round-trip). Measure the delay
-   between the two in samples at 16 kHz.
-4. Set `AUDIO_MGR_SYS_DELAY` to the measured sample count using
-   `vfctrl SET_AUDIO_MGR_SYS_DELAY <samples>` (the exact command
-   name is in the SDK; consult the parameter reference).
-5. Re-record music + your voice. Residual music should drop to
-   the −25 dB target. Iterate ±10 samples until it does.
-
-**Alternative (white-noise + cross-correlation):** play 5 seconds
-of white noise via `pcm.jasper_out`, capture the chip's mic
-output, cross-correlate the two with numpy:
-
-```python
-import numpy as np, wave
-ref = np.frombuffer(open('/tmp/ref.raw','rb').read(), dtype=np.int16)
-mic = np.frombuffer(open('/tmp/mic.raw','rb').read(), dtype=np.int16)
-xc = np.correlate(mic.astype(float), ref.astype(float), mode='full')
-peak = np.argmax(xc) - (len(ref) - 1)
-print(f"round-trip: {peak} samples @ 16 kHz = {peak/16:.1f} ms")
+```sh
+sudo /opt/jasper/.venv/bin/jasper-aec-tune
 ```
+
+What it does (~10 sec total):
+1. Drops `master_gain` to −12 dB to keep the test signal moderate.
+2. Plays 5 seconds of white noise to `pcm.jasper_out` (audible at
+   the dongle, AND echoed via snd-aloop sub1 → bridge → XVF
+   reference port).
+3. Concurrently captures from `hw:Array,0` channel 2 (raw mic 0
+   on the 6-ch firmware — pre-AEC, gives the cleanest echo).
+4. Restores `master_gain` to 0 dB.
+5. Cross-correlates mic vs reference with a 200-3400 Hz bandpass.
+6. Writes the lag (in 16 kHz samples) to
+   `/var/lib/jasper/aec_delay.txt` and applies it to the chip via
+   `xvf_host AUDIO_MGR_SYS_DELAY <N>`.
+
+`jasper-aec-init.service` re-applies the persisted value at every
+boot (because firmware 2.0.6's `SAVE_CONFIGURATION` is brick-prone).
+
+**Verify the tune worked:** play music at moderate volume, speak
+into the mic. Run:
+
+```sh
+arecord -d 5 -f S16_LE -r 16000 -c 1 -D plughw:CARD=Array,DEV=0 /tmp/post-aec.wav
+aplay /tmp/post-aec.wav
+```
+
+Music should be ≥25 dB below your voice in the recording. If still
+loud, re-run the tuner — and verify `journalctl -u jasper-aec-bridge`
+isn't dropping samples.
+
+**Manual probe (sanity check what's on chip):**
+
+```sh
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AEC_AECCONVERGED
+```
+
+Convergence flag should be `1` after a few seconds of music
+playing. If stuck at `0`, the bridge isn't delivering reference
+signal — check the chain.
 
 The peak lag in samples is the value to write to
 `AUDIO_MGR_SYS_DELAY`. Typical figures for a Pi 5 + Apple dongle +
@@ -617,23 +698,30 @@ sudo systemctl restart jasper-voice
 
 ```
 /opt/camilladsp/camilladsp                  # 4.1.3 binary
-/etc/camilladsp/v1.yml                      # passthrough + master_gain
-                                            #   (CamillaDSP 4.x schema)
+/etc/camilladsp/v1.yml                      # main DSP: passthrough +
+                                            #   master_gain ducking
+/etc/camilladsp/aec-bridge.yml              # bridge DSP: snd-aloop sub1
+                                            #   (48 k) → XVF USB-IN (16 k)
 /etc/modules-load.d/snd-aloop.conf          # snd-aloop loaded at boot
 /etc/alsa/conf.d/zz-jts-loopback.conf       # pcm._audioout override
                                             #   redirecting to Loopback
 /root/.asoundrc                             # pcm.jasper_out fan-out
-                                            #   (route → multi → per-device
-                                            #   dmix on dongle + XVF USB-IN)
+                                            #   (plug → multi: dongle dmix
+                                            #   + Loopback,0,sub1 dmix)
 /opt/jasper/                                # Python pkg (managed by install.sh)
   .venv/                                    # virtualenv
-  jasper/                                   # source
+  jasper/                                   # source (incl. cli/aec_init,
+                                            #   cli/aec_tune, xvf/xvf_host)
 /etc/jasper/jasper.env                      # API keys + tunables (chmod 600)
 /var/lib/jasper/                            # state dir
   usage.db                                  # SQLite spend log
   .spotify-cache                            # Spotify refresh token
+  aec_delay.txt                             # calibrated AUDIO_MGR_SYS_DELAY
+                                            #   (re-applied at boot)
 /etc/systemd/system/jasper-camilla.service
 /etc/systemd/system/jasper-voice.service
+/etc/systemd/system/jasper-aec-bridge.service
+/etc/systemd/system/jasper-aec-init.service
 /etc/systemd/system/shairport-sync.service.d/jts-output.conf
                                             # drop-in: shairport-sync
                                             #   writes to _audioout
@@ -673,7 +761,11 @@ Defaults assume `pi@jasper.local`; override via `PI_HOST` / `PI_USER` /
 | `journalctl -u jasper-camilla` shows "unknown variant `S16LE`" or "unknown field `channel`" | CamillaDSP 4.x schema mismatch; old YAML has 3.x-style format names or pipeline filter keys | Edit `/etc/camilladsp/v1.yml`: format `S16LE`/`S32LE` → `S16_LE`/`S32_LE`; pipeline filter `channel: N` → `channels: [N]` |
 | TTS plays but music doesn't | dmix conflict — both processes opened the dongle at incompatible rates | Confirm `slave.rate 48000` in `/root/.asoundrc`; `aplay -v` shows actual rate |
 | Wake word never fires | Mic device wrong, or model file missing, or threshold too high | `arecord -d 5 ... | aplay` to confirm mic; lower `JASPER_WAKE_THRESHOLD` to 0.4 temporarily |
-| Wake word fires constantly during music | XVF3800 AEC not working — likely AEC reference not reaching the chip's USB-IN, or `AUDIO_MGR_SYS_DELAY` mistimed | Verify `cat /proc/asound/Array/pcm0p/sub0/status` shows `state: RUNNING` while music plays (the fan-out leg is delivering); tune `AUDIO_MGR_SYS_DELAY` per Phase 2A.5; verify XVF3800 firmware; raise `JASPER_WAKE_THRESHOLD` to 0.65 as a stop-gap |
+| Wake word fires constantly during music | XVF3800 AEC not working — likely AEC reference not reaching the chip's USB-IN, or `AUDIO_MGR_SYS_DELAY` mistimed | Verify `cat /proc/asound/Array/pcm0p/sub0/status` shows `state: RUNNING` while music plays (jasper-aec-bridge is delivering); check `journalctl -u jasper-aec-bridge`; run `jasper-aec-tune` to recalibrate; verify XVF3800 firmware; raise `JASPER_WAKE_THRESHOLD` to 0.65 as a stop-gap |
+| `journalctl -u jasper-aec-bridge` shows "Cannot open device hw:CARD=Loopback,DEV=1,SUBDEV=1" | jasper-camilla isn't running, or `pcm.jasper_aec_loopback` dmix isn't writing to Loopback,0,sub1 | `systemctl status jasper-camilla` — must be active. Then check `cat /proc/asound/Loopback/pcm0p/sub1/status` for `state: RUNNING`. If `closed`, the `multi` PCM in /root/.asoundrc isn't fanning to slave_b — check the asoundrc syntax with `aplay -L \| grep jasper_aec` |
+| `journalctl -u jasper-aec-bridge` shows "Cannot open device hw:CARD=Array,DEV=0" | XVF3800 not enumerated, or another process holds the playback EP | `arecord -L \| grep -i array` should show the card. `lsof /dev/snd/pcmC*` to find any rogue holder. The XVF playback EP can be opened by exactly one writer at a time (it's not a dmix) |
+| `jasper-aec-tune` reports lag of 0 or negative | No echo captured during the test — speakers not actually wired to dongle, OR jasper-aec-bridge isn't running, OR the tuner's master_gain ducking went too far | Verify music is audible during the test (you should hear ~5s of white noise at moderate volume). Check `systemctl is-active jasper-aec-bridge`. Re-run with `--duck-db -6` if needed. |
+| `AEC_AECCONVERGED` reads `0` for >10 sec while music plays | AEC reference not reaching chip OR `AUDIO_MGR_SYS_DELAY` is too far wrong (>40 sample residual) | Check the chain (Loopback,1,sub1 RUNNING, Array pcm0p/sub0 RUNNING). Re-run `jasper-aec-tune`. If still won't converge, check XVF firmware version: `python -m jasper.xvf.xvf_host VERSION` should be 2.0.6 or later |
 | "GEMINI_API_KEY not found" on daemon start | Env file not loaded by systemd | Confirm `EnvironmentFile=/etc/jasper/jasper.env` in unit; `systemctl daemon-reload` |
 | Spotify tool returns "no active spotify device" | moOde's Spotify Connect endpoint isn't running, or another phone took over | moOde web UI → Configure → Audio → Spotify Connect → Enable. Disconnect any other devices controlling Spotify. |
 | Voice ducking doesn't restore | CamillaDSP websocket disconnected mid-session | Check `journalctl -u jasper-voice` for "camilla call failed"; restart `jasper-camilla` |

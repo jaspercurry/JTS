@@ -22,19 +22,21 @@ devices:
   queuelimit: 4
   enable_rate_adjust: true
   capture:
-    # plughw lets ALSA convert if MPD writes a narrower format (e.g. S16LE).
-    # Loopback locks RATE at the writer's rate though — moOde must be
+    # Capture from the shared dsnoop on the moOde→camilla loopback
+    # (pcm.jasper_capture, defined in /root/.asoundrc). The
+    # jasper-aec-bridge also captures from the same dsnoop in
+    # parallel; dsnoop gives each reader an independent stream.
+    # Loopback locks RATE at the writer's rate — moOde must be
     # configured to output 48 kHz to Loopback (BRINGUP.md Phase 1B).
     type: Alsa
     channels: 2
-    device: "plughw:CARD=Loopback,DEV=1,SUBDEV=0"
+    device: "jasper_capture"
     format: S32_LE
   playback:
-    # pcm.jasper_out fans the stream out to the dongle + XVF USB-IN.
-    # See /root/.asoundrc for the route → multi → per-device dmix
-    # topology. Format S16_LE because the XVF leg's USB-IN endpoint
-    # only accepts S16_LE 16 kHz; the route+multi pipeline carries
-    # S16_LE through to both legs.
+    # pcm.jasper_out is the dongle dmix (single audible
+    # destination). The AEC reference path is handled by
+    # jasper-aec-bridge as a separate process that captures from
+    # jasper_capture in parallel — no playback-side fan-out needed.
     type: Alsa
     channels: 2
     device: "jasper_out"

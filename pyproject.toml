@@ -17,6 +17,17 @@ dependencies = [
     "httpx==0.28.1",
     "onnxruntime>=1.17",
     "nyct-gtfs==2.0.0",
+    "rapidfuzz>=3.6,<4",
+    # XVF3800 control: jasper.xvf.xvf_host (vendored from
+    # github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY) talks to
+    # the chip's USB vendor-control interface to set AUDIO_MGR_SYS_DELAY.
+    "pyusb>=1.2",
+    "libusb_package>=1.0",
+    # ALSA-native PCM access for jasper-aec-bridge — needed because
+    # PortAudio (sounddevice's backend) only enumerates hw: devices,
+    # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
+    # we capture the AEC reference from).
+    "pyalsaaudio>=0.11",
 ]
 
 [project.optional-dependencies]
@@ -31,6 +42,10 @@ jasper-voice = "jasper.voice_daemon:main"
 jasper-spotify-auth = "jasper.cli.spotify_auth:main"
 jasper-doctor = "jasper.cli.doctor:main"
 jasper-web = "jasper.web.spotify_setup:main"
+jasper-aec-init = "jasper.cli.aec_init:main"
+jasper-aec-tune = "jasper.cli.aec_tune:main"
+jasper-aec-bridge = "jasper.cli.aec_bridge:main"
+jasper-aec-matrix = "jasper.cli.aec_matrix:main"
 
 [build-system]
 requires = ["setuptools>=68"]

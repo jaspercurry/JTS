@@ -37,7 +37,9 @@ install_deps() {
     apt-get install -y --no-install-recommends \
         python3 python3-venv python3-dev \
         build-essential libasound2-dev libasound2 portaudio19-dev \
-        libsndfile1 curl ca-certificates rsync
+        libsndfile1 curl ca-certificates rsync \
+        dfu-util \
+        libspeexdsp-dev libspeexdsp1 swig
 }
 
 install_camilladsp() {
@@ -68,6 +70,16 @@ install_camilladsp() {
     install -m 0644 \
         "${REPO_DIR}/deploy/camilladsp/v1.yml" \
         "${CAMILLA_CONF}/v1.yml"
+
+    # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
+    # now a Python software AEC daemon (jasper-aec-bridge, see
+    # jasper/cli/aec_bridge.py). The chip's on-chip AEC turned out
+    # to be incompatible with our external-DAC topology, so we do
+    # SpeexDSP cancellation on the host using the XVF chip's raw
+    # mic 0 (channel 2 of 6-ch firmware) + the dsnoop-tapped music
+    # reference. Old aec-bridge.yml is removed if present from a
+    # prior install.
+    rm -f "${CAMILLA_CONF}/aec-bridge.yml"
 }
 
 detect_card() {
@@ -87,10 +99,20 @@ detect_card() {
 }
 
 install_alsa() {
-    install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d
+    install -d -m 0755 /etc/modules-load.d /etc/alsa/conf.d /etc/modprobe.d
     install -m 0644 \
         "${REPO_DIR}/deploy/modules-load.d/snd-aloop.conf" \
         /etc/modules-load.d/snd-aloop.conf
+    # Two snd-aloop cards: card 0 'Loopback' for the music chain,
+    # card 1 'LoopbackAEC' for the AEC bridge → jasper-voice mic
+    # path. Without the second card, PortAudio (no substream
+    # selection) would address sub0 of the only loopback, which
+    # collides with the music chain.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/modprobe.d/snd-aloop.conf" \
+        /etc/modprobe.d/snd-aloop.conf
+    # Reload module so the new card config takes effect (idempotent).
+    rmmod snd_aloop 2>/dev/null || true
     modprobe snd-aloop || true
 
     # Hijack moOde's pcm._audioout symbol to redirect all renderers
@@ -106,30 +128,26 @@ install_alsa() {
         "${REPO_DIR}/deploy/alsa/zz-jts-loopback.conf" \
         /etc/alsa/conf.d/zz-jts-loopback.conf
 
-    # Detect Apple USB-C dongle card name. Falls back to "A" (the literal
-    # default on PiOS Trixie). If the dongle isn't plugged in at install
-    # time, the fallback is fine — jasper-doctor will catch a real mismatch.
+    # Detect Apple USB-C dongle card name. Falls back to "A" (the
+    # literal default on PiOS Trixie). If the dongle isn't plugged
+    # in at install time, the fallback is fine — jasper-doctor will
+    # catch a real mismatch. The XVF3800's card name ("Array") is
+    # hardcoded in deploy/camilladsp/aec-bridge.yml because the AEC
+    # bridge is only meaningful with the XVF (UMIK has no AEC).
     local dongle_card
     dongle_card=$(detect_card aplay 'usb-c to 3.5mm' 'A')
     echo "  Apple dongle: CARD=${dongle_card}"
 
-    # Detect XVF3800 / ReSpeaker card name for the jasper_xvfin dmix
-    # slave (the chip's USB-IN endpoint, used as the AEC reference).
-    # Falls back to "Array" (PiOS literal).
-    local mic_card
-    mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
-    echo "  XVF3800 (AEC reference target): CARD=${mic_card}"
-
-    # Render /root/.asoundrc from template with detected card names.
-    # /root/.asoundrc is read by CamillaDSP + jasper-voice (both run as
-    # root via systemd). moOde/MPD runs as a different uid, unaffected.
+    # Render /root/.asoundrc from template with detected dongle name.
+    # /root/.asoundrc is read by CamillaDSP + jasper-voice (both run
+    # as root via systemd). moOde/MPD runs as a different uid,
+    # unaffected.
     if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
         if ! grep -q "jasper_dongle" /root/.asoundrc; then
             cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
         fi
     fi
     sed -e "s/__DONGLE_CARD__/${dongle_card}/g" \
-        -e "s/__MIC_CARD__/${mic_card}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" > /root/.asoundrc
     chmod 0600 /root/.asoundrc
 }
@@ -163,6 +181,21 @@ install_jasper() {
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
     "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
+
+    # SpeexDSP Python bindings — used by jasper-aec-bridge for
+    # software echo cancellation. The xiongyihui/speexdsp-python
+    # repo's __init__.py is broken on Python 3.13 (tries to import
+    # a SWIG-generated wrapper that isn't actually built), so we
+    # patch __init__.py post-install to load the SWIG extension
+    # module directly. swig + libspeexdsp-dev are installed by
+    # install_deps.
+    "${INSTALL_DIR}/.venv/bin/pip" install \
+        "git+https://github.com/xiongyihui/speexdsp-python.git"
+    local sx_init
+    sx_init="${INSTALL_DIR}/.venv/lib/python3.13/site-packages/speexdsp/__init__.py"
+    if [[ -f "${sx_init}" ]]; then
+        echo "from ._speexdsp import *" > "${sx_init}"
+    fi
 
     # openWakeWord stock models (hey_jarvis + required feature models)
     # don't auto-download on first model load. Pull them now so the daemon
@@ -199,6 +232,13 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.service" \
         "${SYSTEMD_DIR}/jasper-web.service"
+    # AEC bridge + boot-time chip init (see asoundrc.jasper header).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-aec-bridge.service" \
+        "${SYSTEMD_DIR}/jasper-aec-bridge.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-aec-init.service" \
+        "${SYSTEMD_DIR}/jasper-aec-init.service"
 
     # Drop-in override forcing the system shairport-sync.service onto
     # moOde's `_audioout` ALSA symbol. Without this it writes to ALSA
@@ -210,7 +250,17 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
 
     systemctl daemon-reload
-    systemctl enable jasper-camilla.service jasper-voice.service jasper-web.service
+    systemctl enable jasper-camilla.service jasper-voice.service \
+        jasper-web.service
+    # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
+    # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
+    # "Acoustic echo cancellation" section for the on/off procedure
+    # and the trade-off rationale (modest attenuation, ~110 MB RAM
+    # cost on 1GB Pi 5). To enable:
+    #   systemctl enable --now jasper-aec-init jasper-aec-bridge
+    #   sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
+    #       /etc/jasper/jasper.env
+    #   systemctl restart jasper-voice
 
     # On a fresh moOde, shairport-sync is spawned outside systemd by
     # moOde's startup mechanism (with its own ALSA args, and root-uid).
