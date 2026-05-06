@@ -1,0 +1,61 @@
+# /root/.asoundrc — debian-stack variant. Installed by deploy/install.sh
+# with __DONGLE_CARD__ substituted by the detected USB-C dongle name.
+#
+# Why this file exists on debian (no _audioout hijack here):
+#   - jasper-voice's TTS needs a path to the speakers that's separate
+#     from the CamillaDSP music chain. Without a shared destination,
+#     TTS would have to either go through the loopback (mixing with
+#     music in unhelpful ways) or directly to the dongle (locked
+#     while CamillaDSP holds it).
+#   - dmix (`jasper_out`) is that shared destination: CamillaDSP's
+#     processed music + jasper-voice's TTS both write here; dmix sums
+#     them sample-wise; one stream goes to the dongle.
+#
+# Topology on the debian stack:
+#
+#   renderers (go-librespot, shairport-sync, bluealsa-aplay)
+#     → hw:Loopback,0,0  (snd-aloop playback)
+#                   │
+#                   ▼ (loop)
+#         hw:Loopback,1,0  (snd-aloop capture)
+#                   │
+#                   ▼ (plughw, rate-converts)
+#               jasper-camilla (CamillaDSP)
+#                   │
+#                   ▼ (writes to dmix below)
+#         pcm.jasper_out  ─── dmix ───┐
+#                                     │
+#         jasper-voice TTS  ──────────┤  (also writes to dmix)
+#                                     │
+#                                     ▼
+#                            hw:CARD=__DONGLE_CARD__,DEV=0
+#                                  Apple USB-C dongle → speakers
+#
+# When the AEC bridge is added back on the debian stack (currently
+# debian doesn't enable AEC), this file gains a `pcm.jasper_capture`
+# dsnoop block (matching the moOde-stack asoundrc.jasper) so both
+# CamillaDSP and the AEC bridge can read from the same loopback
+# capture side.
+
+pcm.jasper_out {
+    type dmix
+    ipc_key 7777
+    ipc_perm 0666
+    slave {
+        pcm "hw:CARD=__DONGLE_CARD__,DEV=0"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.jasper_out {
+    type hw
+    card __DONGLE_CARD__
+}

@@ -30,11 +30,15 @@ devices:
     device: "plughw:Loopback,1,0"
     format: S32_LE
   playback:
+    # jasper_out is the dmix defined in /root/.asoundrc that fans the
+    # CamillaDSP-processed music AND jasper-voice TTS into one stream
+    # before the dongle. install.sh writes /root/.asoundrc with the
+    # detected dongle card name substituted in. CamillaDSP just
+    # opens the named PCM here — no card detection needed in this
+    # config.
     type: Alsa
     channels: 2
-    # __DONGLE_CARD__ is substituted by install.sh based on lsusb
-    # detection of the Apple USB-C dongle. On jts.local it is "A".
-    device: "plughw:CARD=__DONGLE_CARD__,DEV=0"
+    device: "jasper_out"
     format: S16_LE
 
 filters:

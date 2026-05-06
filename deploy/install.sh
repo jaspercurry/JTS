@@ -195,13 +195,24 @@ install_alsa() {
 
     if [[ "$BACKEND" == "debian" ]]; then
         # No _audioout hijack — we own each renderer and point them
-        # directly at hw:Loopback,0,0. No /root/.asoundrc — CamillaDSP
-        # captures via plughw on the loopback (no jasper_capture
-        # dsnoop fan-out needed until AEC bridge is reintroduced).
-        # Future-work TODO: when AEC bridge is added back to the
-        # debian stack, restore /root/.asoundrc with jasper_capture.
+        # directly at hw:Loopback,0,0.
         rm -f /etc/alsa/conf.d/zz-jts-loopback.conf  # remove if leftover from moOde install
-        echo "  (debian backend — skipping _audioout hijack and /root/.asoundrc)"
+
+        # /root/.asoundrc on debian provides ONLY jasper_out (dmix on
+        # the dongle). CamillaDSP captures plughw:Loopback,1,0 directly
+        # (no dsnoop fan-out until AEC bridge is reintroduced); both
+        # CamillaDSP music and jasper-voice TTS write to jasper_out so
+        # dmix sums them before the speakers.
+        if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
+            if ! grep -q "jasper_out" /root/.asoundrc; then
+                cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
+            fi
+        fi
+        sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+            "${DEBIAN_STACK_DIR}/etc/asoundrc-jasper.template" \
+            > /root/.asoundrc
+        chmod 0600 /root/.asoundrc
+        echo "  (debian backend — wrote /root/.asoundrc with jasper_out)"
         return 0
     fi
 
