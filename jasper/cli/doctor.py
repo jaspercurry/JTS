@@ -392,6 +392,79 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     )
 
 
+def check_airplay_renderer() -> CheckResult:
+    """Verify moOde's AirPlay renderer is enabled, shairport-sync is
+    running, and the broadcast is visible via mDNS.
+
+    AirPlay isn't always-on by default — moOde's `airplaysvc` flag
+    controls whether the worker launches shairport-sync at boot. If
+    that flag flips to 0 (manual toggle, side effect of another
+    renderer change, etc.) and the Pi reboots, AirPlay disappears
+    silently and senders just stop seeing the speaker on the network.
+    This check catches all three failure modes (flag off, flag on but
+    process dead, process up but mDNS not advertising) with specific
+    actionable messages for each."""
+    label = "AirPlay renderer"
+
+    svc_flag = _read_moode_cfg("airplaysvc")
+    if svc_flag is None:
+        return CheckResult(label, "warn", "moOde DB unreadable (off-Pi run?)")
+
+    airplay_name = _read_moode_cfg("airplayname") or "Jasper AirPlay"
+
+    if svc_flag != "1":
+        return CheckResult(
+            label, "fail",
+            "moOde's AirPlay renderer is disabled "
+            "(cfg_system.airplaysvc=0). AirPlay senders won't see this "
+            "speaker. Re-enable in moOde's web UI → Configure → Audio "
+            "→ Renderers → AirPlay, or run: "
+            "curl 'http://127.0.0.1/command/?cmd=renderer_onoff%20--airplay%20on'",
+        )
+
+    # Flag is on — verify shairport-sync is actually running.
+    try:
+        proc = _run(["pgrep", "-x", "shairport-sync"], timeout=2.0)
+        running = proc.returncode == 0
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        running = False
+
+    if not running:
+        return CheckResult(
+            label, "fail",
+            "airplaysvc=1 but shairport-sync is not running. moOde's "
+            "worker may have failed to launch it. Try: "
+            "curl 'http://127.0.0.1/command/?cmd=renderer_onoff%20--airplay%20on' "
+            "to re-fire the launch, or restart moOde's worker.",
+        )
+
+    # Process is up — verify mDNS is advertising on _raop._tcp.
+    try:
+        avahi = _run(["avahi-browse", "-tr", "_raop._tcp"], timeout=3.0)
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return CheckResult(
+            label, "warn",
+            f"shairport-sync running but couldn't query avahi to verify "
+            f"the {airplay_name!r} broadcast (avahi-browse missing or "
+            f"timed out). The renderer probably works; this check is "
+            f"non-authoritative.",
+        )
+
+    if airplay_name.lower() not in avahi.stdout.lower():
+        return CheckResult(
+            label, "warn",
+            f"shairport-sync running but {airplay_name!r} not yet visible "
+            f"in `avahi-browse -tr _raop._tcp` output. Either mDNS is "
+            f"still propagating (wait 10-15s and re-run) or avahi-daemon "
+            f"is unhealthy. Check `systemctl status avahi-daemon`.",
+        )
+
+    return CheckResult(
+        label, "ok",
+        f"{airplay_name!r} broadcasting via _raop._tcp",
+    )
+
+
 def _read_moode_spotify_name() -> str | None:
     """Read moOde's configured Spotify Connect broadcast name from its
     SQLite. Returns None if unreadable (off-Pi runs, etc.)."""
@@ -569,6 +642,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         lambda: check_moode_http(cfg),
         lambda: check_spotify_cache(cfg),
         lambda: check_spotify_connect_device(cfg),
+        check_airplay_renderer,
         lambda: check_state_dir(cfg),
         check_ram,
         lambda: check_spend_cap(cfg),
