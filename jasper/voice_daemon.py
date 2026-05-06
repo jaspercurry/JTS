@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 from collections import deque
@@ -831,6 +832,55 @@ class WakeLoop:
             logger.warning("send_audio failed (will end turn): %s", e)
             await self._end_turn()
 
+    async def manual_session_start(self) -> str:
+        """Trigger a voice session from external IPC (dial hold-to-talk).
+        Bypasses the openWakeWord trigger but honors the same gates
+        wake does: spend cap and connection-paused. Returns one of
+        OK / BUSY / CAP / PAUSED / ERROR for the caller's logging.
+        """
+        if self._state is State.SESSION:
+            return "BUSY"
+        if not self._spend_cap.allowed():
+            return "CAP"
+        if self._connection.is_paused():
+            return "PAUSED"
+        try:
+            await self._begin_turn()
+            return "OK"
+        except Exception as e:  # noqa: BLE001
+            logger.exception("manual session start failed: %s", e)
+            await self._cleanup_after_failed_begin()
+            return "ERROR"
+
+    async def manual_session_end(self) -> str:
+        """Finalize the input side of an in-progress session (dial
+        button release). This is the same operation the silence
+        detector performs at end-of-utterance: send activity_end so
+        Gemini stops listening and starts responding.
+        """
+        if self._state is not State.SESSION or self._turn is None:
+            return "NO_SESSION"
+        if self._input_ended:
+            return "ALREADY_ENDED"
+        self._input_ended = True
+        try:
+            await self._turn.end_input()
+            return "OK"
+        except Exception as e:  # noqa: BLE001
+            logger.warning("manual session end failed: %s", e)
+            return "ERROR"
+
+    def session_status(self) -> dict:
+        """Diagnostic snapshot — exposed via the control socket so
+        jasper-control / the dial can render correct UI without polling
+        the spend-cap or connection state separately."""
+        return {
+            "state": self._state.name,
+            "input_ended": self._input_ended,
+            "spend_allowed": self._spend_cap.allowed(),
+            "connection_paused": self._connection.is_paused(),
+        }
+
     async def _begin_turn(self) -> None:
         import time as _time
         t_wake = _time.monotonic()
@@ -975,6 +1025,72 @@ class WakeLoop:
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
 
+async def _start_control_socket(
+    wake_loop: WakeLoop, socket_path: str,
+) -> asyncio.AbstractServer:
+    """Listen for one-line commands on a Unix domain socket so external
+    daemons (jasper-control, in particular) can drive voice-session
+    state without going through the wake word.
+
+    Wire format: line of ASCII, terminated by `\\n`. Response: a single
+    JSON object terminated by `\\n`.
+
+    Commands:
+        START   → manual_session_start  (long-press begin)
+        END     → manual_session_end    (long-press release)
+        STATUS  → session_status        (diagnostic snapshot)
+
+    The socket lives in /run (tmpfs) so it gets created fresh each boot
+    via systemd's RuntimeDirectory=jasper. Both jasper-voice and
+    jasper-control run as root, so default 0o600 perms are fine."""
+    import json as _json
+
+    async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            cmd = raw.decode("ascii", errors="replace").strip().upper()
+            if cmd == "START":
+                result = {"result": await wake_loop.manual_session_start()}
+            elif cmd == "END":
+                result = {"result": await wake_loop.manual_session_end()}
+            elif cmd == "STATUS":
+                result = wake_loop.session_status()
+            else:
+                result = {"result": "UNKNOWN", "command": cmd}
+            writer.write((_json.dumps(result) + "\n").encode("utf-8"))
+            await writer.drain()
+        except asyncio.TimeoutError:
+            logger.warning("voice control socket: client read timed out")
+        except Exception as e:  # noqa: BLE001
+            logger.exception("voice control socket handler failed: %s", e)
+            try:
+                writer.write(b'{"result":"ERROR"}\n')
+                await writer.drain()
+            except Exception:  # noqa: BLE001
+                pass
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+
+    # Unix-domain-socket: stale file from a crashed prior run blocks
+    # bind(). Best-effort unlink first.
+    try:
+        os.unlink(socket_path)
+    except FileNotFoundError:
+        pass
+    os.makedirs(os.path.dirname(socket_path), exist_ok=True)
+    server = await asyncio.start_unix_server(handle, socket_path)
+    try:
+        os.chmod(socket_path, 0o660)
+    except OSError as e:
+        logger.warning("voice control socket chmod failed: %s", e)
+    logger.info("voice control socket: %s", socket_path)
+    return server
+
+
 async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -1097,7 +1213,17 @@ async def run() -> None:
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
             )
-            await wake_loop.run()
+            control_socket = await _start_control_socket(
+                wake_loop, cfg.voice_control_socket,
+            )
+            try:
+                await wake_loop.run()
+            finally:
+                control_socket.close()
+                try:
+                    await control_socket.wait_closed()
+                except Exception:  # noqa: BLE001
+                    pass
     finally:
         if tts_volume_tracker is not None:
             await tts_volume_tracker.stop()

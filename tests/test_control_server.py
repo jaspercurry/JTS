@@ -60,7 +60,8 @@ class FakeCamilla:
 def server_with_camilla():
     """Start a ThreadingHTTPServer on a free port. Yields (base_url, fake)."""
     fake = FakeCamilla(db=-20.0)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), _make_handler(fake))
+    handler = _make_handler(fake, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base = f"http://127.0.0.1:{server.server_port}"
@@ -70,6 +71,36 @@ def server_with_camilla():
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+@pytest.fixture
+def server_with_voice_socket(monkeypatch):
+    """Server fixture for /session/* endpoints: stubs out the UDS round-trip
+    by monkey-patching _voice_socket_command. Yields (base_url, response_queue).
+    Push dicts onto the queue to control the next response; a default
+    {"result":"OK"} is used when the queue is empty."""
+    voice_responses: list[dict] = []
+    received_cmds: list[str] = []
+
+    async def fake_command(socket_path, cmd):
+        received_cmds.append(cmd)
+        return voice_responses.pop(0) if voice_responses else {"result": "OK"}
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+
+    fake_camilla = FakeCamilla(db=-20.0)
+    handler = _make_handler(fake_camilla, "/tmp/unused.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    http_thread = threading.Thread(target=server.serve_forever, daemon=True)
+    http_thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield base, voice_responses, received_cmds
+    finally:
+        server.shutdown()
+        server.server_close()
+        http_thread.join(timeout=2)
 
 
 def _maybe_json(raw: bytes) -> dict:
@@ -206,3 +237,53 @@ def test_camilla_failure_502(server_with_camilla):
     status, body = _post(f"{base}/volume/adjust", {"delta_db": -2.0})
     assert status == 502
     assert "error" in body
+
+
+# --- /session/* endpoints (phase 3) ---
+
+
+def test_session_start_proxies_to_voice_socket(server_with_voice_socket):
+    base, voice_responses, received = server_with_voice_socket
+    voice_responses.append({"result": "OK"})
+    status, body = _post(f"{base}/session/start", None)
+    assert status == 200
+    assert body["result"] == "OK"
+    assert received == ["START"]
+
+
+def test_session_end_proxies_to_voice_socket(server_with_voice_socket):
+    base, voice_responses, received = server_with_voice_socket
+    voice_responses.append({"result": "OK"})
+    status, body = _post(f"{base}/session/end", None)
+    assert status == 200
+    assert received == ["END"]
+
+
+def test_session_start_busy_409(server_with_voice_socket):
+    base, voice_responses, _ = server_with_voice_socket
+    voice_responses.append({"result": "BUSY"})
+    status, body = _post(f"{base}/session/start", None)
+    assert status == 409
+    assert body["result"] == "BUSY"
+
+
+def test_session_start_cap_503(server_with_voice_socket):
+    base, voice_responses, _ = server_with_voice_socket
+    voice_responses.append({"result": "CAP"})
+    status, body = _post(f"{base}/session/start", None)
+    assert status == 503
+
+
+def test_session_end_no_session_409(server_with_voice_socket):
+    base, voice_responses, _ = server_with_voice_socket
+    voice_responses.append({"result": "NO_SESSION"})
+    status, body = _post(f"{base}/session/end", None)
+    assert status == 409
+
+
+def test_session_endpoint_503_when_voice_socket_missing(server_with_camilla):
+    base, _ = server_with_camilla
+    # Fixture passes /nonexistent.sock — connect will FileNotFoundError.
+    status, body = _post(f"{base}/session/start", None)
+    assert status == 503
+    assert "voice_daemon" in body["error"]

@@ -9,6 +9,7 @@
 // without restructuring.
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <ESPmDNS.h>
 #include <FastLED.h>
 #include <HTTPClient.h>
@@ -16,9 +17,19 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <WiFiUdp.h>
+#include <lvgl.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include "config.h"
+#include "display.h"
+#include "scenes.h"
+
+// Local time zone for the SNTP-driven clock face. Hardcoded to US
+// Eastern with DST rules; phase 6 could read this from /etc/jasper/
+// jasper.env on the Pi via /now-playing if you ship dials to other
+// time zones.
+#define DIAL_TZ "EST5EDT,M3.2.0,M11.1.0"
 
 // --- LED status ---
 //
@@ -121,6 +132,13 @@ static void dlog(const char *fmt, ...) {
     }
 }
 
+// SNTP setup: fire on every WiFi-up. Sets system time + TZ so the
+// LVGL clock face has something to render. Idempotent; configTzTime
+// is cheap and just (re)programs the SNTP daemon.
+static void startSntp() {
+    configTzTime(DIAL_TZ, "pool.ntp.org", "time.cloudflare.com", "time.google.com");
+}
+
 // Resolve the Pi's IP for UDP logging. Called whenever WiFi comes up.
 // Cached in g_logTarget; cleared on disconnect so the next reconnect
 // re-resolves (the Pi may have a new DHCP lease).
@@ -168,14 +186,55 @@ static bool postJson(const char *path, const char *body) {
     return ok;
 }
 
+// Tracks the latest volume percent reported by the Pi. Used to seed
+// the volume gauge — without this, a dial-driven turn would only
+// know the *delta* it sent, not where the gauge should land.
+static int g_lastVolumePercent = -1;
+
 static bool postVolumeAdjust(float deltaDb) {
+    if (WiFi.status() != WL_CONNECTED) {
+        g_lastPostOk = false;
+        return false;
+    }
+    HTTPClient http;
+    String url = String("http://") + JASPER_HOST + ":" + String(JASPER_PORT) + "/volume/adjust";
+    if (!http.begin(url)) {
+        g_lastPostOk = false;
+        return false;
+    }
+    http.setConnectTimeout(2000);
+    http.setTimeout(2000);
+    http.addHeader("Content-Type", "application/json");
+
     char body[48];
     snprintf(body, sizeof(body), "{\"delta_db\":%.2f}", deltaDb);
-    return postJson("/volume/adjust", body);
+
+    int code = http.POST((uint8_t *)body, strlen(body));
+    bool ok = (code >= 200 && code < 300);
+    if (ok) {
+        // Parse {"db":..,"percent":..} so the gauge can show the new
+        // level rather than guessing from sent delta.
+        StaticJsonDocument<128> doc;
+        if (!deserializeJson(doc, http.getString())) {
+            int p = doc["percent"] | -1;
+            if (p >= 0) g_lastVolumePercent = p;
+        }
+    }
+    http.end();
+    g_lastPostOk = ok;
+    return ok;
 }
 
 static bool postTransportToggle() {
     return postJson("/transport/toggle", "{}");
+}
+
+static bool postSessionStart() {
+    return postJson("/session/start", "{}");
+}
+
+static bool postSessionEnd() {
+    return postJson("/session/end", "{}");
 }
 
 static bool tryConnectStored() {
@@ -206,6 +265,8 @@ static void onImprovConnected(const char *ssid, const char *password) {
     g_prefs.putString("pass", password);
     MDNS.begin(MDNS_HOSTNAME);
     resolveLogTarget();
+    startSntp();
+    scenes_set_status("provisioned");
     g_status = Status::ONLINE;
     dlog("[improv] connected, ip=%s, hostname=%s.local",
          WiFi.localIP().toString().c_str(), MDNS_HOSTNAME);
@@ -244,6 +305,12 @@ void setup() {
     delay(1000);
     Serial.println("[boot] jasper-dial firmware v" JASPER_DIAL_FIRMWARE_VERSION);
 
+    // Hardware peripherals (encoder, RMT for WS2812 ring, NVS) FIRST.
+    // Order matters: when this block ran AFTER display_init +
+    // display_start_lvgl_task, FastLED.addLeds() hung — apparently
+    // contending with LovyanGFX/LVGL for an SPI-DMA or RMT channel
+    // allocation. Initializing the simple peripherals before the
+    // display stack avoids the contention entirely.
     pinMode(ENCODER_A_PIN, INPUT_PULLUP);
     pinMode(ENCODER_B_PIN, INPUT_PULLUP);
     pinMode(SWITCH_PIN, INPUT_PULLUP);
@@ -260,6 +327,16 @@ void setup() {
 
     g_prefs.begin("jasper", false);
     Serial.println("[boot] prefs (NVS) opened");
+
+    // Display + LVGL come up AFTER FastLED so peripheral allocation
+    // doesn't contend. LVGL task isn't started yet — we spawn it at
+    // the very end of setup, after WiFi is up, so disp_flush can't
+    // hang the main thread before we've finished provisioning.
+    display_init();
+    scenes_init();
+    scenes_set_status("booting");
+    display_set_backlight(180);
+    Serial.println("[boot] display + LVGL up");
 
     // Use the 4-arg overload — passing nullptr to the 5-arg deviceUrl
     // form crashes some library versions (the library does
@@ -279,6 +356,8 @@ void setup() {
         g_status = Status::ONLINE;
         MDNS.begin(MDNS_HOSTNAME);
         resolveLogTarget();
+        startSntp();
+        scenes_set_status("online");
         dlog("[boot] WiFi connected from stored creds, ip=%s",
              WiFi.localIP().toString().c_str());
     } else {
@@ -289,6 +368,13 @@ void setup() {
         g_status = Status::PROVISION;
         Serial.println("[boot] no stored creds; awaiting Improv");
     }
+
+    // Now safe to spawn the LVGL task. WiFi is up (or we're in
+    // PROVISION mode and no race against WiFi can happen). If
+    // disp_flush still hangs at this point, only the screen breaks —
+    // encoder, button, watchdog, and Improv all keep running.
+    display_start_lvgl_task();
+    Serial.println("[boot] LVGL task spawned");
 }
 
 void loop() {
@@ -304,9 +390,12 @@ void loop() {
         lastApplied += detents * ENCODER_PULSES_PER_DETENT;
         if (WiFi.status() == WL_CONNECTED) {
             bool ok = postVolumeAdjust((float)detents * VOLUME_STEP_DB);
-            dlog("[encoder] detent=%ld → POST %.2f dB %s",
+            if (ok && g_lastVolumePercent >= 0) {
+                scenes_show_volume(g_lastVolumePercent);
+            }
+            dlog("[encoder] detent=%ld → POST %.2f dB %s (now %d%%)",
                  (long)detents, (float)detents * VOLUME_STEP_DB,
-                 ok ? "OK" : "FAIL");
+                 ok ? "OK" : "FAIL", g_lastVolumePercent);
         } else {
             dlog("[encoder] detent=%ld dropped (WiFi disconnected)",
                  (long)detents);
@@ -314,14 +403,18 @@ void loop() {
     }
 
     // Button (encoder press) — polled with software debounce.
-    //   Short press (release within LONG_PRESS_MS) → /transport/toggle
-    //   Long press: phase 3 will use this for hold-to-talk.
-    // We dispatch on RELEASE for short press so we can distinguish
-    // by held-duration; long press could fire on press-down for
-    // lower latency, which phase 3 will tune.
+    //   Short press (release before LONG_PRESS_MS): /transport/toggle
+    //   Long press: at LONG_PRESS_MS while still held, /session/start
+    //               (low latency — fires DURING the hold, not after);
+    //               on release, /session/end so Gemini can respond.
+    // Dispatching the long-press start mid-hold lets the user begin
+    // talking the instant they're past the threshold; the dial's LED
+    // could indicate "listening" if we wanted, though phase 5 owns
+    // visuals.
     static bool buttonPrev = HIGH;
     static unsigned long buttonChangedAt = 0;
     static unsigned long buttonPressedAt = 0;
+    static bool sessionStarted = false;
     bool buttonNow = digitalRead(SWITCH_PIN);
     unsigned long now = millis();
     if (buttonNow != buttonPrev && now - buttonChangedAt > 30) {
@@ -330,20 +423,47 @@ void loop() {
         if (buttonNow == LOW) {
             // press
             buttonPressedAt = now;
+            sessionStarted = false;
         } else {
             // release
             unsigned long held = now - buttonPressedAt;
-            if (held < LONG_PRESS_MS) {
+            if (sessionStarted) {
+                bool ok = postSessionEnd();
+                scenes_set_listening(false);
+                dlog("[button] long-press release (%lums) → session/end %s",
+                     held, ok ? "OK" : "FAIL");
+            } else if (held < LONG_PRESS_MS) {
                 bool ok = postTransportToggle();
                 dlog("[button] short-press (%lums) → toggle %s",
                      held, ok ? "OK" : "FAIL");
             } else {
-                // Phase 3 will fire /session/end here.
-                dlog("[button] long-press release (%lums) — phase 3 placeholder",
+                // Held past the threshold but session never started —
+                // most likely WiFi was down at the moment. The user got
+                // no listening feedback (no session opened) so don't
+                // surprise them with end_input either.
+                dlog("[button] long-press release (%lums) but session never started",
                      held);
             }
         }
+    } else if (
+        buttonNow == LOW
+        && !sessionStarted
+        && buttonPressedAt > 0
+        && (now - buttonPressedAt) >= LONG_PRESS_MS
+    ) {
+        // Mid-press: still holding past the threshold, fire session/start.
+        sessionStarted = true;
+        bool ok = postSessionStart();
+        scenes_set_listening(true);
+        dlog("[button] long-press start at %lums → session/start %s",
+             now - buttonPressedAt, ok ? "OK" : "FAIL");
     }
+
+    // LVGL is pumped on its own FreeRTOS task pinned to core 0
+    // (see display.cpp). Calling lv_timer_handler() from this loop
+    // wedged the dial — disp_flush over SPI took long enough that
+    // the next call landed before the previous returned, starving
+    // encoder/button polling. Mutexed task = clean separation.
 
     // WiFi watchdog — every 5 s, if we're not connected and have
     // creds, try again. If we're connected but the last POST failed,

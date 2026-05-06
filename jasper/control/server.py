@@ -108,6 +108,27 @@ class CamillaProxy:
         return float(self._call(rmw))
 
 
+async def _voice_socket_command(socket_path: str, cmd: str) -> dict:
+    """Send one ASCII line to voice_daemon's control socket and return
+    the parsed JSON response. Used by /session/start and /session/end
+    so dial hold-to-talk drives the same session-state machine the
+    wake word uses."""
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        writer.write((cmd + "\n").encode("ascii"))
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+    if not line:
+        raise RuntimeError("voice_daemon returned no response")
+    return json.loads(line.decode("utf-8"))
+
+
 async def _toggle_transport() -> dict:
     """Build moOde + Spotify-router clients in the current event loop,
     dispatch a 'toggle' transport action, then close. We rebuild per
@@ -165,7 +186,9 @@ async def _toggle_transport() -> dict:
             logger.debug("moode.aclose() warning: %s", e)
 
 
-def _make_handler(camilla: CamillaProxy) -> type[BaseHTTPRequestHandler]:
+def _make_handler(
+    camilla: CamillaProxy, voice_socket_path: str,
+) -> type[BaseHTTPRequestHandler]:
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -261,6 +284,43 @@ def _make_handler(camilla: CamillaProxy) -> type[BaseHTTPRequestHandler]:
                 self._send_json(result)
                 return
 
+            if self.path == "/session/start" or self.path == "/session/end":
+                cmd = "START" if self.path.endswith("start") else "END"
+                try:
+                    result = asyncio.run(
+                        _voice_socket_command(voice_socket_path, cmd),
+                    )
+                except FileNotFoundError:
+                    self._send_json(
+                        {"error": "voice_daemon not running (socket not found)"},
+                        status=503,
+                    )
+                    return
+                except (OSError, asyncio.TimeoutError) as e:
+                    self._send_json(
+                        {"error": f"voice_daemon unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("session %s failed", cmd)
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                # Result codes from voice_daemon's manual_session_*:
+                #   OK / BUSY / CAP / PAUSED / NO_SESSION / ALREADY_ENDED / ERROR
+                # Map non-OK outcomes to non-2xx so the dial's HTTP
+                # error path can show the right LED color.
+                http_status = 200
+                if result.get("result") not in ("OK", None):
+                    if result.get("result") in ("CAP", "PAUSED"):
+                        http_status = 503
+                    elif result.get("result") in ("BUSY", "NO_SESSION", "ALREADY_ENDED"):
+                        http_status = 409
+                    else:
+                        http_status = 502
+                self._send_json(result, status=http_status)
+                return
+
             self.send_error(HTTPStatus.NOT_FOUND)
 
     return Handler
@@ -270,8 +330,12 @@ def build_server(
     host: str,
     port: int,
     camilla: CamillaProxy,
+    voice_socket_path: str = "/run/jasper/voice.sock",
 ) -> ThreadingHTTPServer:
-    return ThreadingHTTPServer((host, port), _make_handler(camilla))
+    return ThreadingHTTPServer(
+        (host, port),
+        _make_handler(camilla, voice_socket_path),
+    )
 
 
 def run_dial_log_listener(host: str, port: int) -> threading.Thread:
@@ -341,6 +405,13 @@ def main(argv: list[str] | None = None) -> int:
         default=int(os.environ.get("JASPER_DIAL_LOG_PORT", "5514")),
         help="UDP port for dial log datagrams (default 5514)",
     )
+    parser.add_argument(
+        "--voice-socket",
+        default=os.environ.get(
+            "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+        ),
+        help="path to voice_daemon's control UDS",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -349,13 +420,15 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     camilla = CamillaProxy(args.camilla_host, args.camilla_port)
-    server = build_server(args.host, args.port, camilla)
+    server = build_server(args.host, args.port, camilla, args.voice_socket)
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     logger.info(
-        "jasper-control listening on http://%s:%d (camilla=%s:%d, dial-log=%s:%d/udp)",
+        "jasper-control listening on http://%s:%d "
+        "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",
         args.host, args.port,
         args.camilla_host, args.camilla_port,
         args.dial_log_host, args.dial_log_port,
+        args.voice_socket,
     )
     try:
         server.serve_forever()

@@ -33,6 +33,41 @@
 // shorter than a typical human hold but longer than a quick click.
 #define LONG_PRESS_MS 500
 
+// --- Display (GC9A01 driver, 240x240 round IPS) ---
+// Pins from the CrowPanel HMI factory firmware source. SPI bus is
+// dedicated to the display (no other SPI peripherals).
+#define TFT_SCLK 10
+#define TFT_MOSI 11
+#define TFT_DC    3
+#define TFT_CS    9
+#define TFT_RST  14
+#define TFT_BACKLIGHT 46
+
+// --- Touch (CST816D capacitive controller) ---
+#define TP_I2C_SDA 6
+#define TP_I2C_SCL 7
+#define TP_RST    13
+#define TP_INT     5
+
+// --- Misc onboard ---
+// Power LED (red glow under the bezel). Drive HIGH at boot so the
+// dial visibly powered-up even before the screen lights.
+#define POWER_LED_PIN 40
+
+// Backlight PWM channel/freq/resolution.
+#define BACKLIGHT_PWM_CHANNEL    0
+#define BACKLIGHT_PWM_FREQ_HZ 5000
+#define BACKLIGHT_PWM_RES_BITS   8
+
+// LVGL framebuffer height (lines). DMA-pumped pushPixels can only
+// safely read from internal RAM on ESP32-S3 — PSRAM-backed buffers
+// hang the SPI controller mid-transfer. 60 lines × 240 × 2 B =
+// 28.8 KB per buffer, double-buffered = 57.6 KB total in internal
+// RAM (we have ~320 KB). 60 is the sweet spot: large enough that
+// LVGL flushes the screen in 4 chunks (smooth), small enough that
+// we keep plenty of internal RAM for WiFi / TLS / app state.
+#define LVGL_BUF_LINES 60
+
 // Quadrature transitions per detent. 4 is standard for mechanical
 // encoders. The CrowPanel HMI factory firmware uses a different
 // debounce strategy ("50 pulse counts for direction") — if rotation

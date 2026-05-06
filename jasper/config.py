@@ -122,6 +122,8 @@ class Config:
     volume_regress_safe_high_pct: int
     volume_first_boot_default_pct: int
 
+    voice_control_socket: str
+
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
@@ -319,6 +321,13 @@ class Config:
             # state file got deleted / corrupted).
             volume_first_boot_default_pct=_env_int(
                 "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
+            ),
+            # Unix-domain socket where voice_daemon listens for external
+            # session triggers (dial hold-to-talk via jasper-control).
+            # systemd's RuntimeDirectory=jasper auto-creates /run/jasper
+            # at service start with mode 0750.
+            voice_control_socket=_env(
+                "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
             ),
         ))
 

@@ -13,6 +13,11 @@ Restart=on-failure
 RestartSec=2
 StateDirectory=jasper
 StateDirectoryMode=0750
+# RuntimeDirectory creates /run/jasper at service start (auto-cleaned
+# at stop). voice_daemon binds /run/jasper/voice.sock there for
+# jasper-control to send dial hold-to-talk triggers via.
+RuntimeDirectory=jasper
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target
