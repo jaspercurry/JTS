@@ -261,6 +261,11 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Silence httpx's per-request INFO log — at 1 Hz polling, leaving
+    # this on writes ~86k log lines/day which crowds out anything
+    # interesting in the journal. We still see WARN+ from httpx
+    # (which is what we'd want to debug a real issue).
+    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         asyncio.run(_amain(args))
     except KeyboardInterrupt:
