@@ -448,6 +448,12 @@ install_systemd_units() {
         install -m 0644 \
             "${DEBIAN_STACK_DIR}/systemd/bt-agent.service" \
             "${SYSTEMD_DIR}/bt-agent.service"
+        # jasper-mux: latest-source-wins preemption between Spotify,
+        # AirPlay, and Bluetooth. moOde does this via worker.php; on
+        # debian we own the orchestration ourselves.
+        install -m 0644 \
+            "${DEBIAN_STACK_DIR}/systemd/jasper-mux.service" \
+            "${SYSTEMD_DIR}/jasper-mux.service"
         # Drop-in routing bluealsa-aplay's output into the JTS loopback
         # instead of ALSA default (HDMI on a fresh Pi).
         install -d -m 0755 "${SYSTEMD_DIR}/bluealsa-aplay.service.d"
@@ -471,10 +477,11 @@ install_systemd_units() {
 
     if [[ "$BACKEND" == "debian" ]]; then
         systemctl enable nqptp.service shairport-sync.service \
-            go-librespot.service bt-agent.service
+            go-librespot.service bt-agent.service jasper-mux.service
         systemctl restart bluealsa-aplay.service 2>/dev/null || true
         systemctl restart nqptp.service shairport-sync.service \
-            go-librespot.service bt-agent.service 2>/dev/null || true
+            go-librespot.service bt-agent.service jasper-mux.service \
+            2>/dev/null || true
     else
         # On a fresh moOde, shairport-sync is spawned outside systemd by
         # moOde's startup mechanism (with its own ALSA args, and root-uid).

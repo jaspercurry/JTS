@@ -321,6 +321,21 @@ def check_nqptp_running() -> CheckResult:
     )
 
 
+def check_jasper_mux() -> CheckResult:
+    """jasper-mux arbitrates which renderer plays when. Without it,
+    starting Spotify while AirPlay is playing produces mixed audio
+    until session_timeout expires."""
+    p = _run(["systemctl", "is-active", "jasper-mux.service"])
+    state = p.stdout.strip()
+    if state == "active":
+        return CheckResult("jasper-mux", "ok", "active (latest-source-wins)")
+    return CheckResult(
+        "jasper-mux", "warn",
+        f"state={state}. Renderer preemption disabled — multiple "
+        f"sources will play concurrently if active.",
+    )
+
+
 def check_bluealsa() -> CheckResult:
     """bluealsa daemon registers the A2DP profile with bluez;
     bluealsa-aplay forwards incoming A2DP audio to ALSA. Both
@@ -747,6 +762,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
             check_shairport_sync_ap2,
             check_nqptp_running,
             check_bluealsa,
+            check_jasper_mux,
             lambda: check_spotify_cache(cfg),
         ]
     else:

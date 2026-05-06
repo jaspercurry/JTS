@@ -1,0 +1,19 @@
+[Unit]
+Description=Jasper renderer source-arbiter (latest-source-wins preemption)
+After=go-librespot.service shairport-sync.service bluealsa.service
+Wants=go-librespot.service shairport-sync.service bluealsa.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-mux
+Restart=on-failure
+RestartSec=2
+# 1 Hz polling of three sources is light; stay under typical
+# python+httpx idle footprint. CPU should be <1%.
+MemoryHigh=80M
+MemoryMax=120M
+Nice=-3
+
+[Install]
+WantedBy=multi-user.target
