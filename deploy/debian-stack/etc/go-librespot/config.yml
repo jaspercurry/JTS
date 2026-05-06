@@ -1,0 +1,24 @@
+# go-librespot config for JTS smart speaker.
+# Spotify Connect renderer writing into snd-aloop card "Loopback".
+# Spotify negotiates 44.1k/FLOAT_LE natively; the loopback locks to
+# whatever the first opener requests. CamillaDSP captures via plughw
+# on the other side, so no rate pinning is needed here.
+
+device_name: JTS
+device_type: speaker
+bitrate: 320
+volume_steps: 100
+initial_volume: 80
+normalisation_pregain: 0
+external_volume: false
+
+audio_backend: alsa
+audio_device: plughw:Loopback,0,0
+mixer_device: ""
+
+# HTTP API on localhost only — used by jasper-control / source-state
+# polling, not exposed on the LAN.
+server:
+  enabled: true
+  address: 127.0.0.1
+  port: 3678

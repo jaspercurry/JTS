@@ -1,0 +1,17 @@
+[Unit]
+Description=Bluetooth Just Works pairing agent (NoInputNoOutput) for JTS speaker
+Requires=bluetooth.service
+After=bluetooth.service
+
+[Service]
+Type=simple
+# bt-agent comes from the bluez-tools apt package. NoInputNoOutput
+# capability means pairing happens without PIN/passkey exchange —
+# correct for a headless speaker (we have no display or keyboard
+# for the user to confirm a code on).
+ExecStart=/usr/bin/bt-agent --capability=NoInputNoOutput
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

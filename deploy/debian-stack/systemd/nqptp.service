@@ -1,0 +1,19 @@
+# Vendored from mikebrady/nqptp's `make install` output. Identical to
+# what nqptp's autotools build installs at
+# /usr/local/lib/systemd/system/nqptp.service — captured here so
+# install.sh can deploy it without depending on whether the source
+# build's install-systemd target succeeded (it sometimes fails on
+# Trixie due to an `install` flag mismatch — the binary still installs
+# fine to /usr/local/bin/nqptp but the unit step errors out).
+
+[Unit]
+Description=NQPTP -- Not Quite PTP
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/nqptp
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
