@@ -306,3 +306,73 @@ def test_parse_mpris_metadata_multiple_artists():
 def test_parse_mpris_metadata_empty_input():
     assert _parse_mpris_metadata("") == {}
     assert _parse_mpris_metadata("v s \"random\"") == {}
+
+
+# ----------------------------------------------------------------------
+# Edge cases — make sure failure modes don't crash the cascade
+# ----------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_active_renderers_when_busctl_missing(backend):
+    """If busctl can't be found (FileNotFoundError), _airplay_playing
+    should return False rather than propagating. Same contract as the
+    other probes."""
+    backend._http.get = AsyncMock()
+    backend._http.get.return_value.raise_for_status = MagicMock()
+    backend._http.get.return_value.json = MagicMock(
+        return_value={"stopped": True, "paused": False, "track": None},
+    )
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("busctl not found"),
+    ):
+        result = await backend.active_renderers()
+    # All probes return False on FileNotFoundError; nothing crashes.
+    assert result["aplactive"] is False
+    assert result["btactive"] is False
+
+
+@pytest.mark.asyncio
+async def test_currentsong_airplay_returns_metadata(backend):
+    """When AirPlay is the active source and shairport-sync's MPRIS
+    has metadata, currentsong should populate title/album/artist
+    from the parsed busctl output."""
+    # spotactive=False, aplactive=True
+    backend._http.get = AsyncMock()
+    backend._http.get.return_value.raise_for_status = MagicMock()
+    backend._http.get.return_value.json = MagicMock(
+        return_value={"stopped": True, "paused": False, "track": None},
+    )
+
+    sample_mpris = (
+        'v a{sv} 4 "mpris:trackid" o "/foo" '
+        '"xesam:title" s "Bohemian Rhapsody" '
+        '"xesam:album" s "A Night at the Opera" '
+        '"xesam:artist" as 1 "Queen"'
+    )
+
+    async def fake_subproc(*args, **kwargs):
+        # First call: bluealsa-cli list-pcms (BT not active)
+        # Second call: busctl Get PlaybackStatus (returns "Playing")
+        # Third call: busctl Get Metadata (returns the sample)
+        proc = MagicMock()
+        proc.returncode = 0
+        if "bluealsa-cli" in args:
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+        elif "PlaybackStatus" in args:
+            proc.communicate = AsyncMock(return_value=(b'v s "Playing"\n', b""))
+        elif "Metadata" in args:
+            proc.communicate = AsyncMock(
+                return_value=(sample_mpris.encode(), b""),
+            )
+        else:
+            proc.communicate = AsyncMock(return_value=(b"", b""))
+        proc.wait = AsyncMock(return_value=0)
+        return proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_subproc):
+        song = await backend.get_currentsong()
+
+    assert song["title"] == "Bohemian Rhapsody"
+    assert song["album"] == "A Night at the Opera"
+    assert song["artist"] == "Queen"

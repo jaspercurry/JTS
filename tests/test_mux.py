@@ -126,6 +126,51 @@ async def test_simultaneous_start_picks_one_deterministically(mux):
 
 
 @pytest.mark.asyncio
+async def test_spotify_probe_handles_httpx_failure(mux):
+    """If go-librespot's HTTP server is down, _spotify_playing must
+    return False rather than raising — a missing daemon shouldn't
+    crash the polling loop."""
+    import httpx
+    mux._http.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    assert await mux._spotify_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_spotify_probe_handles_204_no_content(mux):
+    """go-librespot returns 204 No Content when idle (no Spotify
+    client connected). _spotify_playing must treat that as 'not
+    playing,' not as a JSON parse error."""
+    response = MagicMock()
+    response.status_code = 204
+    response.content = b""
+    mux._http.get = AsyncMock(return_value=response)
+    assert await mux._spotify_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_airplay_probe_handles_busctl_missing(mux):
+    """If busctl isn't on PATH (unlikely on Trixie but possible on
+    a stripped image), _airplay_playing returns False without
+    raising."""
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=FileNotFoundError("busctl"),
+    ):
+        assert await mux._airplay_playing() is False
+
+
+@pytest.mark.asyncio
+async def test_bluetooth_probe_handles_timeout(mux):
+    """bluealsa-cli list-pcms hanging (DBus daemon stuck) should
+    timeout cleanly and return False."""
+    with patch(
+        "asyncio.create_subprocess_exec",
+        side_effect=asyncio.TimeoutError(),
+    ):
+        assert await mux._bluetooth_playing() is False
+
+
+@pytest.mark.asyncio
 async def test_pause_is_resilient_to_action_failures(mux):
     """If _pause throws, _tick should not crash — the polling loop's
     try/except catches any exception. We test that here at the _pause
