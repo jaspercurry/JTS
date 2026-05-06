@@ -71,12 +71,19 @@ Software AEC is **built but disabled by default**. README's
 (modest attenuation, ~110 MB RAM cost on 1GB Pi 5). The full
 investigation is in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
-To enable on the Pi:
+**Prerequisite**: the XVF chip must be on the 6-channel firmware
+variant (`v2.0.8 6chl`) — the bridge reads raw mic 0 from
+channel 2 of the chip's USB capture, which only exists on the
+6-ch firmware. If unsure, check with
+`cat /proc/asound/Array/stream0 | grep Channels` (expect 6).
+DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
+
+To enable on the Pi (assumes 6-ch firmware already flashed):
 
 ```sh
-sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
     /etc/jasper/jasper.env
+sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice
 ```
 
@@ -90,6 +97,9 @@ sudo systemctl restart jasper-voice
 ```
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
+
+These commands are duplicated in [`BRINGUP.md`](BRINGUP.md) Phase
+2A.2 — keep both in sync.
 
 The chip control library (`jasper.xvf.xvf_host`) is useful for
 diagnostics regardless of bridge state. **Never call

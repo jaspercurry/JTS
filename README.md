@@ -250,8 +250,11 @@ It's disabled by default because:
   source) is good enough for typical use with `NO_INTERRUPTION`
   + ducking
 
-To turn the bridge on for A/B testing, see CLAUDE.md "Acoustic
-echo cancellation" section. Two-line operation.
+To turn the bridge on for A/B testing, see [CLAUDE.md](CLAUDE.md)
+"Acoustic echo cancellation" section or [BRINGUP.md](BRINGUP.md)
+Phase 2A.2 (both have the same enable/disable commands). Requires
+the chip to be on the 6-channel firmware variant — `v2.0.8 6chl`,
+DFU procedure in BRINGUP.md Phase 2A.5; reversible.
 
 ### What's installed and at what cost
 
