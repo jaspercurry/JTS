@@ -321,6 +321,44 @@ def check_nqptp_running() -> CheckResult:
     )
 
 
+def check_apple_dongle_audio() -> CheckResult:
+    """Apple's USB-C → 3.5mm Headphone Jack Adapter only exposes its
+    USB Audio class interfaces when something is plugged into the
+    analog 3.5mm jack. With no analog load, lsusb sees the chip but
+    aplay -l shows no card "A" — and CamillaDSP fails to open the
+    DAC with "Cannot get card index for A".
+
+    This check distinguishes three states so the operator gets a
+    clear signal instead of a generic ALSA error:
+
+      - dongle absent: USB device not detected → fail
+      - dongle USB-only: idVendor=05ac, idProduct=110a present but
+        no `aplay -l` card with USB Audio class → warn with the
+        actionable message (plug in speakers/headphones)
+      - dongle audio active: card visible → ok
+    """
+    p = _run(["lsusb"])
+    has_apple_dongle = bool(re.search(r"05ac:110a", p.stdout))
+    if not has_apple_dongle:
+        return CheckResult(
+            "Apple dongle", "fail",
+            "USB-C headphone adapter not detected (lsusb has no 05ac:110a). "
+            "Plug it into the Pi.",
+        )
+    p = _run(["aplay", "-l"])
+    has_audio_card = bool(
+        re.search(r"USB-C to 3\.5mm|USB Audio.*USB Audio", p.stdout)
+    )
+    if has_audio_card:
+        return CheckResult("Apple dongle", "ok", "USB + audio interfaces present")
+    return CheckResult(
+        "Apple dongle", "warn",
+        "USB present but audio interfaces not enumerated. "
+        "Plug speakers/headphones into the dongle's 3.5mm jack — "
+        "the chip stays in low-power mode without an analog load.",
+    )
+
+
 def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
     starting Spotify while AirPlay is playing produces mixed audio
@@ -773,6 +811,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
             check_airplay_renderer,
         ]
     sync_checks += [
+        check_apple_dongle_audio,
         lambda: check_state_dir(cfg),
         check_ram,
         lambda: check_spend_cap(cfg),
