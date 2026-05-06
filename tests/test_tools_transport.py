@@ -3,7 +3,11 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from jasper.tools.transport import _detect_source, make_transport_tools
+from jasper.tools.transport import (
+    _detect_source,
+    make_transport_dispatcher,
+    make_transport_tools,
+)
 
 
 class FakeMoode:
@@ -14,6 +18,7 @@ class FakeMoode:
         self.previous_track = AsyncMock()
         self.pause = AsyncMock()
         self.play = AsyncMock()
+        self.toggle_play_pause = AsyncMock()
 
     async def active_renderers(self) -> dict:
         return self._renderers
@@ -262,6 +267,96 @@ def test_dispatch_failures_return_error_dict():
         new=AsyncMock(return_value={"title": "Hey Jude"}),
     ):
         result = asyncio.run(tools["next_track"]())
+    assert "error" in result
+
+
+# --- toggle action ---
+
+
+def test_toggle_mpd_calls_moode_native_toggle():
+    moode = FakeMoode(renderers={})
+    dispatch = make_transport_dispatcher(moode, None)
+    result = asyncio.run(dispatch("toggle"))
+    moode.toggle_play_pause.assert_awaited_once()
+    assert result == {"ok": True, "source": "mpd"}
+
+
+def test_toggle_spotify_pauses_when_playing():
+    moode = FakeMoode(renderers={"spotactive": True})
+    sp = FakeSpotify()
+    sp.current_playback = MagicMock(return_value={"is_playing": True})
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=matched)
+    dispatch = make_transport_dispatcher(moode, router)
+    result = asyncio.run(dispatch("toggle"))
+    sp.pause_playback.assert_called_once_with(device_id="dev1")
+    sp.start_playback.assert_not_called()
+    assert result["ok"] is True
+    assert result["source"] == "spotify"
+
+
+def test_toggle_spotify_resumes_when_paused():
+    moode = FakeMoode(renderers={"spotactive": True})
+    sp = FakeSpotify()
+    sp.current_playback = MagicMock(return_value={"is_playing": False})
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=matched)
+    dispatch = make_transport_dispatcher(moode, router)
+    result = asyncio.run(dispatch("toggle"))
+    sp.start_playback.assert_called_once_with(device_id="dev1")
+    sp.pause_playback.assert_not_called()
+    assert result["ok"] is True
+
+
+def test_toggle_airplay_with_spotify_match_routes_to_account():
+    moode = FakeMoode(renderers={"aplactive": True})
+    sp = FakeSpotify()
+    sp.current_playback = MagicMock(return_value={"is_playing": True})
+    matched = FakeAccountClient("jasper", sp)
+    router = FakeRouter(transport_match=matched)
+    dispatch = make_transport_dispatcher(moode, router)
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Jasper's Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude"}),
+    ):
+        result = asyncio.run(dispatch("toggle"))
+    sp.pause_playback.assert_called_once_with(device_id="dev1")
+    assert result["source"] == "airplay+spotify"
+
+
+def test_toggle_airplay_no_match_uses_mpris_playpause():
+    """Non-Spotify AirPlay senders → MPRIS PlayPause is the native
+    single-call toggle. Beats query+dispatch for browser tabs / Apple
+    Music / podcast apps that don't expose is-playing introspection."""
+    moode = FakeMoode(renderers={"aplactive": True})
+    router = FakeRouter(transport_match=None)
+    dispatch = make_transport_dispatcher(moode, router)
+    mpris_call = AsyncMock()
+    with patch(
+        "jasper.tools.transport.airplay_client_name",
+        new=AsyncMock(return_value="Some Mac"),
+    ), patch(
+        "jasper.tools.transport._mpris_now_playing",
+        new=AsyncMock(return_value={"title": "Hey Jude"}),
+    ), patch(
+        "jasper.tools.transport._airplay_remote_available",
+        new=AsyncMock(return_value=True),
+    ), patch(
+        "jasper.tools.transport._mpris_call",
+        new=mpris_call,
+    ):
+        result = asyncio.run(dispatch("toggle"))
+    mpris_call.assert_awaited_once_with("PlayPause")
+    assert result == {"ok": True, "source": "airplay"}
+
+
+def test_toggle_bluetooth_returns_unsupported_error():
+    moode = FakeMoode(renderers={"btactive": True})
+    dispatch = make_transport_dispatcher(moode, None)
+    result = asyncio.run(dispatch("toggle"))
     assert "error" in result
 
 

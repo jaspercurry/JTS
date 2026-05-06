@@ -163,6 +163,16 @@ install_jasper() {
         "${REPO_DIR}/jasper" "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
+    # Stage firmware/ next to the package so jasper-dial-onboard
+    # finds the bin (default --bin path: /opt/jasper/firmware/dial/
+    # jasper-dial.bin). The .pio build dir is excluded — that's local
+    # to whoever ran build.sh and contains absolute paths.
+    if [[ -d "${REPO_DIR}/firmware" ]]; then
+        rsync -a --delete \
+            --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
+            "${REPO_DIR}/firmware" "${INSTALL_DIR}/"
+    fi
+
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then
         python3 -m venv "${INSTALL_DIR}/.venv"
     fi
@@ -232,6 +242,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-web.service" \
         "${SYSTEMD_DIR}/jasper-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-control.service" \
+        "${SYSTEMD_DIR}/jasper-control.service"
     # AEC bridge + boot-time chip init (see asoundrc.jasper header).
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-bridge.service" \
@@ -251,7 +264,7 @@ install_systemd_units() {
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
-        jasper-web.service
+        jasper-web.service jasper-control.service
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
     # "Acoustic echo cancellation" section for the on/off procedure

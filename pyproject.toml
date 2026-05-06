@@ -28,6 +28,10 @@ dependencies = [
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
     # we capture the AEC reference from).
     "pyalsaaudio>=0.11",
+    # jasper-dial-onboard: pyserial for the dial's USB CDC, esptool for
+    # firmware flash. Both are pure-Python and tiny.
+    "pyserial>=3.5",
+    "esptool>=4.7",
 ]
 
 [project.optional-dependencies]
@@ -42,10 +46,12 @@ jasper-voice = "jasper.voice_daemon:main"
 jasper-spotify-auth = "jasper.cli.spotify_auth:main"
 jasper-doctor = "jasper.cli.doctor:main"
 jasper-web = "jasper.web.spotify_setup:main"
+jasper-control = "jasper.control.server:main"
 jasper-aec-init = "jasper.cli.aec_init:main"
 jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-aec-matrix = "jasper.cli.aec_matrix:main"
+jasper-dial-onboard = "jasper.cli.dial_onboard:main"
 
 [build-system]
 requires = ["setuptools>=68"]

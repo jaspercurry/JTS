@@ -21,6 +21,7 @@ roughly $1–3/month at light use.
 | TPA3255 class-D amp + 32V supply | Speaker power |
 | Speakers + speaker wire | (Whatever you have) |
 | Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-chip XMOS DSP |
+| ELECROW CrowPanel 1.28" HMI ESP32 Rotary Display (optional) | Wireless physical knob — volume, play/pause, hold-to-talk |
 
 The XVF3800's onboard 3.5mm jack / AIC3104 codec is **not**
 connected — speakers go to the Apple dongle. This is the
@@ -109,6 +110,9 @@ to consume. Disabled by default — see § below.
 - ✅ Hardware AEC investigation completed and documented
 - ⚠️  Software AEC infrastructure built but disabled by default
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
+- 🔄 ESP32 rotary dial: phase 1 landed (volume); phase 2/3
+  (play/pause click + hold-to-talk) and phase 5 (LVGL display) pending.
+  See "Rotary dial controller" in [CLAUDE.md](CLAUDE.md).
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
@@ -128,19 +132,25 @@ jasper/                         Python daemon source
   camilla.py                    pycamilladsp websocket helpers
   voice/                        VoiceSession interface + Gemini adapter
   tools/                        Tool registry + per-tool implementations
+  control/                      jasper-control: HTTP API for dial/automation
   cli/                          jasper-doctor, jasper-spotify-auth,
-                                jasper-aec-{init,tune,bridge}
+                                jasper-aec-{init,tune,bridge},
+                                jasper-dial-onboard
   xvf/                          Vendored XMOS XVF3800 control library
   web/                          FastAPI: Spotify household OAuth web UI
   data/                         Static data (subway stops, etc.)
   ...                           accounts, spotify_router, vad,
                                 volume_persistence, etc.
 
+firmware/
+  dial/                         PlatformIO project for the ESP32-S3
+                                rotary dial (phase 1: volume only)
+
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
   alsa/                         /root/.asoundrc + zz-jts-loopback.conf
   camilladsp/                   v1.yml passthrough config + master_gain
-  systemd/                      jasper-{camilla,voice,aec-bridge,aec-init}
+  systemd/                      jasper-{camilla,voice,control,aec-bridge,aec-init}
   modules-load.d/               snd-aloop autoload
   modprobe.d/                   snd-aloop two-card config
   nginx-jasper{,-https}.conf    /spotify reverse-proxy

@@ -1,0 +1,23 @@
+[Unit]
+Description=Jasper external control surface (HTTP API for dial / automation)
+After=jasper-camilla.service network-online.target
+Wants=network-online.target
+Requires=jasper-camilla.service
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-control
+Restart=on-failure
+RestartSec=2
+
+# Hardening — daemon only reads jasper.env, opens a localhost
+# WebSocket to CamillaDSP, and binds an HTTP port. No filesystem
+# writes outside transient sockets.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

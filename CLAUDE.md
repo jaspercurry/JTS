@@ -109,6 +109,59 @@ versions (respeaker repo issue #8).
 
 ---
 
+## Rotary dial controller — opt-in hardware
+
+The CrowPanel 1.28" HMI ESP32-S3 rotary dial is a wireless physical
+controller that talks to the Pi over WiFi. Phase 1 (volume only) is
+the only piece landed; play/pause and hold-to-talk follow.
+
+Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
+`POST /volume/adjust` (and `/volume/set`, `/healthz`). It calls
+CamillaDSP's `main_volume` mixer via the existing websocket on
+1234. Persistence is incidental — voice_daemon's debounced poller
+catches external main_volume changes and writes them to the same
+state file used by voice tools and moOde's slider, so dial-driven
+volume survives restarts without the control daemon knowing about
+the persistence layer. Service file at
+`deploy/systemd/jasper-control.service`. No auth — home LAN only.
+
+Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native
+USB-CDC, Improv-over-Serial provisioning. WS2812 LED 0 = status
+indicator (magenta=boot, yellow=connecting, dim green=online,
+red blink=HTTP error, solid red=WiFi down).
+
+To onboard a fresh dial, end-to-end:
+
+```sh
+# One-time, on any machine with PlatformIO (or via the Pi venv):
+bash firmware/dial/build.sh
+# Stages bin to /opt/jasper/firmware/dial/jasper-dial.bin
+
+# Plug the dial into a Pi USB-C port, then on the Pi:
+sudo /opt/jasper/.venv/bin/jasper-dial-onboard
+# → flashes via esptool, reads Pi's current WiFi creds from
+#   NetworkManager (or wpa_supplicant), pushes via Improv,
+#   waits for dial to appear at jasper-dial.local. ~30 s.
+
+# Unplug from Pi and connect to USB power. Dial reconnects to
+# WiFi from NVS flash on every subsequent boot.
+```
+
+To re-provision after a WiFi password change: same command, same
+USB plug. The dial accepts `SUBMIT_SETTINGS` over Improv whenever
+it's connected to USB.
+
+If the dial is already flashed and you just need to update creds,
+pass `--no-flash`. If auto-detection of WiFi creds fails (locked-down
+NM secret store, etc.), pass `--ssid` and `--password` explicitly.
+
+The control daemon is always installed and enabled by `install.sh`,
+even if there's no dial — it costs <10 MB RAM idle and the volume
+endpoints are useful for any LAN client (Home Assistant, shortcuts,
+etc.).
+
+---
+
 ## Debugging — fetch evidence before guessing
 
 When the user reports "it doesn't work" or asks about Pi-side

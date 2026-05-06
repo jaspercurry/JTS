@@ -123,15 +123,52 @@ async def _detect_source(moode) -> str:
     return "mpd"
 
 
-def make_transport_tools(moode, router):
-    """Source-aware transport tools.
+async def _spotify_active_device_id(sp) -> str | None:
+    try:
+        devices = await asyncio.to_thread(sp.devices)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("spotify devices fetch failed: %s", e)
+        return None
+    for d in devices.get("devices", []):
+        if d.get("is_active"):
+            return d.get("id")
+    return None
+
+
+async def _resolve_airplay_account(router):
+    """Cross-reference MPRIS title with each account's current_playback.
+    Returns None if router unconfigured or no title-match found.
+    Module-level so both make_transport_dispatcher (for routing) and
+    make_transport_tools.get_now_playing (for metadata) can call it
+    without duplicating the closure."""
+    if router is None:
+        return None
+    client_name = await airplay_client_name()
+    if not client_name:
+        return None
+    try:
+        metadata = await _mpris_now_playing()
+    except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
+        return None
+    title = metadata.get("title", "")
+    if not title:
+        return None
+    return await router.resolve_for_transport(client_name, title)
+
+
+def make_transport_dispatcher(moode, router):
+    """Returns `async dispatch(action) -> dict`, the source-aware
+    transport routing function. Both the voice-tool decorators
+    (make_transport_tools) and external callers (jasper-control's
+    HTTP toggle endpoint) share this implementation so that `pause`
+    behaves identically whether triggered by voice or by the dial.
 
     Routing logic for AirPlay (the interesting case):
 
       - Cross-reference shairport's MPRIS `xesam:title` against each
         configured account's `current_playback.item.name`. If exactly
         one matches, that's the AirPlay sender — route Next/Previous/
-        Pause/Play to that account via the Spotify Web API.
+        Pause/Play/Toggle to that account via the Spotify Web API.
       - If no Spotify account is playing the AirPlay-pushed track,
         the sender is something else (Apple Music, podcast, browser
         tab). Try DACP via shairport's MPRIS — works for legacy
@@ -146,18 +183,19 @@ def make_transport_tools(moode, router):
 
     MPD / Bluetooth: same as before — moOde for MPD, "not supported"
     for Bluetooth.
+
+    Toggle action: query the current is-playing state for the active
+    source and dispatch pause-or-play accordingly. MPRIS exposes a
+    native PlayPause method which is preferred for non-Spotify AirPlay.
     """
 
-    async def _spotify_active_device_id(sp) -> str | None:
+    async def _spotify_is_playing(sp) -> bool:
         try:
-            devices = await asyncio.to_thread(sp.devices)
+            playback = await asyncio.to_thread(sp.current_playback)
         except Exception as e:  # noqa: BLE001
-            logger.warning("spotify devices fetch failed: %s", e)
-            return None
-        for d in devices.get("devices", []):
-            if d.get("is_active"):
-                return d.get("id")
-        return None
+            logger.warning("spotify current_playback failed: %s", e)
+            return False
+        return bool(playback and playback.get("is_playing"))
 
     async def _spotify_call(sp, action: str, device_id: str | None) -> None:
         fn = {
@@ -168,33 +206,25 @@ def make_transport_tools(moode, router):
         }[action]
         await asyncio.to_thread(fn, device_id=device_id)
 
-    async def _resolve_airplay_account():
-        """Cross-reference MPRIS title with each account's
-        current_playback. Returns None if router unconfigured or no
-        title-match found."""
-        if router is None:
-            return None
-        client_name = await airplay_client_name()
-        if not client_name:
-            return None
-        try:
-            metadata = await _mpris_now_playing()
-        except (RuntimeError, asyncio.TimeoutError, FileNotFoundError):
-            return None
-        title = metadata.get("title", "")
-        if not title:
-            return None
-        return await router.resolve_for_transport(client_name, title)
+    async def _spotify_toggle(sp, device_id: str | None) -> None:
+        # Spotipy has no native toggle — query then dispatch.
+        if await _spotify_is_playing(sp):
+            await asyncio.to_thread(sp.pause_playback, device_id=device_id)
+        else:
+            await asyncio.to_thread(sp.start_playback, device_id=device_id)
 
     async def _dispatch(action: str) -> dict:
         source = await _detect_source(moode)
         logger.info("transport dispatch: action=%s source=%s", action, source)
         try:
             if source == "airplay":
-                matched = await _resolve_airplay_account()
+                matched = await _resolve_airplay_account(router)
                 if matched is not None:
                     device_id = await _spotify_active_device_id(matched.sp)
-                    await _spotify_call(matched.sp, action, device_id)
+                    if action == "toggle":
+                        await _spotify_toggle(matched.sp, device_id)
+                    else:
+                        await _spotify_call(matched.sp, action, device_id)
                     logger.info(
                         "airplay+spotify: %s routed to account=%s device_id=%s",
                         action, matched.account.name, device_id,
@@ -215,11 +245,16 @@ def make_transport_tools(moode, router):
                         "to link their spotify account at jasper.local/spotify.",
                         "source": "airplay",
                     }
+                # MPRIS PlayPause is a single-call native toggle —
+                # cleaner than state-query-then-dispatch, and the
+                # only path that works for AirPlay senders we can't
+                # introspect (browser tabs, Apple Music, etc.).
                 method = {
                     "next": "Next",
                     "previous": "Previous",
                     "pause": "Pause",
                     "play": "Play",
+                    "toggle": "PlayPause",
                 }[action]
                 await _mpris_call(method)
                 return {"ok": True, "source": "airplay"}
@@ -230,7 +265,10 @@ def make_transport_tools(moode, router):
                 if active is None:
                     return {"error": "no spotify account configured"}
                 device_id = await _spotify_active_device_id(active.sp)
-                await _spotify_call(active.sp, action, device_id)
+                if action == "toggle":
+                    await _spotify_toggle(active.sp, device_id)
+                else:
+                    await _spotify_call(active.sp, action, device_id)
                 return {
                     "ok": True,
                     "source": "spotify",
@@ -241,6 +279,12 @@ def make_transport_tools(moode, router):
                     "error": "bluetooth transport not yet supported. "
                     "tell the user to use the controls on their phone.",
                 }
+            # MPD source. moOde's REST exposes a native toggle that
+            # consults MPD's current state, so toggle is one call —
+            # avoids a status round-trip.
+            if action == "toggle":
+                await moode.toggle_play_pause()
+                return {"ok": True, "source": "mpd"}
             mpd_fn = {
                 "next": moode.next_track,
                 "previous": moode.previous_track,
@@ -252,6 +296,13 @@ def make_transport_tools(moode, router):
         except Exception as e:  # noqa: BLE001
             logger.warning("transport %s/%s failed: %s", source, action, e)
             return {"error": f"transport failed: {e}"}
+
+    return _dispatch
+
+
+def make_transport_tools(moode, router):
+    """Voice-side tool wrappers around the transport dispatcher."""
+    _dispatch = make_transport_dispatcher(moode, router)
 
     @tool()
     async def next_track() -> dict:
@@ -279,7 +330,7 @@ def make_transport_tools(moode, router):
         source = await _detect_source(moode)
         try:
             if source == "airplay":
-                matched = await _resolve_airplay_account()
+                matched = await _resolve_airplay_account(router)
                 if matched is not None:
                     playback = await asyncio.to_thread(matched.sp.current_playback)
                     if playback and playback.get("item"):
