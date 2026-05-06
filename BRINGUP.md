@@ -599,7 +599,7 @@ Two different Spotify integrations exist in this build — don't conflate them:
 | | Spotify Connect (built into moOde) | Spotify Web API (this section) |
 |---|---|---|
 | Purpose | Makes the speaker show up as a target in Spotify's app | Lets the voice daemon search for and start tracks via tool calls |
-| Setup | None — moOde 10.x bundles librespot 0.8.0; the Pi auto-advertises via zeroconf as "Moode jasper" | Requires a Spotify Developer app + OAuth |
+| Setup | None — moOde 10.x bundles librespot 0.8.0; the Pi auto-advertises via zeroconf as "Moode jasper" | Requires a Spotify Developer app + per-household-member OAuth |
 | Account | Premium required for use, but no developer registration | Premium required + your own Developer app |
 | What you can do | Play any track from Spotify's app to the speaker | "Hey Jarvis, play Bohemian Rhapsody" |
 
@@ -607,29 +607,65 @@ Skip this section entirely if you don't want voice-driven Spotify search;
 moOde's Spotify Connect already works without any setup — open Spotify on
 your phone, tap the device icon, pick the moOde unit. Done.
 
-To enable voice-driven Spotify control:
+The voice daemon supports **multi-user Spotify** — each household member
+links their own account once, and the router cross-references the
+currently-AirPlay-streamed track title with each account's
+`current_playback` to figure out whose voice command should hit which
+account. End-to-end architecture, gotchas, and verification commands
+live in [docs/multi-user-spotify.md](docs/multi-user-spotify.md); this
+section is just the bringup steps.
 
-1. Create a Spotify Developer app at
-   <https://developer.spotify.com/dashboard>.
-2. **Redirect URI**: `http://127.0.0.1:8765/callback` exactly. Spotify
-   rejects `localhost` since April 2025 — must be the literal `127.0.0.1`.
-3. Copy Client ID + Client Secret into `/etc/jasper/jasper.env`.
-4. On the Pi, run:
+**1. Create a Spotify Developer app** (one-time, by the speaker owner)
+at <https://developer.spotify.com/dashboard>.
 
-   ```sh
-   sudo -E /opt/jasper/.venv/bin/jasper-spotify-auth
-   ```
+- **Name:** anything ("Jasper Smart Speaker")
+- **Redirect URI:** `https://jasper.local/spotify/callback` —
+  must be HTTPS (Spotify rejects HTTP for non-loopback hosts as of late
+  2024). The Pi serves HTTPS via a self-signed cert that
+  `deploy/install.sh` generates with the right SANs.
+- **APIs:** Web API
+- **User Management:** add each household member's Spotify-account
+  email. Development Mode allows up to 25 named users.
 
-   It prints an authorize URL. Open it on your phone or laptop. Grant
-   access. Your phone redirects to `http://127.0.0.1:8765/callback?code=...`
-   which fails to load — that's fine. **Copy the FULL URL from the address
-   bar** (must include `?code=...`) and paste it back into the SSH
-   terminal. The refresh token is cached at `/var/lib/jasper/.spotify-cache`.
+**2. Drop credentials into `/etc/jasper/jasper.env`:**
 
-5. The voice daemon's `spotify_play()` tool needs an active Spotify Connect
-   target. Open Spotify on your phone once and pick the moOde unit so
-   librespot starts; from then on `start_playback` from the daemon will
-   find it.
+```sh
+sudo nano /etc/jasper/jasper.env
+# Set:
+#   SPOTIFY_CLIENT_ID=...
+#   SPOTIFY_CLIENT_SECRET=...
+sudo chmod 0600 /etc/jasper/jasper.env
+sudo systemctl restart jasper-web
+```
+
+**3. Each household member, on their own phone, visits**
+<https://jasper.local/spotify>:
+
+1. Click through the cert warning ("connection not private" → "visit
+   anyway"). One-time-per-device — the browser remembers.
+2. Pick a label name (lowercase, no spaces — internal identifier the
+   speaker uses to route commands).
+3. Click **Continue with Spotify** → log in → **Agree** → bounced back
+   to the speaker page. Account now appears in the list.
+
+**4. Restart `jasper-voice` once after the first account is added** so
+the router builds clients for the registered accounts:
+
+```sh
+sudo systemctl restart jasper-voice
+```
+
+After that, voice commands like "Hey Jarvis, play Sufjan Stevens" or
+"play my workout playlist" route to the appropriate household member's
+Spotify account. The router and ranking logic are documented in
+[docs/multi-user-spotify.md](docs/multi-user-spotify.md).
+
+**Legacy single-account fallback.** A `jasper-spotify-auth` CLI still
+exists in the repo for headless single-account OAuth (one cache file at
+`/var/lib/jasper/.spotify-cache`, no web UI). It's no longer the
+canonical path — use the multi-user web flow above. If you have an
+existing single-account install, the daemon migrates the legacy cache
+into the registry on first start (see `maybe_migrate_legacy()`).
 
 ### B4. Start the voice daemon
 
@@ -678,6 +714,85 @@ sudo systemctl restart jasper-voice
 # Try saying the wake word — log will show "daily spend cap reached"
 # Restore JASPER_DAILY_SPEND_CAP_USD=1.00 when done
 ```
+
+---
+
+## Bringing up a second speaker (additional Pi)
+
+Most steps are identical to the first Pi — Phases 0 → 2B run unchanged.
+What follows is just what differs when a unit isn't the first one in the
+household.
+
+### Pick a different hostname at flash time
+
+Both Pis can't be `jasper.local`. At Phase 0's Pi Imager step, set
+hostname to e.g. `jasper-kitchen` or `jasper-bedroom`. Everything that
+references the hostname (Spotify redirect URI, nginx self-signed cert
+SAN, fetch-pi-logs scripts) flows from this. The setup web URL becomes
+`https://jasper-kitchen.local/spotify`.
+
+### Reuse the Spotify Developer app — just add a redirect URI
+
+You don't create a second Developer app. Open the existing one at
+<https://developer.spotify.com/dashboard>, edit settings, and **add an
+additional Redirect URI** for the new hostname:
+
+```
+https://jasper-kitchen.local/spotify/callback
+```
+
+Spotify allows multiple redirect URIs on a single app. Same Client ID
+and Client Secret go into the new Pi's `/etc/jasper/jasper.env` —
+no developer-side change beyond the redirect URI addition.
+
+### Each household member re-OAuths on the new Pi
+
+OAuth tokens are scoped per-Pi (cache files live at
+`/var/lib/jasper/spotify/caches/<name>.json`). Each person who wants
+their account on the new speaker visits
+`https://jasper-kitchen.local/spotify` once, clicks through the cert
+warning, picks the same label name they used on the first Pi (or a
+different one — labels are per-Pi), and OAuths. ~10 seconds per person.
+
+### TLS cert auto-generates with the right SANs
+
+`deploy/install.sh` generates the self-signed cert at install time
+using the Pi's actual hostname. No manual cert work needed. Each phone
+clicks through "not private" once on the new device.
+
+### AEC is a per-room judgment call
+
+Default ships with no real AEC (the chip's processed channel still
+does beamforming + NS + AGC). If the second speaker lives somewhere
+loud-music-while-speaking is common, plan to flash 6-channel firmware
+and enable the software AEC bridge for that unit (see Phase 2A.5 and
+A2). Most rooms don't need it.
+
+### Gemini API key — reuse or split
+
+The same key works on both Pis. Split into separate keys per Pi if
+you want per-unit spend caps via `JASPER_DAILY_SPEND_CAP_USD`.
+
+### Run `jasper-doctor` to verify
+
+After install, on the new Pi:
+
+```sh
+sudo -E /opt/jasper/.venv/bin/jasper-doctor
+```
+
+Should turn up green for all critical checks — including the
+`Spotify Connect device` and `AirPlay renderer` checks that catch
+the most common per-Pi misconfigurations (broadcast-name pattern
+mismatch, AirPlay disabled in moOde, mDNS not advertising). If
+anything fails, the message is the fix.
+
+### Time estimate
+
+~1.5 hours for a second Pi if you skip the optional software AEC
+bridge, ~2 hours with it. Faster than the first Pi because you
+already know the moOde web UI clicks and have the Spotify Developer
+app set up — most of the savings is in Phases 1A and 2B.
 
 ---
 
