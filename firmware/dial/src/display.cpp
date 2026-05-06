@@ -4,6 +4,7 @@
 
 #define LGFX_USE_V1
 #include <Arduino.h>
+#include <Wire.h>
 #include <LovyanGFX.hpp>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
@@ -77,15 +78,20 @@ static lv_color_t *lvgl_buf2 = nullptr;
 static lv_disp_drv_t lvgl_disp_drv;
 static lv_indev_drv_t lvgl_indev_drv;
 
-// LVGL → display: copy LVGL's rendered buffer to the GC9A01.
+// LVGL → display: hand the rendered buffer to LovyanGFX's DMA path.
+// Using pushImageDMA (not pushPixels) so PSRAM-backed buffers work —
+// the cache-aware DMA descriptor that pushImageDMA sets up handles
+// PSRAM reads, where the lower-level pushPixels DMA path doesn't.
+// startWrite/endWrite are bracketed across calls (factory pattern):
+// gfx.startWrite() is called once at boot, and we just check
+// getStartCount() here so back-to-back flushes don't double-bracket.
 static void disp_flush(lv_disp_drv_t *drv, const lv_area_t *area,
                        lv_color_t *color_p) {
     uint32_t w = area->x2 - area->x1 + 1;
     uint32_t h = area->y2 - area->y1 + 1;
-    gfx.startWrite();
-    gfx.setAddrWindow(area->x1, area->y1, w, h);
-    gfx.pushPixels((uint16_t *)color_p, w * h, true);
-    gfx.endWrite();
+    if (gfx.getStartCount() > 0) gfx.endWrite();
+    gfx.pushImageDMA(area->x1, area->y1, w, h,
+                     (lgfx::rgb565_t *)&color_p->full);
     lv_disp_flush_ready(drv);
 }
 
@@ -129,21 +135,56 @@ static void lvgl_task_loop(void *) {
 }
 
 void display_init() {
-    // Power LED on as a "we have power" indicator before the
-    // backlight comes up. Useful when debugging a black screen.
-    pinMode(POWER_LED_PIN, OUTPUT);
-    digitalWrite(POWER_LED_PIN, HIGH);
+    // CRITICAL: power-enable pins for the panel + backlight rail.
+    // Without driving GPIO1 and GPIO2 HIGH, the panel has no power
+    // and stays completely dark regardless of SPI / init state.
+    // This is the CrowPanel HMI's onboard power-gating — see the
+    // factory firmware setup() for the canonical reference.
+    pinMode(PANEL_POWER_PIN_1, OUTPUT);
+    digitalWrite(PANEL_POWER_PIN_1, HIGH);
+    pinMode(PANEL_POWER_PIN_2, OUTPUT);
+    digitalWrite(PANEL_POWER_PIN_2, HIGH);
 
-    // Backlight PWM — start at 0 (display dark), bring it up after
-    // we've drawn the splash so the user doesn't see a flash of
-    // garbage from the framebuffer's power-on state.
+    // Power LED is ACTIVE LOW on this board (factory drives it LOW
+    // to enable). Setting HIGH keeps it off — that's fine, our
+    // WS2812 ring is the user-visible status indicator anyway.
+    pinMode(POWER_LED_PIN, OUTPUT);
+    digitalWrite(POWER_LED_PIN, LOW);
+
+    // Default I2C bus (pins 38/39) — factory inits this for the
+    // onboard SSD1306 OLED. We don't use the OLED but bring the bus
+    // up to match factory behavior in case any board-init magic
+    // depends on it.
+    Wire.begin(I2C_SDA, I2C_SCL);
+
+    bool gfx_ok = gfx.init();
+    gfx.initDMA();   // factory: required after init() for pushImageDMA
+    Serial.printf("[disp] gfx.init() = %d\n", (int)gfx_ok);
+    gfx.setRotation(0);
+
+    // Diagnostic test pattern: prove panel + SPI work *before* we
+    // touch LVGL. If the user sees RED→GREEN→BLUE→BLACK during boot,
+    // the panel responds; we know any subsequent dark-screen problem
+    // is in LVGL's flush_cb. If they see nothing, the panel itself
+    // isn't being driven (init/pin/clock issue).
+    //
+    // Backlight is brought up here at full so the test colors are
+    // unambiguous. The main caller resets it to its preferred level
+    // after display_init returns.
     ledcSetup(BACKLIGHT_PWM_CHANNEL, BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_PWM_RES_BITS);
     ledcAttachPin(TFT_BACKLIGHT, BACKLIGHT_PWM_CHANNEL);
-    display_set_backlight(0);
-
-    gfx.init();
-    gfx.setRotation(0);
-    gfx.fillScreen(0x0000);  // black
+    ledcWrite(BACKLIGHT_PWM_CHANNEL, 255);
+    Serial.println("[disp] panel test: red");
+    gfx.fillScreen(0xF800);
+    delay(1200);
+    Serial.println("[disp] panel test: green");
+    gfx.fillScreen(0x07E0);
+    delay(1200);
+    Serial.println("[disp] panel test: blue");
+    gfx.fillScreen(0x001F);
+    delay(1200);
+    Serial.println("[disp] panel test: black");
+    gfx.fillScreen(0x0000);
 
     // Touch is initialized but NOT registered as an LVGL input
     // device. The vendored CST816D driver's i2c_read() spins forever
@@ -158,17 +199,16 @@ void display_init() {
 
     lv_init();
 
-    // Allocate the LVGL flush buffers in DMA-capable internal RAM.
-    // PSRAM-backed buffers hang the SPI controller mid-transfer
-    // because the GDMA peripheral doesn't safely service PSRAM reads
-    // at our 80 MHz SPI clock — DMA fetches stall and disp_flush
-    // never returns. Internal RAM keeps DMA happy at the cost of
-    // ~58 KB out of the chip's 320 KB DRAM (we have plenty).
+    // Full-screen double buffer in PSRAM (matches factory). The
+    // PSRAM path works *only* because we use pushImageDMA in the
+    // flush callback — pushPixels' direct-DMA path can't safely
+    // read PSRAM. 240×240×2 = 115 KB each, 230 KB total in 8 MB
+    // PSRAM. Falls back to internal RAM if PSRAM isn't available.
     size_t buf_bytes = sizeof(lv_color_t) * 240 * LVGL_BUF_LINES;
-    lvgl_buf1 = (lv_color_t *)heap_caps_malloc(
-        buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
-    lvgl_buf2 = (lv_color_t *)heap_caps_malloc(
-        buf_bytes, MALLOC_CAP_DMA | MALLOC_CAP_INTERNAL);
+    lvgl_buf1 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    lvgl_buf2 = (lv_color_t *)heap_caps_malloc(buf_bytes, MALLOC_CAP_SPIRAM);
+    if (!lvgl_buf1) lvgl_buf1 = (lv_color_t *)malloc(buf_bytes);
+    if (!lvgl_buf2) lvgl_buf2 = (lv_color_t *)malloc(buf_bytes);
     Serial.printf("[disp] flush bufs: %p / %p (%u bytes ea)\n",
                   lvgl_buf1, lvgl_buf2, (unsigned)buf_bytes);
     lv_disp_draw_buf_init(&lvgl_draw_buf, lvgl_buf1, lvgl_buf2,

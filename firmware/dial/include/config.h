@@ -49,24 +49,38 @@
 #define TP_RST    13
 #define TP_INT     5
 
+// --- Default I2C bus (factory uses for the onboard SSD1306 OLED) ---
+// We don't drive the OLED, but Wire.begin() on these pins matches
+// factory boot order so any board-level magic that depends on the
+// bus being live still works.
+#define I2C_SDA   38
+#define I2C_SCL   39
+
 // --- Misc onboard ---
-// Power LED (red glow under the bezel). Drive HIGH at boot so the
-// dial visibly powered-up even before the screen lights.
+// Power LED (red glow under the bezel) — ACTIVE LOW. Factory firmware
+// drives it LOW to enable. Don't set HIGH.
 #define POWER_LED_PIN 40
+
+// CrowPanel HMI v1 power-enable pins. The panel's backlight + display
+// power supply is gated by GPIO1 and GPIO2 — without driving these
+// HIGH the screen has no power and stays dark, regardless of SPI /
+// LVGL state. Source: factory firmware setup() in
+//   factory_soucecode/RotaryScreen_1_28/RotaryScreen_1_28.ino
+#define PANEL_POWER_PIN_1 1
+#define PANEL_POWER_PIN_2 2
 
 // Backlight PWM channel/freq/resolution.
 #define BACKLIGHT_PWM_CHANNEL    0
 #define BACKLIGHT_PWM_FREQ_HZ 5000
 #define BACKLIGHT_PWM_RES_BITS   8
 
-// LVGL framebuffer height (lines). DMA-pumped pushPixels can only
-// safely read from internal RAM on ESP32-S3 — PSRAM-backed buffers
-// hang the SPI controller mid-transfer. 60 lines × 240 × 2 B =
-// 28.8 KB per buffer, double-buffered = 57.6 KB total in internal
-// RAM (we have ~320 KB). 60 is the sweet spot: large enough that
-// LVGL flushes the screen in 4 chunks (smooth), small enough that
-// we keep plenty of internal RAM for WiFi / TLS / app state.
-#define LVGL_BUF_LINES 60
+// LVGL framebuffer: full 240×240 in PSRAM, matching factory firmware.
+// pushImageDMA (not pushPixels) handles PSRAM-backed buffers
+// correctly — the GDMA controller's PSRAM-cache path used by
+// pushImageDMA differs from the direct pushPixels DMA path. 240*240*2
+// = 115 KB per buffer, double-buffered = 230 KB in PSRAM (we have
+// 8 MB).
+#define LVGL_BUF_LINES 240
 
 // Quadrature transitions per detent. 4 is standard for mechanical
 // encoders. The CrowPanel HMI factory firmware uses a different

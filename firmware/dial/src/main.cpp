@@ -305,6 +305,7 @@ void setup() {
     delay(1000);
     Serial.println("[boot] jasper-dial firmware v" JASPER_DIAL_FIRMWARE_VERSION);
 
+
     // Hardware peripherals (encoder, RMT for WS2812 ring, NVS) FIRST.
     // Order matters: when this block ran AFTER display_init +
     // display_start_lvgl_task, FastLED.addLeds() hung — apparently
