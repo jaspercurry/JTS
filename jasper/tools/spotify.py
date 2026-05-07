@@ -307,7 +307,7 @@ async def _resolve_query(
     return pick[0], pick[1], pick[2]
 
 
-def make_spotify_tools(router, moode, librespot_name: str):
+def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
     """Multi-account-aware Spotify tools.
 
     `router` is a `jasper.spotify_router.Router`. When AirPlay is
@@ -318,15 +318,25 @@ def make_spotify_tools(router, moode, librespot_name: str):
     start), we fall back to whichever account is currently is_playing,
     then to the registry's default.
 
-    Returns an empty tool list if no accounts are configured (fresh
-    install, nobody has visited jasper.local/spotify yet)."""
-    if router is None or not router.clients:
-        return []
+    `setup_url` is woven into the no-account-configured error so a
+    fresh install can answer "play X" requests with a spoken pointer
+    to the OAuth setup page. When the router has no clients, the
+    tools still register (so Gemini can call them) but every call
+    short-circuits to the no-account error — the alternative,
+    returning [] from this factory, made Gemini fall silent on
+    'play X' because it had no relevant tool to offer."""
+    has_clients = router is not None and bool(router.clients)
+    no_account_msg = "no spotify account configured."
+    if setup_url:
+        no_account_msg += f" tell the user to visit {setup_url} to set one up."
 
-    from ..spotify_router import airplay_client_name
-    from .transport import _mpris_now_playing
+    if has_clients:
+        from ..spotify_router import airplay_client_name
+        from .transport import _mpris_now_playing
 
     async def _resolve_for_play() -> "tuple[object, str | None, list[str], str] | None":
+        if not has_clients:
+            return None
         """Pick the active account and decide where to start_playback.
         Returns (sp, device_id, stop_renderers, account_name) or None
         if no account / device combination can be reached.
@@ -409,16 +419,13 @@ def make_spotify_tools(router, moode, librespot_name: str):
         mic does not stay open for follow-ups."""
         resolved = await _resolve_for_play()
         if resolved is None:
-            return {
-                "error": "no spotify account configured. tell the user to "
-                "set one up at jasper.local/spotify.",
-            }
+            return {"error": no_account_msg}
         sp, device_id, stops, account_name = resolved
         if not device_id:
             return {
                 "error": "no spotify target device available. tell the user "
-                "to open spotify on their phone or check that moOde's "
-                "spotify connect is running.",
+                "to open spotify on their phone or check that the speaker's "
+                "spotify connect (librespot) is running.",
             }
 
         pick = await _resolve_query(sp, query, kind)
@@ -487,7 +494,7 @@ def make_spotify_tools(router, moode, librespot_name: str):
         """Search Spotify for a track and add it to the playback queue."""
         resolved = await _resolve_for_play()
         if resolved is None:
-            return {"error": "no spotify account configured"}
+            return {"error": no_account_msg}
         sp, device_id, _, account_name = resolved
         if not device_id:
             return {"error": "no spotify target device available"}

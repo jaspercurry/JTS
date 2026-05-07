@@ -531,7 +531,9 @@ def _build_registry(
     router = spotify_router if spotify_router is not None else _build_router(cfg)
     for fn in make_transport_tools(moode, router):
         registry.register(fn)
-    for fn in make_spotify_tools(router, moode, cfg.spotify_device_name):
+    for fn in make_spotify_tools(
+        router, moode, cfg.spotify_device_name, cfg.spotify_setup_url,
+    ):
         registry.register(fn)
     for fn in make_weather_tools(weather):
         registry.register(fn)
