@@ -1,42 +1,40 @@
 ---
-# CamillaDSP 4.x v1 passthrough config.
-# Capture: ALSA Loopback (moOde renderers write here via the
-# pcm._audioout hijack). Playback: pcm.jasper_out — the fan-out
-# PCM defined in /root/.asoundrc that duplicates the processed
-# stream to BOTH the Apple USB-C dongle (the actual speaker) AND
-# the XVF3800's USB-IN endpoint (the AEC reference). See the
-# header comment in deploy/alsa/asoundrc.jasper for the full
-# rationale on why we fan out instead of using the chip's DAC.
+# JTS CamillaDSP config.
 #
-# Single master_gain mixer per channel so the daemon can SetVolume
-# for ducking without reloading the YAML (Reload glitches audio).
+# Bridges snd-aloop card "Loopback" (where librespot, shairport-sync,
+# and bluealsa-aplay all write their audio) to the Apple USB-C dongle
+# (the speaker output). plughw on the capture side absorbs renderer
+# rate/format mismatches (Spotify FLOAT_LE/44.1, AirPlay/BT S16/44.1
+# all converge here); CamillaDSP resamples internally to 48 kHz which
+# is the dongle's native rate.
 #
-# All rates pinned at 48 kHz — Apple dongle is 48 kHz only on
-# Linux, and Loopback locks rate at first opener. The XVF leg
-# downsamples 48→16 kHz inside the plug wrapper at the asoundrc
-# level; CamillaDSP doesn't see that.
+# When the AEC bridge is enabled, capture switches from
+# `plughw:Loopback,1,0` to `pcm.jasper_capture` (a dsnoop wrapper
+# defined in /root/.asoundrc) so the AEC bridge and CamillaDSP can
+# share the loopback capture side.
+#
+# master_gain mixer is the ducking knob jasper-voice uses on wake.
 
 devices:
   samplerate: 48000
   chunksize: 1024
   queuelimit: 4
   enable_rate_adjust: true
+  resampler:
+    type: AsyncSinc
+    profile: Balanced
   capture:
-    # Capture from the shared dsnoop on the moOde→camilla loopback
-    # (pcm.jasper_capture, defined in /root/.asoundrc). The
-    # jasper-aec-bridge also captures from the same dsnoop in
-    # parallel; dsnoop gives each reader an independent stream.
-    # Loopback locks RATE at the writer's rate — moOde must be
-    # configured to output 48 kHz to Loopback (BRINGUP.md Phase 1B).
     type: Alsa
     channels: 2
-    device: "jasper_capture"
+    device: "plughw:Loopback,1,0"
     format: S32_LE
   playback:
-    # pcm.jasper_out is the dongle dmix (single audible
-    # destination). The AEC reference path is handled by
-    # jasper-aec-bridge as a separate process that captures from
-    # jasper_capture in parallel — no playback-side fan-out needed.
+    # jasper_out is the dmix defined in /root/.asoundrc that fans the
+    # CamillaDSP-processed music AND jasper-voice TTS into one stream
+    # before the dongle. install.sh writes /root/.asoundrc with the
+    # detected dongle card name substituted in. CamillaDSP just
+    # opens the named PCM here — no card detection needed in this
+    # config.
     type: Alsa
     channels: 2
     device: "jasper_out"
@@ -45,27 +43,16 @@ devices:
 filters:
   flat:
     type: Gain
-    parameters:
-      gain: 0.0
-      inverted: false
-      mute: false
+    parameters: { gain: 0.0, inverted: false, mute: false }
 
 mixers:
   master_gain:
-    channels:
-      in: 2
-      out: 2
+    channels: { in: 2, out: 2 }
     mapping:
       - dest: 0
-        sources:
-          - channel: 0
-            gain: 0
-            inverted: false
+        sources: [{ channel: 0, gain: 0, inverted: false }]
       - dest: 1
-        sources:
-          - channel: 1
-            gain: 0
-            inverted: false
+        sources: [{ channel: 1, gain: 0, inverted: false }]
 
 pipeline:
   - type: Mixer

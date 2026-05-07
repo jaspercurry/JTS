@@ -36,7 +36,7 @@ devices:
     type: AsyncSinc
     profile: Balanced
   capture:
-    # Capture from the shared dsnoop on the moOde→camilla loopback
+    # Capture from the shared dsnoop on the renderer→camilla loopback
     # (pcm.jasper_capture, defined in /root/.asoundrc). The main
     # jasper-camilla also captures from this same dsnoop — dsnoop
     # gives each reader an independent copy.

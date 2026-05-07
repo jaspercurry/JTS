@@ -1,94 +1,41 @@
-# /root/.asoundrc — installed by deploy/install.sh.
+# /root/.asoundrc — installed by deploy/install.sh with
+# __DONGLE_CARD__ substituted by the detected USB-C dongle name.
 #
-# Topology: capture-side fan-out for hardware AEC via dsnoop.
+# Why this file exists:
+#   - jasper-voice's TTS needs a path to the speakers that's separate
+#     from the CamillaDSP music chain. Without a shared destination,
+#     TTS would have to either go through the loopback (mixing with
+#     music in unhelpful ways) or directly to the dongle (locked
+#     while CamillaDSP holds it).
+#   - dmix (`jasper_out`) is that shared destination: CamillaDSP's
+#     processed music + jasper-voice's TTS both write here; dmix sums
+#     them sample-wise; one stream goes to the dongle.
 #
-#   moOde renderers (MPD/shairport/librespot/bluealsa)
-#     │  via pcm._audioout (zz-jts-loopback.conf hijack)
-#     ▼
-#   hw:Loopback,0,0  (snd-aloop, sub0 — single writer)
-#     │
-#     ▼
-#   hw:Loopback,1,0  (capture)
-#     │
-#     ▼
-#   pcm.jasper_capture  (type dsnoop — capture-side fan-out:
-#                        multiple readers share this single
-#                        capture device)
-#     │
-#     ├──► reader A: jasper-camilla
-#     │      - master_gain ducking
-#     │      - flat passthrough filter
-#     │      - playback → pcm.jasper_out → Apple dongle
-#     │      → audible path (speakers)
-#     │
-#     └──► reader B: jasper-aec-bridge
-#            - AsyncSinc resample 48 → 16 kHz
-#            - L+R → mono on left
-#            - playback → hw:Array (XVF3800 USB-IN)
-#            → XVF chip's hardware-AEC reference
+# Topology:
 #
-# Why dsnoop instead of dmix-on-playback or multi:
-#  - dsnoop is the capture-side analog of dmix (multiple readers
-#    share one capture device). Built-in ALSA primitive, well
-#    tested.
-#  - Multi-writer on playback (multi → 2x[hw or dmix]) was tested
-#    and silently dropped writes to slaves beyond the first —
-#    appl_ptr on sub1/sub2 advanced but the data was zero on the
-#    capture side. Switching the fan-out to the capture side
-#    sidesteps multi entirely.
-#  - With this shape, jasper-camilla and jasper-aec-bridge each
-#    open `pcm.jasper_capture` and get an independent copy of the
-#    same audio, both clocked off the snd-aloop substream — no
-#    drift between them.
+#   renderers (librespot, shairport-sync, bluealsa-aplay)
+#     → hw:Loopback,0,0  (snd-aloop playback)
+#                   │
+#                   ▼ (loop)
+#         hw:Loopback,1,0  (snd-aloop capture)
+#                   │
+#                   ▼ (plughw, rate-converts)
+#               jasper-camilla (CamillaDSP)
+#                   │
+#                   ▼ (writes to dmix below)
+#         pcm.jasper_out  ─── dmix ───┐
+#                                     │
+#         jasper-voice TTS  ──────────┤  (also writes to dmix)
+#                                     │
+#                                     ▼
+#                            hw:CARD=__DONGLE_CARD__,DEV=0
+#                                  Apple USB-C dongle → speakers
 #
-# pcm.jasper_out is now JUST the dongle dmix — a single
-# destination since there's no fan-out needed at the playback
-# side. Multiple writers (jasper-camilla music + jasper-voice TTS)
-# both write to it; dmix sums them sample-wise.
-#
-# Why the dongle is the speaker, not the chip's onboard DAC:
-#  Speakers are physically wired to the Apple dongle. The XVF3800
-#  has its own onboard DAC (AIC3104 → 3.5mm jack / JST connector)
-#  but its analog output is unused — nothing connected. The chip
-#  happily drives a disconnected output; only the AEC reference
-#  signal path matters for our purposes.
-#
-# moOde owns /etc/asound.conf, conf.d/_audioout.conf, etc.; we own
-# /root/.asoundrc and /etc/alsa/conf.d/zz-jts-loopback.conf only.
+# When the AEC bridge is enabled (see CLAUDE.md "Acoustic echo
+# cancellation"), this file needs an additional `pcm.jasper_capture`
+# dsnoop block so CamillaDSP and the AEC bridge can share the
+# loopback capture side.
 
-# Capture-side fan-out: shared snoop over the moOde→camilla
-# loopback. Both jasper-camilla and jasper-aec-bridge capture
-# from this device, each getting an independent stream.
-#
-# Wrapped in `type plug` so each reader can request its own format
-# (jasper-camilla wants S32_LE, jasper-aec-bridge wants S16_LE) —
-# plug converts on each side, dsnoop's own slave is fixed to S16_LE
-# matching what moOde's MPD writes at (48 kHz, 16-bit per
-# BRINGUP.md SoX resampling settings).
-pcm.jasper_capture {
-    type plug
-    slave.pcm {
-        type dsnoop
-        ipc_key 7782
-        ipc_perm 0666
-        slave {
-            pcm "hw:CARD=Loopback,DEV=1,SUBDEV=0"
-            rate 48000
-            channels 2
-            format S16_LE
-            period_size 1024
-            buffer_size 4096
-        }
-        bindings {
-            0 0
-            1 1
-        }
-    }
-}
-
-# Dmix on the Apple USB-C dongle. Single audible destination.
-# Two writers (jasper-camilla music + jasper-voice TTS) — dmix
-# sums them sample-wise. 48 kHz is the dongle's native rate.
 pcm.jasper_out {
     type dmix
     ipc_key 7777
