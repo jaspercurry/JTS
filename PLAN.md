@@ -271,6 +271,34 @@ The v1 architecture decisions that protect this sequence:
 - **48 kHz everywhere** keeps resampling out of the hot path now and through Snapcast later.
 - **Systemd-managed services in `/opt/jasper`** keep the install survivable across moOde updates, so v4's NM swap is the only risky migration on the horizon.
 
+### Configuration web view (post-v1, no specific version yet)
+
+Add a setup web view at `https://<host>.local/setup` (or wherever fits
+alongside the existing `/spotify` flow served by `jasper-web`) that
+lets the speaker's owner — without SSHing in — configure:
+
+- **Location** for weather (`JASPER_DEFAULT_LOCATION`, e.g. "Sunset
+  Park, Brooklyn" — needs to be specific enough that the geocoder
+  doesn't land in the wrong "Sunset Park" in another state)
+- **Weather units** (`JASPER_WEATHER_UNITS`: celsius/fahrenheit)
+- **Subway** (NYC-specific): `JASPER_SUBWAY_STATION_ID` (GTFS stop
+  ID), `JASPER_SUBWAY_LINES`, `JASPER_SUBWAY_DEFAULT_DIRECTION`
+- **Mic device** (`JASPER_MIC_DEVICE` — default `Array` for
+  XVF3800; would need to be different for other USB mics)
+- **Spotify Connect device name** (cosmetic — what shows in the
+  Spotify app's device picker)
+- **Daily spend cap** in dollars
+
+Same pattern as the existing Spotify OAuth web flow: jasper-web
+serves the form, validates input, writes to `/etc/jasper/jasper.env`,
+issues `systemctl reload jasper-voice` (or restart). Authentication
+is whatever the Spotify flow uses (or none for home-LAN-only
+deployments).
+
+This is exactly the kind of thing an end-user shouldn't have to
+SSH for. Not blocking v1 ship; flagged as the next polish piece
+after voice end-to-end is solid on the debian backend.
+
 ---
 
 ## Risks worth re-flagging before starting
