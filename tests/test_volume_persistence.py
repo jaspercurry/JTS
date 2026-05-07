@@ -11,6 +11,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -238,9 +239,13 @@ def test_partial_update_preserves_other_field(tmp_path):
     versa. Both fields are independent state, written as one record."""
     p = VolumePersistence(_path(tmp_path))
     p.save_now(-22.0)
-    # Wait debounce by using save_now which always writes.
-    p.maybe_save_anchor(-25.0)  # may not write (debounce)
-    p._last_written_anchor_at_mono = 0  # type: ignore[attr-defined]
+    p.maybe_save_anchor(-25.0)  # writes (first anchor call, no debounce)
+    # Simulate enough time having passed to bypass debounce. Using a
+    # raw 0 doesn't work on platforms where time.monotonic() starts near
+    # zero at process start (macOS), since now-0 < DEBOUNCE_SEC.
+    p._last_written_anchor_at_mono = (  # type: ignore[attr-defined]
+        time.monotonic() - VolumePersistence.DEBOUNCE_SEC - 1
+    )
     p.maybe_save_anchor(-30.0)
     rec = p.load()
     assert rec is not None
