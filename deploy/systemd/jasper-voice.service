@@ -7,6 +7,12 @@ Requires=jasper-camilla.service
 [Service]
 Type=simple
 EnvironmentFile=/etc/jasper/jasper.env
+# Spotify CLIENT_ID/SECRET written by the setup wizard at
+# https://jts.local/spotify. Optional — leading `-` lets the
+# daemon boot fine when this file doesn't exist yet (the
+# spotify_play tool then short-circuits to a "visit
+# JASPER_SPOTIFY_SETUP_URL" error which Gemini speaks).
+EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 Restart=on-failure
