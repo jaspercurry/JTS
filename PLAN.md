@@ -285,6 +285,16 @@ graduating from "best we can do for now" to a complete UX.
 
 Settings the dashboard should expose — without SSHing in:
 
+- **Per-account Spotify playlists** ✅ landed 2026-05-07. Each Spotify
+  account in `/spotify` has a "Custom playlists" section: paste a
+  `https://open.spotify.com/playlist/...` URL or `spotify:playlist:`
+  URI, the server fetches the canonical name, persists `uri → name`
+  on the account, and the spotify_play tool fuzzy-matches against it.
+  Motivated by the 2026 Spotify Web API hiding algorithmic personalised
+  playlists (Discover Weekly, Daily Mix, Release Radar, Daylist) from
+  both `current_user_playlists` and catalog search owner-filter — see
+  [docs/HANDOFF-spotify-personal-playlists.md](docs/HANDOFF-spotify-personal-playlists.md)
+  if it ever gets written. First piece of this web-view work to ship.
 - **Location** for weather (`JASPER_DEFAULT_LOCATION`, e.g. "Sunset
   Park, Brooklyn" — needs to be specific enough that the geocoder
   doesn't land in the wrong "Sunset Park" in another state)

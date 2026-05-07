@@ -126,3 +126,102 @@ def test_legacy_migration_skipped_when_no_legacy_cache():
     finally:
         if os.path.exists(reg_path):
             os.unlink(reg_path)
+
+
+# ----- per-account playlist config (the web-UI map) -----
+
+
+def test_playlists_field_round_trip():
+    """Account.playlists round-trips through save/load."""
+    path = _tmp_registry()
+    try:
+        r = Registry(path=path)
+        r.add_or_update(Account(name="jasper"), make_default=True)
+        r.add_playlist("jasper", "spotify:playlist:abc", "Discover Weekly")
+        r.add_playlist("jasper", "spotify:playlist:def", "Daylist")
+        r.save()
+
+        r2 = Registry.load(path)
+        a = r2.get("jasper")
+        assert a is not None
+        assert a.playlists == {
+            "spotify:playlist:abc": "Discover Weekly",
+            "spotify:playlist:def": "Daylist",
+        }
+    finally:
+        for f in (path, path + ".tmp"):
+            if os.path.exists(f):
+                os.unlink(f)
+
+
+def test_load_tolerates_missing_playlists_field():
+    """Older registry JSON has no `playlists` key. Load must not choke
+    — running installs upgraded in place shouldn't have to rewrite the
+    JSON before they boot."""
+    path = _tmp_registry()
+    try:
+        Path(path).write_text(json.dumps({
+            "version": 1,
+            "default": "jasper",
+            "accounts": [{
+                "name": "jasper",
+                "cache_path": "/tmp/jasper.json",
+            }],
+        }))
+        r = Registry.load(path)
+        a = r.get("jasper")
+        assert a is not None
+        assert a.playlists == {}
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_load_tolerates_garbage_playlist_entries():
+    """Defensive: hand-edited JSON with non-string keys/values is filtered
+    out rather than crashing the registry load."""
+    path = _tmp_registry()
+    try:
+        Path(path).write_text(json.dumps({
+            "version": 1,
+            "default": "jasper",
+            "accounts": [{
+                "name": "jasper",
+                "cache_path": "/tmp/jasper.json",
+                "playlists": {
+                    "spotify:playlist:abc": "Good",
+                    "spotify:playlist:bad": 123,    # non-string value
+                    "no_uri": "Also bad",            # we keep this — validation
+                                                      # is best-effort, not strict
+                },
+            }],
+        }))
+        r = Registry.load(path)
+        a = r.get("jasper")
+        assert a is not None
+        assert "spotify:playlist:abc" in a.playlists
+        assert "spotify:playlist:bad" not in a.playlists  # non-string filtered
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_remove_playlist_returns_false_for_unknown_account():
+    r = Registry()
+    r.add_or_update(Account(name="jasper"), make_default=True)
+    assert r.remove_playlist("alice", "spotify:playlist:abc") is False
+    assert r.remove_playlist("jasper", "spotify:playlist:not-there") is False
+
+
+def test_add_or_update_preserves_existing_playlists():
+    """A subsequent add_or_update with an empty playlists field shouldn't
+    nuke previously-configured entries — the OAuth re-flow path passes
+    a freshly-constructed Account whose default playlists field is {}."""
+    r = Registry()
+    r.add_or_update(Account(name="jasper"), make_default=True)
+    r.add_playlist("jasper", "spotify:playlist:abc", "Discover Weekly")
+    # Second add_or_update (e.g. on re-OAuth) with no playlists field set:
+    r.add_or_update(Account(name="jasper", cache_path="/new/path.json"))
+    a = r.get("jasper")
+    assert a.cache_path == "/new/path.json"
+    assert a.playlists == {"spotify:playlist:abc": "Discover Weekly"}

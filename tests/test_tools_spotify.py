@@ -110,9 +110,12 @@ class FakeSpotify:
 
 
 class FakeAccountClient:
-    def __init__(self, name: str, sp) -> None:
+    def __init__(self, name: str, sp, playlists=None) -> None:
         self.account = MagicMock()
         self.account.name = name
+        # Real dict so `dict(ac.account.playlists)` round-trips. Without
+        # this, MagicMock auto-creates a child mock and dict() barfs.
+        self.account.playlists = playlists if playlists is not None else {}
         self.sp = sp
 
 
@@ -631,6 +634,143 @@ def test_playlist_kind_returns_clarification_on_no_match():
 
     assert "error" in result
     assert "didn't understand" in result["error"]
+
+
+# ============================================================
+# Configured (web-UI-pinned) playlist URIs
+#
+# These cover the per-account `playlists: dict[str, str]` map populated
+# via the web UI. The motivating case: Spotify hides algorithmic
+# personalised playlists (Discover Weekly, Daily Mix N, Release Radar)
+# from `current_user_playlists` AND from owner-filtered catalog search.
+# The user pins their personal URIs by hand so name lookup hits them.
+# ============================================================
+
+
+def test_configured_playlist_resolves_when_library_misses():
+    """User has manually pinned 'Discover Weekly' for their account.
+    Library search returns nothing useful. The configured URI wins."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        library=[("spotify:playlist:other", "Workout Mix")],
+    )
+    active = FakeAccountClient(
+        "jasper", sp,
+        playlists={"spotify:playlist:dw_jasper": "Discover Weekly"},
+    )
+    router = FakeRouter(active_account=active)
+    moode = FakeMoode(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    result = asyncio.run(
+        tools["spotify_play"](query="Discover Weekly", kind="playlist")
+    )
+
+    assert result.get("ok") is True
+    assert result.get("playing") == "Discover Weekly"
+    sp.start_playback.assert_called_once()
+    _, kwargs = sp.start_playback.call_args
+    assert kwargs.get("context_uri") == "spotify:playlist:dw_jasper"
+
+
+def test_configured_playlist_beats_same_named_library_entry():
+    """If both the library and the configured map have a 'Discover Weekly'
+    (e.g. a user-coined copy + the real pinned URI), the configured one
+    wins on ties via stable sort. The user paid the cost of configuring
+    it; that's a vote of confidence."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        library=[("spotify:playlist:user_copy", "Discover Weekly")],
+    )
+    active = FakeAccountClient(
+        "jasper", sp,
+        playlists={"spotify:playlist:real_dw": "Discover Weekly"},
+    )
+    router = FakeRouter(active_account=active)
+    moode = FakeMoode(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    result = asyncio.run(
+        tools["spotify_play"](query="Discover Weekly", kind="playlist")
+    )
+
+    assert result.get("ok") is True
+    sp.start_playback.assert_called_once()
+    _, kwargs = sp.start_playback.call_args
+    assert kwargs.get("context_uri") == "spotify:playlist:real_dw"
+
+
+def test_configured_playlist_picks_up_voice_to_text_mishears():
+    """'Disco verbally' for 'Discover Weekly' — fuzzy match against the
+    configured name should still catch it via the loose playlist
+    threshold + best-by-far rule. This is the same tolerance the library
+    path enjoys; configured entries shouldn't be stricter."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        library=[],
+    )
+    active = FakeAccountClient(
+        "jasper", sp,
+        playlists={
+            "spotify:playlist:dw": "Discover Weekly",
+            "spotify:playlist:rr": "Release Radar",
+        },
+    )
+    router = FakeRouter(active_account=active)
+    moode = FakeMoode(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    result = asyncio.run(
+        tools["spotify_play"](query="Discover Weekend", kind="playlist")
+    )
+
+    assert result.get("ok") is True
+    assert result.get("playing") == "Discover Weekly"
+
+
+def test_configured_playlist_works_in_auto_kind():
+    """User says 'play Discover Weekly' without the word 'playlist'.
+    Auto path fans out artist + track + album + library; the
+    configured map flows in via the library function. With no
+    artist/track/album hits, the playlist match should win on score."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        library=[],
+        search_results={},  # no artist/track/album hits for 'Discover Weekly'
+    )
+    active = FakeAccountClient(
+        "jasper", sp,
+        playlists={"spotify:playlist:dw": "Discover Weekly"},
+    )
+    router = FakeRouter(active_account=active)
+    moode = FakeMoode(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    result = asyncio.run(tools["spotify_play"](query="Discover Weekly"))  # auto
+
+    assert result.get("ok") is True
+    assert result.get("kind") == "playlist"
+    assert result.get("playing") == "Discover Weekly"
+
+
+def test_no_configured_playlist_does_not_break_existing_paths():
+    """Defensive: an account with no configured playlists (the common
+    case) behaves exactly like before — library lookup only."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        library=[("spotify:playlist:jaspany", "Jaspany Jams")],
+    )
+    active = FakeAccountClient("jasper", sp)  # no playlists kwarg → default {}
+    router = FakeRouter(active_account=active)
+    moode = FakeMoode(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    result = asyncio.run(
+        tools["spotify_play"](query="Jaspany Jams", kind="playlist")
+    )
+
+    assert result.get("ok") is True
+    assert result.get("playing") == "Jaspany Jams"
 
 
 # ============================================================
