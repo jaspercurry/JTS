@@ -365,3 +365,89 @@ async def test_user_change_bumps_last_used_at(tmp_path):
     # Should be very recent (within last 5 seconds).
     age = (datetime.now(timezone.utc) - rec.last_used_at).total_seconds()
     assert 0 <= age < 5
+
+
+# ---------- DACP-aware AirPlay dispatch -------------------------------------
+# When AirPlay 2 senders (iOS 17+) connect, shairport's DACP back-channel
+# is typically unavailable. SetAirplayVolume succeeds silently in that
+# case, so the bug we're guarding against is "log says we set it; nothing
+# actually happened." _set_airplay must skip the dispatch and log the
+# truth. We don't fall back to attenuating Camilla — that'd double-
+# attenuate against the iPhone slider (already in the chain) and the
+# cap-lift transient when shairport's high_volume_threshold expires
+# would pop the volume up without warning.
+
+
+async def test_set_airplay_skips_dispatch_when_dacp_unavailable(tmp_path, monkeypatch):
+    """Real _set_airplay path: DACP false → no busctl call, level not
+    stamped (so a subsequent observer reading isn't mistaken for our
+    own write)."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    import jasper.volume_coordinator as vc_mod
+    busctl_calls: list = []
+
+    async def fake_dacp() -> bool:
+        return False
+
+    async def fake_call(*args, **kwargs):
+        busctl_calls.append((args, kwargs))
+        return True
+
+    monkeypatch.setattr(vc_mod, "_airplay_dacp_available", fake_dacp)
+    monkeypatch.setattr(vc_mod, "_busctl_call_method", fake_call)
+
+    await coord._set_airplay(75)
+
+    assert busctl_calls == [], "no busctl call should fire when DACP is false"
+    # Outbound stamp should not have been recorded — otherwise the
+    # observer's echo guard would suppress the next genuine iPhone-
+    # side change.
+    assert Source.AIRPLAY not in coord._last_outbound
+
+
+async def test_set_airplay_dispatches_when_dacp_available(tmp_path, monkeypatch):
+    """Real _set_airplay path: DACP true → busctl SetAirplayVolume
+    fires with the right interface + signature. Stamps outbound so
+    the echo guard catches the next observer reading."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    import jasper.volume_coordinator as vc_mod
+    busctl_calls: list = []
+
+    async def fake_dacp() -> bool:
+        return True
+
+    async def fake_call(bus_name, object_path, interface, method, signature, value, **kwargs):
+        busctl_calls.append({
+            "bus_name": bus_name, "object_path": object_path,
+            "interface": interface, "method": method,
+            "signature": signature, "value": value,
+        })
+        return True
+
+    monkeypatch.setattr(vc_mod, "_airplay_dacp_available", fake_dacp)
+    monkeypatch.setattr(vc_mod, "_busctl_call_method", fake_call)
+
+    await coord._set_airplay(75)
+
+    assert len(busctl_calls) == 1
+    call = busctl_calls[0]
+    assert call["bus_name"] == "org.gnome.ShairportSync"
+    assert call["interface"] == "org.gnome.ShairportSync.RemoteControl"
+    assert call["method"] == "SetAirplayVolume"
+    assert call["signature"] == "d"
+    # 75% should map to roughly -7.5 dB on the airplay -30..0 scale.
+    db = float(call["value"])
+    assert -10 < db < -5
+    assert Source.AIRPLAY in coord._last_outbound

@@ -22,6 +22,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "discovery.h"
 #include "display.h"
 #include "scenes.h"
 
@@ -109,6 +110,11 @@ static ImprovWiFi g_improv(&Serial);
 static WiFiUDP g_logUdp;
 static IPAddress g_logTarget;  // (0,0,0,0) means "not yet resolved"
 
+// Resolved jasper-control endpoint (mDNS-SD or fallback). Re-resolved
+// on every WiFi-up. The Pi's hostname doesn't matter — whichever Pi
+// advertises `_jasper-control._tcp` wins.
+static ControlEndpoint g_control;
+
 // Fire-and-forget log helper. Always prints to USB-CDC; if WiFi is up
 // and we've resolved the Pi's IP, also sends one UDP datagram per call
 // to the jasper-control dial-log listener. UDP loss is acceptable —
@@ -139,24 +145,22 @@ static void startSntp() {
     configTzTime(DIAL_TZ, "pool.ntp.org", "time.cloudflare.com", "time.google.com");
 }
 
-// Resolve the Pi's IP for UDP logging. Called whenever WiFi comes up.
-// Cached in g_logTarget; cleared on disconnect so the next reconnect
-// re-resolves (the Pi may have a new DHCP lease).
-static void resolveLogTarget() {
-    g_logTarget = MDNS.queryHost(JASPER_HOST);
-    if ((uint32_t)g_logTarget != 0) {
-        Serial.printf("[log] resolved %s.local → %s\n",
-                      JASPER_HOST, g_logTarget.toString().c_str());
-    } else {
-        // Fall back to standard DNS resolution (router DNS often answers
-        // for .local hostnames if mDNS is blocked).
-        if (WiFi.hostByName(JASPER_HOST, g_logTarget)) {
-            Serial.printf("[log] DNS-resolved %s → %s\n",
-                          JASPER_HOST, g_logTarget.toString().c_str());
-        } else {
-            Serial.printf("[log] could not resolve %s — UDP logs disabled\n",
-                          JASPER_HOST);
-        }
+// Resolve jasper-control via mDNS-SD (preferred) or hostname fallback.
+// Called on every WiFi-up. Caches into g_control + g_logTarget so the
+// hot paths (postJson, dlog) don't redo discovery per request. The Pi
+// advertises `_jasper-control._tcp` via avahi; whoever answers wins.
+static void resolveControlEndpoint() {
+    g_control = discoverControlEndpoint();
+    g_logTarget = g_control.ip;
+    Serial.printf(
+        "[discovery] jasper-control %s at %s:%u\n",
+        g_control.fromMdns ? "via mDNS-SD" : "via fallback hostname",
+        g_control.hostOrIp.c_str(), (unsigned)g_control.port
+    );
+    if ((uint32_t)g_logTarget == 0) {
+        Serial.println(
+            "[discovery] no IP resolved — UDP logs disabled until reconnect"
+        );
     }
 }
 
@@ -166,12 +170,13 @@ static void resolveLogTarget() {
 static volatile bool g_lastPostOk = true;
 
 static bool postJson(const char *path, const char *body) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || g_control.hostOrIp.length() == 0) {
         g_lastPostOk = false;
         return false;
     }
     HTTPClient http;
-    String url = String("http://") + JASPER_HOST + ":" + String(JASPER_PORT) + path;
+    String url = String("http://") + g_control.hostOrIp +
+                 ":" + String(g_control.port) + path;
     if (!http.begin(url)) {
         g_lastPostOk = false;
         return false;
@@ -192,12 +197,13 @@ static bool postJson(const char *path, const char *body) {
 static int g_lastVolumePercent = -1;
 
 static bool postVolumeAdjust(float deltaDb) {
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED || g_control.hostOrIp.length() == 0) {
         g_lastPostOk = false;
         return false;
     }
     HTTPClient http;
-    String url = String("http://") + JASPER_HOST + ":" + String(JASPER_PORT) + "/volume/adjust";
+    String url = String("http://") + g_control.hostOrIp +
+                 ":" + String(g_control.port) + "/volume/adjust";
     if (!http.begin(url)) {
         g_lastPostOk = false;
         return false;
@@ -264,7 +270,7 @@ static void onImprovConnected(const char *ssid, const char *password) {
     g_prefs.putString("ssid", ssid);
     g_prefs.putString("pass", password);
     MDNS.begin(MDNS_HOSTNAME);
-    resolveLogTarget();
+    resolveControlEndpoint();
     startSntp();
     scenes_set_status("provisioned");
     g_status = Status::ONLINE;
@@ -356,7 +362,7 @@ void setup() {
     if (tryConnectStored()) {
         g_status = Status::ONLINE;
         MDNS.begin(MDNS_HOSTNAME);
-        resolveLogTarget();
+        resolveControlEndpoint();
         startSntp();
         scenes_set_status("online");
         dlog("[boot] WiFi connected from stored creds, ip=%s",
@@ -486,7 +492,7 @@ void loop() {
             // Late mDNS resolve: if WiFi came up via reconnect after
             // setup() picked the no-creds path, the log target won't
             // be set yet. Resolve once we see WL_CONNECTED.
-            if ((uint32_t)g_logTarget == 0) resolveLogTarget();
+            if ((uint32_t)g_logTarget == 0) resolveControlEndpoint();
             g_status = g_lastPostOk ? Status::ONLINE : Status::HTTP_ERROR;
         }
     }

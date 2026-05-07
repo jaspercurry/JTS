@@ -12,6 +12,7 @@ Returns 0 if all critical checks pass, 1 otherwise.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -853,6 +854,14 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         check_aec_output_card,
         check_xvf_firmware_6ch,
+        # Rotary dial: avahi advertising the control service so the
+        # dial finds us via mDNS-SD, plus a heartbeat from any dial
+        # currently on the network.
+        check_avahi_jasper_control,
+        check_dial_heartbeat,
+        # Catch deployment drift on the shairport-sync.conf alsa block —
+        # raw `hw:Loopback` silently breaks AirPlay (the d6c946c bug).
+        check_shairport_sync_loopback_plughw,
     ]
     results = [c() for c in sync_checks]
     results.append(await check_camilla_websocket(cfg))
@@ -862,6 +871,141 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # local files / radio); skip the check to avoid noise.
         results.append(await check_mpd(cfg))
     return results
+
+
+def check_shairport_sync_loopback_plughw() -> CheckResult:
+    """Verify the deployed shairport-sync.conf uses `plughw:Loopback,0,0`
+    (not raw `hw:Loopback,0,0`). The Loopback substream is locked at
+    48 kHz by CamillaDSP, but AirPlay is natively 44.1 kHz; raw `hw:`
+    fails the rate negotiation and silently rejects every iPhone /
+    Mac connection ("device shows up but won't connect"). plughw lets
+    ALSA's plug layer resample on the way in.
+
+    This caught us once when the fix in commit `d6c946c` lived on a
+    feature branch and never made it to main. The check runs against
+    the deployed file (not the repo) so it catches both sources of
+    drift: branch that wasn't merged, and manual on-Pi edits."""
+    label = "shairport-sync.conf: plughw:Loopback"
+    p = Path("/etc/shairport-sync.conf")
+    if not p.exists():
+        return CheckResult(
+            label, "warn",
+            f"{p} missing — shairport-sync may not be installed (debian "
+            f"backend) or this is a moOde-only system.",
+        )
+    try:
+        text = p.read_text()
+    except OSError as e:
+        return CheckResult(label, "warn", f"can't read {p}: {e}")
+    # Look for an active (non-comment) output_device line. Comments in
+    # shairport-sync.conf use //; libconfig syntax. We tolerate the
+    # value being quoted or unquoted, single or double quotes.
+    active_lines = [
+        ln.strip() for ln in text.splitlines()
+        if ln.strip().startswith("output_device")
+    ]
+    if not active_lines:
+        return CheckResult(
+            label, "warn",
+            "no `output_device` directive found in alsa block; relying "
+            "on shairport-sync's default (probably wrong).",
+        )
+    line = active_lines[0]
+    if 'plughw:Loopback' in line:
+        return CheckResult(
+            label, "ok",
+            "plughw:Loopback,0,0 (correct — ALSA plug layer resamples "
+            "44.1k AirPlay → 48k Loopback)",
+        )
+    if '"hw:Loopback' in line or "'hw:Loopback" in line:
+        return CheckResult(
+            label, "fail",
+            "output_device uses raw `hw:Loopback,0,0` — AirPlay sessions "
+            "will be silently rejected because Loopback is locked at "
+            "48 kHz and shairport requests 44.1 kHz. Symptom: iPhone / "
+            "Mac sees JTS in the picker but can't establish a session. "
+            "Fix: edit /etc/shairport-sync.conf, change `hw:` → `plughw:`, "
+            "`systemctl restart shairport-sync`. The fix in source is "
+            "deploy/debian-stack/etc/shairport-sync.conf (commit d6c946c).",
+        )
+    return CheckResult(
+        label, "warn",
+        f"output_device value not recognized: {line!r}",
+    )
+
+
+def check_avahi_jasper_control() -> CheckResult:
+    """Verify avahi is advertising `_jasper-control._tcp` so the dial
+    can find us via mDNS-SD. avahi-browse with -t (terminate after a
+    few seconds) keeps this check fast even if no service is found."""
+    label = "avahi: _jasper-control._tcp"
+    bin_path = shutil.which("avahi-browse")
+    if bin_path is None:
+        return CheckResult(
+            label, "warn",
+            "avahi-browse missing (apt install avahi-utils) — can't "
+            "verify the service is being advertised. Dial may still "
+            "find us if avahi-daemon is publishing it.",
+        )
+    proc = _run([bin_path, "-rt", "_jasper-control._tcp"], timeout=4.0)
+    if proc.returncode != 0:
+        return CheckResult(
+            label, "fail",
+            f"avahi-browse exited {proc.returncode}. Is avahi-daemon "
+            f"running? (`systemctl status avahi-daemon`).",
+        )
+    if "_jasper-control._tcp" not in proc.stdout:
+        return CheckResult(
+            label, "fail",
+            "service not being advertised. Check that "
+            "/etc/avahi/services/jasper-control.service exists and "
+            "avahi-daemon was reloaded — re-run install.sh, or "
+            "`sudo systemctl reload avahi-daemon`.",
+        )
+    return CheckResult(
+        label, "ok",
+        "advertised — dials can auto-discover via mDNS-SD",
+    )
+
+
+def check_dial_heartbeat() -> CheckResult:
+    """Hit jasper-control's /dial/status — if a dial is on the network
+    and configured to talk to us, it'll have sent at least one UDP log
+    line during boot. Stale heartbeat is a warning (dial offline,
+    asleep, or pointing at a different Pi)."""
+    import urllib.request
+    label = "dial heartbeat"
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8780/dial/status", timeout=3,
+        ) as r:
+            data = json.loads(r.read())
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(
+            label, "warn",
+            f"jasper-control /dial/status unreachable: {e}. "
+            f"`systemctl status jasper-control`.",
+        )
+    last_seen_at = data.get("last_seen_at")
+    if last_seen_at is None:
+        return CheckResult(
+            label, "warn",
+            "no dial UDP log received since jasper-control started. "
+            "Either no dial is on the network, the dial is on a "
+            "different Wi-Fi, or it can't resolve us via mDNS-SD.",
+        )
+    age = data.get("age_seconds")
+    ip = data.get("last_seen_ip")
+    if age is not None and age > 300:
+        return CheckResult(
+            label, "warn",
+            f"last dial heartbeat from {ip} was {int(age)}s ago "
+            f"(>5 min). Dial may have lost Wi-Fi or been unplugged.",
+        )
+    return CheckResult(
+        label, "ok",
+        f"{ip} talking to us {int(age) if age else '<1'}s ago",
+    )
 
 
 def main() -> None:

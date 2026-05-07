@@ -13,10 +13,16 @@
 #define RGB_LED_PIN    48
 #define NUM_LEDS       5
 
-// jasper-control is reachable at jasper.local:8780 over HTTP. mDNS
+// jasper-control is reachable at jts.local:8780 over HTTP. mDNS
 // resolves the hostname; if your network blocks mDNS, override here.
 // Match JASPER_CONTROL_PORT in /etc/jasper/jasper.env on the Pi.
-#define JASPER_HOST    "jasper.local"
+//
+// Was "jasper.local" originally; moved to "jts.local" with the
+// debian-stack migration (jasper.local hosts the legacy moOde build,
+// jts.local is the no-moOde Pi). If you ever swap hardware again,
+// either change this and re-flash, or graduate to NVS-stored host
+// (see Option B in the migration notes).
+#define JASPER_HOST    "jts.local"
 #define JASPER_PORT    8780
 
 // UDP log target — see jasper-control's dial-log listener. Diagnostic

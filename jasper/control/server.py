@@ -35,12 +35,25 @@ import logging
 import os
 import socket
 import threading
+import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
+
+
+# Most-recent dial heartbeat. Updated by the UDP log listener every
+# time a datagram arrives; read by GET /dial/status. Kept module-level
+# so jasper-doctor can ask "is a dial actually talking to us?" without
+# parsing the journal. Lock isn't needed — Python dict assignment is
+# atomic and a stale read is harmless for a heartbeat.
+_dial_heartbeat: dict[str, Any] = {
+    "last_seen_at": None,    # float epoch seconds, or None
+    "last_seen_ip": None,    # str IPv4, or None
+    "last_message": None,    # str (last UDP payload), or None
+}
 
 
 # Same range jasper.tools.audio uses for the voice-driven volume tools.
@@ -336,6 +349,18 @@ def _make_handler(
                     return
                 self._send_json(self._volume_payload(percent))
                 return
+            if self.path == "/dial/status":
+                # Heartbeat snapshot — used by jasper-doctor's
+                # "is the dial actually talking to us?" check.
+                snap = dict(_dial_heartbeat)
+                if snap["last_seen_at"] is not None:
+                    snap["age_seconds"] = round(
+                        time.time() - snap["last_seen_at"], 1,
+                    )
+                else:
+                    snap["age_seconds"] = None
+                self._send_json(snap)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -512,6 +537,10 @@ def run_dial_log_listener(host: str, port: int) -> threading.Thread:
                 msg = repr(data)
             # Tag with sender IP so multi-dial setups don't get confused.
             dial_log.info("[%s] %s", addr[0], msg)
+            # Heartbeat for jasper-doctor's "is the dial talking?" check.
+            _dial_heartbeat["last_seen_at"] = time.time()
+            _dial_heartbeat["last_seen_ip"] = addr[0]
+            _dial_heartbeat["last_message"] = msg
 
     t = threading.Thread(target=_loop, name="dial-log-listener", daemon=True)
     t.start()

@@ -636,6 +636,24 @@ install_nginx_proxy() {
     fi
 }
 
+install_avahi_jasper_control() {
+    # Advertise jasper-control over mDNS so the rotary dial can find
+    # us via service discovery instead of a hardcoded hostname. See
+    # deploy/avahi/jasper-control.service for the rationale and the
+    # firmware-side counterpart in firmware/dial/src/discovery.cpp.
+    install -d -m 0755 /etc/avahi/services
+    install -m 0644 \
+        "${REPO_DIR}/deploy/avahi/jasper-control.service" \
+        /etc/avahi/services/jasper-control.service
+    # Reload — avahi-daemon picks up new service files via inotify
+    # but a SIGHUP is more deterministic on first install. Best
+    # effort: avahi-daemon may not be running yet on a fresh image.
+    systemctl reload avahi-daemon 2>/dev/null \
+        || systemctl restart avahi-daemon 2>/dev/null \
+        || true
+    echo "  Advertised _jasper-control._tcp via avahi (port 8780)"
+}
+
 main() {
     require_root
     install_deps
@@ -646,6 +664,7 @@ main() {
     fi
     install_jasper
     install_systemd_units
+    install_avahi_jasper_control
     install_self_signed_cert
     if [[ "$BACKEND" == "moode" ]]; then
         install_nginx_proxy

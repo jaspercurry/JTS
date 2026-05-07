@@ -335,3 +335,39 @@ def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator)
     status, body = _post(f"{base}/session/start", None)
     assert status == 503
     assert "voice_daemon" in body["error"]
+
+
+# --- /dial/status (heartbeat) ---
+
+
+def test_dial_status_empty_when_no_dial_seen(server_with_coordinator):
+    """Fresh daemon, no UDP datagrams yet → all heartbeat fields null."""
+    import jasper.control.server as srv_mod
+    srv_mod._dial_heartbeat["last_seen_at"] = None
+    srv_mod._dial_heartbeat["last_seen_ip"] = None
+    srv_mod._dial_heartbeat["last_message"] = None
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/dial/status")
+    assert status == 200
+    assert body["last_seen_at"] is None
+    assert body["last_seen_ip"] is None
+    assert body["age_seconds"] is None
+
+
+def test_dial_status_reports_recent_heartbeat(server_with_coordinator):
+    """Simulate a UDP datagram by mutating the module heartbeat dict
+    (the listener does the same on each datagram). /dial/status should
+    then report a recent age."""
+    import time
+    import jasper.control.server as srv_mod
+    now = time.time()
+    srv_mod._dial_heartbeat["last_seen_at"] = now - 12.0
+    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST 2.00 dB OK"
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/dial/status")
+    assert status == 200
+    assert body["last_seen_ip"] == "192.168.1.89"
+    assert body["age_seconds"] >= 12.0
+    assert body["age_seconds"] < 30.0   # generous slack for slow CI
+    assert "encoder" in body["last_message"]

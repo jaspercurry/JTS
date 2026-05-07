@@ -1,0 +1,25 @@
+<?xml version="1.0" standalone='no'?>
+<!--
+  Advertise jasper-control over mDNS so the rotary dial can find the
+  Pi without hardcoding a hostname. The dial does
+    MDNS.queryService("jasper-control", "tcp")
+  at every WiFi-up and posts to whichever Pi answers; if no Pi
+  answers it falls back to the dial's compile-time JASPER_HOST.
+  This file lets us swap the Pi underneath the dial without
+  re-flashing firmware.
+
+  Survives Pi rename and IP change. avahi auto-substitutes %h
+  with the system hostname so the friendly name in the browse
+  output is informative.
+
+  Installed by deploy/install.sh into /etc/avahi/services/.
+  jasper-doctor's "avahi: _jasper-control._tcp" check confirms it.
+-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">JTS jasper-control on %h</name>
+  <service>
+    <type>_jasper-control._tcp</type>
+    <port>8780</port>
+  </service>
+</service-group>

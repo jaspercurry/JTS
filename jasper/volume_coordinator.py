@@ -525,6 +525,29 @@ class VolumeCoordinator:
     # ------------------------------------------------------------------
 
     async def _set_airplay(self, level: int) -> None:
+        # Skip the dispatch entirely when the AirPlay back-channel
+        # (DACP) is unavailable. SetAirplayVolume *succeeds* in that
+        # case but it's a silent no-op — the iPhone slider doesn't
+        # move, so the audio level doesn't change either. Logging
+        # "set: 50%" when nothing happened was the bug we hit on
+        # AirPlay 2 from iOS 17+. Now we tell the truth: the iPhone
+        # is the boss for its own audio path, and the dial is
+        # functionally a no-op until the user changes it on the phone
+        # (or switches to a controllable source).
+        #
+        # We deliberately DO NOT fall back to attenuating Camilla here
+        # — that would double-attenuate (the iPhone slider is already
+        # in the chain) and the cap-lift transient when shairport's
+        # high_volume_threshold expires would pop the volume up
+        # without warning. Better to do nothing and respect what the
+        # source is sending.
+        if not await _airplay_dacp_available():
+            logger.info(
+                "airplay volume dispatch skipped: DACP unavailable "
+                "(iPhone is the boss; dial twist won't move the "
+                "speaker until source changes to a controllable one)",
+            )
+            return
         db = listening_level_to_airplay_db(level)
         # AirplayVolume the property is read-only (emits-change for
         # observers). To change it, call the SetAirplayVolume METHOD
@@ -662,6 +685,55 @@ class VolumeCoordinator:
 # codebase; observers in volume_observers.py use dbus-next for live
 # subscriptions, but one-shot Set ops stay subprocess.
 # ----------------------------------------------------------------------
+
+async def _busctl_get_property(
+    bus_name: str,
+    object_path: str,
+    interface: str,
+    prop: str,
+    *,
+    bus: str = "--system",
+) -> str | None:
+    """Read a DBus property and return the stdout (busctl's pretty-printed
+    `<sig> <value>` line, e.g. `b true` or `d -15.0`). None on error.
+    Used to probe DACP availability before dispatching to AirPlay so we
+    don't silently no-op when the iPhone has no back-channel."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "busctl", bus, "get-property",
+            bus_name, object_path, interface, prop,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except (FileNotFoundError, asyncio.TimeoutError) as e:
+        logger.debug(
+            "busctl get-property %s.%s failed: %s", interface, prop, e,
+        )
+        return None
+    if proc.returncode != 0:
+        return None
+    return stdout.decode("utf-8", "replace").strip()
+
+
+async def _airplay_dacp_available() -> bool:
+    """True iff shairport's gnome RemoteControl reports `Available=true`,
+    i.e. the AirPlay sender exposes a DACP back-channel that lets us
+    push volume changes back to the iPhone/Mac slider.
+
+    On AirPlay 2 from iOS 17+ this is commonly false — Apple closed
+    the DACP path. When false, `SetAirplayVolume` succeeds silently
+    but the actual volume property doesn't change and nothing
+    propagates to the sender, so we have to skip the dispatch
+    entirely (and let the user's iPhone slider be the boss)."""
+    out = await _busctl_get_property(
+        "org.gnome.ShairportSync",
+        "/org/gnome/ShairportSync",
+        "org.gnome.ShairportSync.RemoteControl",
+        "Available",
+    )
+    return out is not None and "true" in out
+
 
 async def _busctl_set_property(
     bus_name: str,
