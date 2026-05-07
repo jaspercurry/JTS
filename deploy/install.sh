@@ -636,6 +636,24 @@ install_nginx_proxy() {
     fi
 }
 
+regenerate_audio_cues() {
+    # Bake the speaker's audible-failure cues so they're ready before
+    # the daemon ever needs them. The daemon retries on every startup
+    # if this fails, so a no-internet-at-install scenario is tolerated
+    # — we just warn and continue. See docs/HANDOFF-audible-feedback.md
+    # for what cues exist and why.
+    if [[ ! -x /opt/jasper/.venv/bin/jasper-cues ]]; then
+        echo "  (jasper-cues not on PATH yet — will run on first daemon boot)"
+        return 0
+    fi
+    echo "  Regenerating audio cues..."
+    if ! /bin/sh -c '. /etc/jasper/jasper.env && export $(grep -E "^[A-Z_]+=" /etc/jasper/jasper.env | cut -d= -f1) && /opt/jasper/.venv/bin/jasper-cues regenerate'; then
+        echo "  WARNING: cue regenerate failed (network down or API key not set?). " \
+             "Daemon will retry at startup. To force a refresh later: " \
+             "sudo systemctl restart jasper-voice"
+    fi
+}
+
 main() {
     require_root
     install_deps
@@ -657,6 +675,7 @@ main() {
         # cert).
         echo "  (debian backend — skipping moOde nginx integration; see TODO)"
     fi
+    regenerate_audio_cues
 }
 
 main "$@"

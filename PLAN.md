@@ -271,11 +271,19 @@ The v1 architecture decisions that protect this sequence:
 - **48 kHz everywhere** keeps resampling out of the hot path now and through Snapcast later.
 - **Systemd-managed services in `/opt/jasper`** keep the install survivable across moOde updates, so v4's NM swap is the only risky migration on the horizon.
 
-### Configuration web view (post-v1, no specific version yet)
+### Configuration web view / management dashboard (post-v1, no specific version yet)
 
-Add a setup web view at `https://<host>.local/setup` (or wherever fits
-alongside the existing `/spotify` flow served by `jasper-web`) that
-lets the speaker's owner — without SSHing in — configure:
+Grow the existing `jasper-web` service into a single management
+dashboard at `https://<host>.local/` (root). The Spotify OAuth flow
+at `/spotify/` becomes the first sub-page; everything below moves
+into peer pages under `/settings/`, `/spend/`, `/diagnostics/`, etc.
+The audio-cue subsystem already points the user at the dashboard
+root: when a wake hits the spend cap, Jarvis says "visit
+`{hostname}` to manage" — that landing page has to actually exist
+for the cue to be useful, so this work is a soft prereq for cues
+graduating from "best we can do for now" to a complete UX.
+
+Settings the dashboard should expose — without SSHing in:
 
 - **Location** for weather (`JASPER_DEFAULT_LOCATION`, e.g. "Sunset
   Park, Brooklyn" — needs to be specific enough that the geocoder
