@@ -24,7 +24,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.gemini_api_key == "test-key"
     assert cfg.gemini_model == "gemini-3.1-flash-live-preview"
     assert cfg.wake_model == "hey_jarvis"
-    assert cfg.duck_db == -15.0
+    assert cfg.duck_db == -25.0
     assert cfg.live_context_reset_sec == 300
     assert cfg.daily_spend_cap_usd == 1.0
     # ALSA defaults must match the templates in /root/.asoundrc and the

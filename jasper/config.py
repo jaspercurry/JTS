@@ -245,7 +245,7 @@ class Config:
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
-            duck_db=_env_float("JASPER_DUCK_DB", -15.0),
+            duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
             # After this many seconds with no turns, the persistent live
             # connection drops its sessionResumption handle and reopens
