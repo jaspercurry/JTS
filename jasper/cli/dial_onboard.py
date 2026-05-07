@@ -62,6 +62,7 @@ IMPROV_STATE_PROVISIONED = 0x04
 IMPROV_ERROR_NONE = 0x00
 
 IMPROV_CMD_SUBMIT_SETTINGS = 0x01
+IMPROV_CMD_GET_DEVICE_INFO = 0x03
 
 
 # ---------- USB device discovery ----------
@@ -256,6 +257,83 @@ def _scan_packets(buf: bytearray) -> list[tuple[int, bytes]]:
             logger.warning("dropped Improv frame with bad checksum")
 
 
+# Boot-log signature emitted by the JTS dial firmware in setup().
+# See firmware/dial/src/main.cpp's `Serial.println("[boot] jasper-dial
+# firmware v...")` — this is the unique identifier we look for in the
+# probe. Generic ESP32-S3 dev kits, Arduino default sketches, or other
+# Improv-using firmwares will not emit this exact string.
+_DIAL_BOOT_SIGNATURE = b"jasper-dial firmware"
+
+
+def probe_jts_dial(port: str, *, timeout_s: float = 5.0) -> bool:
+    """Identify whether the device on `port` is running our dial
+    firmware. Returns True on positive ID, False on timeout / error.
+
+    Mechanism: opening /dev/ttyACMx on the ESP32-S3 native USB-CDC
+    causes the chip to reset (the USB-Serial-JTAG controller pulses
+    the chip's reset line on CDC SET_CONTROL_LINE_STATE — observed
+    empirically with `dtr=False, rts=False` still resetting; the
+    behavior is on the ROM side, not pyserial's). The dial's setup()
+    then prints `[boot] jasper-dial firmware v<version>` over Serial
+    within ~1-2 seconds. We open, listen for that exact string, and
+    return True if seen.
+
+    Why this beats sending an Improv RPC: the dial's `tryConnectStored`
+    in setup() blocks for up to 15s on stored-creds WiFi reconnect
+    BEFORE loop() runs, and improv.handleSerial() runs in loop(). So
+    an RPC sent at port-open sits in the buffer for 15+ seconds before
+    a reply comes — too slow for udev-fired auto-onboarding. The boot
+    log appears immediately in setup(), much faster.
+
+    Why opening the port at all is acceptable: on the JTS dial path
+    `--auto` mode runs an mDNS pre-check first (jasper-dial.local in
+    3s); already-online dials short-circuit before this probe runs,
+    so the chip-reset disruption only fires when the dial wasn't
+    going to be useful anyway (fresh, off-network, or unrelated S3).
+    Unrelated ESP32-S3 boards plugged into the Pi will reset on open
+    too, but no flash or cred-push happens after a probe miss — chip
+    reboots, no other side effect.
+    """
+    import serial  # pyserial; deferred so import is optional for tests
+
+    # Open the port with pyserial's defaults — on Linux + ESP32-S3
+    # native USB CDC, this raises DTR which the USB-Serial-JTAG ROM
+    # treats as a reset request. The chip reboots and emits the boot
+    # log within ~1-2 s, which is what we look for. Suppressing DTR
+    # via dsrdtr=False/dtr=False was tried and made the probe
+    # unreliable: on a chip that's already booted from a prior open,
+    # the suppressed-DTR open doesn't trigger a fresh boot log, so
+    # the probe sees nothing even on a real JTS dial. Reset is the
+    # signal here, not the bug.
+    try:
+        ser = serial.Serial(port, 115200, timeout=0.2)
+    except (OSError, Exception) as e:  # noqa: BLE001
+        logger.debug("dial probe: open %s failed: %s", port, e)
+        return False
+
+    try:
+        deadline = time.monotonic() + timeout_s
+        buf = bytearray()
+        while time.monotonic() < deadline:
+            try:
+                chunk = ser.read(256)
+            except (OSError, IOError) as e:
+                logger.debug("dial probe: read failed: %s", e)
+                return False
+            if chunk:
+                buf.extend(chunk)
+                if _DIAL_BOOT_SIGNATURE in buf:
+                    return True
+            else:
+                time.sleep(0.05)
+        return False
+    finally:
+        try:
+            ser.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def push_credentials(port: str, ssid: str, password: str, *, timeout: float = 30.0) -> None:
     """Open the dial's serial port and run the Improv handshake.
 
@@ -381,6 +459,13 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the flash step even if a bin is present",
     )
     parser.add_argument(
+        "--flash", action="store_true",
+        help="force-flash even if the dial is already running JTS firmware "
+        "(default: skip flash when the Improv probe succeeds — i.e. when "
+        "the device already speaks our protocol). Mutually exclusive with "
+        "--no-flash; this flag wins if both are passed.",
+    )
+    parser.add_argument(
         "--ssid", default=None,
         help="WiFi SSID (default: read from NetworkManager / wpa_supplicant)",
     )
@@ -393,6 +478,13 @@ def main(argv: list[str] | None = None) -> int:
         help="mDNS hostname to ping after provisioning (default jasper-dial.local)",
     )
     parser.add_argument(
+        "--auto", action="store_true",
+        help="udev-triggered idempotent mode: if the dial already responds at "
+        "--mdns-host, exit without flashing or pushing creds. If not, proceed "
+        "with the normal flash + provision flow. Designed for the on-plug-in "
+        "udev rule so re-plugging an already-provisioned dial is a no-op.",
+    )
+    parser.add_argument(
         "--verbose", "-v", action="store_true",
     )
     args = parser.parse_args(argv)
@@ -402,6 +494,26 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # Idempotency short-circuit. In --auto mode (udev-triggered re-plug),
+    # if the dial already resolves on mDNS we treat that as "already
+    # provisioned and on the same WiFi", and exit without touching it.
+    # Opening the serial port to talk Improv would reset the dial via
+    # DTR; skipping is genuinely cheaper. Manual runs without --auto
+    # always proceed (operator may want to re-flash or re-push creds).
+    if args.auto:
+        ip = wait_for_online(args.mdns_host, timeout=3.0)
+        if ip is not None:
+            logger.info(
+                "dial already online at %s (%s) — auto mode short-circuit, "
+                "no flash or cred push needed",
+                args.mdns_host, ip,
+            )
+            return 0
+        logger.info(
+            "dial not yet online at %s — proceeding with onboard flow",
+            args.mdns_host,
+        )
+
     try:
         dial = find_dial(args.port)
     except RuntimeError as e:
@@ -409,7 +521,62 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     logger.info("found dial on %s (vid=0x%04x pid=0x%04x)", dial.port, dial.vid, dial.pid)
 
-    if not args.no_flash:
+    # Boot-log fingerprint: does the device emit our JTS firmware
+    # signature on serial open? The udev rule that fires us only
+    # matches by ESP32-S3 VID/PID, which any unrelated S3 board will
+    # satisfy. This probe is the actual filter — narrows from "any
+    # S3 board" to "this S3 board is running our dial firmware".
+    is_jts_dial = probe_jts_dial(dial.port)
+    if is_jts_dial:
+        logger.info(
+            "boot-log probe succeeded — device is running JTS dial "
+            "firmware, no flash needed",
+        )
+    else:
+        logger.info(
+            "boot-log probe didn't see JTS firmware signature — "
+            "device either needs flashing, or it's not a JTS dial",
+        )
+
+    # Flash decision matrix:
+    #   is_jts_dial    args.flash  args.no_flash  args.auto  → flash?
+    #   ─────────────  ──────────  ─────────────  ─────────  ────────
+    #   True           True        *              *          yes (forced)
+    #   True           False       *              *          no (already JTS)
+    #   False          *           True           *          no (--no-flash wins)
+    #   False          False       False          True       no (auto: try push only)
+    #   False          *           False          False      yes (manual fresh-chip path)
+    #
+    # The "False / auto" cell tries the Improv push without flashing.
+    # The boot-log probe is unreliable: it depends on the chip resetting
+    # at serial open, which only happens on the first port-open after
+    # USB plug-in. Subsequent opens skip the reset and the boot log
+    # never shows, even on a real JTS dial. Falling through to push in
+    # --auto mode means: if it IS our dial that the probe missed, the
+    # push handshakes successfully. If it's an unrelated ESP32-S3, the
+    # push times out cleanly (Improv handshake fails). Either way no
+    # flash happens, so we never write JTS firmware over unrelated
+    # hardware. To intentionally flash a fresh chip use `--flash`.
+    should_flash = False
+    if is_jts_dial:
+        should_flash = bool(args.flash)
+    else:
+        if args.no_flash:
+            should_flash = False
+        elif args.auto:
+            logger.info(
+                "device on %s didn't show the JTS boot signature, but "
+                "the probe is unreliable when the chip doesn't reset on "
+                "serial open. Trying Improv push anyway — if it's a JTS "
+                "dial the push will succeed, otherwise it'll time out "
+                "cleanly without flashing.",
+                dial.port,
+            )
+            should_flash = False
+        else:
+            should_flash = True
+
+    if should_flash:
         try:
             flash_firmware(dial.port, args.bin)
             # Re-discover post-flash — esptool resets the chip and the

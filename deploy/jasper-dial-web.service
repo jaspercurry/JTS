@@ -1,0 +1,31 @@
+[Unit]
+Description=Jasper smart-speaker rotary-dial onboarding wizard (web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jasper/jasper.env
+# The wizard scans for ESP32-S3 USB devices via pyserial (reads
+# /dev/ttyACM*) and shells out to /opt/jasper/.venv/bin/jasper-dial-onboard
+# which in turn invokes esptool (write_flash → /dev/ttyACM*) and writes
+# Improv frames over serial. Both need RW access to the tty char devices.
+# Run as root to keep that path simple — this service is on 127.0.0.1
+# only, fronted by nginx on jts.local; the user-initiated POST /onboard
+# is the only path that can spawn esptool.
+ExecStart=/opt/jasper/.venv/bin/jasper-dial-web --host 127.0.0.1 --port 8766
+Restart=on-failure
+RestartSec=2
+
+# Less-locked-down hardening than other Jasper units because we need
+# to read NetworkManager secrets (via nmcli inside jasper-dial-onboard),
+# open arbitrary /dev/ttyACM* nodes, and exec esptool. ProtectHome=true
+# is fine — we only need /etc, /var/lib/jasper, /opt/jasper, /dev.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/jasper
+
+[Install]
+WantedBy=multi-user.target
