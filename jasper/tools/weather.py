@@ -11,9 +11,10 @@ def make_weather_tools(weather):
 
     @tool()
     async def get_weather(location: str = "") -> dict:
-        """Return current conditions, today/tomorrow forecasts, the next 24
-        hourly slots, and daily summaries for the next 14 days. location
-        is optional — if empty, uses the speaker's default location.
+        """Return current conditions, today/tomorrow forecasts, hourly
+        slots for the next 7 days, and daily summaries for the next 14
+        days. location is optional — if empty, uses the speaker's default
+        location.
 
         Response shape:
           location, current_local_time, units ('°C' or '°F')
@@ -21,8 +22,10 @@ def make_weather_tools(weather):
           today: {date, temperature_high, temperature_low, condition,
                   precipitation_probability, will_rain}
           tomorrow: same shape as today
-          hourly_next_24h: list of {time, temperature, condition,
-                  precipitation_probability} starting at the current hour
+          hourly_forecast: list of {time, temperature, condition,
+                  precipitation_probability} for 168 hours (7 days)
+                  starting at the current hour. Use this for any
+                  specific-hour question within the next week.
           daily_next_14d: list of 14 daily summaries (same shape as
                   today), index 0 = today, index 13 = today + 13 days
 
@@ -31,12 +34,19 @@ def make_weather_tools(weather):
           'today' / 'is it raining'       → response.today
           'tomorrow'                      → response.tomorrow
           'this evening' / 'tonight' /
-          'tomorrow morning' / etc.       → filter hourly_next_24h
-                                            by hour-of-day in 'time'
+          'tomorrow morning' /
+          'what time will it rain
+           on Saturday' / etc.            → filter hourly_forecast by
+                                            the entry's 'time' field
+                                            (match date YYYY-MM-DD and
+                                            hour against the user's ref)
           'this week'                     → daily_next_14d[0:7], summarise
                                             (highs, lows, rainy days)
           'next week'                     → daily_next_14d[7:14], summarise
-          'on Friday' / 'this weekend'    → filter daily_next_14d by date
+          'on Friday' / 'this weekend'    → filter daily_next_14d by date,
+                                            then for time-specific
+                                            follow-ups drill into
+                                            hourly_forecast for that date
 
         For rain questions, lead with the precipitation_probability
         percentage (e.g. 'There's a 70% chance of rain tonight').

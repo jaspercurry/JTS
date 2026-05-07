@@ -638,10 +638,35 @@ def test_playlist_kind_returns_clarification_on_no_match():
 # ============================================================
 
 
-def test_no_clients_returns_empty_tool_list():
+def test_no_clients_still_registers_tools_with_setup_error():
+    """When no Spotify accounts are configured, the tools must still
+    register (so Gemini can call them) and short-circuit to a spoken
+    "go OAuth at <setup_url>" error. Previously returned []; that made
+    Gemini fall silent on 'play X' because it had no relevant tool to
+    offer."""
     router = FakeRouter()
     moode = FakeMoode()
-    assert make_spotify_tools(router, moode, "moode") == []
+    tools = _by_name(make_spotify_tools(
+        router, moode, "moode", setup_url="https://jts.local/spotify",
+    ))
+    assert set(tools.keys()) == {"spotify_play", "spotify_queue"}
+    play_result = asyncio.run(tools["spotify_play"](query="Ariana Grande"))
+    assert "no spotify account configured" in play_result["error"]
+    assert "https://jts.local/spotify" in play_result["error"]
+    queue_result = asyncio.run(tools["spotify_queue"](query="Anti-Hero"))
+    assert "no spotify account configured" in queue_result["error"]
+    assert "https://jts.local/spotify" in queue_result["error"]
+
+
+def test_no_clients_no_setup_url_omits_url_phrase():
+    """Defensive: if setup_url isn't configured (shouldn't happen in
+    practice — config.py provides a default — but tests shouldn't
+    crash on the empty case), the error message stays sane."""
+    router = FakeRouter()
+    moode = FakeMoode()
+    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    play_result = asyncio.run(tools["spotify_play"](query="X"))
+    assert play_result["error"] == "no spotify account configured."
 
 
 def test_no_device_id_returns_device_error_before_search():

@@ -6,12 +6,18 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/etc/jasper/jasper.env
+# Optional file written by the setup wizard when the user pastes
+# their Spotify Developer App credentials. Sourced after jasper.env
+# so wizard-written values win. Leading `-` makes it optional —
+# fresh installs boot fine without it (and land on the wizard).
+EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
-# Hardening — this process only needs to read /etc/jasper/jasper.env,
-# read+write /var/lib/jasper/spotify/, and bind 127.0.0.1:8765.
+# Hardening — this process needs to read /etc/jasper/jasper.env,
+# read+write /var/lib/jasper/, bind 127.0.0.1:8765, and call
+# `systemctl restart jasper-voice` after the wizard updates creds.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
