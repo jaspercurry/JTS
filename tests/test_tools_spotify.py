@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 from jasper.tools.spotify import make_spotify_tools
 
 
-class FakeMoode:
+class FakeRenderer:
     def __init__(self, renderers=None, currentsong=None) -> None:
         self._renderers = renderers or {}
         self._currentsong = currentsong or {}
@@ -146,23 +146,24 @@ def _by_name(tools):
 def test_play_airplay_short_circuits_to_sender_device():
     """When AirPlay is active and the title-match identifies the sender's
     account, start_playback targets that account's currently-playing
-    Spotify Connect device (the sender's phone) — NOT moOde's librespot.
-    No renderer-stop. This is the bug fix for the 'no spotify target
-    device available' error during AirPlay-Spotify play-by-name."""
+    Spotify Connect device (the sender's phone) — NOT the JTS librespot
+    endpoint. No renderer-stop. This is the bug fix for the 'no spotify
+    target device available' error during AirPlay-Spotify play-by-name."""
     sp = FakeSpotify(
         playback={
             "is_playing": True,
             "device": {"id": "iphone-spotify-id", "name": "iPhone"},
             "item": {"name": "Hey Jude", "artists": [{"name": "The Beatles"}]},
         },
-        # Note: moOde's librespot is NOT in this account's devices list,
-        # which is the realistic scenario that broke before the fix.
+        # Note: the JTS librespot endpoint is NOT in this account's
+        # devices list, which is the realistic scenario that broke
+        # before the fix.
         devices={"devices": [{"id": "iphone-spotify-id", "name": "iPhone"}]},
         search_results={"artist": ("spotify:artist:xyz", "Kanye West")},
     )
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    moode = FakeMoode(
+    renderer = FakeRenderer(
         renderers={"aplactive": True},
         currentsong={"file": "Airplay Active"},
     )
@@ -174,7 +175,7 @@ def test_play_airplay_short_circuits_to_sender_device():
         "jasper.tools.transport._mpris_now_playing",
         new=lambda: _coro_return({"title": "Hey Jude", "artist": "The Beatles"}),
     ):
-        tools = _by_name(make_spotify_tools(router, moode, "moode"))
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
         result = asyncio.run(tools["spotify_play"](query="Kanye West", kind="artist"))
 
     assert result.get("ok") is True
@@ -191,12 +192,12 @@ def test_play_airplay_short_circuit_falls_through_when_no_device_id():
     crashing."""
     sp = FakeSpotify(
         playback={"is_playing": True, "device": {}, "item": {"name": "X"}},
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"track": ("spotify:track:abc", "Hey Jude")},
     )
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched, active_account=matched)
-    moode = FakeMoode(
+    renderer = FakeRenderer(
         renderers={"aplactive": True},
         currentsong={"file": "Airplay Active"},
     )
@@ -209,15 +210,15 @@ def test_play_airplay_short_circuit_falls_through_when_no_device_id():
         new=lambda: _coro_return({"title": "Hey Jude", "artist": "The Beatles"}),
     ), patch(
         "jasper.tools.spotify.resolve_target",
-        new=lambda *a, **k: _coro_return(_FakeResolution("moode-id", [])),
+        new=lambda *a, **k: _coro_return(_FakeResolution("renderer-id", [])),
     ):
-        tools = _by_name(make_spotify_tools(router, moode, "moode"))
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
         result = asyncio.run(tools["spotify_play"](query="Hey Jude", kind="track"))
 
     assert result.get("ok") is True
     sp.start_playback.assert_called_once()
     _, kwargs = sp.start_playback.call_args
-    assert kwargs["device_id"] == "moode-id"
+    assert kwargs["device_id"] == "renderer-id"
 
 
 def test_play_no_airplay_uses_resolve_target():
@@ -225,20 +226,20 @@ def test_play_no_airplay_uses_resolve_target():
     go through resolve_target as before."""
     sp = FakeSpotify(
         playback=None,
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"track": ("spotify:track:abc", "Hey Jude")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Hey Jude", kind="track"))
 
     assert result.get("ok") is True
     sp.start_playback.assert_called_once()
     _, kwargs = sp.start_playback.call_args
-    assert kwargs["device_id"] == "moode-id"
+    assert kwargs["device_id"] == "renderer-id"
     assert kwargs.get("uris") == ["spotify:track:abc"]
 
 
@@ -251,14 +252,14 @@ def test_artist_search_uses_field_qualifier():
     """Artist searches use `artist:"X"` so STRFKR doesn't outrank Matt and
     Kim just because STRFKR has a song titled 'Matt & Kim'."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"artist": ("spotify:artist:matt-and-kim-real", "Matt and Kim")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Matt and Kim", kind="artist"))
 
     assert result.get("ok") is True
@@ -268,14 +269,14 @@ def test_artist_search_uses_field_qualifier():
 
 def test_album_search_uses_field_qualifier():
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"album": ("spotify:album:abc", "Some Album")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     asyncio.run(tools["spotify_play"](query="Grace", kind="album"))
     assert sp.last_search_q == 'album:"Grace"'
 
@@ -284,14 +285,14 @@ def test_track_search_passes_query_through_unqualified():
     """Track queries stay unqualified so 'Daylight by Matt and Kim' still
     works — a `track:` filter would zero-result that."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"track": ("spotify:track:abc", "Daylight")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     asyncio.run(tools["spotify_play"](query="Daylight by Matt and Kim", kind="track"))
     assert sp.last_search_q == "Daylight by Matt and Kim"
 
@@ -299,14 +300,14 @@ def test_track_search_passes_query_through_unqualified():
 def test_artist_search_strips_stray_quotes():
     """Defensive: a stray double-quote breaks the field syntax. Strip them."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"artist": ("spotify:artist:abc", "X")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     asyncio.run(tools["spotify_play"](query='Foo "Bar"', kind="artist"))
     assert sp.last_search_q == 'artist:"Foo Bar"'
 
@@ -321,7 +322,7 @@ def test_auto_picks_artist_on_bare_name():
     beats whatever Spotify's track-relevance returns (which previously
     surfaced Taylor Swift via popularity ranking on weak track queries)."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={
             "artist": ("spotify:artist:sufjan", "Sufjan Stevens"),
             "track": ("spotify:track:tswift", "Cardigan"),  # nonsense top track hit
@@ -330,9 +331,9 @@ def test_auto_picks_artist_on_bare_name():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Sufjan Stevens"))
 
     assert result.get("ok") is True
@@ -347,7 +348,7 @@ def test_auto_tiebreak_artist_beats_track_on_close_score():
     """Both artist and track score 100 ('exact match'). Tiebreak prefers
     artist for bare-name queries."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={
             "artist": ("spotify:artist:matt-and-kim", "Matt and Kim"),
             "track": ("spotify:track:strfkr-song", "Matt and Kim"),  # STRFKR's homonym song
@@ -355,9 +356,9 @@ def test_auto_tiebreak_artist_beats_track_on_close_score():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Matt and Kim"))
 
     assert result.get("kind") == "artist"
@@ -369,7 +370,7 @@ def test_auto_tiebreak_artist_beats_track_on_close_score():
 def test_auto_picks_track_when_no_artist_with_that_name():
     """'play All of the Lights' — no artist by that name, track wins."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={
             "track": ("spotify:track:lights", "All of the Lights"),
             # No artist or album with that exact name.
@@ -377,9 +378,9 @@ def test_auto_picks_track_when_no_artist_with_that_name():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="All of the Lights"))
 
     assert result.get("kind") == "track"
@@ -393,15 +394,15 @@ def test_auto_picks_user_playlist_on_fuzzy_match():
     track/album hits, but the user's saved playlist 'Jaspany Jams' fuzzy-
     matches at score ~77, above the 75 threshold for kind=auto."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={},  # empty Spotify-search results
         library=[("spotify:playlist:jaspany", "Jaspany Jams")],
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Jasperine Jams"))
 
     assert result.get("ok") is True
@@ -415,7 +416,7 @@ def test_auto_picks_user_playlist_on_fuzzy_match():
 def test_auto_returns_clarification_when_nothing_matches():
     """Garbage query: no candidate above threshold → clarification error."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={
             "artist": ("spotify:artist:rando", "Some Random Artist"),
             "track": ("spotify:track:rando", "Random Song"),
@@ -424,9 +425,9 @@ def test_auto_returns_clarification_when_nothing_matches():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="qwerty asdf"))
 
     assert "error" in result
@@ -446,7 +447,7 @@ def test_playlist_kind_uses_library_with_loose_threshold():
     match should clear the looser playlist threshold (~55) even when the
     auto threshold (~75) would have been borderline."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[
             ("spotify:playlist:jaspany", "Jaspany Jams"),
             ("spotify:playlist:other", "Workout Mix"),
@@ -454,9 +455,9 @@ def test_playlist_kind_uses_library_with_loose_threshold():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Jasperine Jams", kind="playlist"))
 
     assert result.get("ok") is True
@@ -473,14 +474,14 @@ def test_playlist_play_uses_context_uri_in_native_order():
     to play 'newest first' without rolling our own queue, which we
     deliberately don't do."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[("spotify:playlist:jaspany", "Jaspany Jamz")],
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Jaspany Jamz", kind="playlist")
     )
@@ -500,14 +501,14 @@ def test_playlist_play_with_shuffle_enables_shuffle_state():
     """`shuffle=True` flips Spotify's shuffle state on; playback still
     goes through context_uri (Spotify handles randomisation server-side)."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[("spotify:playlist:jaspany", "Jaspany Jamz")],
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Jaspany Jamz", kind="playlist", shuffle=True)
     )
@@ -524,14 +525,14 @@ def test_playlist_play_with_shuffle_enables_shuffle_state():
 
 def test_track_play_returns_confirm_field():
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"track": ("spotify:track:abc", "Hey Jude")},
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Hey Jude", kind="track"))
     assert "Hey Jude" in result.get("confirm", "")
 
@@ -541,7 +542,7 @@ def test_playlist_kind_best_by_far_picks_top_below_threshold():
     Top library match scores below the absolute threshold but is well
     clear of the runner-up — take it as the clear winner."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[
             ("spotify:playlist:jaspany", "Jaspany Jams"),
             ("spotify:playlist:cardio", "Cardio Mix"),
@@ -550,9 +551,9 @@ def test_playlist_kind_best_by_far_picks_top_below_threshold():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Jazz Knee Jams", kind="playlist")
     )
@@ -570,7 +571,7 @@ def test_playlist_kind_best_by_far_does_not_fire_when_close():
     than guess. Prevents 'Jaspany Jams' from accidentally beating
     'Jaspeny Jams' when scores are within a few points."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[
             ("spotify:playlist:a", "Jasper's A Jams"),
             ("spotify:playlist:b", "Jasper's B Jams"),
@@ -579,9 +580,9 @@ def test_playlist_kind_best_by_far_does_not_fire_when_close():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="random gibberish xyz", kind="playlist")
     )
@@ -598,15 +599,15 @@ def test_playlist_kind_does_not_fall_back_to_public_search():
     (e.g. 'Jaspany Jams' fuzzy-matches strangers' 'Jaslene's Jams' / 'Jazzy
     Jams') and the user almost always meant a personal playlist."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={"playlist": ("spotify:playlist:public", "Today's Top Hits")},
         library=[],
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Today's Top Hits", kind="playlist")
     )
@@ -619,15 +620,15 @@ def test_playlist_kind_does_not_fall_back_to_public_search():
 def test_playlist_kind_returns_clarification_on_no_match():
     """Library miss + public miss → clarification error."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         search_results={},
         library=[("spotify:playlist:other", "Workout Mix")],
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Some Nonexistent Playlist", kind="playlist")
     )
@@ -651,7 +652,7 @@ def test_configured_playlist_resolves_when_library_misses():
     """User has manually pinned 'Discover Weekly' for their account.
     Library search returns nothing useful. The configured URI wins."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[("spotify:playlist:other", "Workout Mix")],
     )
     active = FakeAccountClient(
@@ -659,9 +660,9 @@ def test_configured_playlist_resolves_when_library_misses():
         playlists={"spotify:playlist:dw_jasper": "Discover Weekly"},
     )
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Discover Weekly", kind="playlist")
     )
@@ -679,7 +680,7 @@ def test_configured_playlist_beats_same_named_library_entry():
     wins on ties via stable sort. The user paid the cost of configuring
     it; that's a vote of confidence."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[("spotify:playlist:user_copy", "Discover Weekly")],
     )
     active = FakeAccountClient(
@@ -687,9 +688,9 @@ def test_configured_playlist_beats_same_named_library_entry():
         playlists={"spotify:playlist:real_dw": "Discover Weekly"},
     )
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Discover Weekly", kind="playlist")
     )
@@ -706,7 +707,7 @@ def test_configured_playlist_picks_up_voice_to_text_mishears():
     threshold + best-by-far rule. This is the same tolerance the library
     path enjoys; configured entries shouldn't be stricter."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[],
     )
     active = FakeAccountClient(
@@ -717,9 +718,9 @@ def test_configured_playlist_picks_up_voice_to_text_mishears():
         },
     )
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Discover Weekend", kind="playlist")
     )
@@ -734,7 +735,7 @@ def test_configured_playlist_works_in_auto_kind():
     configured map flows in via the library function. With no
     artist/track/album hits, the playlist match should win on score."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[],
         search_results={},  # no artist/track/album hits for 'Discover Weekly'
     )
@@ -743,9 +744,9 @@ def test_configured_playlist_works_in_auto_kind():
         playlists={"spotify:playlist:dw": "Discover Weekly"},
     )
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(tools["spotify_play"](query="Discover Weekly"))  # auto
 
     assert result.get("ok") is True
@@ -757,14 +758,14 @@ def test_no_configured_playlist_does_not_break_existing_paths():
     """Defensive: an account with no configured playlists (the common
     case) behaves exactly like before — library lookup only."""
     sp = FakeSpotify(
-        devices={"devices": [{"id": "moode-id", "name": "Moode jasper"}]},
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
         library=[("spotify:playlist:jaspany", "Jaspany Jams")],
     )
     active = FakeAccountClient("jasper", sp)  # no playlists kwarg → default {}
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     result = asyncio.run(
         tools["spotify_play"](query="Jaspany Jams", kind="playlist")
     )
@@ -785,9 +786,9 @@ def test_no_clients_still_registers_tools_with_setup_error():
     Gemini fall silent on 'play X' because it had no relevant tool to
     offer."""
     router = FakeRouter()
-    moode = FakeMoode()
+    renderer = FakeRenderer()
     tools = _by_name(make_spotify_tools(
-        router, moode, "moode", setup_url="https://jts.local/spotify",
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
     ))
     assert set(tools.keys()) == {"spotify_play", "spotify_queue"}
     play_result = asyncio.run(tools["spotify_play"](query="Ariana Grande"))
@@ -803,8 +804,8 @@ def test_no_clients_no_setup_url_omits_url_phrase():
     practice — config.py provides a default — but tests shouldn't
     crash on the empty case), the error message stays sane."""
     router = FakeRouter()
-    moode = FakeMoode()
-    tools = _by_name(make_spotify_tools(router, moode, "moode"))
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     play_result = asyncio.run(tools["spotify_play"](query="X"))
     assert play_result["error"] == "no spotify account configured."
 
@@ -818,13 +819,13 @@ def test_no_device_id_returns_device_error_before_search():
     )
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    moode = FakeMoode(renderers={}, currentsong={})
+    renderer = FakeRenderer(renderers={}, currentsong={})
 
     with patch(
         "jasper.tools.spotify.resolve_target",
         new=lambda *a, **k: _coro_return(_FakeResolution(None, [])),
     ):
-        tools = _by_name(make_spotify_tools(router, moode, "moode"))
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
         result = asyncio.run(tools["spotify_play"](query="X", kind="artist"))
 
     assert "error" in result

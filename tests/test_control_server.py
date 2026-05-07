@@ -2,7 +2,7 @@
 
 Spins the ThreadingHTTPServer on a random port. The volume routes go
 through `_with_coordinator` — we monkey-patch that helper to bypass
-the real CamillaController/RendererBackend stack and feed in a fake
+the real CamillaController/RendererClient stack and feed in a fake
 coordinator that records calls.
 """
 from __future__ import annotations

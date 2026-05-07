@@ -42,7 +42,7 @@ def test_resolve_for_transport_no_match_returns_none():
 def test_resolve_for_transport_normalizes_title():
     """Punctuation/case differences between MPRIS title and Spotify
     canonical name shouldn't kill the match — same _normalise the
-    moOde→Spotify resolver already uses."""
+    AirPlay→Spotify resolver already uses."""
     jasper = _ac("jasper", title="Hey Jude")
     r = Router(clients={"jasper": jasper}, default_name="jasper")
     result = asyncio.run(r.resolve_for_transport("Jasper's iPhone", "HEY JUDE!"))

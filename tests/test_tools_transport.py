@@ -10,7 +10,7 @@ from jasper.tools.transport import (
 )
 
 
-class FakeMoode:
+class FakeRenderer:
     def __init__(self, renderers=None, currentsong=None) -> None:
         self._renderers = renderers or {}
         self._currentsong = currentsong or {}
@@ -76,39 +76,39 @@ def _by_name(tools):
 
 
 def test_detect_source_airplay():
-    moode = FakeMoode(renderers={"aplactive": True})
-    assert asyncio.run(_detect_source(moode)) == "airplay"
+    renderer = FakeRenderer(renderers={"aplactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "airplay"
 
 
 def test_detect_source_spotify():
-    moode = FakeMoode(renderers={"spotactive": True})
-    assert asyncio.run(_detect_source(moode)) == "spotify"
+    renderer = FakeRenderer(renderers={"spotactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "spotify"
 
 
 def test_detect_source_bluetooth():
-    moode = FakeMoode(renderers={"btactive": True})
-    assert asyncio.run(_detect_source(moode)) == "bluetooth"
+    renderer = FakeRenderer(renderers={"btactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "bluetooth"
 
 
 def test_detect_source_falls_back_to_mpd():
-    moode = FakeMoode(renderers={})
-    assert asyncio.run(_detect_source(moode)) == "mpd"
+    renderer = FakeRenderer(renderers={})
+    assert asyncio.run(_detect_source(renderer)) == "mpd"
 
 
 def test_detect_source_airplay_wins_over_others():
-    moode = FakeMoode(renderers={"aplactive": True, "spotactive": True})
-    assert asyncio.run(_detect_source(moode)) == "airplay"
+    renderer = FakeRenderer(renderers={"aplactive": True, "spotactive": True})
+    assert asyncio.run(_detect_source(renderer)) == "airplay"
 
 
 # --- AirPlay dispatch: title-match path ---
 
 
 def test_dispatch_airplay_title_match_routes_to_account():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -124,11 +124,11 @@ def test_dispatch_airplay_title_match_routes_to_account():
 
 
 def test_dispatch_airplay_pause_routes_to_account():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -145,9 +145,9 @@ def test_dispatch_airplay_pause_routes_to_account():
 
 
 def test_dispatch_airplay_no_match_falls_back_to_dacp_when_available():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     router = FakeRouter(transport_match=None)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -167,9 +167,9 @@ def test_dispatch_airplay_no_match_falls_back_to_dacp_when_available():
 
 
 def test_dispatch_airplay_no_match_no_dacp_returns_error():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     router = FakeRouter(transport_match=None)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -190,8 +190,8 @@ def test_dispatch_airplay_no_match_no_dacp_returns_error():
 
 
 def test_dispatch_airplay_no_router_falls_back_to_dacp():
-    moode = FakeMoode(renderers={"aplactive": True})
-    tools = _by_name(make_transport_tools(moode, None))
+    renderer = FakeRenderer(renderers={"aplactive": True})
+    tools = _by_name(make_transport_tools(renderer, None))
 
     with patch(
         "jasper.tools.transport._airplay_remote_available",
@@ -208,38 +208,38 @@ def test_dispatch_airplay_no_router_falls_back_to_dacp():
 
 
 def test_dispatch_spotify_targets_active_device():
-    moode = FakeMoode(renderers={"spotactive": True})
+    renderer = FakeRenderer(renderers={"spotactive": True})
     sp = FakeSpotify(active_id="dev1")
     active = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=active)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     result = asyncio.run(tools["next_track"]())
     sp.next_track.assert_called_once_with(device_id="dev1")
     assert result == {"ok": True, "source": "spotify", "account": "jasper"}
 
 
-def test_dispatch_mpd_uses_moode_methods():
-    moode = FakeMoode(renderers={})
-    tools = _by_name(make_transport_tools(moode, None))
+def test_dispatch_mpd_uses_renderer_methods():
+    renderer = FakeRenderer(renderers={})
+    tools = _by_name(make_transport_tools(renderer, None))
     asyncio.run(tools["pause"]())
-    moode.pause.assert_awaited_once()
+    renderer.pause.assert_awaited_once()
 
 
 def test_dispatch_bluetooth_returns_unsupported_error():
-    moode = FakeMoode(renderers={"btactive": True})
-    tools = _by_name(make_transport_tools(moode, None))
+    renderer = FakeRenderer(renderers={"btactive": True})
+    tools = _by_name(make_transport_tools(renderer, None))
     result = asyncio.run(tools["pause"]())
     assert "error" in result
     assert "bluetooth" in result["error"].lower()
 
 
 def test_resume_aliases_play_action():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
 
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -253,12 +253,12 @@ def test_resume_aliases_play_action():
 
 
 def test_dispatch_failures_return_error_dict():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
     sp.next_track = MagicMock(side_effect=RuntimeError("network down"))
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
     with patch(
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Jasper's Mac"),
@@ -273,21 +273,21 @@ def test_dispatch_failures_return_error_dict():
 # --- toggle action ---
 
 
-def test_toggle_mpd_calls_moode_native_toggle():
-    moode = FakeMoode(renderers={})
-    dispatch = make_transport_dispatcher(moode, None)
+def test_toggle_mpd_calls_renderer_native_toggle():
+    renderer = FakeRenderer(renderers={})
+    dispatch = make_transport_dispatcher(renderer, None)
     result = asyncio.run(dispatch("toggle"))
-    moode.toggle_play_pause.assert_awaited_once()
+    renderer.toggle_play_pause.assert_awaited_once()
     assert result == {"ok": True, "source": "mpd"}
 
 
 def test_toggle_spotify_pauses_when_playing():
-    moode = FakeMoode(renderers={"spotactive": True})
+    renderer = FakeRenderer(renderers={"spotactive": True})
     sp = FakeSpotify()
     sp.current_playback = MagicMock(return_value={"is_playing": True})
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=matched)
-    dispatch = make_transport_dispatcher(moode, router)
+    dispatch = make_transport_dispatcher(renderer, router)
     result = asyncio.run(dispatch("toggle"))
     sp.pause_playback.assert_called_once_with(device_id="dev1")
     sp.start_playback.assert_not_called()
@@ -296,12 +296,12 @@ def test_toggle_spotify_pauses_when_playing():
 
 
 def test_toggle_spotify_resumes_when_paused():
-    moode = FakeMoode(renderers={"spotactive": True})
+    renderer = FakeRenderer(renderers={"spotactive": True})
     sp = FakeSpotify()
     sp.current_playback = MagicMock(return_value={"is_playing": False})
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(active_account=matched)
-    dispatch = make_transport_dispatcher(moode, router)
+    dispatch = make_transport_dispatcher(renderer, router)
     result = asyncio.run(dispatch("toggle"))
     sp.start_playback.assert_called_once_with(device_id="dev1")
     sp.pause_playback.assert_not_called()
@@ -309,12 +309,12 @@ def test_toggle_spotify_resumes_when_paused():
 
 
 def test_toggle_airplay_with_spotify_match_routes_to_account():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     sp = FakeSpotify()
     sp.current_playback = MagicMock(return_value={"is_playing": True})
     matched = FakeAccountClient("jasper", sp)
     router = FakeRouter(transport_match=matched)
-    dispatch = make_transport_dispatcher(moode, router)
+    dispatch = make_transport_dispatcher(renderer, router)
     with patch(
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Jasper's Mac"),
@@ -331,9 +331,9 @@ def test_toggle_airplay_no_match_uses_mpris_playpause():
     """Non-Spotify AirPlay senders → MPRIS PlayPause is the native
     single-call toggle. Beats query+dispatch for browser tabs / Apple
     Music / podcast apps that don't expose is-playing introspection."""
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     router = FakeRouter(transport_match=None)
-    dispatch = make_transport_dispatcher(moode, router)
+    dispatch = make_transport_dispatcher(renderer, router)
     mpris_call = AsyncMock()
     with patch(
         "jasper.tools.transport.airplay_client_name",
@@ -354,8 +354,8 @@ def test_toggle_airplay_no_match_uses_mpris_playpause():
 
 
 def test_toggle_bluetooth_returns_unsupported_error():
-    moode = FakeMoode(renderers={"btactive": True})
-    dispatch = make_transport_dispatcher(moode, None)
+    renderer = FakeRenderer(renderers={"btactive": True})
+    dispatch = make_transport_dispatcher(renderer, None)
     result = asyncio.run(dispatch("toggle"))
     assert "error" in result
 
@@ -364,9 +364,9 @@ def test_toggle_bluetooth_returns_unsupported_error():
 
 
 def test_get_now_playing_routes_to_airplay_mpris_when_no_match():
-    moode = FakeMoode(renderers={"aplactive": True})
+    renderer = FakeRenderer(renderers={"aplactive": True})
     router = FakeRouter(transport_match=None)
-    tools = _by_name(make_transport_tools(moode, router))
+    tools = _by_name(make_transport_tools(renderer, router))
     with patch(
         "jasper.tools.transport.airplay_client_name",
         new=AsyncMock(return_value="Some Mac"),
@@ -379,11 +379,11 @@ def test_get_now_playing_routes_to_airplay_mpris_when_no_match():
 
 
 def test_get_now_playing_routes_to_mpd_when_no_renderer():
-    moode = FakeMoode(
+    renderer = FakeRenderer(
         renderers={},
         currentsong={"title": "Local Song", "artist": "Local Artist", "album": "X"},
     )
-    tools = _by_name(make_transport_tools(moode, None))
+    tools = _by_name(make_transport_tools(renderer, None))
     result = asyncio.run(tools["get_now_playing"]())
     assert result["title"] == "Local Song"
     assert result["source"] == "mpd"
