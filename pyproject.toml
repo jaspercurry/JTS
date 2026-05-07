@@ -53,6 +53,7 @@ jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-aec-matrix = "jasper.cli.aec_matrix:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
+jasper-cues = "jasper.cues.cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
