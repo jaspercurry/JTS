@@ -11,10 +11,12 @@ from .generator import (
     render_template,
     write_cue,
 )
+from .manager import AudioCueManager
 
 __all__ = [
     "CUES",
     "CueDef",
+    "AudioCueManager",
     "GeminiTTSGenerator",
     "cue_hash",
     "render_template",
