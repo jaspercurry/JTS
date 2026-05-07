@@ -8,10 +8,10 @@ import pytest
 
 from jasper.cues import AudioCueManager, CUES
 from jasper.cues.generator import (
-    PLAYBACK_CHANNELS,
-    PLAYBACK_RATE,
-    PLAYBACK_SAMPLE_WIDTH,
     TTSResult,
+    WAV_CHANNELS,
+    WAV_RATE,
+    WAV_SAMPLE_WIDTH,
     cue_filename,
     cue_hash,
     cue_path,
@@ -47,14 +47,15 @@ class _FakeTtsPlayout:
         self.writes.append(pcm)
 
 
-def _hand_write_wav(path: str, pcm_48k: bytes) -> None:
-    """Helper: write a valid 48kHz mono 16-bit WAV at `path`."""
+def _hand_write_wav(path: str, pcm_24k: bytes) -> None:
+    """Helper: write a valid 24kHz mono 16-bit WAV at `path` (matches
+    the format the generator now writes)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with wave.open(path, "wb") as f:
-        f.setnchannels(PLAYBACK_CHANNELS)
-        f.setsampwidth(PLAYBACK_SAMPLE_WIDTH)
-        f.setframerate(PLAYBACK_RATE)
-        f.writeframes(pcm_48k)
+        f.setnchannels(WAV_CHANNELS)
+        f.setsampwidth(WAV_SAMPLE_WIDTH)
+        f.setframerate(WAV_RATE)
+        f.writeframes(pcm_24k)
 
 
 # --- regenerate ---
@@ -184,8 +185,9 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is True
     assert len(tts.writes) == 1
-    # 240 samples @ 24kHz upsampled 2x = 480 samples @ 48kHz = 960 bytes.
-    assert len(tts.writes[0]) == 960
+    # WAVs are at Gemini's native 24kHz mono — 240 samples = 480 bytes.
+    # TtsPlayout upsamples to 48k internally; the manager doesn't.
+    assert len(tts.writes[0]) == 480
 
 
 def test_play_returns_false_with_no_tts_playout(tmp_path):

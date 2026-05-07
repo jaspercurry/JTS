@@ -22,6 +22,7 @@ that called `play()` would defeat that.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import wave
@@ -36,6 +37,12 @@ from .generator import (
 from .registry import CUES, CueDef, find as find_cue
 
 logger = logging.getLogger(__name__)
+
+
+# Extra time to wait after the computed audio duration so ALSA's
+# pipeline / dmix buffer fully empties before un-ducking. 200ms is
+# generous for the dongle's typical ~85ms dmix buffer.
+_PLAY_DRAIN_BUFFER_SEC = 0.2
 
 
 class AudioCueManager:
@@ -158,7 +165,7 @@ class AudioCueManager:
             path = stale
 
         try:
-            pcm = self._read_wav_pcm(path)
+            pcm, audio_duration_sec = self._read_wav_pcm(path)
         except (OSError, wave.Error) as e:
             logger.warning("cue play: could not read %s: %s", path, e)
             return False
@@ -168,7 +175,18 @@ class AudioCueManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("cue play: TtsPlayout.write failed (slug=%s): %s", slug, e)
             return False
-        logger.info("cue play: %s (%d bytes pcm)", slug, len(pcm))
+        # TtsPlayout.write() goes through sounddevice's BLOCKING
+        # write under asyncio.to_thread — by the time it returns,
+        # all bytes have been pushed into the stream buffer at
+        # playback rate (so write() takes ~audio_duration_sec wall
+        # clock). All that's left is the small ALSA / dmix tail
+        # buffer; sleep just that long before returning so callers
+        # that wrap us with duck/restore don't un-duck mid-tail.
+        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+        logger.info(
+            "cue play: %s (%d bytes pcm, audio=%.1fs)",
+            slug, len(pcm), audio_duration_sec,
+        )
         return True
 
     # --- internals ---
@@ -182,10 +200,13 @@ class AudioCueManager:
                 return os.path.join(self._sounds_dir, entry)
         return None
 
-    def _read_wav_pcm(self, path: str) -> bytes:
-        """Strip the WAV header, return raw PCM bytes ready for
-        TtsPlayout.write. Assumes the file matches PLAYBACK_RATE /
-        PLAYBACK_CHANNELS / PLAYBACK_SAMPLE_WIDTH from generator.py
-        — which it will, since we wrote it that way ourselves."""
+    def _read_wav_pcm(self, path: str) -> "tuple[bytes, float]":
+        """Strip the WAV header, return (raw PCM bytes, duration in
+        seconds). Duration comes from the WAV header so we don't need
+        to assume what rate the generator wrote at."""
         with wave.open(path, "rb") as f:
-            return f.readframes(f.getnframes())
+            nframes = f.getnframes()
+            rate = f.getframerate()
+            pcm = f.readframes(nframes)
+            duration_sec = nframes / float(rate) if rate else 0.0
+        return pcm, duration_sec

@@ -7,10 +7,10 @@ import pytest
 
 from jasper.cues import CUES, CueDef
 from jasper.cues.generator import (
-    PLAYBACK_CHANNELS,
-    PLAYBACK_RATE,
-    PLAYBACK_SAMPLE_WIDTH,
     TTSResult,
+    WAV_CHANNELS,
+    WAV_RATE,
+    WAV_SAMPLE_WIDTH,
     cue_filename,
     cue_hash,
     cue_path,
@@ -135,17 +135,19 @@ def _read_wav(path: str) -> tuple[int, int, int, int]:
         )
 
 
-def test_write_cue_writes_48k_mono_16bit_wav(tmp_path):
+def test_write_cue_writes_24k_mono_16bit_wav(tmp_path):
     cue = CUES[0]
     backend = _FakeBackend(samples_24k=240)
     path = write_cue(cue, "jts.local", "Aoede", str(tmp_path), backend)
     assert os.path.isfile(path)
     chans, sw, rate, frames = _read_wav(path)
-    assert chans == PLAYBACK_CHANNELS == 1
-    assert sw == PLAYBACK_SAMPLE_WIDTH == 2
-    assert rate == PLAYBACK_RATE == 48000
-    # 240 samples @ 24k upsampled 2x → 480 frames @ 48k
-    assert frames == 480
+    # 24kHz mono 16-bit — same shape as Gemini Live's streaming
+    # audio. TtsPlayout assumes this format and upsamples to 48k
+    # internally; double-upsampling here would play at half speed.
+    assert chans == WAV_CHANNELS == 1
+    assert sw == WAV_SAMPLE_WIDTH == 2
+    assert rate == WAV_RATE == 24000
+    assert frames == 240  # exactly the input — no resample
 
 
 def test_write_cue_filename_matches_hash(tmp_path):

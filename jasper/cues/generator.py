@@ -29,14 +29,20 @@ logger = logging.getLogger(__name__)
 #
 # Bump GENERATOR_VERSION if you change generation semantics in a way
 # that should invalidate every cached file (e.g., switching the
-# resample algorithm). Editing a template string OR changing the
+# WAV format). Editing a template string OR changing the
 # hostname / voice / model is handled automatically by the hash.
-GENERATOR_VERSION = "1"
+#
+# WAV files are written at Gemini's native 24kHz mono — same shape
+# as Gemini Live's streaming audio. TtsPlayout assumes 24kHz input
+# and upsamples to its output_rate (48kHz on the dongle); writing
+# WAVs at 48kHz here would be double-upsampled and play at half
+# speed at the output. So: keep the file at 24kHz and let
+# TtsPlayout handle the conversion the same way it does for Live.
+GENERATOR_VERSION = "2"  # v2: WAVs at 24kHz native (was 48k upsampled)
 TTS_MODEL = "gemini-2.5-flash-preview-tts"
-TTS_NATIVE_RATE = 24000   # what Gemini's TTS endpoint returns
-PLAYBACK_RATE = 48000      # what TtsPlayout / the dongle dmix consume
-PLAYBACK_CHANNELS = 1
-PLAYBACK_SAMPLE_WIDTH = 2  # 16-bit
+WAV_RATE = 24000           # what Gemini returns AND what TtsPlayout expects
+WAV_CHANNELS = 1
+WAV_SAMPLE_WIDTH = 2       # 16-bit
 
 
 def render_template(cue: CueDef, hostname: str) -> str:
@@ -54,8 +60,8 @@ def cue_hash(
     text = render_template(cue, hostname)
     payload = (
         f"v={GENERATOR_VERSION}|model={model}|voice={voice}"
-        f"|rate={PLAYBACK_RATE}|sw={PLAYBACK_SAMPLE_WIDTH}"
-        f"|ch={PLAYBACK_CHANNELS}|text={text}"
+        f"|rate={WAV_RATE}|sw={WAV_SAMPLE_WIDTH}"
+        f"|ch={WAV_CHANNELS}|text={text}"
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:8]
 
@@ -68,35 +74,21 @@ def cue_path(sounds_dir: str, cue: CueDef, hostname: str, voice: str) -> str:
     return os.path.join(sounds_dir, cue_filename(cue, hostname, voice))
 
 
-# --- Resample + WAV write ---
+# --- WAV write ---
 
 
-def _resample_2x_int16(pcm24k_bytes: bytes) -> bytes:
-    """Upsample 24kHz int16 PCM → 48kHz by zero-order-hold (each
-    sample emitted twice). Audio cues are short voice messages; the
-    artifacting is inaudible at speech rates. Pure stdlib so this
-    module imports cleanly in environments without numpy (e.g. the
-    test runner)."""
-    if len(pcm24k_bytes) % 2 != 0:
-        raise ValueError("PCM byte length must be even (16-bit samples)")
-    out = bytearray(len(pcm24k_bytes) * 2)
-    for i in range(0, len(pcm24k_bytes), 2):
-        sample = pcm24k_bytes[i:i + 2]
-        out[i * 2:i * 2 + 2] = sample
-        out[i * 2 + 2:i * 2 + 4] = sample
-    return bytes(out)
-
-
-def _write_wav_atomic(path: str, pcm48k_bytes: bytes) -> None:
-    """Write a 16-bit mono PCM 48kHz WAV file atomically (write
+def _write_wav_atomic(path: str, pcm_24k_bytes: bytes) -> None:
+    """Write a 16-bit mono PCM 24kHz WAV file atomically (write
     `.tmp` first, then rename). Standard WAV (not raw PCM) so cached
-    files are playable with `aplay` / `afplay` for debugging."""
+    files are playable with `aplay` / `afplay` for debugging — those
+    tools read the rate from the WAV header and produce correct
+    playback regardless of the speaker's TtsPlayout configuration."""
     tmp = path + ".tmp"
     with wave.open(tmp, "wb") as f:
-        f.setnchannels(PLAYBACK_CHANNELS)
-        f.setsampwidth(PLAYBACK_SAMPLE_WIDTH)
-        f.setframerate(PLAYBACK_RATE)
-        f.writeframes(pcm48k_bytes)
+        f.setnchannels(WAV_CHANNELS)
+        f.setsampwidth(WAV_SAMPLE_WIDTH)
+        f.setframerate(WAV_RATE)
+        f.writeframes(pcm_24k_bytes)
     os.replace(tmp, path)
 
 
@@ -181,9 +173,8 @@ def write_cue(
         cue.slug, text, voice, cue_hash(cue, hostname, voice),
     )
     result = backend.synthesise(text)
-    pcm48k = _resample_2x_int16(result.pcm_24k)
-    _write_wav_atomic(path, pcm48k)
-    logger.info("cue: wrote %s (%d bytes pcm)", path, len(pcm48k))
+    _write_wav_atomic(path, result.pcm_24k)
+    logger.info("cue: wrote %s (%d bytes pcm @ 24kHz)", path, len(result.pcm_24k))
     return path
 
 
