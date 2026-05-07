@@ -121,16 +121,25 @@ def _hourly_next_24h(hourly: dict, current_time: str | None) -> list[dict]:
     return out
 
 
-def _daily_summary(daily: dict, idx: int) -> dict:
+def _daily_summary(daily: dict, idx: int, override: dict | None = None) -> dict:
     """Pull one day's worth of summary out of Open-Meteo's parallel arrays.
     Includes ISO date so the model can compute day-of-week for 'this week'
-    / 'next week' / 'on Friday' style questions."""
+    / 'next week' / 'on Friday' style questions.
+
+    `override` lets the caller replace `weather_code` and/or
+    `precipitation_probability` (used for today's entry to swap in the
+    remaining-hours aggregate; see `_today_override`)."""
     def _at(key):
         v = daily.get(key) or []
         return v[idx] if len(v) > idx else None
 
     code = _at("weather_code")
     prob = _at("precipitation_probability_max")
+    if override:
+        if override.get("weather_code") is not None:
+            code = override["weather_code"]
+        if override.get("precipitation_probability") is not None:
+            prob = override["precipitation_probability"]
     return {
         "date": _at("time"),
         "temperature_high": _at("temperature_2m_max"),
@@ -141,12 +150,59 @@ def _daily_summary(daily: dict, idx: int) -> dict:
     }
 
 
-def _daily_array(daily: dict, max_days: int = 14) -> list[dict]:
+def _today_override(hourly: dict, current_time: str | None) -> dict:
+    """Compute remaining-hours-of-today aggregates from the hourly
+    forecast: max precipitation_probability and worst weather code
+    across hours from `current_time` to end-of-today.
+
+    Open-Meteo's daily.precipitation_probability_max and weather_code
+    cover the WHOLE day; on a morning-rain day they keep saying
+    'today: 70% rain' all afternoon even when remaining hours are 0%.
+    The voice tool's `today` summary uses this to override the daily
+    aggregate so 'will it rain today' answers about what's still
+    coming. Returns {} when hourly data is missing."""
+    times = hourly.get("time") or []
+    probs = hourly.get("precipitation_probability") or []
+    codes = hourly.get("weather_code") or []
+    if not current_time or not times:
+        return {}
+    today_date = current_time[:10]
+    cur_hour = current_time[:13]
+    max_prob: int | None = None
+    worst_rainy: int | None = None
+    fallback_code: int | None = None
+    for i, t in enumerate(times):
+        if not isinstance(t, str) or not t.startswith(today_date) or t < cur_hour:
+            continue
+        if i < len(probs) and probs[i] is not None:
+            p = int(probs[i])
+            if max_prob is None or p > max_prob:
+                max_prob = p
+        if i < len(codes) and codes[i] is not None:
+            c = int(codes[i])
+            if c in RAINY_CODES:
+                if worst_rainy is None or c > worst_rainy:
+                    worst_rainy = c
+            elif fallback_code is None or c > fallback_code:
+                fallback_code = c
+    code = worst_rainy if worst_rainy is not None else fallback_code
+    return {"precipitation_probability": max_prob, "weather_code": code}
+
+
+def _daily_array(
+    daily: dict,
+    max_days: int = 14,
+    today_override: dict | None = None,
+) -> list[dict]:
     """Build a list of daily summaries for the next N days (capped by what
-    Open-Meteo returned). Each entry is the same shape as today/tomorrow."""
+    Open-Meteo returned). Each entry is the same shape as today/tomorrow.
+    `today_override` is applied to entry 0 only (rest-of-today aggregate)."""
     times = daily.get("time") or []
     n = min(len(times), max_days)
-    return [_daily_summary(daily, i) for i in range(n)]
+    return [
+        _daily_summary(daily, i, today_override if i == 0 else None)
+        for i in range(n)
+    ]
 
 
 def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
@@ -169,6 +225,7 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
 
     cur_code = cur.get("weather_code")
     cur_time = cur.get("time")
+    today_over = _today_override(hourly, cur_time)
 
     return {
         "location": location_name,
@@ -178,12 +235,12 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
             "temperature": cur.get("temperature_2m"),
             "condition": _describe(cur_code),
         },
-        "today": _daily_summary(daily, 0),
+        "today": _daily_summary(daily, 0, today_over),
         "tomorrow": _daily_summary(daily, 1),
         "hourly_next_24h": _hourly_next_24h(hourly, cur_time),
         # Indexed 0..13 starting today. For 'this week' / 'next week' /
         # 'on Friday' questions, slice this by the date field.
-        "daily_next_14d": _daily_array(daily, 14),
+        "daily_next_14d": _daily_array(daily, 14, today_over),
     }
 
 

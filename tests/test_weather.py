@@ -56,15 +56,25 @@ def test_will_rain_handles_none():
 # --- response transformation ---
 
 
-def _hourly_block(date: str, start_hour: int, count: int) -> dict:
+def _hourly_block(
+    date: str,
+    start_hour: int,
+    count: int,
+    code: int = 0,
+    prob: int = 10,
+) -> dict:
     """Build a parallel-arrays hourly block starting at <date>T<HH>:00,
-    `count` entries long, with predictable values for assertions."""
+    `count` entries long, with predictable values for assertions.
+    `code` and `prob` are constant across the block by default, which
+    makes hourly-vs-daily aggregates internally consistent — pass an
+    explicit hourly dict to `_open_meteo_response` for tests that
+    need varying values across the day."""
     times = [f"{date}T{(start_hour + i) % 24:02d}:00" for i in range(count)]
     return {
         "time": times,
         "temperature_2m": [10.0 + i * 0.1 for i in range(count)],
-        "weather_code": [0 for _ in range(count)],
-        "precipitation_probability": [10 + i for i in range(count)],
+        "weather_code": [code for _ in range(count)],
+        "precipitation_probability": [prob for _ in range(count)],
     }
 
 
@@ -87,8 +97,16 @@ def _open_meteo_response(
     hourly variables enabled. Defaults to the production 14-day shape;
     pass days=2 for legacy/short-forecast scenarios."""
     if hourly is None:
-        today_hours = _hourly_block("2024-05-15", 0, 24)
-        tomorrow_hours = _hourly_block("2024-05-16", 0, 24)
+        # Default: hourly stays consistent with the daily aggregate for
+        # the day (every hour gets today_code/today_prob). Tests that
+        # need a morning-rainy/afternoon-clear mismatch should pass an
+        # explicit hourly dict.
+        today_hours = _hourly_block(
+            "2024-05-15", 0, 24, code=today_code, prob=today_prob,
+        )
+        tomorrow_hours = _hourly_block(
+            "2024-05-16", 0, 24, code=tomorrow_code, prob=tomorrow_prob,
+        )
         hourly = {
             "time": today_hours["time"] + tomorrow_hours["time"],
             "temperature_2m": today_hours["temperature_2m"] + tomorrow_hours["temperature_2m"],
@@ -211,6 +229,77 @@ def test_build_summary_daily_next_14d_caps_at_returned_length():
     truncates to what's actually available (no None-padding)."""
     s = _build_summary(_open_meteo_response(days=3), "Toronto", "celsius")
     assert len(s["daily_next_14d"]) == 3
+
+
+def test_build_summary_today_reflects_remaining_hours_not_whole_day():
+    """Open-Meteo's daily.precipitation_probability_max and weather_code
+    aggregate over the WHOLE day, so morning rain that's already passed
+    keeps showing up in `today` all afternoon. Verify today's summary
+    reflects only the remaining hours from the current local time."""
+    # Today has rain from 04:00–08:00 (70%, code 63), then clears.
+    # Current time is 14:30 — rain is in the past.
+    today_hours = {
+        "time": [f"2024-05-15T{h:02d}:00" for h in range(24)],
+        "temperature_2m": [12.0] * 24,
+        "weather_code":
+            [0, 0, 0, 0, 63, 63, 63, 63, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        "precipitation_probability":
+            [0, 0, 0, 0, 70, 70, 70, 70, 70, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    }
+    tomorrow_hours = _hourly_block("2024-05-16", 0, 24, code=1, prob=10)
+    hourly = {
+        k: today_hours[k] + tomorrow_hours[k]
+        for k in ("time", "temperature_2m", "weather_code", "precipitation_probability")
+    }
+    s = _build_summary(
+        _open_meteo_response(
+            cur_time="2024-05-15T14:30",
+            today_code=63, today_prob=70,  # daily aggregate still says rain
+            hourly=hourly,
+        ),
+        "Brooklyn", "fahrenheit",
+    )
+    # Today's summary now reflects 14:00 onward (all clear, 0% prob),
+    # NOT the morning's daily-aggregate rain.
+    assert s["today"]["condition"] == "clear"
+    assert s["today"]["precipitation_probability"] == 0
+    assert s["today"]["will_rain"] is False
+    # daily_next_14d[0] gets the same override (consistency with `today`).
+    assert s["daily_next_14d"][0] == s["today"]
+    # Tomorrow is unaffected (daily aggregate used, no override).
+    assert s["tomorrow"]["condition"] == "mainly clear"
+
+
+def test_today_override_picks_worst_remaining_code():
+    """If rain is still coming later today, today's summary should
+    surface it (code 63 = moderate rain) regardless of clear hours
+    in between."""
+    today_hours = {
+        "time": [f"2024-05-15T{h:02d}:00" for h in range(24)],
+        "temperature_2m": [12.0] * 24,
+        # Clear now (14:00), drizzle (51) at 17, moderate rain (63) at 20.
+        "weather_code":
+            [0]*14 + [0, 0, 0, 51, 0, 0, 63, 0, 0, 0],
+        "precipitation_probability":
+            [0]*14 + [0, 0, 0, 40, 5, 5, 80, 5, 5, 5],
+    }
+    tomorrow_hours = _hourly_block("2024-05-16", 0, 24, code=0, prob=0)
+    hourly = {
+        k: today_hours[k] + tomorrow_hours[k]
+        for k in ("time", "temperature_2m", "weather_code", "precipitation_probability")
+    }
+    s = _build_summary(
+        _open_meteo_response(
+            cur_time="2024-05-15T14:30",
+            today_code=0, today_prob=0,  # daily aggregate doesn't see it
+            hourly=hourly,
+        ),
+        "Brooklyn", "fahrenheit",
+    )
+    # Worst remaining-hour rainy code wins (63 > 51).
+    assert s["today"]["condition"] == "moderate rain"
+    assert s["today"]["precipitation_probability"] == 80
+    assert s["today"]["will_rain"] is True
 
 
 # --- WeatherClient with mock transport ---
