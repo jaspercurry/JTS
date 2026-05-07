@@ -97,24 +97,27 @@ def _open_meteo_response(
     hourly variables enabled. Defaults to the production 14-day shape;
     pass days=2 for legacy/short-forecast scenarios."""
     if hourly is None:
-        # Default: hourly stays consistent with the daily aggregate for
-        # the day (every hour gets today_code/today_prob). Tests that
-        # need a morning-rainy/afternoon-clear mismatch should pass an
+        # Default: hourly covers the same `days` range as daily and
+        # stays consistent with the daily aggregate (every hour of a
+        # day gets that day's code/prob). Tests that need a
+        # morning-rainy/afternoon-clear mismatch should pass an
         # explicit hourly dict.
-        today_hours = _hourly_block(
-            "2024-05-15", 0, 24, code=today_code, prob=today_prob,
-        )
-        tomorrow_hours = _hourly_block(
-            "2024-05-16", 0, 24, code=tomorrow_code, prob=tomorrow_prob,
-        )
+        per_day_codes = [today_code, tomorrow_code] + [0] * max(0, days - 2)
+        per_day_probs = [today_prob, tomorrow_prob] + [0] * max(0, days - 2)
+        blocks = [
+            _hourly_block(
+                f"2024-05-{15 + i:02d}", 0, 24,
+                code=per_day_codes[i], prob=per_day_probs[i],
+            )
+            for i in range(days)
+        ]
         hourly = {
-            "time": today_hours["time"] + tomorrow_hours["time"],
-            "temperature_2m": today_hours["temperature_2m"] + tomorrow_hours["temperature_2m"],
-            "weather_code": today_hours["weather_code"] + tomorrow_hours["weather_code"],
-            "precipitation_probability": (
-                today_hours["precipitation_probability"]
-                + tomorrow_hours["precipitation_probability"]
-            ),
+            "time": [t for b in blocks for t in b["time"]],
+            "temperature_2m": [v for b in blocks for v in b["temperature_2m"]],
+            "weather_code": [v for b in blocks for v in b["weather_code"]],
+            "precipitation_probability": [
+                v for b in blocks for v in b["precipitation_probability"]
+            ],
         }
     # Build daily arrays of length `days`. Index 0 uses today_*, index 1
     # uses tomorrow_*, indices 2..days-1 are filler with predictable values.
@@ -161,23 +164,34 @@ def test_build_summary_now_today_tomorrow_blocks():
 def test_build_summary_hourly_starts_at_current_hour():
     s = _build_summary(_open_meteo_response(cur_time="2024-05-15T14:30"),
                        "Toronto", "celsius")
-    hours = s["hourly_next_24h"]
-    assert len(hours) == 24
+    hours = s["hourly_forecast"]
     # First entry should be the 14:00 slot of today (current local hour).
     assert hours[0]["time"] == "2024-05-15T14:00"
     # Should span past midnight into tomorrow.
-    assert hours[-1]["time"].startswith("2024-05-16")
+    assert hours[1]["time"] == "2024-05-15T15:00"
+    assert any(h["time"].startswith("2024-05-16") for h in hours)
     # Each entry has the expected fields.
     assert "temperature" in hours[0]
     assert "condition" in hours[0]
     assert "precipitation_probability" in hours[0]
 
 
+def test_build_summary_hourly_caps_at_168_hours():
+    """Default 168-hour (7-day) window covers 'what time on Saturday'
+    questions from any day of the week. Open-Meteo returns up to 14
+    days of hourly data; we cap at 168."""
+    s = _build_summary(_open_meteo_response(cur_time="2024-05-15T00:00"),
+                       "Toronto", "celsius")
+    hours = s["hourly_forecast"]
+    assert len(hours) == 168
+    # Last entry should be exactly 167 hours after the start.
+    assert hours[167]["time"] == "2024-05-21T23:00"
+
+
 def test_build_summary_hourly_starts_at_zero_when_current_time_unknown():
     s = _build_summary(_open_meteo_response(cur_time=None),
                        "Toronto", "celsius")
-    hours = s["hourly_next_24h"]
-    assert len(hours) == 24
+    hours = s["hourly_forecast"]
     assert hours[0]["time"] == "2024-05-15T00:00"
 
 
@@ -198,7 +212,7 @@ def test_build_summary_handles_empty_response():
     assert s["now"]["condition"] == "unknown"
     assert s["today"]["will_rain"] is False
     assert s["tomorrow"]["will_rain"] is False
-    assert s["hourly_next_24h"] == []
+    assert s["hourly_forecast"] == []
     assert s["daily_next_14d"] == []
 
 

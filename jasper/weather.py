@@ -86,12 +86,20 @@ def _will_rain(daily_code: int | None, precip_prob: int | None) -> bool:
     return False
 
 
-def _hourly_next_24h(hourly: dict, current_time: str | None) -> list[dict]:
-    """Slice the hourly forecast to the next 24 hours starting from the
+def _hourly_forecast(
+    hourly: dict,
+    current_time: str | None,
+    hours: int = 168,
+) -> list[dict]:
+    """Slice the hourly forecast to `hours` entries starting from the
     current local hour. Open-Meteo's hourly array starts at 00:00 today
     (location-local) and extends through the forecast period; we match
-    by 'YYYY-MM-DDTHH' prefix to find the current hour and take the
-    next 24 entries."""
+    by 'YYYY-MM-DDTHH' prefix to find the current hour.
+
+    Default 168 hours = 7 days, enough to answer 'what time will it
+    rain on Saturday' from any day of the week. Open-Meteo returns
+    14*24 = 336 hourly entries with forecast_days=14, so we have headroom
+    if we need to go longer."""
     times = hourly.get("time") or []
     temps = hourly.get("temperature_2m") or []
     codes = hourly.get("weather_code") or []
@@ -109,7 +117,7 @@ def _hourly_next_24h(hourly: dict, current_time: str | None) -> list[dict]:
                 start_idx = i
                 break
 
-    end_idx = min(start_idx + 24, len(times))
+    end_idx = min(start_idx + hours, len(times))
     out = []
     for i in range(start_idx, end_idx):
         out.append({
@@ -214,8 +222,9 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
       'what's the weather today?'       → response['today']
       'what's the weather tomorrow?'    → response['tomorrow']
       'this evening?' / 'tonight?' /
-      'tomorrow morning?'               → response['hourly_next_24h'],
-                                          filter by hour vs current_local_time
+      'tomorrow morning?' /
+      'what time will it rain Sat?'     → response['hourly_forecast'],
+                                          filter by date/hour vs current_local_time
 
     Defensive about missing fields — Open-Meteo's response schema is
     stable but a malformed/empty one shouldn't crash."""
@@ -237,7 +246,9 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
         },
         "today": _daily_summary(daily, 0, today_over),
         "tomorrow": _daily_summary(daily, 1),
-        "hourly_next_24h": _hourly_next_24h(hourly, cur_time),
+        # 168 hours = 7 days from now. Covers 'what time on Saturday'
+        # questions from any day of the week.
+        "hourly_forecast": _hourly_forecast(hourly, cur_time),
         # Indexed 0..13 starting today. For 'this week' / 'next week' /
         # 'on Friday' questions, slice this by the date field.
         "daily_next_14d": _daily_array(daily, 14, today_over),
