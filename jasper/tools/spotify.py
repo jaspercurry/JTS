@@ -66,27 +66,44 @@ def _playlist_score(query: str, name: str) -> int:
     return int(fuzz.ratio(query.lower(), name.lower()))
 
 
-async def _user_library_ranked(sp, query: str) -> "list[tuple[str, str, int]]":
-    """Return the user's saved playlists, ranked by fuzzy match against
-    `query`. Each entry is (uri, name, score), sorted high-to-low. Empty
-    list when the library is unreachable or empty."""
+async def _user_library_ranked(
+    sp, query: str, configured: "dict[str, str] | None" = None,
+) -> "list[tuple[str, str, int]]":
+    """Return playlists ranked by fuzzy match against `query`. Pool =
+    `configured` (per-account map of uri→name set via the web UI) +
+    everything from `sp.current_user_playlists`. Configured entries
+    appear first on score ties (stable sort), so a manually-pinned
+    Discover Weekly URI wins over a same-named library entry.
+
+    Each entry is (uri, name, score), sorted high-to-low. Empty list
+    when both pools are empty / unreachable."""
+    ranked: list[tuple[str, str, int]] = []
+    seen_uris: set[str] = set()
+
+    # Configured first — for stable-sort tiebreak in the user's favour.
+    if configured:
+        for uri, name in configured.items():
+            if not (uri and name):
+                continue
+            ranked.append((uri, name, _playlist_score(query, name)))
+            seen_uris.add(uri)
+
     try:
         playlists = await asyncio.to_thread(sp.current_user_playlists, limit=50)
     except Exception as e:  # noqa: BLE001
         logger.warning("user playlists fetch failed: %s", e)
-        return []
-    items = (playlists or {}).get("items") or []
-    if not items:
-        return []
-    ranked: list[tuple[str, str, int]] = []
+        playlists = None
+    items = ((playlists or {}).get("items") or []) if playlists else []
     for p in items:
         if not p:
             continue
         name = p.get("name") or ""
         uri = p.get("uri") or ""
-        if not (name and uri):
+        if not (name and uri) or uri in seen_uris:
             continue
         ranked.append((uri, name, _playlist_score(query, name)))
+        seen_uris.add(uri)
+
     ranked.sort(key=lambda r: -r[2])
     return ranked
 
@@ -143,15 +160,18 @@ async def _spotify_owned_playlist_match(
     return best
 
 
-async def _user_library_match(sp, query: str) -> "tuple[str, str, int] | None":
-    """Top fuzzy match from the user's library, or None if empty/unreachable.
-    Kept as a thin wrapper around the ranked variant for the auto-path."""
-    ranked = await _user_library_ranked(sp, query)
+async def _user_library_match(
+    sp, query: str, configured: "dict[str, str] | None" = None,
+) -> "tuple[str, str, int] | None":
+    """Top fuzzy match from the user's library + configured playlists,
+    or None if empty/unreachable. Thin wrapper for the auto-path."""
+    ranked = await _user_library_ranked(sp, query, configured=configured)
     return ranked[0] if ranked else None
 
 
 async def _resolve_query(
-    sp, query: str, kind: str
+    sp, query: str, kind: str,
+    configured_playlists: "dict[str, str] | None" = None,
 ) -> "tuple[str, str, str] | None":
     """Resolve a 'play X' query to (uri, resolved_kind, display_name).
 
@@ -175,14 +195,19 @@ async def _resolve_query(
     safe_q = query.replace(chr(34), "")
 
     if kind == "playlist":
-        # User said the word "playlist". First try THEIR library, then
-        # fall back to Spotify-owned playlists (Discover Weekly, Release
-        # Radar, Daily Mix N, etc.) which don't appear in the user's
-        # library unless they've explicitly saved them.
+        # User said the word "playlist". First try THEIR pool — the
+        # account's configured-via-web-UI playlists merged with their
+        # Spotify library. Configured wins ties (stable sort).
+        # Fall back to Spotify-owned catalog search (Discover Weekly,
+        # Release Radar, Daily Mix N) — but per the 2026 API, that
+        # endpoint no longer returns the real Spotify-owned versions
+        # for newly-issued credentials, so the configured map is the
+        # only reliable path for those. Kept for the rare account that
+        # still has access.
         # We do NOT fall back to general public playlist search —
         # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
         # Jams', which is exactly what we don't want.
-        ranked = await _user_library_ranked(sp, query)
+        ranked = await _user_library_ranked(sp, query, configured=configured_playlists)
         if ranked:
             logger.info(
                 "spotify_play: library candidates for query=%r → %s",
@@ -258,7 +283,7 @@ async def _resolve_query(
         _safe_search(artist_q, "artist"),
         _safe_search(query, "track"),
         _safe_search(album_q, "album"),
-        _user_library_match(sp, query),
+        _user_library_match(sp, query, configured=configured_playlists),
     )
 
     q_lower = query.lower()
@@ -334,12 +359,14 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         from ..spotify_router import airplay_client_name
         from .transport import _mpris_now_playing
 
-    async def _resolve_for_play() -> "tuple[object, str | None, list[str], str] | None":
+    async def _resolve_for_play() -> "tuple[object, str | None, list[str], str, dict[str, str]] | None":
         if not has_clients:
             return None
         """Pick the active account and decide where to start_playback.
-        Returns (sp, device_id, stop_renderers, account_name) or None
-        if no account / device combination can be reached.
+        Returns (sp, device_id, stop_renderers, account_name,
+        configured_playlists) or None if no account / device combination
+        can be reached. `configured_playlists` is a uri→name map populated
+        via the web UI for that account (typically empty).
 
         AirPlay-carrying-Spotify short-circuit: if the title-match already
         identified the AirPlay sender's account, target that account's
@@ -365,7 +392,10 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
                     playback = await asyncio.to_thread(ac.sp.current_playback)
                     device_id = (playback or {}).get("device", {}).get("id")
                     if device_id:
-                        return ac.sp, device_id, [], ac.account.name
+                        return (
+                            ac.sp, device_id, [], ac.account.name,
+                            dict(getattr(ac.account, "playlists", {}) or {}),
+                        )
                     logger.info(
                         "spotify_play: title-match account=%s but current_playback "
                         "has no device_id; falling through to resolve_target",
@@ -375,7 +405,10 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         if ac is None:
             return None
         resolution = await resolve_target(ac.sp, moode, librespot_name)
-        return ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name
+        return (
+            ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name,
+            dict(getattr(ac.account, "playlists", {}) or {}),
+        )
 
     @tool()
     async def spotify_play(
@@ -420,7 +453,7 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         resolved = await _resolve_for_play()
         if resolved is None:
             return {"error": no_account_msg}
-        sp, device_id, stops, account_name = resolved
+        sp, device_id, stops, account_name, configured_playlists = resolved
         if not device_id:
             return {
                 "error": "no spotify target device available. tell the user "
@@ -428,7 +461,9 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
                 "spotify connect (librespot) is running.",
             }
 
-        pick = await _resolve_query(sp, query, kind)
+        pick = await _resolve_query(
+            sp, query, kind, configured_playlists=configured_playlists,
+        )
         if pick is None:
             return {"error": _NOT_UNDERSTOOD}
         uri, resolved_kind, name = pick
@@ -495,7 +530,7 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         resolved = await _resolve_for_play()
         if resolved is None:
             return {"error": no_account_msg}
-        sp, device_id, _, account_name = resolved
+        sp, device_id, _, account_name, _ = resolved
         if not device_id:
             return {"error": "no spotify target device available"}
         results = await asyncio.to_thread(sp.search, q=query, type="track", limit=1)

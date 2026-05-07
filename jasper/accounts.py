@@ -37,6 +37,15 @@ Older registry files may carry a `client_name_patterns` field. It's
 ignored — the title-match resolver supersedes the pattern model — but
 left in JSON files in place so out-of-band tooling that wrote it
 doesn't have to be updated immediately.
+
+Each account also carries a `playlists` map: `uri → display_name`.
+This is the "personal-playlist" config map populated via the web UI
+to work around Spotify's 2026 Web API restrictions, which hide
+algorithmic playlists (Discover Weekly, Release Radar, Daily Mix N)
+from both `current_user_playlists` and catalog search owner-filter.
+The map keys are full `spotify:playlist:<id>` URIs, the values are
+the canonical Spotify-fetched names. Matching at voice time happens
+against the names; the URIs feed straight into `start_playback`.
 """
 from __future__ import annotations
 
@@ -44,7 +53,7 @@ import json
 import logging
 import os
 import re
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -61,6 +70,9 @@ LEGACY_CACHE_PATH = "/var/lib/jasper/.spotify-cache"
 class Account:
     name: str
     cache_path: str = ""
+    # uri → display name, populated via the web UI. Empty for accounts
+    # that haven't configured any (the common case).
+    playlists: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -93,10 +105,21 @@ class Registry:
         except (OSError, json.JSONDecodeError) as e:
             logger.warning("accounts registry %s unreadable (%s); starting empty", path, e)
             return cls(path=path)
-        accounts = [
-            Account(name=a["name"], cache_path=a.get("cache_path", ""))
-            for a in data.get("accounts", [])
-        ]
+        accounts = []
+        for a in data.get("accounts", []):
+            raw_playlists = a.get("playlists") or {}
+            # Defensive: only keep entries that are str→str. Tolerant of
+            # hand-edited JSON or older files that don't have this field.
+            playlists = {
+                str(uri): str(name)
+                for uri, name in raw_playlists.items()
+                if isinstance(uri, str) and isinstance(name, str)
+            }
+            accounts.append(Account(
+                name=a["name"],
+                cache_path=a.get("cache_path", ""),
+                playlists=playlists,
+            ))
         return cls(accounts=accounts, default_name=data.get("default", ""), path=path)
 
     def save(self) -> None:
@@ -129,12 +152,35 @@ class Registry:
         if existing is not None:
             if account.cache_path:
                 existing.cache_path = account.cache_path
+            # Don't clobber existing playlists with an empty default-factory
+            # dict from a freshly-constructed Account passed in by the
+            # OAuth flow — only overwrite if the caller provided real data.
+            if account.playlists:
+                existing.playlists = account.playlists
         else:
             if not account.cache_path:
                 account.cache_path = default_cache_path_for(account.name)
             self.accounts.append(account)
         if make_default or not self.default_name:
             self.default_name = account.name
+
+    def add_playlist(self, account_name: str, uri: str, display_name: str) -> bool:
+        """Attach a Spotify playlist URI to an account by URI. Returns
+        True on success, False if the account doesn't exist. Existing
+        entries with the same URI are overwritten (so a re-fetched name
+        replaces the old one). Caller is responsible for normalising
+        the URI via `parse_playlist_uri`."""
+        a = self.get(account_name)
+        if a is None:
+            return False
+        a.playlists[uri] = display_name
+        return True
+
+    def remove_playlist(self, account_name: str, uri: str) -> bool:
+        a = self.get(account_name)
+        if a is None:
+            return False
+        return a.playlists.pop(uri, None) is not None
 
     def remove(self, name: str) -> bool:
         before = len(self.accounts)
