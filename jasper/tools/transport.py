@@ -110,7 +110,7 @@ async def _mpris_now_playing() -> dict[str, str]:
 async def _detect_source(renderer) -> str:
     """Return the active playback source: 'airplay' / 'spotify' / 'bluetooth' / 'mpd'.
 
-    Reads moOde's SQLite-backed renderer flags. Order matters when more
+    Reads the renderer's per-source flags. Order matters when more
     than one is somehow active: airplay > spotify > bluetooth > mpd.
     """
     renderers = await renderer.active_renderers()
@@ -181,8 +181,8 @@ def make_transport_dispatcher(renderer, router):
     Spotify Connect (no AirPlay): router picks the active or default
     account; spotipy targets that account's active device.
 
-    MPD / Bluetooth: same as before — moOde for MPD, "not supported"
-    for Bluetooth.
+    MPD / Bluetooth: MPD via python-mpd2; Bluetooth is "not supported"
+    (no clean pause API on bluez-alsa A2DP sink).
 
     Toggle action: query the current is-playing state for the active
     source and dispatch pause-or-play accordingly. MPRIS exposes a
@@ -279,9 +279,9 @@ def make_transport_dispatcher(renderer, router):
                     "error": "bluetooth transport not yet supported. "
                     "tell the user to use the controls on their phone.",
                 }
-            # MPD source. moOde's REST exposes a native toggle that
-            # consults MPD's current state, so toggle is one call —
-            # avoids a status round-trip.
+            # MPD source. RendererClient.toggle_play_pause consults
+            # MPD's current state in a single call, avoiding a separate
+            # status round-trip.
             if action == "toggle":
                 await renderer.toggle_play_pause()
                 return {"ok": True, "source": "mpd"}

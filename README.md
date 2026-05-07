@@ -1,10 +1,10 @@
 # JTS — Jasper smart speaker
 
-A custom voice-controlled smart speaker built on a Raspberry Pi 5
-plus [moOde audio](https://moodeaudio.org/) and
-[CamillaDSP](https://github.com/HEnquist/camilladsp), with voice
-via [Gemini 3.1 Flash Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview).
-This is a personal hobby project; not a product.
+A custom voice-controlled smart speaker on a Raspberry Pi 5 running
+Raspberry Pi OS Lite Trixie, with
+[CamillaDSP](https://github.com/HEnquist/camilladsp) for audio and
+[Gemini 3.1 Flash Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
+for voice. This is a personal hobby project; not a product.
 
 The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
@@ -38,17 +38,12 @@ Audio path:
 Phone (AirPlay / Spotify Connect / BT)
         │
         ▼
-  moOde renderers (MPD / shairport-sync / librespot / bluealsa)
+  shairport-sync (AirPlay 2)   librespot (Spotify Connect)
+  bluealsa-aplay (BT A2DP)
         │
-        │  via /etc/alsa/conf.d/zz-jts-loopback.conf
-        │  (rewrites pcm._audioout to point at snd-aloop)
+        │ each writes directly to hw:Loopback,0,0
         ▼
-  hw:Loopback,0,sub0  ── snd-aloop ──  hw:Loopback,1,sub0
-                                              │
-                                              ▼
-                                    pcm.jasper_capture
-                                    (type plug → type dsnoop;
-                                    multiple readers OK)
+  hw:Loopback,0,sub0  ── snd-aloop ──  plughw:Loopback,1,0
                                               │
                                               ▼
                                     jasper-camilla (CamillaDSP, port 1234)
@@ -86,11 +81,15 @@ dmix (`pcm.jasper_out`); dmix sums their streams. Music ducks on
 wake via a CamillaDSP `SetVolume` call on the `master_gain` mixer
 over its websocket on port 1234.
 
+`jasper-mux` arbitrates between the three renderers — when a new
+source transitions to playing while another is already active, it
+pauses the older one so the user gets "latest source wins" UX.
+
 There's also an opt-in software AEC bridge (`jasper-aec-bridge`)
-that taps the music chain via `pcm.jasper_capture`, runs SpeexDSP
-echo cancellation against the chip's raw mic, and emits a
-cleaned-up mono signal to a second snd-aloop card for jasper-voice
-to consume. Disabled by default — see § below.
+that taps the music chain via a `pcm.jasper_capture` dsnoop, runs
+SpeexDSP echo cancellation against the chip's raw mic, and emits
+a cleaned-up mono signal to a second snd-aloop card for
+jasper-voice to consume. Disabled by default — see § below.
 
 ---
 
@@ -98,7 +97,10 @@ to consume. Disabled by default — see § below.
 
 `v1` (per [PLAN.md](PLAN.md)) is mostly landed:
 
-- ✅ Music streaming (AirPlay / Spotify Connect / Bluetooth) via moOde
+- ✅ Music streaming (AirPlay 2, Spotify Connect, Bluetooth A2DP) via
+  source-built shairport-sync + nqptp, librespot (rust, via raspotify
+  .deb) with log volume curve, and bluez-alsa
+- ✅ `jasper-mux` daemon for latest-source-wins preemption
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
 - ✅ Wake-word detection ("Hey Jarvis", openWakeWord ONNX)
 - ✅ Gemini Live voice loop with tool calling
@@ -113,15 +115,6 @@ to consume. Disabled by default — see § below.
 - 🔄 ESP32 rotary dial: phase 1 landed (volume); phase 2/3
   (play/pause click + hold-to-talk) and phase 5 (LVGL display) pending.
   See "Rotary dial controller" in [CLAUDE.md](CLAUDE.md).
-- ✅ No-moOde install option: validated on a 2GB Pi 5 with Raspberry
-  Pi OS Lite (Trixie). Source-builds shairport-sync with AirPlay 2
-  + nqptp, drops in librespot (rust, via raspotify .deb) with a
-  log volume curve, bluez-alsa, and a `jasper-mux` daemon for
-  "latest-source-wins" preemption. Total daemon RAM ~76 MB; system
-  idle ~273 MiB used (vs 600-800 MiB on moOde). Run
-  `install.sh --backend=debian`. See
-  [deploy/debian-stack/README.md](deploy/debian-stack/README.md) and
-  the "Renderer backend" section of [CLAUDE.md](CLAUDE.md).
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
@@ -157,12 +150,16 @@ firmware/
 
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
-  alsa/                         /root/.asoundrc + zz-jts-loopback.conf
+  alsa/                         /root/.asoundrc template
   camilladsp/                   v1.yml passthrough config + master_gain
-  systemd/                      jasper-{camilla,voice,control,aec-bridge,aec-init}
+  systemd/                      jasper-{camilla,voice,control,mux,aec-bridge,aec-init}
+                                + librespot, shairport-sync, nqptp, bt-agent
   modules-load.d/               snd-aloop autoload
   modprobe.d/                   snd-aloop two-card config
-  nginx-jasper{,-https}.conf    /spotify reverse-proxy
+  bin/                          jasper-librespot-event (--onevent hook)
+  configure-bluez.sh            Speaker-mode pairing config
+  shairport-sync.conf           AirPlay 2 receiver config
+  nginx-jasper.conf             Standalone /spotify + /dial HTTPS site
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation
@@ -357,13 +354,13 @@ If the repo is already deployed and you're just pushing changes:
 # from your laptop, with rsync set up to the Pi:
 rsync -avz --delete \
   --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
-  ./ pi@jasper.local:/home/pi/jts/
+  ./ pi@jts.local:/home/pi/jts/
 
-ssh pi@jasper.local 'sudo bash /home/pi/jts/deploy/install.sh'
-ssh pi@jasper.local 'sudo systemctl restart jasper-camilla jasper-voice'
+ssh pi@jts.local 'sudo bash /home/pi/jts/deploy/install.sh'
+ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice'
 ```
 
-The install script is idempotent. moOde stays untouched.
+The install script is idempotent.
 
 ---
 

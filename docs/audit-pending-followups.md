@@ -212,13 +212,12 @@ The May 2026 voice-music-control phase landed:
 
 - **Volume:** percent-based `set_volume` / `adjust_volume` / `mute` /
   `unmute` against CamillaDSP's main fader (works regardless of which
-  renderer is active — moOde's HTTP `set_volume` is gated whenever a
-  renderer is up, so it's the wrong target for voice).
+  renderer is active).
 - **Transport:** source-aware `next_track` / `previous_track` /
   `pause` / `resume` / `get_now_playing`. AirPlay routes via shairport-
   sync's MPRIS interface (`org.mpris.MediaPlayer2.ShairportSync` on
   the system bus → DACP → sender), Spotify Connect routes via spotipy
-  against the active device, MPD routes via existing `MoodeClient`.
+  against the active device, MPD routes via `RendererClient`.
 
 These follow-ons are explicitly in scope for the next phase:
 
@@ -234,7 +233,7 @@ The interesting bit is **device targeting in the AirPlay-carrying-Spotify
 case** (the canonical iPhone use case from the original handoff):
 
 - User has iPhone Spotify casting via AirPlay to the Pi.
-- moOde reports `aplactive=1`. To the Pi, AirPlay is the source.
+- The renderer reports `aplactive=1`. To the Pi, AirPlay is the source.
 - User says "play Kanye West."
 - Correct behaviour: target the **iPhone's** Spotify Connect device,
   not the Pi's librespot. The iPhone's Spotify app receives the

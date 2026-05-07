@@ -14,7 +14,7 @@ test, interpret the results, and act on the decision tree.
 ## Project context (read first)
 
 JTS is a personal-hobby smart speaker built on a Raspberry Pi 5
-running [moOde audio](https://moodeaudio.org) plus
+running Raspberry Pi OS Lite Trixie plus
 [CamillaDSP](https://github.com/HEnquist/camilladsp), with a voice
 loop powered by Gemini 3.1 Flash Live. The hardware:
 

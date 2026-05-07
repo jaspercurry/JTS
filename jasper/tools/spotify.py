@@ -373,10 +373,10 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         currently-playing Spotify Connect device (the sender's phone)
         directly. start_playback to that device just changes the track
         riding the existing AirPlay stream — no need to stop anything,
-        and no dependency on whether moOde's librespot is visible to
-        that account. resolve_target's heuristics (which re-derive the
-        AirPlay→Spotify match from moOde's currentsong) only run for
-        cold-start cases."""
+        and no dependency on whether the on-Pi librespot endpoint is
+        visible to that account. resolve_target's heuristics (which
+        re-derive the AirPlay→Spotify match from the renderer's
+        currentsong) only run for cold-start cases."""
         renderers = await renderer.active_renderers()
         airplay_active = bool(renderers.get("aplactive"))
         if airplay_active:

@@ -18,57 +18,26 @@ agent file). Keep both in sync when editing.
 
 ---
 
-## Renderer backend — moode vs debian
+## Renderer architecture — file map
 
-JTS supports two deployment targets, picked at install time:
+`install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
+drops in librespot (rust, via raspotify .deb) + bluez-alsa +
+bt-agent, and owns the full systemd unit per renderer.
 
-```sh
-sudo bash deploy/install.sh --backend=moode    # default; existing
-sudo bash deploy/install.sh --backend=debian   # no moOde
-```
+`jasper/renderer.py:RendererClient` reads renderer state from each
+daemon's own surface:
+- librespot → `/run/librespot/state.json` (written by the
+  `--onevent` hook `/usr/local/bin/jasper-librespot-event`)
+- shairport-sync → MPRIS PlaybackStatus over busctl
+- bluez-alsa → `bluealsa-cli list-pcms`
 
-**moode** (default, what jasper.local runs): assumes moOde audio
-10.1.2+ is already up. Hijacks moOde's `pcm._audioout` ALSA symbol
-to redirect renderers into snd-aloop. `jasper/moode.py` polls
-moOde's REST + SQLite for renderer state.
-
-**debian** (validated on jts.local 2026-05-07): stock Raspberry Pi OS
-Lite, no moOde. Source-builds shairport-sync with AirPlay 2 +
-nqptp, drops in librespot (rust, via raspotify .deb) + bluez-alsa
-+ bt-agent, owns the full systemd unit per renderer.
-`jasper/renderer.py:DebianBackend` reads librespot state from
-`/run/librespot/state.json` (written by the `--onevent` hook
-`/usr/local/bin/jasper-librespot-event`), shairport-sync MPRIS,
-and bluez-alsa directly. `jasper-mux.service` does latest-source-
-wins preemption (moOde's worker.php replacement).
+`jasper-mux.service` does latest-source-wins preemption: when a
+new source transitions to playing while another is already active,
+it pauses the older one.
 
 Spotify volume control goes via the Spotify Web API (the multi-
-account `spotify_router`) since librespot has no local control HTTP
-— see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
-
-Backend selection is via `JASPER_RENDERER_BACKEND=moode|debian`
-in `/etc/jasper/jasper.env` (default "moode" for backward compat).
-`jasper.renderer.make_backend()` is the single entry point;
-voice_daemon and jasper-control both go through it.
-
-**Things that differ between backends:**
-
-| Aspect | moode | debian |
-|---|---|---|
-| `/root/.asoundrc` | jasper_capture (dsnoop) + jasper_out (dmix) | jasper_out only (no AEC bridge yet) |
-| `/etc/alsa/conf.d/zz-jts-loopback.conf` | hijacks `_audioout` | not installed |
-| `/etc/modprobe.d/snd-aloop.conf` | `index=0,5` | `index=6,7` (HDMI claims 0,1 on fresh Pi OS Lite) |
-| Renderer daemons | provided by moOde | source-built or apt-installed by `install.sh` |
-| Renderer state polling | moOde REST + SQLite | each daemon's own surface |
-| Source preemption | moOde's worker.php | `jasper-mux` daemon |
-
-**For voice testing on the debian backend** (jts.local), the XVF3800
-mic array still needs to be physically present on that Pi. As of
-the migration date, the mic was on jasper.local and not yet moved.
-Voice end-to-end on the debian stack is the next milestone.
-
-The full debian-stack file map and source-build deps are in
-[`deploy/debian-stack/README.md`](deploy/debian-stack/README.md).
+account `spotify_router`) since librespot has no local control
+HTTP — see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 
 ---
 
@@ -168,7 +137,7 @@ When the user reports "it doesn't work" or asks about Pi-side
 behaviour, **before guessing**, fetch the actual logs:
 
 ```sh
-bash scripts/fetch-pi-logs.sh                # last hour, default Pi at jasper.local
+bash scripts/fetch-pi-logs.sh                # last hour, default Pi at jts.local
 SINCE='10 minutes ago' bash scripts/fetch-pi-logs.sh
 PI_HOST=192.168.1.42 bash scripts/fetch-pi-logs.sh
 ```
@@ -208,7 +177,7 @@ For a one-shot full diagnostic dump (when something's badly
 wrong), run on the Pi:
 
 ```sh
-ssh pi@jasper.local sudo bash /home/pi/jts/scripts/pi-bundle.sh
+ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh
 # prints the path to a tarball under /tmp/, scp it back to ./logs/
 ```
 
@@ -237,13 +206,12 @@ specific project:
 - **Check prior art.** Existing helpers — `pycamilladsp`,
   `python-mpd2`, `openwakeword`, `google-genai` — handle most of
   the integration. Don't reinvent.
-- **Surgical changes — file ownership.** moOde owns
-  `/etc/asound.conf`, `/etc/mpd.conf`, `/var/local/www/`. Our
-  files live under `/opt/jasper/`, `/etc/camilladsp/`,
-  `/etc/jasper/`, `/etc/modprobe.d/snd-aloop.conf`,
-  `/etc/alsa/conf.d/zz-jts-loopback.conf`, `/root/.asoundrc`,
-  and `/etc/systemd/system/jasper-*.service`. **Do not modify
-  anything moOde owns.**
+- **Surgical changes — file ownership.** Our files live under
+  `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,
+  `/etc/modprobe.d/snd-aloop.conf`, `/root/.asoundrc`,
+  `/etc/shairport-sync.conf`, `/etc/nginx/sites-enabled/jasper.conf`,
+  and `/etc/systemd/system/{jasper-*,librespot,shairport-sync,nqptp,bt-agent}.service`.
+  Touch only what you must when modifying these.
 - **No silent failure paths.** Any new code path that would
   prevent the speaker from responding to a wake event MUST also
   trigger an audio cue (so the user hears why nothing happened).

@@ -78,7 +78,7 @@ hardware topology.
 
 | Component | Role |
 |---|---|
-| Raspberry Pi 5 (1GB or 2GB) | Host running moOde audio + jasper daemons |
+| Raspberry Pi 5 (1GB or 2GB) | Host running the jasper daemons |
 | Apple USB-C → 3.5mm dongle | The actual speaker output. 48 kHz native, simple UAC2 device. |
 | TPA3255 amp + speakers | Driven from the dongle's 3.5mm output |
 | Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-board XMOS DSP. Connected over USB. |
@@ -283,10 +283,9 @@ just changed what it does internally.
 ### The architecture
 
 ```
-moOde renderers (MPD, shairport-sync, librespot, bluealsa)
+renderers (shairport-sync, librespot, bluealsa-aplay, optional MPD)
     │
-    │  via /etc/alsa/conf.d/zz-jts-loopback.conf
-    │  (rewrites pcm._audioout to point at Loopback,0,sub0)
+    │  each writes directly to hw:Loopback,0,0
     ▼
 hw:Loopback,0,sub0  ← snd-aloop card 0, kernel-clocked
     │  cross-wired by snd-aloop
@@ -320,7 +319,7 @@ pcm.jasper_capture  ← type plug → type dsnoop on Loopback,1,sub0
 ```
 
 Two snd-aloop cards. Card 0 ("Loopback") carries the music chain
-(moOde → camilla → dongle, with the bridge tapping the camilla
+(renderer → camilla → dongle, with the bridge tapping the camilla
 input via dsnoop). Card 5 ("LoopbackAEC") carries only the AEC'd
 mono mic from the bridge to jasper-voice. Two cards instead of
 multiple substreams of one card because PortAudio (sounddevice's
@@ -352,9 +351,9 @@ Three options were considered for the software AEC implementation:
 
 - **WebRTC AEC3** (Google, used by PipeWire's `module-echo-cancel`
   and Chrome). High quality. But the canonical integration path
-  is via PipeWire, which we can't run alongside moOde without
-  significant restructuring. Standalone ALSA-only WebRTC AEC
-  packages don't really exist; we'd be writing or porting one.
+  is via PipeWire, which would require restructuring our ALSA
+  topology. Standalone ALSA-only WebRTC AEC packages don't really
+  exist; we'd be writing or porting one.
 - **SpeexDSP** (xiph). Mature, packaged in Debian
   (`libspeexdsp-dev`), small. Stuart Naylor's writeups
   (the most-cited voice on Pi-AEC) report SpeexDSP holds up at
@@ -442,9 +441,9 @@ mic/speaker swap, hardware redesign).
 ## Current measured performance
 
 Setup: controlled log sweep (200–3400 Hz, 5% FS, 30 sec) played
-through `_audioout` (the moOde-hijacked path that flows through
-the Loopback chain), with `jasper-aec-bridge` instrumentation
-logging per-frame RMS for raw mic, reference, and AEC output.
+through `plughw:Loopback,0,0` (the same path the renderers use)
+with `jasper-aec-bridge` instrumentation logging per-frame RMS for
+raw mic, reference, and AEC output.
 
 | Time | Reference RMS | Raw mic RMS | AEC out RMS | Attenuation |
 |---|---|---|---|---|
@@ -475,11 +474,10 @@ jasper-voice:      11.3%,                  265 MB RSS
                    ~15% of one core        ~380 MB total
 ```
 
-Relative to baseline (Pi 5 idle with moOde = ~50% RAM used), the
-bridge adds ~110 MB which puts the 1GB Pi 5 at ~60% memory usage
-and ~160 MB into swap. The 2GB Pi 5 (which BRINGUP.md and PLAN.md
-have always recommended as the v1 target) has comfortable
-headroom.
+Relative to baseline (Pi 5 idle ≈ 270 MiB used), the bridge adds
+~110 MB which puts the 1GB Pi 5 at ~38% memory usage. The 2GB
+Pi 5 (which BRINGUP.md and PLAN.md have always recommended as the
+v1 target) has comfortable headroom.
 
 ---
 

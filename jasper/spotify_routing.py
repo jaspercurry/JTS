@@ -4,17 +4,17 @@ start_playback to, and what (if anything) needs to stop first.
 Three real-world cases:
 
 1. User is currently AirPlaying Spotify from their phone to the Pi:
-   moOde's renderer state has aplactive=1; moOde's currentsong has the
-   AirPlay metadata; Spotify Web API also reports something is_playing.
-   If the AirPlay track and the Spotify track match (by title + artist),
+   the renderer reports aplactive=1; currentsong has the AirPlay
+   metadata; Spotify Web API also reports something is_playing. If
+   the AirPlay track and the Spotify track match (by title + artist),
    the AirPlay session IS Spotify — target the active Spotify device
    (the phone) so the song change rides the existing AirPlay stream.
    The user's iPhone hardware volume buttons keep working.
 
 2. User is AirPlaying NON-Spotify (Apple Music, YouTube, podcast),
-   or has Bluetooth A2DP active, or moOde MPD is playing a radio
-   station: stop that source first, then start librespot on the Pi.
-   Voice command is an exclusive override — never two streams at once.
+   or has Bluetooth A2DP active, or MPD is playing a radio station:
+   stop that source first, then start librespot on the Pi. Voice
+   command is an exclusive override — never two streams at once.
 
 3. Nothing is playing on the Pi: start librespot. Plain case.
 
@@ -89,8 +89,8 @@ async def resolve_target(
     renderer,                                 # RendererClient
     librespot_name_pattern: str,
 ) -> Resolution:
-    """Determine the Spotify device_id to target and what (if anything) on
-    moOde needs to stop first. All four data fetches run in parallel —
+    """Determine the Spotify device_id to target and what (if anything)
+    needs to stop first. All four data fetches run in parallel —
     total latency ≈ slowest single call (~200ms)."""
 
     async def _spotify_playback():
@@ -164,11 +164,12 @@ async def resolve_target(
 
 
 async def stop_renderers(renderer, names: list[str]) -> None:
-    """Stop the moOde renderers named in `names`. Names match
+    """Stop the renderers named in `names`. Names match
     Resolution.stop_renderers values. mpd is paused; airplay/bluetooth
-    are disabled via renderer_onoff. After disabling the service takes
-    a beat to actually release the audio device — small sleep avoids a
-    race where librespot starts while shairport-sync is still draining."""
+    are disabled via disable_renderer. After disabling, the service
+    takes a beat to actually release the audio device — a small sleep
+    avoids a race where librespot starts while shairport-sync is still
+    draining."""
     for name in names:
         try:
             if name == "mpd":

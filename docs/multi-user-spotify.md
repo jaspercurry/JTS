@@ -107,8 +107,9 @@ restart is the cleanest way to make a new account fully active.
 
 When you say "next song" / "previous" / "pause" / "resume":
 
-1. `_detect_source` reads moOde's renderer flags and figures out the
-   active source: `airplay`, `spotify` (Connect), `bluetooth`, or `mpd`.
+1. `_detect_source` reads the renderer's per-source flags and figures
+   out the active source: `airplay`, `spotify` (Connect), `bluetooth`,
+   or `mpd`.
 2. For **AirPlay**: read shairport's MPRIS `xesam:title` and the
    AirPlay `ClientName`. Then call
    `Router.resolve_for_transport(client_name, mpris_title)`:
@@ -234,8 +235,8 @@ generated at install time:
 - Cert: `/etc/nginx/ssl/jasper.crt` (10-year validity, SANs for
   `jasper.local`, `jasper`, `127.0.0.1`)
 - Key: `/etc/nginx/ssl/jasper.key`
-- nginx site: `/etc/nginx/sites-enabled/jasper-https.conf` (port 443,
-  HTTPS-only — moOde's HTTP UI on port 80 is unaffected)
+- nginx site: `/etc/nginx/sites-enabled/jasper.conf` (port 80
+  redirects to HTTPS; port 443 with the cert above)
 
 Each device clicks through "not private" once. To eliminate the
 warning, install the cert on the device's trust store (iOS: AirDrop

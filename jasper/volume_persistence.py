@@ -315,8 +315,7 @@ class VolumePersistence:
         If `main_volume_db` hasn't been written yet (no save_now call
         in this process), derive it from listening_level so the file
         always has a coherent main_volume_db field for legacy
-        callers (boot-time regress_if_stale on the moOde backend,
-        external readers, etc.)."""
+        callers (boot-time regress_if_stale, external readers, etc.)."""
         clamped = max(0, min(100, int(percent)))
         self._current_listening_level = clamped
         if mark_user_change:

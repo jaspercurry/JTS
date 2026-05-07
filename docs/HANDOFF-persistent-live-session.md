@@ -15,7 +15,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 
 ## What's working (don't break this)
 
-- **Hardware bring-up**: Pi 5 (1 GB) + moOde 10.1.2 + always-on CamillaDSP + Apple USB-C dongle as DAC + ReSpeaker XVF3800 as mic. AirPlay/MPD/Spotify Connect all flow through CamillaDSP to the dongle. See `BRINGUP.md`.
+- **Hardware bring-up**: Pi 5 (1 GB) + Raspberry Pi OS Lite Trixie + always-on CamillaDSP + Apple USB-C dongle as DAC + ReSpeaker XVF3800 as mic. AirPlay/Spotify Connect/Bluetooth all flow through CamillaDSP to the dongle. See `BRINGUP.md`.
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis". Currently threshold 0.92 (high — see "what's broken" below).
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
 - **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, MPD transport — all work when Gemini actually responds.
