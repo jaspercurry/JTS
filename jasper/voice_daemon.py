@@ -10,6 +10,7 @@ from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
+from .cues import AudioCueManager, GeminiTTSGenerator
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
@@ -487,6 +488,50 @@ def _make_connection(cfg: Config) -> LiveConnection:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
+def _build_cues_manager(cfg: Config, tts: TtsPlayout) -> AudioCueManager:
+    """Construct the audio-cue manager with hostname extracted from
+    JASPER_MANAGEMENT_URL and the same voice the assistant uses for
+    Live responses (so the user doesn't hear two different voices
+    coming out of the same speaker). When no API key is configured
+    we still return a manager — playback works off any cached files
+    that already exist; only regeneration is disabled."""
+    import urllib.parse
+    hostname = urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
+    backend = (
+        GeminiTTSGenerator(api_key=cfg.gemini_api_key, voice=cfg.gemini_voice)
+        if cfg.gemini_api_key
+        else None
+    )
+    return AudioCueManager(
+        sounds_dir=cfg.sounds_dir,
+        hostname=hostname,
+        voice=cfg.gemini_voice,
+        backend=backend,
+        tts_playout=tts,
+    )
+
+
+def _schedule_cue_regen(manager: AudioCueManager) -> None:
+    """Background task: bake any missing / stale cues. Failures
+    (network down, API key wrong, quota) are logged but never raised
+    — the daemon should still come up if regeneration can't run."""
+    async def _run() -> None:
+        try:
+            written = await asyncio.to_thread(manager.regenerate)
+        except RuntimeError as e:
+            logger.warning("cue regen skipped: %s", e)
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cue regen failed: %s", e)
+            return
+        if written:
+            logger.info("cue regen wrote %d new cue(s): %s", len(written), written)
+        else:
+            logger.info("cue regen: all cues already cached")
+
+    asyncio.create_task(_run(), name="jasper-cues-regen")
+
+
 def _build_router(cfg: Config) -> Router | None:
     """Build the multi-account spotify router, or None if Spotify
     isn't configured at the env level."""
@@ -643,6 +688,7 @@ class WakeLoop:
         spend_cap: SpendCap,
         stop_event: asyncio.Event,
         volume_coordinator: "VolumeCoordinator",
+        cues: AudioCueManager | None = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -655,6 +701,7 @@ class WakeLoop:
         self._spend_cap = spend_cap
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
+        self._cues = cues
 
         # Local Silero VAD for in-session barge-in gating. While the
         # model is producing TTS, mic frames are forwarded to Gemini
@@ -694,6 +741,16 @@ class WakeLoop:
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
 
+    async def _play_cue(self, slug: str) -> None:
+        """Best-effort cue playback. Swallows any exception — this
+        is called from failure handlers and must never throw."""
+        if self._cues is None:
+            return
+        try:
+            await self._cues.play(slug)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cue %s play failed: %s", slug, e)
+
     async def run(self) -> None:
         async for frame in self._mic.frames():
             if self._stop_event.is_set():
@@ -732,21 +789,31 @@ class WakeLoop:
         logger.info("wake detected (score=%.2f, threshold=%.2f)", score, self._detector.threshold)
         if not self._spend_cap.allowed():
             logger.warning("daily spend cap reached; voice disabled until rollover")
+            await self._play_cue("spend_cap_reached")
             return
 
         # If the connection is in a backoff/failed window, don't bother
-        # opening a turn — surface the situation in the log and skip.
+        # opening a turn — play a "can't connect" cue so the user
+        # knows why and isn't left guessing, then skip.
         if self._connection.is_paused():
             logger.warning(
                 "wake detected but live connection is paused (reconnect/backoff); "
                 "ignoring this wake event"
             )
+            await self._play_cue("cant_connect")
             return
 
         try:
             await self._begin_turn()
         except Exception as e:  # noqa: BLE001
             logger.exception("turn begin failed: %s", e)
+            # Treat "can't begin a turn" the same way as
+            # is_paused — most of the time the underlying cause is
+            # a transient connection issue surfaced inside
+            # acquire_turn (e.g., the timeout-while-waiting-for-
+            # connect path). Play the cue so the user hears
+            # something, then fall through to cleanup.
+            await self._play_cue("cant_connect")
             await self._cleanup_after_failed_begin()
 
     async def _handle_session_frame(self, frame) -> None:
@@ -1281,10 +1348,25 @@ async def run() -> None:
                 initial_anchor_dbfs=initial_anchor,
             )
             await tts_volume_tracker.start()
+
+            # Build the audio-cue manager. Hostname for templates is
+            # extracted from JASPER_MANAGEMENT_URL ("https://jts.local"
+            # → "jts.local") so cues say "visit jts.local" rather
+            # than reading out the full URL with scheme/path. The
+            # manager is wired into WakeLoop so failure paths can
+            # call cues.play(slug) instead of just logging.
+            cues_manager = _build_cues_manager(cfg, tts)
+            # Kick off background regen for any missing/stale cues.
+            # Doesn't block daemon "ready" — if regen fails (no
+            # internet / bad API key), cues silently won't play; the
+            # daemon's other voice paths still work.
+            _schedule_cue_regen(cues_manager)
+
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
+                cues=cues_manager,
             )
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
