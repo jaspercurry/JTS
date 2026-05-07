@@ -27,9 +27,6 @@ own echo. So pushing 50% to AirPlay → polling sees 50% on next tick →
 ignored; pushing 50% then user touches slider to 30% → polling sees
 30% (outside echo window OR different value) → propagated.
 
-Backend gate. Observers only run on the debian backend (the moOde
-backend has its own coordination layer, worker.php). voice_daemon
-checks cfg.renderer_backend before starting.
 """
 from __future__ import annotations
 

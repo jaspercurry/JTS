@@ -1,9 +1,9 @@
-"""jasper-mux — renderer source-arbiter for the debian backend.
+"""jasper-mux — renderer source-arbiter.
 
 Polls each renderer's state on a short interval and, when a new
 source transitions to "playing" while another is already playing,
-pauses the older one. Implements the "most recent source wins"
-UX that moOde's worker.php provides on the moOde backend.
+pauses the older one. Implements "most recent source wins" UX
+across the AirPlay / Spotify Connect / Bluetooth A2DP renderers.
 
 Cadence: 1 Hz polling. Each tick fans out to three concurrent
 state probes; the whole tick takes <100 ms typically.
@@ -29,9 +29,6 @@ Renderer support:
             audio for a moment until the user pauses on their
             phone. Better-than-nothing.
 
-Backend gate: this daemon is debian-stack-only. On moOde,
-worker.php handles preemption. install.sh only enables
-jasper-mux when --backend=debian.
 """
 from __future__ import annotations
 

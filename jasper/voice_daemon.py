@@ -14,7 +14,7 @@ from .cues import AudioCueManager, GeminiTTSGenerator
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
-from .renderer import RendererBackend, make_backend
+from .renderer import RendererClient
 from .spotify_router import Router, build_clients
 from .subway import SubwayClient
 from .tools import ToolRegistry
@@ -298,10 +298,10 @@ class TtsVolumeTracker:
         self._task: asyncio.Task | None = None
         self._stop_event = asyncio.Event()
         # Optional disk persistence: every poll reads main_volume; we
-        # opportunistically debounce-write it so external changes (moOde
-        # web UI volume slider, mpc, hardware knob) get captured even
-        # though they don't go through our voice tools. The same path
-        # also persists the loudness anchor as it updates.
+        # opportunistically debounce-write it so external changes (mpc,
+        # hardware knob, anything that bypasses our voice tools) get
+        # captured. The same path also persists the loudness anchor as
+        # it updates.
         self._volume_persistence = volume_persistence
         # Loudness anchor: the last observed playback RMS while music
         # was actually playing, used as TTS's reference during silence
@@ -433,8 +433,8 @@ class TtsVolumeTracker:
                 self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
                 continue
             # Debounced persistence catches external main_volume changes
-            # (moOde UI, mpc, hardware knob, anything that bypasses our
-            # voice tools). Voice-tool-driven changes already persist
+            # (mpc, hardware knob, anything that bypasses our voice
+            # tools). Voice-tool-driven changes already persist
             # immediately via tools/audio.py; this is the catch-all.
             if self._volume_persistence is not None:
                 self._volume_persistence.maybe_save(vol_db)
@@ -560,7 +560,7 @@ def _build_router(cfg: Config) -> Router | None:
 def _build_registry(
     cfg: Config,
     camilla: CamillaController,
-    moode: RendererBackend,
+    renderer: RendererClient,
     weather: WeatherClient,
     subway: SubwayClient | None,
     volume_coordinator: "VolumeCoordinator",
@@ -574,10 +574,10 @@ def _build_registry(
     # build it here for backward-compat with any caller that doesn't
     # plumb the shared instance through.
     router = spotify_router if spotify_router is not None else _build_router(cfg)
-    for fn in make_transport_tools(moode, router):
+    for fn in make_transport_tools(renderer, router):
         registry.register(fn)
     for fn in make_spotify_tools(
-        router, moode, cfg.spotify_device_name, cfg.spotify_setup_url,
+        router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
     ):
         registry.register(fn)
     for fn in make_weather_tools(weather):
@@ -1249,12 +1249,10 @@ async def run() -> None:
     spend_cap = SpendCap(usage_store, cfg.daily_spend_cap_usd)
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
-    moode = make_backend(
-        moode_base_url=cfg.moode_base_url,
+    renderer = RendererClient(
         mpd_host=cfg.mpd_host,
         mpd_port=cfg.mpd_port,
         librespot_state_path=cfg.librespot_state_path,
-        backend_name=cfg.renderer_backend,
     )
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
     subway = (
@@ -1281,7 +1279,7 @@ async def run() -> None:
     volume_coordinator = VolumeCoordinator(
         camilla=camilla,
         persistence=volume_persistence,
-        backend=moode,
+        backend=renderer,
         spotify_router=volume_spotify_router,
         spotify_device_name=cfg.spotify_device_name,
     )
@@ -1317,27 +1315,19 @@ async def run() -> None:
             "in-memory default", e,
         )
 
-    # Inbound source-volume observers (Phase 2). On the debian backend
-    # we poll shairport (DBus), librespot (state file written by
-    # --onevent hook), and bluez-alsa (DBus) once per second so
-    # iPhone slider movements / Spotify app slider drags / BT volume
-    # button presses sync into the coordinator's listening_level.
-    # Skipped on moOde — that backend's worker.php owns coordination.
-    volume_observer: VolumeObserver | None = None
-    if cfg.renderer_backend == "debian":
-        volume_observer = VolumeObserver(
-            volume_coordinator,
-            librespot_state_path=cfg.librespot_state_path,
-        )
-        await volume_observer.start()
-    else:
-        logger.info(
-            "volume observer disabled (renderer_backend=%s; only enabled on debian)",
-            cfg.renderer_backend,
-        )
+    # Inbound source-volume observers: poll shairport (DBus),
+    # librespot (state file written by --onevent hook), and bluez-alsa
+    # (DBus) once per second so iPhone slider movements / Spotify app
+    # slider drags / BT volume button presses sync into the
+    # coordinator's listening_level.
+    volume_observer = VolumeObserver(
+        volume_coordinator,
+        librespot_state_path=cfg.librespot_state_path,
+    )
+    await volume_observer.start()
 
     registry = _build_registry(
-        cfg, camilla, moode, weather, subway,
+        cfg, camilla, renderer, weather, subway,
         volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
@@ -1437,7 +1427,7 @@ async def run() -> None:
             await volume_observer.stop()
         await volume_coordinator.aclose()
         await connection.stop()
-        await moode.aclose()
+        await renderer.aclose()
         await weather.aclose()
 
 

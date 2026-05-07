@@ -52,10 +52,10 @@ from .volume_persistence import (
 if TYPE_CHECKING:
     # Avoid loading camilladsp/dbus modules at unit-test time. The
     # coordinator is duck-typed against CamillaController and
-    # RendererBackend; the real Pi-side imports happen in voice_daemon
+    # RendererClient; the real Pi-side imports happen in voice_daemon
     # and jasper-control.
     from .camilla import CamillaController
-    from .renderer import RendererBackend
+    from .renderer import RendererClient
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class VolumeCoordinator:
     the right attenuator based on which source is currently active.
 
     The coordinator does NOT cache active_renderers() across calls —
-    DebianBackend.active_renderers() is itself fast (<100 ms typical)
+    RendererClient.active_renderers() is itself fast (<100 ms typical)
     and re-querying on each volume command keeps "I just hit pause"
     transitions correct.
 
@@ -153,7 +153,7 @@ class VolumeCoordinator:
         *,
         camilla: "CamillaController",
         persistence: VolumePersistence,
-        backend: "RendererBackend",
+        backend: "RendererClient",
         spotify_router: Any | None = None,
         spotify_device_name: str = "JTS",
         http_client: Optional[httpx.AsyncClient] = None,

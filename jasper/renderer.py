@@ -1,33 +1,29 @@
-"""Renderer backend abstraction.
+"""Renderer state poller + transport dispatcher.
 
-Two implementations conform to the same RendererBackend protocol:
+Consults each renderer daemon directly for its playback state:
 
-- MoodeClient (jasper.moode.MoodeClient): polls moOde's REST + SQLite
-  for renderer state. The original implementation, used when running
-  on top of moOde audio.
-- DebianBackend (this file): consults each renderer daemon directly —
-  the librespot --onevent state file for Spotify, shairport-sync's
-  MPRIS over DBus for AirPlay, and bluez-alsa's PCM list for BT.
-  Used when running on a stock Debian Trixie box without moOde
-  (the migrate/no-moode stack).
+  librespot     → /run/librespot/state.json (--onevent hook)
+  shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
+  bluez-alsa    → bluealsa-cli list-pcms (subprocess)
+  MPD           → python-mpd2 (rare on this box — only if user
+                  installed mpd themselves for radio)
 
-Selection happens in `make_backend()` via the JASPER_RENDERER_BACKEND
-env var (default "moode" for backward compat). All callers go through
-the factory; nothing else needs to know which backend is live.
+`RendererClient.active_renderers()` returns a dict with one boolean
+per renderer (`spotactive`, `aplactive`, `btactive`, plus
+backwards-compatible `slactive`/`rbactive` always-False keys for
+squeezelite/roon-bridge that callers may still check).
 
-The two backends are duck-typed against the RendererBackend protocol,
-not subclassed. That keeps MoodeClient untouched on this branch and
-lets the cleanup commit at the end of the migration delete it without
-unwinding inheritance.
+Transport (next/prev/pause/play/toggle) routes to MPD if reachable.
+For source-aware AirPlay/Spotify transport, callers should use
+`jasper.tools.transport.make_transport_dispatcher`, which delegates
+to MPRIS / Spotify Web API based on the active source.
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import os
 import re
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import httpx
 from mpd.asyncio import MPDClient
@@ -37,39 +33,11 @@ from . import librespot_state
 logger = logging.getLogger(__name__)
 
 
-@runtime_checkable
-class RendererBackend(Protocol):
-    """Stable surface used by voice_daemon, transport tools, spotify
-    routing, and jasper-control. Both MoodeClient and DebianBackend
-    conform to this; callers should depend on the protocol rather
-    than either concrete class."""
-
-    async def active_renderers(self) -> dict[str, bool]: ...
-    async def get_currentsong(self) -> dict[str, Any]: ...
-    async def status(self) -> dict[str, Any]: ...
-    async def toggle_play_pause(self) -> None: ...
-    async def next_track(self) -> None: ...
-    async def previous_track(self) -> None: ...
-    async def pause(self) -> None: ...
-    async def play(self) -> None: ...
-    async def disable_renderer(self, name: str) -> None: ...
-    async def aclose(self) -> None: ...
-
-
-class DebianBackend:
-    """Renderer state + control without moOde. Consults each daemon's
-    own surface:
-      librespot     → /run/librespot/state.json (--onevent hook)
-      shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
-      bluez-alsa    → bluealsa-cli list-pcms (subprocess)
-      MPD           → python-mpd2 (rare on debian-stack — only if
-                      user installed mpd themselves for radio)
-
-    Transport (next/prev/pause/play/toggle) goes to MPD if MPD is
-    reachable. Source-aware AirPlay/Spotify transport is the job of
-    `jasper.tools.transport.make_transport_dispatcher`, which already
-    delegates to MPRIS / Spotify Web API when the source is not MPD.
-    """
+class RendererClient:
+    """Renderer state + control. Read-only state queries are
+    fail-soft (log + return safe default on transport errors).
+    Transport methods target MPD; source-aware routing across
+    AirPlay/Spotify lives in `jasper.tools.transport`."""
 
     def __init__(
         self,
@@ -87,17 +55,14 @@ class DebianBackend:
 
     # ------------------------------------------------------------------
     # State queries — read-only, fail-soft. None of these methods raise
-    # on transport errors; they log and return a safe default. This
-    # mirrors MoodeClient.active_renderers() which silently returns {}
-    # when the SQLite DB is unreachable.
+    # on transport errors; they log and return a safe default.
     # ------------------------------------------------------------------
 
     async def active_renderers(self) -> dict[str, bool]:
-        """Match MoodeClient's keys exactly (aplactive, btactive,
-        spotactive, slactive, rbactive) so callers don't branch on
-        backend type. slactive (squeezelite) and rbactive (roon
-        bridge) are always False on the debian stack — neither is
-        installed by default."""
+        """Returns a dict keyed by renderer name. slactive (squeezelite)
+        and rbactive (roon bridge) are always False — neither is
+        installed by default — and remain in the shape so callers
+        that iterate the dict don't need backend-specific branches."""
         spot, ap, bt = await asyncio.gather(
             self._spot_active(),
             self._ap_active(),
@@ -146,10 +111,10 @@ class DebianBackend:
         return b"a2dpsnk/source" in stdout
 
     # ------------------------------------------------------------------
-    # Currentsong — cascades by active source. Returns the same shape
-    # MoodeClient.get_currentsong() returns: a dict with at minimum
-    # "title", "album", "artist" keys that consumers (transport.py,
-    # spotify_routing.py) read from. Empty dict on error / no source.
+    # Currentsong — cascades by active source. Returns a dict with at
+    # minimum "title", "album", "artist" keys that consumers
+    # (transport.py, spotify_routing.py) read from. Empty dict on
+    # error / no source.
     # ------------------------------------------------------------------
 
     async def get_currentsong(self) -> dict[str, Any]:
@@ -210,20 +175,15 @@ class DebianBackend:
             return {}
 
     # ------------------------------------------------------------------
-    # Transport — same shape as MoodeClient. Note that
-    # transport.make_transport_dispatcher() already does source-aware
-    # routing, so these MPD calls only fire for the MPD source. On a
-    # debian-stack install without MPD, MPD calls fail soft.
+    # Transport — these MPD calls only fire for the MPD source. Without
+    # MPD installed, MPD calls fail soft. Source-aware routing for
+    # AirPlay/Spotify lives in jasper.tools.transport.
     # ------------------------------------------------------------------
 
     async def toggle_play_pause(self) -> None:
-        # MoodeClient hits moOde's REST `cmd=toggle_play_pause` which
-        # is source-aware (delegates to active renderer). On debian
-        # without moOde, the equivalent source-aware logic lives in
-        # make_transport_dispatcher.dispatch("toggle"). We don't have
-        # the dispatcher's deps here, so this method only handles MPD
-        # (and is_playing→pause, otherwise→play). Callers that need
-        # source-aware toggle should use the dispatcher directly.
+        # Only handles the MPD source (and is_playing→pause,
+        # otherwise→play). Callers that need source-aware toggle
+        # should use make_transport_dispatcher.dispatch("toggle").
         try:
             client = await self._mpd_client()
             status = await client.status()
@@ -247,11 +207,9 @@ class DebianBackend:
         await self._mpd_call("play")
 
     # ------------------------------------------------------------------
-    # disable_renderer — moOde's REST `cmd=renderer_onoff --<name> off`
-    # stops the active renderer so another source can take over. On
-    # the debian stack we pause the renderer's own session via its
-    # native API (gentler than systemctl-stop). Maps moOde's renderer
-    # names to debian-stack actions.
+    # disable_renderer — pauses the active renderer's session via its
+    # native API (gentler than systemctl-stop) so another source can
+    # take over.
     # ------------------------------------------------------------------
 
     _NAME_MAP = {
@@ -285,12 +243,11 @@ class DebianBackend:
         # bluez-alsa. The phone remains connected; we just don't have
         # a way to remotely stop playback. Caller (spotify_routing)
         # will fall back to MPD pause if applicable.
-        logger.debug("disable_renderer(%s): no-op on debian stack", name)
+        logger.debug("disable_renderer(%s): no-op", name)
 
     # ------------------------------------------------------------------
-    # MPD plumbing — identical to MoodeClient's. Reconnects on
-    # disconnect; serialised via a lock since python-mpd2's async
-    # client isn't reentrant.
+    # MPD plumbing — reconnects on disconnect; serialised via a lock
+    # since python-mpd2's async client isn't reentrant.
     # ------------------------------------------------------------------
 
     async def _mpd_client(self) -> MPDClient:
@@ -406,45 +363,3 @@ def _parse_mpris_metadata(busctl_out: str) -> dict[str, Any]:
             pos += sub.end()
         result["xesam:artist"] = items
     return result
-
-
-# ----------------------------------------------------------------------
-# Factory — single entry point. Reads JASPER_RENDERER_BACKEND if no
-# explicit name is passed (default "moode"). Both branches return
-# a RendererBackend-compatible object.
-# ----------------------------------------------------------------------
-
-def make_backend(
-    *,
-    moode_base_url: str,
-    mpd_host: str,
-    mpd_port: int,
-    librespot_state_path: str = librespot_state.DEFAULT_PATH,
-    backend_name: str | None = None,
-) -> RendererBackend:
-    if backend_name is None:
-        backend_name = os.environ.get("JASPER_RENDERER_BACKEND", "moode")
-    if backend_name == "debian":
-        logger.info(
-            "renderer backend: debian (librespot state file, "
-            "shairport MPRIS, bluez-alsa)",
-        )
-        return DebianBackend(
-            mpd_host=mpd_host,
-            mpd_port=mpd_port,
-            librespot_state_path=librespot_state_path,
-        )
-    if backend_name != "moode":
-        logger.warning(
-            "unknown JASPER_RENDERER_BACKEND=%r, falling back to moode",
-            backend_name,
-        )
-    # Lazy import — keeps the moOde-specific module out of the import
-    # graph for debian-stack-only deployments.
-    from .moode import MoodeClient
-    logger.info("renderer backend: moode (REST + SQLite)")
-    return MoodeClient(
-        base_url=moode_base_url,
-        mpd_host=mpd_host,
-        mpd_port=mpd_port,
-    )

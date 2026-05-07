@@ -141,7 +141,7 @@ async def _with_coordinator(
     `op` is an async callable taking the live coordinator and
     returning the per-request result (dict or scalar)."""
     from ..camilla import CamillaController
-    from ..renderer import make_backend
+    from ..renderer import RendererClient
     from ..volume_coordinator import VolumeCoordinator
     from ..volume_persistence import VolumePersistence
 
@@ -152,8 +152,7 @@ async def _with_coordinator(
             "/var/lib/jasper/speaker_volume.json",
         ),
     )
-    backend = make_backend(
-        moode_base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
+    backend = RendererClient(
         mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
         mpd_port=int(os.environ.get("MPD_PORT", "6600")),
         librespot_state_path=os.environ.get(
@@ -215,25 +214,20 @@ async def _voice_socket_command(
 
 
 async def _toggle_transport() -> dict:
-    """Build moOde + Spotify-router clients in the current event loop,
-    dispatch a 'toggle' transport action, then close. We rebuild per
-    request because httpx's AsyncClient is loop-bound: a persistent
+    """Build renderer + Spotify-router clients in the current event
+    loop, dispatch a 'toggle' transport action, then close. We rebuild
+    per request because httpx's AsyncClient is loop-bound: a persistent
     instance would be tied to the first request's loop and error on
     every subsequent one. The cost is small (~50 ms) and dial clicks
     are rare."""
     # Import inside the function so jasper-control doesn't import the
     # full voice-daemon dependency tree at startup.
     from ..accounts import Registry, maybe_migrate_legacy
-    from ..renderer import make_backend
+    from ..renderer import RendererClient
     from ..spotify_router import Router, build_clients
     from ..tools.transport import make_transport_dispatcher
 
-    # Variable kept named `moode` for parity with the rest of the
-    # codebase (transport.py, spotify_routing.py); make_backend
-    # returns a MoodeClient or DebianBackend depending on
-    # JASPER_RENDERER_BACKEND.
-    moode = make_backend(
-        moode_base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
+    renderer = RendererClient(
         mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
         mpd_port=int(os.environ.get("MPD_PORT", "6600")),
         librespot_state_path=os.environ.get(
@@ -269,13 +263,13 @@ async def _toggle_transport() -> dict:
             )
 
     try:
-        dispatch = make_transport_dispatcher(moode, router)
+        dispatch = make_transport_dispatcher(renderer, router)
         return await dispatch("toggle")
     finally:
         try:
-            await moode.aclose()
+            await renderer.aclose()
         except Exception as e:  # noqa: BLE001
-            logger.debug("moode.aclose() warning: %s", e)
+            logger.debug("renderer.aclose() warning: %s", e)
 
 
 def _make_handler(

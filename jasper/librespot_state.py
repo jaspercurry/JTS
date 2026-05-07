@@ -5,8 +5,8 @@ go-librespot did. Instead, we configure it with `--onevent` pointing
 at a small script (`jasper-librespot-event`) that captures env vars
 on every player event and atomically writes them to a JSON file
 under `/run/librespot/state.json`. This module is the read side —
-mux, volume_observers, and the DebianBackend renderer all consult
-it for "is Spotify active?" and "what's its current volume?".
+mux, volume_observers, and RendererClient all consult it for
+"is Spotify active?" and "what's its current volume?".
 
 Why a state file instead of, say, a Unix socket or a long-lived
 event subscription:
