@@ -74,9 +74,9 @@ FILTER_TAPS = 3200
 SAMPLE_RATE = 16000
 
 # Capture device for the reference (host-clocked dsnoop on the
-# moOde→camilla loopback). Same as jasper-aec-tune uses.
+# renderer→camilla loopback). Same as jasper-aec-tune uses.
 REF_DEVICE = "jasper_capture"
-REF_RATE = 48000  # Loopback is locked at 48 kHz by moOde
+REF_RATE = 48000  # Loopback is locked at 48 kHz by CamillaDSP
 REF_CHANNELS = 2
 
 # Capture device for the raw mic. Chip's 6-ch firmware exposes

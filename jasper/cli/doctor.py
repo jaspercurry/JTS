@@ -220,28 +220,8 @@ def check_openwakeword_model(cfg: Config) -> CheckResult:
         return CheckResult("openWakeWord models", "fail", str(e))
 
 
-def check_moode_http(cfg: Config) -> CheckResult:
-    # The transport tools (toggle_play_pause, skip_next, get_now_playing)
-    # are always registered, so a broken moOde REST means voice commands
-    # like "Hey Jasper, pause" silently fail. Treat as fail, not warn.
-    try:
-        import httpx
-        r = httpx.get(
-            f"{cfg.moode_base_url}/command/", params={"cmd": "get_volume"},
-            timeout=2.0,
-        )
-        r.raise_for_status()
-        return CheckResult("moOde REST", "ok", f"GET {cfg.moode_base_url}")
-    except Exception as e:  # noqa: BLE001
-        return CheckResult(
-            "moOde REST", "fail",
-            f"can't reach {cfg.moode_base_url}: {e}. "
-            f"Music transport tools (pause, skip, now playing) won't work.",
-        )
-
-
 # ----------------------------------------------------------------------
-# debian-stack equivalents — each renderer's own surface, not moOde's.
+# Per-renderer health: each daemon's own surface (HTTP / DBus / system).
 # ----------------------------------------------------------------------
 
 def check_librespot_running(cfg: Config) -> CheckResult:
@@ -428,6 +408,9 @@ def check_bluealsa() -> CheckResult:
 
 
 async def check_mpd(cfg: Config) -> CheckResult:
+    """MPD is optional — only used if the operator installed it for
+    local files / radio. Source-aware transport for AirPlay/Spotify/BT
+    runs without MPD."""
     try:
         from mpd.asyncio import MPDClient
         client = MPDClient()
@@ -438,10 +421,9 @@ async def check_mpd(cfg: Config) -> CheckResult:
         return CheckResult("MPD", "ok", f"{cfg.mpd_host}:{cfg.mpd_port} state={state}")
     except Exception as e:  # noqa: BLE001
         return CheckResult(
-            "MPD", "fail",
-            f"can't connect to {cfg.mpd_host}:{cfg.mpd_port}: {e}. "
-            f"Music transport tools depend on this; the assistant will "
-            f"fail any play/pause/skip command.",
+            "MPD", "warn",
+            f"not reachable at {cfg.mpd_host}:{cfg.mpd_port} ({e}). "
+            f"MPD is optional — only needed for local files / radio.",
         )
 
 
@@ -458,56 +440,27 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
 
 
 def check_spotify_connect_device(cfg: Config) -> CheckResult:
-    """Verify moOde's librespot is visible to at least one configured
-    Spotify account, AND its broadcast name matches what
-    JASPER_SPOTIFY_DEVICE_NAME is configured to substring-match against.
+    """Verify the on-Pi librespot endpoint is visible to at least one
+    configured Spotify account, with a broadcast name matching
+    JASPER_SPOTIFY_DEVICE_NAME (substring match).
 
-    This is the cold-start playback path: when no AirPlay is active
-    (or AirPlay is connected but idle), `spotify_play` falls through
-    to `resolve_target` → librespot. `_find_librespot_id` does a
-    case-insensitive substring match of the configured pattern against
-    `sp.devices()[].name`. If the configured pattern doesn't match
-    moOde's actual broadcast name, every cold-start `play X` returns
-    'no spotify target device available' — a silent severe failure
-    mode this check catches.
-
-    Reads moOde's `cfg_system.spotifyname` for the actual broadcast
-    name and uses it as the source of truth for the diagnostic message
-    even when nothing matches via Spotify's device list (e.g. moOde
-    Spotify Connect disabled, or libreport not yet discovered)."""
+    This is the cold-start playback path: when no AirPlay is active,
+    `spotify_play` falls through to `resolve_target` → librespot.
+    `_find_librespot_id` does a case-insensitive substring match of
+    the configured pattern against `sp.devices()[].name`. If the
+    pattern doesn't match what librespot is broadcasting, every
+    cold-start `play X` returns 'no spotify target device available'
+    — a silent severe failure this check catches."""
     label = "Spotify Connect device"
     if not cfg.spotify_enabled:
         return CheckResult(label, "ok", "not configured (skipped)")
 
-    moode_broadcast_name = _read_moode_spotify_name()
-    moode_spotify_enabled = _read_moode_spotify_enabled()
     pattern = cfg.spotify_device_name.strip().lower()
     if not pattern:
         return CheckResult(
             label, "fail",
             "JASPER_SPOTIFY_DEVICE_NAME is empty. Set it to a substring "
-            f"of moOde's broadcast name (currently {moode_broadcast_name!r}).",
-        )
-
-    # If moOde Spotify Connect is off, librespot won't broadcast.
-    if moode_spotify_enabled is False:
-        return CheckResult(
-            label, "fail",
-            "moOde's Spotify Connect renderer is disabled "
-            "(cfg_system.spotifysvc=0). Enable it in moOde's web UI "
-            "→ Configure → Audio → Renderers → Spotify Connect.",
-        )
-
-    # Quick sanity check: does the configured pattern even match moOde's
-    # broadcast name? If not, no need to hit the Spotify API.
-    if moode_broadcast_name and pattern not in moode_broadcast_name.lower():
-        return CheckResult(
-            label, "fail",
-            f"JASPER_SPOTIFY_DEVICE_NAME={cfg.spotify_device_name!r} "
-            f"is not a substring of moOde's broadcast name "
-            f"{moode_broadcast_name!r}. Cold-start playback will fail "
-            f"with 'no spotify target device available'. Fix in "
-            f"/etc/jasper/jasper.env (e.g. set it to {moode_broadcast_name!r}).",
+            "of librespot's --name (default 'JTS').",
         )
 
     # Build clients and probe each account's sp.devices() for a match.
@@ -563,124 +516,19 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
             f"{cfg.spotify_device_name!r} visible to {matched_accounts} "
             f"but NOT {missed_accounts}. Cold-start `play X` will work "
             f"only for the matched account(s). Try opening Spotify on the "
-            f"missing account and casting to '{moode_broadcast_name}' once "
-            f"to register it.",
+            f"missing account and casting to the device once to register it.",
         )
     return CheckResult(
         label, "fail",
         f"no account sees a device matching "
-        f"{cfg.spotify_device_name!r}. moOde's broadcast name is "
-        f"{moode_broadcast_name!r}. Devices currently visible to the "
+        f"{cfg.spotify_device_name!r}. Devices currently visible to the "
         f"linked accounts: {sorted(seen_names_overall)}. "
         f"Fix: open Spotify on a phone/desktop logged into the linked "
-        f"account, click the cast/devices icon, select "
-        f"'{moode_broadcast_name}' once to make it discoverable; or "
-        f"verify moOde Spotify Connect is actually broadcasting "
+        f"account, click the cast/devices icon, select the JTS speaker "
+        f"once to make it discoverable; or verify librespot is running "
+        f"(`systemctl status librespot`) and broadcasting "
         f"(`avahi-browse -tr _spotify-connect._tcp`).",
     )
-
-
-def check_airplay_renderer() -> CheckResult:
-    """Verify moOde's AirPlay renderer is enabled, shairport-sync is
-    running, and the broadcast is visible via mDNS.
-
-    AirPlay isn't always-on by default — moOde's `airplaysvc` flag
-    controls whether the worker launches shairport-sync at boot. If
-    that flag flips to 0 (manual toggle, side effect of another
-    renderer change, etc.) and the Pi reboots, AirPlay disappears
-    silently and senders just stop seeing the speaker on the network.
-    This check catches all three failure modes (flag off, flag on but
-    process dead, process up but mDNS not advertising) with specific
-    actionable messages for each."""
-    label = "AirPlay renderer"
-
-    svc_flag = _read_moode_cfg("airplaysvc")
-    if svc_flag is None:
-        return CheckResult(label, "warn", "moOde DB unreadable (off-Pi run?)")
-
-    airplay_name = _read_moode_cfg("airplayname") or "Jasper AirPlay"
-
-    if svc_flag != "1":
-        return CheckResult(
-            label, "fail",
-            "moOde's AirPlay renderer is disabled "
-            "(cfg_system.airplaysvc=0). AirPlay senders won't see this "
-            "speaker. Re-enable in moOde's web UI → Configure → Audio "
-            "→ Renderers → AirPlay, or run: "
-            "curl 'http://127.0.0.1/command/?cmd=renderer_onoff%20--airplay%20on'",
-        )
-
-    # Flag is on — verify shairport-sync is actually running.
-    try:
-        proc = _run(["pgrep", "-x", "shairport-sync"], timeout=2.0)
-        running = proc.returncode == 0
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        running = False
-
-    if not running:
-        return CheckResult(
-            label, "fail",
-            "airplaysvc=1 but shairport-sync is not running. moOde's "
-            "worker may have failed to launch it. Try: "
-            "curl 'http://127.0.0.1/command/?cmd=renderer_onoff%20--airplay%20on' "
-            "to re-fire the launch, or restart moOde's worker.",
-        )
-
-    # Process is up — verify mDNS is advertising on _raop._tcp.
-    try:
-        avahi = _run(["avahi-browse", "-tr", "_raop._tcp"], timeout=3.0)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return CheckResult(
-            label, "warn",
-            f"shairport-sync running but couldn't query avahi to verify "
-            f"the {airplay_name!r} broadcast (avahi-browse missing or "
-            f"timed out). The renderer probably works; this check is "
-            f"non-authoritative.",
-        )
-
-    if airplay_name.lower() not in avahi.stdout.lower():
-        return CheckResult(
-            label, "warn",
-            f"shairport-sync running but {airplay_name!r} not yet visible "
-            f"in `avahi-browse -tr _raop._tcp` output. Either mDNS is "
-            f"still propagating (wait 10-15s and re-run) or avahi-daemon "
-            f"is unhealthy. Check `systemctl status avahi-daemon`.",
-        )
-
-    return CheckResult(
-        label, "ok",
-        f"{airplay_name!r} broadcasting via _raop._tcp",
-    )
-
-
-def _read_moode_spotify_name() -> str | None:
-    """Read moOde's configured Spotify Connect broadcast name from its
-    SQLite. Returns None if unreadable (off-Pi runs, etc.)."""
-    return _read_moode_cfg("spotifyname")
-
-
-def _read_moode_spotify_enabled() -> bool | None:
-    """Returns True/False for moOde's Spotify Connect service flag, or
-    None if unreadable."""
-    val = _read_moode_cfg("spotifysvc")
-    if val is None:
-        return None
-    return val == "1"
-
-
-def _read_moode_cfg(param: str) -> str | None:
-    """Read a single value from moOde's cfg_system table. Returns None
-    if the DB is unreadable (e.g. running off the Pi)."""
-    import sqlite3
-    db_path = "/var/local/www/db/moode-sqlite3.db"
-    try:
-        with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True) as conn:
-            row = conn.execute(
-                "SELECT value FROM cfg_system WHERE param = ?", (param,),
-            ).fetchone()
-            return row[0] if row else None
-    except sqlite3.Error:
-        return None
 
 
 def check_state_dir(cfg: Config) -> CheckResult:
@@ -713,7 +561,7 @@ def check_ram() -> CheckResult:
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs SpeexDSP echo cancellation on the XVF
     chip's raw mic 0 (channel 2 of 6-ch firmware), with the
-    moOde→camilla loopback as far-end reference. Output goes to
+    renderer→camilla loopback as far-end reference. Output goes to
     LoopbackAEC which jasper-voice consumes as its mic source.
 
     The bridge is OPT-IN (not enabled by default) — see CLAUDE.md
@@ -814,9 +662,6 @@ def render(results: list[CheckResult]) -> int:
 
 
 async def run_async(cfg: Config) -> list[CheckResult]:
-    # Backend-agnostic checks (env, GEMINI key, ALSA cards, AEC,
-    # CamillaDSP, MPD-if-present, etc.) run regardless. The renderer
-    # checks branch on cfg.renderer_backend.
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
         lambda: check_gemini_key(cfg),
@@ -825,27 +670,14 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         lambda: check_mic_capture(cfg),
         lambda: check_tts_open(cfg),
         lambda: check_openwakeword_model(cfg),
-    ]
-    if cfg.renderer_backend == "debian":
-        # Direct-daemon checks. No moOde REST, no SQLite. Spotify auth
-        # / cache checks still run (Spotify Web API is the same surface
-        # regardless of which backend handles Connect playback).
-        sync_checks += [
-            lambda: check_librespot_running(cfg),
-            check_shairport_sync_ap2,
-            check_nqptp_running,
-            check_bluealsa,
-            check_jasper_mux,
-            lambda: check_spotify_cache(cfg),
-        ]
-    else:
-        sync_checks += [
-            lambda: check_moode_http(cfg),
-            lambda: check_spotify_cache(cfg),
-            lambda: check_spotify_connect_device(cfg),
-            check_airplay_renderer,
-        ]
-    sync_checks += [
+        # Per-renderer health: each daemon's own surface.
+        lambda: check_librespot_running(cfg),
+        check_shairport_sync_ap2,
+        check_nqptp_running,
+        check_bluealsa,
+        check_jasper_mux,
+        lambda: check_spotify_cache(cfg),
+        lambda: check_spotify_connect_device(cfg),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),
@@ -865,11 +697,9 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     ]
     results = [c() for c in sync_checks]
     results.append(await check_camilla_websocket(cfg))
-    if cfg.renderer_backend == "moode":
-        # MPD is part of moOde's stack and is a hard dep there.
-        # On debian it's optional (only if user installed it for
-        # local files / radio); skip the check to avoid noise.
-        results.append(await check_mpd(cfg))
+    # MPD is optional (only if the operator installed it for local
+    # files / radio); a "not reachable" result is a warn, not a fail.
+    results.append(await check_mpd(cfg))
     return results
 
 
@@ -890,8 +720,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
     if not p.exists():
         return CheckResult(
             label, "warn",
-            f"{p} missing — shairport-sync may not be installed (debian "
-            f"backend) or this is a moOde-only system.",
+            f"{p} missing — shairport-sync may not be installed.",
         )
     try:
         text = p.read_text()

@@ -289,12 +289,12 @@ def generate_sweep(path: Path, duration_sec: int = SWEEP_DURATION_SEC) -> None:
 
 def play_and_capture(sweep_wav: Path, out_wav: Path,
                      capture_duration_sec: int) -> None:
-    """Play the sweep via _audioout (the moOde-hijacked Loopback path)
-    and concurrently capture from the XVF chip's mic. The sweep flows
-    through camilla → dongle → speaker → mic, exactly the path AEC
-    needs to cancel."""
+    """Play the sweep via plughw:Loopback,0,0 (the same path the
+    renderers use) and concurrently capture from the XVF chip's mic.
+    The sweep flows through camilla → dongle → speaker → mic, exactly
+    the path AEC needs to cancel."""
     play_proc = subprocess.Popen(
-        ["aplay", "-q", "-D", "_audioout", str(sweep_wav)],
+        ["aplay", "-q", "-D", "plughw:Loopback,0,0", str(sweep_wav)],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     time.sleep(0.5)  # let the playback ramp up

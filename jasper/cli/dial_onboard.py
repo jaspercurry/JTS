@@ -113,7 +113,7 @@ def find_dial(explicit_port: str | None = None) -> Dial:
 def read_pi_wifi() -> tuple[str, str]:
     """Read the Pi's current WiFi SSID + PSK. Returns (ssid, password).
 
-    Tries NetworkManager first (moOde 9 / Bookworm default), falls back
+    Tries NetworkManager first (Trixie/Bookworm default), falls back
     to wpa_supplicant.conf. Raises if neither yields a usable secret.
     """
     creds = _read_wifi_nm()

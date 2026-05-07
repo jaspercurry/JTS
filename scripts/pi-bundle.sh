@@ -61,7 +61,6 @@ sqlite3 /var/lib/jasper/usage.db \
 {
     echo "== uname =="; uname -a
     echo; echo "== os-release =="; cat /etc/os-release
-    echo; echo "== moOde =="; cat /var/local/www/footer.txt 2>/dev/null || echo "n/a"
     echo; echo "== mpd =="; mpd --version 2>/dev/null | head -1
     echo; echo "== camilladsp =="; /opt/camilladsp/camilladsp --version 2>/dev/null
     echo; echo "== python pkgs =="; /opt/jasper/.venv/bin/pip freeze 2>/dev/null | grep -E '^(google-genai|pycamilladsp|openwakeword|sounddevice|spotipy|python-mpd2|httpx|onnxruntime|numpy)='

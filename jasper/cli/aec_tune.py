@@ -180,7 +180,7 @@ def _capture_simultaneous(
     """Start two arecord processes at once, wait for both. Returns True
     on success (both files exist and are non-empty)."""
     # Capture from pcm.jasper_capture — the dsnoop fan-out on the
-    # moOde→camilla loopback. dsnoop accepts multiple readers
+    # renderer→camilla loopback. dsnoop accepts multiple readers
     # (jasper-camilla and jasper-aec-bridge are the existing two);
     # the tuner becomes a third reader without disrupting either.
     ref_proc = subprocess.Popen(
