@@ -332,7 +332,7 @@ async def _resolve_query(
     return pick[0], pick[1], pick[2]
 
 
-def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
+def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = ""):
     """Multi-account-aware Spotify tools.
 
     `router` is a `jasper.spotify_router.Router`. When AirPlay is
@@ -377,7 +377,7 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         that account. resolve_target's heuristics (which re-derive the
         AirPlay→Spotify match from moOde's currentsong) only run for
         cold-start cases."""
-        renderers = await moode.active_renderers()
+        renderers = await renderer.active_renderers()
         airplay_active = bool(renderers.get("aplactive"))
         if airplay_active:
             client_name = await airplay_client_name()
@@ -404,7 +404,7 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         ac = await router.active(airplay_active=airplay_active)
         if ac is None:
             return None
-        resolution = await resolve_target(ac.sp, moode, librespot_name)
+        resolution = await resolve_target(ac.sp, renderer, librespot_name)
         return (
             ac.sp, resolution.device_id, resolution.stop_renderers, ac.account.name,
             dict(getattr(ac.account, "playlists", {}) or {}),
@@ -469,7 +469,7 @@ def make_spotify_tools(router, moode, librespot_name: str, setup_url: str = ""):
         uri, resolved_kind, name = pick
 
         if stops:
-            await stop_renderers(moode, stops)
+            await stop_renderers(renderer, stops)
         if resolved_kind == "track":
             await asyncio.to_thread(
                 sp.start_playback, device_id=device_id, uris=[uri]

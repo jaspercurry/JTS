@@ -86,7 +86,7 @@ def _find_librespot_id(devices: list[dict], name_pattern: str) -> str | None:
 
 async def resolve_target(
     sp,                                    # spotipy.Spotify
-    moode,                                 # MoodeClient
+    renderer,                                 # RendererClient
     librespot_name_pattern: str,
 ) -> Resolution:
     """Determine the Spotify device_id to target and what (if anything) on
@@ -100,10 +100,10 @@ async def resolve_target(
         return await asyncio.to_thread(sp.devices)
 
     renderers, playback, devices, song = await asyncio.gather(
-        moode.active_renderers(),
+        renderer.active_renderers(),
         _spotify_playback(),
         _spotify_devices(),
-        moode.get_currentsong(),
+        renderer.get_currentsong(),
         return_exceptions=True,
     )
     # Defensive: any of the four can fail; we treat exceptions as
@@ -163,7 +163,7 @@ async def resolve_target(
     )
 
 
-async def stop_renderers(moode, names: list[str]) -> None:
+async def stop_renderers(renderer, names: list[str]) -> None:
     """Stop the moOde renderers named in `names`. Names match
     Resolution.stop_renderers values. mpd is paused; airplay/bluetooth
     are disabled via renderer_onoff. After disabling the service takes
@@ -172,9 +172,9 @@ async def stop_renderers(moode, names: list[str]) -> None:
     for name in names:
         try:
             if name == "mpd":
-                await moode.pause()
+                await renderer.pause()
             elif name in ("airplay", "bluetooth"):
-                await moode.disable_renderer(name)
+                await renderer.disable_renderer(name)
             else:
                 logger.warning("unknown renderer to stop: %s", name)
         except Exception as e:  # noqa: BLE001

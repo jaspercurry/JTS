@@ -107,13 +107,13 @@ async def _mpris_now_playing() -> dict[str, str]:
     return {"title": title, "artist": artist, "album": album}
 
 
-async def _detect_source(moode) -> str:
+async def _detect_source(renderer) -> str:
     """Return the active playback source: 'airplay' / 'spotify' / 'bluetooth' / 'mpd'.
 
     Reads moOde's SQLite-backed renderer flags. Order matters when more
     than one is somehow active: airplay > spotify > bluetooth > mpd.
     """
-    renderers = await moode.active_renderers()
+    renderers = await renderer.active_renderers()
     if renderers.get("aplactive"):
         return "airplay"
     if renderers.get("spotactive"):
@@ -156,7 +156,7 @@ async def _resolve_airplay_account(router):
     return await router.resolve_for_transport(client_name, title)
 
 
-def make_transport_dispatcher(moode, router):
+def make_transport_dispatcher(renderer, router):
     """Returns `async dispatch(action) -> dict`, the source-aware
     transport routing function. Both the voice-tool decorators
     (make_transport_tools) and external callers (jasper-control's
@@ -214,7 +214,7 @@ def make_transport_dispatcher(moode, router):
             await asyncio.to_thread(sp.start_playback, device_id=device_id)
 
     async def _dispatch(action: str) -> dict:
-        source = await _detect_source(moode)
+        source = await _detect_source(renderer)
         logger.info("transport dispatch: action=%s source=%s", action, source)
         try:
             if source == "airplay":
@@ -283,13 +283,13 @@ def make_transport_dispatcher(moode, router):
             # consults MPD's current state, so toggle is one call —
             # avoids a status round-trip.
             if action == "toggle":
-                await moode.toggle_play_pause()
+                await renderer.toggle_play_pause()
                 return {"ok": True, "source": "mpd"}
             mpd_fn = {
-                "next": moode.next_track,
-                "previous": moode.previous_track,
-                "pause": moode.pause,
-                "play": moode.play,
+                "next": renderer.next_track,
+                "previous": renderer.previous_track,
+                "pause": renderer.pause,
+                "play": renderer.play,
             }[action]
             await mpd_fn()
             return {"ok": True, "source": "mpd"}
@@ -300,9 +300,9 @@ def make_transport_dispatcher(moode, router):
     return _dispatch
 
 
-def make_transport_tools(moode, router):
+def make_transport_tools(renderer, router):
     """Voice-side tool wrappers around the transport dispatcher."""
-    _dispatch = make_transport_dispatcher(moode, router)
+    _dispatch = make_transport_dispatcher(renderer, router)
 
     @tool()
     async def next_track() -> dict:
@@ -327,7 +327,7 @@ def make_transport_tools(moode, router):
     @tool()
     async def get_now_playing() -> dict:
         """Return metadata about the currently playing track (title, artist, album, source)."""
-        source = await _detect_source(moode)
+        source = await _detect_source(renderer)
         try:
             if source == "airplay":
                 matched = await _resolve_airplay_account(router)
@@ -361,7 +361,7 @@ def make_transport_tools(moode, router):
                             "account": active.account.name,
                         }
                 return {"title": "", "artist": "", "album": "", "source": "spotify"}
-            song = await moode.get_currentsong()
+            song = await renderer.get_currentsong()
             return {
                 "title": song.get("title") or song.get("Title") or "",
                 "artist": song.get("artist") or song.get("Artist") or "",
