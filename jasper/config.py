@@ -95,20 +95,13 @@ class Config:
     daily_spend_cap_usd: float
     usage_db: str
 
-    moode_base_url: str
     mpd_host: str
     mpd_port: int
 
-    # Renderer backend selection. "moode" (default) routes through
-    # moOde's REST API + SQLite for renderer state. "debian" uses
-    # each daemon's own surface (librespot state file via --onevent
-    # hook, shairport-sync MPRIS, bluez-alsa DBus) and is the
-    # no-moOde stack on Trixie Lite. See jasper.renderer.make_backend.
-    renderer_backend: str
     # Path to the librespot state file written by the --onevent hook
     # (jasper-librespot-event). Read by mux, volume_observers, and
-    # the DebianBackend renderer. Default written by librespot.service
-    # via systemd RuntimeDirectory.
+    # RendererClient. Default written by librespot.service via
+    # systemd RuntimeDirectory.
     librespot_state_path: str
 
     spotify_client_id: str
@@ -257,10 +250,8 @@ class Config:
             live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
-            moode_base_url=_env("MOODE_BASE_URL", "http://127.0.0.1"),
             mpd_host=_env("MPD_HOST", "127.0.0.1"),
             mpd_port=_env_int("MPD_PORT", 6600),
-            renderer_backend=_env("JASPER_RENDERER_BACKEND", "moode"),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),
@@ -284,9 +275,9 @@ class Config:
             ),
             # Substring (case-insensitive) matched against
             # `sp.devices()[].name` to find the Pi's librespot endpoint.
-            # moOde defaults to "Moode <hostname>". Change if you renamed
-            # your moOde Spotify Connect device.
-            spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "moode"),
+            # Default "JTS" matches `--name JTS` in deploy/systemd/
+            # librespot.service. Change if you renamed the device.
+            spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "JTS"),
             # Multi-account registry: one record per household member,
             # mapping AirPlay ClientName patterns to per-user OAuth
             # caches. See jasper.accounts module-doc for shape.

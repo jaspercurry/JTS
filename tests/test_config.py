@@ -45,7 +45,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.volume_first_boot_default_pct == 50
     assert cfg.gemini_voice == "Aoede"
     assert cfg.vad_barge_in_threshold == 0.5
-    assert cfg.spotify_device_name == "moode"
+    assert cfg.spotify_device_name == "JTS"
     assert cfg.weather_default_location == ""
     assert cfg.weather_units == "celsius"
     assert cfg.subway_station_id == ""

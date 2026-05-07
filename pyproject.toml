@@ -1,7 +1,7 @@
 [project]
 name = "jasper-speaker"
 version = "0.1.0"
-description = "Open smart-speaker voice daemon for Pi 5 + moOde + CamillaDSP"
+description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP and Gemini Live"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai==1.13.0",
