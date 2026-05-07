@@ -444,20 +444,33 @@ class TtsVolumeTracker:
             self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
 
 
-def _build_system_instruction() -> str:
-    """Return the system instruction with current local time injected.
+def _build_system_instruction(location: str = "") -> str:
+    """Return the system instruction with current local time and the
+    user's home location injected.
 
     Called at every connection (re)open — the persistent connection
     lives across the 5-min context-reset window, so calling this on
-    every fresh open keeps the time accurate to within that window."""
+    every fresh open keeps the time accurate to within that window.
+
+    `location` should be the user's home location (a city/neighborhood
+    string the geocoder can resolve). When set, Gemini stops asking
+    "what city are you in?" for location-sensitive questions outside
+    the weather tool's scope (sunset times, nearby places, traffic)."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
-    time_addendum = (
+    addendum = (
         f" Right now it is {now_local.strftime('%A, %B %-d %Y, %-I:%M %p %Z')}"
         f" ({now_local.tzname()}). Use this directly for time/date "
         "questions — do not ask the user."
     )
-    return SYSTEM_INSTRUCTION + time_addendum
+    if location:
+        addendum += (
+            f" The user's home location is {location}. Use this directly "
+            "for any location-sensitive question (weather, sunset/sunrise, "
+            "nearby places, local time elsewhere) — do not ask the user "
+            "where they are."
+        )
+    return SYSTEM_INSTRUCTION + addendum
 
 
 def _make_connection(cfg: Config) -> LiveConnection:
@@ -1226,13 +1239,18 @@ async def run() -> None:
     # Open the persistent live connection ONCE at daemon startup and
     # keep it open for the daemon's lifetime. Wake events acquire/release
     # turns against this connection — they don't open new WebSockets.
-    # Pass _build_system_instruction (not the rendered string) so the
-    # time-injection inside it stays accurate across context resets and
-    # reconnects — the connection re-renders it on every fresh open.
+    # Pass a lambda (not the rendered string) so the time-injection
+    # inside _build_system_instruction stays accurate across context
+    # resets and reconnects — the connection re-renders on every
+    # fresh open. The location is captured at startup; if you change
+    # JASPER_DEFAULT_LOCATION you must restart jasper-voice.
     connection = _make_connection(cfg)
     tts_volume_tracker: TtsVolumeTracker | None = None
     try:
-        await connection.start(registry, _build_system_instruction)
+        await connection.start(
+            registry,
+            lambda: _build_system_instruction(cfg.weather_default_location),
+        )
         async with MicCapture(
             cfg.mic_device,
             capture_rate=cfg.mic_capture_rate,
