@@ -445,6 +445,9 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/jasper-web.service" \
         "${SYSTEMD_DIR}/jasper-web.service"
     install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-dial-web.service" \
+        "${SYSTEMD_DIR}/jasper-dial-web.service"
+    install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
     # AEC bridge + boot-time chip init (see asoundrc.jasper header).
@@ -504,7 +507,8 @@ install_systemd_units() {
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
-        jasper-web.service jasper-control.service jasper-dac-init.service
+        jasper-web.service jasper-dial-web.service jasper-control.service \
+        jasper-dac-init.service
     # Apply the dongle Headphone-max pin immediately so a fresh
     # install gets the full analog ceiling without waiting for
     # next reboot.

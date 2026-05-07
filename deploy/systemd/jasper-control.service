@@ -7,6 +7,15 @@ Requires=jasper-camilla.service
 [Service]
 Type=simple
 EnvironmentFile=/etc/jasper/jasper.env
+# Spotify creds live in /var/lib/jasper/spotify_credentials.env (written
+# by the web wizard at f1c7dee). jasper-voice / jasper-web already
+# load it; jasper-control needs it too so /transport/toggle's
+# title-match path can build a Spotify Web API router. Without these
+# creds the router is None and the dispatcher falls straight through
+# to the DACP precheck — which on iOS 17+ AirPlay 2 returns false,
+# producing a 502 "doesn't accept remote control" on every dial click.
+# Leading `-` makes systemd skip if the file's missing (fresh install).
+EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2

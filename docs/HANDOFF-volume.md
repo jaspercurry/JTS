@@ -39,14 +39,24 @@ When the voice tool / dial / "louder" wants to change volume:
 
 1. Coordinator queries `backend.active_renderers()`.
 2. Picks the active source: priority `airplay > spotify > bluetooth > idle`.
-3. Pushes the level to that source's own attenuator:
-   - **AirPlay** → `org.gnome.ShairportSync` DBus method `SetAirplayVolume(d)` (range −30..0 dB)
+3. Decides whether the source is **push-mode** (it has a slider we
+   can drive — camilla pinned at 0 dB) or **camilla-as-master** (we
+   can't drive its slider — camilla carries listening_level on the
+   −50..0 dB scale). The decision lives in
+   `_camilla_carries_level(source)`:
+   - **IDLE** → camilla-as-master
+   - **AIRPLAY** → camilla-as-master *always* (see "AirPlay is always
+     camilla-as-master" below for the why)
+   - **SPOTIFY** → push-mode (Web API)
+   - **BLUETOOTH** → push-mode (AVRCP via bluez-alsa)
+4. Pushes the level to the right attenuator:
+   - **AirPlay** → CamillaDSP `main_volume` (linear over −50..0 dB)
    - **Spotify** → Spotify Web API `PUT /me/player/volume` via the multi-account `spotify_router` (librespot 0.8.0 has no local control HTTP, so we go through Spotify's cloud → spirc → librespot, ~200-800ms latency, also propagates to all Spotify clients so the app slider visibly moves)
    - **Bluetooth** → `org.bluez.MediaTransport1.Volume` property on the active a2dpsnk path (uint16 0..127)
-   - **Idle** → CamillaDSP `main_volume` (linear over −50..0 dB)
-4. While a source is active, **CamillaDSP `main_volume` is pinned at 0 dB**
-   so there's no double-attenuation. Idle path returns `main_volume`
-   to its role as the user-facing knob.
+   - **Idle** → CamillaDSP `main_volume`
+5. In push-mode, **CamillaDSP `main_volume` is pinned at 0 dB** so
+   there's no double-attenuation. In camilla-as-master mode (idle or
+   AirPlay), `main_volume` IS the user-facing knob.
 
 ### Inbound observation
 
@@ -54,14 +64,25 @@ A 1 Hz poller (`jasper.volume_observers.VolumeObserver`) reads each
 source's current value and feeds detected changes into
 `coordinator.observe_source_volume(...)`:
 
-- AirPlay: `busctl get-property` for `AirplayVolume`
+- AirPlay: `busctl get-property` for `AirplayVolume` (read but
+  unconditionally ignored downstream — see exception below)
 - Spotify: read `/run/librespot/state.json` (written atomically by librespot's `--onevent` hook on every player event; `volume` field is raw 0-65535, mapped to percent)
 - Bluetooth: `bluealsa-cli list-pcms` to find the transport, then
   `busctl get-property` for `Volume`
 
-When the user moves their iPhone slider, the Spotify app slider, or
-the BT volume, the next poll picks it up (sub-second latency) and
-the coordinator updates `listening_level` accordingly.
+When the user moves the Spotify app slider or BT volume, the next
+poll picks it up (sub-second latency) and the coordinator updates
+`listening_level` accordingly.
+
+**Exception: AirPlay observations are unconditionally skipped.** The
+sender's slider sits *upstream* of camilla in the audio chain —
+honoring it as the user's master-volume intent would mean the
+canonical level bounces around with whatever the phone/Mac is
+showing, disconnected from what camilla (the actual master) is
+doing. So we ignore the iPhone/Mac AirPlay slider and let the dial
+own the canonical level. (Practical implication: ask users to leave
+the sender slider at 100% — see "AirPlay is always camilla-as-master"
+below.)
 
 ### Echo prevention
 
@@ -145,6 +166,64 @@ Multiple guardrails sit on top:
 
 Don't bypass any of these. The user is volume-sensitive ("don't blow
 my eardrums out"); defense in depth is the design.
+
+## AirPlay is always camilla-as-master
+
+shairport-sync exposes `SetAirplayVolume` as a method that should
+forward volume changes back to the AirPlay sender via the DACP
+back-channel. In practice, Apple's AirPlay 2 receivers (iOS 17+
+*and* macOS Sequoia) accept the DBus call but silently no-op the
+sender-side slider. The DACP `Available` flag isn't a reliable
+predictor either — empirically it flips true and false during a
+single session, and even when it reports true `SetAirplayVolume`
+often still no-ops.
+
+So instead of trying to drive the AirPlay sender's slider, we
+attenuate at camilla — `main_volume` sits *downstream* of
+shairport's receiver in the audio chain (shairport → snd-aloop →
+camilla → DAC), so it reduces what the speakers actually emit
+regardless of what the sender chose to send. The dial behaves like
+a master volume on every source.
+
+**Trade:** the iPhone/Mac AirPlay slider on the sender does not
+visibly move when the dial turns. The audio at the speaker does.
+Acceptable for a smart speaker — the user's primary controller is
+the dial, not the phone.
+
+**The four transitions** at the camilla-as-master / push-mode
+boundary all flow through `apply_active_source_transition`:
+
+| Edge | What happens |
+|---|---|
+| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | camilla → 0 dB (clear residual), then push level to new source |
+| push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) (take over) |
+| push → push (e.g. Spotify → BT) | camilla already at 0 dB; push level to new source |
+| camilla → camilla (idle ↔ AirPlay) | no change; camilla already carries level |
+
+The first edge is the one users notice: without it, the residual
+camilla attenuation from AirPlay mode would compound with the new
+source's own slider when they switch (e.g. start Spotify Connect
+and find the speaker mysteriously twice as quiet as expected).
+
+**Cross-process staleness fix.** `apply_active_source_transition`
+calls `_refresh_from_disk()` before dispatch. The control daemon
+(dial / HTTP) writes listening_level to disk on every twist; without
+the refresh, voice_daemon's in-memory cache lags and a transition
+that fires between voice operations would dispatch a stale level.
+
+**Recommended user setup for AirPlay sessions:** leave the
+iPhone/Mac slider at 100%. Then `audio = 100% × camilla(listening_level)` ≈
+`camilla(listening_level)` — the dial maps cleanly to perceived
+loudness on the camilla −50..0 dB scale. If the sender slider is
+below 100% it pre-attenuates upstream of camilla and the dial
+position stops being a 1:1 read of perceived loudness; not
+catastrophic (user just turns the dial further) but worth knowing.
+
+A previous iteration of this code gated on
+`_airplay_dacp_available()` — push-mode when DACP=true, fall back
+to camilla when false. That gating was unreliable for the reasons
+above (DACP flips, even DACP=true frequently no-ops). Removed in
+favor of the simpler "always camilla" rule.
 
 ## What's NOT here
 
