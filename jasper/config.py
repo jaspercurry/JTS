@@ -121,6 +121,19 @@ class Config:
     spotify_web_bind_host: str
     spotify_web_bind_port: int
 
+    # Top-level URL for the speaker's management dashboard. Used by
+    # the audio-cue subsystem to tell the user where to go when they
+    # hit a wake-blocking failure (e.g., spend cap reached). The
+    # spotify setup wizard at /spotify/ is the seed of what will
+    # become a broader dashboard at /. The hostname (without scheme
+    # or path) is what gets injected into cue templates.
+    management_url: str
+
+    # Where pre-rendered cue WAVs live. Path is in
+    # ReadWritePaths=/var/lib/jasper of the systemd unit so the
+    # daemon (and `jasper-cues regenerate`) can write here.
+    sounds_dir: str
+
     weather_default_location: str
     weather_units: str
 
@@ -295,6 +308,17 @@ class Config:
             ),
             spotify_web_bind_port=_env_int(
                 "JASPER_SPOTIFY_WEB_PORT", 8765
+            ),
+            # Speaker management dashboard URL. Audio cues extract the
+            # hostname from this and tell the user "visit <hostname>"
+            # when something blocks normal voice response (spend cap,
+            # connection failure). Default uses jts.local — installs
+            # on a different hostname should override.
+            management_url=_env(
+                "JASPER_MANAGEMENT_URL", "https://jts.local",
+            ),
+            sounds_dir=_env(
+                "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.

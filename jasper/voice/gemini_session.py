@@ -15,13 +15,30 @@ from .session import LiveConnection, LiveTurn, VoiceSession
 logger = logging.getLogger(__name__)
 
 
-# Bounded exponential backoff for reconnect attempts. Caps at 8s so the
-# daemon recovers within ~15s after a transient drop, but doesn't
-# hammer the API into OVERLOADED_TOO_MANY_RETRIES_PER_REQUEST
-# (livekit/agents#1679). Total wall-time across the schedule is 15s,
-# which fits comfortably under the 30s the user typically waits before
-# repeating a wake-word.
-RECONNECT_BACKOFF_SCHEDULE = (1.0, 2.0, 4.0, 8.0)
+# Reconnect backoff: never give up. A smart speaker that goes
+# permanently silent after a 15-second DNS blip is broken UX —
+# the user has no way to know recovery requires a manual restart,
+# so they just stop using the device. We retry forever, with
+# exponential backoff capped at RECONNECT_MAX_BACKOFF_SEC and
+# ±25% jitter so we don't hammer the API or accidentally
+# self-synchronise with other speakers on the same outage.
+#
+# Schedule (jitter omitted): 1, 2, 4, 8, 16, 32, 60, 60, 60, …
+RECONNECT_INITIAL_BACKOFF_SEC = 1.0
+RECONNECT_MAX_BACKOFF_SEC = 60.0
+RECONNECT_BACKOFF_JITTER_FRACTION = 0.25
+
+
+def _reconnect_backoff_delay(attempt: int) -> float:
+    """Exponential delay with jitter for the supervisor reconnect loop.
+    `attempt` is 1-indexed (first retry is attempt 1)."""
+    import random
+    base = min(
+        RECONNECT_INITIAL_BACKOFF_SEC * (2 ** (attempt - 1)),
+        RECONNECT_MAX_BACKOFF_SEC,
+    )
+    j = base * RECONNECT_BACKOFF_JITTER_FRACTION
+    return base + random.uniform(-j, j)
 
 # Keepalive period — Vertex Live API closes idle connections after 10
 # min (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting).
@@ -334,7 +351,11 @@ class GeminiLiveConnection(LiveConnection):
         voice: str = "Aoede",
         context_reset_sec: float = 300.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
-        backoff_schedule: tuple[float, ...] = RECONNECT_BACKOFF_SCHEDULE,
+        # Production: leave None → supervisor reconnects FOREVER with
+        # `_reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
+        # 60, …s with ±25% jitter). Tests pass a bounded tuple to make
+        # exhaustion observable and runs fast.
+        backoff_schedule: tuple[float, ...] | None = None,
         # Test seam: replace `client.aio.live.connect` so unit tests can
         # mock the SDK without touching the network.
         connect_factory=None,
@@ -482,12 +503,19 @@ class GeminiLiveConnection(LiveConnection):
 
         # If we're mid-reconnect, wait for the connected event so the
         # turn doesn't open against a half-open WS. Bounded so we don't
-        # block forever if the connection is permanently down.
+        # block the wake handler forever if the connection is in a
+        # protracted outage. The daemon's wake path checks is_paused()
+        # before reaching here, so this timeout is a defensive
+        # backstop, not the normal user-facing wait.
         if not self._connected_event.is_set():
+            timeout = (
+                sum(self._backoff_schedule) + 5.0
+                if self._backoff_schedule is not None
+                else 15.0  # production: long enough for one full backoff cycle
+            )
             try:
                 await asyncio.wait_for(
-                    self._connected_event.wait(),
-                    timeout=sum(self._backoff_schedule) + 5.0,
+                    self._connected_event.wait(), timeout=timeout,
                 )
             except asyncio.TimeoutError:
                 raise RuntimeError(
@@ -954,13 +982,25 @@ class GeminiLiveConnection(LiveConnection):
 
         last_exc: Exception | None = None
         handle_dropped = False
-        for attempt, delay in enumerate(self._backoff_schedule, start=1):
-            if self._stopping.is_set():
-                return
+        attempt = 0
+        # Production: `self._backoff_schedule is None` → infinite loop.
+        # Tests pass a bounded tuple to make exhaustion observable.
+        bounded = self._backoff_schedule is not None
+        max_attempts = len(self._backoff_schedule) if bounded else None
+        while not self._stopping.is_set():
+            attempt += 1
+            if bounded and attempt > max_attempts:
+                break
+            delay = (
+                self._backoff_schedule[attempt - 1]
+                if bounded
+                else _reconnect_backoff_delay(attempt)
+            )
             async with self._state_lock:
                 self._set_state(ConnectionState.PAUSED_FOR_BACKOFF)
             logger.info(
-                "live connection: reconnect attempt %d after %.1fs backoff", attempt, delay,
+                "live connection: reconnect attempt %d after %.1fs backoff",
+                attempt, delay,
             )
             await asyncio.sleep(delay)
             if self._stopping.is_set():
@@ -985,16 +1025,15 @@ class GeminiLiveConnection(LiveConnection):
                     )
                     logger.warning(
                         "live connection: reconnect 409 Conflict on attempt "
-                        "%d/%d (status=%s, exc=%s, handle=%s)",
-                        attempt, len(self._backoff_schedule),
-                        status, type(e).__name__, handle_short,
+                        "%d (status=%s, exc=%s, handle=%s)",
+                        attempt, status, type(e).__name__, handle_short,
                     )
                     # Drop the cached resumption handle on the first
                     # 409. The supervisor reconnect path is the one
                     # most likely to be holding a stale handle —
                     # GoAway / 1011 / ABORTED close types can all
                     # invalidate the handle server-side, and replaying
-                    # it 4 times wastes the entire backoff budget.
+                    # it forever would waste indefinite reconnect time.
                     if not handle_dropped and self._resumption_handle is not None:
                         logger.warning(
                             "live connection: reconnect dropping cached "
@@ -1009,13 +1048,17 @@ class GeminiLiveConnection(LiveConnection):
                         "live connection: reconnect attempt %d failed (%s: %s)",
                         attempt, type(e).__name__, e,
                     )
-        # Exhausted retries.
-        async with self._state_lock:
-            self._set_state(ConnectionState.FAILED)
-        logger.error(
-            "live connection: failed after %d retries; daemon will pause. Last error: %s",
-            len(self._backoff_schedule), last_exc,
-        )
+
+        # Only reached when (a) the test override exhausted its bounded
+        # schedule, or (b) the daemon is stopping. Production never
+        # reaches this — the loop iterates forever until success.
+        if bounded and not self._stopping.is_set():
+            async with self._state_lock:
+                self._set_state(ConnectionState.FAILED)
+            logger.error(
+                "live connection: bounded test schedule exhausted after %d "
+                "retries. Last error: %s", attempt - 1, last_exc,
+            )
 
     async def _receive_loop(self) -> None:
         """Iterate the SDK's lower-level `session._receive()` and route

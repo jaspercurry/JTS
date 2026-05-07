@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import os
+import wave
+
+import pytest
+
+from jasper.cues import CUES, CueDef
+from jasper.cues.generator import (
+    TTSResult,
+    WAV_CHANNELS,
+    WAV_RATE,
+    WAV_SAMPLE_WIDTH,
+    cue_filename,
+    cue_hash,
+    cue_path,
+    prune_stale,
+    render_template,
+    write_cue,
+)
+from jasper.cues.registry import find
+
+
+# --- Registry ---
+
+
+def test_registry_has_known_cues():
+    slugs = {c.slug for c in CUES}
+    assert "spend_cap_reached" in slugs
+    assert "cant_connect" in slugs
+
+
+def test_find_returns_cue_or_none():
+    assert find("spend_cap_reached") is not None
+    assert find("does_not_exist") is None
+
+
+def test_template_uses_hostname_for_spend_cap():
+    cue = find("spend_cap_reached")
+    assert cue is not None
+    rendered = render_template(cue, "jts.local")
+    assert "jts.local" in rendered
+
+
+def test_template_no_hostname_for_cant_connect():
+    """cant_connect doesn't include a URL — no point telling the user
+    to visit a page when the issue is that we can't reach the
+    network at all."""
+    cue = find("cant_connect")
+    assert cue is not None
+    rendered = render_template(cue, "ignored.local")
+    assert "ignored.local" not in rendered
+
+
+def test_cues_are_provider_agnostic():
+    """No cue may name a specific provider — the project may switch
+    voice backends, and audio files baked with provider names would
+    mislead users post-switch (per the project's design memory)."""
+    forbidden = ("google", "gemini", "openai", "anthropic")
+    for cue in CUES:
+        text = cue.template.lower()
+        for word in forbidden:
+            assert word not in text, (
+                f"cue {cue.slug!r} mentions {word!r} — keep messages "
+                "provider-agnostic"
+            )
+
+
+# --- Hash ---
+
+
+def test_hash_is_deterministic():
+    cue = CUES[0]
+    h1 = cue_hash(cue, "jts.local", "Aoede")
+    h2 = cue_hash(cue, "jts.local", "Aoede")
+    assert h1 == h2
+    assert len(h1) == 8
+
+
+def test_hash_changes_with_hostname():
+    cue = CUES[0]
+    a = cue_hash(cue, "jts.local", "Aoede")
+    b = cue_hash(cue, "jasper.local", "Aoede")
+    assert a != b
+
+
+def test_hash_changes_with_voice():
+    cue = CUES[0]
+    a = cue_hash(cue, "jts.local", "Aoede")
+    b = cue_hash(cue, "jts.local", "Charon")
+    assert a != b
+
+
+def test_hash_changes_with_template_text():
+    """Editing the template text must invalidate the cache. We verify
+    via two cues that share everything else but differ in text."""
+    a = cue_hash(CUES[0], "jts.local", "Aoede")
+    b = cue_hash(CUES[1], "jts.local", "Aoede")
+    assert a != b
+
+
+def test_filename_has_slug_and_hash():
+    cue = CUES[0]
+    name = cue_filename(cue, "jts.local", "Aoede")
+    assert name.startswith(cue.slug + "-")
+    assert name.endswith(".wav")
+
+
+# --- Write + WAV format ---
+
+
+class _FakeBackend:
+    """Returns a deterministic 24kHz int16 PCM stream so write_cue is
+    testable without hitting the network."""
+
+    def __init__(self, samples_24k: int = 240) -> None:
+        # `samples_24k` int16 zero samples = `samples_24k * 2` bytes
+        # of silence at 24kHz. Small but nonzero so resample / WAV
+        # write paths are exercised.
+        self._pcm = b"\x00\x00" * samples_24k
+        self.calls: list[str] = []
+
+    def synthesise(self, text: str) -> TTSResult:
+        self.calls.append(text)
+        return TTSResult(pcm_24k=self._pcm)
+
+
+def _read_wav(path: str) -> tuple[int, int, int, int]:
+    with wave.open(path, "rb") as f:
+        return (
+            f.getnchannels(),
+            f.getsampwidth(),
+            f.getframerate(),
+            f.getnframes(),
+        )
+
+
+def test_write_cue_writes_24k_mono_16bit_wav(tmp_path):
+    cue = CUES[0]
+    backend = _FakeBackend(samples_24k=240)
+    path = write_cue(cue, "jts.local", "Aoede", str(tmp_path), backend)
+    assert os.path.isfile(path)
+    chans, sw, rate, frames = _read_wav(path)
+    # 24kHz mono 16-bit — same shape as Gemini Live's streaming
+    # audio. TtsPlayout assumes this format and upsamples to 48k
+    # internally; double-upsampling here would play at half speed.
+    assert chans == WAV_CHANNELS == 1
+    assert sw == WAV_SAMPLE_WIDTH == 2
+    assert rate == WAV_RATE == 24000
+    assert frames == 240  # exactly the input — no resample
+
+
+def test_write_cue_filename_matches_hash(tmp_path):
+    cue = CUES[0]
+    backend = _FakeBackend()
+    path = write_cue(cue, "jts.local", "Aoede", str(tmp_path), backend)
+    expected = cue_path(str(tmp_path), cue, "jts.local", "Aoede")
+    assert path == expected
+
+
+def test_write_cue_passes_rendered_text_to_backend(tmp_path):
+    cue = CUES[0]
+    backend = _FakeBackend()
+    write_cue(cue, "jts.local", "Aoede", str(tmp_path), backend)
+    assert backend.calls == ["Hey, I've reached today's spend cap. "
+                             "Visit jts.local to manage."]
+
+
+def test_write_cue_creates_sounds_dir(tmp_path):
+    """Sounds dir doesn't have to exist beforehand — write_cue creates
+    it. Matters because /var/lib/jasper/sounds may not exist on a
+    fresh install before the first regen."""
+    nested = tmp_path / "nested" / "sounds"
+    cue = CUES[0]
+    backend = _FakeBackend()
+    path = write_cue(cue, "jts.local", "Aoede", str(nested), backend)
+    assert os.path.isfile(path)
+
+
+# --- Pruning stale files ---
+
+
+def test_prune_stale_removes_old_hash_files(tmp_path):
+    cue = CUES[0]
+    # Create three files: two stale, one we want to keep.
+    keep_hash = "abcd1234"
+    (tmp_path / f"{cue.slug}-old00001.wav").write_bytes(b"WAV1")
+    (tmp_path / f"{cue.slug}-old00002.wav").write_bytes(b"WAV2")
+    (tmp_path / f"{cue.slug}-{keep_hash}.wav").write_bytes(b"KEEP")
+    # Also drop in an unrelated file that should NOT be touched.
+    (tmp_path / "other_cue-zz.wav").write_bytes(b"OTHER")
+
+    removed = prune_stale(str(tmp_path), cue, keep_hash)
+    assert removed == 2
+    assert (tmp_path / f"{cue.slug}-{keep_hash}.wav").exists()
+    assert not (tmp_path / f"{cue.slug}-old00001.wav").exists()
+    assert not (tmp_path / f"{cue.slug}-old00002.wav").exists()
+    assert (tmp_path / "other_cue-zz.wav").exists()
+
+
+def test_prune_stale_handles_missing_dir(tmp_path):
+    cue = CUES[0]
+    missing = tmp_path / "does-not-exist"
+    assert prune_stale(str(missing), cue, "anything") == 0

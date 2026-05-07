@@ -167,6 +167,13 @@ class TtsPlayout:
         self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
         self._gain_db = self.MIN_TTS_GAIN_DB
         self._stream: sd.RawOutputStream | None = None
+        # One-shot warning latch: if a caller invokes write() before
+        # entering the async context (so _stream is still None), log
+        # once. The class is a context manager and the underlying
+        # ALSA stream only opens in __aenter__; without that, write()
+        # used to silently no-op, which was the cause of "I can't
+        # hear the cue" being mis-diagnosed as routing problems.
+        self._closed_stream_warned = False
         # Apply the constructor's gain_db through the same clamp +
         # validation path as runtime updates. If a caller passes the
         # legacy "-8.0 fixed gain" value, this becomes the active
@@ -206,10 +213,18 @@ class TtsPlayout:
         return self._gain_db
 
     async def __aenter__(self) -> "TtsPlayout":
+        # Open as STEREO even though our input is mono. The dongle's
+        # dmix (`pcm.jasper_out` in /root/.asoundrc) is configured at
+        # channels=2 with no plug layer; opening at channels=1
+        # against it makes PortAudio do something quietly broken —
+        # mono samples land in the stereo frame interleave as if they
+        # were L/R pairs, and audio comes out at half speed with
+        # weird amplitude. Manual mono→stereo duplication in write()
+        # is unambiguous and matches the dmix's native shape.
         self._stream = sd.RawOutputStream(
             device=self._device,
             samplerate=self._output_rate,
-            channels=1,
+            channels=2,
             dtype="int16",
         )
         self._stream.start()
@@ -222,14 +237,25 @@ class TtsPlayout:
             self._stream = None
 
     async def write(self, pcm: bytes) -> None:
+        """Input is MONO int16 PCM at INPUT_RATE (24kHz) — same shape
+        Gemini Live emits and what cue WAVs are stored at. Internally
+        we apply gain + upsample + mono→stereo duplication, then
+        hand off to the (stereo) sounddevice stream."""
         if self._stream is None:
+            if not self._closed_stream_warned:
+                logger.warning(
+                    "TtsPlayout.write called on a closed stream — "
+                    "%d bytes silently dropped. Did you forget "
+                    "`async with tts:`? (Suppressing further such "
+                    "warnings for this instance.)",
+                    len(pcm),
+                )
+                self._closed_stream_warned = True
             return
-        # Fast path: no gain, no resample
-        if self._upsample == 1 and self._gain_linear == 1.0:
-            await asyncio.to_thread(self._stream.write, pcm)
-            return
-        # Apply gain (if non-passthrough) and/or upsample. Both share a
-        # float32 intermediate so we only do one int16 cast at the end.
+        # Always go through the numpy pipeline so the mono→stereo
+        # duplication at the end runs uniformly. The dropped fast
+        # path was for "no gain, no upsample" which is a test-only
+        # config in practice — production always has both.
         arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
         if self._gain_linear != 1.0:
             arr = arr * self._gain_linear
@@ -239,8 +265,13 @@ class TtsPlayout:
             # would create high-frequency images.
             from scipy.signal import resample_poly  # local: keep startup fast
             arr = resample_poly(arr, up=self._upsample, down=1)
-        out_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
-        await asyncio.to_thread(self._stream.write, out_i16.tobytes())
+        # Mono → stereo: each mono sample becomes a (L, R) pair with
+        # L=R. np.repeat(arr, 2) interleaves correctly: [s0, s0, s1,
+        # s1, …]. The stream is opened at channels=2 so this is the
+        # exact byte layout it expects.
+        mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
+        stereo_i16 = np.repeat(mono_i16, 2)
+        await asyncio.to_thread(self._stream.write, stereo_i16.tobytes())
 
     async def flush(self) -> None:
         """Drop any audio currently buffered inside sounddevice / ALSA so

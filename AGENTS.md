@@ -244,6 +244,14 @@ specific project:
   `/etc/alsa/conf.d/zz-jts-loopback.conf`, `/root/.asoundrc`,
   and `/etc/systemd/system/jasper-*.service`. **Do not modify
   anything moOde owns.**
+- **No silent failure paths.** Any new code path that would
+  prevent the speaker from responding to a wake event MUST also
+  trigger an audio cue (so the user hears why nothing happened).
+  Add cues by appending a `CueDef` to `jasper/cues/registry.py`
+  and calling `cues.play("<slug>")` from the failure handler —
+  see `docs/HANDOFF-audible-feedback.md` for the full pattern.
+  Cue text must stay provider-agnostic (no "Google" / "Gemini" —
+  voice backend is replaceable).
 
 ---
 
