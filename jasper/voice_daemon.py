@@ -741,15 +741,55 @@ class WakeLoop:
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
 
+    async def play_cue(self, slug: str) -> str:
+        """Public wrapper for `_play_cue`, callable via the control
+        socket so external clients (jasper-control HTTP, the
+        `jasper-cues play` CLI) can play cues through the daemon's
+        already-correctly-gained TtsPlayout.
+
+        Standalone clients can't easily replicate the daemon's
+        TtsVolumeTracker math; routing through here means they
+        don't have to."""
+        if not slug:
+            return "missing_slug"
+        if self._cues is None:
+            return "cues_not_configured"
+        from .cues.registry import find as _find
+        if _find(slug) is None:
+            return "unknown_slug"
+        await self._play_cue(slug)
+        return "ok"
+
     async def _play_cue(self, slug: str) -> None:
-        """Best-effort cue playback. Swallows any exception — this
-        is called from failure handlers and must never throw."""
+        """Best-effort cue playback. Ducks music via CamillaDSP for
+        the duration of the cue (same wrapping a normal Jarvis voice
+        response uses), then restores. Without ducking, the cue is
+        drowned out by playing music — the level math from the TTS
+        side alone can't make a cue audible over a non-ducked stream.
+
+        Tracker / volume-coordinator manipulation is intentionally
+        omitted — those are needed for multi-second voice sessions
+        where the user might also be adjusting volume mid-turn. A
+        ~6 second cue is short enough that simple duck/restore is
+        the right primitive.
+
+        Swallows any exception — this is called from failure handlers
+        and must never throw."""
         if self._cues is None:
             return
+        ducked = False
         try:
+            await self._ducker.duck()
+            ducked = True
             await self._cues.play(slug)
         except Exception as e:  # noqa: BLE001
             logger.warning("cue %s play failed: %s", slug, e)
+        finally:
+            if ducked:
+                try:
+                    await self._ducker.restore()
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("cue %s restore failed: %s", slug, e)
 
     async def run(self) -> None:
         async for frame in self._mic.frames():
@@ -1135,9 +1175,15 @@ async def _start_control_socket(
     JSON object terminated by `\\n`.
 
     Commands:
-        START   → manual_session_start  (long-press begin)
-        END     → manual_session_end    (long-press release)
-        STATUS  → session_status        (diagnostic snapshot)
+        START               → manual_session_start  (long-press begin)
+        END                 → manual_session_end    (long-press release)
+        STATUS              → session_status        (diagnostic snapshot)
+        CUE_PLAY <slug>     → play a registered audio cue through the
+                              daemon's TtsPlayout (which has the
+                              tracker-set gain). Routed here so a
+                              standalone CLI doesn't have to recreate
+                              the volume math — and can't accidentally
+                              blast at -6 dB when the daemon's at -27.
 
     The socket lives in /run (tmpfs) so it gets created fresh each boot
     via systemd's RuntimeDirectory=jasper. Both jasper-voice and
@@ -1147,13 +1193,18 @@ async def _start_control_socket(
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
-            cmd = raw.decode("ascii", errors="replace").strip().upper()
+            line = raw.decode("ascii", errors="replace").strip()
+            parts = line.split(maxsplit=1)
+            cmd = parts[0].upper() if parts else ""
+            arg = parts[1] if len(parts) > 1 else ""
             if cmd == "START":
                 result = {"result": await wake_loop.manual_session_start()}
             elif cmd == "END":
                 result = {"result": await wake_loop.manual_session_end()}
             elif cmd == "STATUS":
                 result = wake_loop.session_status()
+            elif cmd == "CUE_PLAY":
+                result = {"result": await wake_loop.play_cue(arg)}
             else:
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))

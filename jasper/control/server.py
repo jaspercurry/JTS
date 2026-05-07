@@ -177,16 +177,19 @@ async def _with_coordinator(
         # on next use. GC handles cleanup of the cached client.
 
 
-async def _voice_socket_command(socket_path: str, cmd: str) -> dict:
+async def _voice_socket_command(
+    socket_path: str, cmd: str, *, timeout: float = 5.0,
+) -> dict:
     """Send one ASCII line to voice_daemon's control socket and return
-    the parsed JSON response. Used by /session/start and /session/end
-    so dial hold-to-talk drives the same session-state machine the
-    wake word uses."""
+    the parsed JSON response. Used by /session/start, /session/end,
+    and /cue/play. The default 5s timeout covers session-state
+    commands; cue playback takes longer (~6s for a 5s cue plus
+    duck/restore plus drain) and bumps timeout explicitly."""
     reader, writer = await asyncio.open_unix_connection(socket_path)
     try:
         writer.write((cmd + "\n").encode("ascii"))
         await writer.drain()
-        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
     finally:
         try:
             writer.close()
@@ -461,6 +464,57 @@ def _make_handler(
                         http_status = 409
                     else:
                         http_status = 502
+                self._send_json(result, status=http_status)
+                return
+
+            if self.path == "/cue/play":
+                # POST /cue/play  body: {"slug": "<cue_slug>"}
+                # Routes the request through voice_daemon's control
+                # socket so the cue plays through the daemon's
+                # already-correctly-gained TtsPlayout. A separate
+                # standalone client (e.g., `jasper-cues play <slug>`)
+                # would have to recreate the daemon's volume math
+                # to match levels, and got it wrong (~20 dB too
+                # loud). Centralising here keeps levels consistent.
+                body = self._read_json()
+                slug = (body.get("slug") or "").strip()
+                if not slug:
+                    self._send_json(
+                        {"error": "missing 'slug' in body"}, status=400,
+                    )
+                    return
+                try:
+                    # Cues run ~5-6s of audio plus duck/restore plus
+                    # drain. 30s gives generous headroom even for the
+                    # longest reasonable cue.
+                    result = asyncio.run(_voice_socket_command(
+                        voice_socket_path, f"CUE_PLAY {slug}",
+                        timeout=30.0,
+                    ))
+                except FileNotFoundError:
+                    self._send_json(
+                        {"error": "voice_daemon not running"}, status=503,
+                    )
+                    return
+                except (OSError, asyncio.TimeoutError) as e:
+                    self._send_json(
+                        {"error": f"voice_daemon unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("cue play failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                http_status = 200
+                if result.get("result") == "missing_slug":
+                    http_status = 400
+                elif result.get("result") == "unknown_slug":
+                    http_status = 404
+                elif result.get("result") == "cues_not_configured":
+                    http_status = 503
+                elif result.get("result") != "ok":
+                    http_status = 502
                 self._send_json(result, status=http_status)
                 return
 

@@ -42,10 +42,15 @@ def _hostname_from_url(url: str) -> str:
     return parsed.hostname or ""
 
 
-def _make_manager(*, with_tts: bool = False) -> AudioCueManager:
+def _make_manager(*, tts_playout=None) -> AudioCueManager:
     """Build a manager from environment variables. Same env names the
     daemon uses, so a CLI run and a daemon run agree on which file is
-    canonical for a given cue."""
+    canonical for a given cue.
+
+    `tts_playout` is optional — `list` and `regenerate` don't need
+    audio output, so they pass None. `play` constructs a TtsPlayout
+    inside an `async with` block (so its underlying ALSA stream
+    actually opens) and passes it in here."""
     sounds_dir = _env("JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds")
     management_url = _env("JASPER_MANAGEMENT_URL", "https://jts.local")
     voice = _env("JASPER_GEMINI_VOICE", "Aoede")
@@ -59,23 +64,13 @@ def _make_manager(*, with_tts: bool = False) -> AudioCueManager:
             print(f"warning: TTS backend disabled ({e}); regen will fail",
                   file=sys.stderr)
 
-    tts = None
-    if with_tts:
-        # Constructed lazily here so `list` and `regenerate` don't
-        # need ALSA/portaudio access — those subcommands run fine on
-        # a laptop without an audio device.
-        from ..audio_io import TtsPlayout
-        device = _env("JASPER_TTS_DEVICE", "default")
-        rate = int(_env("JASPER_TTS_OUTPUT_RATE", "48000"))
-        tts = TtsPlayout(device, output_rate=rate)
-
     hostname = _hostname_from_url(management_url) or "this speaker"
     return AudioCueManager(
         sounds_dir=sounds_dir,
         hostname=hostname,
         voice=voice,
         backend=backend,
-        tts_playout=tts,
+        tts_playout=tts_playout,
     )
 
 
@@ -83,7 +78,7 @@ def _make_manager(*, with_tts: bool = False) -> AudioCueManager:
 
 
 def _cmd_list(_args) -> int:
-    mgr = _make_manager()
+    mgr = _make_manager(tts_playout=None)
     rows = mgr.status()
     if not rows:
         print("no cues registered")
@@ -108,7 +103,7 @@ def _cmd_list(_args) -> int:
 
 
 def _cmd_regenerate(args) -> int:
-    mgr = _make_manager()
+    mgr = _make_manager(tts_playout=None)
     try:
         written = mgr.regenerate(slug=args.cue, force=args.force)
     except ValueError as e:
@@ -129,24 +124,59 @@ def _cmd_regenerate(args) -> int:
 
 
 def _cmd_play(args) -> int:
-    """Play a cached cue locally — same code path the daemon uses
-    when it hits a failure state. Useful for previewing a phrasing
-    change before deploying."""
+    """Play a cached cue by routing the request through the running
+    jasper-voice daemon's control socket (via jasper-control's
+    /cue/play HTTP endpoint).
+
+    Why we don't play locally: the daemon's TtsPlayout has its gain
+    set dynamically by TtsVolumeTracker to match current music
+    level. A standalone CLI process can't easily replicate that math
+    and would either play too loud (early version: ~20 dB hot) or
+    fight the daemon's audio path on the same dmix. Routing through
+    the daemon means the cue plays through the same audio chain,
+    same gain, same ducking that real failure-triggered cues use."""
     cue = find_cue(args.slug)
     if cue is None:
         print(f"error: unknown cue slug: {args.slug!r}", file=sys.stderr)
         return 2
-    mgr = _make_manager(with_tts=True)
+
+    import json as _json
+    import urllib.error
+    import urllib.request
+
+    host = _env("JASPER_CONTROL_HOST", "127.0.0.1")
+    port = int(_env("JASPER_CONTROL_PORT", "8780"))
+    url = f"http://{host}:{port}/cue/play"
+    body = _json.dumps({"slug": args.slug}).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
     try:
-        ok = asyncio.run(mgr.play(args.slug))
-    except KeyboardInterrupt:
-        return 130
-    if not ok:
+        with urllib.request.urlopen(req, timeout=35) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            data = _json.loads(e.read().decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            data = {"error": str(e)}
         print(
-            "play failed — see above logs. Common causes: "
-            "no cached file (run regenerate), audio device unavailable.",
+            f"play request returned HTTP {e.code}: {data}",
             file=sys.stderr,
         )
+        return 1
+    except (urllib.error.URLError, ConnectionError) as e:
+        print(
+            f"could not reach jasper-control at {url}: {e}\n"
+            f"is jasper-control running? "
+            f"(`sudo systemctl status jasper-control`)",
+            file=sys.stderr,
+        )
+        return 1
+    if data.get("result") != "ok":
+        print(f"play failed: {data}", file=sys.stderr)
         return 1
     print(f"played {args.slug}")
     return 0
@@ -178,7 +208,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p_play = sub.add_parser(
-        "play", help="play a cached cue locally for testing",
+        "play",
+        help=(
+            "play a cached cue through the running daemon's audio "
+            "chain (so gain matches normal Jarvis voice level)"
+        ),
     )
     p_play.add_argument("slug", help="cue slug (see `jasper-cues list`)")
 
