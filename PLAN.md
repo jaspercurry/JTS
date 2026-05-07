@@ -325,6 +325,24 @@ This is exactly the kind of thing an end-user shouldn't have to
 SSH for. Not blocking v1 ship; flagged as the next polish piece
 after voice end-to-end is solid on the debian backend.
 
+### Test/dev follow-ups (no version)
+
+Small infrastructure items not blocking any feature; recorded so
+they don't get lost in the working tree.
+
+- **`jasper/renderer.py:86` constructs `asyncio.Lock()` synchronously
+  in `DebianBackend.__init__`.** Python 3.10+ defers event-loop
+  binding until first use, so this is fine on the Pi (3.13). Python
+  3.9 + macOS (the local dev venv on jaspercurry's laptop) binds at
+  construction time and raises `RuntimeError: There is no current
+  event loop` once an earlier test in the suite has consumed the
+  default loop — produces 11 collection errors + 5 failures in
+  `tests/test_renderer.py` on a full `.venv/bin/pytest` run while
+  passing when those tests are run alone. Fix: lazy-construct the
+  lock on first await, or take the loop as a parameter. Caught while
+  merging the cue work into main on 2026-05-07; no urgency since
+  the Pi is unaffected and the failures are local-only.
+
 ---
 
 ## Risks worth re-flagging before starting
