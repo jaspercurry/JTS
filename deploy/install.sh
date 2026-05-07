@@ -7,7 +7,7 @@
 #       into snd-aloop, then bridges to CamillaDSP. The historical
 #       baseline.
 #   --backend=debian: stock Debian Trixie Lite, no moOde. Source-builds
-#       shairport-sync (AirPlay 2) + nqptp + go-librespot + bluez-alsa
+#       shairport-sync (AirPlay 2) + nqptp + librespot + bluez-alsa
 #       + bt-agent, owns the full systemd unit per renderer, no
 #       _audioout hijack. Validated on jts.local 2026-05-06.
 #
@@ -54,8 +54,14 @@ CAMILLA_SHA256="d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a
 CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_VERSION}/${CAMILLA_TARBALL}"
 
 # Versions for source builds (debian backend only).
-GO_LIBRESPOT_VERSION="v0.7.1"
-GO_LIBRESPOT_URL="https://github.com/devgianlu/go-librespot/releases/download/${GO_LIBRESPOT_VERSION}/go-librespot_linux_arm64.tar.gz"
+# raspotify ships librespot (rust) 0.8.0 as an arm64 .deb. We use
+# this instead of go-librespot because rust librespot supports
+# `--volume-ctrl log` for a perceptually linear volume slider —
+# go-librespot has a hardcoded cubic curve that concentrates
+# dynamic range at the top of the slider (unusable on real
+# speakers). See docs/HANDOFF-volume.md for full rationale.
+RASPOTIFY_VERSION="0.48.1"
+RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
 SHAIRPORT_SYNC_VERSION="4.3.7"
 NQPTP_REPO="https://github.com/mikebrady/nqptp.git"
 SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
@@ -241,26 +247,32 @@ install_alsa() {
     chmod 0600 /root/.asoundrc
 }
 
-# Source-build go-librespot, nqptp, shairport-sync (AirPlay 2). Run
-# only on debian backend. Each is idempotent — checks for the
-# installed binary and skips the build if present.
+# Source-build / fetch librespot, nqptp, shairport-sync (AirPlay 2).
+# Run only on debian backend. Each is idempotent — checks for the
+# installed binary and skips the install if present.
 install_debian_renderers() {
-    # ---- go-librespot ----
-    if [[ ! -x /usr/local/bin/go-librespot ]]; then
-        echo "Fetching go-librespot ${GO_LIBRESPOT_VERSION}..."
+    # ---- librespot (rust, via raspotify .deb) ----
+    # We use the raspotify .deb because (a) it ships librespot 0.8.0
+    # arm64 binaries; (b) the librespot project itself doesn't ship
+    # binaries; (c) building from cargo on a Pi takes 20+ minutes.
+    # raspotify's own systemd unit + config are disabled — we run
+    # our own /etc/systemd/system/librespot.service with the flags
+    # we want (--volume-ctrl log being the headline).
+    if [[ ! -x /usr/bin/librespot ]]; then
+        echo "Installing librespot via raspotify ${RASPOTIFY_VERSION}..."
         local tmpdir
         tmpdir="$(mktemp -d)"
-        curl -fsSL -o "${tmpdir}/glr.tar.gz" "${GO_LIBRESPOT_URL}"
-        tar -xzf "${tmpdir}/glr.tar.gz" -C "${tmpdir}" go-librespot
-        install -m 0755 "${tmpdir}/go-librespot" /usr/local/bin/go-librespot
+        curl -fsSL -o "${tmpdir}/raspotify.deb" "${RASPOTIFY_URL}"
+        DEBIAN_FRONTEND=noninteractive apt install -y "${tmpdir}/raspotify.deb"
         rm -rf "${tmpdir}"
-        echo "  Installed /usr/local/bin/go-librespot"
+        # Disable raspotify's default service; we run our own unit.
+        systemctl disable --now raspotify.service 2>/dev/null || true
+        echo "  Installed /usr/bin/librespot ($(librespot --version 2>&1 | head -1 || echo unknown))"
     fi
-    install -d -m 0755 /etc/go-librespot
-    install -m 0644 \
-        "${DEBIAN_STACK_DIR}/etc/go-librespot/config.yml" \
-        /etc/go-librespot/config.yml
-    chown -R pi:pi /etc/go-librespot 2>/dev/null || true
+    # The --onevent hook script that writes /run/librespot/state.json
+    install -m 0755 \
+        "${DEBIAN_STACK_DIR}/bin/jasper-librespot-event" \
+        /usr/local/bin/jasper-librespot-event
 
     # ---- nqptp ----
     if [[ ! -x /usr/local/bin/nqptp ]]; then
@@ -442,14 +454,22 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-init.service" \
         "${SYSTEMD_DIR}/jasper-aec-init.service"
+    # Pin the Apple dongle's analog Headphone control to 100% at every
+    # boot — the dynamic volume control happens in CamillaDSP (or the
+    # source's own slider) and the dongle should never be limiting us.
+    # DONGLE_CARD was set above by install_alsa_debian / install_alsa.
+    sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
+        "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
+        > "${SYSTEMD_DIR}/jasper-dac-init.service"
+    chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
 
     if [[ "$BACKEND" == "debian" ]]; then
         # We own the full systemd units for each renderer + nqptp +
         # bt-agent. No drop-in override on shairport-sync — it's our
         # unit pointing at our binary at /usr/local/bin/shairport-sync.
         install -m 0644 \
-            "${DEBIAN_STACK_DIR}/systemd/go-librespot.service" \
-            "${SYSTEMD_DIR}/go-librespot.service"
+            "${DEBIAN_STACK_DIR}/systemd/librespot.service" \
+            "${SYSTEMD_DIR}/librespot.service"
         install -m 0644 \
             "${DEBIAN_STACK_DIR}/systemd/shairport-sync.service" \
             "${SYSTEMD_DIR}/shairport-sync.service"
@@ -484,14 +504,20 @@ install_systemd_units() {
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
-        jasper-web.service jasper-control.service
+        jasper-web.service jasper-control.service jasper-dac-init.service
+    # Apply the dongle Headphone-max pin immediately so a fresh
+    # install gets the full analog ceiling without waiting for
+    # next reboot.
+    systemctl start jasper-dac-init.service || \
+        echo "  WARN: jasper-dac-init failed (dongle not enumerated?). \
+Will retry on next boot."
 
     if [[ "$BACKEND" == "debian" ]]; then
         systemctl enable nqptp.service shairport-sync.service \
-            go-librespot.service bt-agent.service jasper-mux.service
+            librespot.service bt-agent.service jasper-mux.service
         systemctl restart bluealsa-aplay.service 2>/dev/null || true
         systemctl restart nqptp.service shairport-sync.service \
-            go-librespot.service bt-agent.service jasper-mux.service \
+            librespot.service bt-agent.service jasper-mux.service \
             2>/dev/null || true
     else
         # On a fresh moOde, shairport-sync is spawned outside systemd by

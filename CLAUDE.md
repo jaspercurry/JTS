@@ -33,13 +33,19 @@ sudo bash deploy/install.sh --backend=debian   # no moOde
 to redirect renderers into snd-aloop. `jasper/moode.py` polls
 moOde's REST + SQLite for renderer state.
 
-**debian** (validated on jts.local 2026-05-06): stock Raspberry Pi OS
+**debian** (validated on jts.local 2026-05-07): stock Raspberry Pi OS
 Lite, no moOde. Source-builds shairport-sync with AirPlay 2 +
-nqptp, drops in go-librespot + bluez-alsa + bt-agent, owns the full
-systemd unit per renderer. `jasper/renderer.py:DebianBackend`
-polls go-librespot HTTP, shairport-sync MPRIS, and bluez-alsa
-directly. `jasper-mux.service` does latest-source-wins preemption
-(moOde's worker.php replacement).
+nqptp, drops in librespot (rust, via raspotify .deb) + bluez-alsa
++ bt-agent, owns the full systemd unit per renderer.
+`jasper/renderer.py:DebianBackend` reads librespot state from
+`/run/librespot/state.json` (written by the `--onevent` hook
+`/usr/local/bin/jasper-librespot-event`), shairport-sync MPRIS,
+and bluez-alsa directly. `jasper-mux.service` does latest-source-
+wins preemption (moOde's worker.php replacement).
+
+Spotify volume control goes via the Spotify Web API (the multi-
+account `spotify_router`) since librespot has no local control HTTP
+— see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 
 Backend selection is via `JASPER_RENDERER_BACKEND=moode|debian`
 in `/etc/jasper/jasper.env` (default "moode" for backward compat).
@@ -164,9 +170,11 @@ controller that talks to the Pi over WiFi. Phase 1 (volume only) is
 the only piece landed; play/pause and hold-to-talk follow.
 
 Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
-`POST /volume/adjust` (and `/volume/set`, `/healthz`). It calls
-CamillaDSP's `main_volume` mixer via the existing websocket on
-1234. Persistence is incidental — voice_daemon's debounced poller
+`POST /volume/adjust` (and `/volume/set`, `/healthz`). Volume
+requests route through `VolumeCoordinator` (see
+[`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md)), which dispatches
+to the active source's own slider (AirPlay DBus, Spotify HTTP, BT
+DBus) — not just CamillaDSP. Persistence is incidental — voice_daemon's debounced poller
 catches external main_volume changes and writes them to the same
 state file used by voice tools and moOde's slider, so dial-driven
 volume survives restarts without the control daemon knowing about

@@ -25,10 +25,11 @@ from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore
 from .voice.gemini_session import GeminiLiveConnection
 from .voice.session import LiveConnection, LiveTurn
+from .volume_coordinator import VolumeCoordinator
+from .volume_observers import VolumeObserver
 from .volume_persistence import (
     DEFAULT_ANCHOR_DBFS,
     VolumePersistence,
-    regress_if_stale,
 )
 from .wake import WakeWordDetector
 from .weather import WeatherClient
@@ -501,12 +502,17 @@ def _build_registry(
     moode: RendererBackend,
     weather: WeatherClient,
     subway: SubwayClient | None,
+    volume_coordinator: "VolumeCoordinator",
     volume_persistence: VolumePersistence | None = None,
+    spotify_router: Router | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
-    for fn in make_audio_tools(camilla, volume_persistence):
+    for fn in make_audio_tools(volume_coordinator):
         registry.register(fn)
-    router = _build_router(cfg)
+    # Reuse the router built once for the coordinator; if not passed,
+    # build it here for backward-compat with any caller that doesn't
+    # plumb the shared instance through.
+    router = spotify_router if spotify_router is not None else _build_router(cfg)
     for fn in make_transport_tools(moode, router):
         registry.register(fn)
     for fn in make_spotify_tools(router, moode, cfg.spotify_device_name):
@@ -618,6 +624,7 @@ class WakeLoop:
         usage_store: UsageStore,
         spend_cap: SpendCap,
         stop_event: asyncio.Event,
+        volume_coordinator: "VolumeCoordinator",
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -629,6 +636,7 @@ class WakeLoop:
         self._usage_store = usage_store
         self._spend_cap = spend_cap
         self._stop_event = stop_event
+        self._volume_coordinator = volume_coordinator
 
         # Local Silero VAD for in-session barge-in gating. While the
         # model is producing TTS, mic frames are forwarded to Gemini
@@ -909,6 +917,10 @@ class WakeLoop:
         # re-read main_volume mid-turn.
         await self._tts_volume_tracker.apply_now()
         self._tts_volume_tracker.pause()
+        # Tell the volume coordinator a session is active so its
+        # source-transition handler doesn't fight the ducker's
+        # additive math on camilla.
+        self._volume_coordinator.note_voice_session(True)
         await self._ducker.duck()
         self._session_id = self._usage_store.open_session()
         self._turn = await self._connection.acquire_turn()
@@ -949,6 +961,7 @@ class WakeLoop:
             except Exception:  # noqa: BLE001
                 pass
         await self._ducker.restore()
+        self._volume_coordinator.note_voice_session(False)
         self._tts_volume_tracker.resume()
         if self._session_id is not None:
             self._usage_store.close_session(self._session_id, 0, 0)
@@ -1008,6 +1021,7 @@ class WakeLoop:
             )
 
         await self._ducker.restore()
+        self._volume_coordinator.note_voice_session(False)
         # Resume the TTS volume tracker AFTER the duck has been
         # restored, so the next poll reads the user's actual master
         # volume, not the still-ducked one.
@@ -1103,7 +1117,7 @@ async def run() -> None:
         moode_base_url=cfg.moode_base_url,
         mpd_host=cfg.mpd_host,
         mpd_port=cfg.mpd_port,
-        go_librespot_url=cfg.go_librespot_url,
+        librespot_state_path=cfg.librespot_state_path,
         backend_name=cfg.renderer_backend,
     )
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
@@ -1117,21 +1131,25 @@ async def run() -> None:
     )
     ducker = Ducker(camilla, cfg.duck_db)
 
-    # Volume persistence: read the last-saved main_volume from disk
-    # and restore it before anything plays. Soft-regression clamps
-    # extreme values into [safe_low, safe_high] if the saved record
-    # is older than `regress_after_sec` (default 30 min). First boot
-    # / corrupt file → 50% default. Within-session restarts (deploys,
-    # crash recovery seconds later) preserve the exact level.
+    # Volume coordinator: owns the canonical listening_level (0-100),
+    # dispatches voice/dial-driven changes to the active source's own
+    # attenuator (AirPlay DBus / Spotify HTTP / BT DBus) instead of
+    # only adjusting CamillaDSP main_volume. Boot path applies a
+    # safety regression to extreme stale values.
     volume_persistence = VolumePersistence(cfg.volume_state_path)
-    record = volume_persistence.load()
-    restored_db, reason = regress_if_stale(
-        record,
-        stale_after_sec=cfg.volume_regress_after_sec,
-        safe_low_pct=cfg.volume_regress_safe_low_pct,
-        safe_high_pct=cfg.volume_regress_safe_high_pct,
-        first_boot_default_pct=cfg.volume_first_boot_default_pct,
+    # Build the multi-account Spotify router once; reused by both the
+    # coordinator (for outbound volume control via Web API) and the
+    # voice tool registry (transport / spotify_play). Same instance,
+    # one OAuth refresh cycle per account.
+    volume_spotify_router = _build_router(cfg)
+    volume_coordinator = VolumeCoordinator(
+        camilla=camilla,
+        persistence=volume_persistence,
+        backend=moode,
+        spotify_router=volume_spotify_router,
+        spotify_device_name=cfg.spotify_device_name,
     )
+    record = volume_persistence.load()
     # Loudness anchor: never expires. If the file has one, use it
     # exactly. Otherwise fall to DEFAULT_ANCHOR_DBFS (-30 dBFS = 40%
     # equivalent), which gives a conservative conversational-level TTS
@@ -1147,21 +1165,46 @@ async def run() -> None:
         anchor_reason, initial_anchor,
     )
     try:
-        await camilla.set_volume_db(restored_db)
-        # Always re-persist after restore so the file's updated_at
-        # reflects this boot — protects against runaway "stale by 6
-        # months" scenarios where the disk anchor never refreshes.
-        volume_persistence.save_now(restored_db)
-        logger.info("volume persistence: %s → %.1f dB", reason, restored_db)
+        target_level, restore_reason = await volume_coordinator.initialize(
+            stale_after_sec=cfg.volume_regress_after_sec,
+            safe_low_pct=cfg.volume_regress_safe_low_pct,
+            safe_high_pct=cfg.volume_regress_safe_high_pct,
+            first_boot_default_pct=cfg.volume_first_boot_default_pct,
+        )
+        logger.info(
+            "volume coordinator: %s → listening_level=%d%%",
+            restore_reason, target_level,
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning(
-            "volume persistence: could not restore main_volume to %.1f dB: %s",
-            restored_db, e,
+            "volume coordinator: initialize failed (%s); proceeding with "
+            "in-memory default", e,
+        )
+
+    # Inbound source-volume observers (Phase 2). On the debian backend
+    # we poll shairport (DBus), librespot (state file written by
+    # --onevent hook), and bluez-alsa (DBus) once per second so
+    # iPhone slider movements / Spotify app slider drags / BT volume
+    # button presses sync into the coordinator's listening_level.
+    # Skipped on moOde — that backend's worker.php owns coordination.
+    volume_observer: VolumeObserver | None = None
+    if cfg.renderer_backend == "debian":
+        volume_observer = VolumeObserver(
+            volume_coordinator,
+            librespot_state_path=cfg.librespot_state_path,
+        )
+        await volume_observer.start()
+    else:
+        logger.info(
+            "volume observer disabled (renderer_backend=%s; only enabled on debian)",
+            cfg.renderer_backend,
         )
 
     registry = _build_registry(
         cfg, camilla, moode, weather, subway,
+        volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
+        spotify_router=volume_spotify_router,
     )
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
@@ -1218,6 +1261,7 @@ async def run() -> None:
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
+                volume_coordinator=volume_coordinator,
             )
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
@@ -1233,6 +1277,9 @@ async def run() -> None:
     finally:
         if tts_volume_tracker is not None:
             await tts_volume_tracker.stop()
+        if volume_observer is not None:
+            await volume_observer.stop()
+        await volume_coordinator.aclose()
         await connection.stop()
         await moode.aclose()
         await weather.aclose()

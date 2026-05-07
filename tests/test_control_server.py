@@ -1,8 +1,9 @@
 """Route-level tests for jasper.control.server.
 
-Spins the ThreadingHTTPServer on a random port against a fake
-CamillaProxy that records calls — so we can exercise the HTTP
-surface end-to-end without needing a real CamillaDSP instance.
+Spins the ThreadingHTTPServer on a random port. The volume routes go
+through `_with_coordinator` — we monkey-patch that helper to bypass
+the real CamillaController/RendererBackend stack and feed in a fake
+coordinator that records calls.
 """
 from __future__ import annotations
 
@@ -19,48 +20,63 @@ from jasper.control.server import (
     VOLUME_MIN_DB,
     _clamp_db,
     _db_to_percent,
+    _delta_db_to_delta_percent,
     _make_handler,
 )
 
 
-class FakeCamilla:
-    """Stand-in for CamillaProxy. Same sync interface, in-memory state."""
+class FakeCoordinator:
+    """In-memory stand-in. Same async surface as VolumeCoordinator."""
 
-    def __init__(self, db: float = -25.0) -> None:
-        self._db = db
-        self.calls: list[tuple[str, float | None]] = []
+    def __init__(self, level: int = 60) -> None:
+        self._level = int(level)
+        self.calls: list[tuple[str, int | None]] = []
         self.fail_next = False
 
     def _maybe_fail(self) -> None:
         if self.fail_next:
             self.fail_next = False
-            raise RuntimeError("simulated camilla failure")
+            raise RuntimeError("simulated coordinator failure")
 
-    def get_volume_db(self) -> float:
+    def get_listening_level(self) -> int:
         self._maybe_fail()
         self.calls.append(("get", None))
-        return self._db
+        return self._level
 
-    def set_volume_db(self, db: float) -> float:
-        self._maybe_fail()
-        clamped = _clamp_db(db)
-        self._db = clamped
-        self.calls.append(("set", clamped))
-        return clamped
+    def load_persisted_level(self) -> int:
+        return self._level
 
-    def adjust_volume_db(self, delta_db: float) -> float:
+    async def set_listening_level(self, percent: int) -> int:
         self._maybe_fail()
-        target = _clamp_db(self._db + float(delta_db))
-        self._db = target
-        self.calls.append(("adjust", float(delta_db)))
+        target = max(0, min(100, int(percent)))
+        self._level = target
+        self.calls.append(("set", target))
         return target
+
+    async def adjust_listening_level(self, delta: int) -> int:
+        self._maybe_fail()
+        target = max(0, min(100, self._level + int(delta)))
+        self._level = target
+        self.calls.append(("adjust", int(delta)))
+        return target
+
+    async def aclose(self) -> None:
+        return None
 
 
 @pytest.fixture
-def server_with_camilla():
-    """Start a ThreadingHTTPServer on a free port. Yields (base_url, fake)."""
-    fake = FakeCamilla(db=-20.0)
-    handler = _make_handler(fake, "/nonexistent.sock")
+def server_with_coordinator(monkeypatch):
+    """Start a ThreadingHTTPServer and patch _with_coordinator to use
+    the fake. Yields (base_url, fake_coord)."""
+    fake = FakeCoordinator(level=60)
+
+    async def fake_with_coordinator(op, **kwargs):  # noqa: ARG001
+        return await op(fake)
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_with_coordinator", fake_with_coordinator)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -76,9 +92,8 @@ def server_with_camilla():
 @pytest.fixture
 def server_with_voice_socket(monkeypatch):
     """Server fixture for /session/* endpoints: stubs out the UDS round-trip
-    by monkey-patching _voice_socket_command. Yields (base_url, response_queue).
-    Push dicts onto the queue to control the next response; a default
-    {"result":"OK"} is used when the queue is empty."""
+    by monkey-patching _voice_socket_command. Yields (base, responses, received).
+    Push dicts onto responses to control the next reply; default {"result":"OK"}."""
     voice_responses: list[dict] = []
     received_cmds: list[str] = []
 
@@ -89,8 +104,16 @@ def server_with_voice_socket(monkeypatch):
     import jasper.control.server as srv_mod
     monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
 
-    fake_camilla = FakeCamilla(db=-20.0)
-    handler = _make_handler(fake_camilla, "/tmp/unused.sock")
+    # Coordinator is also patched — session-only tests don't touch
+    # volume routes, but the handler factory still needs the wiring.
+    fake_coord = FakeCoordinator(level=60)
+
+    async def fake_with_coordinator(op, **kwargs):  # noqa: ARG001
+        return await op(fake_coord)
+
+    monkeypatch.setattr(srv_mod, "_with_coordinator", fake_with_coordinator)
+
+    handler = _make_handler("127.0.0.1", 1234, "/tmp/unused.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     http_thread = threading.Thread(target=server.serve_forever, daemon=True)
     http_thread.start()
@@ -146,95 +169,120 @@ def test_db_to_percent_endpoints():
     assert _db_to_percent((VOLUME_MIN_DB + VOLUME_MAX_DB) / 2) == 50
 
 
+def test_delta_db_to_delta_percent_5db_is_10pp():
+    assert _delta_db_to_delta_percent(5.0) == 10
+    assert _delta_db_to_delta_percent(-5.0) == -10
+    assert _delta_db_to_delta_percent(2.5) == 5
+
+
 # --- routes ---
 
 
-def test_healthz(server_with_camilla):
-    base, _ = server_with_camilla
+def test_healthz(server_with_coordinator):
+    base, _ = server_with_coordinator
     status, body = _get(f"{base}/healthz")
     assert status == 200
     assert body == {"ok": True}
 
 
-def test_get_volume(server_with_camilla):
-    base, fake = server_with_camilla
+def test_get_volume(server_with_coordinator):
+    base, fake = server_with_coordinator
     status, body = _get(f"{base}/volume")
     assert status == 200
-    assert body["db"] == -20.0
-    assert body["percent"] == _db_to_percent(-20.0)
-    assert fake.calls == [("get", None)]
+    assert body["percent"] == 60
+    # `db` is computed from percent for back-compat
+    assert body["db"] == round((60 / 100) * (VOLUME_MAX_DB - VOLUME_MIN_DB) + VOLUME_MIN_DB, 3)
+    assert ("get", None) in fake.calls
 
 
-def test_volume_adjust_relative(server_with_camilla):
-    base, fake = server_with_camilla
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": -2.0})
+def test_volume_adjust_legacy_delta_db(server_with_coordinator):
+    """Dial firmware sends delta_db; control daemon converts to
+    listening_level percent points."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/adjust", {"delta_db": -2.5})
     assert status == 200
-    assert body["db"] == -22.0
-    assert ("adjust", -2.0) in fake.calls
+    # -2.5 dB on 50 dB span = -5 percent points; 60 - 5 = 55
+    assert body["percent"] == 55
+    assert ("adjust", -5) in fake.calls
 
 
-def test_volume_adjust_clamps_high(server_with_camilla):
-    base, fake = server_with_camilla
-    fake._db = -1.0
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": 10.0})
+def test_volume_adjust_native_delta_percent(server_with_coordinator):
+    """Newer clients send delta_percent directly."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": 10})
     assert status == 200
-    assert body["db"] == VOLUME_MAX_DB
+    assert body["percent"] == 70
+    assert ("adjust", 10) in fake.calls
+
+
+def test_volume_adjust_clamps_high(server_with_coordinator):
+    base, fake = server_with_coordinator
+    fake._level = 95
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": 20})
+    assert status == 200
     assert body["percent"] == 100
 
 
-def test_volume_adjust_clamps_low(server_with_camilla):
-    base, fake = server_with_camilla
-    fake._db = -49.0
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": -10.0})
+def test_volume_adjust_clamps_low(server_with_coordinator):
+    base, fake = server_with_coordinator
+    fake._level = 5
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": -30})
     assert status == 200
-    assert body["db"] == VOLUME_MIN_DB
     assert body["percent"] == 0
 
 
-def test_volume_set_absolute(server_with_camilla):
-    base, fake = server_with_camilla
-    status, body = _post(f"{base}/volume/set", {"db": -8.0})
+def test_volume_set_legacy_db(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"db": -25.0})
     assert status == 200
-    assert body["db"] == -8.0
-    assert ("set", -8.0) in fake.calls
+    # -25 dB → 50% (midpoint of -50..0 span)
+    assert body["percent"] == 50
+    assert ("set", 50) in fake.calls
 
 
-def test_volume_set_clamps(server_with_camilla):
-    base, _ = server_with_camilla
-    status, body = _post(f"{base}/volume/set", {"db": 100.0})
+def test_volume_set_native_percent(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": 75})
     assert status == 200
-    assert body["db"] == VOLUME_MAX_DB
+    assert body["percent"] == 75
+    assert ("set", 75) in fake.calls
 
 
-def test_adjust_missing_field_400(server_with_camilla):
-    base, _ = server_with_camilla
+def test_volume_set_clamps(server_with_coordinator):
+    base, _ = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": 200})
+    assert status == 200
+    assert body["percent"] == 100
+
+
+def test_adjust_missing_field_400(server_with_coordinator):
+    base, _ = server_with_coordinator
     status, body = _post(f"{base}/volume/adjust", {})
     assert status == 400
-    assert "delta_db" in body["error"]
 
 
-def test_adjust_non_numeric_400(server_with_camilla):
-    base, _ = server_with_camilla
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": "loud"})
+def test_adjust_non_numeric_400(server_with_coordinator):
+    base, _ = server_with_coordinator
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": "loud"})
     assert status == 400
 
 
-def test_set_missing_field_400(server_with_camilla):
-    base, _ = server_with_camilla
+def test_set_missing_field_400(server_with_coordinator):
+    base, _ = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {})
     assert status == 400
 
 
-def test_unknown_route_404(server_with_camilla):
-    base, _ = server_with_camilla
+def test_unknown_route_404(server_with_coordinator):
+    base, _ = server_with_coordinator
     status, _ = _get(f"{base}/nope")
     assert status == 404
 
 
-def test_camilla_failure_502(server_with_camilla):
-    base, fake = server_with_camilla
+def test_coordinator_failure_502(server_with_coordinator):
+    base, fake = server_with_coordinator
     fake.fail_next = True
-    status, body = _post(f"{base}/volume/adjust", {"delta_db": -2.0})
+    status, body = _post(f"{base}/volume/adjust", {"delta_percent": -10})
     assert status == 502
     assert "error" in body
 
@@ -281,8 +329,8 @@ def test_session_end_no_session_409(server_with_voice_socket):
     assert status == 409
 
 
-def test_session_endpoint_503_when_voice_socket_missing(server_with_camilla):
-    base, _ = server_with_camilla
+def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator):
+    base, _ = server_with_coordinator
     # Fixture passes /nonexistent.sock — connect will FileNotFoundError.
     status, body = _post(f"{base}/session/start", None)
     assert status == 503

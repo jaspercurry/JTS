@@ -101,11 +101,15 @@ class Config:
 
     # Renderer backend selection. "moode" (default) routes through
     # moOde's REST API + SQLite for renderer state. "debian" uses
-    # each daemon's own surface (go-librespot HTTP, shairport-sync
-    # MPRIS, bluez-alsa) and is the no-moOde stack on Trixie Lite.
-    # See jasper.renderer.make_backend.
+    # each daemon's own surface (librespot state file via --onevent
+    # hook, shairport-sync MPRIS, bluez-alsa DBus) and is the
+    # no-moOde stack on Trixie Lite. See jasper.renderer.make_backend.
     renderer_backend: str
-    go_librespot_url: str
+    # Path to the librespot state file written by the --onevent hook
+    # (jasper-librespot-event). Read by mux, volume_observers, and
+    # the DebianBackend renderer. Default written by librespot.service
+    # via systemd RuntimeDirectory.
+    librespot_state_path: str
 
     spotify_client_id: str
     spotify_client_secret: str
@@ -244,8 +248,8 @@ class Config:
             mpd_host=_env("MPD_HOST", "127.0.0.1"),
             mpd_port=_env_int("MPD_PORT", 6600),
             renderer_backend=_env("JASPER_RENDERER_BACKEND", "moode"),
-            go_librespot_url=_env(
-                "JASPER_GO_LIBRESPOT_URL", "http://127.0.0.1:3678",
+            librespot_state_path=_env(
+                "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
             spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),

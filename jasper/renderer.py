@@ -5,10 +5,11 @@ Two implementations conform to the same RendererBackend protocol:
 - MoodeClient (jasper.moode.MoodeClient): polls moOde's REST + SQLite
   for renderer state. The original implementation, used when running
   on top of moOde audio.
-- DebianBackend (this file): polls each renderer daemon directly —
-  go-librespot's HTTP API, shairport-sync's MPRIS over DBus, and
-  bluez-alsa's PCM list. Used when running on a stock Debian Trixie
-  box without moOde (the migrate/no-moode stack).
+- DebianBackend (this file): consults each renderer daemon directly —
+  the librespot --onevent state file for Spotify, shairport-sync's
+  MPRIS over DBus for AirPlay, and bluez-alsa's PCM list for BT.
+  Used when running on a stock Debian Trixie box without moOde
+  (the migrate/no-moode stack).
 
 Selection happens in `make_backend()` via the JASPER_RENDERER_BACKEND
 env var (default "moode" for backward compat). All callers go through
@@ -30,6 +31,8 @@ from typing import Any, Protocol, runtime_checkable
 
 import httpx
 from mpd.asyncio import MPDClient
+
+from . import librespot_state
 
 logger = logging.getLogger(__name__)
 
@@ -54,9 +57,9 @@ class RendererBackend(Protocol):
 
 
 class DebianBackend:
-    """Renderer state + control without moOde. Polls each daemon's
+    """Renderer state + control without moOde. Consults each daemon's
     own surface:
-      go-librespot  → HTTP /status
+      librespot     → /run/librespot/state.json (--onevent hook)
       shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
       bluez-alsa    → bluealsa-cli list-pcms (subprocess)
       MPD           → python-mpd2 (rare on debian-stack — only if
@@ -71,11 +74,11 @@ class DebianBackend:
     def __init__(
         self,
         *,
-        go_librespot_url: str,
         mpd_host: str,
         mpd_port: int,
+        librespot_state_path: str = librespot_state.DEFAULT_PATH,
     ) -> None:
-        self._gl_url = go_librespot_url.rstrip("/")
+        self._librespot_state_path = librespot_state_path
         self._http = httpx.AsyncClient(timeout=2.0)
         self._mpd_host = mpd_host
         self._mpd_port = mpd_port
@@ -110,16 +113,9 @@ class DebianBackend:
         }
 
     async def _spot_active(self) -> bool:
-        try:
-            r = await self._http.get(f"{self._gl_url}/status")
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("go-librespot /status fetch failed: %s", e)
-            return False
-        return not bool(data.get("stopped", True)) and not bool(
-            data.get("paused", True)
-        )
+        # State file is small (~few hundred bytes); read on every
+        # query. is_playing() returns False on missing file.
+        return librespot_state.is_playing(self._librespot_state_path)
 
     async def _ap_active(self) -> bool:
         # busctl returns 's "Playing"' (or "Paused"/"Stopped") for the
@@ -173,20 +169,20 @@ class DebianBackend:
             return {}
 
     async def _spot_currentsong(self) -> dict[str, Any]:
-        try:
-            r = await self._http.get(f"{self._gl_url}/status")
-            r.raise_for_status()
-            data = r.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("go-librespot /status (currentsong) failed: %s", e)
+        # librespot's --onevent hook only gives us TRACK_ID / URI;
+        # title/artist/album require a Spotify Web API lookup.
+        # Voice tools that need rich metadata go through
+        # jasper.spotify_router (which already does Web API). For
+        # the renderer's purposes we return the URI so transport
+        # routing can identify the source as Spotify.
+        uri = librespot_state.track_uri(self._librespot_state_path)
+        if not uri:
             return {}
-        track = data.get("track") or {}
-        artists = track.get("artist_names") or []
         return {
-            "title": track.get("name", ""),
-            "album": track.get("album_name", ""),
-            "artist": ", ".join(artists),
-            "uri": track.get("uri", ""),
+            "title": "",
+            "album": "",
+            "artist": "",
+            "uri": uri,
         }
 
     async def _ap_currentsong(self) -> dict[str, Any]:
@@ -260,16 +256,22 @@ class DebianBackend:
 
     _NAME_MAP = {
         "airplay": "shairport-sync",
-        "spotify": "go-librespot",
+        "spotify": "librespot",
         "bluetooth": "bluealsa",
     }
 
     async def disable_renderer(self, name: str) -> None:
         if name == "spotify":
-            try:
-                await self._http.post(f"{self._gl_url}/player/pause")
-            except Exception as e:  # noqa: BLE001
-                logger.debug("go-librespot pause failed: %s", e)
+            # librespot has no local control HTTP; pause via Spotify
+            # Web API. jasper-mux owns the multi-account router for
+            # this — disable_renderer() callers (transport tools,
+            # spotify_router) can issue their own pause via the
+            # router they already hold. Best-effort no-op here.
+            logger.debug(
+                "disable_renderer(spotify): no local pause API on "
+                "librespot — caller should issue Web API pause via "
+                "their spotify_router instance",
+            )
             return
         if name == "airplay":
             await _busctl_call_method(
@@ -417,17 +419,20 @@ def make_backend(
     moode_base_url: str,
     mpd_host: str,
     mpd_port: int,
-    go_librespot_url: str = "http://127.0.0.1:3678",
+    librespot_state_path: str = librespot_state.DEFAULT_PATH,
     backend_name: str | None = None,
 ) -> RendererBackend:
     if backend_name is None:
         backend_name = os.environ.get("JASPER_RENDERER_BACKEND", "moode")
     if backend_name == "debian":
-        logger.info("renderer backend: debian (go-librespot HTTP, shairport MPRIS, bluez-alsa)")
+        logger.info(
+            "renderer backend: debian (librespot state file, "
+            "shairport MPRIS, bluez-alsa)",
+        )
         return DebianBackend(
-            go_librespot_url=go_librespot_url,
             mpd_host=mpd_host,
             mpd_port=mpd_port,
+            librespot_state_path=librespot_state_path,
         )
     if backend_name != "moode":
         logger.warning(

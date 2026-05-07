@@ -6,13 +6,16 @@ pauses the older one. Implements the "most recent source wins"
 UX that moOde's worker.php provides on the moOde backend.
 
 Cadence: 1 Hz polling. Each tick fans out to three concurrent
-state probes (Spotify HTTP, AirPlay MPRIS, Bluetooth bluealsa-cli);
-the whole tick takes <100 ms typically.
+state probes; the whole tick takes <100 ms typically.
 
 Renderer support:
-  Spotify (go-librespot):
-    detect: GET /status — `not paused and not stopped`
-    pause:  POST /player/pause
+  Spotify (librespot):
+    detect: read /run/librespot/state.json (written by
+            --onevent hook on every player event)
+    pause:  Spotify Web API via spotipy — librespot 0.8.0 has no
+            local control HTTP. We iterate household accounts and
+            issue PUT /me/player/pause to whoever has the JTS
+            device active.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing"
     pause:  MPRIS Pause method
@@ -38,9 +41,11 @@ import logging
 import os
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
+
+from . import librespot_state
 
 logger = logging.getLogger(__name__)
 
@@ -70,20 +75,28 @@ class Mux:
     # handover.
     DEBOUNCE_TICKS = 2
 
-    def __init__(self, go_librespot_url: str) -> None:
-        self._gl_url = go_librespot_url.rstrip("/")
+    def __init__(
+        self,
+        librespot_state_path: str = librespot_state.DEFAULT_PATH,
+    ) -> None:
+        self._librespot_state_path = librespot_state_path
         self._http = httpx.AsyncClient(timeout=2.0)
         self._state = _State()
         self._winner: Optional[Source] = None
         self._winner_age_ticks = 0
+        # Lazy router for Web API pause. Built on first use, kept
+        # for the daemon's lifetime. None means Spotify env vars
+        # weren't set → pause-via-Web-API not available, log no-op.
+        self._spotify_router: Any | None = None
+        self._spotify_router_built = False
 
     async def aclose(self) -> None:
         await self._http.aclose()
 
     async def run(self) -> None:
         logger.info(
-            "jasper-mux starting (poll=%.1fs, go-librespot=%s)",
-            self.POLL_INTERVAL_SEC, self._gl_url,
+            "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
+            self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
         try:
             while True:
@@ -150,17 +163,10 @@ class Mux:
     # ------------------------------------------------------------------
 
     async def _spotify_playing(self) -> bool:
-        try:
-            r = await self._http.get(f"{self._gl_url}/status")
-            if r.status_code == 204 or not r.content:
-                return False
-            data = r.json()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("spotify probe failed: %s", e)
-            return False
-        return not bool(data.get("stopped", True)) and not bool(
-            data.get("paused", True)
-        )
+        # State file is small; reading it on every tick is cheap.
+        # is_playing() returns False on missing file / parse error,
+        # which is the right "spotify not active" answer.
+        return librespot_state.is_playing(self._librespot_state_path)
 
     async def _airplay_playing(self) -> bool:
         out = await _busctl(
@@ -194,11 +200,13 @@ class Mux:
     async def _pause(self, source: Source) -> None:
         logger.info("preempting %s", source.value)
         if source == Source.SPOTIFY:
-            try:
-                r = await self._http.post(f"{self._gl_url}/player/pause")
-                r.raise_for_status()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("spotify pause failed: %s", e)
+            ok = await self._spotify_pause_via_web_api()
+            if not ok:
+                logger.warning(
+                    "spotify pause: no Web API account could pause the JTS "
+                    "device; AirPlay and Spotify will mix briefly until "
+                    "Spotify times out (~30s) or the user pauses on phone",
+                )
         elif source == Source.AIRPLAY:
             ok = await _busctl(
                 "call", "org.mpris.MediaPlayer2.ShairportSync",
@@ -216,6 +224,95 @@ class Mux:
                 "bluetooth: no graceful pause API. "
                 "Audio may briefly mix until phone-side stops.",
             )
+
+
+    # ------------------------------------------------------------------
+    # Spotify Web API helpers — librespot 0.8.0 has no local control
+    # HTTP, so to pause Spotify we drive Spotify's cloud → spirc →
+    # librespot. Uses the same multi-account router voice tools
+    # already use for Spotify queries.
+    # ------------------------------------------------------------------
+
+    def _ensure_spotify_router(self) -> Any | None:
+        """Build the multi-account Spotify router on first use, or
+        return the cached one. None means Spotify env vars aren't set
+        and Web API isn't available."""
+        if self._spotify_router_built:
+            return self._spotify_router
+        self._spotify_router_built = True
+        client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
+        client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+        if not (client_id and client_secret):
+            logger.debug(
+                "spotify Web API: SPOTIFY_CLIENT_ID/SECRET not set; "
+                "pause-via-Web-API disabled",
+            )
+            return None
+        try:
+            from .accounts import Registry, maybe_migrate_legacy
+            from .spotify_router import Router, build_clients
+            registry = Registry.load(os.environ.get(
+                "JASPER_SPOTIFY_ACCOUNTS_PATH",
+                "/var/lib/jasper/spotify/accounts.json",
+            ))
+            maybe_migrate_legacy(
+                registry,
+                os.environ.get("SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"),
+                default_name="default",
+            )
+            clients = build_clients(
+                registry,
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=os.environ.get(
+                    "SPOTIFY_REDIRECT_URI",
+                    "https://jts.local/spotify/callback",
+                ),
+            )
+            if not clients:
+                logger.debug("spotify Web API: no accounts authorized")
+                return None
+            self._spotify_router = Router(
+                clients=clients, default_name=registry.default_name,
+            )
+            return self._spotify_router
+        except Exception as e:  # noqa: BLE001
+            logger.warning("spotify Web API router build failed: %s", e)
+            return None
+
+    async def _spotify_pause_via_web_api(self) -> bool:
+        """Try every authorized account; pause whichever has the JTS
+        device. Returns True if any account successfully paused."""
+        router = self._ensure_spotify_router()
+        if router is None:
+            return False
+        device_name = os.environ.get("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+        for ac in router.clients.values():
+            try:
+                devices = await asyncio.to_thread(ac.sp.devices)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "spotify devices() failed for %s: %s", ac.account.name, e,
+                )
+                continue
+            for d in (devices.get("devices") or []):
+                if d.get("name") == device_name and d.get("is_active"):
+                    try:
+                        await asyncio.to_thread(
+                            ac.sp.pause_playback, device_id=d.get("id"),
+                        )
+                        logger.info(
+                            "spotify pause via Web API: account=%s device=%s",
+                            ac.account.name, d.get("id"),
+                        )
+                        return True
+                    except Exception as e:  # noqa: BLE001
+                        logger.debug(
+                            "spotify pause failed for %s: %s",
+                            ac.account.name, e,
+                        )
+                        continue
+        return False
 
 
 async def _busctl(*args: str) -> Optional[str]:
@@ -237,19 +334,20 @@ async def _busctl(*args: str) -> Optional[str]:
 
 
 async def _amain(args: argparse.Namespace) -> None:
-    mux = Mux(go_librespot_url=args.go_librespot_url)
+    mux = Mux(librespot_state_path=args.librespot_state)
     await mux.run()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Jasper renderer source-arbiter")
     parser.add_argument(
-        "--go-librespot-url",
+        "--librespot-state",
         default=os.environ.get(
-            "JASPER_GO_LIBRESPOT_URL", "http://127.0.0.1:3678",
+            "JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH,
         ),
-        help="go-librespot HTTP API base URL (default from "
-             "JASPER_GO_LIBRESPOT_URL env or http://127.0.0.1:3678)",
+        help="path to librespot state file written by the --onevent "
+             "hook (default from JASPER_LIBRESPOT_STATE env or "
+             f"{librespot_state.DEFAULT_PATH})",
     )
     parser.add_argument(
         "--log-level", default="INFO",

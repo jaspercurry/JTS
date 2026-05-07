@@ -1,11 +1,11 @@
 """Tests for jasper.renderer — the RendererBackend protocol +
 DebianBackend implementation + make_backend factory.
 
-Mocks at the I/O boundary: httpx.AsyncClient for go-librespot, and
-asyncio.create_subprocess_exec for busctl / bluealsa-cli. MPD calls
-are mocked per-test since the protocol requires `_mpd_call` to work
-even when MPD is offline (caller `get_currentsong` falls back to
-empty dict).
+Mocks at the I/O boundary: tmp_path-backed librespot state file
+(which the --onevent hook would write), and asyncio.create_subprocess_exec
+for busctl / bluealsa-cli. MPD calls are mocked per-test since the
+protocol requires `_mpd_call` to work even when MPD is offline
+(caller `get_currentsong` falls back to empty dict).
 """
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ from jasper.renderer import (
 # make_backend factory
 # ----------------------------------------------------------------------
 
-def test_make_backend_debian_returns_debian_backend():
+def test_make_backend_debian_returns_debian_backend(tmp_path):
     b = make_backend(
         moode_base_url="http://127.0.0.1",
         mpd_host="127.0.0.1",
         mpd_port=6600,
-        go_librespot_url="http://127.0.0.1:3678",
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
         backend_name="debian",
     )
     assert isinstance(b, DebianBackend)
@@ -71,12 +71,12 @@ def test_make_backend_unknown_name_falls_back_to_moode(monkeypatch, caplog):
     assert isinstance(b, MoodeClient)
 
 
-def test_protocol_runtime_check():
+def test_protocol_runtime_check(tmp_path):
     """Both backends should satisfy isinstance against the protocol."""
     debian = DebianBackend(
-        go_librespot_url="http://127.0.0.1:3678",
         mpd_host="127.0.0.1",
         mpd_port=6600,
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
     )
     assert isinstance(debian, RendererBackend)
     from jasper.moode import MoodeClient
@@ -91,12 +91,20 @@ def test_protocol_runtime_check():
 # ----------------------------------------------------------------------
 
 @pytest.fixture
-def backend():
+def backend(tmp_path):
+    # Per-test state file path. Tests write fixture JSON into it
+    # (or leave it absent) to control what _spot_active() observes.
     return DebianBackend(
-        go_librespot_url="http://127.0.0.1:3678",
         mpd_host="127.0.0.1",
         mpd_port=6600,
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
     )
+
+
+def _write_librespot_state(backend, payload):
+    """Helper to write a librespot state file the backend will read."""
+    from pathlib import Path
+    Path(backend._librespot_state_path).write_text(json.dumps(payload))
 
 
 def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
@@ -113,13 +121,8 @@ def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
 
 @pytest.mark.asyncio
 async def test_active_renderers_all_inactive(backend):
-    # go-librespot says stopped, busctl returns nothing for AirPlay,
+    # No librespot state file present, busctl empty for AirPlay,
     # bluealsa-cli has no PCM.
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={"stopped": True, "paused": False, "track": None},
-    )
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -136,14 +139,10 @@ async def test_active_renderers_all_inactive(backend):
 
 @pytest.mark.asyncio
 async def test_active_renderers_spotify_playing(backend):
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={
-            "stopped": False, "paused": False,
-            "track": {"name": "X", "artist_names": ["Y"], "album_name": "Z"},
-        },
-    )
+    _write_librespot_state(backend, {
+        "playing": True, "paused": False, "stopped": False,
+        "uri": "spotify:track:X",
+    })
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -156,11 +155,6 @@ async def test_active_renderers_spotify_playing(backend):
 
 @pytest.mark.asyncio
 async def test_active_renderers_bluetooth_playing(backend):
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={"stopped": True, "paused": False, "track": None},
-    )
     fake_pcm = b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source\n"
     with patch(
         "asyncio.create_subprocess_exec",
@@ -172,14 +166,12 @@ async def test_active_renderers_bluetooth_playing(backend):
 
 
 @pytest.mark.asyncio
-async def test_active_renderers_resilient_to_go_librespot_down(backend):
-    """If go-librespot HTTP is unreachable, _spot_active() returns
-    False rather than raising — same fail-soft contract MoodeClient
+async def test_active_renderers_resilient_to_missing_state_file(backend):
+    """If librespot state file is absent (daemon not started yet,
+    or session never connected), _spot_active() returns False
+    rather than raising — same fail-soft contract MoodeClient
     follows for SQLite."""
-    import httpx
-    backend._http.get = AsyncMock(
-        side_effect=httpx.ConnectError("Connection refused"),
-    )
+    # No state file written → librespot_state.is_playing returns False
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
@@ -193,39 +185,28 @@ async def test_active_renderers_resilient_to_go_librespot_down(backend):
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_currentsong_spotify_extracts_track_metadata(backend):
-    spot_response = {
-        "stopped": False,
-        "paused": False,
-        "track": {
-            "name": "Stay Lucky",
-            "artist_names": ["Bachi"],
-            "album_name": "It Was The Best",
-            "uri": "spotify:track:6IiSsjuKiOIbOCSv10SqPn",
-        },
-    }
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(return_value=spot_response)
+async def test_currentsong_spotify_returns_uri(backend):
+    """librespot's --onevent only gives us URI/track_id in the state
+    file — title/artist resolution requires a Spotify Web API call,
+    which voice tools handle via spotify_router. The renderer just
+    surfaces the URI so transport routing knows the source identity."""
+    _write_librespot_state(backend, {
+        "playing": True, "paused": False, "stopped": False,
+        "uri": "spotify:track:6IiSsjuKiOIbOCSv10SqPn",
+    })
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),
     ):
         song = await backend.get_currentsong()
-    assert song["title"] == "Stay Lucky"
-    assert song["artist"] == "Bachi"
-    assert song["album"] == "It Was The Best"
+    assert song["uri"] == "spotify:track:6IiSsjuKiOIbOCSv10SqPn"
 
 
 @pytest.mark.asyncio
 async def test_currentsong_falls_through_to_mpd_when_no_source(backend):
     """When no Spotify, AirPlay, or BT is active, currentsong falls
     through to MPD. If MPD is also down, returns empty dict."""
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={"stopped": True, "paused": False, "track": None},
-    )
+    # No librespot state file → no spotify
     backend._mpd_call = AsyncMock(side_effect=ConnectionRefusedError())
     with patch(
         "asyncio.create_subprocess_exec",
@@ -240,10 +221,15 @@ async def test_currentsong_falls_through_to_mpd_when_no_source(backend):
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_disable_renderer_spotify_calls_pause_endpoint(backend):
-    backend._http.post = AsyncMock()
+async def test_disable_renderer_spotify_is_noop_with_advisory_log(backend, caplog):
+    """librespot 0.8.0 has no local pause API. The renderer logs a
+    debug message; callers (e.g. spotify_router transport layer)
+    should issue Web API pause directly."""
+    import logging
+    caplog.set_level(logging.DEBUG, logger="jasper.renderer")
     await backend.disable_renderer("spotify")
-    backend._http.post.assert_awaited_once_with("http://127.0.0.1:3678/player/pause")
+    # No HTTP call was made; method returned cleanly.
+    assert any("no local pause API" in rec.message for rec in caplog.records)
 
 
 @pytest.mark.asyncio
@@ -317,11 +303,7 @@ async def test_active_renderers_when_busctl_missing(backend):
     """If busctl can't be found (FileNotFoundError), _airplay_playing
     should return False rather than propagating. Same contract as the
     other probes."""
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={"stopped": True, "paused": False, "track": None},
-    )
+    # No librespot state file → spotify inactive
     with patch(
         "asyncio.create_subprocess_exec",
         side_effect=FileNotFoundError("busctl not found"),
@@ -337,12 +319,7 @@ async def test_currentsong_airplay_returns_metadata(backend):
     """When AirPlay is the active source and shairport-sync's MPRIS
     has metadata, currentsong should populate title/album/artist
     from the parsed busctl output."""
-    # spotactive=False, aplactive=True
-    backend._http.get = AsyncMock()
-    backend._http.get.return_value.raise_for_status = MagicMock()
-    backend._http.get.return_value.json = MagicMock(
-        return_value={"stopped": True, "paused": False, "track": None},
-    )
+    # No librespot state file → spotactive False; aplactive=True via MPRIS
 
     sample_mpris = (
         'v a{sv} 4 "mpris:trackid" o "/foo" '

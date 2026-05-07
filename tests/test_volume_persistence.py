@@ -283,3 +283,159 @@ def test_anchor_garbage_type_rejected(tmp_path):
     rec = VolumePersistence(str(path)).load()
     assert rec is not None
     assert rec.loudness_anchor_dbfs is None
+
+
+# ---------- listening_level (schema v2) -----------------------------------
+
+from jasper.volume_persistence import regress_listening_level_if_stale
+
+
+def test_save_listening_level_round_trip(tmp_path):
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(70)
+    rec = p.load()
+    assert rec is not None
+    assert rec.listening_level == 70
+    assert rec.last_used_at is not None
+
+
+def test_save_listening_level_clamps(tmp_path):
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(150)
+    rec = p.load()
+    assert rec.listening_level == 100
+    p.save_listening_level(-50)
+    rec = p.load()
+    assert rec.listening_level == 0
+
+
+def test_save_listening_level_without_main_volume_derives_it(tmp_path):
+    """Coordinator may write listening_level without prior save_now —
+    main_volume_db should be derived from listening_level so the
+    file has a coherent main_volume_db field for legacy callers."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(50)
+    rec = p.load()
+    assert rec is not None
+    # 50% on -50..0 dB scale → -25 dB
+    assert rec.main_volume_db == -25.0
+
+
+def test_v1_migration_derives_listening_level(tmp_path):
+    """Files written by old code (no listening_level field) should
+    have it derived from main_volume_db percent on load."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 1,
+        "main_volume_db": -15.0,  # 70%
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    assert rec.listening_level == 70
+
+
+def test_listening_level_out_of_range_rejected(tmp_path):
+    """A v2 file with garbage listening_level should fall back to
+    deriving from main_volume_db rather than carrying through the
+    bad value."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 2,
+        "main_volume_db": -25.0,  # 50%
+        "listening_level": 250,   # garbage
+        "updated_at": "2026-05-05T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    # Out-of-range listening_level rejected → derived from main_volume_db
+    assert rec.listening_level == 50
+
+
+def test_save_listening_level_no_user_change_preserves_last_used_at(tmp_path):
+    """Boot-time restore writes listening_level but should NOT bump
+    last_used_at — otherwise every reboot resets the staleness clock
+    and yesterday's bedtime 90% never gets clamped down."""
+    p = VolumePersistence(_path(tmp_path))
+    # Seed with an old timestamp.
+    old_ts = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    p._current_main_volume_db = -25.0
+    p._current_listening_level = 70
+    p._current_last_used_at = old_ts
+    p._write_full()
+
+    p.save_listening_level(70, mark_user_change=False)
+    rec = p.load()
+    assert rec is not None
+    assert rec.last_used_at is not None
+    assert abs((rec.last_used_at - old_ts).total_seconds()) < 1.0
+
+
+# ---------- regress_listening_level_if_stale -------------------------------
+
+
+def test_regress_listening_level_first_boot():
+    pct, reason = regress_listening_level_if_stale(
+        None, first_boot_default_pct=42,
+    )
+    assert pct == 42
+    assert "first-boot" in reason
+
+
+def test_regress_listening_level_fresh_unchanged():
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(85),
+        updated_at=NOW - timedelta(seconds=60),
+        listening_level=85,
+        last_used_at=NOW - timedelta(seconds=60),
+    )
+    pct, reason = regress_listening_level_if_stale(
+        rec, now=NOW, stale_after_sec=1800.0,
+    )
+    assert pct == 85
+    assert "regressed" not in reason
+
+
+def test_regress_listening_level_stale_high_clamped():
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(90),
+        updated_at=NOW - timedelta(hours=12),
+        listening_level=90,
+        last_used_at=NOW - timedelta(hours=12),
+    )
+    pct, reason = regress_listening_level_if_stale(
+        rec, now=NOW, safe_high_pct=70,
+    )
+    assert pct == 70
+    assert "regressed down" in reason
+
+
+def test_regress_listening_level_uses_last_used_at_not_updated_at():
+    """When both timestamps exist, last_used_at is the staleness anchor
+    (it's "when did the user actually move the slider", not "when did
+    the daemon last write the file")."""
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(90),
+        updated_at=NOW - timedelta(seconds=60),  # daemon wrote recently
+        listening_level=90,
+        last_used_at=NOW - timedelta(hours=12),  # user touched it long ago
+    )
+    pct, _ = regress_listening_level_if_stale(
+        rec, now=NOW, stale_after_sec=1800.0, safe_high_pct=70,
+    )
+    # Stale via last_used_at → clamped to 70
+    assert pct == 70
+
+
+def test_regress_listening_level_falls_back_to_updated_at_if_no_last_used():
+    """v1-migrated records have no last_used_at; fallback to updated_at."""
+    rec = VolumeRecord(
+        main_volume_db=percent_to_db(90),
+        updated_at=NOW - timedelta(hours=12),
+        listening_level=90,
+        last_used_at=None,
+    )
+    pct, _ = regress_listening_level_if_stale(
+        rec, now=NOW, stale_after_sec=1800.0, safe_high_pct=70,
+    )
+    assert pct == 70

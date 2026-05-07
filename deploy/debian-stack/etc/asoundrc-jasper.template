@@ -13,7 +13,7 @@
 #
 # Topology on the debian stack:
 #
-#   renderers (go-librespot, shairport-sync, bluealsa-aplay)
+#   renderers (librespot, shairport-sync, bluealsa-aplay)
 #     → hw:Loopback,0,0  (snd-aloop playback)
 #                   │
 #                   ▼ (loop)

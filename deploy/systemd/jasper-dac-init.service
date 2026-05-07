@@ -1,0 +1,30 @@
+[Unit]
+Description=Pin Apple USB-C dongle Headphone control to max (fixed analog ceiling)
+# The dongle's "Headphone" amixer control is an analog attenuator
+# in the DAC's output stage. Leaving it below 100% throws away
+# headroom we'd want available to the digital chain (CamillaDSP
+# main_volume) — the user-perceived volume should be controlled
+# entirely in software. Pin it at 100% on every boot so a stray
+# alsactl restore or external setting can't quietly cap us.
+#
+# Runs once at boot, BEFORE jasper-camilla so the speaker output
+# path is at full hardware gain by the time camilla opens it.
+# Idempotent — safe to re-run.
+After=sound.target
+Before=jasper-camilla.service shairport-sync.service librespot.service
+Requires=sound.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# `--` so amixer's getopt doesn't choke on a leading "-" if the
+# card name ever gets passed via env (it'd start with "-" if so).
+# `unmute` is belt-and-suspenders — Headphone Playback Switch is
+# a separate amixer control and shouldn't be muted, but we make
+# it explicit.
+ExecStart=/usr/bin/amixer -c __DONGLE_CARD__ -- sset Headphone 100% unmute
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

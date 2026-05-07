@@ -243,39 +243,34 @@ def check_moode_http(cfg: Config) -> CheckResult:
 # debian-stack equivalents — each renderer's own surface, not moOde's.
 # ----------------------------------------------------------------------
 
-def check_go_librespot_http(cfg: Config) -> CheckResult:
-    """Verify go-librespot's HTTP API is reachable and the daemon is
-    serving Spotify Connect. /status returns 200+JSON when a session
-    is live and 204 No Content when idle (no Spotify client connected
-    yet). Both are healthy; only network/transport errors are real
-    failures."""
-    try:
-        import httpx
-        r = httpx.get(f"{cfg.go_librespot_url.rstrip('/')}/status", timeout=2.0)
-        r.raise_for_status()
-    except Exception as e:  # noqa: BLE001
+def check_librespot_running(cfg: Config) -> CheckResult:
+    """Verify librespot is installed and the systemd unit is active.
+
+    librespot 0.8.0 (rust) replaced go-librespot in the debian-stack
+    on 2026-05-07 specifically for the configurable volume curve
+    (--volume-ctrl log over 60 dB range). It has no local control
+    HTTP, so health is checked via systemd state + binary version."""
+    bin_path = "/usr/bin/librespot"
+    if not os.path.isfile(bin_path):
         return CheckResult(
-            "go-librespot HTTP", "fail",
-            f"can't reach {cfg.go_librespot_url}: {e}. "
-            f"Check: systemctl status go-librespot",
+            "librespot binary", "fail",
+            f"{bin_path} not present. Install: "
+            "apt install raspotify (provides librespot via .deb)",
         )
-    if r.status_code == 204 or not r.content:
+    p = _run(["systemctl", "is-active", "librespot.service"])
+    state = p.stdout.strip()
+    if state != "active":
         return CheckResult(
-            "go-librespot HTTP", "ok",
-            f"{cfg.go_librespot_url} (idle — no Spotify client connected)",
+            "librespot.service", "fail",
+            f"systemctl is-active = '{state}'. Check: "
+            "systemctl status librespot",
         )
-    try:
-        data = r.json()
-        name = data.get("device_name", "?")
-        return CheckResult(
-            "go-librespot HTTP", "ok",
-            f"{cfg.go_librespot_url} (device={name})",
-        )
-    except ValueError:
-        return CheckResult(
-            "go-librespot HTTP", "warn",
-            f"{cfg.go_librespot_url} reachable but returned non-JSON",
-        )
+    # Best-effort version line (librespot prints to stderr at startup)
+    return CheckResult(
+        "librespot.service", "ok",
+        f"{bin_path} active (state file: "
+        f"/run/librespot/state.json)",
+    )
 
 
 def check_shairport_sync_ap2() -> CheckResult:
@@ -356,6 +351,45 @@ def check_apple_dongle_audio() -> CheckResult:
         "USB present but audio interfaces not enumerated. "
         "Plug speakers/headphones into the dongle's 3.5mm jack — "
         "the chip stays in low-power mode without an analog load.",
+    )
+
+
+def check_dongle_headphone_at_max() -> CheckResult:
+    """The Apple dongle's analog Headphone control should be pinned at
+    100%. Anything lower throws away analog headroom that we'd rather
+    have available to the digital chain — main_volume in CamillaDSP is
+    the user-facing knob, the dongle is meant to be a pass-through
+    ceiling.
+
+    `jasper-dac-init.service` sets this on every boot; if it's drifted,
+    this check catches it. -36 dB at 40% was the historical "safe test"
+    setting and is what triggered the audible-loudness gap that led to
+    this check existing."""
+    p = _run(["amixer", "-c", "A", "sget", "Headphone"])
+    if p.returncode != 0:
+        return CheckResult(
+            "Dongle headphone gain", "fail",
+            "amixer -c A sget Headphone failed — dongle not enumerated as "
+            "card 'A'?",
+        )
+    # amixer prints "Front Left: Playback NN [PP%] [-DD.DDdB] [on]";
+    # we want PP. If both channels are present, expect them equal.
+    pcts = re.findall(r"\[(\d+)%\]", p.stdout)
+    if not pcts:
+        return CheckResult(
+            "Dongle headphone gain", "warn",
+            "Could not parse percent from amixer output (format change?).",
+        )
+    pct = int(pcts[0])
+    if pct < 100:
+        return CheckResult(
+            "Dongle headphone gain", "warn",
+            f"Headphone control at {pct}% (analog attenuation engaged). "
+            "Run `sudo systemctl start jasper-dac-init` to pin at 100%.",
+        )
+    return CheckResult(
+        "Dongle headphone gain", "ok",
+        "Headphone at 100% (analog ceiling open)",
     )
 
 
@@ -796,7 +830,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # / cache checks still run (Spotify Web API is the same surface
         # regardless of which backend handles Connect playback).
         sync_checks += [
-            lambda: check_go_librespot_http(cfg),
+            lambda: check_librespot_running(cfg),
             check_shairport_sync_ap2,
             check_nqptp_running,
             check_bluealsa,
@@ -812,6 +846,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         ]
     sync_checks += [
         check_apple_dongle_audio,
+        check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),
         check_ram,
         lambda: check_spend_cap(cfg),

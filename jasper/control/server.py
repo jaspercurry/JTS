@@ -2,25 +2,29 @@
 home automation). Bound to LAN so an ESP32 dial on the household network
 can drive volume / transport / session.
 
-Stack: stdlib http.server (ThreadingHTTPServer), pycamilladsp client.
-Same dependency footprint as jasper-web — nothing new to install.
+Stack: stdlib http.server (ThreadingHTTPServer), pycamilladsp client,
+VolumeCoordinator (source-aware dispatch).
 
 Phase 1 routes:
   GET  /healthz             — liveness check
   GET  /volume              — {"db": float, "percent": int}
   POST /volume/adjust       — body: {"delta_db": float} → new state
+                              delta_db is interpreted on the legacy
+                              50 dB scale (5 dB == 10 percent points)
+                              for backward-compat with the dial firmware
   POST /volume/set          — body: {"db": float} → new state
 
-Future routes (phases 2-3, slot in beneath this file):
-  POST /transport/toggle    — auto play↔pause based on moOde state
+Phase 2 routes:
+  POST /transport/toggle    — auto play↔pause based on backend state
   POST /session/start       — manual wake bypass (long-press)
   POST /session/end         — finalize input (release)
 
-Persistence: this daemon does NOT write the volume state file.
-voice_daemon's debounced poller already catches external main_volume
-changes (it watches Camilla's main_volume regardless of who set it),
-so dial-driven changes converge into the same persistence path used
-by voice tools and the moOde slider.
+Volume dispatch: requests build a fresh VolumeCoordinator per call
+(matches the per-request _toggle_transport pattern). The coordinator
+reads the canonical listening_level from /var/lib/jasper/speaker_volume.json,
+applies the change, dispatches to the active source (or CamillaDSP
+when idle), persists. This daemon doesn't run inbound observers —
+that's voice_daemon's job. Both daemons converge through persistence.
 """
 from __future__ import annotations
 
@@ -54,58 +58,123 @@ def _db_to_percent(db: float) -> int:
     return max(0, min(100, round((float(db) - VOLUME_MIN_DB) / span * 100.0)))
 
 
-class CamillaProxy:
-    """Sync, thread-safe wrapper around pycamilladsp for the request
-    handlers. pycamilladsp itself is sync; ThreadingHTTPServer hands
-    each request its own thread, so we just need a lock to serialise
-    websocket access (the underlying CamillaClient isn't reentrant).
+def _percent_to_db(percent: int) -> float:
+    p = max(0, min(100, int(percent)))
+    span = VOLUME_MAX_DB - VOLUME_MIN_DB
+    return VOLUME_MIN_DB + (span * p / 100.0)
 
-    Reconnects on failure rather than raising — Camilla restarts
-    happen out-of-band (e.g. moOde mode switches) and we don't want
-    to bounce this daemon every time."""
 
-    def __init__(self, host: str, port: int) -> None:
-        self._host = host
-        self._port = port
-        # Imported lazily so tests using FakeCamilla don't need
-        # pycamilladsp installed (it's a git dep, heavy to fetch).
-        self._client: Any | None = None
-        self._lock = threading.Lock()
+def _delta_db_to_delta_percent(delta_db: float) -> int:
+    """Convert a legacy-scale dB delta to a listening-level percent
+    delta. The dial firmware sends fixed deltas like ±2.5 dB per
+    encoder tick; we map those onto the 0-100 percent scale using
+    the same 50 dB span the camilla-only path used. ±5 dB == ±10pp."""
+    span = VOLUME_MAX_DB - VOLUME_MIN_DB
+    return round(float(delta_db) / span * 100.0)
 
-    def _ensure(self) -> Any:
-        if self._client is None:
-            from camilladsp import CamillaClient
-            client = CamillaClient(self._host, self._port)
-            client.connect()
-            self._client = client
-        return self._client
 
-    def _call(self, fn: Callable[[Any], Any]) -> Any:
-        with self._lock:
-            try:
-                return fn(self._ensure())
-            except Exception as e:  # noqa: BLE001
-                logger.warning("camilla call failed, reconnecting: %s", e)
-                self._client = None
-                return fn(self._ensure())
+def _build_spotify_router_or_none():
+    """Build a multi-account Spotify router for dial-driven volume.
+    Returns None if SPOTIFY_CLIENT_ID/SECRET aren't set or no
+    accounts have been authorized — _set_spotify in the coordinator
+    treats None as "skip Spotify dispatch", logging a no-op."""
+    client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
+    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
+    if not (client_id and client_secret):
+        return None
+    try:
+        from ..accounts import Registry, maybe_migrate_legacy
+        from ..spotify_router import Router, build_clients
+        registry = Registry.load(os.environ.get(
+            "JASPER_SPOTIFY_ACCOUNTS_PATH",
+            "/var/lib/jasper/spotify/accounts.json",
+        ))
+        maybe_migrate_legacy(
+            registry,
+            os.environ.get(
+                "SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache",
+            ),
+            default_name="default",
+        )
+        clients = build_clients(
+            registry,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=os.environ.get(
+                "SPOTIFY_REDIRECT_URI",
+                "https://jts.local/spotify/callback",
+            ),
+        )
+        if not clients:
+            return None
+        return Router(clients=clients, default_name=registry.default_name)
+    except Exception as e:  # noqa: BLE001
+        logger.debug("control daemon spotify router build failed: %s", e)
+        return None
 
-    def get_volume_db(self) -> float:
-        return float(self._call(lambda c: c.volume.main_volume()))
 
-    def set_volume_db(self, db: float) -> float:
-        clamped = _clamp_db(db)
-        self._call(lambda c: c.volume.set_main_volume(clamped))
-        return clamped
+async def _with_coordinator(
+    op: Callable[[Any], Any],
+    *,
+    camilla_host: str,
+    camilla_port: int,
+) -> Any:
+    """Build a VolumeCoordinator for one operation, run `op(coord)`,
+    dispose. Mirrors `_toggle_transport`'s per-request pattern — each
+    HTTP request creates and tears down its own async resources, so we
+    don't have to manage a long-lived asyncio loop in this stdlib HTTP
+    server.
 
-    def adjust_volume_db(self, delta_db: float) -> float:
-        # Read-modify-write under one lock so concurrent encoder ticks
-        # from a fast-spinning dial can't lose updates.
-        def rmw(c: Any) -> float:
-            current = float(c.volume.main_volume())
-            target = _clamp_db(current + float(delta_db))
-            c.volume.set_main_volume(target)
-            return target
-        return float(self._call(rmw))
+    `op` is an async callable taking the live coordinator and
+    returning the per-request result (dict or scalar)."""
+    from ..camilla import CamillaController
+    from ..renderer import make_backend
+    from ..volume_coordinator import VolumeCoordinator
+    from ..volume_persistence import VolumePersistence
+
+    camilla = CamillaController(host=camilla_host, port=camilla_port)
+    persistence = VolumePersistence(
+        os.environ.get(
+            "JASPER_VOLUME_STATE_PATH",
+            "/var/lib/jasper/speaker_volume.json",
+        ),
+    )
+    backend = make_backend(
+        moode_base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
+        mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
+        mpd_port=int(os.environ.get("MPD_PORT", "6600")),
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
+        ),
+    )
+    # Build a Spotify router per-request so dial volume can dispatch
+    # to Spotify via Web API (librespot 0.8.0 has no local HTTP).
+    # Best-effort: if env vars aren't set or no accounts authorized,
+    # router is None and Spotify dispatch becomes a no-op.
+    spotify_router = _build_spotify_router_or_none()
+    coord = VolumeCoordinator(
+        camilla=camilla,
+        persistence=persistence,
+        backend=backend,
+        spotify_router=spotify_router,
+        spotify_device_name=os.environ.get(
+            "JASPER_SPOTIFY_DEVICE_NAME", "JTS",
+        ),
+    )
+    coord.load_persisted_level()
+    try:
+        return await op(coord)
+    finally:
+        try:
+            await coord.aclose()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("coordinator aclose warning: %s", e)
+        try:
+            await backend.aclose()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("backend aclose warning: %s", e)
+        # CamillaController has no aclose — sync websocket reconnects
+        # on next use. GC handles cleanup of the cached client.
 
 
 async def _voice_socket_command(socket_path: str, cmd: str) -> dict:
@@ -151,8 +220,8 @@ async def _toggle_transport() -> dict:
         moode_base_url=os.environ.get("MOODE_BASE_URL", "http://127.0.0.1"),
         mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
         mpd_port=int(os.environ.get("MPD_PORT", "6600")),
-        go_librespot_url=os.environ.get(
-            "JASPER_GO_LIBRESPOT_URL", "http://127.0.0.1:3678",
+        librespot_state_path=os.environ.get(
+            "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
         ),
     )
     router: Router | None = None
@@ -194,8 +263,34 @@ async def _toggle_transport() -> dict:
 
 
 def _make_handler(
-    camilla: CamillaProxy, voice_socket_path: str,
+    camilla_host: str,
+    camilla_port: int,
+    voice_socket_path: str,
 ) -> type[BaseHTTPRequestHandler]:
+
+    async def _set_op(percent: int):
+        async def _op(coord):
+            return await coord.set_listening_level(percent)
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
+
+    async def _adjust_op(delta_percent: int):
+        async def _op(coord):
+            return await coord.adjust_listening_level(delta_percent)
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
+
+    async def _get_op():
+        async def _op(coord):
+            return coord.get_listening_level()
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
@@ -219,8 +314,12 @@ def _make_handler(
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return {}
 
-        def _volume_payload(self, db: float) -> dict[str, Any]:
-            return {"db": round(db, 3), "percent": _db_to_percent(db)}
+        def _volume_payload(self, percent: int) -> dict[str, Any]:
+            # `db` is computed for back-compat with the dial firmware
+            # which reads `percent` but logs `db`. The legacy 50 dB
+            # scale is still the lingua franca for clients that haven't
+            # been updated.
+            return {"db": round(_percent_to_db(percent), 3), "percent": percent}
 
         # --- routes ---
 
@@ -230,52 +329,89 @@ def _make_handler(
                 return
             if self.path == "/volume":
                 try:
-                    db = camilla.get_volume_db()
+                    percent = asyncio.run(_get_op())
                 except Exception as e:  # noqa: BLE001
                     logger.exception("get volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
-                self._send_json(self._volume_payload(db))
+                self._send_json(self._volume_payload(percent))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path == "/volume/adjust":
                 body = self._read_json()
-                if "delta_db" not in body:
-                    self._send_json({"error": "missing delta_db"}, status=400)
+                # Support both legacy delta_db (dial firmware compat,
+                # interpreted on the 50 dB camilla scale) and the
+                # cleaner delta_percent for newer clients.
+                if "delta_percent" in body:
+                    try:
+                        delta_pct = int(body["delta_percent"])
+                    except (TypeError, ValueError):
+                        self._send_json(
+                            {"error": "delta_percent must be an integer"},
+                            status=400,
+                        )
+                        return
+                elif "delta_db" in body:
+                    try:
+                        delta_pct = _delta_db_to_delta_percent(
+                            float(body["delta_db"]),
+                        )
+                    except (TypeError, ValueError):
+                        self._send_json(
+                            {"error": "delta_db must be a number"},
+                            status=400,
+                        )
+                        return
+                else:
+                    self._send_json(
+                        {"error": "missing delta_db or delta_percent"},
+                        status=400,
+                    )
                     return
                 try:
-                    delta = float(body["delta_db"])
-                except (TypeError, ValueError):
-                    self._send_json({"error": "delta_db must be a number"}, status=400)
-                    return
-                try:
-                    new_db = camilla.adjust_volume_db(delta)
+                    new_pct = asyncio.run(_adjust_op(delta_pct))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("adjust volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
-                self._send_json(self._volume_payload(new_db))
+                self._send_json(self._volume_payload(new_pct))
                 return
 
             if self.path == "/volume/set":
                 body = self._read_json()
-                if "db" not in body:
-                    self._send_json({"error": "missing db"}, status=400)
+                # Support both legacy `db` (dial / older clients) and
+                # the cleaner `percent`. Percent is the canonical unit
+                # for listening_level.
+                if "percent" in body:
+                    try:
+                        target_pct = int(body["percent"])
+                    except (TypeError, ValueError):
+                        self._send_json(
+                            {"error": "percent must be an integer"}, status=400,
+                        )
+                        return
+                elif "db" in body:
+                    try:
+                        target_pct = _db_to_percent(float(body["db"]))
+                    except (TypeError, ValueError):
+                        self._send_json(
+                            {"error": "db must be a number"}, status=400,
+                        )
+                        return
+                else:
+                    self._send_json(
+                        {"error": "missing db or percent"}, status=400,
+                    )
                     return
                 try:
-                    db = float(body["db"])
-                except (TypeError, ValueError):
-                    self._send_json({"error": "db must be a number"}, status=400)
-                    return
-                try:
-                    new_db = camilla.set_volume_db(db)
+                    new_pct = asyncio.run(_set_op(target_pct))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("set volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
-                self._send_json(self._volume_payload(new_db))
+                self._send_json(self._volume_payload(new_pct))
                 return
 
             if self.path == "/transport/toggle":
@@ -336,12 +472,13 @@ def _make_handler(
 def build_server(
     host: str,
     port: int,
-    camilla: CamillaProxy,
+    camilla_host: str,
+    camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
 ) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(
         (host, port),
-        _make_handler(camilla, voice_socket_path),
+        _make_handler(camilla_host, camilla_port, voice_socket_path),
     )
 
 
@@ -426,8 +563,11 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    camilla = CamillaProxy(args.camilla_host, args.camilla_port)
-    server = build_server(args.host, args.port, camilla, args.voice_socket)
+    server = build_server(
+        args.host, args.port,
+        args.camilla_host, args.camilla_port,
+        args.voice_socket,
+    )
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     logger.info(
         "jasper-control listening on http://%s:%d "

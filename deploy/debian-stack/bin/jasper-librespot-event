@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Receives env vars from librespot --onevent and writes a JSON
+state file for jasper consumers (mux, volume_observers, renderer).
+
+librespot 0.8.0 has no local control HTTP API — instead it fires
+this script as a child process on every player event with relevant
+state in env vars (PLAYER_EVENT, VOLUME, TRACK_ID, ...). We capture
+those into /run/librespot/state.json with an atomic tmp+rename
+write, so multiple jasper components can read the file at any time
+without racing against partial writes.
+
+Why a state file instead of a Unix socket or HTTP server: librespot
+fires this hook synchronously per event — one process per event, no
+long-running listener allowed. A file gives all consumers a stable
+read surface without us having to write our own daemon to bridge.
+
+Path is hardcoded at /run/librespot/state.json — librespot.service's
+RuntimeDirectory=librespot creates the directory at start with the
+right ownership, and tears it down on stop.
+"""
+from __future__ import annotations
+
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+STATE = Path("/run/librespot/state.json")
+
+RELEVANT_VARS = (
+    "PLAYER_EVENT", "TRACK_ID", "VOLUME", "POSITION_MS",
+    "CLIENT_ID", "OLD_TRACK_ID", "NEW_TRACK_ID", "DURATION_MS",
+    "REASON", "URI", "ITEM_TYPE", "PLAY_REQUEST_ID",
+)
+
+
+def main() -> int:
+    event = os.environ.get("PLAYER_EVENT", "")
+    state: dict = {}
+    try:
+        state = json.loads(STATE.read_text())
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        state = {}
+    for k in RELEVANT_VARS:
+        v = os.environ.get(k)
+        if v is not None:
+            state[k.lower()] = v
+    state["last_event"] = event
+    # Coarse playing/paused/stopped derived from event names so
+    # downstream consumers don't have to re-derive.
+    if event in ("playing", "started"):
+        state["playing"] = True
+        state["paused"] = False
+        state["stopped"] = False
+    elif event == "paused":
+        state["playing"] = False
+        state["paused"] = True
+        state["stopped"] = False
+    elif event in ("stopped", "session_disconnected"):
+        state["playing"] = False
+        state["paused"] = False
+        state["stopped"] = True
+        if event == "session_disconnected":
+            state["session_active"] = False
+    elif event == "session_connected":
+        state["session_active"] = True
+    # Atomic tmp+rename write
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(prefix=".librespot.", dir=str(STATE.parent))
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(state, f)
+        os.replace(tmp, STATE)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,38 +1,50 @@
 """Persist + restore the speaker's volume setting across daemon restarts.
 
 The Pi is stationary. Speaker volume should not reset on every reboot.
-We write CamillaDSP's `main_volume` to disk whenever it changes, and
-restore it at daemon boot.
+We write the user-perceived listening level to disk whenever it changes,
+and restore it at daemon boot.
 
-Why persist at all. Without this, every restart leaves Camilla at
-whatever Camilla's own state-load picks (typically the YAML default,
-0 dB = 100%). Combined with the TTS volume tracker's silence-fallback
-formula (main_volume + offset), an unintended high main_volume after
-a restart is a "blast the room" hazard. Persisting closes that loop.
+Two related fields are tracked:
 
-Why we persist `main_volume` and not the observed playback RMS
-(`anchor`):
-the user-facing "speaker volume" is *the Camilla setting itself*. iPhone
-AirPlay sliders and Spotify Connect sliders are upstream attenuators
-the user is aware of and treats separately; "the speaker is at 60%"
-means main_volume sits at 60% of its scale, regardless of what the
-source is doing. The TTS gain tracker already follows observed RMS
-in real-time during music — there's no need to also persist it.
+- `listening_level` (0-100): the canonical user-facing volume. With
+  source-aware coordination (volume_coordinator.py), this is the
+  number "volume up" / "set volume to 50%" / dial-knob ticks all
+  drive. When a source (AirPlay/Spotify/BT) is active the level is
+  pushed to that source's own slider; during idle/MPD it maps to
+  CamillaDSP main_volume.
 
-Soft regression at boot. If the saved value is from "long enough ago"
-(default 30 min), we clamp the restored value into a safe percent range
-[20%, 70%] before applying. So the speaker doesn't suddenly come up
-at yesterday's 90% bedtime listening level after a power cycle, but a
-modest 50% setting is preserved. Within-session restarts (deploys,
-crashes recovered in seconds) skip regression — continuity is preserved.
+- `main_volume_db`: the underlying CamillaDSP setting. Still tracked
+  because (a) it's what TtsVolumeTracker reads as its ceiling, and
+  (b) we need it captured for the boot-restore path. With the
+  coordinator running, main_volume is pinned at 0 dB during source-
+  active operation (so we don't double-attenuate) and tracks
+  listening_level during idle.
 
-File format (JSON, atomic write via tmp+rename):
+- `loudness_anchor_dbfs`: last observed playback RMS while music was
+  actually playing. TTS uses this during silence so it doesn't get
+  loud just because main_volume is high.
+
+Soft regression at boot. If the saved listening_level is from "long
+enough ago" (default 30 min), we clamp into a safe range [20%, 70%]
+before applying. Yesterday's late-night 90% gets clamped to safe_high
+so the morning isn't a blast. Within-session restarts (deploys, fast
+crash recovery) preserve continuity.
+
+File format (JSON, atomic write via tmp+rename, v2):
 
     {
-        "version": 1,
-        "main_volume_db": -20.0,
-        "updated_at": "2026-05-05T15:30:00Z"
+        "version": 2,
+        "listening_level": 70,
+        "last_used_at": "2026-05-07T15:30:00Z",
+        "main_volume_db": 0.0,
+        "loudness_anchor_dbfs": -28.0,
+        "updated_at": "2026-05-07T15:30:00Z"
     }
+
+v1 files (pre-coordinator) had only `main_volume_db` and `updated_at`.
+On load, a missing `listening_level` is derived from `main_volume_db`
+percent — that's exactly what "speaker volume" meant under the old,
+Camilla-only path, so the migration preserves the user's last setting.
 """
 from __future__ import annotations
 
@@ -44,6 +56,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -79,13 +92,22 @@ DEFAULT_ANCHOR_DBFS = -30.0
 class VolumeRecord:
     main_volume_db: float
     updated_at: datetime
-    # NEW: last observed playback RMS while music was playing. None
-    # means "never recorded" → callers should fall back to
-    # DEFAULT_ANCHOR_DBFS. Persists across restarts WITHOUT expiry.
-    # The Pi doesn't move; the user's room context doesn't change
-    # often enough to warrant time-based invalidation.
+    # Last observed playback RMS while music was playing. None means
+    # "never recorded" → callers fall back to DEFAULT_ANCHOR_DBFS.
+    # Persists WITHOUT expiry; the Pi doesn't move and the room
+    # context is stable.
     loudness_anchor_dbfs: float | None = None
     anchor_updated_at: datetime | None = None
+    # Canonical user-facing volume 0-100 (added in schema v2). When
+    # loading a v1 file, this is derived from main_volume_db percent
+    # by load(). Once the coordinator runs, listening_level is the
+    # source of truth and main_volume is derived from it (or pinned
+    # at 0 dB while a source is active).
+    listening_level: int | None = None
+    # When the user (or an observed source-side slider) last touched
+    # the volume. Used by the boot-time idle-reset to decide whether
+    # to fall back to a safe default after a long quiet period.
+    last_used_at: datetime | None = None
 
 
 class VolumePersistence:
@@ -117,9 +139,11 @@ class VolumePersistence:
         self._last_written_anchor_at_mono: float = 0.0
         # In-memory copy of all persisted fields, so we can write the
         # full record whenever any single field changes (avoids losing
-        # main_volume when only anchor changes, and vice-versa).
+        # one field when only another updates).
         self._current_main_volume_db: float | None = None
         self._current_anchor_dbfs: float | None = None
+        self._current_listening_level: int | None = None
+        self._current_last_used_at: datetime | None = None
 
     @property
     def path(self) -> Path:
@@ -188,15 +212,54 @@ class VolumePersistence:
                 )
         except (TypeError, ValueError, AttributeError):
             anchor_ts = None
-        # Cache loaded values so subsequent partial-update writes
-        # (only main_volume, only anchor) don't lose the other field.
+        # listening_level + last_used_at — schema v2. v1 files lack
+        # both; migrate by deriving listening_level from main_volume_db.
+        # That value was the user's last commanded volume under the
+        # Camilla-only path, so the migration preserves intent.
+        listening_level: int | None = None
+        try:
+            raw_level = data.get("listening_level")
+            if raw_level is not None:
+                lvl = int(raw_level)
+                if 0 <= lvl <= 100:
+                    listening_level = lvl
+                else:
+                    logger.warning(
+                        "volume persistence: stored listening_level=%d out of "
+                        "[0,100]; ignoring",
+                        lvl,
+                    )
+        except (TypeError, ValueError):
+            listening_level = None
+        if listening_level is None:
+            listening_level = db_to_percent(db)
+            logger.info(
+                "volume persistence: deriving listening_level=%d%% from v1 "
+                "main_volume_db=%.1f (migration)",
+                listening_level, db,
+            )
+        last_used_at: datetime | None = None
+        try:
+            raw_last_used = data.get("last_used_at")
+            if raw_last_used is not None:
+                last_used_at = datetime.fromisoformat(
+                    raw_last_used.replace("Z", "+00:00")
+                )
+        except (TypeError, ValueError, AttributeError):
+            last_used_at = None
+        # Cache loaded values so subsequent partial-update writes don't
+        # lose any field.
         self._current_main_volume_db = db
         self._current_anchor_dbfs = anchor
+        self._current_listening_level = listening_level
+        self._current_last_used_at = last_used_at
         return VolumeRecord(
             main_volume_db=db,
             updated_at=updated_at,
             loudness_anchor_dbfs=anchor,
             anchor_updated_at=anchor_ts,
+            listening_level=listening_level,
+            last_used_at=last_used_at,
         )
 
     def save_now(self, main_volume_db: float) -> None:
@@ -211,7 +274,14 @@ class VolumePersistence:
 
     def maybe_save(self, main_volume_db: float) -> bool:
         """Debounced main_volume write — for poll-driven detection of
-        external changes (moOde UI, mpc, etc). Returns True if we wrote."""
+        external changes (mpc, hardware knob, etc). Returns True if
+        we wrote.
+
+        Refreshes from disk before writing so the file's
+        listening_level + last_used_at fields (which might have been
+        updated by another process — e.g. jasper-control via dial)
+        aren't trampled by this process's stale in-memory state.
+        Only main_volume_db is treated as owned by this writer."""
         db = float(main_volume_db)
         now = time.monotonic()
         last_db = self._last_written_db
@@ -220,16 +290,50 @@ class VolumePersistence:
                 return False
             if now - self._last_written_at_mono < self.DEBOUNCE_SEC:
                 return False
+        # Refresh listening_level + last_used_at from disk so a write
+        # by another process isn't lost.
+        self.load()
         self._current_main_volume_db = db
         self._write_full()
         self._last_written_db = db
         self._last_written_at_mono = now
         return True
 
+    def save_listening_level(
+        self, percent: int, *, mark_user_change: bool = True,
+    ) -> None:
+        """Force-write the canonical listening_level (0-100) to disk.
+        Not debounced: listening_level changes are infrequent compared
+        to anchor updates, and we want every change durable so a
+        crash doesn't lose the user's last command.
+
+        `mark_user_change` controls whether last_used_at is bumped to
+        now. Set False for boot-time restore writes — otherwise every
+        daemon restart would reset the idle-reset clock, masking truly
+        stale levels.
+
+        If `main_volume_db` hasn't been written yet (no save_now call
+        in this process), derive it from listening_level so the file
+        always has a coherent main_volume_db field for legacy
+        callers (boot-time regress_if_stale on the moOde backend,
+        external readers, etc.)."""
+        clamped = max(0, min(100, int(percent)))
+        self._current_listening_level = clamped
+        if mark_user_change:
+            self._current_last_used_at = datetime.now(timezone.utc)
+        if self._current_main_volume_db is None:
+            self._current_main_volume_db = percent_to_db(clamped)
+        self._write_full()
+
     def maybe_save_anchor(self, anchor_dbfs: float) -> bool:
         """Debounced anchor write. The anchor moves continuously while
         music plays; we don't want to write to flash on every poll.
-        Returns True if we wrote."""
+        Returns True if we wrote.
+
+        Refreshes from disk before writing — same multi-process safety
+        as maybe_save. Anchor is owned by this writer (TtsVolumeTracker)
+        but listening_level / main_volume_db may have changed
+        externally."""
         a = float(anchor_dbfs)
         now = time.monotonic()
         last_a = self._last_written_anchor
@@ -238,6 +342,7 @@ class VolumePersistence:
                 return False
             if now - self._last_written_anchor_at_mono < self.DEBOUNCE_SEC:
                 return False
+        self.load()
         self._current_anchor_dbfs = a
         self._write_full()
         self._last_written_anchor = a
@@ -266,8 +371,8 @@ class VolumePersistence:
         now_iso = datetime.now(timezone.utc).isoformat(
             timespec="seconds",
         ).replace("+00:00", "Z")
-        payload = {
-            "version": 1,
+        payload: dict[str, Any] = {
+            "version": 2,
             "main_volume_db": round(self._current_main_volume_db, 2),
             "updated_at": now_iso,
         }
@@ -276,6 +381,12 @@ class VolumePersistence:
                 self._current_anchor_dbfs, 2,
             )
             payload["loudness_anchor_updated_at"] = now_iso
+        if self._current_listening_level is not None:
+            payload["listening_level"] = int(self._current_listening_level)
+        if self._current_last_used_at is not None:
+            payload["last_used_at"] = self._current_last_used_at.isoformat(
+                timespec="seconds",
+            ).replace("+00:00", "Z")
         body = json.dumps(payload, indent=2)
         try:
             # Atomic write: write to a tmp file in the same directory,
@@ -303,21 +414,93 @@ class VolumePersistence:
                 self._path, e,
             )
             return
+        parts = [
+            f"main_volume={self._current_main_volume_db:.1f} dB "
+            f"({db_to_percent(self._current_main_volume_db)}%)",
+        ]
+        if self._current_listening_level is not None:
+            parts.append(f"listening_level={self._current_listening_level}%")
         if self._current_anchor_dbfs is not None:
-            logger.info(
-                "volume persistence: saved main_volume=%.1f dB (%d%%) "
-                "anchor=%.1f dBFS",
-                self._current_main_volume_db,
-                db_to_percent(self._current_main_volume_db),
-                self._current_anchor_dbfs,
-            )
-        else:
-            logger.info(
-                "volume persistence: saved main_volume=%.1f dB (%d%%) "
-                "(no anchor yet)",
-                self._current_main_volume_db,
-                db_to_percent(self._current_main_volume_db),
-            )
+            parts.append(f"anchor={self._current_anchor_dbfs:.1f} dBFS")
+        logger.info("volume persistence: saved %s", ", ".join(parts))
+
+
+def _regress_percent(
+    pct: int | None,
+    age_sec: float | None,
+    *,
+    stale_after_sec: float,
+    safe_low_pct: int,
+    safe_high_pct: int,
+    first_boot_default_pct: int,
+) -> tuple[int, str]:
+    """Shared regression rules. Returns (target_percent, reason).
+
+    No record (pct is None) → first-boot default.
+    Fresh → use as-is. Stale + extreme → clamp into [safe_low, safe_high].
+    Stale but already in safe band → use as-is.
+    """
+    if pct is None or age_sec is None:
+        return first_boot_default_pct, f"first-boot default ({first_boot_default_pct}%)"
+    if age_sec < stale_after_sec:
+        return pct, f"restored from disk ({pct}%, age={int(age_sec)}s)"
+    if pct < safe_low_pct:
+        return (
+            safe_low_pct,
+            f"regressed up: stale ({int(age_sec)}s) and was {pct}% "
+            f"(< {safe_low_pct}%), clamped to {safe_low_pct}%",
+        )
+    if pct > safe_high_pct:
+        return (
+            safe_high_pct,
+            f"regressed down: stale ({int(age_sec)}s) and was {pct}% "
+            f"(> {safe_high_pct}%), clamped to {safe_high_pct}%",
+        )
+    return (
+        pct,
+        f"restored from disk ({pct}%, stale {int(age_sec)}s but within "
+        f"safe band [{safe_low_pct}, {safe_high_pct}])",
+    )
+
+
+def regress_listening_level_if_stale(
+    record: VolumeRecord | None,
+    *,
+    now: datetime | None = None,
+    stale_after_sec: float = 1800.0,
+    safe_low_pct: int = 20,
+    safe_high_pct: int = 70,
+    first_boot_default_pct: int = 50,
+) -> tuple[int, str]:
+    """Compute the listening_level (0-100) to restore at boot.
+
+    Prefers `last_used_at` for staleness if present (the timestamp of
+    the last user-initiated change), falling back to `updated_at`.
+    Returns (target_percent, reason_string).
+    """
+    now = now or datetime.now(timezone.utc)
+    if record is None:
+        return _regress_percent(
+            None, None,
+            stale_after_sec=stale_after_sec,
+            safe_low_pct=safe_low_pct,
+            safe_high_pct=safe_high_pct,
+            first_boot_default_pct=first_boot_default_pct,
+        )
+    pct = record.listening_level
+    if pct is None:
+        # No level recorded — derive from main_volume_db (same as
+        # load() does, but record is the in-memory shape).
+        pct = db_to_percent(record.main_volume_db)
+    age_anchor = record.last_used_at or record.updated_at
+    age_sec = (now - age_anchor).total_seconds()
+    return _regress_percent(
+        pct, age_sec,
+        stale_after_sec=stale_after_sec,
+        safe_low_pct=safe_low_pct,
+        safe_high_pct=safe_high_pct,
+        first_boot_default_pct=first_boot_default_pct,
+    )
 
 
 def regress_if_stale(
@@ -329,7 +512,9 @@ def regress_if_stale(
     safe_high_pct: int = 70,
     first_boot_default_pct: int = 50,
 ) -> tuple[float, str]:
-    """Compute the main_volume to apply at boot.
+    """Compute the main_volume_db to apply at boot. Operates on the
+    legacy main_volume_db field only — for callers that haven't been
+    moved to the listening_level coordinator yet.
 
     Rules:
       - No record → first-boot default (50%).
@@ -339,38 +524,24 @@ def regress_if_stale(
           percent > safe_high_pct → clamp down to safe_high_pct
       - Record stale but already in [safe_low, safe_high] → use as-is.
 
-    Returns (main_volume_db, reason_string). The reason is a short
-    explanation logged at boot so it's clear why the speaker came up
-    at the level it did.
+    Returns (main_volume_db, reason_string).
     """
     now = now or datetime.now(timezone.utc)
     if record is None:
         db = percent_to_db(first_boot_default_pct)
         return db, f"first-boot default ({first_boot_default_pct}%)"
     age_sec = (now - record.updated_at).total_seconds()
-    if age_sec < stale_after_sec:
-        return (
-            record.main_volume_db,
-            f"restored from disk ({db_to_percent(record.main_volume_db)}%, "
-            f"age={int(age_sec)}s)",
-        )
     pct = db_to_percent(record.main_volume_db)
-    if pct < safe_low_pct:
-        regressed_db = percent_to_db(safe_low_pct)
-        return (
-            regressed_db,
-            f"regressed up: stale ({int(age_sec)}s) and was {pct}% "
-            f"(< {safe_low_pct}%), clamped to {safe_low_pct}%",
-        )
-    if pct > safe_high_pct:
-        regressed_db = percent_to_db(safe_high_pct)
-        return (
-            regressed_db,
-            f"regressed down: stale ({int(age_sec)}s) and was {pct}% "
-            f"(> {safe_high_pct}%), clamped to {safe_high_pct}%",
-        )
-    return (
-        record.main_volume_db,
-        f"restored from disk ({pct}%, stale {int(age_sec)}s but within "
-        f"safe band [{safe_low_pct}, {safe_high_pct}])",
+    target_pct, reason = _regress_percent(
+        pct, age_sec,
+        stale_after_sec=stale_after_sec,
+        safe_low_pct=safe_low_pct,
+        safe_high_pct=safe_high_pct,
+        first_boot_default_pct=first_boot_default_pct,
     )
+    # If the regressor didn't move us, return the original db
+    # (preserves sub-percent precision); if it clamped, compute the
+    # target db from the new percent.
+    if target_pct == pct:
+        return record.main_volume_db, reason
+    return percent_to_db(target_pct), reason

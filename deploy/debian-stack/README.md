@@ -16,12 +16,12 @@ of truth for a one-command install on a blank Trixie box.
 
 | File here | Installed to | Owned by |
 |---|---|---|
-| `etc/go-librespot/config.yml` | `/etc/go-librespot/config.yml` | go-librespot |
+| `bin/jasper-librespot-event` | `/usr/local/bin/jasper-librespot-event` | librespot --onevent hook |
 | `etc/shairport-sync.conf` | `/etc/shairport-sync.conf` | shairport-sync (source-built) |
 | `etc/modprobe.d/snd-aloop.conf` | `/etc/modprobe.d/snd-aloop.conf` | kernel module |
 | `etc/asoundrc-jasper.template` | `/root/.asoundrc` (with `__DONGLE_CARD__` substituted) | jasper-camilla + jasper-voice |
 | `etc/camilladsp/v1.yml` | `/etc/camilladsp/v1.yml` | jasper-camilla |
-| `systemd/go-librespot.service` | `/etc/systemd/system/go-librespot.service` | systemd |
+| `systemd/librespot.service` | `/etc/systemd/system/librespot.service` | systemd |
 | `systemd/shairport-sync.service` | `/etc/systemd/system/shairport-sync.service` | systemd |
 | `systemd/nqptp.service` | `/etc/systemd/system/nqptp.service` | systemd |
 | `systemd/bt-agent.service` | `/etc/systemd/system/bt-agent.service` | systemd |
@@ -44,7 +44,8 @@ The `jasper-mux` daemon (this stack's replacement for moOde's
 transitions to playing while another is already playing, pauses
 the older one — implementing "latest source wins" UX:
 
-- Spotify (go-librespot): pause via HTTP `POST /player/pause`
+- Spotify (librespot): pause via Spotify Web API (`PUT /me/player/pause`)
+  using the multi-account router. librespot has no local control HTTP.
 - AirPlay (shairport-sync): pause via MPRIS `Pause` over busctl
 - Bluetooth (bluez-alsa): no graceful pause API on the receiver
   side — best-effort, brief audio-mixing window until the user

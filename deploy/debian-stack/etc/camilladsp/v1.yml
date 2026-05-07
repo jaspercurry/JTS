@@ -1,7 +1,7 @@
 ---
 # JTS CamillaDSP config — debian-stack variant.
 #
-# Bridges snd-aloop card "Loopback" (where go-librespot, shairport-sync,
+# Bridges snd-aloop card "Loopback" (where librespot, shairport-sync,
 # and bluealsa-aplay all write their audio) to the Apple USB-C dongle
 # (the speaker output). plughw on the capture side absorbs renderer
 # rate/format mismatches (Spotify FLOAT_LE/44.1, AirPlay/BT S16/44.1

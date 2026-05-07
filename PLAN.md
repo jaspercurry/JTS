@@ -288,6 +288,14 @@ lets the speaker's owner — without SSHing in — configure:
 - **Spotify Connect device name** (cosmetic — what shows in the
   Spotify app's device picker)
 - **Daily spend cap** in dollars
+- **Volume idle-reset behaviour** — a custom default startup volume
+  that the speaker uses if `last_used_at` in `speaker_volume.json`
+  is older than a configurable threshold. The persistence schema
+  already records `last_used_at` per user-initiated change; the
+  web UI work just plumbs through two env vars
+  (`JASPER_VOLUME_IDLE_THRESHOLD_SEC`, `JASPER_VOLUME_IDLE_DEFAULT_PCT`)
+  and a small read of `volume_persistence.regress_listening_level_if_stale`
+  arguments.
 
 Same pattern as the existing Spotify OAuth web flow: jasper-web
 serves the form, validates input, writes to `/etc/jasper/jasper.env`,

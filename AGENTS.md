@@ -32,13 +32,19 @@ sudo bash deploy/install.sh --backend=debian   # no moOde
 to redirect renderers into snd-aloop. `jasper/moode.py` polls
 moOde's REST + SQLite for renderer state.
 
-**debian** (validated on jts.local 2026-05-06): stock Raspberry Pi OS
+**debian** (validated on jts.local 2026-05-07): stock Raspberry Pi OS
 Lite, no moOde. Source-builds shairport-sync with AirPlay 2 +
-nqptp, drops in go-librespot + bluez-alsa + bt-agent, owns the full
-systemd unit per renderer. `jasper/renderer.py:DebianBackend`
-polls go-librespot HTTP, shairport-sync MPRIS, and bluez-alsa
-directly. `jasper-mux.service` does latest-source-wins preemption
-(moOde's worker.php replacement).
+nqptp, drops in librespot (rust, via raspotify .deb) + bluez-alsa
++ bt-agent, owns the full systemd unit per renderer.
+`jasper/renderer.py:DebianBackend` reads librespot state from
+`/run/librespot/state.json` (written by the `--onevent` hook
+`/usr/local/bin/jasper-librespot-event`), shairport-sync MPRIS,
+and bluez-alsa directly. `jasper-mux.service` does latest-source-
+wins preemption (moOde's worker.php replacement).
+
+Spotify volume control goes via the Spotify Web API (the multi-
+account `spotify_router`) since librespot has no local control HTTP
+— see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 
 Backend selection is via `JASPER_RENDERER_BACKEND=moode|debian`
 in `/etc/jasper/jasper.env` (default "moode" for backward compat).

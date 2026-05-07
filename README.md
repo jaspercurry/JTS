@@ -113,12 +113,13 @@ to consume. Disabled by default — see § below.
 - 🔄 ESP32 rotary dial: phase 1 landed (volume); phase 2/3
   (play/pause click + hold-to-talk) and phase 5 (LVGL display) pending.
   See "Rotary dial controller" in [CLAUDE.md](CLAUDE.md).
-- 🔄 No-moOde install option: `migrate/no-moode` branch validated
-  on a 2GB Pi 5 with Raspberry Pi OS Lite (Trixie). Source-builds
-  shairport-sync with AirPlay 2 + nqptp, drops in go-librespot,
-  bluez-alsa, and a `jasper-mux` daemon for "latest-source-wins"
-  preemption. Total daemon RAM ~76 MB; system idle ~273 MiB used
-  (vs 600-800 MiB on moOde). Run `install.sh --backend=debian`. See
+- ✅ No-moOde install option: validated on a 2GB Pi 5 with Raspberry
+  Pi OS Lite (Trixie). Source-builds shairport-sync with AirPlay 2
+  + nqptp, drops in librespot (rust, via raspotify .deb) with a
+  log volume curve, bluez-alsa, and a `jasper-mux` daemon for
+  "latest-source-wins" preemption. Total daemon RAM ~76 MB; system
+  idle ~273 MiB used (vs 600-800 MiB on moOde). Run
+  `install.sh --backend=debian`. See
   [deploy/debian-stack/README.md](deploy/debian-stack/README.md) and
   the "Renderer backend" section of [CLAUDE.md](CLAUDE.md).
 
@@ -167,6 +168,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
+  HANDOFF-volume.md             Source-aware volume coordinator
   multi-user-spotify.md
   audit-pending-followups.md    Open Tier 2/3 follow-ups
 
@@ -201,6 +203,9 @@ reference. Currently:
   — Long-running Gemini Live connection management
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify/MPD) + volume
+- [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
+  volume coordinator (one canonical `listening_level`, dispatched
+  to whichever source is active, observed inbound at 1 Hz)
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — Per-household-
   member Spotify account routing
 

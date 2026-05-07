@@ -1,0 +1,53 @@
+[Unit]
+Description=Spotify Connect renderer (librespot, log volume curve)
+Documentation=https://github.com/librespot-org/librespot
+After=network-online.target sound.target jasper-camilla.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=audio
+# RuntimeDirectory creates /run/librespot/ at start with mode 0755.
+# Other components (jasper-mux, jasper-voice volume_observers,
+# jasper-control coordinator) read /run/librespot/state.json — the
+# file is written atomically by the --onevent hook on every player
+# event (volume_set, playing, paused, stopped, etc).
+RuntimeDirectory=librespot
+RuntimeDirectoryMode=0755
+# Volume curve: --volume-ctrl log + --volume-range 60 gives a
+# perceptually linear slider over 60 dB. go-librespot's hardcoded
+# cubic curve packed all useful loudness into the bottom third —
+# unusable on real speakers. See docs/HANDOFF-volume.md.
+#
+# Format: S24_3 + tpdf dither = 24-bit packed output with triangular-
+# distribution dither, ~141 dB SNR, well below any DAC noise floor.
+#
+# Audio device: plughw:Loopback,0,0 — same snd-aloop subdevice that
+# shairport-sync and bluealsa-aplay write to. shairport's
+# session_timeout=1 ensures it releases the device promptly so
+# librespot can take over when the user switches sources.
+ExecStart=/usr/bin/librespot \
+    --name JTS \
+    --device-type speaker \
+    --bitrate 320 \
+    --backend alsa \
+    --device plughw:Loopback,0,0 \
+    --format S24_3 \
+    --dither tpdf \
+    --mixer softvol \
+    --volume-ctrl log \
+    --volume-range 60 \
+    --initial-volume 50 \
+    --enable-volume-normalisation \
+    --onevent /usr/local/bin/jasper-librespot-event
+Restart=on-failure
+RestartSec=2
+MemoryHigh=150M
+MemoryMax=200M
+Nice=-5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

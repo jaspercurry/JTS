@@ -15,8 +15,10 @@ from jasper.mux import Mux, Source
 
 
 @pytest.fixture
-def mux():
-    m = Mux(go_librespot_url="http://127.0.0.1:3678")
+def mux(tmp_path):
+    # State file path is per-test (tmp_path) so individual probe tests
+    # can write fixtures into it without colliding with /run/librespot.
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
     return m
 
 
@@ -126,24 +128,30 @@ async def test_simultaneous_start_picks_one_deterministically(mux):
 
 
 @pytest.mark.asyncio
-async def test_spotify_probe_handles_httpx_failure(mux):
-    """If go-librespot's HTTP server is down, _spotify_playing must
-    return False rather than raising — a missing daemon shouldn't
-    crash the polling loop."""
-    import httpx
-    mux._http.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+async def test_spotify_probe_handles_missing_state_file(mux):
+    """librespot state file isn't written until the first --onevent
+    fires. Before that, _spotify_playing must return False rather
+    than raising."""
+    # mux fixture's path doesn't exist yet → returns False
     assert await mux._spotify_playing() is False
 
 
 @pytest.mark.asyncio
-async def test_spotify_probe_handles_204_no_content(mux):
-    """go-librespot returns 204 No Content when idle (no Spotify
-    client connected). _spotify_playing must treat that as 'not
-    playing,' not as a JSON parse error."""
-    response = MagicMock()
-    response.status_code = 204
-    response.content = b""
-    mux._http.get = AsyncMock(return_value=response)
+async def test_spotify_probe_reads_state_file_playing(mux, tmp_path):
+    import json
+    path = tmp_path / "librespot.state.json"
+    path.write_text(json.dumps({"playing": True, "paused": False, "stopped": False}))
+    mux._librespot_state_path = str(path)
+    assert await mux._spotify_playing() is True
+
+
+@pytest.mark.asyncio
+async def test_spotify_probe_state_file_paused(mux, tmp_path):
+    """Paused/stopped sessions should report not-playing."""
+    import json
+    path = tmp_path / "librespot.state.json"
+    path.write_text(json.dumps({"playing": False, "paused": True, "stopped": False}))
+    mux._librespot_state_path = str(path)
     assert await mux._spotify_playing() is False
 
 
