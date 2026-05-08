@@ -433,6 +433,14 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-output.conf" \
         "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-output.conf"
+    # Drop-in flipping bluealsa.service (the apt-installed system unit)
+    # to Restart=always with a StartLimit guard. Same logic as the
+    # source-built renderers' service files: a clean exit (status=0)
+    # silently disables Bluetooth audio under the apt default.
+    install -d -m 0755 "${SYSTEMD_DIR}/bluealsa.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
+        "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
