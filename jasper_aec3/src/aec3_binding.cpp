@@ -45,10 +45,14 @@ constexpr int kFrameSamples10ms = 160;
 class Aec3 {
 public:
     Aec3() : stream_cfg_(kSampleRate, kNumChannels) {
-        webrtc::AudioProcessingBuilder builder;
-        builder.SetEchoControlFactory(
-            std::make_unique<webrtc::EchoCanceller3Factory>());
-        apm_ = builder.Create();
+        // libwebrtc-audio-processing-1-3 (Debian Trixie) doesn't expose
+        // EchoCanceller3Factory in the public headers, but AEC3 is the
+        // *default* echo controller when echo_canceller.enabled = true
+        // and mobile_mode = false; the legacy AECM only kicks in when
+        // mobile_mode = true. No SetEchoControlFactory call is needed.
+        // AudioProcessingBuilder::Create() returns a raw pointer in this
+        // version (newer upstream returns unique_ptr); wrap manually.
+        apm_.reset(webrtc::AudioProcessingBuilder().Create());
         if (!apm_) {
             throw std::runtime_error(
                 "AudioProcessingBuilder::Create() returned null — "
@@ -57,7 +61,7 @@ public:
 
         webrtc::AudioProcessing::Config cfg;
         cfg.echo_canceller.enabled = true;
-        cfg.echo_canceller.mobile_mode = false;
+        cfg.echo_canceller.mobile_mode = false;  // → AEC3
         cfg.high_pass_filter.enabled = true;
         cfg.noise_suppression.enabled = true;
         cfg.noise_suppression.level =
