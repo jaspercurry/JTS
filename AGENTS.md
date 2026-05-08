@@ -131,6 +131,84 @@ versions (respeaker repo issue #8).
 
 ---
 
+## Satellite devices — opt-in hardware
+
+The cross-cutting design home for ESP32 satellites (existing rotary
+dial, planned AMOLED touchscreen mic satellite, future devices) lives
+in [`docs/satellites.md`](docs/satellites.md). It owns shared protocols
+(Improv-over-Serial provisioning, mDNS-SD discovery via
+`_jasper-control._tcp`, control HTTP at `:8780`, UDP-log diagnostics
+at `:5514`), the multi-mic arbitration design (wake-confidence
+broadcast with a debounce window — *not* "loudest wins"), and the
+per-device roadmap. Read that first when working on satellite
+firmware or related Pi-side daemons.
+
+### Rotary dial
+
+The CrowPanel 1.28" HMI ESP32-S3 rotary dial is a wireless physical
+controller that talks to the Pi over WiFi. **Currently working
+end-to-end on hardware:** volume control via encoder with an
+on-screen volume gauge, transport toggle on short-press (play/pause),
+hold-to-talk Gemini session on long-press. The other LVGL scenes
+(clock face, listening orb, speaking waveform, now-playing card with
+album art) have firmware scaffold but aren't yet validated on-device.
+
+Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
+`POST /volume/adjust`, `/volume/set`, `/transport/toggle`,
+`/session/start`, `/session/end`, `/cue/play`, `/healthz`. Volume
+requests route through `VolumeCoordinator` (see
+[`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md)), which dispatches
+to the active source's own slider (AirPlay DBus, Spotify HTTP, BT
+DBus) — not just CamillaDSP. Service file at
+`deploy/systemd/jasper-control.service`. No auth — home LAN only.
+
+Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native
+USB-CDC, Improv-over-Serial provisioning. WS2812 LED 0 = status
+indicator (magenta=boot, yellow=connecting, dim green=online,
+red blink=HTTP error, solid red=WiFi down).
+
+To onboard a fresh dial, end-to-end:
+
+```sh
+# One-time, on any machine with PlatformIO (or via the Pi venv):
+bash firmware/dial/build.sh
+# Stages bin to /opt/jasper/firmware/dial/jasper-dial.bin
+
+# Plug the dial into a Pi USB-C port, then on the Pi:
+sudo /opt/jasper/.venv/bin/jasper-dial-onboard
+# → flashes via esptool, reads Pi's current WiFi creds from
+#   NetworkManager (or wpa_supplicant), pushes via Improv,
+#   waits for dial to appear at jasper-dial.local. ~30 s.
+```
+
+To re-provision after a WiFi password change: same command, same
+USB plug. The dial accepts `SUBMIT_SETTINGS` over Improv whenever
+it's connected to USB.
+
+### AMOLED satellite (Phase 0 done, Phase 1 in progress)
+
+Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
+Phase 0 (mic capture) shipped 2026-05-08: PlatformIO project at
+`firmware/satellite-amoled/`, captures 16 kHz / 16-bit mono PCM
+over USB-CDC, validated with music playback. See `docs/satellites.md`
+"Hardware gotchas" for the non-obvious ES8311 init quirks
+(I²S stereo + demux for slot alignment; REG02 pre_multi=3 for
+SCLK-derived MCLK). Phase 1 (WiFi + LVGL Tap-to-Talk + UDP audio
+to Pi) is the next milestone.
+
+To capture audio for testing/debugging:
+
+```sh
+bash scripts/capture-satellite-amoled.sh 10        # 10 s → captures/<ts>.wav
+bash scripts/capture-chip-mic.sh 10                # same, from XVF3800
+```
+
+The control daemon is always installed and enabled by `install.sh`,
+even if there's no satellite — it costs <10 MB RAM idle and the
+endpoints are useful for any LAN client.
+
+---
+
 ## Debugging — fetch evidence before guessing
 
 When the user reports "it doesn't work" or asks about Pi-side
