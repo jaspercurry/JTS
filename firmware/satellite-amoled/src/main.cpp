@@ -1,45 +1,177 @@
-// Jasper AMOLED Satellite — Phase 0 sub-step 2 firmware.
+// Jasper AMOLED Satellite — Phase 1.1 firmware.
 //
-// Adds I²S RX (ESP32 as master, MCLK from MCLK pin) and a minimal
-// ES8311 codec init for **16 kHz / 16-bit / mono ADC capture**.
-// After init succeeds, prints the literal sentinel `[stream-start]\n`
-// and then dumps raw int16 little-endian PCM over USB-CDC forever.
+// Phase 0 (mic capture, USB-CDC PCM stream) plus WiFi + Improv-over-
+// Serial provisioning. The audio path is unchanged from v0.1.0 — same
+// register sequence, same I²S config. New in this build:
 //
-// Hardware path (host's perspective, ESP32 = I²S master):
-//   ES8311 (analog MEMS mic) → ADC → I²S DOUT → ESP32 I²S DIN (GPIO10)
-//   ESP32 I²S BCLK / LRCK / MCLK → ES8311 (codec is I²S slave)
+//   - WiFi connects from creds in NVS at boot (15 s timeout).
+//   - If no creds, sit in PROVISION state and accept Improv pushes
+//     over USB-CDC. After provisioning, creds are stored to NVS so
+//     subsequent boots reconnect automatically.
+//   - mDNS-SD discovery resolves jasper-control on the LAN
+//     (`_jasper-control._tcp`). Falls back to the compile-time
+//     `JASPER_HOST` if no service is advertised.
+//   - dlog() emits each diagnostic line over both USB-CDC (always)
+//     and UDP to the Pi's :5514 (when WiFi is up + endpoint resolved),
+//     mirroring the dial's pattern.
 //
-// Why this approach:
-//   - **Legacy `<driver/i2s.h>` is mandatory.** The newer i2s_std.h
-//     allocates DMA descriptors via heap_caps_*, which can land them
-//     in PSRAM with our `qio_opi` build, triggering a GDMA "user
-//     context not in internal RAM" failure. The legacy driver pins
-//     them in internal SRAM via MALLOC_CAP_DMA. Issue documented in
-//     docs/satellites.md gotchas.
-//   - **ES8311 init is inlined.** Espressif's official driver has
-//     deep transitive deps (board.h, audio_hal.h, audio_volume.h,
-//     i2c_bus.h) that don't translate cleanly to Arduino. Translated
-//     just the bits we need from
-//     espressif/esp-adf release/v2.x components/audio_hal/driver/es8311/.
-//     Coefficient values for MCLK=4.096 MHz @ 16 kHz come straight
-//     from that source's coeff_div[] table.
+// Improv coexistence with the binary PCM stream is intentional. The
+// host's Improv parser scans for the `IMPROV\\x01` magic prefix in the
+// incoming byte stream — PCM bytes that don't match the prefix are
+// ignored. Improv onboarding (rare) does cause a tiny audible click
+// in any concurrent capture; not a problem in practice since onboarding
+// happens once per device.
 //
-// Sub-steps within Phase 0:
-//   v0.0.2: I²C init + bus scan. ✅ done.
-//   v0.0.3 (this):  + I²S RX + ES8311 init + raw PCM stream.
-//   v0.0.4:         + Pi-side capture script writes WAV.
+// Hardware path is unchanged from Phase 0 (ESP32 = I²S master, codec
+// is slave). Audio init / capture comments live with their respective
+// functions below.
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <ImprovWiFiLibrary.h>
+#include <Preferences.h>
+#include <WiFi.h>
+#include <WiFiUdp.h>
 #include <Wire.h>
 #include <driver/i2s.h>
 #include <esp_chip_info.h>
 #include <esp_heap_caps.h>
+#include <stdarg.h>
 
 #include "config.h"
+#include "discovery.h"
 
 static const i2s_port_t I2S_PORT       = I2S_NUM_0;
 static constexpr int     SAMPLE_RATE_HZ = 16000;
 static constexpr int     MCLK_HZ        = SAMPLE_RATE_HZ * 256;  // = 4.096 MHz
+
+// --- Connection-state model ---
+//
+// Six states. Phase 1.2 wires these to an LVGL status icon; for now
+// they only drive Serial / UDP log output. Mirror of the dial firmware
+// for cross-satellite consistency.
+//
+//   BOOT         power on, before anything has run
+//   PROVISION    no WiFi creds in NVS — awaiting Improv push
+//   CONNECTING   joining WiFi with stored creds
+//   ONLINE       WiFi up + jasper-control endpoint resolved
+//   HTTP_ERROR   WiFi up but a recent jasper-control POST failed
+//                (used in Phase 1.5 once we add transport HTTP)
+//   OFFLINE      WiFi dropped after a successful connect; reconnecting
+enum class Status { BOOT, PROVISION, CONNECTING, ONLINE, HTTP_ERROR, OFFLINE };
+static volatile Status g_status = Status::BOOT;
+
+static Preferences     g_prefs;
+static ImprovWiFi      g_improv(&Serial);
+static WiFiUDP         g_logUdp;
+static IPAddress       g_logTarget;     // (0,0,0,0) = not yet resolved
+static ControlEndpoint g_control;        // resolved after every WiFi-up
+
+// --- WiFi / Improv / discovery helpers (mirrored from firmware/dial/) ---
+
+// Fire-and-forget log line. Always prints to USB-CDC; if WiFi is up
+// and we've resolved the Pi's IP, also sends one UDP datagram per
+// call to jasper-control's :5514 listener. UDP loss is acceptable —
+// these are diagnostic lines, not protocol.
+static void dlog(const char *fmt, ...) {
+    char buf[256];
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    if (n < 0) return;
+    if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;
+    Serial.write((const uint8_t *)buf, n);
+    if (n > 0 && buf[n - 1] != '\n') Serial.write('\n');
+
+    if (WiFi.status() == WL_CONNECTED && (uint32_t)g_logTarget != 0) {
+        if (g_logUdp.beginPacket(g_logTarget, JASPER_LOG_PORT)) {
+            g_logUdp.write((const uint8_t *)buf, n);
+            g_logUdp.endPacket();
+        }
+    }
+}
+
+// Resolve where jasper-control lives on the LAN. Cached into g_control
+// + g_logTarget so the per-loop dlog() doesn't re-discover. Re-call on
+// every WiFi-up.
+static void resolveControlEndpoint() {
+    g_control = discoverControlEndpoint();
+    g_logTarget = g_control.ip;
+    Serial.printf(
+        "[discovery] jasper-control %s at %s:%u\n",
+        g_control.fromMdns ? "via mDNS-SD" : "via fallback hostname",
+        g_control.hostOrIp.c_str(), (unsigned)g_control.port
+    );
+    if ((uint32_t)g_logTarget == 0) {
+        Serial.println(
+            "[discovery] no IP resolved — UDP logs disabled until reconnect"
+        );
+    }
+}
+
+// Try to join WiFi using credentials stored in NVS. Blocks up to 15 s.
+// Returns true on success. Caller drives g_status before/after.
+static bool tryConnectStored() {
+    String ssid = g_prefs.getString("ssid", "");
+    String pass = g_prefs.getString("pass", "");
+    if (ssid.length() == 0) return false;
+
+    g_status = Status::CONNECTING;
+    WiFi.mode(WIFI_STA);
+    WiFi.setHostname(MDNS_HOSTNAME);
+    WiFi.begin(ssid.c_str(), pass.c_str());
+
+    unsigned long t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000) {
+        delay(100);
+    }
+    return WiFi.status() == WL_CONNECTED;
+}
+
+// Improv callback. The library invokes this AFTER it has independently
+// verified that the credentials work (it called improvConnect below
+// and got WL_CONNECTED). Persist creds, set up mDNS, mark online.
+static void onImprovConnected(const char *ssid, const char *password) {
+    g_prefs.putString("ssid", ssid);
+    g_prefs.putString("pass", password);
+    MDNS.begin(MDNS_HOSTNAME);
+    resolveControlEndpoint();
+    g_status = Status::ONLINE;
+    dlog("[improv] connected, ip=%s, hostname=%s.local",
+         WiFi.localIP().toString().c_str(), MDNS_HOSTNAME);
+}
+
+// Improv "custom connect" callback. Called by the library when the
+// host pushes credentials; we drive the WiFi attempt and report
+// success/failure back. 30 s timeout because the first DHCP after a
+// fresh router can be slow.
+static bool improvConnect(const char *ssid, const char *password) {
+    Serial.printf("[improv] connect attempt: ssid=%s, pass=<%d chars>\n",
+                  ssid, (int)strlen(password));
+    WiFi.mode(WIFI_STA);
+    WiFi.setHostname(MDNS_HOSTNAME);
+    WiFi.begin(ssid, password);
+    unsigned long t0 = millis();
+    wl_status_t prev = (wl_status_t)255;
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 30000) {
+        wl_status_t s = WiFi.status();
+        if (s != prev) {
+            Serial.printf("[improv] wifi status: %d (elapsed=%lums)\n",
+                          (int)s, millis() - t0);
+            prev = s;
+        }
+        delay(100);
+    }
+    bool ok = (WiFi.status() == WL_CONNECTED);
+    Serial.printf("[improv] connect %s after %lums (final status=%d)\n",
+                  ok ? "OK" : "FAIL", millis() - t0, (int)WiFi.status());
+    return ok;
+}
+
+// --- Heap reporting ---
 
 // One-line summary of the heap state in a single capability domain
 // (internal SRAM or PSRAM). `caps` is a MALLOC_CAP_* bitmask.
@@ -313,9 +445,41 @@ void setup() {
     print_heap("PSRAM", MALLOC_CAP_SPIRAM);
     print_heap("SRAM",  MALLOC_CAP_INTERNAL);
 
-    // I²C bus comes up before any peripheral init so we can probe what's
-    // there. Wire.begin(SDA, SCL) on Arduino-ESP32 v3.x does the right
-    // pin-MUX setup; setClock() must come AFTER begin().
+    // --- WiFi + Improv ---
+    //
+    // Configure Improv first so handleSerial() in loop() can respond to
+    // a host-driven onboarding even if the WiFi join below fails. Then
+    // try stored creds. If the device has been provisioned before, we
+    // arrive at ONLINE; if not, we sit in PROVISION until the host
+    // pushes credentials over Improv.
+    g_prefs.begin("jasper", false);
+    Serial.println("[boot] prefs (NVS) opened");
+
+    g_improv.setDeviceInfo(
+        ImprovTypes::ChipFamily::CF_ESP32_S3,
+        DEVICE_NAME,
+        JASPER_SATELLITE_AMOLED_FIRMWARE_VERSION,
+        DEVICE_MFG
+    );
+    g_improv.onImprovConnected(onImprovConnected);
+    g_improv.setCustomConnectWiFi(improvConnect);
+    Serial.println("[boot] improv configured");
+
+    if (tryConnectStored()) {
+        g_status = Status::ONLINE;
+        MDNS.begin(MDNS_HOSTNAME);
+        resolveControlEndpoint();
+        dlog("[boot] WiFi connected from stored creds, ip=%s, hostname=%s.local",
+             WiFi.localIP().toString().c_str(), MDNS_HOSTNAME);
+    } else {
+        g_status = Status::PROVISION;
+        Serial.println("[boot] no stored WiFi creds; awaiting Improv push");
+    }
+
+    // I²C bus comes up after WiFi so dlog (which uses UDP once online)
+    // can report the I²C scan results to the Pi. Wire.begin(SDA, SCL)
+    // on Arduino-ESP32 v3.x does the right pin-MUX setup; setClock()
+    // must come AFTER begin().
     Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
     Wire.setClock(I2C_FREQ_HZ);
     Serial.printf("[boot] I²C up: SDA=%d SCL=%d @ %u Hz\n",
@@ -373,6 +537,43 @@ void setup() {
 }
 
 void loop() {
+    // Improv first so onboarding via USB-CDC works even when the audio
+    // stream is filling Serial. The library scans incoming bytes for
+    // the `IMPROV\\x01` magic prefix; PCM bytes that don't match are
+    // ignored. handleSerial() is cheap when no Improv frame is in
+    // progress (a quick read + compare).
+    g_improv.handleSerial();
+
+    // WiFi watchdog. If we drop offline, retry stored creds every 5 s
+    // and re-resolve jasper-control on reconnect. State transitions
+    // are logged so we can spot churny networks from the journal.
+    static unsigned long lastWatchdog = 0;
+    if (millis() - lastWatchdog > 5000) {
+        lastWatchdog = millis();
+        if (WiFi.status() != WL_CONNECTED) {
+            String ssid = g_prefs.getString("ssid", "");
+            if (ssid.length() > 0) {
+                if (g_status != Status::OFFLINE) {
+                    g_status = Status::OFFLINE;
+                    dlog("[wifi] disconnected; reconnecting…");
+                }
+                g_logTarget = IPAddress();  // re-resolve on reconnect
+                WiFi.reconnect();
+            } else if (g_status != Status::PROVISION) {
+                g_status = Status::PROVISION;
+                Serial.println("[wifi] no creds; staying in PROVISION");
+            }
+        } else if (g_status != Status::ONLINE) {
+            // Late-resolved discovery: tryConnectStored failed but a
+            // later WiFi.reconnect() succeeded, so we hadn't run
+            // resolveControlEndpoint yet.
+            if ((uint32_t)g_logTarget == 0) resolveControlEndpoint();
+            g_status = Status::ONLINE;
+            dlog("[wifi] online, ip=%s",
+                 WiFi.localIP().toString().c_str());
+        }
+    }
+
     // Continuous I²S read → USB-CDC raw write. After [stream-start]
     // is printed in setup(), this loop produces nothing but binary
     // PCM until the device is reset. The host's capture script splits
