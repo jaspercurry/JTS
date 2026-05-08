@@ -106,6 +106,97 @@ SSH for. Not blocking anything; flagged as the next polish piece.
 
 ---
 
+## Wake-word reliability — AEC tuning roadmap (no version, ongoing)
+
+After the WebRTC AEC3 engine landed (2026-05-08), measured attenuation
+on music is **−15 to −18 dB mean** (vs. the −2 to −7 dB baseline that
+SpeexDSP delivered). That's well into "wake-word during music
+plausible" territory, but at high SPL the wake-word still sometimes
+misses. This section tracks what's left on the menu, ordered by
+expected leverage / effort.
+
+The current production config (set 2026-05-08): `JASPER_AEC_ENGINE=
+webrtc3`, `JASPER_AEC_AGC2=0`, `JASPER_AEC_REF_GAIN_DB=25`. See
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Tuning findings" for
+the full sweep matrix and reasoning.
+
+### Tier 1 — cheap experiments (≤30 min each)
+
+- **Chip's beamformed ASR channel as bridge input.** We currently
+  consume channel 2 (raw mic 0, BYPASS) for clean linear input to
+  AEC3. Switching to channel 1 (ASR — post-BF + NS + AGC, tuned for
+  speech) gives 6–10 dB of directional speaker rejection from the
+  on-chip beamformer for free, before AEC3. Trade-off: chip's AGC
+  introduces non-linearity that AEC3's linear filter can't fully
+  model. Risk: chip's auto-DoA might aim its beam *at* the speakers
+  (loudest source) — measurable in seconds and revertable. Effort:
+  one-line change to `MIC_CHANNEL_INDEX` (or env-configurable),
+  plus a sweep run.
+- **Soft-clip the REF_GAIN path.** Currently `np.clip` hard-clips at
+  `JASPER_AEC_REF_GAIN_DB ≥ 25` and injects distortion. Replacing
+  with `tanh` soft-limiting (~10 lines NumPy) lets us push to +30
+  to +35 dB cleanly, putting loop gain firmly in AEC3's design
+  window. Pink-noise sweep showed diminishing returns past +25 dB,
+  but on music it's untested.
+- **Lower `JASPER_WAKE_THRESHOLD` from 0.5 → 0.4 or 0.3.** Pure UX
+  tradeoff knob — more wakes, some false positives. Easy to revert.
+
+### Tier 2 — engineering with real upside
+
+- **AEC3 internal config tuning (`EchoCanceller3Config`).** Research
+  pass on 2026-05-08 (sub-agent) identified concrete overrides that
+  should move attenuation past the −18 dB ceiling: extend filter
+  length 13 → 30 partitions (~83 ms → ~192 ms), enable
+  `ep_strength.bounded_erl`, enable `suppressor.use_subband_nearend_
+  detection`, lower `dominant_nearend_detection.snr_threshold` 30 →
+  20, etc. **Blocked in v1.3-3:** the public headers don't expose
+  `EchoCanceller3Factory`, so applying these overrides requires
+  either vendoring the private `modules/audio_processing/aec3/
+  echo_canceller3.h` from upstream (the symbol is exported by the
+  .so but the header isn't shipped) or upgrading to v2.x (not in
+  Trixie stable). ~2 hrs to vendor + write a custom factory; needs
+  re-checking if upstream layout changes. The research output is
+  preserved in this session's transcripts; revisit when the v1.3-3
+  → v2.x package transition happens or when engineering effort is
+  available.
+- **Software beamforming over the chip's 4 raw mics (channels
+  2–5).** The cleanest path. Implement fixed-direction delay-and-sum
+  or MVDR ourselves, pointed at the user's seated position, instead
+  of trusting the chip's auto-DoA. Reduces speaker bleed by 6–10 dB
+  *before* AEC3 with no chip-side AGC artifacts. ~1 day of work.
+  Probably the highest-quality endpoint short of neural.
+- **microWakeWord A/B.** Different wake-word model (TFLite-Micro,
+  Hey Jarvis pretrained). Different sensitivity/robustness profile
+  than openWakeWord. Lower compute footprint. ~2 hrs to integrate
+  + ~30 min A/B against current openWakeWord.
+
+### Tier 3 — heavy lifts, defer until needed
+
+- **DeepVQE neural residual stage.** Stack a learned residual
+  canceler on top of AEC3. Documented +10 to +20 dB ERLE on music
+  in the literature (DeepVQE paper, Indenbom 2023). Treat as
+  Stage 4 — only if Tier 1+2 are exhausted and wake-word still
+  misses at high SPL. ~2–3 days of work, competes with openWakeWord
+  for CPU. The richiejp/deepvqe-ggml repo ships pretrained weights
+  for the full 8M-param model; DeepVQE-S (the smaller variant
+  Microsoft Teams actually deploys) doesn't have public weights as
+  of 2026-05.
+- **Custom "Hey Jasper" wake-word model trained on this speaker's
+  residual.** Already in the v1.1 lane above, but worth flagging
+  here: it directly addresses the symptom rather than the underlying
+  audio quality. Largest "absolutely crushing it" outcome possible.
+  Substantial work (data collection, training, validation).
+
+### Hardware / UX (free wins)
+
+- **Move the mic farther from the speakers.** Free-floating on a
+  desk currently ~3 ft away. Each doubling of distance is ~6 dB of
+  speaker bleed reduction.
+- **Add foam baffling between speaker and mic** if the desktop
+  geometry allows it. Cheap, helps direct-path component.
+
+---
+
 ## Test/dev follow-ups (no version)
 
 Small infrastructure items not blocking any feature; recorded so
