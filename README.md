@@ -145,7 +145,7 @@ topology (we drive the speaker from a separate USB DAC, not the
 chip's codec), and software AEC delivers only modest attenuation
 at significant RAM cost — see the AEC section below for the full
 trade-off analysis. Live with `NO_INTERRUPTION` on the Gemini
-session and a 5-second wake refractory until/unless that changes.
+session and a 0.7-second wake refractory until/unless that changes.
 
 ---
 
