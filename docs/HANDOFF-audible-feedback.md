@@ -6,9 +6,21 @@ mode — it plays a short pre-rendered audio cue instead of falling
 silent. Silence in a living room with no admin access is unfixable
 from the user's perspective; repetition beats silence.
 
+Cues come in two flavours, distinguished by what triggers them:
+
+- **Reactive cues** fire when a wake event hits a wake-blocking
+  state. The user pressed the proverbial doorbell; we're saying
+  "I heard you, but I can't do this right now."
+- **Proactive cues** fire from background supervisors when
+  something's wrong even if the user hasn't tried to use the
+  speaker. The supervisor saw a sustained failure (e.g., 5
+  consecutive identical reconnect errors) and tells the user
+  "the speaker is broken, please check on me." Rate-limited so a
+  long outage doesn't spam the room.
+
 This document is the canonical reference for the cue subsystem: what
-exists, how to add a new cue, where the cached files live, and why
-the design is the way it is.
+exists, how to add a new cue (reactive or proactive), where the
+cached files live, and why the design is the way it is.
 
 ---
 
@@ -31,24 +43,34 @@ the design is the way it is.
               │ play(slug)          │                    │
        ┌──────┴───────────────────────────────────────────┐
        │                jasper.voice_daemon                │
+       │  Reactive (wake-driven, via WakeLoop._play_cue):  │
        │  - on wake during spend-cap → cues.play(...)      │
        │  - on wake during reconnect → cues.play(...)      │
        │  - on turn-begin failure   → cues.play(...)       │
+       │                                                   │
+       │  Proactive (supervisor-driven, via                │
+       │  WakeLoop.play_supervisor_cue — skips if a turn   │
+       │  is in flight to avoid garbling TtsPlayout):      │
+       │  - on N identical reconnect failures              │
+       │    → connection.set_failure_escalation_cb(...)    │
        └───────────────────────────────────────────────────┘
 ```
 
 All cue logic lives in `jasper/cues/`. Adding new cues means
-editing one file (`registry.py`) and wiring `cues.play("<slug>")`
-into the failure path.
+editing one file (`registry.py`) and wiring either
+`cues.play("<slug>")` (for reactive paths from inside WakeLoop) or
+the relevant supervisor's escalation callback (for proactive
+paths). See "Adding a new cue" below for both patterns.
 
 ---
 
 ## What's in the registry today
 
-| slug | when it plays | template |
-|---|---|---|
-| `spend_cap_reached` | wake during spend-cap-tripped state | "Hey, I've reached today's spend cap. Visit `{hostname}` to manage." |
-| `cant_connect` | wake while voice backend is in reconnect/backoff, or turn-begin throws | "Hey, sorry, I can't connect right now. I'll keep trying." |
+| slug | trigger | when it plays | template |
+|---|---|---|---|
+| `spend_cap_reached` | reactive | wake during spend-cap-tripped state | "Hey, I've reached today's spend cap. Visit `{hostname}` to manage." |
+| `cant_connect` | reactive | wake while voice backend is in reconnect/backoff, or turn-begin throws | "Hey, sorry, I can't connect right now. I'll keep trying." |
+| `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule); rate-limited to once per hour | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
 
 Cues are **provider-agnostic** — they don't say "Google" or
 "Gemini". The voice backend is replaceable; baking provider names
@@ -57,10 +79,20 @@ into audio files would mislead users post-switch.
 Cues do **not** announce recovery ("you're back online"). The user
 hears recovery directly when the next wake gets a normal response.
 
-There is **no cooldown across wakes**. If the user wakes the speaker
-ten times during a failure, they hear the same cue ten times. That's
-intentional — the alternative (mute after first cue, silence on
-subsequent wakes) is what we're explicitly trying to avoid.
+**Reactive cues have no cooldown across wakes**. If the user wakes
+the speaker ten times during a failure, they hear the same cue ten
+times. That's intentional — the alternative (mute after first cue,
+silence on subsequent wakes) is what we're explicitly trying to
+avoid.
+
+**Proactive cues ARE rate-limited** because they fire without a
+user-initiated event. Without rate-limiting, a sustained outage
+would replay "I can't reach the cloud" every backoff cycle, which is
+the spam pattern proactive cues are supposed to eliminate. One per
+hour balances "the user gets to know" with "the room isn't yelled
+at." Rate state is per-supervisor (in-memory; resets on daemon
+restart), so a fresh boot during a sustained outage will fire the
+cue once.
 
 ---
 
@@ -168,9 +200,26 @@ Exit codes (stable so install.sh can read them):
      dashboard. Don't manually type "jts.local" — installs may run
      on a different hostname.
 
-2. **Wire the failure path to call `cues.play("<slug>")`**. The
-   daemon already has a `_play_cue(slug)` helper on `WakeLoop`
-   that swallows exceptions; add it where the failure is detected.
+2. **Wire the failure path** to play the cue. The right wiring
+   depends on whether the cue is reactive or proactive:
+
+   - **Reactive** (fires from inside a wake handler): call
+     `await self._play_cue("<slug>")` directly from `WakeLoop`.
+     `_play_cue` ducks music, plays the WAV, restores, and
+     swallows exceptions. The wake/turn-begin handlers in
+     `voice_daemon.py` show the pattern.
+   - **Proactive** (fires from a background supervisor with no
+     active wake): expose a `set_*_cb(callback)` method on the
+     subsystem and have it call back into
+     `WakeLoop.play_supervisor_cue("<slug>")`. That public method
+     does the same duck-play-restore as `_play_cue` but **skips
+     when a user-driven turn is in flight** so the supervisor
+     can't garble an in-progress TTS reply by trying to layer a
+     second WAV onto the single PortAudio stream. The
+     `GeminiLiveConnection.set_failure_escalation_cb` →
+     `WakeLoop.play_supervisor_cue` wiring in `voice_daemon.run()`
+     is the canonical example. Don't forget to rate-limit at the
+     supervisor — `play_supervisor_cue` itself doesn't.
 
 3. **Bake the audio**. Either restart `jasper-voice` (its startup
    regen catches the new cue) or run `jasper-cues regenerate`

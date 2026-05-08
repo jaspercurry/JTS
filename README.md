@@ -333,12 +333,16 @@ modifying. One-line summaries here:
   command targets by cross-referencing AirPlay metadata against
   each account's currently-playing track.
 - **Audible failure feedback** ([HANDOFF-audible-feedback.md](docs/HANDOFF-audible-feedback.md))
-  — Pre-rendered Gemini-TTS WAVs that the daemon plays when a wake
-  hits a known wake-blocking failure (spend cap reached, voice
-  backend in reconnect/backoff, etc.) instead of falling silent.
-  Content-addressable cache keyed on `(rendered text, voice, model,
-  format)` so any input change auto-invalidates. CLI:
-  `jasper-cues regenerate|list|play <slug>`.
+  — Pre-rendered Gemini-TTS WAVs that the daemon plays in two
+  situations instead of falling silent: **reactive cues** when a
+  wake event hits a wake-blocking failure (spend cap reached, voice
+  backend in reconnect/backoff, etc.), and **proactive cues** that
+  background supervisors fire when something's wrong even if the
+  user hasn't woken the speaker (today: 5 consecutive identical
+  reconnect failures → `cant_reach_cloud`, rate-limited to once
+  per hour). Content-addressable cache keyed on `(rendered text,
+  voice, model, format)` so any input change auto-invalidates.
+  CLI: `jasper-cues regenerate|list|play <slug>`.
 
 ---
 
