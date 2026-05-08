@@ -279,6 +279,78 @@ def test_index_active_card_starts_open():
     assert "open" in open_section
 
 
+def test_index_save_form_does_not_enclose_cards():
+    """HTML forbids nested forms. Each provider card includes a per-card
+    "Clear key" form, so the outer save form MUST close before the cards
+    begin. Regression test: in the live deploy, an earlier version of
+    this page nested the clear forms inside the save form, which made
+    every browser silently close the outer form when it parsed the
+    inner <form> — and the "Save and restart voice" button at the
+    bottom was no longer associated with anything, so pressing it did
+    literally nothing. Pin the structural invariant here."""
+    state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
+    page = voice_setup._index_html(state).decode()
+    save_form_open = page.index('id="save-form"')
+    save_form_close = page.index("</form>", save_form_open)
+    first_card = page.index("<details", save_form_close)
+    # The first card must come AFTER the save form has closed.
+    assert save_form_close < first_card, (
+        "outer save form must close before the cards begin "
+        "(otherwise the per-card clear-key forms nest inside it)"
+    )
+
+
+def test_index_card_inputs_associate_with_save_form_via_attribute():
+    """Cards are no longer DOM-nested in the save form (see prior test),
+    so each input/select inside a card MUST carry the HTML5
+    `form="save-form"` attribute to participate in the save POST.
+    Without it, pasting a key and pressing Save sends a POST with that
+    field absent — a silent no-op that gave us "Save doesn't do
+    anything" in the live deploy."""
+    state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
+    page = voice_setup._index_html(state).decode()
+    # Every key input must opt into the save form.
+    for pid in ("gemini", "openai", "grok"):
+        anchor = f'name="{pid}_key"'
+        idx = page.index(anchor)
+        # Look in the same tag (between the previous '<' and the next '>').
+        tag_start = page.rfind("<", 0, idx)
+        tag_end = page.index(">", idx)
+        tag = page[tag_start: tag_end + 1]
+        assert 'form="save-form"' in tag, (
+            f"{pid}_key input is missing form=\"save-form\" — "
+            f"submission will silently drop this field. tag={tag!r}"
+        )
+    # Same check for model + voice selects.
+    for pid in ("gemini", "openai", "grok"):
+        for field in ("model", "voice"):
+            anchor = f'name="{pid}_{field}"'
+            idx = page.index(anchor)
+            tag_start = page.rfind("<", 0, idx)
+            tag_end = page.index(">", idx)
+            tag = page[tag_start: tag_end + 1]
+            assert 'form="save-form"' in tag, (
+                f"{pid}_{field} select is missing form=\"save-form\""
+            )
+
+
+def test_index_save_button_associates_with_save_form_via_attribute():
+    """The submit button at the bottom of the page sits OUTSIDE the
+    <form>...</form> tags (so the outer form can close before the
+    cards). It must carry form="save-form" to actually submit."""
+    state = {}
+    page = voice_setup._index_html(state).decode()
+    idx = page.index("Save and restart voice")
+    # Find the enclosing <button> tag.
+    btn_start = page.rfind("<button", 0, idx)
+    btn_end = page.index(">", btn_start)
+    btn_tag = page[btn_start: btn_end + 1]
+    assert 'form="save-form"' in btn_tag, (
+        f"save button is missing form=\"save-form\" — "
+        f"clicking it would do nothing. tag={btn_tag!r}"
+    )
+
+
 def test_index_unconfigured_card_starts_open_to_invite_paste(monkeypatch):
     """A card with no saved key opens by default so the user doesn't
     have to click to discover where to paste."""

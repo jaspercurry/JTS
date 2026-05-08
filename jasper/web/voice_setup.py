@@ -333,7 +333,12 @@ def _model_select_html(provider: dict, current: str) -> str:
             f'<option value="{html.escape(current)}" selected>'
             f'{html.escape(current)} (custom)</option>',
         )
-    return f'<select name="{provider["id"]}_model">{"".join(rows)}</select>'
+    # `form="save-form"` associates this input with the outer
+    # save-form by ID — necessary because the cards visually live
+    # OUTSIDE the form's <form>...</form> tags so a per-card "Clear
+    # key" form can sit beside them without nesting (HTML forbids
+    # nested forms).
+    return f'<select name="{provider["id"]}_model" form="save-form">{"".join(rows)}</select>'
 
 
 def _voice_select_html(provider: dict, current: str) -> str:
@@ -349,7 +354,7 @@ def _voice_select_html(provider: dict, current: str) -> str:
             f'<option value="{html.escape(current)}" selected>'
             f'{html.escape(current)} (custom)</option>',
         )
-    return f'<select name="{provider["id"]}_voice">{"".join(rows)}</select>'
+    return f'<select name="{provider["id"]}_voice" form="save-form">{"".join(rows)}</select>'
 
 
 def _provider_extras_html(provider: dict, state: dict[str, str]) -> str:
@@ -379,7 +384,7 @@ def _provider_extras_html(provider: dict, state: dict[str, str]) -> str:
             )
         out.append(f"""
           <label for="{provider['id']}_{field_name}">{html.escape(spec['label'])}</label>
-          <select id="{provider['id']}_{field_name}" name="{provider['id']}_{field_name}">
+          <select id="{provider['id']}_{field_name}" name="{provider['id']}_{field_name}" form="save-form">
             {''.join(rows)}
           </select>
           <small>{html.escape(spec.get('hint', ''))}</small>""")
@@ -430,7 +435,7 @@ def _provider_card_html(
     </p>
 
     <label for="{provider['id']}_key">{html.escape(provider['key_env'])}</label>
-    <input id="{provider['id']}_key" name="{provider['id']}_key"
+    <input id="{provider['id']}_key" name="{provider['id']}_key" form="save-form"
            type="password" autocomplete="off" autocapitalize="off"
            autocorrect="off" spellcheck="false"
            placeholder="{html.escape('paste new key — leave blank to keep' if configured else f'paste your key ({provider["key_prefix_hint"]})')}">
@@ -464,14 +469,26 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
         _provider_card_html(p, state, is_active=(p["id"] == active_id))
         for p in PROVIDERS
     )
+    # Page structure note: HTML forbids nested forms, so the outer
+    # "save" form CANNOT enclose the per-card "Clear key" forms. Layout:
+    #   <form id="save-form">  ← active radios
+    #     ...
+    #   </form>                ← form closes BEFORE the cards
+    #   <h2>Provider keys</h2>
+    #   {cards}                ← card inputs use form="save-form"
+    #                            attribute to associate with the outer
+    #                            form by ID. Clear-key forms inside
+    #                            cards stand alone with no nesting.
+    #   <button form="save-form">  ← submit explicitly attaches
     body = f"""
 <p class="sub">Configure the real-time voice backend for this speaker.
 Paste an API key into any provider you want to enable, pick which one is
 active, and save — the voice daemon picks up the change on its next
 restart (about 5 seconds).</p>
 
-<form method="post" action="save">
+<form method="post" action="save" id="save-form">
 {_active_radio_html(state)}
+</form>
 
 <h2>Provider keys</h2>
 <p class="hint">Pasted keys are stored on this speaker only, written to
@@ -480,9 +497,8 @@ never sent anywhere except the relevant provider's API.</p>
 {cards}
 
 <p style="margin-top:2em">
-  <button type="submit">Save and restart voice</button>
+  <button type="submit" form="save-form">Save and restart voice</button>
 </p>
-</form>
 
 <p class="hint" style="margin-top:2em">
   See <a href="https://github.com/jaspercurry/JTS/blob/main/docs/HANDOFF-voice-providers.md" target="_blank" rel="noopener">HANDOFF-voice-providers.md</a> for architecture, per-provider trade-offs, and the steps for adding a fourth backend.
