@@ -1,10 +1,20 @@
 [Unit]
-Description=Software AEC bridge — SpeexDSP cancels speaker echo from XVF raw mic
+Description=Software AEC bridge — SpeexDSP or WebRTC AEC3 cancels speaker echo from XVF raw mic
 # Captures from pcm.jasper_capture (host-clocked dsnoop on the
 # renderer→camilla loopback, the AEC reference) AND from
 # hw:CARD=Array,DEV=0 channel 2 (raw mic 0, exposed by 6-ch
 # firmware variant 2.0.8). Outputs the AEC'd mono mic to
-# hw:Loopback,0,sub3 for jasper-voice to read at hw:Loopback,1,sub3.
+# hw:LoopbackAEC,0 (= hw:7,0) for jasper-voice to read at
+# hw:LoopbackAEC,1 (= hw:7,1, the JASPER_MIC_DEVICE setting when the
+# bridge is enabled). LoopbackAEC is a dedicated second snd-aloop
+# card pinned at modprobe index 7, separate from the music-chain
+# Loopback card at index 6.
+#
+# Engine selection via JASPER_AEC_ENGINE in /etc/jasper/jasper.env:
+# `speex` (default) for the linear NLMS canceler, `webrtc3` for
+# WebRTC AEC3 via the jasper_aec3 pybind11 binding (typically with
+# JASPER_AEC_REF_GAIN_DB set to compensate for our smart-speaker
+# loop-gain inversion — see docs/HANDOFF-aec.md tuning findings).
 #
 # REPLACES the previous CamillaDSP-based bridge that was trying to
 # feed the XVF chip's USB-IN as far-end reference. The chip's AEC
