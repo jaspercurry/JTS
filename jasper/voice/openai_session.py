@@ -608,7 +608,15 @@ class OpenAIRealtimeConnection(LiveConnection):
         Manual VAD: ``turn_detection`` is JSON ``null`` (Python None).
         Tools come from the tool registry's OpenAI-shape serializer —
         provider-locked tools are filtered out at this stage so they
-        never reach the model."""
+        never reach the model.
+
+        Schema is verified against
+        ``openai.types.realtime.realtime_session_create_request_param.
+        RealtimeSessionCreateRequestParam`` in the SDK source. The
+        notable surprises (vs. the generic 'Realtime' docs around the
+        web): voice lives at ``audio.output.voice`` not at the session
+        top level, and ``temperature`` was removed from this schema in
+        Realtime 2 — the model has its own defaults."""
         instruction = (
             self._system_instruction_provider()
             if self._system_instruction_provider is not None
@@ -624,7 +632,6 @@ class OpenAIRealtimeConnection(LiveConnection):
             "model": self._model,
             "output_modalities": ["audio"],
             "instructions": instruction or "",
-            "voice": self._voice,
             "audio": {
                 "input": {
                     # 24 kHz is the only PCM rate OpenAI accepts on
@@ -639,6 +646,15 @@ class OpenAIRealtimeConnection(LiveConnection):
                     "turn_detection": None,
                 },
                 "output": {
+                    # Voice belongs HERE in Realtime 2 — at session
+                    # top-level it errors with `Unknown parameter:
+                    # 'session.voice'` and the entire session.update
+                    # gets rejected (cascading into "no tools, no
+                    # config, model auto-responds with defaults").
+                    # The OpenAI Voice union: alloy / ash / ballad /
+                    # coral / echo / sage / shimmer / verse / marin /
+                    # cedar, plus a custom-VoiceID escape hatch.
+                    "voice": self._voice,
                     "format": {
                         "type": "audio/pcm",
                         "rate": OPENAI_AUDIO_RATE_HZ,
@@ -647,14 +663,11 @@ class OpenAIRealtimeConnection(LiveConnection):
             },
             "tools": tools,
             "tool_choice": "auto",
-            "temperature": self._temperature,
         }
         # ``reasoning.effort`` is gated to reasoning-capable models
-        # (``gpt-realtime-2``); on older models the SDK's typed shape
-        # rejects it. We send it unconditionally — the user's chosen
-        # model is the contract, and if they pinned an older model
-        # they also need to leave the default effort alone (which we
-        # detect by the model name carrying "-2").
+        # (``gpt-realtime-2``). We detect that from the model name
+        # carrying "-2"; older models (gpt-realtime, gpt-realtime-1.5,
+        # gpt-realtime-mini) don't accept the field.
         if self._reasoning_effort and "-2" in self._model:
             session["reasoning"] = {"effort": self._reasoning_effort}
         return session
@@ -921,10 +934,29 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         # Server-side response complete.
         if etype == "response.done":
-            response = _event_field(event, "response") or {}
-            usage = response.get("usage") if isinstance(response, dict) else None
+            response = _event_field(event, "response")
+            usage_obj = _event_field(response, "usage") if response is not None else None
+            # Both `response` and `usage` may be Pydantic models from
+            # the openai SDK (RealtimeResponse, RealtimeResponseUsage)
+            # OR dicts in the test seam. Normalise to dict before the
+            # turn consumes it so `_on_response_done` doesn't have to
+            # care which shape it got.
+            usage_dict: dict | None = None
+            if usage_obj is not None:
+                if isinstance(usage_obj, dict):
+                    usage_dict = usage_obj
+                elif hasattr(usage_obj, "model_dump"):
+                    usage_dict = usage_obj.model_dump()
+                else:
+                    # Last-resort: scrape attributes by name. Keeps the
+                    # token counter from going to 0 if a future SDK
+                    # release replaces Pydantic with something else.
+                    usage_dict = {
+                        "input_tokens": getattr(usage_obj, "input_tokens", None),
+                        "output_tokens": getattr(usage_obj, "output_tokens", None),
+                    }
             if turn is not None:
-                await turn._on_response_done(usage)
+                await turn._on_response_done(usage_dict)
             return
 
         # Server-side VAD events. We run manual VAD (turn_detection=None)

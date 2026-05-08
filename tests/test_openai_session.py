@@ -237,8 +237,19 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         assert upd is not None
         sess_payload = upd["session"]
         assert sess_payload["model"] == "gpt-realtime-2"
-        assert sess_payload["voice"] == "marin"
         assert sess_payload["instructions"] == "system instruction text"
+        # Voice belongs INSIDE audio.output.voice. Putting it at the
+        # session top level was the live-deploy bug — OpenAI rejected
+        # session.update with `Unknown parameter: 'session.voice'`,
+        # which silently nuked the entire session config (no tools, no
+        # voice config) and the model auto-responded with defaults
+        # without ever calling tools. Pin BOTH the correct location
+        # AND the absence of the wrong location.
+        assert sess_payload["audio"]["output"]["voice"] == "marin"
+        assert "voice" not in sess_payload, (
+            "voice MUST NOT be at the session top level — the Realtime "
+            "schema rejects it there. It belongs in audio.output.voice."
+        )
         # Manual VAD is the canonical Python None / JSON null.
         assert sess_payload["audio"]["input"]["turn_detection"] is None
         assert sess_payload["audio"]["input"]["format"] == {
@@ -247,6 +258,14 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         assert sess_payload["audio"]["output"]["format"] == {
             "type": "audio/pcm", "rate": 24000,
         }
+        # `temperature` was REMOVED from the Realtime 2 session schema.
+        # Sending it doesn't currently error (server seems to ignore)
+        # but the SDK type doesn't list it and it may start erroring in
+        # a future release.
+        assert "temperature" not in sess_payload, (
+            "temperature is not in the Realtime 2 session schema; "
+            "the model has its own defaults"
+        )
         # Tools serialised in the OpenAI Realtime flat shape.
         assert sess_payload["tools"] == [{
             "type": "function",
