@@ -105,7 +105,7 @@ DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
 To enable on the Pi (assumes 6-ch firmware already flashed):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:7,1|' \
     /etc/jasper/jasper.env
 sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice

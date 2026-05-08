@@ -295,7 +295,7 @@ Disabled by default. To enable on a Pi with the 6-channel XVF
 firmware (see DFU procedure below):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:7,1|' \
     /etc/jasper/jasper.env
 sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice

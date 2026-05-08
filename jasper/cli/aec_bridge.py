@@ -107,12 +107,12 @@ MIC_DEVICE = "Array"  # matches "Array: USB Audio (hw:N,0)"
 MIC_CHANNELS = 6
 MIC_CHANNEL_INDEX = 2  # raw mic 0
 
-# Output: write AEC'd mono to LoopbackAEC card (kernel index 5 per
+# Output: write AEC'd mono to LoopbackAEC card (kernel index 7 per
 # /etc/modprobe.d/snd-aloop.conf). PortAudio names all snd-aloop
 # devices identically ("Loopback: PCM (hw:N,M)") so the unique
 # substring is the hw:N,M part. jasper-voice reads the mirror
-# device hw:5,1 (configured in jasper.env as JASPER_MIC_DEVICE).
-OUT_DEVICE = "hw:5,0"
+# device hw:7,1 (configured in jasper.env as JASPER_MIC_DEVICE).
+OUT_DEVICE = "hw:7,0"
 OUT_CHANNELS = 1
 OUT_RATE = 16000
 
