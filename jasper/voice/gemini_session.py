@@ -4,7 +4,6 @@ import asyncio
 import logging
 import time as _time
 from collections import deque
-from dataclasses import dataclass
 from enum import Enum
 from typing import Awaitable, AsyncIterator, Callable
 
@@ -12,95 +11,26 @@ from google import genai
 from google.genai import types
 
 from ..tools import ToolRegistry
+from ._supervisor import (
+    ESCALATION_CUE_SLUG,
+    ESCALATION_RATE_LIMIT_SEC,
+    ESCALATION_REPEAT_THRESHOLD,
+    RECONNECT_BACKOFF_JITTER_FRACTION,
+    RECONNECT_INITIAL_BACKOFF_SEC,
+    RECONNECT_MAX_BACKOFF_SEC,
+    FailureFingerprint,
+    reconnect_backoff_delay,
+)
 from .session import LiveConnection, LiveTurn, VoiceSession
 
 logger = logging.getLogger(__name__)
 
 
-# ---------- Tight-retry-loop escalation ------------------------------------
-#
-# When the supervisor reconnect loop keeps producing the SAME failure (same
-# exception type, same close code, same reason text) in succession, that's a
-# signal the user should know about — the speaker is broken and silent retries
-# won't fix it on their own. PR #4 fixed the *known* 1008 wedge by always
-# dropping the cached resumption handle on first failure; this generalises
-# the principle. The supervisor never gives up, but after N consecutive
-# identical failures it plays an audible cue ("I can't reach the cloud,
-# please check on me") at most once per hour so the user can intervene.
-#
-# Threshold of 5 was picked because the default backoff schedule is
-# (1, 2, 4, 8, 16, 32, 60, 60…) seconds — 5 attempts ≈ 30 s of sustained
-# identical failures before the cue. By that point we're well past
-# transient-blip territory (DNS hiccup, momentary WS reset, etc.) and into
-# real-outage territory.
-ESCALATION_REPEAT_THRESHOLD = 5
-ESCALATION_RATE_LIMIT_SEC = 3600.0
-ESCALATION_CUE_SLUG = "cant_reach_cloud"
-
-
-@dataclass(frozen=True)
-class _FailureFingerprint:
-    """Identity of a reconnect failure, for tight-loop detection.
-
-    Two fingerprints compare equal iff they're the same shape of
-    failure: same exception type, same WebSocket close code (if any),
-    same reason text. Reason is truncated to 200 chars so jittery error
-    messages with timestamps or other unique content don't pollute the
-    "are these all identical?" check; the exception type + close code
-    do most of the work anyway."""
-    exc_type: str
-    close_code: int | None
-    reason: str
-
-    @classmethod
-    def from_exception(cls, exc: BaseException) -> "_FailureFingerprint":
-        # WebSocket exceptions from the underlying `websockets` library
-        # carry the close frame on `.rcvd`. Other exception shapes
-        # (httpx errors, generic OSError) won't have it; fall back to
-        # str(exc) for the reason field. See line ~1209 receive_loop
-        # for the same extraction pattern.
-        rcvd = getattr(exc, "rcvd", None)
-        close_code = getattr(rcvd, "code", None)
-        reason = getattr(rcvd, "reason", None) or str(exc)
-        return cls(
-            exc_type=type(exc).__name__,
-            close_code=close_code,
-            reason=str(reason)[:200],
-        )
-
-
-# Reconnect backoff: never give up. A smart speaker that goes
-# permanently silent after a 15-second DNS blip is broken UX —
-# the user has no way to know recovery requires a manual restart,
-# so they just stop using the device. We retry forever, with
-# exponential backoff capped at RECONNECT_MAX_BACKOFF_SEC and
-# ±25% jitter so we don't hammer the API or accidentally
-# self-synchronise with other speakers on the same outage.
-#
-# Schedule (jitter omitted): 1, 2, 4, 8, 16, 32, 60, 60, 60, …
-RECONNECT_INITIAL_BACKOFF_SEC = 1.0
-RECONNECT_MAX_BACKOFF_SEC = 60.0
-RECONNECT_BACKOFF_JITTER_FRACTION = 0.25
-
-
-def _reconnect_backoff_delay(attempt: int) -> float:
-    """Exponential delay with jitter for the supervisor reconnect loop.
-    `attempt` is 1-indexed (first retry is attempt 1).
-
-    The shift is saturated at 32 because Python ints don't overflow but
-    `float(2 ** 1024)` does — and the supervisor retries forever, so
-    we *will* see attempt > 1024 in a long outage (last-night incident
-    hit 798). Once `2 ** shift` exceeds the max-backoff/initial ratio
-    the outer ``min()`` clamps it anyway, so the saturation is purely
-    a numeric safety bound."""
-    import random
-    shift = min(attempt - 1, 32)
-    base = min(
-        RECONNECT_INITIAL_BACKOFF_SEC * (2 ** shift),
-        RECONNECT_MAX_BACKOFF_SEC,
-    )
-    j = base * RECONNECT_BACKOFF_JITTER_FRACTION
-    return base + random.uniform(-j, j)
+# Back-compat aliases for tests that import the underscore-prefixed
+# names from this module. New code should import these directly from
+# `jasper.voice._supervisor`.
+_FailureFingerprint = FailureFingerprint
+_reconnect_backoff_delay = reconnect_backoff_delay
 
 # Keepalive period — Vertex Live API closes idle connections after 10
 # min (https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting).

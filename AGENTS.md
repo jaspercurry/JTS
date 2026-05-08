@@ -41,6 +41,74 @@ HTTP — see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 
 ---
 
+## Voice provider switching — read first
+
+The voice loop runs against any of three real-time speech-to-speech
+APIs behind a single env var. Architecture and per-provider
+trade-offs are in
+[`docs/HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md);
+this section is the operational summary.
+
+**Two ways to switch.** Either work; pick whichever fits the moment.
+
+**Web UI (preferred, end-user friendly)** — visit
+`https://jts.local/voice/` from any device on the LAN. The page
+shows one card per provider for pasting API keys, picks model and
+voice from curated dropdowns, and has a single radio group at the
+top for "use this provider". Saving writes
+`/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
+`jasper-voice`. Source: [`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
+
+**Laptop-side script (operator-friendly, scriptable)**:
+
+```sh
+bash scripts/switch-voice-provider.sh           # show current
+bash scripts/switch-voice-provider.sh gemini    # gemini-3.1-flash-live-preview
+bash scripts/switch-voice-provider.sh openai    # gpt-realtime-2 (released 2026-05-07)
+bash scripts/switch-voice-provider.sh grok      # grok-voice-think-fast-1.0
+```
+
+The script refuses to switch if the destination provider's API key
+isn't already in `/etc/jasper/jasper.env` (`GEMINI_API_KEY`,
+`OPENAI_API_KEY`, or `XAI_API_KEY`) or in the wizard-written
+`/var/lib/jasper/voice_provider.env`. Set the key first via
+either path; the script sets the provider and restarts
+`jasper-voice` in one shot.
+
+**Per-provider model env var** is independent of the provider switch
+— `JASPER_GEMINI_MODEL`, `JASPER_OPENAI_MODEL`, `JASPER_GROK_MODEL`.
+The `switch-gemini-model.sh` script (below, "Gemini model switching")
+flips the *Gemini* model alias for within-Gemini fallback (3.1 ↔ 2.5)
+and is independent of cross-provider switching.
+
+**Pricing trade-off** (early 2026):
+
+| Provider | Cost / minute | Notes |
+|---|---|---|
+| `gemini` | ~$0.025 | cheapest; 15-min audio cap with 2-h resumption handle |
+| `openai` | ~$0.30 | reasoning levels, 128K context, 60-min hard cap, no resumption |
+| `grok` | ~$0.05 | flat $3/hour; spend cap under-counts (logs warning) |
+
+**Cue regeneration**: pre-rendered cue WAVs (`cant_connect`,
+`spend_cap_reached`, `cant_reach_cloud`) are baked from Gemini TTS
+regardless of which voice provider is active for the live loop —
+[`jasper/cues/generator.py`](jasper/cues/generator.py)'s
+`GeminiTTSGenerator` is the only render backend wired up. If you run
+with `JASPER_VOICE_PROVIDER=openai` and no `GEMINI_API_KEY`, cue
+regen silently skips — the daemon plays whatever WAVs already exist
+on disk. Bake them once with a Gemini key set, then you can run
+provider=openai indefinitely.
+
+**Adding a fourth provider**: see the "Adding a fourth provider"
+checklist in
+[`docs/HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md).
+The interface is `LiveConnection` + `LiveTurn` at
+[`jasper/voice/session.py`](jasper/voice/session.py); shared
+supervisor helpers (backoff, fingerprint, escalation cue) live at
+[`jasper/voice/_supervisor.py`](jasper/voice/_supervisor.py).
+
+---
+
 ## Gemini model switching — read first
 
 **Preferred model: `gemini-3.1-flash-live-preview`** (latest Live

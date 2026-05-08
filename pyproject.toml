@@ -1,10 +1,20 @@
 [project]
 name = "jasper-speaker"
 version = "0.1.0"
-description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP and Gemini Live"
+description = "Voice-controlled smart speaker on Raspberry Pi 5 with CamillaDSP and a swappable real-time voice backend (Gemini Live, OpenAI Realtime, xAI Grok)"
 requires-python = ">=3.11"
 dependencies = [
     "google-genai==1.13.0",
+    # OpenAI Realtime SDK — used by jasper.voice.openai_session for
+    # the gpt-realtime-2 backend, and (via the OpenAI-compatible WS
+    # endpoint) by jasper.voice.grok_session for the xAI Grok Voice
+    # Agent backend. 2.36.0 shipped on 2026-05-07 alongside
+    # gpt-realtime-2 and exposes the post-GA `client.realtime.connect`
+    # path; older SDKs only have `client.beta.realtime.connect`,
+    # which we don't use. Pulls in `websockets` as the realtime
+    # transport. Skippable at install time only if the active
+    # provider is gemini AND the user is sure they'll never switch.
+    "openai>=2.36.0",
     "camilladsp @ git+https://github.com/HEnquist/pycamilladsp@v4.0.0",
     # openwakeword==0.6.0 is installed by deploy/install.sh with --no-deps
     # because its transitive tflite-runtime dep has no Python 3.13 wheel

@@ -1,23 +1,33 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (multi-user Spotify onboarding)
+Description=Jasper smart-speaker web setup service (Spotify accounts + voice provider)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 EnvironmentFile=/etc/jasper/jasper.env
-# Optional file written by the setup wizard when the user pastes
-# their Spotify Developer App credentials. Sourced after jasper.env
-# so wizard-written values win. Leading `-` makes it optional —
-# fresh installs boot fine without it (and land on the wizard).
+# Optional file written by the Spotify setup wizard when the user
+# pastes their Spotify Developer App credentials. Sourced after
+# jasper.env so wizard-written values win. Leading `-` makes it
+# optional — fresh installs boot fine without it (and land on the
+# wizard).
 EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# Optional file written by the voice-provider wizard at
+# /voice/. Same override pattern: wizard values beat operator
+# defaults. Sourced here so the wizard's process can render the
+# current state correctly even on cold boot.
+EnvironmentFile=-/var/lib/jasper/voice_provider.env
+# Single Python process serves BOTH wizards as separate threads:
+#   /spotify/  →  127.0.0.1:8765
+#   /voice/    →  127.0.0.1:8767
+# See jasper/web/__main__.py for the wiring.
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure
 RestartSec=2
 
 # Hardening — this process needs to read /etc/jasper/jasper.env,
-# read+write /var/lib/jasper/, bind 127.0.0.1:8765, and call
-# `systemctl restart jasper-voice` after the wizard updates creds.
+# read+write /var/lib/jasper/, bind two loopback ports, and call
+# `systemctl restart jasper-voice` after either wizard updates state.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true

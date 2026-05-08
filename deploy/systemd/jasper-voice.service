@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper voice daemon (wake word + Gemini Live + tools)
+Description=Jasper voice daemon (wake word + real-time LLM + tools)
 After=jasper-camilla.service network-online.target mpd.service
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
@@ -17,6 +17,12 @@ EnvironmentFile=/etc/jasper/jasper.env
 # spotify_play tool then short-circuits to a "visit
 # JASPER_SPOTIFY_SETUP_URL" error which Gemini speaks).
 EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
+# Voice provider keys (GEMINI / OPENAI / XAI) and active-provider
+# selection written by the wizard at https://jts.local/voice.
+# Sourced AFTER /etc/jasper/jasper.env so wizard-written values
+# override operator-managed defaults — same pattern as the
+# Spotify creds file above. Optional via the leading `-`.
+EnvironmentFile=-/var/lib/jasper/voice_provider.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 Restart=on-failure

@@ -2,13 +2,17 @@
 
 A custom voice-controlled smart speaker on a Raspberry Pi 5 running
 Raspberry Pi OS Lite Trixie, with
-[CamillaDSP](https://github.com/HEnquist/camilladsp) for audio and
+[CamillaDSP](https://github.com/HEnquist/camilladsp) for audio. The
+voice loop is provider-agnostic: any of three real-time
+speech-to-speech APIs can drive it via a single env-var switch —
 [Gemini 3.1 Flash Live](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
-for voice. This is a personal hobby project; not a product.
+(default), [OpenAI gpt-realtime-2](https://developers.openai.com/api/docs/guides/realtime),
+or [xAI Grok Voice Agent](https://docs.x.ai/docs/guides/voice/agent).
+This is a personal hobby project; not a product.
 
 The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
-roughly $1–3/month at light use.
+roughly $1–3/month at light use on the cheapest provider.
 
 ---
 
@@ -65,14 +69,15 @@ Phone (AirPlay / Spotify Connect / BT)
   XVF3800 4-mic array  ── USB UAC2 ──  hw:CARD=Array,DEV=0
         │                                     │
         │                                     ▼
-        │                            jasper-voice (wake-word, Gemini Live, tools)
+        │                            jasper-voice (wake-word, real-time LLM, tools)
         │                            - openWakeWord ("Hey Jarvis")
         │                            - Silero VAD
-        │                            - google-genai live session
+        │                            - real-time LLM session (provider-agnostic):
+        │                                Gemini Live | OpenAI Realtime | xAI Grok
         │                            - tool registry (volume, transport, Spotify, weather…)
         │                                     │
         │                                     ▼
-        │                            TTS (Gemini-generated PCM)
+        │                            TTS (provider-generated PCM, 24 kHz mono)
         │                                     │
         │                                     ▼
         │                            pcm.jasper_out (same dmix as music)
@@ -120,6 +125,14 @@ jasper-voice to consume. Disabled by default — see § below.
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
 - ✅ Wake-word detection ("Hey Jarvis", openWakeWord ONNX)
 - ✅ Gemini Live voice loop with tool calling
+- ✅ Provider-agnostic voice abstraction — `JASPER_VOICE_PROVIDER`
+  flips between Gemini Live, OpenAI Realtime (`gpt-realtime-2`), and
+  xAI Grok Voice Agent. See
+  [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)
+- ✅ Web setup wizard at `https://jts.local/voice/` — paste API keys,
+  pick the active provider, save. Writes
+  `/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
+  `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
   search & queue, weather, NYC subway times
 - ✅ Multi-user Spotify routing (each household member's account,
@@ -154,17 +167,23 @@ refractory until/unless that changes.
 
 ```
 jasper/                         Python daemon source
-  voice_daemon.py               Main: wake → Gemini Live → tools → TTS
+  voice_daemon.py               Main: wake → real-time LLM → tools → TTS
   audio_io.py                   MicCapture, TtsPlayout (sounddevice-based)
   camilla.py                    pycamilladsp websocket helpers
-  voice/                        VoiceSession interface + Gemini adapter
+  voice/                        Provider-agnostic LiveConnection / LiveTurn
+                                  protocols + adapters (gemini_session,
+                                  openai_session, grok_session) +
+                                  shared reconnect supervisor helpers
   tools/                        Tool registry + per-tool implementations
+                                  (provider-aware schema serializers)
   control/                      jasper-control: HTTP API for dial/automation
   cli/                          jasper-doctor, jasper-spotify-auth,
                                 jasper-aec-{init,tune,bridge},
                                 jasper-dial-onboard
   xvf/                          Vendored XMOS XVF3800 control library
-  web/                          FastAPI: Spotify household OAuth web UI
+  web/                          stdlib http.server settings UIs at
+                                  /spotify (account OAuth) and /voice
+                                  (provider config + key paste)
   data/                         Static data (subway stops, etc.)
   ...                           accounts, spotify_router, vad,
                                 volume_persistence, etc.
@@ -198,7 +217,9 @@ scripts/                        Operator helpers (run from laptop)
   fetch-pi-logs.sh              Pull journals + configs into ./logs/
   tail-pi-logs.sh               Live tail
   pi-bundle.sh                  One-shot diagnostic dump
-  switch-gemini-model.sh        Flip JASPER_GEMINI_MODEL between 3.1 / 2.5
+  switch-voice-provider.sh      Flip JASPER_VOICE_PROVIDER between
+                                gemini / openai / grok
+  switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
 
 tests/                          Hardware-free pytest suite
 ```
@@ -221,6 +242,11 @@ tests/                          Hardware-free pytest suite
 The HANDOFF docs are the most engineer-relevant. Each one is the
 canonical "if you're modifying this subsystem, read this first"
 reference. Currently:
+- [`HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md) —
+  Multi-provider voice loop architecture: how `LiveConnection` /
+  `LiveTurn` abstract Gemini Live, OpenAI Realtime, and Grok Voice
+  Agent behind one switch, plus the per-provider trade-offs and the
+  steps for adding a fourth backend
 - [`satellites.md`](docs/satellites.md) — The home base for the
   satellite-device family. Existing dial + planned AMOLED mic
   satellite, shared protocols (Improv / mDNS-SD / control HTTP / UDP
@@ -229,7 +255,9 @@ reference. Currently:
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
-  — Long-running Gemini Live connection management
+  — Long-running Gemini Live connection management (Gemini-specific
+  details — see HANDOFF-voice-providers.md for the cross-provider
+  architecture)
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify/MPD) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware

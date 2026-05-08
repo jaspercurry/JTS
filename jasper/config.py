@@ -68,10 +68,25 @@ def _validate(cfg: "Config") -> "Config":
 
 @dataclass(frozen=True)
 class Config:
+    # Voice provider: "gemini" (default) | "openai" | "grok". The
+    # corresponding *_api_key + *_model + *_voice fields are read for
+    # whichever provider is selected. Other providers' keys may be
+    # blank and the daemon still starts — only the active provider's
+    # credentials are required.
     voice_provider: str
+
     gemini_api_key: str
     gemini_model: str
     gemini_voice: str
+
+    openai_api_key: str
+    openai_model: str
+    openai_voice: str
+    openai_reasoning_effort: str
+
+    grok_api_key: str
+    grok_model: str
+    grok_voice: str
 
     wake_model: str
     wake_threshold: float
@@ -145,7 +160,17 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
+        if provider not in {"gemini", "openai", "grok"}:
+            raise RuntimeError(
+                f"unsupported JASPER_VOICE_PROVIDER={provider!r}; expected "
+                "one of: gemini, openai, grok"
+            )
+        # Only the active provider's API key is required. Each provider
+        # block's other env vars have sensible defaults, so the user
+        # only needs to set the key + provider to switch backends.
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
+        openai_key = _env("OPENAI_API_KEY", required=(provider == "openai"))
+        grok_key = _env("XAI_API_KEY", required=(provider == "grok"))
         return _validate(cls(
             voice_provider=provider,
             gemini_api_key=gemini_key,
@@ -155,6 +180,34 @@ class Config:
             # include Aoede, Charon, Fenrir, Kore, Puck, Leda, Orus,
             # Zephyr. Without this, the server picks one per session.
             gemini_voice=_env("JASPER_GEMINI_VOICE", "Aoede"),
+            openai_api_key=openai_key,
+            # Default model is the post-2026-05-07 reasoning-capable
+            # GA: gpt-realtime-2 ($32 / $64 / $0.40 per 1M audio tokens
+            # in / out / cached). For the cheaper non-reasoning sibling
+            # set JASPER_OPENAI_MODEL=gpt-realtime-mini ($10 / $20 /
+            # $0.30) — same wire format, no `reasoning.effort` field.
+            openai_model=_env("JASPER_OPENAI_MODEL", "gpt-realtime-2"),
+            # OpenAI Realtime voices include marin, cedar, alloy, ash,
+            # ballad, coral, echo, sage, shimmer, verse. `marin` is the
+            # default in the post-GA SDK quickstarts.
+            openai_voice=_env("JASPER_OPENAI_VOICE", "marin"),
+            # Reasoning effort for gpt-realtime-2: minimal | low |
+            # medium | high | xhigh. Default `low` matches the SDK
+            # default and is the right choice for short voice queries.
+            # Ignored on non-`-2` models (the openai_session adapter
+            # only includes the field when the model name carries
+            # "-2"). `minimal` cuts ~1 second of TTFA at the cost of
+            # less coherent multi-step answers.
+            openai_reasoning_effort=_env("JASPER_OPENAI_REASONING_EFFORT", "low"),
+            grok_api_key=grok_key,
+            # xAI Grok Voice Agent. The `grok-voice-think-fast-1.0`
+            # model claims sub-second latency and is OpenAI-Realtime-
+            # protocol-compatible per xAI's docs (we run it through the
+            # same adapter as OpenAI with a base-URL override).
+            grok_model=_env("JASPER_GROK_MODEL", "grok-voice-think-fast-1.0"),
+            # Grok voice list is disjoint from OpenAI's: eve, ara, rex,
+            # sal, leo. Default is `eve` per xAI docs.
+            grok_voice=_env("JASPER_GROK_VOICE", "eve"),
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
             wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
             # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not

@@ -23,8 +23,10 @@ from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
-from .usage import SpendCap, UsageStore
+from .usage import SpendCap, UsageStore, pricing_for_provider
 from .voice.gemini_session import GeminiLiveConnection
+from .voice.openai_session import OpenAIRealtimeConnection
+from .voice.grok_session import GrokRealtimeConnection
 from .voice.session import LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
@@ -466,12 +468,46 @@ def _build_system_instruction(location: str = "") -> str:
     return SYSTEM_INSTRUCTION + addendum
 
 
+def _active_model(cfg: Config) -> str:
+    """Return the model name for the currently selected provider — used
+    by startup-readiness logging and the silent-failure heuristic in
+    `_end_turn` so journalctl shows the actual model in flight."""
+    if cfg.voice_provider == "gemini":
+        return cfg.gemini_model
+    if cfg.voice_provider == "openai":
+        return cfg.openai_model
+    if cfg.voice_provider == "grok":
+        return cfg.grok_model
+    return f"<unknown:{cfg.voice_provider}>"
+
+
 def _make_connection(cfg: Config) -> LiveConnection:
+    """Construct the long-lived voice connection for the active provider.
+
+    Single switch point — `JASPER_VOICE_PROVIDER` selects which adapter
+    runs. Daemon code above this function is provider-agnostic; daemon
+    code below it talks only to the `LiveConnection` / `LiveTurn`
+    Protocols and works equally for any provider that implements them."""
     if cfg.voice_provider == "gemini":
         return GeminiLiveConnection(
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
             voice=cfg.gemini_voice,
+            context_reset_sec=float(cfg.live_context_reset_sec),
+        )
+    if cfg.voice_provider == "openai":
+        return OpenAIRealtimeConnection(
+            api_key=cfg.openai_api_key,
+            model=cfg.openai_model,
+            voice=cfg.openai_voice,
+            reasoning_effort=cfg.openai_reasoning_effort,
+            context_reset_sec=float(cfg.live_context_reset_sec),
+        )
+    if cfg.voice_provider == "grok":
+        return GrokRealtimeConnection(
+            api_key=cfg.grok_api_key,
+            model=cfg.grok_model,
+            voice=cfg.grok_voice,
             context_reset_sec=float(cfg.live_context_reset_sec),
         )
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
@@ -1143,14 +1179,15 @@ class WakeLoop:
             bytes_sent = self._turn.bytes_sent()
             chunks_received = self._turn.chunks_received()
             if bytes_sent > 0 and chunks_received == 0 and not self._turn.turn_lost():
+                model = _active_model(self._cfg)
                 logger.warning(
                     "SILENT FAILURE: sent %d bytes of audio to %s on this "
                     "turn but received 0 audio chunks back. Likely causes: "
-                    "quota exhausted (check Google Cloud Console → Quotas), "
-                    "billing not yet propagated to this model, or service-"
-                    "side outage of %s. Non-Live API may still work "
+                    "quota exhausted, billing not yet propagated to this "
+                    "model, or service-side outage of %s. Non-realtime "
+                    "endpoints on the same provider may still work "
                     "(separate quota bucket).",
-                    bytes_sent, self._cfg.gemini_model, self._cfg.gemini_model,
+                    bytes_sent, model, model,
                 )
             logger.info(
                 "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s)",
@@ -1258,7 +1295,29 @@ async def run() -> None:
     cfg = Config.from_env()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-    usage_store = UsageStore(cfg.usage_db)
+    pricing = pricing_for_provider(
+        cfg.voice_provider, model=_active_model(cfg),
+    )
+    logger.info(
+        "spend cap: provider=%s pricing=%s cap=$%.2f/day",
+        cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
+    )
+    if (
+        cfg.voice_provider == "grok"
+        and cfg.daily_spend_cap_usd > 0
+        and pricing.flat_per_hour_usd > 0
+    ):
+        # Grok bills per hour, not per token; UsageStore tracks tokens
+        # and will under-count. Document the gap so the user knows the
+        # cap behaviour is advisory under Grok.
+        logger.warning(
+            "spend cap with Grok: token-based accounting under-counts "
+            "Grok's flat $%.2f/hour rate. Spend cap is effectively a "
+            "liveness nudge under this provider — use xAI's billing "
+            "dashboard for real numbers.",
+            pricing.flat_per_hour_usd,
+        )
+    usage_store = UsageStore(cfg.usage_db, pricing=pricing)
     spend_cap = SpendCap(usage_store, cfg.daily_spend_cap_usd)
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
@@ -1364,8 +1423,9 @@ async def run() -> None:
         loop.add_signal_handler(sig, _shutdown)
 
     logger.info(
-        "jasper-voice ready: model=%s wake=%s mic=%s tts=%s",
-        cfg.gemini_model, cfg.wake_model, cfg.mic_device, cfg.tts_device,
+        "jasper-voice ready: provider=%s model=%s wake=%s mic=%s tts=%s",
+        cfg.voice_provider, _active_model(cfg), cfg.wake_model,
+        cfg.mic_device, cfg.tts_device,
     )
 
     # Open the persistent live connection ONCE at daemon startup and
