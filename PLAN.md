@@ -80,6 +80,20 @@ Settings the dashboard should expose — without SSHing in:
   (`JASPER_VOLUME_IDLE_THRESHOLD_SEC`, `JASPER_VOLUME_IDLE_DEFAULT_PCT`)
   and a small read of `volume_persistence.regress_listening_level_if_stale`
   arguments.
+- **AirPlay reset button** — a one-click action that runs
+  `systemctl restart shairport-sync nqptp`. Fixes the recurring
+  symptom where the Pi shows up in the Mac's AirPlay picker but
+  won't accept connections (or sustains for a half-second then
+  drops). Root cause is shairport-sync's AP2 connection state
+  getting wedged after abrupt client disconnects — the process is
+  alive so `Restart=always` doesn't help; PTP via nqptp can also
+  desync independently. Today's recovery is `bash
+  scripts/airplay-reset.sh` from a laptop with SSH; a dashboard
+  button removes the SSH dependency. Implementation: small POST
+  endpoint on jasper-web that shells out to the systemctl command,
+  plus a button on the diagnostics page. See
+  `project_shairport_ap2_wedge_recovery` (memory) for the full
+  symptom/cause writeup.
 
 Same pattern as the existing Spotify OAuth web flow: jasper-web
 serves the form, validates input, writes to `/etc/jasper/jasper.env`,
