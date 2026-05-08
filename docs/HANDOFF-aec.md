@@ -648,7 +648,7 @@ Logged here as the calibration baseline.
 - Mic placement: free-floating on desk ~3 ft from speakers
 - `main_volume` at 0 dB (the dial's "100%")
 
-**Measurements:**
+**Measurements (baseline, REF_GAIN_DB=0):**
 
 | What | How | Result |
 |------|------|--------|
@@ -656,6 +656,14 @@ Logged here as the calibration baseline.
 | AEC3 plateau on stationary content | 30 s pink noise, `scripts/aec-probe-pinknoise.sh` | **−11 dB**, converges in ~10 s |
 | AEC3 on real-world music (AirPlay) | 90 s sustained streaming | **−2 to −7 dB**, oscillates with content, no convergence trend |
 | Loop gain (digital ref RMS → mic RMS) | Bridge log RMS averages | **+27 to +30 dB** on music |
+
+**Measurements (with REF_GAIN_DB=20, the loop-gain-correction lever):**
+
+| What | How | Result |
+|------|------|--------|
+| AEC3 plateau on pink noise | Same probe + `REF_GAIN_DB=20` | **−16 to −18 dB**, converges in ~5 s (+5 to +7 dB lift) |
+| AEC3 on music | 60 s music + `REF_GAIN_DB=20` | **−12 to −20 dB**, mean ~−15 dB, stable across loud and quiet passages (+10 dB lift) |
+| Loop gain after the boost | Same RMS averages | **+7 to +9 dB** (was +27 to +30 dB) — inside AEC3's design window |
 
 **Interpretation (with literature cross-reference):**
 
@@ -682,25 +690,34 @@ than the mic capture (typical conferencing has loop gain of −7 to
 of round-trip gain. AEC3's adaptive filter math expects loop gain
 near unity; ours sits well outside its design point.
 
-**Mitigations on the table (in order of expected leverage):**
+**Mitigations tested:**
 
-1. **Boost the digital reference** before it enters AEC3 — closes
+1. ✅ **Boost the digital reference** before it enters AEC3 — closes
    the loop gain gap directly. Implemented as the
-   `JASPER_AEC_REF_GAIN_DB` env var on the bridge (default 0 dB);
-   try +20 dB to start.
-2. **Hint AEC3's delay estimator** with the measured 40 ms via
-   `set_stream_delay_ms`. Already wired up as the AEC3 binding's
-   constructor default. Speeds initial convergence; small
-   steady-state effect.
+   `JASPER_AEC_REF_GAIN_DB` env var on the bridge (default 0 dB).
+   At `+20 dB`: pink noise +5-7 dB lift, music +10 dB lift, no
+   audible artifacts, no clipping at typical music levels. Going
+   higher than +20 dB risks int16 clipping on loud peaks; if more
+   lift is needed the path is soft-clipping or AGC2.
+2. ✅ **Hint AEC3's delay estimator** with the measured 40 ms via
+   `set_stream_delay_ms`. Wired up as the AEC3 binding's
+   constructor default. Convergence speeds up modestly (5 s vs 10 s
+   on pink noise); steady-state plateau unchanged within
+   measurement noise.
+
+**Mitigations still on the table:**
+
 3. **Enable WebRTC AGC2** as the post-AEC stage. AGC2 is the
    modern modular gain-controller (newer than AGC1; the "2" is
    per-module numbering, not "older than AGC3"). One-line config
    flip in the binding. Adds level normalization that helps
-   downstream wake-word detection too.
+   downstream wake-word detection too. Worth trying if the
+   wake-word-during-music acceptance test undershoots.
 4. **Neural residual stage (DeepVQE)**. Skips the linear-filter
    fundamental limitation entirely. ~2-3 days of work per the
-   project plan; treat as Stage 4, only if 1-3 prove insufficient
-   for the actual acceptance test.
+   project plan; treat as Stage 4, only if AEC3 + REF_GAIN_DB +
+   AGC2 prove insufficient for the actual acceptance test. Given
+   we're now at −15 dB on music, this stage is probably not needed.
 
 **The acceptance test that matters** is end-to-end wake-word
 detection rate during music at conversational distance, not raw
