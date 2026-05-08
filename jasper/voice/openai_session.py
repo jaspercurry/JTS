@@ -122,16 +122,19 @@ def _upsample_16k_to_24k(
 ) -> tuple[bytes, tuple]:
     """Polyphase upsample 16 kHz mono int16 → 24 kHz mono int16.
 
-    Uses ``audioop.ratecv`` (stdlib). State must persist across calls
-    within a turn so the resampler doesn't introduce phase
-    discontinuities at frame boundaries — pass the returned state back
-    in on the next call. Reset state to ``None`` at turn start.
+    Uses ``audioop.ratecv``. State must persist across calls within a
+    turn so the resampler doesn't introduce phase discontinuities at
+    frame boundaries — pass the returned state back in on the next
+    call. Reset state to ``None`` at turn start.
 
-    audioop is deprecated in Python 3.13 and slated for removal in
-    3.14; if/when JTS upgrades past that, swap this for
-    ``scipy.signal.resample_poly`` or a hand-rolled polyphase filter.
-    The Pi OS targets (Bookworm Python 3.11, Trixie Python 3.12) are
-    fine for now."""
+    ``audioop`` was REMOVED from Python 3.13's stdlib (PEP 594), and
+    PiOS Trixie ships 3.13. The ``audioop-lts`` backport on PyPI is a
+    drop-in replacement that registers under the ``audioop`` import
+    name — pyproject.toml depends on it conditionally for 3.13+, so
+    this import resolves transparently on every supported Python
+    version. If/when ``audioop-lts`` stops being maintained, swap to
+    ``scipy.signal.resample_poly`` or a hand-rolled 3:2 polyphase
+    filter."""
     return audioop.ratecv(
         pcm_16k, 2, 1, DAEMON_MIC_RATE_HZ, OPENAI_AUDIO_RATE_HZ, state,
     )
