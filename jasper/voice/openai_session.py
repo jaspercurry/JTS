@@ -170,6 +170,19 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
+        # True between `response.function_call_arguments.done` and the
+        # next `response.done`. A single user-facing turn produces
+        # multiple OpenAI responses when the model uses a tool:
+        #   response 1: function_call_arguments → response.done (no audio)
+        #   <client sends conversation.item.create(function_call_output)
+        #    + response.create>
+        #   response 2: response.output_audio.delta × N → response.done
+        # We must NOT flip `_server_turn_complete` on response 1's done
+        # — if we do, the daemon's idle watchdog ends the turn before
+        # response 2's audio plays, audibly cutting the model off
+        # mid-sentence. The flag tells the dispatcher to defer
+        # turn-completion to the second response.done.
+        self._tool_call_in_flight = False
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -300,16 +313,27 @@ class OpenAIRealtimeTurn(LiveTurn):
             )
         await self._audio_q.put(data)
 
+    def _record_usage(self, usage: dict | None) -> None:
+        """Accumulate tokens from one response.done. A tool-using turn
+        spans multiple OpenAI responses, each carrying its own usage —
+        sum them so the spend cap reflects the full round-trip cost,
+        rather than only the final audio response (which would
+        under-count). Called by both the deferred-completion path
+        (intermediate tool-call response.done) and the final
+        ``_on_response_done``."""
+        if not usage:
+            return
+        in_tok = usage.get("input_tokens")
+        out_tok = usage.get("output_tokens")
+        if isinstance(in_tok, int):
+            self._usage["input_tokens"] += in_tok
+        if isinstance(out_tok, int):
+            self._usage["output_tokens"] += out_tok
+
     async def _on_response_done(self, usage: dict | None) -> None:
         self._last_activity_at = asyncio.get_event_loop().time()
         self._server_turn_complete = True
-        if usage:
-            in_tok = usage.get("input_tokens")
-            out_tok = usage.get("output_tokens")
-            if isinstance(in_tok, int):
-                self._usage["input_tokens"] = in_tok
-            if isinstance(out_tok, int):
-                self._usage["output_tokens"] = out_tok
+        self._record_usage(usage)
 
     def _on_assistant_item_id(self, item_id: str | None) -> None:
         if item_id:
@@ -927,8 +951,13 @@ class OpenAIRealtimeConnection(LiveConnection):
                     turn._on_assistant_item_id(item.get("id"))
             return
 
-        # Function call dispatched by the model.
+        # Function call dispatched by the model. Set the in-flight
+        # flag BEFORE the dispatch so the response.done that closes
+        # this tool-call response (which arrives next from the
+        # server) is correctly recognised as intermediate, not final.
         if etype == "response.function_call_arguments.done":
+            if turn is not None:
+                turn._tool_call_in_flight = True
             await self._handle_tool_call(event)
             return
 
@@ -955,8 +984,22 @@ class OpenAIRealtimeConnection(LiveConnection):
                         "input_tokens": getattr(usage_obj, "input_tokens", None),
                         "output_tokens": getattr(usage_obj, "output_tokens", None),
                     }
-            if turn is not None:
-                await turn._on_response_done(usage_dict)
+            if turn is None:
+                return
+            if turn._tool_call_in_flight:
+                # This response.done closes the tool-call response;
+                # another response with the actual audio answer will
+                # arrive after the function_call_output we already
+                # sent. Accumulate this response's usage but DEFER
+                # turn-completion to the next response.done — flipping
+                # `_server_turn_complete` here would let the daemon's
+                # idle watchdog tear the turn down ~1.5s later, just
+                # as the audio answer is starting to stream, audibly
+                # cutting the model off mid-sentence.
+                turn._tool_call_in_flight = False
+                turn._record_usage(usage_dict)
+                return
+            await turn._on_response_done(usage_dict)
             return
 
         # Server-side VAD events. We run manual VAD (turn_detection=None)

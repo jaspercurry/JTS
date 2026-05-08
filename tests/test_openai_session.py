@@ -496,6 +496,120 @@ async def test_function_call_round_trip():
         await conn.stop()
 
 
+async def test_tool_call_response_done_does_NOT_complete_turn():
+    """A tool-using turn produces TWO response.done events from
+    OpenAI: one closing the tool-call response (no audio), then one
+    closing the audio answer. The first MUST NOT flip
+    server_turn_complete — if it does, the daemon's idle watchdog
+    closes the turn before the actual audio answer streams in, and
+    the user hears the model cut off mid-sentence.
+
+    This was the live-deploy bug behind "she keeps cutting out":
+    7 audio chunks received per turn, ~175ms after the tool result
+    came back. The model did everything right; my dispatcher ended
+    the turn too early.
+
+    Drives the full two-response sequence and checks server_turn_complete
+    after each step."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool()
+    def get_weather(location: str = "") -> dict:
+        """."""
+        return {"location": "Brooklyn", "temperature": 62}
+    registry.register(get_weather)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        assert turn.server_turn_complete() is False
+
+        # ROUND 1: model decides to call the tool.
+        sess.feed({
+            "type": "response.function_call_arguments.done",
+            "call_id": "call_1",
+            "name": "get_weather",
+            "arguments": "{}",
+            "response_id": "resp_1",
+        })
+        # Wait for our function_call_output to land.
+        await _wait_until(
+            lambda: any(
+                e.get("type") == "conversation.item.create"
+                and e.get("item", {}).get("type") == "function_call_output"
+                for e in sess.sent
+            ),
+            timeout=2.0,
+        )
+
+        # ROUND 1 close: server emits response.done for the tool-call
+        # response. CRITICAL: this MUST NOT flip server_turn_complete.
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+            },
+        })
+        await asyncio.sleep(0.05)
+        assert turn.server_turn_complete() is False, (
+            "server_turn_complete must remain False after the tool-call "
+            "response.done — the audio answer hasn't streamed yet. "
+            "Flipping True here is what made the daemon cut off the "
+            "model mid-sentence in the live deploy."
+        )
+
+        # ROUND 2: server streams the actual audio answer.
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"answer_audio_1"),
+            "response_id": "resp_2",
+        })
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"answer_audio_2"),
+            "response_id": "resp_2",
+        })
+        # ROUND 2 close: real end of turn — audio answer is complete.
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_2",
+                "usage": {"input_tokens": 50, "output_tokens": 200},
+            },
+        })
+
+        # Drain audio + wait for completion flag to flip.
+        async def consume():
+            chunks = []
+            async for chunk in turn.audio_out():
+                chunks.append(chunk)
+                if len(chunks) >= 2:
+                    break
+            return chunks
+
+        consumer = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        await turn.end_input()
+        await turn.release()
+        chunks = await asyncio.wait_for(consumer, timeout=1.0)
+        assert chunks == [b"answer_audio_1", b"answer_audio_2"]
+        # NOW server_turn_complete should be True (set by the second
+        # response.done, before release).
+        assert turn.server_turn_complete() is True
+
+        # Token usage should ACCUMULATE across both responses, not
+        # just report the second one. The spend cap charges the
+        # full round-trip.
+        usage = turn.usage_tokens()
+        assert usage["input_tokens"] == 150  # 100 + 50
+        assert usage["output_tokens"] == 208  # 8 + 200
+    finally:
+        await conn.stop()
+
+
 async def test_unknown_tool_call_returns_error_payload():
     """If the model hallucinates a tool name we don't know about, we
     still must reply (otherwise the model hangs waiting for the
