@@ -594,7 +594,10 @@ In rough order of effort:
 
 Files involved in the AEC subsystem:
 
-- `jasper/cli/aec_bridge.py` — the SpeexDSP software AEC daemon
+- `jasper/cli/aec_bridge.py` — the software AEC daemon (selectable
+  engines: SpeexDSP default, WebRTC AEC3 via `JASPER_AEC_ENGINE=webrtc3`)
+- `jasper_aec3/` — sibling package, pybind11 binding for WebRTC AEC3
+  (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
 - `jasper/cli/aec_init.py` — boot-time chip init (resets chip,
   sets UAC2 PCM to unity)
 - `jasper/cli/aec_tune.py` — calibrator for chip-side
@@ -606,7 +609,7 @@ Files involved in the AEC subsystem:
 - `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
   (the dsnoop tap) and `pcm.jasper_out` (dongle dmix)
 - `deploy/modprobe.d/snd-aloop.conf` — two-card snd-aloop
-  config (`index=0,5 id=Loopback,LoopbackAEC`)
+  config (`index=6,7 id=Loopback,LoopbackAEC`)
 - `deploy/modules-load.d/snd-aloop.conf` — auto-load at boot
 - `deploy/systemd/jasper-aec-bridge.service` — runs
   `jasper-aec-bridge` Python daemon
@@ -617,8 +620,94 @@ Files involved in the AEC subsystem:
 - `pyproject.toml` — registers `jasper-aec-bridge`,
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
-- `.env.example` — `JASPER_MIC_DEVICE=hw:5,1` (the LoopbackAEC
+- `.env.example` — `JASPER_MIC_DEVICE=hw:7,1` (the LoopbackAEC
   capture-side substream)
+- `scripts/aec-probe-latency.sh` — chirp + cross-correlation
+  measurement of end-to-end ref-to-mic delay (used to set the AEC3
+  binding's `stream_delay_ms` default)
+- `scripts/aec-probe-pinknoise.sh` — runs the bridge against
+  stationary pink noise to measure the AEC engine's plateau
+  attenuation (the upper bound for this setup, since music is
+  documented as harder for AEC3)
+
+---
+
+## Tuning findings (2026-05-08)
+
+After landing the WebRTC AEC3 engine option, we ran a structured
+tuning pass to characterize attenuation against the actual hardware.
+Logged here as the calibration baseline.
+
+**Setup measured against:**
+
+- Apple USB-C dongle → user's TPA3255 amp → bookshelf speakers
+  (free-floating, not in a sealed cabinet)
+- ReSpeaker XVF3800 6-ch firmware, raw mic 0 (channel 2, BYPASS
+  mode = no chip-side AGC/BF/NS in path)
+- WebRTC AEC3 via `libwebrtc-audio-processing-1` v1.3-3
+- Mic placement: free-floating on desk ~3 ft from speakers
+- `main_volume` at 0 dB (the dial's "100%")
+
+**Measurements:**
+
+| What | How | Result |
+|------|------|--------|
+| End-to-end ref→mic delay | Chirp cross-correlation, `scripts/aec-probe-latency.sh` | **40 ms** (peak/median 5.2×) |
+| AEC3 plateau on stationary content | 30 s pink noise, `scripts/aec-probe-pinknoise.sh` | **−11 dB**, converges in ~10 s |
+| AEC3 on real-world music (AirPlay) | 90 s sustained streaming | **−2 to −7 dB**, oscillates with content, no convergence trend |
+| Loop gain (digital ref RMS → mic RMS) | Bridge log RMS averages | **+27 to +30 dB** on music |
+
+**Interpretation (with literature cross-reference):**
+
+The headline "20-40 dB ERLE" attributed to AEC3 is for ideal
+conferencing — near-field mic, integrated speaker, moderate SPL.
+On real-world far-field recordings AEC3 alone delivers single-digit
+to low-double-digit ERLE; the ICASSP AEC challenges stopped reporting
+ERLE entirely circa 2022 because the metric becomes misleading on
+real hardware. **Our −11 dB on pink noise is consistent with what
+AEC3 actually delivers on realistic setups.**
+
+The −5 to −10 dB gap between music and pink noise is the documented
+non-stationarity penalty: AEC3's linear adaptive filter can't model
+loudspeaker non-linearity, and music's transient content keeps the
+filter in a perpetual re-converge state. RFC 7874 explicitly says
+AEC SHOULD be turn-offable for music.
+
+**The dominant problem is loop gain inversion.** AEC3 was designed
+for setups where the digital reference is comparable to or louder
+than the mic capture (typical conferencing has loop gain of −7 to
+−10 dB; pro AEC guides — Bose, Biamp — recommend ref 7-10 dB
+*louder* than mic). Our smart-speaker setup inverts that: the amp
++ speakers + room + chip mic preamp chain produces +27 to +30 dB
+of round-trip gain. AEC3's adaptive filter math expects loop gain
+near unity; ours sits well outside its design point.
+
+**Mitigations on the table (in order of expected leverage):**
+
+1. **Boost the digital reference** before it enters AEC3 — closes
+   the loop gain gap directly. Implemented as the
+   `JASPER_AEC_REF_GAIN_DB` env var on the bridge (default 0 dB);
+   try +20 dB to start.
+2. **Hint AEC3's delay estimator** with the measured 40 ms via
+   `set_stream_delay_ms`. Already wired up as the AEC3 binding's
+   constructor default. Speeds initial convergence; small
+   steady-state effect.
+3. **Enable WebRTC AGC2** as the post-AEC stage. AGC2 is the
+   modern modular gain-controller (newer than AGC1; the "2" is
+   per-module numbering, not "older than AGC3"). One-line config
+   flip in the binding. Adds level normalization that helps
+   downstream wake-word detection too.
+4. **Neural residual stage (DeepVQE)**. Skips the linear-filter
+   fundamental limitation entirely. ~2-3 days of work per the
+   project plan; treat as Stage 4, only if 1-3 prove insufficient
+   for the actual acceptance test.
+
+**The acceptance test that matters** is end-to-end wake-word
+detection rate during music at conversational distance, not raw
+ERLE. We may already be close to passing with current attenuation
++ ducking + good mic placement (the desk + free-floating mic
+geometry is favorable). That test is on the agenda for the next
+session.
 
 ---
 

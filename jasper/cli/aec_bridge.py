@@ -227,9 +227,20 @@ def _ref_thread(ref_q: Queue) -> None:
     first one as the stream warms up), so we accumulate at the 48k
     rate and only emit complete capture_block-sized chunks. This
     guarantees every queued frame matches the mic frame size — the
-    WebRTC AEC3 engine enforces equal lengths strictly."""
+    WebRTC AEC3 engine enforces equal lengths strictly.
+
+    Optional pre-AEC reference gain (`JASPER_AEC_REF_GAIN_DB`):
+    boosts the digital ref before it enters the AEC engine. AEC3
+    was tuned for conferencing setups where ref RMS ≈ mic RMS or
+    ref is louder; in our smart-speaker setup the digital ref is
+    typically 25-30 dB *quieter* than what the mic captures (amp +
+    speakers + room amplify the chain). Boosting ref closes that
+    gap so the adaptive filter operates near its design point. See
+    docs/HANDOFF-aec.md "Tuning findings" for measured impact."""
     import alsaaudio
     capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
+    ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
+    ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
 
     pcm = alsaaudio.PCM(
         type=alsaaudio.PCM_CAPTURE,
@@ -240,7 +251,10 @@ def _ref_thread(ref_q: Queue) -> None:
         format=alsaaudio.PCM_FORMAT_S16_LE,
         periodsize=capture_block,
     )
-    logger.info("ref capture opened: %s @ %d Hz, %d ch", REF_DEVICE, REF_RATE, REF_CHANNELS)
+    logger.info(
+        "ref capture opened: %s @ %d Hz, %d ch (pre-AEC gain=%+.1f dB)",
+        REF_DEVICE, REF_RATE, REF_CHANNELS, ref_gain_db,
+    )
     accum_48 = np.empty(0, dtype=np.float32)
     try:
         while not _shutdown.is_set():
@@ -257,6 +271,8 @@ def _ref_thread(ref_q: Queue) -> None:
                 chunk = accum_48[:capture_block]
                 accum_48 = accum_48[capture_block:]
                 mono16 = resample_poly(chunk, up=1, down=3)
+                if ref_gain_lin != 1.0:
+                    mono16 = mono16 * ref_gain_lin
                 mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
                 try:
                     ref_q.put_nowait(mono16.tobytes())

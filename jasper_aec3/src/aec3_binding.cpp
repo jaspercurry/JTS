@@ -44,7 +44,9 @@ constexpr int kFrameSamples10ms = 160;
 
 class Aec3 {
 public:
-    Aec3() : stream_cfg_(kSampleRate, kNumChannels) {
+    explicit Aec3(int stream_delay_ms = 40)
+        : stream_cfg_(kSampleRate, kNumChannels),
+          stream_delay_ms_(stream_delay_ms) {
         // libwebrtc-audio-processing-1-3 (Debian Trixie) doesn't expose
         // EchoCanceller3Factory in the public headers, but AEC3 is the
         // *default* echo controller when echo_canceller.enabled = true
@@ -109,6 +111,14 @@ public:
             apm_->ProcessReverseStream(
                 ref + i, stream_cfg_, stream_cfg_,
                 reverse_scratch.data());
+            // Hint AEC3 with the measured ref-to-mic delay (default
+            // 40 ms, the value we measured for the Pi 5 + AirPlay →
+            // CamillaDSP → dongle → speaker → free-floating XVF mic
+            // path via scripts/aec-probe-latency.py). The delay
+            // estimator's search converges faster when given a
+            // starting point. Per WebRTC API convention this is set
+            // before every ProcessStream call.
+            apm_->set_stream_delay_ms(stream_delay_ms_);
             apm_->ProcessStream(
                 mic + i, stream_cfg_, stream_cfg_,
                 output.data() + i);
@@ -122,6 +132,7 @@ public:
 private:
     std::unique_ptr<webrtc::AudioProcessing> apm_;
     webrtc::StreamConfig stream_cfg_;
+    int stream_delay_ms_;
 };
 
 }  // namespace
@@ -131,8 +142,14 @@ PYBIND11_MODULE(_aec3, m) {
               "(wraps libwebrtc-audio-processing-1 from Debian Trixie)";
 
     py::class_<Aec3>(m, "Aec3")
-        .def(py::init<>(),
-             "Construct an AEC3 instance (16 kHz mono, defaults baked in).")
+        .def(py::init<int>(),
+             py::arg("stream_delay_ms") = 40,
+             "Construct an AEC3 instance (16 kHz mono). stream_delay_ms "
+             "hints AEC3's delay estimator with the expected ref-to-mic "
+             "delay; default 40 ms is the measured value for the JTS "
+             "build (Pi 5 + AirPlay → CamillaDSP → dongle → speakers → "
+             "free-floating mic). Override per-deployment if the chain "
+             "changes.")
         .def("process", &Aec3::process,
              py::arg("mic"), py::arg("ref"),
              "Process one buffer of mic and ref bytes (equal-length "
