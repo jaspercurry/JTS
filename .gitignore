@@ -19,3 +19,7 @@ dist/
 # state / device serial numbers etc.)
 logs/*
 !logs/.gitkeep
+
+# Test recordings from satellite mic captures — large binaries,
+# regenerate via scripts/capture-satellite-amoled.sh.
+captures/

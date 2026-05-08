@@ -22,6 +22,11 @@ roughly $1–3/month at light use.
 | Speakers + speaker wire | (Whatever you have) |
 | Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-chip XMOS DSP |
 | ELECROW CrowPanel 1.28" HMI ESP32 Rotary Display (optional) | Wireless physical knob — volume, play/pause, hold-to-talk |
+| Waveshare ESP32-S3-Touch-AMOLED-1.8 (optional) | Touchscreen + mic satellite — distributed mic, push-to-talk, aux display |
+
+The optional ESP32 devices form a "satellite" family — see
+[docs/satellites.md](docs/satellites.md) for the cross-cutting
+design (shared protocols, multi-mic arbitration, roadmap per device).
 
 The XVF3800's onboard 3.5mm jack / AIC3104 codec is **not**
 connected — speakers go to the Apple dongle. This is the
@@ -123,9 +128,17 @@ jasper-voice to consume. Disabled by default — see § below.
 - ✅ Hardware AEC investigation completed and documented
 - ⚠️  Software AEC infrastructure built but disabled by default
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
-- 🔄 ESP32 rotary dial: phase 1 landed (volume); phase 2/3
-  (play/pause click + hold-to-talk) and phase 5 (LVGL display) pending.
-  See "Rotary dial controller" in [CLAUDE.md](CLAUDE.md).
+- ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
+  short-press, hold-to-talk long-press all working on hardware.
+  Other LVGL scenes (clock / listening orb / speaking waveform /
+  now-playing) have firmware scaffold but aren't yet on-device
+  validated.
+- 🔄 AMOLED touchscreen + mic satellite
+  (Waveshare ESP32-S3-Touch-AMOLED-1.8) — Phase 0 (mic capture
+  firmware) shipped, Phase 1 (WiFi + LVGL Tap-to-Talk + UDP audio
+  to Pi) in progress. See [docs/satellites.md](docs/satellites.md)
+  for the family overview, multi-mic arbitration design, and
+  per-device roadmap.
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
@@ -201,11 +214,17 @@ tests/                          Hardware-free pytest suite
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle and which volume knob attenuates which path |
+| [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/HANDOFF-*.md](docs/) | Deep-dive on a subsystem | Investigation history + design rationale |
 
 The HANDOFF docs are the most engineer-relevant. Each one is the
 canonical "if you're modifying this subsystem, read this first"
 reference. Currently:
+- [`satellites.md`](docs/satellites.md) — The home base for the
+  satellite-device family. Existing dial + planned AMOLED mic
+  satellite, shared protocols (Improv / mDNS-SD / control HTTP / UDP
+  logs), and the multi-mic arbitration design (with prior-art survey
+  across HA Assist, Sonos, Apple, Amazon ESP).
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)

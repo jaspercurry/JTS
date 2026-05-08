@@ -132,11 +132,24 @@ versions (respeaker repo issue #8).
 
 ---
 
-## Rotary dial controller — opt-in hardware
+## Satellite devices — opt-in hardware
+
+The cross-cutting design home for ESP32 satellites (existing rotary
+dial, AMOLED touchscreen mic satellite in progress, future devices)
+lives in [`docs/satellites.md`](docs/satellites.md). It owns shared
+protocols, multi-mic arbitration design, and per-device roadmap. Read
+that first when working on satellite firmware or related Pi-side
+daemons.
+
+### Rotary dial
 
 The CrowPanel 1.28" HMI ESP32-S3 rotary dial is a wireless physical
-controller that talks to the Pi over WiFi. Phase 1 (volume only) is
-the only piece landed; play/pause and hold-to-talk follow.
+controller that talks to the Pi over WiFi. **Currently working
+end-to-end on hardware:** volume control via encoder with an
+on-screen volume gauge, transport toggle on short-press (play/pause),
+hold-to-talk Gemini session on long-press. The other LVGL scenes
+(clock face, listening orb, speaking waveform, now-playing card with
+album art) have firmware scaffold but aren't yet validated on-device.
 
 Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
 `POST /volume/adjust` (and `/volume/set`, `/healthz`). Volume
@@ -184,6 +197,29 @@ The control daemon is always installed and enabled by `install.sh`,
 even if there's no dial — it costs <10 MB RAM idle and the volume
 endpoints are useful for any LAN client (Home Assistant, shortcuts,
 etc.).
+
+### AMOLED satellite (Phase 0 done, Phase 1 in progress)
+
+Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
+Phase 0 (mic capture firmware) shipped 2026-05-08. Project at
+`firmware/satellite-amoled/`, captures 16 kHz / 16-bit mono PCM over
+USB-CDC. Validated against music playback. See `docs/satellites.md`
+"Hardware gotchas" for the non-obvious ES8311 init quirks
+(I²S stereo + demux for slot alignment; REG02 pre_multi=3 for
+SCLK-derived MCLK; the codec sounds bitcrushed without the second).
+Phase 1 (WiFi/Improv + LVGL Tap-to-Talk + UDP audio to Pi + Pi-side
+receiver) is the next milestone.
+
+To capture audio for testing or SNR comparisons:
+
+```sh
+bash scripts/capture-satellite-amoled.sh 10        # 10 s → captures/<ts>.wav
+bash scripts/capture-chip-mic.sh 10                # same shape, from XVF3800
+```
+
+Capture scripts assume the satellite is plugged into the Pi via
+USB-C and the Pi is at `jts.local`. WAVs land in `captures/` (which
+is gitignored — large binaries, regenerate as needed).
 
 ---
 

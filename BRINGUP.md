@@ -27,9 +27,13 @@ a bug in this runbook — fix it and update.
   pre-configured it in Imager)
 - Laptop on the same LAN
 
-Optional:
+Optional (satellite devices — see [docs/satellites.md](docs/satellites.md)):
 - ELECROW CrowPanel 1.28" HMI ESP32-S3 rotary dial + USB-C cable
-  (for the wireless physical knob)
+  (the wireless physical knob — volume, transport toggle,
+  hold-to-talk; Phase 1–3 working on hardware)
+- Waveshare ESP32-S3-Touch-AMOLED-1.8 + USB-C cable (touchscreen +
+  mic satellite; Phase 0 firmware shipped, Phase 1 push-to-talk
+  in progress)
 
 ---
 
