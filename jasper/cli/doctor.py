@@ -5,12 +5,16 @@ ok/warn/fail. Useful when something breaks at 11 PM — run this instead of
 working through the runbook by hand.
 
 Usage:
-    sudo -E /opt/jasper/.venv/bin/jasper-doctor
+    sudo -E /opt/jasper/.venv/bin/jasper-doctor             # one shot
+    sudo -E /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
+    sudo -E /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
 
-Returns 0 if all critical checks pass, 1 otherwise.
+Returns 0 if all critical checks pass, 1 otherwise. --watch never
+returns by itself; exits 0 on Ctrl-C.
 """
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import os
@@ -18,6 +22,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -837,12 +842,68 @@ def check_dial_heartbeat() -> CheckResult:
     )
 
 
+def _watch_line(results: list[CheckResult]) -> str:
+    """One-line summary for --watch mode. Counts + first non-ok name so
+    a glance tells the operator whether something flipped since the last
+    iteration. Timestamp on the front so the line is meaningful when
+    redirected to a file."""
+    fails = [r for r in results if r.status == "fail"]
+    warns = [r for r in results if r.status == "warn"]
+    ts = time.strftime("%H:%M:%S")
+    if fails:
+        first = fails[0].name
+        return (
+            f"{ts}  {RED}{len(fails)} fail{RESET} "
+            f"{YELLOW}{len(warns)} warn{RESET}  first-fail: {first}"
+        )
+    if warns:
+        first = warns[0].name
+        return (
+            f"{ts}  {GREEN}ok{RESET} "
+            f"{YELLOW}{len(warns)} warn{RESET}  first-warn: {first}"
+        )
+    return f"{ts}  {GREEN}all {len(results)} checks ok{RESET}"
+
+
+async def _watch_loop(cfg: Config, interval: float) -> int:
+    """Run checks every `interval` seconds, print one line per pass.
+    Returns 0 on Ctrl-C."""
+    print(
+        f"jasper-doctor --watch (interval={interval:.1f}s, "
+        f"Ctrl-C to exit)\n",
+        flush=True,
+    )
+    try:
+        while True:
+            results = await run_async(cfg)
+            print(_watch_line(results), flush=True)
+            await asyncio.sleep(interval)
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        print("\nexiting", flush=True)
+        return 0
+
+
 def main() -> None:
+    parser = argparse.ArgumentParser(
+        prog="jasper-doctor",
+        description="JTS preflight diagnostics. Run as root.",
+    )
+    parser.add_argument(
+        "--watch", action="store_true",
+        help="Loop the checks until Ctrl-C; one summary line per pass.",
+    )
+    parser.add_argument(
+        "-i", "--interval", type=float, default=5.0,
+        help="Seconds between iterations in --watch mode (default 5).",
+    )
+    args = parser.parse_args()
     try:
         cfg = Config.from_env()
     except RuntimeError as e:
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
+    if args.watch:
+        sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
     results = asyncio.run(run_async(cfg))
     sys.exit(render(results))
 
