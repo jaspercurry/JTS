@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Diagnostic: watch an ALSA mixer control and log every change.
+#
+# Usage: jasper-headphone-monitor <card> <control>
+#
+# Polls amixer at 1Hz, logs to stdout (-> journald via systemd) on
+# every change to the control's [pct%] [dB] [state] tuple. Existed
+# because something on this system was silently moving the Apple
+# dongle's Headphone control between boots; this gives us a
+# timestamped log of every change so we can correlate with other
+# events.
+#
+# The first poll logs the current value (so "initial state" is
+# visible too). Subsequent polls log only on change.
+
+set -uo pipefail
+
+CARD="${1:-A}"
+CONTROL="${2:-Headphone}"
+
+read_state() {
+    # Output line like:  [100%] [0.00dB] [on]
+    # Grabs the first channel only — both channels of a stereo pair
+    # are slaved to the same setting on this hardware, so reporting
+    # one is enough.
+    amixer -c "$CARD" sget "$CONTROL" 2>/dev/null \
+        | grep -oE '\[[-0-9.]+%\] \[[-0-9.]+dB\] \[(on|off)\]' \
+        | head -1
+}
+
+echo "headphone monitor starting: card=$CARD control=$CONTROL"
+last=""
+while true; do
+    cur=$(read_state)
+    if [[ -n "$cur" && "$cur" != "$last" ]]; then
+        if [[ -z "$last" ]]; then
+            echo "headphone state: $cur (initial)"
+        else
+            echo "headphone CHANGE: $last -> $cur"
+        fi
+        last="$cur"
+    fi
+    sleep 1
+done

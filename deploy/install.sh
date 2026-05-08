@@ -386,6 +386,16 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/jasper-dac-init.service" \
         > "${SYSTEMD_DIR}/jasper-dac-init.service"
     chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
+    # Diagnostic monitor: 1Hz poll on the dongle's Headphone control,
+    # logs every change to journald. Companion to jasper-dac-init —
+    # if something moves the control after boot, this surfaces when
+    # and how often. See deploy/bin/jasper-headphone-monitor.
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-headphone-monitor" \
+        /usr/local/bin/jasper-headphone-monitor
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
+        "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
 
     # We own the full systemd units for each renderer + nqptp + bt-agent.
     #
@@ -427,13 +437,15 @@ install_systemd_units() {
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
         jasper-web.service jasper-dial-web.service jasper-control.service \
-        jasper-dac-init.service
+        jasper-dac-init.service jasper-headphone-monitor.service
     # Apply the dongle Headphone-max pin immediately so a fresh
     # install gets the full analog ceiling without waiting for
     # next reboot.
     systemctl start jasper-dac-init.service || \
         echo "  WARN: jasper-dac-init failed (dongle not enumerated?). \
 Will retry on next boot."
+    # Restart the headphone monitor so it picks up post-init state.
+    systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service

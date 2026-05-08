@@ -1,0 +1,23 @@
+[Unit]
+Description=Watch the Apple dongle Headphone control for unexpected changes
+# Diagnostic-only: jasper-dac-init pins this control to 100% at boot,
+# but observed drift suggests something else moves it during runtime.
+# This monitor logs every change to journald so we can see when it
+# happens and correlate with other events. Low overhead — 1Hz amixer
+# poll on a single control.
+After=sound.target jasper-dac-init.service
+Wants=jasper-dac-init.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/jasper-headphone-monitor A Headphone
+Restart=always
+RestartSec=2
+Nice=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
