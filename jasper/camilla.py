@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import Awaitable, Callable
 
 from camilladsp import CamillaClient
 
@@ -79,16 +80,34 @@ class CamillaController:
 
 
 class Ducker:
-    """Additive duck/restore around a voice session.
+    """Voice-session ducking around CamillaDSP main_volume.
 
-    Apply duck_db (negative number) on duck, reverse it on restore. Done
-    additively so mid-session volume changes by the user (set_volume tool)
-    persist after the session ends.
+    `duck()` lowers camilla by `duck_db` (additive). `restore()` reads the
+    coordinator's canonical target dB and writes it absolutely.
+
+    Why asymmetric: at duck time nothing else is competing for camilla
+    (the voice session is just opening); additive is fine. At restore
+    time, anything could have happened during the ducked window —
+    crucially, the dial / voice tools / external slider observers could
+    have changed `listening_level`. The previous implementation used
+    additive restore (`+= -duck_db`), which wedged camilla at
+    `pre_duck_value + delta` if any other writer touched it during the
+    duck. Real symptom: dial twist during a voice turn → restore
+    overshoots by the duck delta → camilla pinned out-of-range positive
+    → sustained clipping when the next source connects. Reading the
+    canonical target on restore makes the behavior independent of any
+    interleaved writes.
     """
 
-    def __init__(self, camilla: CamillaController, duck_db: float) -> None:
+    def __init__(
+        self,
+        camilla: CamillaController,
+        duck_db: float,
+        target_db_provider: Callable[[], Awaitable[float]],
+    ) -> None:
         self._camilla = camilla
         self._duck_db = duck_db
+        self._target_db_provider = target_db_provider
         self._ducked = False
 
     async def duck(self) -> None:
@@ -101,6 +120,7 @@ class Ducker:
         if not self._ducked:
             return
         try:
-            await self._camilla.adjust_volume_db(-self._duck_db)
+            target_db = await self._target_db_provider()
+            await self._camilla.set_volume_db(target_db)
         finally:
             self._ducked = False

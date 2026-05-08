@@ -489,6 +489,82 @@ async def test_transition_spotify_to_bluetooth_pushes_to_new_source(tmp_path):
     assert coord.bt_writes == [55]
 
 
+async def test_set_camilla_deferred_during_voice_session(tmp_path):
+    """During a voice session the Ducker owns camilla; coordinator
+    writes are deferred. Regression for the dial-during-duck overshoot:
+    the dial path goes set_listening_level → _dispatch → _set_camilla,
+    and was unconditionally writing camilla mid-duck. Now it returns
+    early on voice_session_active. listening_level still updates so
+    Ducker.restore lands at the user's intended level."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-25.0)  # already ducked
+    backend = _FakeBackend(active={})  # idle (camilla-as-master)
+    # Real coordinator, not the recording subclass — we want the
+    # production _set_camilla path with its gate.
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord.note_voice_session(True)
+    await coord.set_listening_level(46)
+    # Camilla untouched — Ducker still owns it.
+    assert cam.set_calls == []
+    # listening_level updated and persisted so Ducker.restore can
+    # read the right target on session end.
+    assert coord.get_listening_level() == 46
+    record = persistence.load()
+    assert record is not None and record.listening_level == 46
+
+    # Out of voice session, the same call writes camilla normally.
+    coord.note_voice_session(False)
+    await coord.set_listening_level(50)
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
+
+
+async def test_get_camilla_target_db_idle_returns_listening_level_db(tmp_path):
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    await coord.set_listening_level(70)
+    target = await coord.get_camilla_target_db()
+    # 70% on the -50..0 scale = -15 dB.
+    assert abs(target - (-15.0)) < 0.01
+
+
+async def test_get_camilla_target_db_airplay_returns_listening_level_db(tmp_path):
+    """AirPlay is camilla-as-master (Apple silently no-ops the sender
+    slider) so the target is percent_to_db(listening_level), same as
+    idle."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"aplactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    await coord.set_listening_level(40)
+    target = await coord.get_camilla_target_db()
+    assert abs(target - (-30.0)) < 0.01  # 40% → -30 dB
+
+
+async def test_get_camilla_target_db_push_mode_returns_zero(tmp_path):
+    """In push mode (Spotify, BT) camilla is pinned at 0 dB; the
+    source's own slider carries listening_level."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    target = await coord.get_camilla_target_db()
+    assert target == 0.0
+
+
 async def test_transition_refreshes_from_disk(tmp_path):
     """Cross-process staleness guard. The control daemon (dial / HTTP)
     writes listening_level to disk on every twist. voice_daemon's

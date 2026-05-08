@@ -522,11 +522,27 @@ class VolumeCoordinator:
 
     def note_voice_session(self, active: bool) -> None:
         """Called by voice_daemon's WakeLoop on session start/end.
-        While a session is active the source-transition handler is
-        suppressed — the ducker has temporary control of camilla
-        and additive duck/restore math gets corrupted by absolute
-        writes from this side."""
+        While a session is active, this coordinator suppresses its
+        own writes to camilla — the Ducker has exclusive control,
+        and `Ducker.restore()` reads back the canonical target via
+        `get_camilla_target_db()` to land at the right value
+        regardless of interleaved listening_level changes during
+        the duck. Affected paths: `apply_active_source_transition`
+        (no-ops mid-session) and `_set_camilla` (defers the camilla
+        write; listening_level still persists)."""
         self._voice_session_active = bool(active)
+
+    async def get_camilla_target_db(self) -> float:
+        """The absolute camilla.main_volume that should be in effect
+        right now, ignoring any active duck. Used by `Ducker.restore()`
+        to land camilla at the canonical level regardless of what the
+        duck delta was or what other writers did during the session."""
+        source = await self._active_source()
+        if await self._camilla_carries_level(source):
+            return percent_to_db(self._level)
+        # Push mode (Spotify, BT): camilla is pinned at 0 dB; the
+        # source's own slider carries listening_level.
+        return 0.0
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
@@ -696,6 +712,22 @@ class VolumeCoordinator:
 
     async def _set_camilla(self, level: int) -> None:
         db = percent_to_db(level)
+        if self._voice_session_active:
+            # Voice session in progress — Ducker owns camilla. Writing
+            # here would either be clobbered by Ducker.restore (absolute
+            # write) or, worse, get the duck delta added on top.
+            # listening_level is still updated in self._level by the
+            # caller and persisted by _dispatch's save_listening_level,
+            # so the user's intent survives; Ducker.restore reads it
+            # via get_camilla_target_db() and lands camilla there.
+            # main_volume_db is intentionally NOT saved here — it'd
+            # diverge from camilla's actual state until restore.
+            logger.info(
+                "camilla main_volume deferred to ducker.restore: "
+                "%d%% (%.1f dB) — voice session active",
+                level, db,
+            )
+            return
         await self._camilla.set_volume_db(db)
         # main_volume IS what the user is controlling in idle. Persist
         # it explicitly so the legacy regress_if_stale path still has

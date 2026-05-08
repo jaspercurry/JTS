@@ -1263,8 +1263,6 @@ async def run() -> None:
         )
         if cfg.subway_enabled else None
     )
-    ducker = Ducker(camilla, cfg.duck_db)
-
     # Volume coordinator: owns the canonical listening_level (0-100),
     # dispatches voice/dial-driven changes to the active source's own
     # attenuator (AirPlay DBus / Spotify HTTP / BT DBus) instead of
@@ -1282,6 +1280,14 @@ async def run() -> None:
         backend=renderer,
         spotify_router=volume_spotify_router,
         spotify_device_name=cfg.spotify_device_name,
+    )
+    # Ducker built after the coordinator so it can read the canonical
+    # camilla target on restore (avoids additive-overshoot when other
+    # writers — dial twists, voice tools — touch listening_level mid-
+    # session).
+    ducker = Ducker(
+        camilla, cfg.duck_db,
+        target_db_provider=volume_coordinator.get_camilla_target_db,
     )
     record = volume_persistence.load()
     # Loudness anchor: never expires. If the file has one, use it
