@@ -16,6 +16,12 @@ Requires=jasper-camilla.service
 
 [Service]
 Type=simple
+# Pull JASPER_AEC_ENGINE, JASPER_AEC_REF_GAIN_DB, etc. from the same
+# env file jasper-voice uses. Leading `-` makes systemd skip the file
+# silently if it's absent (e.g. fresh install before install.sh has
+# run); the bridge defaults are conservative (engine=speex, ref_gain=
+# 0 dB) so that's safe.
+EnvironmentFile=-/etc/jasper/jasper.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
 Restart=on-failure
 RestartSec=2
