@@ -8,10 +8,15 @@
 # all converge here); CamillaDSP resamples internally to 48 kHz which
 # is the dongle's native rate.
 #
-# When the AEC bridge is enabled, capture switches from
-# `plughw:Loopback,1,0` to `pcm.jasper_capture` (a dsnoop wrapper
-# defined in /root/.asoundrc) so the AEC bridge and CamillaDSP can
-# share the loopback capture side.
+# Capture goes through `pcm.jasper_capture` (a dsnoop wrapper defined
+# in /root/.asoundrc), wrapped in `plug:` so renderer rate/format
+# mismatches still get absorbed. Why dsnoop unconditionally rather
+# than direct hw: dsnoop has to be the only opener of the underlying
+# Loopback,1,0 substream, so if the AEC bridge gets enabled later it
+# can also tap the same stream — direct hw access here would deny
+# dsnoop the slave and the bridge would fail to open. With camilla
+# as the only client, dsnoop is functionally equivalent to a direct
+# hw open at zero cost.
 #
 # master_gain mixer is the ducking knob jasper-voice uses on wake.
 
@@ -26,7 +31,7 @@ devices:
   capture:
     type: Alsa
     channels: 2
-    device: "plughw:Loopback,1,0"
+    device: "plug:jasper_capture"
     format: S32_LE
   playback:
     # jasper_out is the dmix defined in /root/.asoundrc that fans the

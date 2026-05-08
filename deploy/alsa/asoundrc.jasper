@@ -41,9 +41,13 @@
 # channel as the AEC reference signal (mirroring XMOS's "ref =
 # left channel" convention).
 #
-# When the bridge is disabled the dsnoop block is harmless — it's a
-# kernel object instantiated lazily by ALSA on first open. CamillaDSP
-# continues to read directly from plughw:Loopback,1 as before.
+# CamillaDSP reads via this dsnoop too (`plug:jasper_capture` in
+# v1.yml), whether the bridge is on or off. With camilla as the only
+# client, dsnoop is functionally equivalent to a direct hw open; with
+# the bridge added, dsnoop multiplexes correctly and both readers see
+# the same sample stream. We never want camilla to read
+# `hw:Loopback,1,0` directly — that would deny dsnoop the slave, and
+# the bridge would fail to open with `unable to open slave`.
 
 pcm.jasper_capture {
     type dsnoop
