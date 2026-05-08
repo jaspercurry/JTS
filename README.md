@@ -81,6 +81,17 @@ dmix (`pcm.jasper_out`); dmix sums their streams. Music ducks on
 wake via a CamillaDSP `SetVolume` call on the `master_gain` mixer
 over its websocket on port 1234.
 
+> ### Important: two paths, two volume regimes
+>
+> Music goes **through** CamillaDSP (renderer → Loopback → camilla → dmix
+> → dongle). TTS and any direct `aplay -D plug:jasper_out` go **around**
+> CamillaDSP (writer → dmix → dongle). That means **`main_volume` and
+> `master_gain` only attenuate music**; they have no effect on TTS or
+> test tones written to `jasper_out`. To test the chain at a controlled
+> volume, play to `plughw:Loopback,0,0` (the music input). Full
+> breakdown with a routing table and example commands:
+> [`docs/audio-paths.md`](docs/audio-paths.md).
+
 `jasper-mux` arbitrates between the three renderers — when a new
 source transitions to playing while another is already active, it
 pauses the older one so the user gets "latest source wins" UX.
@@ -189,6 +200,7 @@ tests/                          Hardware-free pytest suite
 | [AGENTS.md](AGENTS.md) | OpenAI Codex agents | Same content as CLAUDE.md, separate for tooling reasons |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
+| [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle and which volume knob attenuates which path |
 | [docs/HANDOFF-*.md](docs/) | Deep-dive on a subsystem | Investigation history + design rationale |
 
 The HANDOFF docs are the most engineer-relevant. Each one is the
