@@ -3,6 +3,16 @@ Description=Shairport Sync AirPlay 2 audio receiver (JTS)
 After=sound.target avahi-daemon.service nqptp.service network-online.target
 Requires=avahi-daemon.service nqptp.service
 Wants=network-online.target
+# Always-on renderer: the AirPlay endpoint MUST be advertised on the
+# LAN whenever the speaker is up. A clean exit (status=0) — whether
+# from a SIGTERM during a shell session, an admin `systemctl stop`
+# that wasn't followed by a `start`, or a clean shutdown path inside
+# shairport itself — would, with Restart=on-failure, leave the device
+# silently invisible to AirPlay clients until the next reboot.
+# Restart=always covers crash AND clean-exit paths. Start-limit guard
+# stops genuine config breakage from infinite-restart-looping.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -10,7 +20,7 @@ ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync
 Group=shairport-sync
 SupplementaryGroups=audio
-Restart=on-failure
+Restart=always
 RestartSec=2
 
 [Install]

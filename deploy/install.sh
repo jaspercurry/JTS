@@ -28,8 +28,22 @@
 
 set -euo pipefail
 
-# Parse --backend= flag. Default to moode for backward compat.
-BACKEND="moode"
+# Backend selection priority (highest first):
+#   1. Explicit --backend= flag on the command line.
+#   2. JASPER_RENDERER_BACKEND in /etc/jasper/jasper.env on a previously-
+#      installed Pi (matches the env consumed by the running daemons —
+#      single source of truth on a deployed system).
+#   3. Default to moode for backward compat with the original install
+#      flow on a fresh Pi where neither is set.
+#
+# This auto-detection prevents a real foot-gun: a debian-stack Pi where
+# `/etc/jasper/jasper.env` says `JASPER_RENDERER_BACKEND=debian` could
+# previously be re-installed without `--backend=debian`, silently fall
+# back to the moode codepath, install the moode-era shairport drop-in
+# pointing at /usr/bin/shairport-sync (which doesn't exist on debian),
+# and crash-loop the AirPlay receiver. Hit on 2026-05-08; this is the
+# fix.
+BACKEND=""
 for arg in "$@"; do
     case "$arg" in
         --backend=moode)  BACKEND="moode" ;;
@@ -37,6 +51,13 @@ for arg in "$@"; do
         --backend=*) echo "unknown backend: ${arg#--backend=}" >&2; exit 2 ;;
     esac
 done
+if [[ -z "$BACKEND" && -r /etc/jasper/jasper.env ]]; then
+    env_backend=$(grep -E '^JASPER_RENDERER_BACKEND=' /etc/jasper/jasper.env | tail -1 | cut -d= -f2-)
+    case "$env_backend" in
+        moode|debian) BACKEND="$env_backend"; echo "==> backend auto-detected from /etc/jasper/jasper.env: $BACKEND" ;;
+    esac
+fi
+BACKEND="${BACKEND:-moode}"
 echo "==> install.sh starting (backend=${BACKEND})"
 
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
@@ -470,6 +491,18 @@ install_systemd_units() {
         # We own the full systemd units for each renderer + nqptp +
         # bt-agent. No drop-in override on shairport-sync — it's our
         # unit pointing at our binary at /usr/local/bin/shairport-sync.
+        #
+        # Defense in depth: if this Pi was ever installed under the
+        # moode codepath (BACKEND=moode default pre-2026-05-08), the
+        # /etc/systemd/system/shairport-sync.service.d/jts-output.conf
+        # drop-in would still be present and would override our
+        # ExecStart with /usr/bin/shairport-sync (apt path), which
+        # doesn't exist on debian-stack. Actively remove it.
+        if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
+            rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+            rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
+            echo "  removed stale moode-era shairport drop-in"
+        fi
         install -m 0644 \
             "${DEBIAN_STACK_DIR}/systemd/librespot.service" \
             "${SYSTEMD_DIR}/librespot.service"

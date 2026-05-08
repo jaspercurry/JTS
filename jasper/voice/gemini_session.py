@@ -31,10 +31,18 @@ RECONNECT_BACKOFF_JITTER_FRACTION = 0.25
 
 def _reconnect_backoff_delay(attempt: int) -> float:
     """Exponential delay with jitter for the supervisor reconnect loop.
-    `attempt` is 1-indexed (first retry is attempt 1)."""
+    `attempt` is 1-indexed (first retry is attempt 1).
+
+    The shift is saturated at 32 because Python ints don't overflow but
+    `float(2 ** 1024)` does — and the supervisor retries forever, so
+    we *will* see attempt > 1024 in a long outage (last-night incident
+    hit 798). Once `2 ** shift` exceeds the max-backoff/initial ratio
+    the outer ``min()`` clamps it anyway, so the saturation is purely
+    a numeric safety bound."""
     import random
+    shift = min(attempt - 1, 32)
     base = min(
-        RECONNECT_INITIAL_BACKOFF_SEC * (2 ** (attempt - 1)),
+        RECONNECT_INITIAL_BACKOFF_SEC * (2 ** shift),
         RECONNECT_MAX_BACKOFF_SEC,
     )
     j = base * RECONNECT_BACKOFF_JITTER_FRACTION
@@ -1017,37 +1025,43 @@ class GeminiLiveConnection(LiveConnection):
             except Exception as e:  # noqa: BLE001
                 last_exc = e
                 is_409, status = _is_409_conflict(e)
+                handle_short = (
+                    (self._resumption_handle or "")[:8]
+                    if self._resumption_handle
+                    else "<none>"
+                )
                 if is_409:
-                    handle_short = (
-                        (self._resumption_handle or "")[:8]
-                        if self._resumption_handle
-                        else "<none>"
-                    )
                     logger.warning(
                         "live connection: reconnect 409 Conflict on attempt "
                         "%d (status=%s, exc=%s, handle=%s)",
                         attempt, status, type(e).__name__, handle_short,
                     )
-                    # Drop the cached resumption handle on the first
-                    # 409. The supervisor reconnect path is the one
-                    # most likely to be holding a stale handle —
-                    # GoAway / 1011 / ABORTED close types can all
-                    # invalidate the handle server-side, and replaying
-                    # it forever would waste indefinite reconnect time.
-                    if not handle_dropped and self._resumption_handle is not None:
-                        logger.warning(
-                            "live connection: reconnect dropping cached "
-                            "resumption handle (handle=%s); next attempt "
-                            "will connect fresh",
-                            handle_short,
-                        )
-                        self._resumption_handle = None
-                        handle_dropped = True
                 else:
                     logger.warning(
-                        "live connection: reconnect attempt %d failed (%s: %s)",
-                        attempt, type(e).__name__, e,
+                        "live connection: reconnect attempt %d failed "
+                        "(%s: %s, handle=%s)",
+                        attempt, type(e).__name__, e, handle_short,
                     )
+                # Drop the cached resumption handle on the first failure
+                # of ANY kind. A server-invalidated handle that surfaces
+                # as anything other than a 409 (the killer: WebSocket
+                # close 1008 with reason "BidiGenerateContent session
+                # expired") used to lock the supervisor into an
+                # indefinite same-error retry loop because the drop was
+                # gated on 409 detection. The cost of dropping a handle
+                # we didn't strictly need to is one turn of context
+                # continuity; the cost of keeping a stale one is the
+                # entire session. The asymmetry justifies the broader
+                # drop.
+                if not handle_dropped and self._resumption_handle is not None:
+                    logger.warning(
+                        "live connection: reconnect dropping cached "
+                        "resumption handle (handle=%s) after first "
+                        "failure; next attempt will connect fresh",
+                        handle_short,
+                    )
+                    self._resumption_handle = None
+                    handle_dropped = True
 
         # Only reached when (a) the test override exhausted its bounded
         # schedule, or (b) the daemon is stopping. Production never

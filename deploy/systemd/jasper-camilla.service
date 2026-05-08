@@ -2,13 +2,25 @@
 Description=CamillaDSP (always-on, v1 passthrough + master_gain ducking node)
 After=sound.target network.target
 Wants=sound.target
+# Camilla must NEVER stay stopped. The voice daemon hard-requires it
+# (Requires=jasper-camilla.service) and the audio chain breaks the
+# moment it exits. A real-world incident on 2026-05-07 at 18:04 EDT
+# left the speaker silently dead overnight because the unit exited
+# status=0 (clean shutdown — trigger unrecoverable from logs after
+# journal rotation) and Restart=on-failure ignores clean exits.
+# Restart=always covers both crash AND clean-exit paths. The
+# start-limit guard prevents an infinite restart loop if the config
+# is genuinely broken — 5 restarts in 60s is enough for transient
+# ALSA-device hiccups but stops short of melting the system.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
     /etc/camilladsp/v1.yml
-Restart=on-failure
+Restart=always
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
