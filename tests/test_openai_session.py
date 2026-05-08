@@ -425,14 +425,22 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
 
 
 async def test_function_call_round_trip():
-    """Server emits ``response.function_call_arguments.done`` with a
-    JSON-string ``arguments`` field; daemon must:
-      1. Parse the JSON.
-      2. Dispatch the registered tool.
+    """Tool dispatch is triggered by ``response.done`` (with a
+    ``function_call`` item in ``response.output[]``), NOT by
+    ``response.function_call_arguments.done``. Dispatching on the
+    latter would race against response 1 still being in-flight on the
+    server — sending ``response.create`` mid-response either errors
+    with "active response in progress" or gets silently dropped, and
+    the audio answer never arrives.
+
+    On response.done with a function_call:
+      1. Parse the JSON args.
+      2. Invoke the registered tool.
       3. Send ``conversation.item.create`` with type
-         ``function_call_output`` and the result as a JSON string under
-         ``output``.
-      4. Send ``response.create`` so the model resumes."""
+         ``function_call_output`` and the JSON-stringified result.
+      4. Send ONE ``response.create`` after dispatch (regardless of
+         how many tools were called this round).
+    """
     conn, factory = _make_conn()
     registry = ToolRegistry()
     captured = {}
@@ -449,16 +457,24 @@ async def test_function_call_round_trip():
         sess = factory.conns[0]
         turn = await conn.acquire_turn()
 
-        # Server fires the function call.
+        # Server fires response.done containing a function_call.
         sess.feed({
-            "type": "response.function_call_arguments.done",
-            "call_id": "call_abc",
-            "name": "set_volume",
-            "arguments": json.dumps({"percent": 30}),
-            "response_id": "resp_1",
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_abc",
+                        "name": "set_volume",
+                        "arguments": json.dumps({"percent": 30}),
+                    },
+                ],
+            },
         })
-        # Wait for the tool dispatch to complete and the reply events to
-        # land in sess.sent.
+        # Wait for the tool dispatch to complete and the reply events
+        # to land in sess.sent.
         await _wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create"
@@ -496,6 +512,82 @@ async def test_function_call_round_trip():
         await conn.stop()
 
 
+async def test_response_create_fired_only_once_per_tool_round_with_multiple_calls():
+    """If the model emits multiple function_call items in one response
+    (parallel_tool_calls), the dispatcher must send the
+    function_call_output for EACH and then send EXACTLY ONE
+    ``response.create`` to start the audio response. Sending one
+    response.create per tool would produce overlapping responses,
+    which OpenAI rejects with `Conversation already has an active
+    response in progress`."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool()
+    def get_weather(location: str = "") -> dict:
+        """."""
+        return {"location": "Brooklyn", "temperature": 62}
+
+    @tool()
+    def get_volume() -> dict:
+        """."""
+        return {"percent": 50}
+
+    registry.register(get_weather)
+    registry.register(get_volume)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        await conn.acquire_turn()
+
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 12},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_w",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    },
+                    {
+                        "type": "function_call",
+                        "call_id": "call_v",
+                        "name": "get_volume",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+        })
+        # Wait for both function_call_output items to land.
+        await _wait_until(
+            lambda: sum(
+                1 for e in sess.sent
+                if e.get("type") == "conversation.item.create"
+                and e.get("item", {}).get("type") == "function_call_output"
+            ) >= 2,
+            timeout=2.0,
+        )
+        # Both tool outputs sent.
+        outputs = [
+            e for e in sess.sent
+            if e.get("type") == "conversation.item.create"
+            and e.get("item", {}).get("type") == "function_call_output"
+        ]
+        assert {o["item"]["call_id"] for o in outputs} == {"call_w", "call_v"}
+        # Exactly ONE response.create after the tool round.
+        creates = [e for e in sess.sent if e.get("type") == "response.create"]
+        assert len(creates) == 1, (
+            f"expected exactly one response.create after the tool "
+            f"round, got {len(creates)}"
+        )
+    finally:
+        await conn.stop()
+
+
 async def test_tool_call_response_done_does_NOT_complete_turn():
     """A tool-using turn produces TWO response.done events from
     OpenAI: one closing the tool-call response (no audio), then one
@@ -526,15 +618,29 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
         turn = await conn.acquire_turn()
         assert turn.server_turn_complete() is False
 
-        # ROUND 1: model decides to call the tool.
+        # ROUND 1: server emits response.done containing the
+        # function_call. The dispatcher should:
+        #   - dispatch the tool
+        #   - send function_call_output
+        #   - send ONE response.create
+        #   - NOT flip server_turn_complete (audio answer still in
+        #     flight as response 2)
         sess.feed({
-            "type": "response.function_call_arguments.done",
-            "call_id": "call_1",
-            "name": "get_weather",
-            "arguments": "{}",
-            "response_id": "resp_1",
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    },
+                ],
+            },
         })
-        # Wait for our function_call_output to land.
+        # Wait for the function_call_output to land.
         await _wait_until(
             lambda: any(
                 e.get("type") == "conversation.item.create"
@@ -543,16 +649,6 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
             ),
             timeout=2.0,
         )
-
-        # ROUND 1 close: server emits response.done for the tool-call
-        # response. CRITICAL: this MUST NOT flip server_turn_complete.
-        sess.feed({
-            "type": "response.done",
-            "response": {
-                "id": "resp_1",
-                "usage": {"input_tokens": 100, "output_tokens": 8},
-            },
-        })
         await asyncio.sleep(0.05)
         assert turn.server_turn_complete() is False, (
             "server_turn_complete must remain False after the tool-call "
@@ -573,11 +669,15 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
             "response_id": "resp_2",
         })
         # ROUND 2 close: real end of turn — audio answer is complete.
+        # output[] for the audio response contains a `message` item
+        # (not `function_call`), so the dispatcher recognises this as
+        # the final response and flips server_turn_complete.
         sess.feed({
             "type": "response.done",
             "response": {
                 "id": "resp_2",
                 "usage": {"input_tokens": 50, "output_tokens": 200},
+                "output": [{"type": "message"}],
             },
         })
 
@@ -621,10 +721,18 @@ async def test_unknown_tool_call_returns_error_payload():
         sess = factory.conns[0]
         await conn.acquire_turn()
         sess.feed({
-            "type": "response.function_call_arguments.done",
-            "call_id": "call_x",
-            "name": "no_such_tool",
-            "arguments": "{}",
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_x",
+                        "name": "no_such_tool",
+                        "arguments": "{}",
+                    },
+                ],
+            },
         })
         await _wait_until(
             lambda: any(

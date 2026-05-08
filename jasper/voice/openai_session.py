@@ -951,55 +951,23 @@ class OpenAIRealtimeConnection(LiveConnection):
                     turn._on_assistant_item_id(item.get("id"))
             return
 
-        # Function call dispatched by the model. Set the in-flight
-        # flag BEFORE the dispatch so the response.done that closes
-        # this tool-call response (which arrives next from the
-        # server) is correctly recognised as intermediate, not final.
-        if etype == "response.function_call_arguments.done":
-            if turn is not None:
-                turn._tool_call_in_flight = True
-            await self._handle_tool_call(event)
+        # Function-call argument streaming events. The official OpenAI
+        # cookbook dispatches tools on `response.done`, NOT on
+        # `function_call_arguments.done` — dispatching on the latter
+        # would send `conversation.item.create` + `response.create`
+        # while response 1 is still in-flight server-side, which
+        # races against (or is rejected by) the server. Ignoring
+        # these events lets the canonical handler in `response.done`
+        # do the work.
+        if etype in (
+            "response.function_call_arguments.delta",
+            "response.function_call_arguments.done",
+        ):
             return
 
         # Server-side response complete.
         if etype == "response.done":
-            response = _event_field(event, "response")
-            usage_obj = _event_field(response, "usage") if response is not None else None
-            # Both `response` and `usage` may be Pydantic models from
-            # the openai SDK (RealtimeResponse, RealtimeResponseUsage)
-            # OR dicts in the test seam. Normalise to dict before the
-            # turn consumes it so `_on_response_done` doesn't have to
-            # care which shape it got.
-            usage_dict: dict | None = None
-            if usage_obj is not None:
-                if isinstance(usage_obj, dict):
-                    usage_dict = usage_obj
-                elif hasattr(usage_obj, "model_dump"):
-                    usage_dict = usage_obj.model_dump()
-                else:
-                    # Last-resort: scrape attributes by name. Keeps the
-                    # token counter from going to 0 if a future SDK
-                    # release replaces Pydantic with something else.
-                    usage_dict = {
-                        "input_tokens": getattr(usage_obj, "input_tokens", None),
-                        "output_tokens": getattr(usage_obj, "output_tokens", None),
-                    }
-            if turn is None:
-                return
-            if turn._tool_call_in_flight:
-                # This response.done closes the tool-call response;
-                # another response with the actual audio answer will
-                # arrive after the function_call_output we already
-                # sent. Accumulate this response's usage but DEFER
-                # turn-completion to the next response.done — flipping
-                # `_server_turn_complete` here would let the daemon's
-                # idle watchdog tear the turn down ~1.5s later, just
-                # as the audio answer is starting to stream, audibly
-                # cutting the model off mid-sentence.
-                turn._tool_call_in_flight = False
-                turn._record_usage(usage_dict)
-                return
-            await turn._on_response_done(usage_dict)
+            await self._handle_response_done(event, turn)
             return
 
         # Server-side VAD events. We run manual VAD (turn_detection=None)
@@ -1048,15 +1016,75 @@ class OpenAIRealtimeConnection(LiveConnection):
             raise
         self._last_turn_end_at = asyncio.get_event_loop().time()
 
-    async def _handle_tool_call(self, event) -> None:
-        """Dispatch a function call from the model.
+    async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
+        """Dispatch a `response.done` event.
 
-        Log shape mirrors Gemini's ``_handle_tool_call`` so journalctl
-        output is provider-uniform."""
+        OpenAI splits a tool-using turn across multiple responses:
+            response 1: optional preamble audio + function_call output(s)
+            (client dispatches each tool, sends function_call_output items,
+             sends ONE response.create)
+            response 2: the final audio answer
+
+        This handler runs the canonical OpenAI-cookbook flow: examine
+        ``response.output[]`` for ``function_call`` items, dispatch
+        them, send their results, kick off response 2 with one
+        ``response.create``, and DEFER turn-completion to response 2's
+        own ``response.done``. If there are no function_calls in the
+        output, this is the final response — flip server_turn_complete.
+        """
+        response = _event_field(event, "response")
+        usage_dict = _normalise_usage(_event_field(response, "usage") if response is not None else None)
+        function_calls = _extract_function_calls(response)
+
+        if turn is None:
+            return
+
+        if function_calls:
+            # Tool round. Mark in-flight BEFORE we await any tool
+            # dispatch — if a server message races our send_event,
+            # the flag prevents the next response.done from being
+            # mistaken for the final.
+            turn._tool_call_in_flight = True
+            for fc in function_calls:
+                await self._dispatch_function_call(fc)
+            # Single response.create at the end of the round, regardless
+            # of how many tools were called. Multiple response.create
+            # calls would conflict (server rejects with "active response
+            # in progress").
+            try:
+                await self._send_event({"type": "response.create"})
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "openai connection: response.create after tool round "
+                    "failed (%s: %s); turn may stall",
+                    type(e).__name__, e,
+                )
+            # Accumulate usage from this response — the model burned
+            # input tokens reading the prompt + output tokens emitting
+            # the function call. Don't flip server_turn_complete; the
+            # audio answer is still in flight.
+            turn._record_usage(usage_dict)
+            return
+
+        # No function_calls: this is the final response. Flip turn
+        # completion so the daemon's idle watchdog can close after the
+        # tail buffer drains.
+        await turn._on_response_done(usage_dict)
+
+    async def _dispatch_function_call(self, fc) -> None:
+        """Run one function_call from a response.done's output[]:
+        invoke the registered tool, send the result as a
+        function_call_output. The caller in `_handle_response_done`
+        sends a single ``response.create`` after all function_calls in
+        the round have been dispatched (NOT once per call — that would
+        produce overlapping response.creates which the server rejects).
+
+        Log format mirrors the Gemini adapter's dispatch logging so
+        journalctl is provider-uniform."""
         assert self._registry is not None
-        name = _event_field(event, "name") or ""
-        call_id = _event_field(event, "call_id") or ""
-        arguments_json = _event_field(event, "arguments") or "{}"
+        name = _event_field(fc, "name") or ""
+        call_id = _event_field(fc, "call_id") or ""
+        arguments_json = _event_field(fc, "arguments") or "{}"
 
         try:
             args = json.loads(arguments_json) if arguments_json else {}
@@ -1111,15 +1139,10 @@ class OpenAIRealtimeConnection(LiveConnection):
                     "output": json.dumps(payload),
                 },
             })
-            # OpenAI requires an explicit response.create() after a tool
-            # result — without it the model just sits there. Gemini
-            # handles this implicitly via send_tool_response; here we do
-            # it by hand.
-            await self._send_event({"type": "response.create"})
             send_ms = (_time.monotonic() - t_send) * 1000
             total_ms = (_time.monotonic() - t0) * 1000
             logger.info(
-                "tool response sent to OpenAI in %.0fms (total dispatch %.0fms)",
+                "tool result item sent to OpenAI in %.0fms (total dispatch %.0fms)",
                 send_ms, total_ms,
             )
 
@@ -1143,6 +1166,43 @@ def _event_field(event, name: str):
     if isinstance(event, dict):
         return event.get(name)
     return getattr(event, name, None)
+
+
+def _normalise_usage(usage_obj) -> dict | None:
+    """Convert a usage object (RealtimeResponseUsage Pydantic model
+    in production, dict in tests) into a flat ``{input_tokens, ...}``
+    dict so downstream code doesn't have to care about the shape."""
+    if usage_obj is None:
+        return None
+    if isinstance(usage_obj, dict):
+        return usage_obj
+    if hasattr(usage_obj, "model_dump"):
+        return usage_obj.model_dump()
+    # Last-resort: scrape attributes by name. Keeps the token counter
+    # working if a future SDK release changes its model representation.
+    return {
+        "input_tokens": getattr(usage_obj, "input_tokens", None),
+        "output_tokens": getattr(usage_obj, "output_tokens", None),
+    }
+
+
+def _extract_function_calls(response) -> list:
+    """Return the list of ``function_call`` items in a Realtime response's
+    ``output[]``. Empty list if the response had no tool calls.
+
+    Each returned item is whatever the SDK gave us (dict in tests,
+    ``RealtimeConversationItemFunctionCall`` Pydantic model in
+    production); ``_event_field`` handles both shapes when reading
+    ``name`` / ``call_id`` / ``arguments`` later."""
+    if response is None:
+        return []
+    output = _event_field(response, "output")
+    if not output:
+        return []
+    return [
+        item for item in output
+        if _event_field(item, "type") == "function_call"
+    ]
 
 
 def _is_transient(exc: BaseException) -> bool:
