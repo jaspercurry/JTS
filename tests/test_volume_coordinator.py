@@ -8,14 +8,24 @@ Covers:
 - observe out-of-window changes update listening_level + persist
 - initialize() applies regression and DOES NOT bump last_used_at
 - subsequent set_listening_level DOES bump last_used_at
+- camilla restart-blip: best_effort=True calls survive unavailability
 """
 from __future__ import annotations
 
+import sys
 import time
+import types
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
+
+# camilladsp is a Pi-side runtime dep not installed locally; stub it so
+# the fake camilla's lazy `from jasper.camilla import CamillaUnavailable`
+# works in unit tests. The coordinator itself imports CamillaController
+# under TYPE_CHECKING only.
+sys.modules.setdefault("camilladsp", types.ModuleType("camilladsp"))
+sys.modules["camilladsp"].CamillaClient = object  # type: ignore[attr-defined]
 
 from jasper.volume_coordinator import (
     AIRPLAY_DB_MAX,
@@ -73,14 +83,31 @@ class _FakeCamilla:
         self._db = db
         self.set_calls: list[float] = []
         self.get_calls: int = 0
+        # When True, every best_effort call is a no-op (writes return
+        # False, reads return None) to simulate a camilla restart blip.
+        # Non-best_effort calls raise CamillaUnavailable.
+        self.unavailable = False
 
-    async def get_volume_db(self) -> float:
+    async def get_volume_db(self, *, best_effort: bool = False) -> float | None:
         self.get_calls += 1
+        if self.unavailable:
+            if best_effort:
+                return None
+            from jasper.camilla import CamillaUnavailable
+            raise CamillaUnavailable("test fake offline")
         return self._db
 
-    async def set_volume_db(self, db: float) -> None:
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        if self.unavailable:
+            if best_effort:
+                return False
+            from jasper.camilla import CamillaUnavailable
+            raise CamillaUnavailable("test fake offline")
         self._db = db
         self.set_calls.append(db)
+        return True
 
 
 class _FakeBackend:
@@ -116,7 +143,9 @@ class _RecordingCoordinator(VolumeCoordinator):
     async def _set_camilla(self, level: int) -> None:
         from jasper.volume_persistence import percent_to_db
         db = percent_to_db(level)
-        await self._camilla.set_volume_db(db)
+        # Mirror production: best_effort=True so a camilla restart-blip
+        # doesn't propagate into the test (and into the daemon).
+        await self._camilla.set_volume_db(db, best_effort=True)
         self._persistence.save_now(db)
         self.camilla_writes.append(level)
 
@@ -583,3 +612,45 @@ async def test_transition_refreshes_from_disk(tmp_path):
     # Spotify was pushed the disk-truth 80%, not the in-memory 50%.
     assert coord.spotify_writes == [80]
     assert coord.get_listening_level() == 80
+
+
+# ---------- camilla restart-blip survival ---------------------------------
+
+
+async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
+    """Regression: a dial twist arriving during a 2 s camilla restart
+    blip (Restart=always brings camilla back) must not throw.
+    listening_level is updated in memory and on disk; the camilla
+    write itself is skipped silently and the next set_listening_level
+    re-applies once camilla is back.
+
+    The user's intent (target percent) is preserved end-to-end so the
+    next operation lands at the right level."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={})  # idle
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+
+    # Camilla goes down (mid-restart).
+    cam.unavailable = True
+
+    # Dial twist lands during the blip. Must not raise.
+    new_level = await coord.set_listening_level(70)
+    assert new_level == 70
+
+    # In-memory level updated; persistence reflects the user's intent.
+    assert coord.get_listening_level() == 70
+    assert persistence.load().listening_level == 70
+
+    # Camilla itself was never written — best_effort=True silently
+    # dropped the write because the fake was unavailable.
+    assert cam.set_calls == []
+
+    # Camilla recovers. The next set lands.
+    cam.unavailable = False
+    await coord.set_listening_level(40)
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-30.0)) < 0.01
+    assert coord.get_listening_level() == 40

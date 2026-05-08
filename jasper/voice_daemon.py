@@ -374,27 +374,20 @@ class TtsVolumeTracker:
             self._volume_persistence.maybe_save_anchor(windowed_rms)
 
     async def apply_now(self) -> None:
-        try:
-            vol_db, muted = await self._camilla.get_volume_and_mute()
-        except Exception as e:  # noqa: BLE001
+        result = await self._camilla.get_volume_and_mute(best_effort=True)
+        if result is None:
             logger.warning(
-                "tts volume tracker: read failed (%s); falling to silent gain",
-                e,
+                "tts volume tracker: camilla unavailable; "
+                "falling to silent gain",
             )
             self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
             return
+        vol_db, muted = result
         if muted:
             self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
             return
-        try:
-            l, r = await self._camilla.get_playback_rms()
-            rms = max(l, r)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(
-                "playback_rms read failed (%s); using silence fallback",
-                e,
-            )
-            rms = float("-inf")
+        rms_pair = await self._camilla.get_playback_rms(best_effort=True)
+        rms = max(rms_pair) if rms_pair is not None else float("-inf")
         windowed = self._record_rms(rms)
         self._maybe_update_anchor(windowed)
         self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
@@ -421,14 +414,13 @@ class TtsVolumeTracker:
                 return
             if self._paused:
                 continue
-            try:
-                vol_db, muted = await self._camilla.get_volume_and_mute()
-            except Exception as e:  # noqa: BLE001
-                logger.debug(
-                    "tts volume tracker poll: read failed (%s), holding last gain",
-                    e,
-                )
+            result = await self._camilla.get_volume_and_mute(best_effort=True)
+            if result is None:
+                # Camilla restart blip — hold last gain rather than
+                # blasting at TTS_FULL. This poll runs at ~1 Hz; we'll
+                # pick up the new state on the next iteration.
                 continue
+            vol_db, muted = result
             if muted:
                 self._tts.set_gain_db(self._tts.MIN_TTS_GAIN_DB)
                 continue
@@ -438,11 +430,8 @@ class TtsVolumeTracker:
             # immediately via tools/audio.py; this is the catch-all.
             if self._volume_persistence is not None:
                 self._volume_persistence.maybe_save(vol_db)
-            try:
-                l, r = await self._camilla.get_playback_rms()
-                rms = max(l, r)
-            except Exception:  # noqa: BLE001
-                rms = float("-inf")
+            rms_pair = await self._camilla.get_playback_rms(best_effort=True)
+            rms = max(rms_pair) if rms_pair is not None else float("-inf")
             windowed = self._record_rms(rms)
             self._maybe_update_anchor(windowed)
             self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
@@ -773,23 +762,32 @@ class WakeLoop:
         ~6 second cue is short enough that simple duck/restore is
         the right primitive.
 
-        Swallows any exception — this is called from failure handlers
-        and must never throw."""
+        Cue plays even if ducking fails. The most common reason a
+        duck would fail is camilla restarting — and in that scenario
+        music isn't playing through camilla anyway, so the cue plays
+        unducked but audible. Silent failure on a wake-blocking
+        condition is the worse outcome. Ducker.restore short-circuits
+        when the duck didn't latch, so the finally is safe to call
+        unconditionally."""
         if self._cues is None:
             return
-        ducked = False
         try:
-            await self._ducker.duck()
-            ducked = True
-            await self._cues.play(slug)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("cue %s play failed: %s", slug, e)
+            try:
+                await self._ducker.duck()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "cue %s: duck failed (cue will play unducked): %s",
+                    slug, e,
+                )
+            try:
+                await self._cues.play(slug)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cue %s play failed: %s", slug, e)
         finally:
-            if ducked:
-                try:
-                    await self._ducker.restore()
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("cue %s restore failed: %s", slug, e)
+            try:
+                await self._ducker.restore()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cue %s restore failed: %s", slug, e)
 
     async def run(self) -> None:
         async for frame in self._mic.frames():

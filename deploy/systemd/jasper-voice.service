@@ -1,8 +1,12 @@
 [Unit]
 Description=Jasper voice daemon (wake word + Gemini Live + tools)
 After=jasper-camilla.service network-online.target mpd.service
-Wants=network-online.target
-Requires=jasper-camilla.service
+# Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
+# the voice daemon. The daemon is hardened to keep wake-word + cue
+# playback working through a 2 s camilla outage (camilla calls go
+# through best_effort=True paths in jasper/camilla.py). After= still
+# orders us behind camilla on cold boot.
+Wants=network-online.target jasper-camilla.service
 
 [Service]
 Type=simple
