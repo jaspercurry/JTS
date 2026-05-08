@@ -54,4 +54,7 @@ sudo aplay -D plughw:Loopback,0,0 /tmp/aec-probe-pink.wav 2>&1 | tail -2
 wait \$BG
 echo '---bridge RMS log---'
 grep -E 'rms|engine|ref capture' /tmp/aec-probe-bridge.log
-sudo systemctl start jasper-voice shairport-sync"
+sudo systemctl start jasper-voice
+# Restart (not just start) shairport-sync to force a fresh AP2 state —
+# see scripts/aec-probe-latency.sh for rationale.
+sudo systemctl restart shairport-sync nqptp"

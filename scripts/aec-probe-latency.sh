@@ -105,4 +105,10 @@ print(f"peak lag: {delay_samples} samples = {delay_ms:.1f} ms (mic vs ref)")
 print(f"peak/median ratio: {xc_m[peak] / max(np.median(xc_m), 1):.1f}x  "
       f"(>3 is a clean peak)")
 EOF
-sudo systemctl start jasper-voice shairport-sync'
+sudo systemctl start jasper-voice
+# Restart (not just start) shairport-sync to force a fresh AP2 state.
+# Stopping shairport leaves clients (e.g. a Mac AirPlaying to JTS)
+# with a half-open AP2 session; on resume shairport sometimes refuses
+# new SETUPs. A clean restart guarantees the session state is reset.
+# nqptp restarts too because AP2 PTP can desync from shairport.
+sudo systemctl restart shairport-sync nqptp'
