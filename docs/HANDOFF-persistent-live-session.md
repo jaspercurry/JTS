@@ -123,6 +123,15 @@ Per the [research summary above](#why-the-current-architecture-is-wrong-the-rewo
 - **`activity_start`/`activity_end` only work with automatic VAD disabled** ([API ref](https://ai.google.dev/api/live)). Don't try to mix the two.
 - **Conversation context carries across turns within a session** unless you explicitly start a fresh session. Hence the idle-reset policy (#4 above).
 
+## Post-rework reliability additions
+
+The original rework above was scope-bounded; subsequent reliability hardening lives on top of it. The pieces a future maintainer working on `gemini_session.py` should know about:
+
+- **Always-drop the resumption handle on first failure** (PR #4). The supervisor used to keep the cached handle and only drop it on a 409. A 1008 close with reason `"BidiGenerateContent session expired"` looked like nothing-special to the dispatch — same handle, same retry, server rejected forever. One overnight wedge hit 798 same-error retries before manual intervention. Now the handle is dropped on the first failure of any kind; cost is one turn of context continuity, payoff is no infinite loops on server-invalidated handles.
+- **Tight-retry-loop detector** (PR #6, [test_supervisor_escalation.py](../tests/test_supervisor_escalation.py)). A 5-deep `_FailureFingerprint(exc_type, close_code, reason)` ring buffer in `GeminiLiveConnection` records the shape of each reconnect failure (cleared on successful reconnect). When all 5 entries are identical, a fire-and-forget callback plays the proactive `cant_reach_cloud` cue, rate-limited to once per hour. The supervisor never gives up — that's still the policy — but the user finds out audibly instead of silently. Wire-up is in `voice_daemon.run()`: `connection.set_failure_escalation_cb(wake_loop.play_supervisor_cue)`. See [docs/HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) for the cue-side architecture.
+- **Backoff shift saturation**: `_reconnect_backoff_delay` saturates `2 ** shift` at `2 ** 32` because the supervisor retries forever and `float(2 ** 1024)` overflows. Outer `min(...)` clamps to `RECONNECT_MAX_BACKOFF_SEC` anyway, so the saturation is purely a numeric safety bound for long outages.
+- **Voice / control daemons survive a camilla restart blip** (PR #5). Not a `gemini_session.py` change, but worth knowing as context: `jasper-voice.service` and `jasper-control.service` use `Wants=jasper-camilla.service` (not `Requires=`), and CamillaController exposes `best_effort=True` on every public method so duck/restore become no-ops during a 2 s camilla outage instead of cascading. The proactive cue path also goes through this graceful-degradation surface, so the cue plays even if camilla is down at the moment the supervisor decides to escalate.
+
 ## How we've been measuring (logging philosophy)
 
 The current logging in the daemon is the model to extend:
@@ -140,6 +149,7 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 - `live connection: reconnect attempt N after Xs backoff`
 - `live connection: disconnected (code=1006), reconnecting`
 - `live connection: failed after N retries; daemon will pause`
+- `live connection: 5 consecutive identical reconnect failures (<exc>, code=<n>, <reason>) — firing cant_reach_cloud cue` (post-rework: tight-retry-loop detector)
 - `live turn: started (activity_start sent)`
 - `live turn: ended in Xms, M chunks received`
 - `live context reset: idle for Xs > threshold; reopening with no resumption handle`
