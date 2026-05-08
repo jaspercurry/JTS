@@ -1,8 +1,10 @@
 # moOde Removal Cleanup — operator + AI runbook
 
-**Status:** _planned cleanup, not yet executed_. Run this only after the
-new no-moOde stack has soaked on production hardware for at least a
-week with no functional regressions vs. the moOde flow.
+**Status:** _completed; archived 2026-05-08._ The moOde stack has
+been fully removed from the codebase. This runbook is preserved
+as a historical record of the migration rationale (§1) and the
+commit sequence used (§6). Current architecture lives in
+[README.md](../../README.md).
 
 This document is the single source of truth for **getting moOde out of
 the codebase entirely**. After this cleanup, no source file, deploy
@@ -694,7 +696,7 @@ phases are history. Two options:
   "This document describes the v1 plan as it was when development
   started in early 2026. It references moOde because v1 shipped on
   moOde. The v1.1 migration to a no-moOde stack is documented in
-  `docs/CLEANUP-moode-removal.md` (this file). For current
+  `docs/historical/CLEANUP-moode-removal.md` (this file). For current
   architecture see README.md." Then do minimal edits below.
 - **Option B — rewrite into a forward-looking roadmap:** keep only
   the "what comes after v1" tail section (the v1.1–v9 sequence
@@ -752,7 +754,7 @@ file is the last thing in `deploy/debian-stack/`; delete it.
 **Verification:**
 - `grep -rni "moode\|moOde\|Moode" --exclude-dir=.git --exclude-dir=logs --exclude-dir=.venv .` —
   zero matches **anywhere in the repo**, except possibly in
-  `docs/CLEANUP-moode-removal.md` (this file) which legitimately
+  `docs/historical/CLEANUP-moode-removal.md` (this file) which legitimately
   documents the removal
 - Manual read-through of README.md and BRINGUP.md — they should
   feel like a project that was always on Debian, not a project
