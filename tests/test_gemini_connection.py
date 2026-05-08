@@ -697,6 +697,105 @@ async def test_reconnect_409_with_no_cached_handle_just_retries():
         await conn.stop()
 
 
+def _make_ws_close_1008_session_expired() -> Exception:
+    """Mirror the real shape produced by `websockets 15.x` when the
+    server closes a Live session with code 1008 / reason
+    "BidiGenerateContent session expired".
+
+    Carries the canonical attribute path (``e.rcvd.code``,
+    ``e.rcvd.reason``) plus the back-compat ``e.code`` / ``e.reason``
+    aliases — both are present in the real exception. Probed live on
+    the Pi against ``websockets.exceptions.ConnectionClosedError``."""
+    class _Rcvd:
+        code = 1008
+        reason = "BidiGenerateContent session expired"
+
+    class _WSClose(Exception):
+        rcvd = _Rcvd()
+        code = 1008
+        reason = "BidiGenerateContent session expired"
+
+        def __init__(self):
+            super().__init__(
+                "received 1008 (policy violation) BidiGenerateContent "
+                "session expired; then sent 1008 (policy violation) "
+                "BidiGenerateContent session expired"
+            )
+
+    return _WSClose()
+
+
+async def test_reconnect_1008_session_expired_drops_resumption_handle():
+    """The bug that wedged the speaker overnight: WS close 1008 with
+    reason "BidiGenerateContent session expired" is the server's way of
+    saying "your cached resumption handle is stale" — but pre-fix the
+    handle drop was gated on `_is_409_conflict`, so 1008 closes were
+    treated as transient and every reconnect attempt sent the same
+    stale handle and got the same rejection.
+
+    Drives this with a 1008-shaped exception on the first reconnect;
+    the second attempt must succeed AND must connect with no
+    resumption handle (proves the drop happened)."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess = factory.sessions[0]
+        # Cache a resumption handle that will be invalidated server-side
+        # while we're still holding it.
+        sess.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stale-1008")))
+        await _wait_until(lambda: conn._resumption_handle == "hndl-stale-1008")
+
+        # Drop the WS, queue ONE 1008 for the first reconnect attempt.
+        factory.next_exceptions = [_make_ws_close_1008_session_expired()]
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal"
+            rcvd = _Rcvd()
+        sess.feed_error(_Drop())
+
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        assert conn._resumption_handle is None
+        assert factory.configs[1].session_resumption is None
+    finally:
+        await conn.stop()
+
+
+async def test_reconnect_generic_exception_drops_resumption_handle():
+    """Forward-compat: any future close code or wrapped exception type
+    that comes out of `__aenter__` on the supervisor reconnect path
+    should drop the cached handle on the first failure. The handle
+    only carries value across a transient drop; persisting one across
+    a real failure is what the bug exploited.
+
+    Uses a bare ``RuntimeError`` (no .code, no .rcvd, no 409 substring)
+    to prove the drop is not gated on any specific exception shape."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.0))
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess = factory.sessions[0]
+        sess.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stale-generic")))
+        await _wait_until(lambda: conn._resumption_handle == "hndl-stale-generic")
+
+        factory.next_exceptions = [RuntimeError("unknown server-side error")]
+        class _Drop(Exception):
+            class _Rcvd:
+                code = 1006
+                reason = "abnormal"
+            rcvd = _Rcvd()
+        sess.feed_error(_Drop())
+
+        await _wait_until(lambda: len(factory.sessions) >= 2, timeout=3.0)
+        await _wait_until(lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0)
+        assert conn._resumption_handle is None
+        assert factory.configs[1].session_resumption is None
+    finally:
+        await conn.stop()
+
+
 async def test_context_reset_reopen_recovers_from_409():
     """Pre-fix the bare ``await self._open_session()`` inside
     ``_maybe_reset_context`` had no retry — a single 409 from the

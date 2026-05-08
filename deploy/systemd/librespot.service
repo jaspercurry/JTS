@@ -3,6 +3,11 @@ Description=Spotify Connect renderer (librespot, log volume curve)
 Documentation=https://github.com/librespot-org/librespot
 After=network-online.target sound.target jasper-camilla.service
 Wants=network-online.target
+# Always-on renderer: same logic as shairport-sync — Spotify Connect
+# must be advertised on the LAN whenever the speaker is up, including
+# after a clean exit (which Restart=on-failure ignores by design).
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -41,7 +46,7 @@ ExecStart=/usr/bin/librespot \
     --initial-volume 50 \
     --enable-volume-normalisation \
     --onevent /usr/local/bin/jasper-librespot-event
-Restart=on-failure
+Restart=always
 RestartSec=2
 MemoryHigh=150M
 MemoryMax=200M

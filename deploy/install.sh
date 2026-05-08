@@ -388,6 +388,18 @@ install_systemd_units() {
     chmod 0644 "${SYSTEMD_DIR}/jasper-dac-init.service"
 
     # We own the full systemd units for each renderer + nqptp + bt-agent.
+    #
+    # Defense in depth: a Pi installed against an older codepath could
+    # still have /etc/systemd/system/shairport-sync.service.d/jts-output.conf
+    # on disk, which would override our ExecStart with
+    # /usr/bin/shairport-sync (the apt-package path) — that binary doesn't
+    # exist on this stack and the service crash-loops. Actively remove
+    # the drop-in on every install so it can't reappear after rsync.
+    if [[ -e "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf" ]]; then
+        rm -f "${SYSTEMD_DIR}/shairport-sync.service.d/jts-output.conf"
+        rmdir "${SYSTEMD_DIR}/shairport-sync.service.d" 2>/dev/null || true
+        echo "  removed stale shairport drop-in from a previous install"
+    fi
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/librespot.service" \
         "${SYSTEMD_DIR}/librespot.service"
