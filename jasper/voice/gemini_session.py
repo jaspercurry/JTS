@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time as _time
+from collections import deque
+from dataclasses import dataclass
 from enum import Enum
-from typing import AsyncIterator, Callable
+from typing import Awaitable, AsyncIterator, Callable
 
 from google import genai
 from google.genai import types
@@ -13,6 +15,58 @@ from ..tools import ToolRegistry
 from .session import LiveConnection, LiveTurn, VoiceSession
 
 logger = logging.getLogger(__name__)
+
+
+# ---------- Tight-retry-loop escalation ------------------------------------
+#
+# When the supervisor reconnect loop keeps producing the SAME failure (same
+# exception type, same close code, same reason text) in succession, that's a
+# signal the user should know about — the speaker is broken and silent retries
+# won't fix it on their own. PR #4 fixed the *known* 1008 wedge by always
+# dropping the cached resumption handle on first failure; this generalises
+# the principle. The supervisor never gives up, but after N consecutive
+# identical failures it plays an audible cue ("I can't reach the cloud,
+# please check on me") at most once per hour so the user can intervene.
+#
+# Threshold of 5 was picked because the default backoff schedule is
+# (1, 2, 4, 8, 16, 32, 60, 60…) seconds — 5 attempts ≈ 30 s of sustained
+# identical failures before the cue. By that point we're well past
+# transient-blip territory (DNS hiccup, momentary WS reset, etc.) and into
+# real-outage territory.
+ESCALATION_REPEAT_THRESHOLD = 5
+ESCALATION_RATE_LIMIT_SEC = 3600.0
+ESCALATION_CUE_SLUG = "cant_reach_cloud"
+
+
+@dataclass(frozen=True)
+class _FailureFingerprint:
+    """Identity of a reconnect failure, for tight-loop detection.
+
+    Two fingerprints compare equal iff they're the same shape of
+    failure: same exception type, same WebSocket close code (if any),
+    same reason text. Reason is truncated to 200 chars so jittery error
+    messages with timestamps or other unique content don't pollute the
+    "are these all identical?" check; the exception type + close code
+    do most of the work anyway."""
+    exc_type: str
+    close_code: int | None
+    reason: str
+
+    @classmethod
+    def from_exception(cls, exc: BaseException) -> "_FailureFingerprint":
+        # WebSocket exceptions from the underlying `websockets` library
+        # carry the close frame on `.rcvd`. Other exception shapes
+        # (httpx errors, generic OSError) won't have it; fall back to
+        # str(exc) for the reason field. See line ~1209 receive_loop
+        # for the same extraction pattern.
+        rcvd = getattr(exc, "rcvd", None)
+        close_code = getattr(rcvd, "code", None)
+        reason = getattr(rcvd, "reason", None) or str(exc)
+        return cls(
+            exc_type=type(exc).__name__,
+            close_code=close_code,
+            reason=str(reason)[:200],
+        )
 
 
 # Reconnect backoff: never give up. A smart speaker that goes
@@ -429,6 +483,25 @@ class GeminiLiveConnection(LiveConnection):
         # the daemon doesn't try to send audio into a half-open WS.
         self._connected_event: asyncio.Event = asyncio.Event()
 
+        # Tight-retry-loop detection. See module-level constants and
+        # _FailureFingerprint. Cleared on successful reconnect so the
+        # "consecutive failures" count resets after a recovery.
+        self._recent_failure_fingerprints: deque[_FailureFingerprint] = deque(
+            maxlen=ESCALATION_REPEAT_THRESHOLD,
+        )
+        # Sentinel: -inf means "never fired", so the rate-limit window
+        # check passes the first time. Using 0.0 would falsely block the
+        # first fire whenever asyncio.get_event_loop().time() < the
+        # rate-limit (1 hour) — which is the entire common case on a
+        # freshly-started daemon.
+        self._last_escalation_at: float = float("-inf")
+        # Async callback invoked when the supervisor detects a tight
+        # retry loop. Wired by the daemon to WakeLoop.play_supervisor_cue
+        # after both the connection and wake loop are constructed.
+        # Signature: (slug: str) -> Awaitable[Any]. None disables
+        # escalation (used by tests + minimal harnesses).
+        self._failure_escalation_cb: Callable[[str], Awaitable[object]] | None = None
+
     def _set_state(self, new_state: "ConnectionState") -> None:
         """Update connection state with structured logging.
 
@@ -447,6 +520,58 @@ class GeminiLiveConnection(LiveConnection):
                 "live connection state: %s → %s",
                 old.value, new_state.value,
             )
+
+    def set_failure_escalation_cb(
+        self, cb: Callable[[str], Awaitable[object]] | None,
+    ) -> None:
+        """Wire the supervisor's tight-retry-loop escalation cue.
+
+        Called by the voice daemon after both the connection and the
+        WakeLoop are constructed (chicken-and-egg: connection comes
+        first, but the cue manager + WakeLoop come later). `cb` should
+        be `WakeLoop.play_supervisor_cue` in production — it takes a
+        cue slug, ducks music, plays the WAV, and skips if a
+        user-driven turn is already active.
+
+        Pass None to disable. Tests do this to keep the supervisor
+        observable without a cue manager."""
+        self._failure_escalation_cb = cb
+
+    def _maybe_fire_escalation_cue(self) -> None:
+        """Inspect the recent-failure ring buffer; fire the escalation
+        cue if the last N failures are all the same shape AND the
+        rate-limit window has elapsed.
+
+        Called from `_reconnect_with_backoff` after each failure is
+        logged. Synchronous (the actual cue play happens in a fire-
+        and-forget background task so the supervisor's reconnect
+        cadence isn't blocked by audio playback)."""
+        if len(self._recent_failure_fingerprints) < ESCALATION_REPEAT_THRESHOLD:
+            return
+        first = self._recent_failure_fingerprints[0]
+        if not all(fp == first for fp in self._recent_failure_fingerprints):
+            return
+        now = asyncio.get_event_loop().time()
+        if now - self._last_escalation_at < ESCALATION_RATE_LIMIT_SEC:
+            return
+        if self._failure_escalation_cb is None:
+            return
+        self._last_escalation_at = now
+        logger.warning(
+            "live connection: %d consecutive identical reconnect failures "
+            "(%s, code=%s, %r) — firing %s cue",
+            ESCALATION_REPEAT_THRESHOLD,
+            first.exc_type, first.close_code, first.reason[:60],
+            ESCALATION_CUE_SLUG,
+        )
+        # Fire-and-forget so the audio playback doesn't block the
+        # supervisor's reconnect cadence. The callback (WakeLoop.
+        # play_supervisor_cue) handles its own errors and returns a
+        # status string; we don't need the result.
+        asyncio.create_task(
+            self._failure_escalation_cb(ESCALATION_CUE_SLUG),
+            name="jasper-supervisor-escalation-cue",
+        )
 
     # ------------------------------------------------------------------
     # LiveConnection protocol
@@ -1021,6 +1146,12 @@ class GeminiLiveConnection(LiveConnection):
                         "after dropping stale resumption handle",
                         attempt,
                     )
+                # Successful reconnect resets the consecutive-identical-
+                # failure detector. Without this clear, a future tight
+                # loop could fire the escalation cue prematurely by
+                # combining new failures with stale ones from before
+                # the recovery.
+                self._recent_failure_fingerprints.clear()
                 return
             except Exception as e:  # noqa: BLE001
                 last_exc = e
@@ -1042,6 +1173,14 @@ class GeminiLiveConnection(LiveConnection):
                         "(%s: %s, handle=%s)",
                         attempt, type(e).__name__, e, handle_short,
                     )
+                # Tight-retry-loop detection: append the failure shape
+                # to the ring buffer and check for sustained identical
+                # failures. The cue (if it fires) is rate-limited to
+                # once per hour to avoid spamming during long outages.
+                self._recent_failure_fingerprints.append(
+                    _FailureFingerprint.from_exception(e),
+                )
+                self._maybe_fire_escalation_cue()
                 # Drop the cached resumption handle on the first failure
                 # of ANY kind. A server-invalidated handle that surfaces
                 # as anything other than a 409 (the killer: WebSocket

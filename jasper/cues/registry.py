@@ -57,6 +57,24 @@ CUES: tuple[CueDef, ...] = (
             "reconnect / paused-for-backoff state."
         ),
     ),
+    CueDef(
+        slug="cant_reach_cloud",
+        template=(
+            "Heads up — I'm having trouble reaching the cloud and "
+            "I'll keep trying. You might want to check on me at "
+            "{hostname}."
+        ),
+        description=(
+            "Proactive cue fired by the connection supervisor after "
+            "5 consecutive identical reconnect failures (~30 s of "
+            "sustained outage on the default backoff schedule). "
+            "Distinguished from cant_connect: that one is reactive "
+            "to a wake event during a paused window. This one fires "
+            "without a wake event so the user knows the speaker is "
+            "broken even when they haven't tried to use it. "
+            "Rate-limited to once per hour to avoid spamming."
+        ),
+    ),
 )
 
 

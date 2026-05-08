@@ -46,7 +46,19 @@ class CamillaController:
             try:
                 return await asyncio.to_thread(fn, self._ensure())
             except Exception as e:
-                logger.warning("camilla call failed, reconnecting: %s", e)
+                # First-attempt failure is normal during a transient
+                # outage (e.g. camilla restart blip) — we always retry
+                # once. DEBUG, not WARNING: the eventual outcome is
+                # what callers care about. If the retry succeeds, the
+                # call is transparent recovery. If the retry also
+                # fails, CamillaUnavailable is raised and best_effort
+                # call sites log their own warning at the action level
+                # ("set_volume_db skipped", etc). Without this demote,
+                # a sustained camilla-down window floods the journal at
+                # ~4 Hz from the TtsVolumeTracker poll alone.
+                logger.debug(
+                    "camilla first attempt failed; retrying: %s", e,
+                )
                 self._client = None
                 try:
                     return await asyncio.to_thread(fn, self._ensure())
