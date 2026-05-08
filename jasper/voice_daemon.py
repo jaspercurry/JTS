@@ -749,6 +749,21 @@ class WakeLoop:
         await self._play_cue(slug)
         return "ok"
 
+    async def play_supervisor_cue(self, slug: str) -> str:
+        """Cue trigger reserved for proactive notifications from
+        background supervisors (e.g. the GeminiLiveConnection's
+        consecutive-failure escalation).
+
+        Differs from `play_cue` by skipping if a user-driven turn is
+        in flight: TtsPlayout has a single PortAudio stream, so
+        layering an escalation cue on top of an active TTS turn would
+        garble both. Suppressing the cue mid-session is the safe
+        default — if the connection is wedged, the next wake event
+        will fire `cant_connect` reactively anyway."""
+        if self._state is State.SESSION:
+            return "skipped_session_active"
+        return await self.play_cue(slug)
+
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for
         the duration of the cue (same wrapping a normal Jarvis voice
@@ -1413,6 +1428,15 @@ async def run() -> None:
                 volume_coordinator=volume_coordinator,
                 cues=cues_manager,
             )
+            # Wire the supervisor's tight-retry-loop escalation cue to
+            # the wake loop's session-aware cue play. Done here (after
+            # both connection and wake loop exist) because the
+            # connection is constructed first by _make_connection but
+            # WakeLoop.play_supervisor_cue is the right callback target.
+            if hasattr(connection, "set_failure_escalation_cb"):
+                connection.set_failure_escalation_cb(
+                    wake_loop.play_supervisor_cue,
+                )
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
             )
