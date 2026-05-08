@@ -189,10 +189,13 @@ class _WebRtc3Engine:
         # running the test suite — the engine selector defaults to
         # speex anyway).
         from jasper_aec3 import Aec3
-        self._aec = Aec3()
+        enable_agc2 = os.environ.get(
+            "JASPER_AEC_AGC2", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self._aec = Aec3(enable_agc2=enable_agc2)
         logger.info(
-            "engine=webrtc3 frame=%d (split internally to 10ms windows) rate=%d",
-            FRAME_SAMPLES, SAMPLE_RATE,
+            "engine=webrtc3 frame=%d agc2=%s (split internally to 10ms windows) rate=%d",
+            FRAME_SAMPLES, "on" if enable_agc2 else "off", SAMPLE_RATE,
         )
 
     def process(self, mic: bytes, ref: bytes) -> bytes:

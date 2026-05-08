@@ -44,9 +44,10 @@ constexpr int kFrameSamples10ms = 160;
 
 class Aec3 {
 public:
-    explicit Aec3(int stream_delay_ms = 40)
+    Aec3(int stream_delay_ms = 40, bool enable_agc2 = false)
         : stream_cfg_(kSampleRate, kNumChannels),
-          stream_delay_ms_(stream_delay_ms) {
+          stream_delay_ms_(stream_delay_ms),
+          enable_agc2_(enable_agc2) {
         // libwebrtc-audio-processing-1-3 (Debian Trixie) doesn't expose
         // EchoCanceller3Factory in the public headers, but AEC3 is the
         // *default* echo controller when echo_canceller.enabled = true
@@ -68,7 +69,12 @@ public:
         cfg.noise_suppression.enabled = true;
         cfg.noise_suppression.level =
             webrtc::AudioProcessing::Config::NoiseSuppression::kModerate;
-        cfg.gain_controller2.enabled = false;
+        // AGC2 is the modern (post-AEC3) gain controller. Off by
+        // default to preserve the bridge's level characteristics for
+        // openWakeWord; enable when the wake-word detector is missing
+        // wakes at high SPL (AGC2 normalizes the post-AEC level back
+        // into the range the wake-word model was trained on).
+        cfg.gain_controller2.enabled = enable_agc2_;
         apm_->ApplyConfig(cfg);
     }
 
@@ -133,6 +139,7 @@ private:
     std::unique_ptr<webrtc::AudioProcessing> apm_;
     webrtc::StreamConfig stream_cfg_;
     int stream_delay_ms_;
+    bool enable_agc2_;
 };
 
 }  // namespace
@@ -142,14 +149,17 @@ PYBIND11_MODULE(_aec3, m) {
               "(wraps libwebrtc-audio-processing-1 from Debian Trixie)";
 
     py::class_<Aec3>(m, "Aec3")
-        .def(py::init<int>(),
+        .def(py::init<int, bool>(),
              py::arg("stream_delay_ms") = 40,
+             py::arg("enable_agc2") = false,
              "Construct an AEC3 instance (16 kHz mono). stream_delay_ms "
              "hints AEC3's delay estimator with the expected ref-to-mic "
              "delay; default 40 ms is the measured value for the JTS "
              "build (Pi 5 + AirPlay → CamillaDSP → dongle → speakers → "
-             "free-floating mic). Override per-deployment if the chain "
-             "changes.")
+             "free-floating mic). enable_agc2 turns on WebRTC's modern "
+             "post-AEC gain controller — recommended at high SPL where "
+             "the AEC'd output's dynamic range can drift outside the "
+             "range openWakeWord was trained on.")
         .def("process", &Aec3::process,
              py::arg("mic"), py::arg("ref"),
              "Process one buffer of mic and ref bytes (equal-length "
