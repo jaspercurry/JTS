@@ -695,15 +695,32 @@ near unity; ours sits well outside its design point.
 1. ✅ **Boost the digital reference** before it enters AEC3 — closes
    the loop gain gap directly. Implemented as the
    `JASPER_AEC_REF_GAIN_DB` env var on the bridge (default 0 dB).
-   At `+20 dB`: pink noise +5-7 dB lift, music +10 dB lift, no
-   audible artifacts, no clipping at typical music levels. Going
-   higher than +20 dB risks int16 clipping on loud peaks; if more
-   lift is needed the path is soft-clipping or AGC2.
 2. ✅ **Hint AEC3's delay estimator** with the measured 40 ms via
    `set_stream_delay_ms`. Wired up as the AEC3 binding's
    constructor default. Convergence speeds up modestly (5 s vs 10 s
    on pink noise); steady-state plateau unchanged within
    measurement noise.
+3. ✅ **AGC2 toggle** — `JASPER_AEC_AGC2=1` enables WebRTC's modern
+   post-AEC gain controller. See sweep results below.
+
+**Sweep matrix (pink noise, 30 s per config):**
+
+| Config (AGC2, REF_GAIN_DB) | Mean attenuation | Peak attenuation | Variability |
+|---|---|---|---|
+| off, 20 | −17.8 dB | −21.6 dB | low |
+| **off, 25** ← chosen | **−24.8 dB** (incl. deep-cancel moments) | **−43.8 dB** | high (deep moments + −16 dB floor) |
+| off, 30 | −21.9 dB | −38.9 dB | medium |
+| on, 20 | −14.8 dB | −17.5 dB | medium |
+| on, 25 | −16.5 dB | −17.1 dB | low |
+| on, 30 | −16.7 dB | −16.8 dB | very low |
+
+**Reading the matrix:**
+
+- **AGC2 ON looks like it makes attenuation worse by 3 dB on the metric, but that's measurement bias.** AGC2 sits *after* AEC and amplifies the residual back up to a target level. The actual residual echo isn't worse; the *amplified output* is louder, which makes the dB ratio look smaller. AGC2's value is in giving openWakeWord a normalized input, not in adding raw cancellation. The right judge of AGC2 is wake-word detection rate, not RMS attenuation.
+- **AGC2 OFF lets AEC3 reach much deeper cancellation when its filter is well-converged.** The −38 to −44 dB windows are real deep-cancel moments. With AGC2 ON, those moments still happen at the AEC3 layer but get masked in the metric.
+- **REF_GAIN above +25 dB hard-clips the digital reference at peaks** (np.clip is hard-clip; pink noise peak factor ≈ 3× RMS). The +30 dB config injects distortion AEC3 has to work around — fewer deep-cancel windows than +25 dB, suggesting the clipping is mildly hurting convergence. If we want to push beyond +25 dB cleanly we need to swap the hard-clip in `_ref_thread` for a soft-limiter (~15 lines of NumPy).
+
+**Chosen production config: `JASPER_AEC_AGC2=0`, `JASPER_AEC_REF_GAIN_DB=25`.** Best peak attenuation, hits the loop-gain target zone closely without excessive clipping, simplest signal path for openWakeWord. If real-world wake-word testing later shows level instability at high SPL, flipping `JASPER_AEC_AGC2=1` is one env edit + bridge restart.
 
 **Mitigations still on the table:**
 
