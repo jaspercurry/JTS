@@ -39,15 +39,23 @@ class _FakeCamilla:
         self.calls_volume = 0
         self.calls_levels = 0
 
-    async def get_volume_and_mute(self) -> tuple[float, bool]:
+    async def get_volume_and_mute(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, bool] | None:
         self.calls_volume += 1
         if self.fail_volume:
+            if best_effort:
+                return None
             raise RuntimeError("camilla volume read failed")
         return self.volume_db, self.muted
 
-    async def get_playback_rms(self) -> tuple[float, float]:
+    async def get_playback_rms(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, float] | None:
         self.calls_levels += 1
         if self.fail_levels:
+            if best_effort:
+                return None
             raise RuntimeError("camilla levels read failed")
         return self.playback_rms
 

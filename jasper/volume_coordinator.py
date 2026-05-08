@@ -268,7 +268,7 @@ class VolumeCoordinator:
                         source.value, target_level,
                     )
             else:
-                await self._camilla.set_volume_db(0.0)
+                await self._camilla.set_volume_db(0.0, best_effort=True)
                 self._persistence.save_now(0.0)
                 logger.info(
                     "boot: %s already active (push-mode); camilla "
@@ -481,7 +481,7 @@ class VolumeCoordinator:
                 # camilla attenuation that was carrying our master
                 # volume, and push the level to the new source's
                 # slider. This is the AirPlay → Spotify edge.
-                await self._camilla.set_volume_db(0.0)
+                await self._camilla.set_volume_db(0.0, best_effort=True)
                 self._persistence.save_now(0.0)
                 logger.info(
                     "active source: %s → %s; camilla pinned at 0 dB, "
@@ -495,7 +495,7 @@ class VolumeCoordinator:
                 # Push-mode → camilla-as-master. Hand listening_level
                 # back to camilla so the dial keeps doing real work.
                 target_db = percent_to_db(self._level)
-                await self._camilla.set_volume_db(target_db)
+                await self._camilla.set_volume_db(target_db, best_effort=True)
                 self._persistence.save_now(target_db)
                 logger.info(
                     "active source: %s → %s; camilla → %.1f dB (%d%%)",
@@ -728,7 +728,12 @@ class VolumeCoordinator:
                 level, db,
             )
             return
-        await self._camilla.set_volume_db(db)
+        # best_effort: dial twist arriving during a 2s camilla restart
+        # blip should still update listening_level on disk and persist
+        # main_volume_db, even if the actual write didn't land. The
+        # next set_volume call (or a source-transition) will re-apply
+        # once camilla is back.
+        await self._camilla.set_volume_db(db, best_effort=True)
         # main_volume IS what the user is controlling in idle. Persist
         # it explicitly so the legacy regress_if_stale path still has
         # the right value if some future restart goes through it.

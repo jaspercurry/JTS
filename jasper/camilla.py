@@ -9,6 +9,18 @@ from camilladsp import CamillaClient
 logger = logging.getLogger(__name__)
 
 
+class CamillaUnavailable(Exception):
+    """CamillaDSP websocket can't be reached after a reconnect attempt.
+
+    Raised by CamillaController._call when both the initial attempt
+    and the reconnect retry fail. Public methods accept ``best_effort=
+    True`` to convert this into a None return / no-op so callers that
+    should keep working through a camilla restart blip (cue playback,
+    Ducker, volume coordinator dispatch) don't have to scatter
+    try/except CamillaUnavailable boilerplate.
+    """
+
+
 class CamillaController:
     """Thin wrapper around pycamilladsp for ducking + volume tools.
 
@@ -36,21 +48,45 @@ class CamillaController:
             except Exception as e:
                 logger.warning("camilla call failed, reconnecting: %s", e)
                 self._client = None
-                return await asyncio.to_thread(fn, self._ensure())
+                try:
+                    return await asyncio.to_thread(fn, self._ensure())
+                except Exception as e2:
+                    self._client = None
+                    raise CamillaUnavailable(str(e2)) from e2
 
-    async def get_volume_db(self) -> float:
-        return float(await self._call(lambda c: c.volume.main_volume()))
+    async def get_volume_db(
+        self, *, best_effort: bool = False,
+    ) -> float | None:
+        try:
+            return float(await self._call(lambda c: c.volume.main_volume()))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug("camilla unavailable; get_volume_db → None: %s", e)
+                return None
+            raise
 
-    async def get_volume_and_mute(self) -> tuple[float, bool]:
+    async def get_volume_and_mute(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, bool] | None:
         """Single round-trip read of main_volume + main_mute. Used by the
         TTS-gain tracker, which needs to honor mute as well as volume —
         if the user has muted the speaker, TTS shouldn't talk over the
         silence they asked for."""
         def read(c):
             return float(c.volume.main_volume()), bool(c.volume.main_mute())
-        return await self._call(read)
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_volume_and_mute → None: %s", e,
+                )
+                return None
+            raise
 
-    async def get_playback_rms(self) -> tuple[float, float]:
+    async def get_playback_rms(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, float] | None:
         """Per-channel RMS of CamillaDSP's playback signal in dBFS — the
         level just before the DAC, AFTER every attenuation stage on the
         music chain (source track loudness, AirPlay sender volume,
@@ -61,21 +97,47 @@ class CamillaController:
 
         Returns (left_db, right_db). Returns (-inf, -inf) on silence
         — pycamilladsp may report None / very negative numbers when
-        the chunk has no signal."""
+        the chunk has no signal. Returns None if ``best_effort=True``
+        and camilla is unreachable."""
         def read(c):
             levels = c.levels.playback_rms()
             l = float(levels[0]) if levels and levels[0] is not None else float("-inf")
             r = float(levels[1]) if len(levels) > 1 and levels[1] is not None else l
             return l, r
-        return await self._call(read)
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_playback_rms → None: %s", e,
+                )
+                return None
+            raise
 
-    async def set_volume_db(self, db: float) -> None:
-        await self._call(lambda c: c.volume.set_main_volume(float(db)))
+    async def set_volume_db(
+        self, db: float, *, best_effort: bool = False,
+    ) -> bool:
+        try:
+            await self._call(lambda c: c.volume.set_main_volume(float(db)))
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning(
+                    "camilla unavailable; set_volume_db(%.1f) skipped: %s",
+                    db, e,
+                )
+                return False
+            raise
 
-    async def adjust_volume_db(self, delta_db: float) -> float:
-        current = await self.get_volume_db()
+    async def adjust_volume_db(
+        self, delta_db: float, *, best_effort: bool = False,
+    ) -> float | None:
+        current = await self.get_volume_db(best_effort=best_effort)
+        if current is None:
+            return None
         target = current + float(delta_db)
-        await self.set_volume_db(target)
+        if not await self.set_volume_db(target, best_effort=best_effort):
+            return None
         return target
 
 
@@ -113,14 +175,25 @@ class Ducker:
     async def duck(self) -> None:
         if self._ducked:
             return
+        # Best-effort: if camilla is restarting (Restart=always brings it
+        # back in ~2s), skip the attenuation rather than raise into the
+        # voice loop. Music isn't playing through camilla anyway when
+        # camilla is down, so there's nothing to duck. Don't latch
+        # _ducked when the write was skipped — that way restore() short-
+        # circuits cleanly and the next duck() retries when camilla is
+        # back.
+        result = await self._camilla.adjust_volume_db(
+            self._duck_db, best_effort=True,
+        )
+        if result is None:
+            return
         self._ducked = True
-        await self._camilla.adjust_volume_db(self._duck_db)
 
     async def restore(self) -> None:
         if not self._ducked:
             return
         try:
             target_db = await self._target_db_provider()
-            await self._camilla.set_volume_db(target_db)
+            await self._camilla.set_volume_db(target_db, best_effort=True)
         finally:
             self._ducked = False
