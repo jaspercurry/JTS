@@ -220,7 +220,14 @@ def _ref_thread(ref_q: Queue) -> None:
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
     custom asoundrc PCMs like `jasper_capture`), downsample to 16k
     mono on the left channel (XMOS chip's convention: ref = left).
-    Push frames of FRAME_SAMPLES bytes (mono int16) onto the queue."""
+    Push frames of exactly FRAME_SAMPLES samples (= 2*FRAME_SAMPLES
+    bytes mono int16) onto the queue.
+
+    alsaaudio.PCM.read() can return partial reads (especially the
+    first one as the stream warms up), so we accumulate at the 48k
+    rate and only emit complete capture_block-sized chunks. This
+    guarantees every queued frame matches the mic frame size — the
+    WebRTC AEC3 engine enforces equal lengths strictly."""
     import alsaaudio
     capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
 
@@ -234,6 +241,7 @@ def _ref_thread(ref_q: Queue) -> None:
         periodsize=capture_block,
     )
     logger.info("ref capture opened: %s @ %d Hz, %d ch", REF_DEVICE, REF_RATE, REF_CHANNELS)
+    accum_48 = np.empty(0, dtype=np.float32)
     try:
         while not _shutdown.is_set():
             length, data = pcm.read()
@@ -242,12 +250,18 @@ def _ref_thread(ref_q: Queue) -> None:
             arr = np.frombuffer(data, dtype=np.int16)
             # interleaved stereo → take left channel
             left48 = arr[::REF_CHANNELS].astype(np.float32)
-            mono16 = resample_poly(left48, up=1, down=3)
-            mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
-            try:
-                ref_q.put_nowait(mono16.tobytes())
-            except Full:
-                logger.warning("ref queue full, dropping frame")
+            accum_48 = np.concatenate([accum_48, left48])
+            # Emit exact-sized chunks at the 48k rate so each
+            # downsample yields exactly FRAME_SAMPLES at 16k.
+            while accum_48.size >= capture_block:
+                chunk = accum_48[:capture_block]
+                accum_48 = accum_48[capture_block:]
+                mono16 = resample_poly(chunk, up=1, down=3)
+                mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
+                try:
+                    ref_q.put_nowait(mono16.tobytes())
+                except Full:
+                    logger.warning("ref queue full, dropping frame")
     finally:
         pcm.close()
 
