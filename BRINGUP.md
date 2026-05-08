@@ -169,27 +169,33 @@ sudo systemctl restart jasper-voice
 
 ---
 
-## Phase 4 — Set initial volume (1 min)
+## Phase 4 — Initial volume calibration (2 min)
 
-The Apple dongle behaves weirdly without a calibrated starting
-volume. Set the DAC to a safe-test level and CamillaDSP to flat:
+The Apple dongle's `Headphone` control is the **fixed analog
+ceiling, pinned at 100% by `jasper-dac-init` at boot** — software
+never adjusts it. CamillaDSP's `main_volume` is the canonical
+software volume knob (the dial, voice tools, and the HTTP API all
+converge on it). For first-boot calibration:
 
 ```sh
-# Apple dongle Headphone control to ~40% (-36 dBFS digital floor)
-sudo amixer -c A sset Headphone 40%
-# CamillaDSP master_gain to 0 dB
-sudo /opt/jasper/.venv/bin/python -c \
-  'import asyncio; from jasper.camilla import CamillaController; \
-   c = CamillaController("127.0.0.1", 1234); \
-   asyncio.run(c.set_main_volume_db(0.0))'
+# Verify the dongle is at 100% (jasper-dac-init enforces this)
+amixer -c A sget Headphone | grep '\[on\]'
+
+# Set CamillaDSP main_volume to a quiet starting level
+curl -s -X POST -H 'Content-Type: application/json' \
+    -d '{"db": -30.0}' http://localhost:8780/volume/set
 ```
 
 Listen for fan noise + amp idle hum. If silence is suspiciously
 quiet, double-check the amp is on and speakers are connected.
 
-Test playback by airplaying anything from your phone to "JTS"
-(it should appear in the AirPlay picker after a few seconds).
-Start very quiet on your phone and ramp up.
+AirPlay something to "JTS" (it should appear in your phone /
+laptop's AirPlay picker after a few seconds). At main_volume =
+−30 dB you should hear barely-audible audio. Now adjust the
+**amp's physical gain knob** until that level is your
+"barely-audible" comfort floor. After that, raising main_volume
+toward 0 dB (the dial's 100%) puts you at your calibrated
+comfortable-max listening level. The dongle stays at 100% always.
 
 ---
 

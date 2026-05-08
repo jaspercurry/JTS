@@ -142,10 +142,11 @@ jasper-voice to consume. Disabled by default — see § below.
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
-chip's codec), and software AEC delivers only modest attenuation
-at significant RAM cost — see the AEC section below for the full
-trade-off analysis. Live with `NO_INTERRUPTION` on the Gemini
-session and a 0.7-second wake refractory until/unless that changes.
+chip's codec). Software AEC via WebRTC AEC3 delivers −15 to −18 dB
+on music (the SpeexDSP fallback hits −2 to −8 dB) at ~110 MB RAM
+either way — see the AEC section below for the full setup. Live
+with `NO_INTERRUPTION` on the Gemini session and a 0.7-second wake
+refractory until/unless that changes.
 
 ---
 
@@ -288,18 +289,23 @@ the chip's on-chip AEC.
 host's music chain (tapped via `pcm.jasper_capture` dsnoop) and
 the chip's raw mic 0 (channel 2 of the 6-channel firmware). It
 emits an AEC'd mono signal to a second snd-aloop card
-(`hw:5,1` = LoopbackAEC) that jasper-voice can consume instead
-of the chip's processed mic. Measured −2 to −8 dB attenuation
-during sustained playback, ~110 MB RAM, ~3% of one CPU core.
+(`hw:7,1` = LoopbackAEC) that jasper-voice can consume instead
+of the chip's processed mic. Two engines are selectable via
+`JASPER_AEC_ENGINE`: SpeexDSP (default, ~−2 to −8 dB on music,
+~1-2% of one CPU core) or WebRTC AEC3 (−15 to −18 dB on music,
+~3-8% of one core, via the bundled `jasper_aec3` pybind11
+binding). Both ~110 MB RAM.
 
 It's disabled by default because:
 - The 1GB Pi 5 is at the edge with 110 MB extra (~60% RAM use,
-  ~160 MB swap when bridge is running)
-- Whether the modest attenuation actually improves wake-word
-  reliability hasn't been measured end-to-end yet
+  ~160 MB swap when bridge is running) — the 2GB SKU is
+  recommended if you want the bridge on
+- It requires the 6-channel XVF firmware variant (`v2.0.8 6chl`)
+  flashed via DFU (BRINGUP.md Phase 2A.5)
 - The chip's beamformed conference channel (the default mic
   source) is good enough for typical use with `NO_INTERRUPTION`
-  + ducking
+  + ducking — the bridge is most useful when you want wake-word
+  detection during loud music playback
 
 To turn the bridge on for A/B testing, see [CLAUDE.md](CLAUDE.md)
 "Acoustic echo cancellation" section or [BRINGUP.md](BRINGUP.md)

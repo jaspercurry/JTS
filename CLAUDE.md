@@ -91,9 +91,11 @@ back.
 ## AEC bridge — opt-in toggle
 
 Software AEC is **built but disabled by default**. README's
-"Acoustic echo cancellation" section explains the trade-off
-(modest attenuation, ~110 MB RAM cost on 1GB Pi 5). The full
-investigation is in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
+"Acoustic echo cancellation" section covers the two selectable
+engines (SpeexDSP default vs. WebRTC AEC3 via
+`JASPER_AEC_ENGINE=webrtc3`, which is −15 to −18 dB on music) and
+the ~110 MB RAM cost. The full investigation is in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant (`v2.0.8 6chl`) — the bridge reads raw mic 0 from
