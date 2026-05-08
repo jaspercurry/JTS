@@ -123,6 +123,16 @@ QUEUE_MAXSIZE = 32
 
 _shutdown = threading.Event()
 
+# Clipping counters (module-level for cheap cross-thread access; small
+# race conditions in increment+reset are benign — worst case a single
+# log window's percentage is off by a frame). Tracked separately for
+# the ref pre-clip stage (after JASPER_AEC_REF_GAIN_DB applied) and
+# the post-AEC mic stage (after JASPER_AEC_MIC_GAIN_DB applied).
+_ref_clipped_samples = 0
+_ref_total_samples = 0
+_out_clipped_samples = 0
+_out_total_samples = 0
+
 
 class _Engine(Protocol):
     """AEC engine plug-in surface.
@@ -276,6 +286,12 @@ def _ref_thread(ref_q: Queue) -> None:
                 mono16 = resample_poly(chunk, up=1, down=3)
                 if ref_gain_lin != 1.0:
                     mono16 = mono16 * ref_gain_lin
+                # Track samples that the hard-clip below will saturate.
+                # Reported in the periodic RMS log so we can see if the
+                # gain stage is destroying peak information.
+                global _ref_clipped_samples, _ref_total_samples
+                _ref_clipped_samples += int(np.sum(np.abs(mono16) > 32767))
+                _ref_total_samples += len(mono16)
                 mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
                 try:
                     ref_q.put_nowait(mono16.tobytes())
@@ -306,7 +322,16 @@ def _mic_thread(mic_q: Queue) -> None:
         _shutdown.wait()
 
 
-def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:
+def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:  # noqa: PLR0915
+    # Post-AEC static gain applied to the engine output before it
+    # reaches LoopbackAEC. Restores level into openWakeWord's training
+    # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
+    # the chip's mic preamp delivers a quiet AEC output. Default 0 dB
+    # (off). Soft-clipped via tanh on the way out so high gain doesn't
+    # injecting hard-clip distortion into the wake-word input. See
+    # docs/HANDOFF-aec.md tuning findings for tested values.
+    mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
+    mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
     """Drain both queues frame-by-frame, run the selected AEC
     engine, write to Loopback. The two queues drift independently;
     we loosely sync by always pulling one mic frame and the
@@ -355,12 +380,25 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:
                 logger.warning("drained %d stale ref frames (drift)", drained)
 
             clean = engine.process(mic_bytes, ref_bytes)
+            # Save pre-gain output for the RMS metric — we want
+            # "attenuation" to reflect what AEC actually accomplished,
+            # not how much the post-gain stage amplified the residual.
+            clean_aec_only = clean
+            if mic_gain_lin != 1.0:
+                arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32) * mic_gain_lin
+                global _out_clipped_samples, _out_total_samples
+                _out_clipped_samples += int(np.sum(np.abs(arr) > 32767))
+                _out_total_samples += len(arr)
+                # tanh soft-clip: smoothly asymptotic to ±32767 instead
+                # of hard-clipping. Below ±~26000 it's near-linear.
+                arr = 32767.0 * np.tanh(arr / 32767.0)
+                clean = arr.astype(np.int16).tobytes()
             out_stream.write(clean)
             frames_processed += 1
 
             mic_arr = np.frombuffer(mic_bytes, dtype=np.int16).astype(np.float32)
             ref_arr = np.frombuffer(ref_bytes, dtype=np.int16).astype(np.float32)
-            aec_arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32)
+            aec_arr = np.frombuffer(clean_aec_only, dtype=np.int16).astype(np.float32)
             sum_mic_sq += float(np.mean(mic_arr * mic_arr))
             sum_ref_sq += float(np.mean(ref_arr * ref_arr))
             sum_aec_sq += float(np.mean(aec_arr * aec_arr))
@@ -376,16 +414,30 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:
                         attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
                     else:
                         attn_db = 0.0
+                    global _ref_clipped_samples, _ref_total_samples  # noqa: PLW0602
+                    global _out_clipped_samples, _out_total_samples  # noqa: PLW0602
+                    ref_clip_pct = (
+                        100.0 * _ref_clipped_samples / _ref_total_samples
+                        if _ref_total_samples else 0.0
+                    )
+                    out_clip_pct = (
+                        100.0 * _out_clipped_samples / _out_total_samples
+                        if _out_total_samples else 0.0
+                    )
                     logger.info(
                         "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
-                        "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d)",
+                        "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
+                        "ref_clip=%.2f%% out_clip=%.2f%%)",
                         rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
                         ref_rms, mic_rms, aec_rms, attn_db,
                         frames_processed, ref_q.qsize(), mic_q.qsize(),
+                        ref_clip_pct, out_clip_pct,
                     )
                 last_log = now
                 rms_window_frames = 0
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
+                _ref_clipped_samples = _ref_total_samples = 0
+                _out_clipped_samples = _out_total_samples = 0
     finally:
         out_stream.stop()
         out_stream.close()
