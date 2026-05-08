@@ -60,6 +60,7 @@ install_deps() {
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
         libspeexdsp-dev libspeexdsp1 swig \
+        libwebrtc-audio-processing-dev pkg-config \
         nginx-light openssl
 
     # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
@@ -283,7 +284,9 @@ install_jasper() {
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
         --exclude='tests' --exclude='deploy' \
-        "${REPO_DIR}/jasper" "${REPO_DIR}/pyproject.toml" \
+        --exclude='build' --exclude='*.egg-info' \
+        "${REPO_DIR}/jasper" "${REPO_DIR}/jasper_aec3" \
+        "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
     # Stage firmware/ next to the package so jasper-dial-onboard
@@ -328,6 +331,17 @@ install_jasper() {
     sx_init="${INSTALL_DIR}/.venv/lib/python3.13/site-packages/speexdsp/__init__.py"
     if [[ -f "${sx_init}" ]]; then
         echo "from ._speexdsp import *" > "${sx_init}"
+    fi
+
+    # jasper_aec3 — pybind11 binding around Trixie's
+    # libwebrtc-audio-processing-1 (v1.3-3, AEC3). Compiled per-host
+    # against the apt-installed library; pkg-config and the dev
+    # package are installed by install_deps. The wheel is the
+    # alternative AEC engine selected by JASPER_AEC_ENGINE=webrtc3.
+    # No-op when the source dir is absent (e.g. an old checkout).
+    if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
+        "${INSTALL_DIR}/.venv/bin/pip" install \
+            "${INSTALL_DIR}/jasper_aec3"
     fi
 
     # openWakeWord stock models (hey_jarvis + required feature models)

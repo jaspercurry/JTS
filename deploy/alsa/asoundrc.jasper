@@ -32,9 +32,41 @@
 #                                  Apple USB-C dongle → speakers
 #
 # When the AEC bridge is enabled (see CLAUDE.md "Acoustic echo
-# cancellation"), this file needs an additional `pcm.jasper_capture`
-# dsnoop block so CamillaDSP and the AEC bridge can share the
-# loopback capture side.
+# cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
+# CamillaDSP and the AEC bridge share the loopback capture side as
+# multiple readers. dsnoop is the multi-reader-safe ALSA primitive
+# (the dual of dmix on the playback side). Both readers pull at
+# 48 kHz S16_LE stereo from hw:Loopback,1,0; CamillaDSP rate-
+# converts and runs the music chain, and the bridge takes the left
+# channel as the AEC reference signal (mirroring XMOS's "ref =
+# left channel" convention).
+#
+# When the bridge is disabled the dsnoop block is harmless — it's a
+# kernel object instantiated lazily by ALSA on first open. CamillaDSP
+# continues to read directly from plughw:Loopback,1 as before.
+
+pcm.jasper_capture {
+    type dsnoop
+    ipc_key 7778
+    ipc_perm 0666
+    slave {
+        pcm "hw:Loopback,1,0"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.jasper_capture {
+    type hw
+    card Loopback
+}
 
 pcm.jasper_out {
     type dmix

@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68", "pybind11>=2.10"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jasper-aec3"
+version = "0.1.0"
+description = "WebRTC AEC3 binding for the JTS smart-speaker AEC bridge"
+requires-python = ">=3.11"
+# No runtime install_requires — the only runtime dep is the system
+# library libwebrtc-audio-processing-1, which we do NOT manage via pip
+# (it ships in Debian Trixie's apt as `libwebrtc-audio-processing-dev`).
+# install.sh is responsible for ensuring the apt package is present
+# before building this wheel.
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["jasper_aec3*"]

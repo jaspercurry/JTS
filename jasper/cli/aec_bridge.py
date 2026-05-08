@@ -9,10 +9,22 @@ defined as I²S sources). Even with USB-IN reference + correct
 volume mirroring, the chip's adaptive filter doesn't reliably
 attenuate echo in our config.
 
-This bridge does the AEC in software using SpeexDSP's
-EchoCanceller, with raw mic 0 (channel 2 of the chip's 6-channel
-USB capture, exposed by the 6-ch firmware variant 2.0.8) as
-near-end and the host-side music chain as far-end.
+This bridge does the AEC in software, with raw mic 0 (channel 2 of
+the chip's 6-channel USB capture, exposed by the 6-ch firmware
+variant 2.0.8) as near-end and the host-side music chain as
+far-end.
+
+Two engines are supported via `JASPER_AEC_ENGINE`:
+  - `speex` (default): SpeexDSP's linear NLMS EchoCanceller. Cheap
+    (~1-2 % of one core), but cannot model speaker non-linearity —
+    falls over once music gets loud (Speex's own docs are explicit
+    about this).
+  - `webrtc3`: WebRTC's modern AEC3 via the `jasper_aec3` pybind11
+    binding around Trixie's `libwebrtc-audio-processing-dev` (v1.3-3,
+    which IS AEC3 — the 1.x version is package-API stability, not
+    algorithm version). Adds a frequency-domain residual echo
+    suppressor + drift-tolerant delay estimator. ~3-8 % of one Pi 5
+    core. Required for wake-during-music.
 
 Topology:
 
@@ -55,10 +67,12 @@ Caveats this implementation does NOT yet address:
 from __future__ import annotations
 
 import logging
+import os
 import signal
 import sys
 import threading
 from queue import Queue, Empty, Full
+from typing import Protocol
 
 import numpy as np
 import sounddevice as sd
@@ -66,9 +80,12 @@ from scipy.signal import resample_poly
 
 logger = logging.getLogger("jasper.aec_bridge")
 
-# Speex AEC params. 320 samples @ 16k = 20 ms frame. Filter
-# length 3200 samples = 200 ms tail — matches the XMOS chip's
-# native 192 ms tail per the XVF3800 datasheet.
+# Frame size: 320 samples @ 16 kHz = 20 ms. This is also a multiple
+# of WebRTC AEC3's 10 ms frame requirement (160 samples) — the
+# WebRTC engine splits 320→2×160 internally. Speex's NLMS filter is
+# configured to 3200 taps (200 ms tail) at construction; that
+# matches the XMOS chip's 192 ms native tail per the XVF3800
+# datasheet. WebRTC AEC3 manages its own filter length.
 FRAME_SAMPLES = 320
 FILTER_TAPS = 3200
 SAMPLE_RATE = 16000
@@ -107,24 +124,96 @@ QUEUE_MAXSIZE = 32
 _shutdown = threading.Event()
 
 
-def _setup_speex():
-    """Patch speexdsp __init__.py at import time if needed and
-    return the raw SWIG bindings. The xiongyihui/speexdsp-python
-    package ships a broken __init__.py on Python 3.13 (tries to
-    import a .py wrapper that SWIG didn't generate). We patched
-    it at install time but defend against future re-installs."""
-    try:
-        from speexdsp import (
-            EchoCanceller_create, EchoCanceller_process,
-            delete_EchoCanceller,
+class _Engine(Protocol):
+    """AEC engine plug-in surface.
+
+    The bridge's main loop hands the engine equal-sized mic and ref
+    byte buffers (int16 mono PCM @ SAMPLE_RATE, FRAME_SAMPLES samples
+    each) and gets back the AEC'd mic of the same size. Each engine
+    handles its own internal framing.
+    """
+
+    def process(self, mic: bytes, ref: bytes) -> bytes: ...
+    def close(self) -> None: ...
+
+
+class _SpeexEngine:
+    """SpeexDSP EchoCanceller — linear NLMS, ~1-2 % of one core."""
+
+    def __init__(self) -> None:
+        # The xiongyihui/speexdsp-python package ships a broken
+        # __init__.py on Python 3.13 (tries to import a .py wrapper
+        # that SWIG didn't generate). install.sh patches __init__.py
+        # post-install; defend against future re-installs by also
+        # falling back to the raw SWIG module here.
+        try:
+            from speexdsp import (
+                EchoCanceller_create, EchoCanceller_process,
+                delete_EchoCanceller,
+            )
+        except ImportError:
+            from speexdsp._speexdsp import (  # type: ignore[no-redef]
+                EchoCanceller_create, EchoCanceller_process,
+                delete_EchoCanceller,
+            )
+        self._ec = EchoCanceller_create(
+            FRAME_SAMPLES, FILTER_TAPS, SAMPLE_RATE
         )
-    except ImportError:
-        # Fall back to the raw SWIG module
-        from speexdsp._speexdsp import (
-            EchoCanceller_create, EchoCanceller_process,
-            delete_EchoCanceller,
+        self._process = EchoCanceller_process
+        self._delete = delete_EchoCanceller
+        logger.info(
+            "engine=speex frame=%d taps=%d (%dms tail) rate=%d",
+            FRAME_SAMPLES, FILTER_TAPS,
+            FILTER_TAPS * 1000 // SAMPLE_RATE, SAMPLE_RATE,
         )
-    return EchoCanceller_create, EchoCanceller_process, delete_EchoCanceller
+
+    def process(self, mic: bytes, ref: bytes) -> bytes:
+        return self._process(self._ec, mic, ref)
+
+    def close(self) -> None:
+        self._delete(self._ec)
+
+
+class _WebRtc3Engine:
+    """WebRTC AEC3 via the jasper_aec3 pybind11 binding.
+
+    Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows
+    internally, calls ProcessReverseStream + ProcessStream per
+    window, returns the joined AEC'd capture. Includes a residual
+    echo suppressor and noise suppression at kModerate.
+    """
+
+    def __init__(self) -> None:
+        # Imported lazily so the bridge doesn't fail to import on
+        # systems where the binding isn't built (e.g. dev laptops
+        # running the test suite — the engine selector defaults to
+        # speex anyway).
+        from jasper_aec3 import Aec3
+        self._aec = Aec3()
+        logger.info(
+            "engine=webrtc3 frame=%d (split internally to 10ms windows) rate=%d",
+            FRAME_SAMPLES, SAMPLE_RATE,
+        )
+
+    def process(self, mic: bytes, ref: bytes) -> bytes:
+        return self._aec.process(mic, ref)
+
+    def close(self) -> None:
+        # The pybind11 wrapper's std::unique_ptr<AudioProcessing>
+        # is freed when the Python Aec3 instance is GC'd. No
+        # explicit teardown needed.
+        pass
+
+
+def _select_engine() -> _Engine:
+    name = os.environ.get("JASPER_AEC_ENGINE", "speex").strip().lower()
+    if name == "speex":
+        return _SpeexEngine()
+    if name in ("webrtc3", "webrtc", "aec3"):
+        return _WebRtc3Engine()
+    raise ValueError(
+        f"unknown JASPER_AEC_ENGINE={name!r} — expected 'speex' or 'webrtc3'"
+    )
 
 
 def _ref_thread(ref_q: Queue) -> None:
@@ -184,15 +273,16 @@ def _mic_thread(mic_q: Queue) -> None:
         _shutdown.wait()
 
 
-def _aec_loop(ref_q: Queue, mic_q: Queue, ec, ec_process) -> None:
-    """Drain both queues frame-by-frame, run SpeexDSP, write to
-    Loopback. The two queues drift independently; we loosely sync
-    by always pulling one mic frame and the freshest ref frame
-    we can grab without blocking — falling back to silence if no
-    ref is available (shouldn't happen if camilla is running).
+def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:
+    """Drain both queues frame-by-frame, run the selected AEC
+    engine, write to Loopback. The two queues drift independently;
+    we loosely sync by always pulling one mic frame and the
+    freshest ref frame we can grab without blocking — falling back
+    to silence if no ref is available (shouldn't happen if camilla
+    is running).
 
     Periodically logs the per-frame RMS of mic, ref, and AEC out
-    so we can observe whether SpeexDSP is actually attenuating
+    so we can observe whether the engine is actually attenuating
     the echo. Comparing mic_rms vs aec_rms gives the running
     attenuation in dB."""
     import math
@@ -231,7 +321,7 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, ec, ec_process) -> None:
             if drained > 5:
                 logger.warning("drained %d stale ref frames (drift)", drained)
 
-            clean = ec_process(ec, mic_bytes, ref_bytes)
+            clean = engine.process(mic_bytes, ref_bytes)
             out_stream.write(clean)
             frames_processed += 1
 
@@ -279,13 +369,7 @@ def main() -> int:
         MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_DEVICE, OUT_RATE,
     )
 
-    ec_create, ec_process, ec_delete = _setup_speex()
-    ec = ec_create(FRAME_SAMPLES, FILTER_TAPS, SAMPLE_RATE)
-    logger.info(
-        "SpeexDSP EchoCanceller: frame=%d taps=%d (%dms tail) rate=%d",
-        FRAME_SAMPLES, FILTER_TAPS,
-        FILTER_TAPS * 1000 // SAMPLE_RATE, SAMPLE_RATE,
-    )
+    engine = _select_engine()
 
     # Signal handlers for clean shutdown
     def on_signal(signum, _frame):
@@ -303,13 +387,13 @@ def main() -> int:
     mic_t.start()
 
     try:
-        _aec_loop(ref_q, mic_q, ec, ec_process)
+        _aec_loop(ref_q, mic_q, engine)
     except Exception as e:  # noqa: BLE001
         logger.exception("aec loop crashed: %s", e)
         _shutdown.set()
         return 1
     finally:
-        ec_delete(ec)
+        engine.close()
         ref_t.join(timeout=2)
         mic_t.join(timeout=2)
     return 0
