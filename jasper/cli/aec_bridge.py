@@ -230,6 +230,7 @@ def _select_engine() -> _Engine:
 
 
 def _ref_thread(ref_q: Queue) -> None:
+    global _ref_clipped_samples, _ref_total_samples
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
     custom asoundrc PCMs like `jasper_capture`), downsample to 16k
     mono on the left channel (XMOS chip's convention: ref = left).
@@ -289,7 +290,6 @@ def _ref_thread(ref_q: Queue) -> None:
                 # Track samples that the hard-clip below will saturate.
                 # Reported in the periodic RMS log so we can see if the
                 # gain stage is destroying peak information.
-                global _ref_clipped_samples, _ref_total_samples
                 _ref_clipped_samples += int(np.sum(np.abs(mono16) > 32767))
                 _ref_total_samples += len(mono16)
                 mono16 = np.clip(mono16, -32768, 32767).astype(np.int16)
@@ -330,6 +330,8 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:  # noqa: PLR
     # (off). Soft-clipped via tanh on the way out so high gain doesn't
     # injecting hard-clip distortion into the wake-word input. See
     # docs/HANDOFF-aec.md tuning findings for tested values.
+    global _ref_clipped_samples, _ref_total_samples
+    global _out_clipped_samples, _out_total_samples
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
     """Drain both queues frame-by-frame, run the selected AEC
@@ -386,7 +388,6 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:  # noqa: PLR
             clean_aec_only = clean
             if mic_gain_lin != 1.0:
                 arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32) * mic_gain_lin
-                global _out_clipped_samples, _out_total_samples
                 _out_clipped_samples += int(np.sum(np.abs(arr) > 32767))
                 _out_total_samples += len(arr)
                 # tanh soft-clip: smoothly asymptotic to ±32767 instead
@@ -414,8 +415,6 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:  # noqa: PLR
                         attn_db = 20.0 * math.log10(max(aec_rms, 1.0) / mic_rms)
                     else:
                         attn_db = 0.0
-                    global _ref_clipped_samples, _ref_total_samples  # noqa: PLW0602
-                    global _out_clipped_samples, _out_total_samples  # noqa: PLW0602
                     ref_clip_pct = (
                         100.0 * _ref_clipped_samples / _ref_total_samples
                         if _ref_total_samples else 0.0
