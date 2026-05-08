@@ -240,6 +240,14 @@ class GeminiLiveTurn(LiveTurn):
     def usage_tokens(self) -> dict[str, int]:
         return dict(self._usage)
 
+    def usage_breakdown(self) -> dict | None:
+        # Gemini Live's usage_metadata only carries
+        # `prompt_token_count` and `response_token_count` — there's no
+        # audio/text/cached split exposed today. Returning None makes
+        # the spend cap fall back to the scalar all-audio estimate,
+        # which is what we've always done for Gemini.
+        return None
+
     def turn_lost(self) -> bool:
         return self._turn_lost
 

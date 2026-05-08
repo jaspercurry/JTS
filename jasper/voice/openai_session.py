@@ -155,6 +155,27 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._conn = conn
         self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._usage = {"input_tokens": 0, "output_tokens": 0}
+        # Modality-aware breakdown accumulator. OpenAI Realtime emits
+        # `response.usage.input_token_details.{audio,text,cached}_tokens`
+        # and `output_token_details.{audio,text}_tokens` per
+        # response.done; we sum across responses within a turn so the
+        # spend cap sees the full breakdown when it computes cost.
+        # Pricing.estimate_cost reads this dict and prices each bucket
+        # at the right rate ($32 audio in, $4 text in, $0.40 cached,
+        # $64 audio out, $24 text out for gpt-realtime-2).
+        self._usage_breakdown: dict = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "input_token_details": {
+                "audio_tokens": 0,
+                "text_tokens": 0,
+                "cached_tokens": 0,
+            },
+            "output_token_details": {
+                "audio_tokens": 0,
+                "text_tokens": 0,
+            },
+        }
         self._interrupted = False
         self._interrupt_event = asyncio.Event()
         self._last_activity_at: float = started_at
@@ -277,6 +298,16 @@ class OpenAIRealtimeTurn(LiveTurn):
     def usage_tokens(self) -> dict[str, int]:
         return dict(self._usage)
 
+    def usage_breakdown(self) -> dict | None:
+        # Deep-copy of the accumulator so callers can't mutate the
+        # turn's internal state through the returned reference.
+        return {
+            "input_tokens": self._usage_breakdown["input_tokens"],
+            "output_tokens": self._usage_breakdown["output_tokens"],
+            "input_token_details": dict(self._usage_breakdown["input_token_details"]),
+            "output_token_details": dict(self._usage_breakdown["output_token_details"]),
+        }
+
     def turn_lost(self) -> bool:
         return self._turn_lost
 
@@ -320,15 +351,34 @@ class OpenAIRealtimeTurn(LiveTurn):
         rather than only the final audio response (which would
         under-count). Called by both the deferred-completion path
         (intermediate tool-call response.done) and the final
-        ``_on_response_done``."""
+        ``_on_response_done``.
+
+        Also accumulates the modality breakdown
+        (input.audio/text/cached, output.audio/text) so
+        ``usage_breakdown()`` returns the full split for cost
+        estimation."""
         if not usage:
             return
         in_tok = usage.get("input_tokens")
         out_tok = usage.get("output_tokens")
         if isinstance(in_tok, int):
             self._usage["input_tokens"] += in_tok
+            self._usage_breakdown["input_tokens"] += in_tok
         if isinstance(out_tok, int):
             self._usage["output_tokens"] += out_tok
+            self._usage_breakdown["output_tokens"] += out_tok
+        # Modality breakdown — the SDK gives both fields per response;
+        # sum them across the turn's responses.
+        in_d = usage.get("input_token_details") or {}
+        for k in ("audio_tokens", "text_tokens", "cached_tokens"):
+            v = in_d.get(k)
+            if isinstance(v, int):
+                self._usage_breakdown["input_token_details"][k] += v
+        out_d = usage.get("output_token_details") or {}
+        for k in ("audio_tokens", "text_tokens"):
+            v = out_d.get(k)
+            if isinstance(v, int):
+                self._usage_breakdown["output_token_details"][k] += v
 
     async def _on_response_done(self, usage: dict | None) -> None:
         self._last_activity_at = asyncio.get_event_loop().time()
@@ -1035,6 +1085,29 @@ class OpenAIRealtimeConnection(LiveConnection):
         response = _event_field(event, "response")
         usage_dict = _normalise_usage(_event_field(response, "usage") if response is not None else None)
         function_calls = _extract_function_calls(response)
+
+        # Diagnostic log: per-response breakdown. Reading the
+        # audio/text split is the difference between "175 output
+        # tokens means 8.75 s of audio that got truncated" (would
+        # indicate a bug) vs "175 output tokens means 80 audio + 95
+        # text transcript = 1.6 s of audio total" (model just gave a
+        # short answer, no bug). Without this line we couldn't tell
+        # the two apart from journalctl alone.
+        if usage_dict:
+            in_d = usage_dict.get("input_token_details") or {}
+            out_d = usage_dict.get("output_token_details") or {}
+            logger.info(
+                "openai response.done: in=%d (audio=%d text=%d cached=%d) "
+                "out=%d (audio=%d text=%d) function_calls=%d",
+                int(usage_dict.get("input_tokens") or 0),
+                int(in_d.get("audio_tokens") or 0),
+                int(in_d.get("text_tokens") or 0),
+                int(in_d.get("cached_tokens") or 0),
+                int(usage_dict.get("output_tokens") or 0),
+                int(out_d.get("audio_tokens") or 0),
+                int(out_d.get("text_tokens") or 0),
+                len(function_calls),
+            )
 
         if turn is None:
             return

@@ -1166,9 +1166,21 @@ class WakeLoop:
                 logger.debug("turn release error (ignored): %s", e)
 
             tokens = self._turn.usage_tokens()
+            # Pull the modality breakdown if the provider exposes one
+            # (OpenAI Realtime does; Gemini Live returns None and the
+            # store falls back to scalar all-audio pricing). The
+            # `getattr` guard keeps this compatible with any older
+            # turn implementations that predate the protocol method.
+            breakdown = None
+            getter = getattr(self._turn, "usage_breakdown", None)
+            if callable(getter):
+                breakdown = getter()
             assert self._session_id is not None
             cost = self._usage_store.close_session(
-                self._session_id, tokens["input_tokens"], tokens["output_tokens"]
+                self._session_id,
+                tokens["input_tokens"],
+                tokens["output_tokens"],
+                usage=breakdown,
             )
             # Per-turn silent-failure detection. With the persistent
             # connection, the original session-level signal ("sent N

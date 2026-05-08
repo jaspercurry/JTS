@@ -70,6 +70,27 @@ class LiveTurn(Protocol):
         as of the last server message processed in this turn."""
         ...
 
+    def usage_breakdown(self) -> "dict | None":
+        """Provider-specific token-detail breakdown if available, else
+        None. The OpenAI Realtime adapter populates this from each
+        ``response.done`` event's ``response.usage`` object so the
+        spend cap can split by modality (audio / text / cached input
+        priced at $32 / $4 / $0.40 per million tokens respectively).
+        Gemini Live doesn't surface a modality breakdown and returns
+        None — the spend cap then falls back to the scalar all-audio
+        estimate, which matches the historical behaviour.
+
+        Shape when populated:
+          ``{"input_tokens": int, "output_tokens": int,``
+          `` "input_token_details": {"audio_tokens": int,``
+          ``                         "text_tokens": int,``
+          ``                         "cached_tokens": int,``
+          ``                         "cached_tokens_details": {...}},``
+          `` "output_token_details": {"audio_tokens": int,``
+          ``                          "text_tokens": int}}``
+        """
+        ...
+
     def turn_lost(self) -> bool:
         """True if the underlying connection dropped mid-turn (e.g. the
         WebSocket closed, GoAway timed out before audio finished). The
