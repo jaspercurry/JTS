@@ -129,6 +129,102 @@ _GOOGLE_PAGE_STYLE = PAGE_STYLE + """
   ul.accounts li .actions button {
     padding: 0.3em 0.7em; font-size: 0.85em;
   }
+
+  /* ---- multi-step wizard (state 1: no creds yet) ---- */
+  ol.wizard-steps {
+    list-style: none; padding: 0; margin: 1.4em 0;
+  }
+  li.wizard-step {
+    background: #fff; border: 1px solid #d8d8d8;
+    border-radius: 7px; margin-bottom: 0.7em;
+    overflow: hidden;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  li.wizard-step.done {
+    background: #f4faf4; border-color: #cde6cd;
+  }
+  li.wizard-step.active {
+    border-color: #1db954; box-shadow: 0 0 0 1px #1db954;
+  }
+  li.wizard-step > details > summary {
+    list-style: none;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    padding: 0.85em 1em;
+    display: flex; align-items: center; gap: 0.8em;
+    font-weight: 600; font-size: 1.04em;
+  }
+  li.wizard-step > details > summary::-webkit-details-marker { display: none; }
+  li.wizard-step > details > summary::after {
+    content: "▸"; color: #999; font-size: 0.9em;
+    transition: transform 0.15s ease;
+    margin-left: auto;
+  }
+  li.wizard-step > details[open] > summary::after { transform: rotate(90deg); }
+  .step-num {
+    display: inline-flex; width: 1.85em; height: 1.85em;
+    border-radius: 50%; background: #ddd; color: #444;
+    font-size: 0.85em; font-weight: 700;
+    align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  li.wizard-step.done .step-num { background: #4a8; color: white; }
+  li.wizard-step.active .step-num { background: #1db954; color: white; }
+  li.wizard-step.done .step-num::before { content: "✓"; }
+  li.wizard-step.done .step-num span { display: none; }
+  .step-title { flex: 1; }
+  .step-status {
+    font-weight: 400; font-size: 0.85em; color: #888;
+    font-variant-numeric: tabular-nums;
+  }
+  li.wizard-step.done .step-status { color: #4a8; }
+  li.wizard-step.done .step-status::before { content: "done — "; }
+  .step-body {
+    padding: 0 1em 1em 1em;
+  }
+  .step-body h3 {
+    font-size: 0.98em; margin: 1.1em 0 0.2em;
+    color: #444; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .step-body p { margin: 0.45em 0; }
+  .step-body ol, .step-body ul {
+    padding-left: 1.4em; margin: 0.5em 0;
+  }
+  .step-body li { margin-bottom: 0.35em; }
+  .step-body code {
+    background: #fafafa; border: 1px solid #e0e0e0;
+    border-radius: 3px; padding: 0.05em 0.4em;
+    font-size: 0.92em;
+  }
+  button.mark-done {
+    margin-top: 1.1em; background: #1db954; color: white;
+  }
+  li.wizard-step.done button.mark-done { display: none; }
+
+  /* Callout box for important gotchas inside step bodies. */
+  .callout {
+    background: #fff8e1; border-left: 4px solid #ffb300;
+    padding: 0.7em 0.9em; margin: 0.9em 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.96em;
+  }
+  .callout strong:first-child { color: #b07b00; }
+
+  /* The paste-creds form is inside the last wizard step but visually
+     separated — it's the action that completes the whole flow. */
+  .creds-form-wrap {
+    margin-top: 1em; padding-top: 1em;
+    border-top: 1px dashed #d0d0d0;
+  }
+
+  /* "Reset wizard progress" — subtle, top-right. */
+  .wizard-progress-reset {
+    float: right; background: transparent; color: #888;
+    padding: 0.25em 0.6em; font-size: 0.82em;
+    margin-top: -0.4em;
+  }
+  .wizard-progress-reset:hover {
+    color: #d44; background: #fee; filter: none;
+  }
 """
 
 
@@ -140,41 +236,264 @@ def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     ).encode()
 
 
-def _setup_wizard_html(*, status_msg: str = "") -> bytes:
-    """State 1: no CLIENT_ID/SECRET. Walk through creating a Google
-    Cloud Console OAuth client + pasting credentials."""
-    body = """
-<p class="sub">Connect this speaker to Google Calendar and Gmail. Takes about three minutes.</p>
+def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
+    """State 1: no CLIENT_ID/SECRET configured. Multi-step walkthrough
+    of the Google Cloud Console flow, with progress tracked in
+    browser localStorage so re-loading after each step shows the
+    user where to pick up.
 
-<h2>Step 1: Create a Google Cloud OAuth client</h2>
-<p>If you don't already have one, create a new OAuth 2.0 Client ID for a <strong>Web application</strong> in the Google Cloud Console. Any project name and app name is fine — this is just an identity for your speaker.</p>
-<p><a class="btn" href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Open Google Cloud Console ↗</a></p>
-<p class="hint">After creating the client you'll see the Client ID and Client Secret. You can come back to this page anytime to paste them.</p>
+    The four sub-steps mirror Google's actual UI as of May 2026 (the
+    OAuth consent screen is now the "Google Auth platform" with
+    Branding/Audience/Data Access tabs at console.cloud.google.com/auth/...).
+    Each step is collapsible; the first not-done step is auto-opened.
+    The user clicks "I've done this" to advance — we can't detect
+    actions on Google's site, so progress is self-reported.
 
-<h2>Step 2: Enable the Calendar and Gmail APIs</h2>
-<p>The OAuth client also needs the relevant APIs turned on for your project.</p>
-<ul>
-  <li><a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">Enable Google Calendar API ↗</a></li>
-  <li><a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">Enable Gmail API ↗</a></li>
-</ul>
+    The form at the bottom of step 4 is the actual server-side
+    transition: posting valid creds moves the index page to state 2
+    (add-account), at which point this whole wizard is hidden."""
+    redirect_safe = html.escape(redirect_uri)
+    body = f"""
+<button type="button" class="wizard-progress-reset secondary"
+        onclick="if (confirm('Forget which steps you marked done? The form at the bottom still works either way.')) {{ try {{ localStorage.removeItem('jts.google.wizard.done'); }} catch(e) {{}} location.reload(); }}">
+  Reset progress
+</button>
+<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I've done this →</strong> when each is finished.</p>
 
-<h2>Step 3: Paste the credentials here</h2>
-<form method="post" action="setup-credentials">
-  <label for="client_id">Client ID</label>
-  <input id="client_id" name="client_id" type="text" required
-         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-         placeholder="123456789012-abc….apps.googleusercontent.com">
+<ol class="wizard-steps">
 
-  <label for="client_secret">Client Secret</label>
-  <input id="client_secret" name="client_secret" type="password" required
-         autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-         placeholder="GOCSPX-…">
-  <small>Stored locally on the speaker only. Never sent anywhere except Google.</small>
+  <!-- ===== Step 1: Create or pick a Cloud project ===== -->
+  <li class="wizard-step" data-step="1">
+    <details>
+      <summary>
+        <span class="step-num"><span>1</span></span>
+        <span class="step-title">Create a Google Cloud project</span>
+        <span class="step-status">~30 seconds</span>
+      </summary>
+      <div class="step-body">
+        <p>The OAuth client lives inside a Google Cloud project. If you already have one, you can reuse it — otherwise:</p>
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">the New Project page ↗</a> in a new tab.</li>
+          <li><strong>Project name:</strong> anything you'll recognise — e.g. "JTS Speaker". The Project ID below auto-fills; leave it.</li>
+          <li>Click <strong>CREATE</strong>. Provisioning takes 10–30 seconds. A toast appears bottom-right when done — click it to switch into the new project, or pick it from the top-bar project switcher.</li>
+        </ol>
+        <div class="callout">
+          <strong>Multi-account heads-up:</strong> if you're signed into more than one Google account in this browser, the page uses whatever account loaded first. Mismatch is the #1 setup failure here. Open the link above in an incognito window and sign in with just the account you want to own this project.
+        </div>
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
 
-  <p style="margin-top:1.4em">
-    <button type="submit">Save credentials →</button>
-  </p>
-</form>
+  <!-- ===== Step 2: Configure OAuth consent screen ===== -->
+  <li class="wizard-step" data-step="2">
+    <details>
+      <summary>
+        <span class="step-num"><span>2</span></span>
+        <span class="step-title">Configure the OAuth consent screen</span>
+        <span class="step-status">~3 minutes</span>
+      </summary>
+      <div class="step-body">
+        <p>This is what each household member will see when they grant the speaker access. Google split this into three sibling tabs in 2025 — the old single-page wizard is gone.</p>
+
+        <h3>2a — Branding</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener">Branding tab ↗</a>. If you see a "Get started" card first, click <strong>GET STARTED</strong>.</li>
+          <li><strong>App name:</strong> what shows up at consent — e.g. "JTS Speaker". Avoid generic names like "test"; Google's heuristics flag them.</li>
+          <li><strong>User support email:</strong> pick your own Gmail from the dropdown.</li>
+          <li><strong>Developer contact information → Email addresses:</strong> same address.</li>
+          <li>Leave logo, home page, privacy policy, terms, and authorized domains blank — those are only needed for verified apps, which this isn't.</li>
+          <li>Click <strong>SAVE</strong>.</li>
+        </ol>
+
+        <h3>2b — Audience</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>.</li>
+          <li>Pick <strong>External</strong>. (Internal is greyed out for personal Google accounts — only Workspace organisations see it.)</li>
+          <li>Under <strong>Test users</strong>, click <strong>+ ADD USERS</strong>. Add your own Gmail and any household members' Gmails (one per line). Click <strong>SAVE</strong>. Cap: 100 test users, all must be Google accounts.</li>
+        </ol>
+
+        <div class="callout">
+          <strong>Important — publish the app to skip the 7-day refresh-token expiry:</strong>
+          Still on the Audience tab, find <strong>Publishing status</strong>. If it says "Testing", click <strong>PUBLISH APP</strong> and confirm the modal. In Testing mode, Google expires refresh tokens every 7 days — you'd have to re-link each household member every week. Publishing turns that off. The trade-off: the FIRST time anyone signs in, they'll see a "Google hasn't verified this app" warning and need to click <strong>Advanced → Go to JTS Speaker (unsafe)</strong>. That's a one-time click, much better than weekly re-auth.
+        </div>
+
+        <h3>2c — Data Access (optional but recommended)</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener">Data Access tab ↗</a>.</li>
+          <li>Click <strong>ADD OR REMOVE SCOPES</strong>.</li>
+          <li>Search for and tick: <code>.../auth/calendar.readonly</code> and <code>.../auth/gmail.readonly</code>. Click <strong>UPDATE</strong>, then <strong>SAVE</strong> at the bottom.</li>
+        </ol>
+        <p class="hint">Skippable — Google will show the scopes at consent regardless. Adding them here just suppresses one class of "unverified app" friction.</p>
+
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
+
+  <!-- ===== Step 3: Enable Calendar + Gmail APIs ===== -->
+  <li class="wizard-step" data-step="3">
+    <details>
+      <summary>
+        <span class="step-num"><span>3</span></span>
+        <span class="step-title">Enable the Calendar and Gmail APIs</span>
+        <span class="step-status">~30 seconds</span>
+      </summary>
+      <div class="step-body">
+        <p>Each API is a separate "Enable" click. Both are free at personal volume — quotas are 1M+ requests per day, no billing account needed.</p>
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">the Calendar API page ↗</a>. Confirm the project picker in the top bar shows the project from Step 1, then click the blue <strong>ENABLE</strong> button. Takes ~10 seconds.</li>
+          <li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">the Gmail API page ↗</a>. Same: confirm project, click <strong>ENABLE</strong>.</li>
+        </ol>
+        <p class="hint">If you navigated to either page without a project context, a "Select a project" modal appears first — pick the one from Step 1.</p>
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
+
+  <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
+  <li class="wizard-step" data-step="4">
+    <details>
+      <summary>
+        <span class="step-num"><span>4</span></span>
+        <span class="step-title">Create the OAuth client and paste it here</span>
+        <span class="step-status">~2 minutes</span>
+      </summary>
+      <div class="step-body">
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a>. Click <strong>+ CREATE CLIENT</strong> at the top.</li>
+          <li><strong>Application type:</strong> select <strong>Web application</strong> from the dropdown — the form expands when you pick this.</li>
+          <li><strong>Name:</strong> anything cosmetic, e.g. "JTS Speaker Web Client".</li>
+          <li>Leave <strong>Authorized JavaScript origins</strong> blank.</li>
+          <li><strong>Authorized redirect URIs:</strong> click <strong>+ ADD URI</strong> and paste this URL:
+            <div class="copy-row" style="margin-top:0.3em">
+              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
+              <button type="button" onclick="copyStep4Redirect()">Copy</button>
+              <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
+            </div>
+          </li>
+          <li>Click <strong>CREATE</strong> at the bottom of the form.</li>
+          <li>The success modal shows your <strong>Client ID</strong> and <strong>Client Secret</strong>.
+            <div class="callout">
+              <strong>The Client Secret is only shown once.</strong> Click <strong>DOWNLOAD JSON</strong> in the modal as a backup before you dismiss it — the Clients page will only show the last 4 characters of the secret afterwards, and you'd have to reset (which invalidates the old secret) if you lose it.
+            </div>
+          </li>
+          <li>Paste the Client ID and Client Secret below. Saving here finishes the setup; the page will move on to linking the first household member.</li>
+        </ol>
+
+        <div class="creds-form-wrap">
+          <form method="post" action="setup-credentials">
+            <label for="client_id">Client ID</label>
+            <input id="client_id" name="client_id" type="text" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="123456789012-abc….apps.googleusercontent.com">
+
+            <label for="client_secret">Client Secret</label>
+            <input id="client_secret" name="client_secret" type="password" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="GOCSPX-…">
+            <small>Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</small>
+
+            <p style="margin-top:1.4em">
+              <button type="submit">Save credentials →</button>
+            </p>
+          </form>
+        </div>
+      </div>
+    </details>
+  </li>
+</ol>
+
+<script>
+(function () {{
+  // Progress-tracking via localStorage. Each step has a "mark done"
+  // button that adds its step number to a JSON array; on page load
+  // we collapse done steps and auto-open the first not-done one.
+  // The browser's native <details> toggle still works after init
+  // (we only set state once, so manually re-opening a done step to
+  // re-read it stays sticky).
+  var STORAGE_KEY = 'jts.google.wizard.done';
+
+  function loadDone() {{
+    try {{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    }} catch (e) {{ return []; }}
+  }}
+  function saveDone(arr) {{
+    try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }}
+    catch (e) {{ /* private mode / quota — silent */ }}
+  }}
+
+  function init() {{
+    var done = loadDone();
+    var firstNotDoneOpened = false;
+    document.querySelectorAll('li.wizard-step').forEach(function (el) {{
+      var step = el.dataset.step;
+      var details = el.querySelector('details');
+      if (!details) return;
+      var isDone = done.indexOf(step) !== -1;
+      if (isDone) {{
+        el.classList.add('done');
+        details.removeAttribute('open');
+      }} else if (!firstNotDoneOpened) {{
+        firstNotDoneOpened = true;
+        el.classList.add('active');
+        details.setAttribute('open', '');
+      }}
+    }});
+  }}
+
+  function markDone(stepEl) {{
+    var step = stepEl.dataset.step;
+    var done = loadDone();
+    if (done.indexOf(step) === -1) done.push(step);
+    saveDone(done);
+    stepEl.classList.add('done');
+    stepEl.classList.remove('active');
+    var details = stepEl.querySelector('details');
+    if (details) details.removeAttribute('open');
+    // Open the next not-done sibling (skip already-done ones).
+    var next = stepEl.nextElementSibling;
+    while (next && next.classList.contains('done')) {{
+      next = next.nextElementSibling;
+    }}
+    if (next) {{
+      next.classList.add('active');
+      var nDetails = next.querySelector('details');
+      if (nDetails) nDetails.setAttribute('open', '');
+      setTimeout(function () {{
+        next.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+      }}, 80);
+    }}
+  }}
+
+  document.addEventListener('DOMContentLoaded', function () {{
+    init();
+    document.querySelectorAll('button.mark-done').forEach(function (btn) {{
+      btn.addEventListener('click', function (e) {{
+        e.preventDefault();
+        var stepEl = btn.closest('li.wizard-step');
+        if (stepEl) markDone(stepEl);
+      }});
+    }});
+  }});
+}})();
+
+async function copyStep4Redirect() {{
+  var input = document.getElementById('step4-redirect');
+  var fb = document.getElementById('step4-redirect-fb');
+  try {{
+    await navigator.clipboard.writeText(input.value);
+  }} catch (e) {{
+    input.select();
+    document.execCommand('copy');
+  }}
+  fb.classList.add('shown');
+  setTimeout(function () {{ fb.classList.remove('shown'); }}, 1800);
+}}
+</script>
 """
     return _wrap_page(
         "Set up Google on this speaker", body, status_msg=status_msg,
@@ -183,11 +502,16 @@ def _setup_wizard_html(*, status_msg: str = "") -> bytes:
 
 def _redirect_uri_section_html(redirect_uri: str) -> str:
     """The 'add this redirect URL to your OAuth client' block.
-    Shared between state 2 and state 3 (so it's always reachable)."""
+    Used as a re-reference in state 2 (when sign-in fails with
+    redirect_uri_mismatch) and state 3 (collapsed under "OAuth
+    client settings"). The setup wizard's step 4 includes this URL
+    inline so the user adds it during initial client creation;
+    this section exists for the cases where they need to re-add
+    or fix it after the fact."""
     redirect_safe = html.escape(redirect_uri)
     return f"""
-<h2>Add this redirect URL to your OAuth client</h2>
-<p>Google needs to know where to send the user back after sign-in. Paste this URL into your OAuth client's <strong>Authorized redirect URIs</strong> list.</p>
+<h3>The redirect URL</h3>
+<p>Your OAuth client needs this URL in its <strong>Authorized redirect URIs</strong> list. The setup wizard's step 4 included this when you created the client; if you skipped it, add it now.</p>
 
 <div class="copy-row">
   <input id="redirect-uri" type="text" readonly value="{redirect_safe}"
@@ -197,10 +521,14 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
 </div>
 
 <ol class="steps">
-  <li>Open <a href="https://console.cloud.google.com/apis/credentials" target="_blank" rel="noopener">Credentials in the Google Cloud Console ↗</a></li>
-  <li>Click your OAuth 2.0 Client ID (the Web application one).</li>
-  <li>Under <strong>Authorized redirect URIs</strong>, click <strong>Add URI</strong>, paste the URL above, then <strong>Save</strong>.</li>
+  <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a> and click your OAuth 2.0 Client ID. (If you bookmarked the old <code>/apis/credentials</code> URL, it still works — Google redirects it here.)</li>
+  <li>You'll land on a page titled <strong>Client ID for Web application</strong>. Scroll to <strong>Authorized redirect URIs</strong>.</li>
+  <li>Click <strong>+ ADD URI</strong>, paste the URL above, then <strong>SAVE</strong> at the bottom.</li>
 </ol>
+
+<p class="hint">
+  <strong>Heads up — propagation delay:</strong> Google says redirect-URI changes can take "5 minutes to a few hours" to take effect, though usually it's well under a minute. If sign-in fails with <code>redirect_uri_mismatch</code>, wait 60 seconds and retry.
+</p>
 
 <script>
 async function copyRedirect() {{
@@ -237,24 +565,32 @@ def _add_account_form_html() -> str:
 
 
 def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: str = "") -> bytes:
+    """State 2: credentials saved, no accounts linked yet. The user
+    already added the redirect URI during the wizard's step 4, so the
+    primary action here is "link a household member's account". The
+    redirect URI section lives in a collapsible <details> as a
+    fallback for the redirect_uri_mismatch case."""
     masked = (
         client_id[:8] + "…" + client_id[-30:]
         if len(client_id) > 38 else "configured"
     )
     body = f"""
-<p class="sub">Credentials saved (Client ID: <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>). Two steps left.</p>
-
-{_redirect_uri_section_html(redirect_uri)}
+<p class="sub">Credentials saved (Client ID: <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>). One step left — link your first Google account.</p>
 
 {_add_account_form_html()}
 
-<form method="post" action="reset-credentials" style="margin-top:3em"
-      onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
-  <button type="submit" class="danger">Reset Google credentials</button>
-</form>
+<details style="margin-top:2.4em">
+  <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
+  <p style="margin-top:0.8em">If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
+  {_redirect_uri_section_html(redirect_uri)}
+  <form method="post" action="reset-credentials" style="margin-top:2em"
+        onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
+    <button type="submit" class="danger">Reset Google credentials</button>
+  </form>
+</details>
 """
     return _wrap_page(
-        "Almost there — connect Google", body, status_msg=status_msg,
+        "Almost there — link a Google account", body, status_msg=status_msg,
     )
 
 
@@ -462,7 +798,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def _render_index(self, *, status_msg: str = "") -> None:
             has_creds = bool(cfg["client_id"] and cfg["client_secret"])
             if not has_creds:
-                self._send_html(_setup_wizard_html(status_msg=status_msg))
+                self._send_html(_setup_wizard_html(
+                    cfg["redirect_uri"], status_msg=status_msg,
+                ))
                 return
             registry = GoogleRegistry.load(cfg["registry_path"])
             if not registry.accounts:
