@@ -565,7 +565,13 @@ regenerate_audio_cues() {
         return 0
     fi
     echo "  Regenerating audio cues..."
-    if ! /bin/sh -c '. /etc/jasper/jasper.env && export $(grep -E "^[A-Z_]+=" /etc/jasper/jasper.env | cut -d= -f1) && /opt/jasper/.venv/bin/jasper-cues regenerate'; then
+    # jasper-cues auto-loads /etc/jasper/jasper.env then
+    # /var/lib/jasper/voice_provider.env (web-wizard overrides) via
+    # jasper.env_load — same precedence as the daemon's systemd unit.
+    # We deliberately do NOT pre-source jasper.env here: doing so puts
+    # those vars into the shell's environment first, where load_env_files's
+    # setdefault preserves them and the wizard file can't override.
+    if ! /opt/jasper/.venv/bin/jasper-cues regenerate; then
         echo "  WARNING: cue regenerate failed (network down or API key not set?). " \
              "Daemon will retry at startup. To force a refresh later: " \
              "sudo systemctl restart jasper-voice"
