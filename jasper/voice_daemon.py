@@ -775,6 +775,16 @@ class WakeLoop:
         self._bg_tasks: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
 
+        # Room-correction measurement window. When set, the WakeLoop
+        # drops mic frames (no wake-word feed, no session forward) and
+        # the TtsVolumeTracker is paused so it doesn't read the sweep
+        # as "loud music" and skew the loudness anchor. Set / cleared
+        # via the MEASURE_PAUSE / MEASURE_RESUME UDS commands; the
+        # `_measurement_safety_task` auto-clears the event after 2 min
+        # so a coordinator crash can't strand the speaker silent.
+        self._measurement_active: asyncio.Event = asyncio.Event()
+        self._measurement_safety_task: asyncio.Task | None = None
+
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
         # moment the user stops speaking — not at turn cleanup. Without
@@ -882,6 +892,17 @@ class WakeLoop:
                     await self._end_turn()
                 return
 
+            # Room-correction measurement window: drop the frame
+            # entirely (no wake-word feed, no session dispatch, no
+            # pre-roll append). Dropping pre-roll matters — sweep tail
+            # in the pre-roll would prepend ~1.4 s of test-tone audio
+            # to whatever turn the user starts immediately after the
+            # window closes. Active sessions never reach this branch
+            # because measurement_pause() refuses to set the event
+            # while State.SESSION (returns BUSY).
+            if self._measurement_active.is_set():
+                continue
+
             # Continuously fill the pre-roll ring. When wake fires, the
             # last N frames already in this deque are what we replay
             # into the turn so the user's first phoneme isn't lost.
@@ -891,6 +912,74 @@ class WakeLoop:
                 await self._handle_wake_frame(frame)
             else:
                 await self._handle_session_frame(frame)
+
+    async def measurement_pause(self) -> str:
+        """Open a measurement window. Set the gate event, pause the
+        TTS volume tracker, and arm a 2-minute auto-clear safety
+        timer.
+
+        Refuses with `BUSY` when a voice session is currently active
+        — yanking the session would orphan the user's turn. The
+        coordinator (jasper.correction.coordinator) is expected to
+        check STATUS first; this is defense-in-depth.
+
+        Idempotent — calling twice is harmless. Returns:
+          - "ok" when the window is now open.
+          - "BUSY" when refused due to an active session.
+        """
+        if self._state is State.SESSION:
+            return "BUSY"
+        self._measurement_active.set()
+        self._tts_volume_tracker.pause()
+
+        # Cancel any prior safety timer (idempotent re-pause path).
+        prev = self._measurement_safety_task
+        if prev is not None and not prev.done():
+            prev.cancel()
+
+        # Arm new safety timer. If the coordinator crashes (kill -9)
+        # without sending RESUME, this auto-clears the gate so the
+        # speaker doesn't stay silent forever. Logged at WARNING so
+        # the operator can see something went wrong.
+        loop = asyncio.get_running_loop()
+
+        async def _safety() -> None:
+            try:
+                await asyncio.sleep(120.0)
+            except asyncio.CancelledError:
+                return
+            if self._measurement_active.is_set():
+                logger.warning(
+                    "measurement window auto-clearing after 2 min — "
+                    "coordinator likely crashed without sending "
+                    "MEASURE_RESUME"
+                )
+                self._measurement_active.clear()
+                self._tts_volume_tracker.resume()
+
+        # Note: this is a fire-once-and-exit task that we deliberately
+        # do NOT add to self._bg_tasks — the WakeLoop run loop's
+        # bg-task done-checker treats any done task as "turn ended
+        # early," so adding short-lived tasks there would corrupt the
+        # turn lifecycle. Single-slot reference is enough; we cancel
+        # via that slot on RESUME or repeated PAUSE.
+        self._measurement_safety_task = loop.create_task(_safety())
+        return "ok"
+
+    async def measurement_resume(self) -> str:
+        """Close a measurement window: clear the gate, resume the
+        tracker, cancel the safety timer.
+
+        Idempotent — calling twice (or before any PAUSE) is harmless.
+        Always returns "ok".
+        """
+        self._measurement_active.clear()
+        self._tts_volume_tracker.resume()
+        if self._measurement_safety_task is not None:
+            if not self._measurement_safety_task.done():
+                self._measurement_safety_task.cancel()
+            self._measurement_safety_task = None
+        return "ok"
 
     async def _handle_wake_frame(self, frame) -> None:
         # During refractory, swallow frames so TTS bleed doesn't self-trigger.
@@ -1281,6 +1370,13 @@ async def _start_control_socket(
                               standalone CLI doesn't have to recreate
                               the volume math — and can't accidentally
                               blast at -6 dB when the daemon's at -27.
+        MEASURE_PAUSE       → open a room-correction measurement
+                              window. Drops mic frames, pauses the
+                              TTS volume tracker. Refuses (BUSY) if a
+                              session is active. Auto-clears in 2 min
+                              if RESUME is never sent.
+        MEASURE_RESUME      → close the measurement window.
+                              Idempotent.
 
     The socket lives in /run (tmpfs) so it gets created fresh each boot
     via systemd's RuntimeDirectory=jasper. Both jasper-voice and
@@ -1302,6 +1398,10 @@ async def _start_control_socket(
                 result = wake_loop.session_status()
             elif cmd == "CUE_PLAY":
                 result = {"result": await wake_loop.play_cue(arg)}
+            elif cmd == "MEASURE_PAUSE":
+                result = {"result": await wake_loop.measurement_pause()}
+            elif cmd == "MEASURE_RESUME":
+                result = {"result": await wake_loop.measurement_resume()}
             else:
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))

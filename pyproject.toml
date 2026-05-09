@@ -30,6 +30,15 @@ dependencies = [
     # tflite-runtime is never imported at runtime. See install.sh.
     "sounddevice==0.5.5",
     "numpy>=1.26,<3",
+    # SciPy is needed for room-correction v2 (jasper.correction.*):
+    # synchronized swept-sine generation, FFT-based deconvolution,
+    # IIR biquad design (peq), and fractional-octave smoothing. Pi 5
+    # 1 GB has plenty of free disk for the install (~200 MB) and
+    # the runtime RAM cost during measurement is bounded by the
+    # measurement_window() pause that frees librespot/shairport/
+    # voice-daemon RAM first. ≥1.13 because we use scipy.signal.iirpeak
+    # and the numpy 2.0 ABI compatibility is patched.
+    "scipy>=1.13,<2",
     "spotipy==2.24.0",
     "httpx==0.28.1",
     "onnxruntime>=1.17",

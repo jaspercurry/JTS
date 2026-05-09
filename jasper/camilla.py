@@ -152,6 +152,62 @@ class CamillaController:
             return None
         return target
 
+    async def get_config_file_path(
+        self, *, best_effort: bool = False,
+    ) -> str | None:
+        """Currently-loaded YAML path, e.g. `/etc/camilladsp/v1.yml`
+        on a fresh boot or `/var/lib/camilladsp/configs/correction_*.yml`
+        after the room-correction wizard applied a profile."""
+        try:
+            return str(await self._call(lambda c: c.config.file_path()))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug("camilla unavailable; get_config_file_path → None: %s", e)
+                return None
+            raise
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False,
+    ) -> bool:
+        """Tell CamillaDSP to load the YAML at `path` and reload the
+        pipeline. Atomic on the CamillaDSP side — no audio dropout
+        across the swap (same property the Ducker relies on for
+        seamless main_volume changes mid-stream).
+
+        The two-step `set_file_path` + `reload` is what camillagui-
+        backend does and what every CamillaDSP downstream uses for
+        config swap. Bundling them here keeps the call site simple
+        and ensures the order is correct (path before reload).
+        """
+        def write_and_reload(c):
+            c.config.set_file_path(path)
+            c.general.reload()
+            return True
+        try:
+            return bool(await self._call(write_and_reload))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning(
+                    "camilla unavailable; set_config_file_path(%s) skipped: %s",
+                    path, e,
+                )
+                return False
+            raise
+
+    async def reload(self, *, best_effort: bool = False) -> bool:
+        """Reload the currently-set config file path. Used by the
+        room-correction wizard's 'Reset to flat' action when the path
+        is already pointed at /etc/camilladsp/v1.yml — saves a
+        redundant set_file_path call."""
+        try:
+            await self._call(lambda c: c.general.reload())
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning("camilla unavailable; reload skipped: %s", e)
+                return False
+            raise
+
 
 class Ducker:
     """Voice-session ducking around CamillaDSP main_volume.
