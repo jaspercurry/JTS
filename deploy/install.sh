@@ -503,6 +503,15 @@ install_nginx_site() {
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
 
+    # Static landing page served at /. Plain HTML, no daemon — nginx
+    # reads it directly via the `location = /` block in jasper.conf.
+    # Updates require an `nginx -s reload` (handled by the reload below)
+    # but no service restart.
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 \
+        "${REPO_DIR}/deploy/index.html" \
+        /usr/share/jasper-web/index.html
+
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
     # `default` symlink; remove it idempotently.
@@ -511,7 +520,7 @@ install_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/spotify, /voice, /dial are live"
+        echo "  nginx reloaded — http://<host>/, /spotify, /voice, /dial are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
