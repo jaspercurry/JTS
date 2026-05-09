@@ -300,12 +300,14 @@ class GeminiLiveTurn(LiveTurn):
             await self._conn._handle_tool_call(tool_call)
 
         # Server content: turn_complete + interrupted.
+        turn_just_completed = False
         sc = getattr(response, "server_content", None)
         if sc is not None:
             if getattr(sc, "turn_complete", False):
                 self._turn_count += 1
                 self._last_activity_at = asyncio.get_event_loop().time()
                 self._server_turn_complete = True
+                turn_just_completed = True
             if getattr(sc, "interrupted", False):
                 # Drop any audio chunks queued ahead of this point — they
                 # are pre-interrupt and should NOT be played to the user.
@@ -327,6 +329,20 @@ class GeminiLiveTurn(LiveTurn):
                 self._usage["input_tokens"] = int(in_tok)
             if out_tok is not None:
                 self._usage["output_tokens"] = int(out_tok)
+
+        # Per-turn diagnostic line, parity with the OpenAI adapter's
+        # `openai response.done:` log. Gemini's usage_metadata is
+        # session-cumulative and lacks the audio/text/cached split, so
+        # we surface what we have: cumulative tokens + this turn's
+        # chunk count. Same shape lets `grep "response.done\|turn complete"`
+        # work across providers when comparing behavior.
+        if turn_just_completed:
+            logger.info(
+                "gemini turn complete: in=%d out=%d (cumulative) chunks=%d",
+                int(self._usage.get("input_tokens") or 0),
+                int(self._usage.get("output_tokens") or 0),
+                self._chunks_received,
+            )
 
     def _on_connection_lost(self) -> None:
         """Called by the connection when the underlying WS dropped while
