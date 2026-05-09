@@ -1,5 +1,5 @@
 """User-initiated rotary-dial onboarding wizard. Public surface:
-https://jts.local/dial/ — visible there because nginx reverse-proxies
+http://jts.local/dial/ — visible there because nginx reverse-proxies
 /dial/ → http://127.0.0.1:8766/.
 
 Why a wizard and not a udev auto-trigger:

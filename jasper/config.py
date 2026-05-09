@@ -116,8 +116,14 @@ class Config:
     # systemd RuntimeDirectory.
     librespot_state_path: str
 
+    # The speaker's mDNS hostname — what other devices on the LAN type
+    # into their browser to reach the speaker. Default is `jts.local`
+    # (canonical reference deployment). Override at install time if you
+    # ran `hostnamectl set-hostname` to something else; the URLs below
+    # default to `http://${hostname}` when not explicitly set.
+    hostname: str
+
     spotify_client_id: str
-    spotify_client_secret: str
     spotify_redirect_uri: str
     spotify_cache_path: str
     spotify_device_name: str
@@ -168,8 +174,13 @@ class Config:
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
         openai_key = _env("OPENAI_API_KEY", required=(provider == "openai"))
         grok_key = _env("XAI_API_KEY", required=(provider == "grok"))
+        # Speaker hostname is the single source of truth for "where do
+        # other devices reach this speaker?" — read first so URL
+        # defaults below can derive from it.
+        hostname = _env("JASPER_HOSTNAME", "jts.local")
         return _validate(cls(
             voice_provider=provider,
+            hostname=hostname,
             gemini_api_key=gemini_key,
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             # Pin the TTS voice so it's consistent across sessions.
@@ -304,15 +315,19 @@ class Config:
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
-            spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),
             # The redirect URI is the URL Spotify bounces the OAuth
             # code back to. It must be an exact match for one of the
             # URIs registered in the user's Spotify Developer App.
-            # In multi-user installs this is the public-facing URL
-            # (jasper.local/spotify/callback) reverse-proxied by nginx
-            # to the local jasper-web service.
+            # Default is the canonical bounce page on GitHub Pages
+            # (separate public repo `jaspercurry/spotify-oauth-callback`),
+            # with `?host=` carrying the speaker's hostname so a single
+            # hosted page works for any speaker. For `manual` mode (no
+            # external infrastructure), override to
+            # "http://127.0.0.1:8888/callback" — the loopback exception
+            # Spotify still allows.
             spotify_redirect_uri=_env(
-                "SPOTIFY_REDIRECT_URI", "https://jasper.local/spotify/callback"
+                "SPOTIFY_REDIRECT_URI",
+                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
             ),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout
@@ -336,12 +351,15 @@ class Config:
             # Public URL household members visit to add their Spotify
             # account. Surfaced in error messages so the voice
             # assistant can tell unrecognized users where to go.
+            # Defaults to http://${hostname}/spotify; override only if
+            # the speaker is reverse-proxied behind a different
+            # hostname or path.
             spotify_setup_url=_env(
-                "JASPER_SPOTIFY_SETUP_URL", "https://jasper.local/spotify"
+                "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
             ),
             # Where the jasper-web service listens. Reverse-proxied
             # from nginx's port 80 — the public surface stays at
-            # jasper.local/spotify regardless.
+            # jts.local/spotify regardless.
             spotify_web_bind_host=_env(
                 "JASPER_SPOTIFY_WEB_HOST", "127.0.0.1"
             ),
@@ -351,10 +369,10 @@ class Config:
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
             # when something blocks normal voice response (spend cap,
-            # connection failure). Default uses jts.local — installs
-            # on a different hostname should override.
+            # connection failure). Defaults to http://${hostname}; the
+            # speaker no longer ships an HTTPS cert.
             management_url=_env(
-                "JASPER_MANAGEMENT_URL", "https://jts.local",
+                "JASPER_MANAGEMENT_URL", f"http://{hostname}",
             ),
             sounds_dir=_env(
                 "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
@@ -416,4 +434,7 @@ class Config:
 
     @property
     def spotify_enabled(self) -> bool:
-        return bool(self.spotify_client_id and self.spotify_client_secret)
+        # PKCE: only the client_id is needed; no secret. A client_id
+        # alone is enough to authorize accounts and refresh their
+        # tokens against Spotify.
+        return bool(self.spotify_client_id)

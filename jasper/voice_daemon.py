@@ -570,7 +570,6 @@ def _build_router(cfg: Config) -> Router | None:
     clients = build_clients(
         accounts,
         client_id=cfg.spotify_client_id,
-        client_secret=cfg.spotify_client_secret,
         redirect_uri=cfg.spotify_redirect_uri,
     )
     if not clients:
@@ -1502,7 +1501,7 @@ async def run() -> None:
             await tts_volume_tracker.start()
 
             # Build the audio-cue manager. Hostname for templates is
-            # extracted from JASPER_MANAGEMENT_URL ("https://jts.local"
+            # extracted from JASPER_MANAGEMENT_URL ("http://jts.local"
             # → "jts.local") so cues say "visit jts.local" rather
             # than reading out the full URL with scheme/path. The
             # manager is wired into WakeLoop so failure paths can

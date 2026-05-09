@@ -52,7 +52,7 @@ this section is the operational summary.
 **Two ways to switch.** Either work; pick whichever fits the moment.
 
 **Web UI (preferred, end-user friendly)** — visit
-`https://jts.local/voice/` from any device on the LAN. The page
+`http://jts.local/voice/` from any device on the LAN. The page
 shows one card per provider for pasting API keys, picks model and
 voice from curated dropdowns, and has a single radio group at the
 top for "use this provider". Saving writes

@@ -22,11 +22,12 @@
 #   grok   :  $0.05  / minute  (flat $3.00 / hour, NOT token-based — note
 #                                JASPER_DAILY_SPEND_CAP_USD will under-count)
 #
-# Defaults: PI_HOST=jasper.local PI_USER=pi (override via env).
+# Defaults: PI_HOST falls back to JASPER_HOSTNAME, then to jts.local.
+# PI_USER=pi. Override either via env.
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-jasper.local}"
+PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 SSH="ssh -o ConnectTimeout=5 ${PI_USER}@${PI_HOST}"
 

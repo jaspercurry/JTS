@@ -140,7 +140,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
         return CheckResult(
             env_name, "fail",
             f"not set; required because JASPER_VOICE_PROVIDER="
-            f"{cfg.voice_provider!r}. Paste at https://jts.local/voice/ "
+            f"{cfg.voice_provider!r}. Paste at http://jts.local/voice/ "
             f"or add to /etc/jasper/jasper.env.",
         )
     if not key.startswith(prefix):
@@ -609,7 +609,6 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         clients = build_clients(
             accounts,
             client_id=cfg.spotify_client_id,
-            client_secret=cfg.spotify_client_secret,
             redirect_uri=cfg.spotify_redirect_uri,
         )
     except Exception as e:  # noqa: BLE001

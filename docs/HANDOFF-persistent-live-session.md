@@ -159,12 +159,12 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 The Pi is the integration target. The development loop:
 
 1. Make code changes locally on the laptop in `/Users/jaspercurry/Code/JTS/`
-2. Sync to Pi: `rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jasper.local:/home/pi/jts/`
-3. Deploy to `/opt/jasper/`: `ssh pi@jasper.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/"`
-4. Restart daemon: `ssh pi@jasper.local "sudo systemctl restart jasper-voice"`
+2. Sync to Pi: `rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/`
+3. Deploy to `/opt/jasper/`: `ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/"`
+4. Restart daemon: `ssh pi@jts.local "sudo systemctl restart jasper-voice"`
 5. Pull logs: `bash scripts/fetch-pi-logs.sh` (output lands in `./logs/*-latest.log`)
 
-Or live tail: `ssh pi@jasper.local "sudo journalctl -u jasper-voice -f"`.
+Or live tail: `ssh pi@jts.local "sudo journalctl -u jasper-voice -f"`.
 
 For unit testing the reconnect state machine, mock the SDK's `aio.live.connect` and exercise:
 - Successful connect → in-turn → idle → in-turn cycle
@@ -201,7 +201,7 @@ Read these on the branch (all are in the repo root or `docs/`):
 
 ## Pi access
 
-- SSH key already deployed: `ssh pi@jasper.local`
+- SSH key already deployed: `ssh pi@jts.local`
 - sudo password if you need it interactively: `pipass`
 - Service: `systemctl {status,restart,stop} jasper-voice`
 - Daemon code at `/opt/jasper/jasper/`
@@ -220,8 +220,8 @@ bash scripts/switch-gemini-model.sh         # show current
 bash scripts/switch-gemini-model.sh 3.1     # → gemini-3.1-flash-live-preview
 bash scripts/switch-gemini-model.sh 2.5     # → gemini-2.5-flash-native-audio-preview-12-2025
 # sync laptop → Pi → /opt/jasper
-rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jasper.local:/home/pi/jts/
-ssh pi@jasper.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/ && sudo systemctl restart jasper-voice"
+rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/
+ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/ && sudo systemctl restart jasper-voice"
 # tests
 .venv/bin/pytest
 ```

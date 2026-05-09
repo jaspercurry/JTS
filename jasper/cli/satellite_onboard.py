@@ -614,11 +614,12 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("satellite reports PROVISIONED — checking mDNS %s", args.mdns_host)
     ip = wait_for_online(args.mdns_host, timeout=20.0)
     if ip is None:
+        speaker_host = os.environ.get("JASPER_HOSTNAME", "jts.local")
         logger.warning(
             "satellite did not appear at %s within 20 s. WiFi probably worked "
             "(Improv waits for it before reporting PROVISIONED), but mDNS "
             "may be filtered on your network. The satellite should still reach "
-            "jasper.local for HTTP control.", args.mdns_host,
+            "%s for HTTP control.", args.mdns_host, speaker_host,
         )
     else:
         logger.info("satellite online at %s (%s)", args.mdns_host, ip)
