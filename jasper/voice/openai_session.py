@@ -180,6 +180,10 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._interrupt_event = asyncio.Event()
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
+        # Updated by `audio_out()` each time the consumer dequeues a
+        # chunk — the right anchor for the idle watchdog's tail wait.
+        # See `last_chunk_played_at()` docstring on LiveTurn for why.
+        self._last_chunk_dequeued_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at = started_at
         self._started_at_monotonic: float = _time.monotonic()
@@ -255,6 +259,13 @@ class OpenAIRealtimeTurn(LiveTurn):
             chunk = await self._audio_q.get()
             if chunk is None:
                 return
+            # Stamp the dequeue time so the idle watchdog can see the
+            # consumer making real-time progress through the queue,
+            # not just network arrivals. Without this, OpenAI's "all
+            # chunks arrive in 1.4 s, played over 7 s" pattern would
+            # let the watchdog end the turn while ~5 s of audio is
+            # still queued.
+            self._last_chunk_dequeued_at = asyncio.get_event_loop().time()
             yield chunk
 
     async def release(self) -> None:
@@ -285,6 +296,9 @@ class OpenAIRealtimeTurn(LiveTurn):
 
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
+
+    def last_chunk_played_at(self) -> float:
+        return self._last_chunk_dequeued_at
 
     def server_turn_complete(self) -> bool:
         return self._server_turn_complete

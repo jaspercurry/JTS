@@ -134,6 +134,14 @@ class GeminiLiveTurn(LiveTurn):
         # Used by the daemon's idle watchdog and barge-in gate.
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
+        # Updated by audio_out() each time the consumer dequeues a
+        # chunk. The idle watchdog uses this for the tail wait so we
+        # don't end the turn while audio is still queued waiting to
+        # play through ALSA. Gemini paces audio chunks closer to
+        # real-time than OpenAI does, so this anchor matters less for
+        # this provider — but we track it anyway for protocol parity
+        # so daemon code stays single-path.
+        self._last_chunk_dequeued_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at = started_at
         # Monotonic clock anchor for elapsed-ms log lines. The connection
@@ -188,6 +196,7 @@ class GeminiLiveTurn(LiveTurn):
             chunk = await self._audio_q.get()
             if chunk is None:
                 return
+            self._last_chunk_dequeued_at = asyncio.get_event_loop().time()
             yield chunk
 
     async def release(self) -> None:
@@ -223,6 +232,9 @@ class GeminiLiveTurn(LiveTurn):
 
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
+
+    def last_chunk_played_at(self) -> float:
+        return self._last_chunk_dequeued_at
 
     def server_turn_complete(self) -> bool:
         """True once the server has emitted server_content.turn_complete

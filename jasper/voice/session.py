@@ -51,6 +51,25 @@ class LiveTurn(Protocol):
         to detect when the model is currently producing TTS."""
         ...
 
+    def last_chunk_played_at(self) -> float:
+        """Loop time when the playback consumer last DEQUEUED an audio
+        chunk via ``audio_out()``. Distinct from ``last_chunk_at()``,
+        which is when the chunk was RECEIVED from the server.
+
+        The two timestamps can diverge by several seconds. OpenAI
+        Realtime delivers all of a response's audio chunks back-to-back
+        over the WebSocket — typically faster than real-time — while
+        the consumer drains them at real-time playback rate via ALSA.
+        For deciding when audio playback is fully drained (the
+        daemon's idle-watchdog tail wait), this is the correct signal.
+        Using the network-arrival anchor instead ends the turn 1.5 s
+        after chunks STOPPED ARRIVING, well before the consumer has
+        finished playing them — abandoning the queue tail and audibly
+        cutting off the model mid-sentence.
+
+        Returns 0.0 if the consumer has not dequeued any chunks yet."""
+        ...
+
     def bytes_sent(self) -> int:
         """Total bytes of audio sent to the server during this turn.
         Used together with chunks_received() to detect the silent-failure

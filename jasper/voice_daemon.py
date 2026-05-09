@@ -672,15 +672,37 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
             # Wait POST_RESPONSE_IDLE_TIMEOUT_SEC after the LAST audio
-            # chunk so any tail chunks finish playing through the
-            # speaker, then close. We use last_chunk_at if any audio
-            # came through, else last_activity_at (no audio response).
-            tail_anchor = turn.last_chunk_at() or turn.last_activity_at()
+            # chunk has been DEQUEUED by the playback consumer — not
+            # since it last ARRIVED on the wire. The two timestamps
+            # diverge for OpenAI Realtime: the server delivers all of
+            # a response's audio chunks back-to-back (faster than
+            # real-time), and the consumer plays them at real-time
+            # rate via ALSA. Anchoring on `last_chunk_at` (network
+            # arrival) ended turns ~1.5 s after the last byte hit our
+            # socket — while ~5 s of audio was still in the consumer's
+            # queue waiting to play, audibly cutting the model off
+            # mid-sentence in production. `last_chunk_played_at` is
+            # the consumer-side anchor that advances at real-time as
+            # the queue drains.
+            #
+            # `getattr` guard: the protocol method is new; older turn
+            # implementations without it fall back to the historical
+            # network-arrival anchor.
+            played_anchor = 0.0
+            getter = getattr(turn, "last_chunk_played_at", None)
+            if callable(getter):
+                played_anchor = getter() or 0.0
+            tail_anchor = (
+                played_anchor
+                or turn.last_chunk_at()
+                or turn.last_activity_at()
+            )
             tail_idle = now - tail_anchor
             if tail_idle > POST_RESPONSE_IDLE_TIMEOUT_SEC:
                 logger.info(
-                    "turn_complete + tail (%.1fs), ending turn",
+                    "turn_complete + tail (%.1fs since last %s), ending turn",
                     tail_idle,
+                    "chunk played" if played_anchor else "chunk received",
                 )
                 return
             continue
