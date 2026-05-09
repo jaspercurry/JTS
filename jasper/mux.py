@@ -40,9 +40,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
-import httpx
-
 from . import librespot_state
+from .source_state import airplay_playing, bluetooth_playing, spotify_playing
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +76,6 @@ class Mux:
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
     ) -> None:
         self._librespot_state_path = librespot_state_path
-        self._http = httpx.AsyncClient(timeout=2.0)
         self._state = _State()
         self._winner: Optional[Source] = None
         self._winner_age_ticks = 0
@@ -87,31 +85,25 @@ class Mux:
         self._spotify_router: Any | None = None
         self._spotify_router_built = False
 
-    async def aclose(self) -> None:
-        await self._http.aclose()
-
     async def run(self) -> None:
         logger.info(
             "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
-        try:
-            while True:
-                try:
-                    await self._tick()
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("mux tick failed: %s", e)
-                await asyncio.sleep(self.POLL_INTERVAL_SEC)
-        finally:
-            await self.aclose()
+        while True:
+            try:
+                await self._tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning("mux tick failed: %s", e)
+            await asyncio.sleep(self.POLL_INTERVAL_SEC)
 
     async def _tick(self) -> None:
         spotify, airplay, bluetooth = await asyncio.gather(
-            self._spotify_playing(),
-            self._airplay_playing(),
-            self._bluetooth_playing(),
+            spotify_playing(self._librespot_state_path),
+            airplay_playing(),
+            bluetooth_playing(),
         )
         current = {
             Source.SPOTIFY: spotify,
@@ -153,41 +145,6 @@ class Mux:
 
         self._winner = new_winner
         self._winner_age_ticks = 0
-
-    # ------------------------------------------------------------------
-    # State probes — each fail-soft. Returns False on any error rather
-    # than raising; a missing daemon should never crash the mux.
-    # ------------------------------------------------------------------
-
-    async def _spotify_playing(self) -> bool:
-        # State file is small; reading it on every tick is cheap.
-        # is_playing() returns False on missing file / parse error,
-        # which is the right "spotify not active" answer.
-        return librespot_state.is_playing(self._librespot_state_path)
-
-    async def _airplay_playing(self) -> bool:
-        out = await _busctl(
-            "call", "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.freedesktop.DBus.Properties", "Get", "ss",
-            "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
-        )
-        return out is not None and '"Playing"' in out
-
-    async def _bluetooth_playing(self) -> bool:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluealsa-cli", "list-pcms",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=2.0,
-            )
-        except (FileNotFoundError, asyncio.TimeoutError) as e:
-            logger.debug("bluealsa-cli probe failed: %s", e)
-            return False
-        return b"a2dpsnk/source" in stdout
 
     # ------------------------------------------------------------------
     # Pause actions — Spotify and AirPlay have clean APIs; Bluetooth
@@ -356,11 +313,6 @@ def main() -> None:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    # Silence httpx's per-request INFO log — at 1 Hz polling, leaving
-    # this on writes ~86k log lines/day which crowds out anything
-    # interesting in the journal. We still see WARN+ from httpx
-    # (which is what we'd want to debug a real issue).
-    logging.getLogger("httpx").setLevel(logging.WARNING)
     try:
         asyncio.run(_amain(args))
     except KeyboardInterrupt:

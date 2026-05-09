@@ -165,20 +165,27 @@ async def resolve_target(
 
 async def stop_renderers(renderer, names: list[str]) -> None:
     """Stop the renderers named in `names`. Names match
-    Resolution.stop_renderers values. mpd is paused; airplay/bluetooth
-    are disabled via disable_renderer. After disabling, the service
-    takes a beat to actually release the audio device — a small sleep
-    avoids a race where librespot starts while shairport-sync is still
-    draining."""
+    Resolution.stop_renderers values: mpd → renderer.pause();
+    airplay → pause_airplay() (MPRIS Pause on shairport-sync);
+    bluetooth → no-op (bluez-alsa A2DP sink has no graceful pause API).
+    After pausing AirPlay the service takes a beat to release the audio
+    device — a small sleep avoids a race where librespot starts while
+    shairport-sync is still draining."""
     for name in names:
         try:
             if name == "mpd":
                 await renderer.pause()
-            elif name in ("airplay", "bluetooth"):
-                await renderer.disable_renderer(name)
+            elif name == "airplay":
+                await renderer.pause_airplay()
+            elif name == "bluetooth":
+                # No graceful pause on bluez-alsa A2DP sink — phone
+                # keeps streaming until the user pauses on phone.
+                logger.debug(
+                    "stop_renderers: bluetooth — no graceful pause API",
+                )
             else:
                 logger.warning("unknown renderer to stop: %s", name)
         except Exception as e:  # noqa: BLE001
             logger.warning("stop_renderers(%s) failed: %s", name, e)
-    if any(n in ("airplay", "bluetooth") for n in names):
+    if "airplay" in names:
         await asyncio.sleep(0.25)
