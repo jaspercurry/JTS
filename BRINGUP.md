@@ -142,9 +142,21 @@ systemctl status jasper-camilla jasper-voice jasper-mux \
 sudo vim /etc/jasper/jasper.env
 ```
 
-Required (jasper-voice will refuse to start without these):
+Required: an API key for whichever real-time voice provider you
+want active. The voice loop runs against any of three backends —
+pick one, paste the matching key. (You can switch later via the
+web wizard in Phase 3.5 without re-editing this file.)
 
-- `GEMINI_API_KEY=<your key from Google AI Studio>`
+- `GEMINI_API_KEY=<your key from Google AI Studio>` —
+  default provider, cheapest (~$0.025/min)
+- `OPENAI_API_KEY=<your key from platform.openai.com>` — set
+  `JASPER_VOICE_PROVIDER=openai` to make it active (~$0.30/min)
+- `XAI_API_KEY=<your key from console.x.ai>` — set
+  `JASPER_VOICE_PROVIDER=grok` to make it active (~$0.05/min)
+
+`jasper-voice` refuses to start if the active provider's key is
+missing or empty. If you set more than one key, the others stay
+benign — the wizard uses them when you switch providers.
 
 Optional but recommended:
 
@@ -166,6 +178,40 @@ After editing:
 ```sh
 sudo systemctl restart jasper-voice
 ```
+
+---
+
+## Phase 3.5 — Pick a voice provider via the wizard (2 min, optional)
+
+This step is optional — the env file you just wrote already
+selects a provider. The wizard at `https://jts.local/voice/` is
+the friendlier path: paste keys, pick model and voice from
+curated dropdowns, flip the active provider with a single radio
+group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
+0600), which `jasper-voice.service` sources AFTER
+`/etc/jasper/jasper.env` so wizard values override the operator
+defaults from Phase 3.
+
+Two reasons to use it:
+
+- **Voice picker labels include gender/style hints.** `marin`
+  is "feminine, warm", `ash` is "masculine, soft" — easier to
+  pick than reading just the catalogue name.
+- **Switch provider without SSH.** Useful for A/B comparisons
+  or if you want to flip from Gemini's $0.025/min to OpenAI's
+  better instruction-following on the fly.
+
+The page is also available scriptably from your laptop:
+
+```sh
+bash scripts/switch-voice-provider.sh           # show current
+bash scripts/switch-voice-provider.sh openai    # switch
+```
+
+The script refuses if the destination provider's key isn't
+already in `jasper.env` or the wizard's env file. See
+[`docs/HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md)
+for the full per-provider trade-off table.
 
 ---
 
@@ -238,7 +284,7 @@ account routed for voice commands.
 
 ```
 "Hey Jarvis."
-[~1s pause for wake detection + Gemini Live to open]
+[~1s pause for wake detection + the active voice provider to open a turn]
 "What time is it?"
 ```
 
@@ -246,7 +292,7 @@ You should hear a synthetic voice reply. If not:
 
 ```sh
 sudo journalctl -u jasper-voice -f
-# Watch for wake events, Gemini errors, etc. while you say "Hey Jarvis"
+# Watch for wake events and provider errors as you say "Hey Jarvis"
 ```
 
 Other test prompts:
@@ -261,11 +307,15 @@ Other test prompts:
 ## Phase 8 — Run doctor (1 min)
 
 ```sh
-sudo -E /opt/jasper/.venv/bin/jasper-doctor
+sudo /opt/jasper/.venv/bin/jasper-doctor
 ```
 
 Returns 0 if all critical checks pass. The codified version of
-this runbook's smoke tests.
+this runbook's smoke tests. The doctor reads
+`/etc/jasper/jasper.env` and (if present)
+`/var/lib/jasper/voice_provider.env` itself, so the active
+provider's key is checked regardless of which env file you put it
+in.
 
 Common warnings (non-fatal):
 
@@ -358,9 +408,14 @@ certain firmware versions (respeaker repo issue #8).
   No log = mic isn't being captured. Verify `JASPER_MIC_DEVICE`
   matches what `arecord -l` shows.
 
-**Wake fires but no Gemini response.**
-- `GEMINI_API_KEY` might be missing/invalid. Check
-  `/etc/jasper/jasper.env`.
+**Wake fires but no voice response.**
+- The active provider's API key might be missing/invalid. Check
+  `/etc/jasper/jasper.env` (or `/var/lib/jasper/voice_provider.env`
+  if you used the `/voice/` wizard) for the right env var:
+  `GEMINI_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`.
+- The active provider can be confirmed with
+  `grep JASPER_VOICE_PROVIDER /etc/jasper/jasper.env
+  /var/lib/jasper/voice_provider.env` (later wins).
 - Daily spend cap might be hit. Check
   `cat /var/lib/jasper/usage.db` via sqlite3.
 

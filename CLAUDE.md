@@ -383,11 +383,14 @@ ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh
 `jasper-doctor` codifies BRINGUP.md's smoke tests:
 
 ```sh
-sudo -E /opt/jasper/.venv/bin/jasper-doctor
+sudo /opt/jasper/.venv/bin/jasper-doctor
 ```
 
 Returns 0 if all critical checks pass. First thing to ask the
-user to run when something's broken.
+user to run when something's broken. The doctor reads
+`/etc/jasper/jasper.env` and (if present)
+`/var/lib/jasper/voice_provider.env` itself — no need to source
+them into the calling shell.
 
 ---
 

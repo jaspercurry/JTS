@@ -53,7 +53,7 @@ Each backend has a real strength and at least one real cost:
 | **OpenAI Realtime** (gpt-realtime-2, GA 2026-05-07) | Reasoning levels (minimal/low/medium/high/xhigh); 128K context; multi-tool-at-once; image input; MCP; SIP; arguably tightest tool/instruction following | $32/$64/$0.40 per 1M tokens — about 5× Gemini per minute; 60-min hard session cap with NO resumption; PCM-input only at 24 kHz (we upsample 16 kHz mic) |
 | **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour billing (cheapest at sustained chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Token-based spend cap under-counts (logs a warning at startup); voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and we normalise it in `grok_session.py` |
 
-Anthropic is **not** on the list. As of 2026-05-08 there is no public
+Anthropic is **not** on the list. As of 2026-05-09 there is no public
 real-time speech-to-speech API from Anthropic — only push-to-talk Voice
 Mode in the consumer apps and dictation in Claude Code.
 
