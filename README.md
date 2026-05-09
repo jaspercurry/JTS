@@ -445,15 +445,24 @@ When something's broken:
 ```sh
 # On the Pi:
 sudo /opt/jasper/.venv/bin/jasper-doctor          # codified smoke tests
+curl -s http://jts.local:8780/state | jq          # cross-daemon snapshot
 
 # From the laptop:
 bash scripts/fetch-pi-logs.sh                     # pull journals to ./logs/
 bash scripts/tail-pi-logs.sh                      # live tail all units
+bash scripts/jasper-trace.sh                      # filter to event= lines
 ```
 
 `jasper-doctor` codifies the smoke tests in BRINGUP.md and runs
 them as code. `fetch-pi-logs.sh` pulls journals + configs +
 ALSA state into `./logs/`, redacting secrets server-side.
+`jasper-trace.sh` is the live-tail equivalent narrowed to the
+cross-daemon `event=` lines emitted by `jasper.camilla.Ducker`,
+the dial volume routes, etc. — useful when you want to see
+duck/preempt/route timing without the rest of each daemon's
+chatter. `GET /state` on `jasper-control` returns one JSON
+snapshot of voice / audio / renderers / satellites, fail-soft
+per section.
 
 Common failure modes are documented at the bottom of
 [BRINGUP.md](BRINGUP.md). For subsystem-specific issues, the

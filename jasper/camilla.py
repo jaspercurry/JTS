@@ -200,6 +200,10 @@ class Ducker:
         if result is None:
             return
         self._ducked = True
+        logger.info(
+            "event=duck on=true new_db=%.1f duck_db=%.1f",
+            result, self._duck_db,
+        )
 
     async def restore(self) -> None:
         if not self._ducked:
@@ -207,5 +211,6 @@ class Ducker:
         try:
             target_db = await self._target_db_provider()
             await self._camilla.set_volume_db(target_db, best_effort=True)
+            logger.info("event=duck on=false target_db=%.1f", target_db)
         finally:
             self._ducked = False

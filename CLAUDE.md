@@ -368,9 +368,30 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 Live tail (interactive, Ctrl-C to stop):
 
 ```sh
-bash scripts/tail-pi-logs.sh                # all units
+bash scripts/tail-pi-logs.sh                # all jasper-* units + renderers
 bash scripts/tail-pi-logs.sh jasper-voice   # just one
 ```
+
+For just the cross-daemon "events" — duck transitions, source
+preempts, dial volume routing, wake/turn boundaries — the
+`jasper-trace.sh` wrapper filters the live tail down to the
+high-signal lines:
+
+```sh
+bash scripts/jasper-trace.sh                # default: last 5 min, follow
+SINCE='1 hour ago' bash scripts/jasper-trace.sh
+```
+
+For a single JSON snapshot of cross-daemon state (voice provider /
+session / spend, main_volume_db / listening_level, renderer states,
+dial heartbeat), hit jasper-control's `/state` aggregator:
+
+```sh
+curl -s http://jts.local:8780/state | jq
+```
+
+Each `/state` section fails soft — if a daemon is unreachable, that
+section is null instead of the whole call erroring out.
 
 For a one-shot full diagnostic dump (when something's badly
 wrong), run on the Pi:
