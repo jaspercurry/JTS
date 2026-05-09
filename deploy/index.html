@@ -56,6 +56,17 @@
       </div>
     </a>
 
+    <a class="card" id="correction-card" data-https="1" data-path="/correction/"
+       href="#">
+      <div class="name">Room correction &rsaquo;</div>
+      <div class="desc">
+        Measure your room from your iPhone and apply correction filters
+        to CamillaDSP. Requires HTTPS for mic capture — the first visit
+        will ask you to trust this speaker's certificate
+        (<a href="/jts-root-ca.crt" onclick="event.stopPropagation();">download CA</a>).
+      </div>
+    </a>
+
     <a class="card" id="camilla-card" data-port="5005" data-path="/"
        href="#" target="_blank" rel="noopener">
       <div class="name">CamillaDSP &rsaquo;</div>
@@ -75,6 +86,13 @@
     // (default jts.local or whatever JASPER_HOSTNAME was set to).
     document.querySelectorAll('a.card[data-port]').forEach(function(a) {
       a.href = 'http://' + window.location.hostname + ':' + a.dataset.port + a.dataset.path;
+    });
+    // /correction/ is on HTTPS (getUserMedia requires a secure
+    // context). The current page is HTTP, so we have to construct an
+    // absolute https URL to switch schemes — a relative link would
+    // hit the http server and 404.
+    document.querySelectorAll('a.card[data-https]').forEach(function(a) {
+      a.href = 'https://' + window.location.hostname + a.dataset.path;
     });
   </script>
 </body>

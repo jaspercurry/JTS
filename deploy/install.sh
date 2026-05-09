@@ -368,6 +368,13 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-dial-web.service" \
         "${SYSTEMD_DIR}/jasper-dial-web.service"
+    # /correction/ wizard. Phase 0 = mic-permission verify only;
+    # future phases pull in heavy deps (numpy / scipy / pyfar) so
+    # this lives in its own process rather than colocating with
+    # jasper-web (Spotify + voice settings). Mirrors jasper-dial-web.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-correction-web.service" \
+        "${SYSTEMD_DIR}/jasper-correction-web.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
@@ -444,7 +451,8 @@ install_systemd_units() {
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
-        jasper-web.service jasper-dial-web.service jasper-control.service \
+        jasper-web.service jasper-dial-web.service \
+        jasper-correction-web.service jasper-control.service \
         jasper-dac-init.service jasper-headphone-monitor.service
     # Apply the dongle Headphone-max pin immediately so a fresh
     # install gets the full analog ceiling without waiting for
@@ -461,6 +469,11 @@ Will retry on next boot."
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    # jasper-correction-web is brand-new in this install — restart so
+    # it's live on 127.0.0.1:8770 before nginx is reloaded with the
+    # /correction/ proxy. Doesn't disturb any in-flight measurement
+    # because Phase 0 has no state to lose.
+    systemctl restart jasper-correction-web.service 2>/dev/null || true
 
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
@@ -485,20 +498,90 @@ remove_legacy_https_artifacts() {
     # GitHub Pages bounce page (separate public repo
     # jaspercurry/spotify-oauth-callback). Sweep the old cert + key +
     # previous-generation nginx site files here so upgrading installs
-    # end up with the new plain-HTTP topology.
+    # end up with the new plain-HTTP topology for the legacy routes.
+    #
+    # NOTE: the new room-correction TLS lives at
+    # /etc/nginx/ssl/jts.local.{crt,key} (different filenames),
+    # provisioned by provision_correction_tls() below. Don't sweep
+    # those.
     rm -f /etc/nginx/ssl/jasper.crt /etc/nginx/ssl/jasper.key
-    rmdir /etc/nginx/ssl 2>/dev/null || true
     rm -f /etc/nginx/sites-enabled/jasper-https.conf
     rm -f /etc/nginx/sites-available/jasper-https.conf
     rm -f /etc/nginx/jasper-locations.conf
 }
 
+provision_correction_tls() {
+    # /correction/ requires HTTPS because getUserMedia (mic capture)
+    # only works in a secure context. There's no way around this in
+    # any browser, so we provision a private CA the user trusts once
+    # on iOS, then issue a server cert from it for jts.local.
+    #
+    # CA is generated once and preserved across reinstalls so the
+    # iOS trust survives upgrades. Server cert is re-issued every
+    # install (cheap, and lets a hostname change propagate).
+    #
+    # 825-day server cert expiry is Apple's hard ceiling — Safari
+    # rejects leaf certs valid longer than that since iOS 13. CA
+    # cert can be longer (10 years).
+    #
+    # See deploy/nginx-jasper.conf "Why HTTPS is added back" and
+    # docs/HANDOFF-correction.md "Decision 1 — TLS" for context.
+    local hostname="${JASPER_HOSTNAME:-jts.local}"
+    local ca_dir=/var/lib/jasper/ca
+    local ssl_dir=/etc/nginx/ssl
+    install -d -m 0700 "${ca_dir}"
+    install -d -m 0755 "${ssl_dir}"
+
+    if [[ ! -f "${ca_dir}/ca.crt" || ! -f "${ca_dir}/ca.key" ]]; then
+        echo "  generating /correction/ private CA at ${ca_dir}/ca.crt"
+        openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
+        openssl req -x509 -new -nodes -key "${ca_dir}/ca.key" \
+            -sha256 -days 3650 -out "${ca_dir}/ca.crt" \
+            -subj "/CN=JTS Speaker Local CA" 2>/dev/null
+        chmod 0600 "${ca_dir}/ca.key"
+    fi
+
+    local tmp_csr tmp_ext
+    tmp_csr=$(mktemp)
+    tmp_ext=$(mktemp)
+    openssl genrsa -out "${ssl_dir}/jts.local.key" 2048 2>/dev/null
+    openssl req -new -key "${ssl_dir}/jts.local.key" \
+        -out "${tmp_csr}" -subj "/CN=${hostname}" 2>/dev/null
+    # Always include "jts.local" + 127.0.0.1 in SANs so the cert
+    # works whether the user typed the configured hostname or the
+    # default mDNS name. Wildcard covers any future sub-host
+    # (e.g. correction.jts.local if we split routes later).
+    cat > "${tmp_ext}" <<EOF
+subjectAltName = DNS:${hostname}, DNS:*.${hostname}, DNS:jts.local, IP:127.0.0.1
+extendedKeyUsage = serverAuth
+EOF
+    openssl x509 -req -in "${tmp_csr}" -CA "${ca_dir}/ca.crt" \
+        -CAkey "${ca_dir}/ca.key" -CAcreateserial \
+        -out "${ssl_dir}/jts.local.crt" -days 825 -sha256 \
+        -extfile "${tmp_ext}" 2>/dev/null
+    chmod 0600 "${ssl_dir}/jts.local.key"
+    rm -f "${tmp_csr}" "${tmp_ext}"
+
+    # Publish CA for download by iOS (chicken-and-egg: user can't
+    # trust HTTPS until they've installed this file, so it's served
+    # over plain HTTP at http://<host>/jts-root-ca.crt — see the
+    # location block in nginx-jasper.conf).
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 "${ca_dir}/ca.crt" /usr/share/jasper-web/jts-root-ca.crt
+    echo "  /correction/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
+}
+
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
-    # (rotary-dial onboarding) to their respective jasper-web services.
-    # Plain HTTP on port 80 — Spotify's HTTPS requirement is satisfied
-    # by the GitHub Pages bounce page, not by this server.
+    # (rotary-dial onboarding) on plain HTTP, plus /correction/ (room
+    # correction wizard) on HTTPS. The legacy routes stay HTTP — Spotify's
+    # HTTPS requirement is satisfied by the GitHub Pages bounce, and there's
+    # no point breaking working flows for one new feature.
+    #
+    # /correction/ requires HTTPS because getUserMedia needs a secure
+    # context; provision_correction_tls() (called before this from main)
+    # writes the cert + key + downloadable CA.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -520,7 +603,7 @@ install_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/, /spotify, /voice, /dial are live"
+        echo "  nginx reloaded — http://<host>/{,spotify,voice,dial} + https://<host>/correction are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
@@ -632,6 +715,7 @@ main() {
     install_systemd_units
     install_avahi_jasper_control
     remove_legacy_https_artifacts
+    provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
     install_camillagui
     regenerate_audio_cues

@@ -436,7 +436,7 @@ rsync -avz --delete \
   ./ pi@jts.local:/home/pi/jts/
 
 ssh pi@jts.local 'sudo bash /home/pi/jts/deploy/install.sh'
-ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice'
+ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice jasper-correction-web'
 ```
 
 The install script is idempotent.

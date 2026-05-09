@@ -71,6 +71,7 @@ jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
 jasper-dial-web = "jasper.web.dial_setup:main"
+jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
 
