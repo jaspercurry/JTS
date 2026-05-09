@@ -7,6 +7,7 @@ import signal
 import sys
 from collections import deque
 from enum import Enum
+from typing import Awaitable, Callable
 
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
@@ -166,6 +167,15 @@ WAKE_REFRACTORY_SEC = 0.7
 # `activity_end` fires (logs show speech being chopped during a
 # natural mid-sentence pause), nudge back up to 1.0 s.
 END_OF_UTTERANCE_SILENCE_SEC = 0.8
+
+# "Still working" reassurance: if the model hasn't started producing
+# audio within this long after activity_end (user finished speaking),
+# play the `still_working` cue once. Skipped if a chunk arrives
+# first. Tools today complete in <1 s — this only fires when
+# something genuinely stalls (network blip, slow Spotify search,
+# upstream model hiccup). Without it, an unusually slow turn looks
+# like the speaker isn't responding.
+THINKING_CUE_DELAY_SEC = 2.5
 
 # Hard cap on user audio length within a single turn. Once the user
 # has been speaking continuously for this long without an
@@ -728,6 +738,49 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
             return
 
 
+async def _thinking_cue_watchdog(
+    turn: "LiveTurn",
+    get_input_ended_at: "Callable[[], float]",
+    fire_cue: "Callable[[], Awaitable[None]]",
+    delay_sec: float,
+) -> None:
+    """If the model takes longer than `delay_sec` after activity_end
+    to produce its first audio chunk, fire the reassurance cue once.
+
+    Three exit conditions:
+      * `turn.turn_lost()` — connection dropped; the cue would be
+        misleading, just exit.
+      * `turn.last_chunk_at() > 0` — model started speaking; no cue
+        needed.
+      * elapsed >= delay_sec with no chunk — fire cue, exit.
+
+    Cancellation is the normal exit path: when the parent ends the
+    turn (post-answer), it cancels this task before it can fire
+    spuriously. The 0.25 s poll interval matches `_idle_watchdog`.
+    """
+    while True:
+        await asyncio.sleep(0.25)
+        if turn.turn_lost():
+            return
+        input_ended_at = get_input_ended_at()
+        if input_ended_at == 0.0:
+            continue  # user still speaking; nothing to wait on yet
+        if turn.last_chunk_at() > 0:
+            return  # model already started, no cue needed
+        elapsed = asyncio.get_event_loop().time() - input_ended_at
+        if elapsed >= delay_sec:
+            logger.info(
+                "thinking cue: %.1fs since activity_end with no model "
+                "audio; firing still_working",
+                elapsed,
+            )
+            try:
+                await fire_cue()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("thinking cue: fire failed: %s", e)
+            return
+
+
 class WakeLoop:
     """Single mic consumer. Dispatches each frame to either the wake-word
     detector (WAKE state) or the active live turn (SESSION state). No
@@ -788,6 +841,11 @@ class WakeLoop:
         self._user_speech_seen: bool = False
         self._silence_started_at: float = 0.0
         self._input_ended: bool = False
+        # Loop-clock timestamp of the activity_end fire. 0.0 means
+        # "user is still speaking" — gates the thinking-cue watchdog,
+        # which can't usefully measure response latency until the
+        # user has actually finished their utterance.
+        self._input_ended_at: float = 0.0
         self._turn_started_at_loop: float = 0.0
         self._max_silero_score_in_turn: float = 0.0
         # Anchor timestamp for the current run of continuous speech.
@@ -999,6 +1057,7 @@ class WakeLoop:
                 HARD_RECORDING_CAP_SEC,
             )
             self._input_ended = True
+            self._input_ended_at = asyncio.get_event_loop().time()
             try:
                 await self._turn.end_input()
             except Exception as e:  # noqa: BLE001
@@ -1034,6 +1093,7 @@ class WakeLoop:
                         silence_ms,
                     )
                     self._input_ended = True
+                    self._input_ended_at = now
                     try:
                         await self._turn.end_input()
                     except Exception as e:  # noqa: BLE001
@@ -1080,6 +1140,7 @@ class WakeLoop:
         if self._input_ended:
             return "ALREADY_ENDED"
         self._input_ended = True
+        self._input_ended_at = asyncio.get_event_loop().time()
         try:
             await self._turn.end_input()
             return "OK"
@@ -1115,6 +1176,7 @@ class WakeLoop:
         self._silence_started_at = 0.0
         self._speech_run_started_at = 0.0
         self._input_ended = False
+        self._input_ended_at = 0.0
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0
         # Pin TTS gain to the user's pre-duck master volume + offset
@@ -1160,7 +1222,19 @@ class WakeLoop:
         idle = asyncio.create_task(
             _idle_watchdog(self._turn, self._cfg.idle_timeout_sec)
         )
-        self._bg_tasks = {playback, idle}
+
+        async def _fire_thinking_cue() -> None:
+            await self._play_cue("still_working")
+
+        thinking = asyncio.create_task(
+            _thinking_cue_watchdog(
+                self._turn,
+                lambda: self._input_ended_at,
+                _fire_thinking_cue,
+                THINKING_CUE_DELAY_SEC,
+            )
+        )
+        self._bg_tasks = {playback, idle, thinking}
         self._state = State.SESSION
 
     async def _cleanup_after_failed_begin(self) -> None:

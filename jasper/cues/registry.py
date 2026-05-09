@@ -75,6 +75,20 @@ CUES: tuple[CueDef, ...] = (
             "Rate-limited to once per hour to avoid spamming."
         ),
     ),
+    CueDef(
+        slug="still_working",
+        template="Working on it.",
+        description=(
+            "Reassurance cue fired by the daemon's thinking-cue "
+            "watchdog when the model hasn't started speaking within "
+            "~2.5 s of activity_end. Skipped if a model audio chunk "
+            "has already arrived. Distinct from anti-preamble rules "
+            "in the system prompt: those forbid the *model* from "
+            "filling tool-call latency with filler audio every time. "
+            "This cue fires only when latency is actually long, so "
+            "the user gets confirmation the speaker heard them."
+        ),
+    ),
 )
 
 
