@@ -159,10 +159,10 @@ back.
 ## AEC bridge — opt-in toggle
 
 Software AEC is **built but disabled by default**. README's
-"Acoustic echo cancellation" section covers the two selectable
-engines (SpeexDSP default vs. WebRTC AEC3 via
-`JASPER_AEC_ENGINE=webrtc3`, which is −15 to −18 dB on music) and
-the ~110 MB RAM cost. The full investigation is in
+"Acoustic echo cancellation" section covers the engine (WebRTC
+AEC3 via the `jasper_aec3` pybind11 binding, −15 to −18 dB on
+music with the production REF_GAIN/MIC_GAIN tunings) and the
+~110 MB RAM cost. The full investigation is in
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware

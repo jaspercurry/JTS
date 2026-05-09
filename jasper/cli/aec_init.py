@@ -18,7 +18,7 @@ The historical `AUDIO_MGR_SYS_DELAY` calibration job is gone —
 that was for the chip's on-chip AEC, which we abandoned in favor
 of software AEC in jasper-aec-bridge. The 6-ch firmware exposes
 raw mics on channels 2-5; the bridge takes raw mic 0 and runs
-SpeexDSP cancellation host-side.
+WebRTC AEC3 cancellation host-side.
 """
 from __future__ import annotations
 

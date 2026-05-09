@@ -564,7 +564,7 @@ def check_ram() -> CheckResult:
 
 
 def check_aec_bridge_running() -> CheckResult:
-    """jasper-aec-bridge runs SpeexDSP echo cancellation on the XVF
+    """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
     chip's raw mic 0 (channel 2 of 6-ch firmware), with the
     renderer→camilla loopback as far-end reference. Output goes to
     LoopbackAEC which jasper-voice consumes as its mic source.

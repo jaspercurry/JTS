@@ -12,19 +12,14 @@ attenuate echo in our config.
 This bridge does the AEC in software, with raw mic 0 (channel 2 of
 the chip's 6-channel USB capture, exposed by the 6-ch firmware
 variant 2.0.8) as near-end and the host-side music chain as
-far-end.
-
-Two engines are supported via `JASPER_AEC_ENGINE`:
-  - `speex` (default): SpeexDSP's linear NLMS EchoCanceller. Cheap
-    (~1-2 % of one core), but cannot model speaker non-linearity —
-    falls over once music gets loud (Speex's own docs are explicit
-    about this).
-  - `webrtc3`: WebRTC's modern AEC3 via the `jasper_aec3` pybind11
-    binding around Trixie's `libwebrtc-audio-processing-dev` (v1.3-3,
-    which IS AEC3 — the 1.x version is package-API stability, not
-    algorithm version). Adds a frequency-domain residual echo
-    suppressor + drift-tolerant delay estimator. ~3-8 % of one Pi 5
-    core. Required for wake-during-music.
+far-end. The engine is WebRTC AEC3 via the `jasper_aec3` pybind11
+binding around Trixie's `libwebrtc-audio-processing-dev` (v1.3-3
+— which IS AEC3; the 1.x is package-API stability versioning, not
+algorithm version). AEC3 includes a frequency-domain residual echo
+suppressor + drift-tolerant delay estimator and runs at ~3-8% of
+one Pi 5 core. See docs/HANDOFF-aec.md for the full investigation
+including why SpeexDSP was tried first then dropped, and what
+deeper tuning paths remain.
 
 Topology:
 
@@ -37,7 +32,7 @@ Topology:
        │  raw mic 0 (no AEC, no NS, no AGC, no BF)
        │       │
        ▼       ▼
-    SpeexDSP EchoCanceller
+    WebRTC AEC3 (jasper_aec3 binding)
        │  AEC'd mono mic
        ▼
     hw:LoopbackAEC,0  (write side)
@@ -51,18 +46,19 @@ Topology:
 Caveats this implementation does NOT yet address:
   - Reference and mic are on independent clock domains (kernel
     timer vs XVF chip's USB UAC2 SYNC). They WILL drift over
-    time — Speex's AEC tolerates some drift but not unbounded.
-    Future fix: drift-compensate via resampling, or expose a
-    USB-side reference channel from the chip (would require
-    custom firmware).
+    time — AEC3's delay estimator tolerates some drift but not
+    unbounded. Future fix: drift-compensate via resampling, or
+    expose a USB-side reference channel from the chip (would
+    require custom firmware).
   - Frame alignment between two PortAudio streams isn't perfectly
     synchronized — the ref-mic offset can vary by a few ms each
-    restart. Speex auto-adapts but convergence takes longer when
-    the offset drifts.
-  - We use SpeexDSP's basic EchoCanceller (linear NLMS adaptive
-    filter). A nonlinear residual suppressor (Speex's
-    EchoSuppress, or a separate post-filter) would help with
-    speaker non-linearity at high SPL but isn't wired up here.
+    restart. AEC3 auto-adapts (the `stream_delay_ms` hint is just
+    a starting point for its delay estimator) but convergence
+    takes longer when the offset drifts.
+  - The engine is the linear AEC3 + residual suppressor only; no
+    neural residual stage. See docs/HANDOFF-aec.md "Deep tuning
+    landscape" for the staged options if AEC3 + REF_GAIN + MIC_GAIN
+    isn't enough.
 """
 from __future__ import annotations
 
@@ -72,7 +68,6 @@ import signal
 import sys
 import threading
 from queue import Queue, Empty, Full
-from typing import Protocol
 
 import numpy as np
 import sounddevice as sd
@@ -80,14 +75,11 @@ from scipy.signal import resample_poly
 
 logger = logging.getLogger("jasper.aec_bridge")
 
-# Frame size: 320 samples @ 16 kHz = 20 ms. This is also a multiple
-# of WebRTC AEC3's 10 ms frame requirement (160 samples) — the
-# WebRTC engine splits 320→2×160 internally. Speex's NLMS filter is
-# configured to 3200 taps (200 ms tail) at construction; that
-# matches the XMOS chip's 192 ms native tail per the XVF3800
-# datasheet. WebRTC AEC3 manages its own filter length.
+# Frame size: 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC
+# AEC3's 10 ms frame requirement (160 samples). The binding splits
+# 320 → 2×160 internally per the AEC3 API contract. AEC3 manages
+# its own filter length internally.
 FRAME_SAMPLES = 320
-FILTER_TAPS = 3200
 SAMPLE_RATE = 16000
 
 # Capture device for the reference (host-clocked dsnoop on the
@@ -134,57 +126,7 @@ _out_clipped_samples = 0
 _out_total_samples = 0
 
 
-class _Engine(Protocol):
-    """AEC engine plug-in surface.
-
-    The bridge's main loop hands the engine equal-sized mic and ref
-    byte buffers (int16 mono PCM @ SAMPLE_RATE, FRAME_SAMPLES samples
-    each) and gets back the AEC'd mic of the same size. Each engine
-    handles its own internal framing.
-    """
-
-    def process(self, mic: bytes, ref: bytes) -> bytes: ...
-    def close(self) -> None: ...
-
-
-class _SpeexEngine:
-    """SpeexDSP EchoCanceller — linear NLMS, ~1-2 % of one core."""
-
-    def __init__(self) -> None:
-        # The xiongyihui/speexdsp-python package ships a broken
-        # __init__.py on Python 3.13 (tries to import a .py wrapper
-        # that SWIG didn't generate). install.sh patches __init__.py
-        # post-install; defend against future re-installs by also
-        # falling back to the raw SWIG module here.
-        try:
-            from speexdsp import (
-                EchoCanceller_create, EchoCanceller_process,
-                delete_EchoCanceller,
-            )
-        except ImportError:
-            from speexdsp._speexdsp import (  # type: ignore[no-redef]
-                EchoCanceller_create, EchoCanceller_process,
-                delete_EchoCanceller,
-            )
-        self._ec = EchoCanceller_create(
-            FRAME_SAMPLES, FILTER_TAPS, SAMPLE_RATE
-        )
-        self._process = EchoCanceller_process
-        self._delete = delete_EchoCanceller
-        logger.info(
-            "engine=speex frame=%d taps=%d (%dms tail) rate=%d",
-            FRAME_SAMPLES, FILTER_TAPS,
-            FILTER_TAPS * 1000 // SAMPLE_RATE, SAMPLE_RATE,
-        )
-
-    def process(self, mic: bytes, ref: bytes) -> bytes:
-        return self._process(self._ec, mic, ref)
-
-    def close(self) -> None:
-        self._delete(self._ec)
-
-
-class _WebRtc3Engine:
+class _Aec3Engine:
     """WebRTC AEC3 via the jasper_aec3 pybind11 binding.
 
     Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows
@@ -196,15 +138,14 @@ class _WebRtc3Engine:
     def __init__(self) -> None:
         # Imported lazily so the bridge doesn't fail to import on
         # systems where the binding isn't built (e.g. dev laptops
-        # running the test suite — the engine selector defaults to
-        # speex anyway).
+        # running the test suite).
         from jasper_aec3 import Aec3
         enable_agc2 = os.environ.get(
             "JASPER_AEC_AGC2", "0"
         ).strip().lower() in ("1", "true", "yes", "on")
         self._aec = Aec3(enable_agc2=enable_agc2)
         logger.info(
-            "engine=webrtc3 frame=%d agc2=%s (split internally to 10ms windows) rate=%d",
+            "engine=aec3 frame=%d agc2=%s (split internally to 10ms windows) rate=%d",
             FRAME_SAMPLES, "on" if enable_agc2 else "off", SAMPLE_RATE,
         )
 
@@ -216,17 +157,6 @@ class _WebRtc3Engine:
         # is freed when the Python Aec3 instance is GC'd. No
         # explicit teardown needed.
         pass
-
-
-def _select_engine() -> _Engine:
-    name = os.environ.get("JASPER_AEC_ENGINE", "speex").strip().lower()
-    if name == "speex":
-        return _SpeexEngine()
-    if name in ("webrtc3", "webrtc", "aec3"):
-        return _WebRtc3Engine()
-    raise ValueError(
-        f"unknown JASPER_AEC_ENGINE={name!r} — expected 'speex' or 'webrtc3'"
-    )
 
 
 def _ref_thread(ref_q: Queue) -> None:
@@ -322,7 +252,7 @@ def _mic_thread(mic_q: Queue) -> None:
         _shutdown.wait()
 
 
-def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Engine) -> None:  # noqa: PLR0915
+def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Aec3Engine) -> None:  # noqa: PLR0915
     # Post-AEC static gain applied to the engine output before it
     # reaches LoopbackAEC. Restores level into openWakeWord's training
     # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
@@ -453,7 +383,7 @@ def main() -> int:
         MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_DEVICE, OUT_RATE,
     )
 
-    engine = _select_engine()
+    engine = _Aec3Engine()
 
     # Signal handlers for clean shutdown
     def on_signal(signum, _frame):
