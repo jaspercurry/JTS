@@ -26,8 +26,13 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
-    if cfg.live_context_reset_sec <= 0:
-        raise RuntimeError("JASPER_LIVE_CONTEXT_RESET_SEC must be > 0")
+    for name, value in [
+        ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
+        ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
+        ("JASPER_GROK_CONTEXT_RESET_SEC", cfg.grok_context_reset_sec),
+    ]:
+        if value < 0:
+            raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
     # Hearing-safety: TTS gain is now an OFFSET applied on top of
@@ -105,7 +110,19 @@ class Config:
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
-    live_context_reset_sec: int
+    # Per-provider idle context reset thresholds (seconds). 0 = disabled
+    # (default). Without a reset, the persistent live session keeps
+    # conversational context indefinitely; OpenAI Realtime auto-truncates
+    # past 128K and caps sessions at 60 min, so unbounded growth is
+    # impossible. Set a positive value (e.g. 21600 = 6 h) to force a
+    # periodic fresh session as a safety hedge against stale-context
+    # weirdness. Per-provider so e.g. Gemini's resumption-handle path
+    # can be tuned separately from OpenAI's reconnect path. Falls back
+    # to the legacy `JASPER_LIVE_CONTEXT_RESET_SEC` if set, for
+    # backwards-compat with existing /etc/jasper/jasper.env files.
+    openai_context_reset_sec: int
+    gemini_context_reset_sec: int
+    grok_context_reset_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
@@ -301,14 +318,33 @@ class Config:
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
-            # After this many seconds with no turns, the persistent live
-            # connection drops its sessionResumption handle and reopens
-            # with a fresh session — so conversational context from a
-            # query hours earlier doesn't leak into the next one
-            # ("what's the weather" at 9am should NOT influence "what
-            # time is it" at 5pm). 5 min default = long enough to keep
-            # multi-turn dialogues coherent, short enough to feel fresh.
-            live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
+            # Idle context reset is OFF by default. Each turn pays full
+            # uncached price for the system prompt + tool defs on the
+            # first turn after a reset (OpenAI: ~$0.008 vs $0.001
+            # cached), and the reset itself blocks the wake event for
+            # 1-6 s while the session reopens. Worth it only if you
+            # actually observe stale-context glitches. Per-provider
+            # because the cost/race tradeoffs differ:
+            #   - OpenAI: no resumption handle, full reconnect, prompt
+            #     cache busted. Most expensive.
+            #   - Gemini: drops resumption handle, similar reconnect
+            #     cost but cheaper baseline pricing.
+            #   - Grok: inherits OpenAI implementation.
+            # Legacy JASPER_LIVE_CONTEXT_RESET_SEC, if set, supplies a
+            # global default for any provider whose specific var is
+            # unset.
+            openai_context_reset_sec=_env_int(
+                "JASPER_OPENAI_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
+            gemini_context_reset_sec=_env_int(
+                "JASPER_GEMINI_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
+            grok_context_reset_sec=_env_int(
+                "JASPER_GROK_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
             librespot_state_path=_env(

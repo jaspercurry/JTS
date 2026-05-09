@@ -377,7 +377,7 @@ class GeminiLiveConnection(LiveConnection):
         api_key: str,
         model: str,
         voice: str = "Aoede",
-        context_reset_sec: float = 300.0,
+        context_reset_sec: float = 0.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
         # `_reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
@@ -1369,9 +1369,14 @@ class GeminiLiveConnection(LiveConnection):
         threshold AND we have at least one previous turn, drop the
         resumption handle and reopen with a fresh session.
 
-        Without this, conversational context bleeds across hour-long
-        gaps — "what time is it?" at 9 AM and 5 PM, the second one
-        shouldn't remember weather queries from the morning."""
+        Disabled by default (`context_reset_sec=0`). Enable only if
+        you actually observe stale-context glitches: each reset busts
+        the resumption handle (so the next turn re-establishes session
+        state at full cost) and blocks the wake event for 1-6 s while
+        the reconnect happens. The terse-tool system prompt makes
+        stale-context bleed a mostly-hypothetical concern in practice."""
+        if self._context_reset_sec <= 0:
+            return
         if self._last_turn_end_at <= 0.0:
             return
         idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at

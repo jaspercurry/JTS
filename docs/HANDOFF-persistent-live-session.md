@@ -94,7 +94,7 @@ Refactor the session layer so the daemon holds **one persistent Gemini Live WebS
    - Bounded retries with exponential backoff (1s/2s/4s/8s/cap), give up after N attempts and surface a clear error
    - Reconnect sends the latest `sessionResumption` handle so the server resumes the conversation context
 
-4. **Idle context reset policy** — env knob `JASPER_LIVE_CONTEXT_RESET_SEC` (default 300 = 5 min). After 5 min of no turns, on the next turn open a fresh session (no resumption handle) so conversational state from earlier doesn't bleed in. Stale-context UX is a real problem otherwise: "Hey Jarvis, what time is it?" at 9am and 5pm — second one shouldn't remember weather query from morning.
+4. **Idle context reset policy** — per-provider env knobs: `JASPER_OPENAI_CONTEXT_RESET_SEC`, `JASPER_GEMINI_CONTEXT_RESET_SEC`, `JASPER_GROK_CONTEXT_RESET_SEC`. **All default to 0 = disabled.** Originally shipped at 300 s (5 min) with the rationale that "stale context bleeds across hours" — in practice the terse-tool system prompt makes that a hypothetical concern, while the costs are real: each reset busts the OpenAI prompt cache (~$0.008 per reset, $2–4/mo at typical use) and blocks the wake event for 1–6 s while the reopen completes. OpenAI auto-truncates past 128K and caps sessions at 60 min anyway, so unbounded growth is impossible. Set a positive value (e.g. 21600 = 6 h) only as a safety hedge if stale-context glitches actually appear in practice. Legacy `JASPER_LIVE_CONTEXT_RESET_SEC` continues to work as a global fallback when set.
 
 5. **Keepalive** to survive the 10-min server idle timeout (per [Vertex troubleshooting docs](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting)). Could be a periodic empty `send_realtime_input` or whatever the SDK supports.
 
@@ -171,7 +171,7 @@ For unit testing the reconnect state machine, mock the SDK's `aio.live.connect` 
 - `GoAway` mid-turn → reconnect with last resumption handle → resume
 - WebSocket close 1006 → reconnect with backoff → eventually succeed
 - Repeated failures → eventually surface `failed` state, daemon pauses
-- Idle reset: connection still healthy but `idle > JASPER_LIVE_CONTEXT_RESET_SEC` → close + reopen fresh
+- Idle reset (opt-in only, off by default): connection still healthy but `idle > JASPER_<PROVIDER>_CONTEXT_RESET_SEC` → close + reopen fresh
 
 Hardware-free tests run with `pytest`. Don't add hardware-dependent tests.
 

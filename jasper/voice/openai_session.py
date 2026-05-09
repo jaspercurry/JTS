@@ -417,7 +417,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         api_key: str,
         model: str = "gpt-realtime-2",
         voice: str = "marin",
-        context_reset_sec: float = 300.0,
+        context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         temperature: float = DEFAULT_TEMPERATURE,
         # Production: leave None → supervisor reconnects FOREVER with
@@ -1038,9 +1038,16 @@ class OpenAIRealtimeConnection(LiveConnection):
 
     async def _maybe_reset_context(self) -> None:
         """OpenAI Realtime has no resumption handle, so 'context reset'
-        is just 'tear down and reopen'. Same trigger as Gemini — long
-        idle gaps shouldn't bleed conversational context across hours.
-        Skipped if no prior turn has happened on this connection."""
+        is just 'tear down and reopen'. Long idle gaps theoretically
+        bleed conversational context across hours — in practice the
+        terse-tool system prompt makes this a hypothetical concern, so
+        the reset is opt-in (default 0 = disabled). When enabled, busts
+        the prompt cache on the first turn after reset and blocks the
+        wake event for 1-6 s during the reopen, so use a long threshold
+        (hours, not minutes) if at all. Skipped if no prior turn has
+        happened on this connection."""
+        if self._context_reset_sec <= 0:
+            return
         if self._last_turn_end_at <= 0.0:
             return
         idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at

@@ -63,7 +63,7 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
         api_key: str,
         model: str = "grok-voice-think-fast-1.0",
         voice: str = "eve",
-        context_reset_sec: float = 300.0,
+        context_reset_sec: float = 0.0,
         backoff_schedule: tuple[float, ...] | None = None,
         connect_factory=None,
         base_url: str | None = None,
