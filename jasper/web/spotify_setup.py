@@ -140,28 +140,38 @@ def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
 
 
 # In-memory pending-flow store:
-#   {nonce: (account_name, code_verifier, created_monotonic)}.
+#   {nonce: (account_name, code_verifier, code_challenge, created_monotonic)}.
 #
-# State (the value Spotify echoes back) is the random nonce; we look it
-# up on the callback to recover both the account this flow belongs to
-# and the PKCE code_verifier that was generated when the authorize URL
-# was built. Persisting the verifier across requests is mandatory:
-# spotipy's SpotifyPKCE generates the verifier lazily inside
-# `get_authorize_url()` and stores it on the instance only — a fresh
-# instance built in `/oauth-callback` has no verifier, so the token
-# exchange would 400 with `code_verifier was incorrect`.
+# State (the value Spotify echoes back) is the random nonce; we look
+# it up on the callback to recover the account this flow belongs to
+# AND both halves of the PKCE handshake parameters that were generated
+# when the authorize URL was built.
+#
+# Why persist both: spotipy's `SpotifyPKCE.get_access_token` regenerates
+# verifier+challenge if EITHER is None — the guard reads
+# `if self.code_verifier is None or self.code_challenge is None`, then
+# calls `get_pkce_handshake_parameters()` which clobbers both. Setting
+# only `code_verifier` on a fresh instance (leaving `code_challenge`
+# at its `__init__` default of None) silently triggers that path,
+# regenerates a new verifier, and Spotify rejects the exchange with
+# `invalid_grant: code_verifier was incorrect`. So we capture both at
+# /start and restore both at /oauth-callback. The challenge value
+# isn't used in the exchange POST itself (only `code_verifier` is sent),
+# but assigning it suppresses the regeneration check.
 #
 # 10-minute TTL matches Spotify's auth-code lifetime; expired entries
 # are pruned lazily on each /start. Per-process is fine — jasper-web
 # runs as one systemd unit, and the wizard isn't load-balanced.
-_PENDING_FLOWS: dict[str, tuple[str, str, float]] = {}
+_PENDING_FLOWS: dict[str, tuple[str, str, str, float]] = {}
 _FLOW_TTL_SEC = 600.0
 
 
 def _gc_pending(now: float | None = None) -> None:
     if now is None:
         now = time.monotonic()
-    expired = [k for k, (_, _, t) in _PENDING_FLOWS.items() if now - t > _FLOW_TTL_SEC]
+    expired = [
+        k for k, (_, _, _, t) in _PENDING_FLOWS.items() if now - t > _FLOW_TTL_SEC
+    ]
     for k in expired:
         _PENDING_FLOWS.pop(k, None)
 
@@ -1002,16 +1012,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state=nonce,
                 open_browser=False,
             )
-            # `get_authorize_url()` lazily generates the verifier+
-            # challenge on the SpotifyPKCE instance. The challenge goes
-            # into the URL we redirect to; the verifier has to come back
-            # with us to /oauth-callback, where we'll attach it to the
-            # next SpotifyPKCE instance before the token exchange.
-            # spotipy's CacheFileHandler doesn't persist the verifier,
-            # so we stash it in _PENDING_FLOWS keyed by the nonce.
+            # `get_authorize_url()` lazily generates verifier+challenge
+            # on the SpotifyPKCE instance. The challenge goes into the
+            # URL we redirect to; both have to come back with us to
+            # /oauth-callback, where we'll restore them on a fresh
+            # SpotifyPKCE instance before the token exchange. spotipy's
+            # CacheFileHandler doesn't persist either value, so we
+            # stash both in _PENDING_FLOWS keyed by the nonce. See the
+            # `_PENDING_FLOWS` docstring for why both are required.
             authorize_url = auth.get_authorize_url()
             _PENDING_FLOWS[nonce] = (
-                name, auth.code_verifier, time.monotonic(),
+                name, auth.code_verifier, auth.code_challenge, time.monotonic(),
             )
 
             if cfg["mode"] == "manual":
@@ -1073,9 +1084,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     "+Start+over."
                 )
                 return
-            account_name, verifier, _created = entry
+            account_name, verifier, challenge, _created = entry
             try:
-                self._exchange_code(account_name, code, verifier)
+                self._exchange_code(account_name, code, verifier, challenge)
             except Exception as e:  # noqa: BLE001
                 logger.exception("oauth exchange failed")
                 self._redirect(
@@ -1185,7 +1196,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._redirect("./?msg=Playlist+not+found")
 
         def _exchange_code(
-            self, account_name: str, code: str, verifier: str,
+            self, account_name: str, code: str,
+            verifier: str, challenge: str,
         ) -> None:
             registry = Registry.load(cfg["registry_path"])
             account = registry.get(account_name)
@@ -1200,15 +1212,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 cache_path=account.cache_path,
                 open_browser=False,
             )
-            # SpotifyPKCE generates verifier/challenge lazily inside
-            # `get_authorize_url()` and only stores them on the instance.
-            # The instance that built the authorize URL was in the
-            # /start request — different process scope from this one's
-            # perspective. Restore the verifier from _PENDING_FLOWS
-            # before calling token-exchange, otherwise spotipy sends
-            # `code_verifier=None` and Spotify replies 400 invalid_grant
-            # `code_verifier was incorrect`.
+            # Restore BOTH verifier and challenge before exchange.
+            # spotipy's `get_access_token` regenerates both via
+            # `get_pkce_handshake_parameters()` whenever either is None,
+            # so setting just `code_verifier` is silently ignored — the
+            # regenerated verifier doesn't match the challenge Spotify
+            # already saw, and we get `invalid_grant`. The challenge
+            # itself isn't sent on the exchange POST; assigning it just
+            # suppresses the regeneration guard.
             auth.code_verifier = verifier
+            auth.code_challenge = challenge
             auth.get_access_token(code, check_cache=False)
 
     return Handler
