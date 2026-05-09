@@ -9,10 +9,34 @@
 
 ## Status
 
-- ⏳ Not started. Document landed 2026-05-09 from a sanity-check pass
-  on two external research briefs. Next action: Phase 0.
-- This is **PLAN.md v2** — the highest-value next-feature after the
-  v1 voice loop is shipped.
+- ✅ **Phase 0 — TLS + skeleton wizard.** PR #40 merged 2026-05-09.
+  Self-signed cert + iOS trust dance documented; mic-permission
+  page with `getSettings()` constraint verify lands at
+  `https://jts.local/correction/`.
+- ✅ **Phase 1 — single-position end-to-end PEQ.** PR #41 merged
+  2026-05-09. Sweep generation (Novak 2015) → playback through
+  CamillaDSP → AudioWorklet capture → deconvolution → 1/48-octave
+  smoothing → greedy peak-fit PEQ design (≤5 cuts, 20-350 Hz) →
+  YAML emit (preserving master_gain mixer) → CamillaDSP hot-swap.
+  Coordinator pauses renderers + voice loop via UDS; voice_daemon
+  has `MEASURE_PAUSE` / `MEASURE_RESUME` with 2-min auto-clear
+  safety timer. 37 new tests, all passing on synthetic data.
+- ✅ **Phase 2 — multi-position MMM + verify pass.** PR #42 merged
+  2026-05-09. Power-mean spatial averaging across 5 positions;
+  post-Apply re-measurement with deviation metrics; target-curve
+  choice (flat / warm / bright). 12 new tests, all passing.
+- ⏳ **Phase 3 — power-user pass-through.** Already shipped as part
+  of v1 — `camillagui.service` runs at port 5005, linked from the
+  landing page. No additional work required for the originally
+  scoped Phase 3.
+- ⏳ **Phase 4 — REW interop + UMIK fetch.** Not started.
+- ⏳ **Phase 5 — FIR filter ladder.** Not started.
+
+**Outstanding Phases 0-2 hardware verification** (see "Hardware
+test checklist" below) — the math is validated on synthetic IRs;
+the integration with real CamillaDSP / iPhone Safari / aplay /
+voice_daemon UDS is unverified and is the gating step before
+declaring v2 shippable.
 
 ## Goal
 
@@ -696,6 +720,98 @@ What can actually go wrong, ordered by likelihood × impact.
 7. **Filter design exceeds RAM on 1 GB after pause.** Mitigation:
    pre-flight `/proc/meminfo` check; refuse with clear message;
    suggest 2 GB upgrade. Don't OOM the Pi.
+
+## Hardware test checklist
+
+These items can only be verified on real hardware. Run on the Pi
+after `rsync` + `install.sh`:
+
+### Phase 0 (TLS + skeleton)
+- [ ] `systemctl status jasper-correction-web` → active (running).
+- [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
+- [ ] `nginx -t` → ok.
+- [ ] On iPhone after cert trust: page loads with no "Connection
+      not private" warning; mic permission prompt appears on first
+      tap; constraint table reads `✓ ok` for all 5 rows.
+      **Critical**: if `echoCancellation` / `noiseSuppression` /
+      `autoGainControl` read `✗ bad`, that's an iOS Safari version
+      regression we have to work around — file an issue.
+
+### Phase 1 (single-position end-to-end)
+- [ ] Tap **Run measurement** → music pauses, sweep audible at the
+      speaker, completes in ~10 s, no audio glitch when renderers
+      come back. Watch `journalctl -u jasper-voice` for
+      `MEASURE_PAUSE` / `MEASURE_RESUME` events.
+- [ ] AudioWorklet capture uploads cleanly (browser network tab
+      shows POST /upload-capture with audio/wav body).
+- [ ] Chart renders within ~5 s of upload; PEQ list shows 0-5
+      filters with reasonable freq/Q/gain.
+- [ ] Tap **Apply** → CamillaDSP swaps config without audio dropout
+      (verify by playing music continuously across the apply
+      boundary, e.g. `aplay -D plughw:Loopback,0,0 white_noise.wav`
+      in another shell).
+- [ ] **Audibility check**: play a familiar bass-heavy track
+      before/after Apply — modal peak should audibly tighten.
+- [ ] Tap **Reset to flat** → CamillaDSP rolls back to v1.yml
+      cleanly.
+- [ ] AEC bridge interaction (if enabled): no permanent drift after
+      a measurement; bridge re-converges in ~200 ms.
+
+### Phase 2 (multi-position + verify)
+- [ ] 5-position flow: NEEDS_NEXT_POSITION prompt visible after
+      each capture; **Continue** advances to next sweep with
+      ~3-5 s of dead air (renderer pause/restart cycle).
+- [ ] Move phone between positions; verify the prompt shows the
+      correct position number.
+- [ ] After 5 positions: PEQ design produces a result; chart shows
+      the AVERAGED measured curve (not the last-position one).
+- [ ] **Verify with re-measurement** after Apply: new measurement
+      runs, purple dashed curve overlays on chart, RMS / max
+      deviation summary appears.
+- [ ] Verify deviation should be SMALLER post-correction than
+      pre-correction was. If it isn't, the correction didn't work
+      — check journals for clues.
+- [ ] Target choice: flat vs warm produces different PEQ sets and
+      audibly different results.
+
+### Things to watch for in journals
+- `journalctl -u jasper-correction-web -f` — measurement state
+  transitions, handler exceptions.
+- `journalctl -u jasper-voice -f` — `MEASURE_PAUSE` / RESUME
+  events; auto-clear safety-timer warning if a coordinator crashes.
+- `journalctl -u jasper-camilla -f` — config reload events;
+  any parse errors on the emitted YAML.
+
+## Known limitations / Phase 3+ refinements
+
+- **Window cycles per position.** Each /start, /next-position,
+  /verify call opens a fresh measurement_window — renderers
+  pause/restart per sweep. ~3-5 s of dead air per position
+  transition. Tolerable but not great. Phase 3 could keep the
+  window open across multi-position runs (~30 LOC of additional
+  state in the session).
+- **Strict Schroeder-aware spatial averaging.** Phase 2 does
+  power-mean everywhere. Strict implementation would do vector-mean
+  below ~350 Hz (preserves phase) and power-mean above. Requires
+  keeping complex H(f) per position rather than just magnitude_db
+  — a refactor of the analysis pipeline.
+- **iPhone mic compensation curve.** Not bundled; the captured
+  response includes the iPhone's mic frequency response. For modal-
+  range correction (20-350 Hz) the iPhone mic is reasonably flat,
+  but for full-range work a calibration curve would help. Out of
+  scope without measurement equipment.
+- **Concurrent /start protection.** If two clients hit /start
+  simultaneously during an in-flight sweep, both sweeps could try
+  to run aplay through the loopback. The UI prevents this in
+  practice (run-measurement button is disabled during a measurement)
+  but a hand-crafted request could trigger it. Mitigation: add a
+  lock around the start handler in Phase 3.
+- **Sweep clipping detection.** No automatic detection if the
+  captured signal clipped (would invalidate the deconvolution).
+  Phase 2 leaves this — a real-world clipped capture would produce
+  a visibly distorted chart, but we don't surface it explicitly.
+- **Ambient noise check.** No pre-sweep ambient SPL check. A loud
+  room would just produce a noisier measurement.
 
 ## Cross-session notes
 
