@@ -7,6 +7,7 @@ from pathlib import Path
 from jasper.usage import (
     GEMINI_AUDIO_IN_USD_PER_1M,
     GEMINI_AUDIO_OUT_USD_PER_1M,
+    OPENAI_REALTIME_MINI_PRICING,
     OPENAI_REALTIME_PRICING,
     SpendCap,
     UsageStore,
@@ -139,6 +140,42 @@ def test_close_session_with_usage_dict_uses_breakdown(tmp_path: Path):
     )
     # 1500 × $32/M + 100 × $64/M = $0.0544
     assert cost_scalar > cost_with_breakdown * 5
+
+
+def test_realistic_per_turn_cost_stays_within_bounds():
+    """Regression guardrail: a realistic single OpenAI Realtime turn
+    must not estimate at >$0.20 on gpt-realtime-2 (or >$0.10 on
+    gpt-realtime-mini). Trips on the next schema drift if every input
+    token starts being priced as audio again — the bug that produced
+    `est $0.1377` per turn on the live Pi before commit 07537ce.
+
+    Numbers represent a typical multi-sentence tool turn after the
+    prompt cache has warmed up: ~12k input total, ~1k of audio, the
+    rest text history + cached system + tool defs; ~300 output total
+    (~150 audio + ~150 transcript)."""
+    realistic_turn = {
+        "input_tokens": 12000,
+        "input_token_details": {
+            "audio_tokens": 1000,
+            "text_tokens": 11000,
+            "cached_tokens": 8000,
+        },
+        "output_tokens": 300,
+        "output_token_details": {
+            "audio_tokens": 150,
+            "text_tokens": 150,
+        },
+    }
+    cost_2 = OPENAI_REALTIME_PRICING.estimate_cost(realistic_turn)
+    assert cost_2 < 0.20, (
+        f"gpt-realtime-2 turn estimated at ${cost_2:.4f} — schema drift "
+        f"or pricing regression suspected"
+    )
+    cost_mini = OPENAI_REALTIME_MINI_PRICING.estimate_cost(realistic_turn)
+    assert cost_mini < 0.10, (
+        f"gpt-realtime-mini turn estimated at ${cost_mini:.4f} — schema "
+        f"drift or pricing regression suspected"
+    )
 
 
 def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
