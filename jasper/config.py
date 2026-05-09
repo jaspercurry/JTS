@@ -21,30 +21,6 @@ def _env_int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
-# Env vars that previously controlled deliberate idle-based context
-# reset of the live voice connection. Removed 2026-05-09 in favor of
-# OpenAI's `truncation: "auto"` and Gemini's session-resumption
-# handle. Logged once at Config.from_env() so an operator who still
-# has the var set in /etc/jasper/jasper.env knows it's no longer
-# load-bearing. Kept here as a list rather than a one-off check so
-# future deprecations follow the same pattern.
-_DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
-    (
-        "JASPER_LIVE_CONTEXT_RESET_SEC",
-        "removed; OpenAI uses truncation:auto and Gemini uses "
-        "session-resumption handles to manage long sessions",
-    ),
-)
-
-
-def _warn_on_deprecated_env() -> None:
-    import logging
-    log = logging.getLogger(__name__)
-    for name, reason in _DEPRECATED_ENV_VARS:
-        if os.environ.get(name):
-            log.warning("env: %s is deprecated and ignored — %s", name, reason)
-
-
 def _validate(cfg: "Config") -> "Config":
     if not 0.0 <= cfg.wake_threshold <= 1.0:
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
@@ -196,7 +172,6 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        _warn_on_deprecated_env()
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
         if provider not in {"gemini", "openai", "grok"}:
             raise RuntimeError(

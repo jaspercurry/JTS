@@ -94,7 +94,7 @@ Refactor the session layer so the daemon holds **one persistent Gemini Live WebS
    - Bounded retries with exponential backoff (1s/2s/4s/8s/cap), give up after N attempts and surface a clear error
    - Reconnect sends the latest `sessionResumption` handle so the server resumes the conversation context
 
-4. **Idle context reset policy** — env knob `JASPER_LIVE_CONTEXT_RESET_SEC` (default 300 = 5 min). After 5 min of no turns, on the next turn open a fresh session (no resumption handle) so conversational state from earlier doesn't bleed in. Stale-context UX is a real problem otherwise: "Hey Jarvis, what time is it?" at 9am and 5pm — second one shouldn't remember weather query from morning.
+4. **Context drift management** — Gemini Live's session-resumption handle preserves conversation state across the unavoidable ~10 min connection cap. Long sessions are billed at the cached-token rate on the system prompt, so reconnecting just to "freshen context" is the wrong default — let the platform manage it. (We previously tore the session down every 5 min idle; removed 2026-05-09 in favor of provider-native context handling, paired with the wake-loop's audio buffer so any natural reconnect doesn't drop user audio.)
 
 5. **Keepalive** to survive the 10-min server idle timeout (per [Vertex troubleshooting docs](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting)). Could be a periodic empty `send_realtime_input` or whatever the SDK supports.
 
@@ -152,7 +152,6 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 - `live connection: 5 consecutive identical reconnect failures (<exc>, code=<n>, <reason>) — firing cant_reach_cloud cue` (post-rework: tight-retry-loop detector)
 - `live turn: started (activity_start sent)`
 - `live turn: ended in Xms, M chunks received`
-- `live context reset: idle for Xs > threshold; reopening with no resumption handle`
 
 ## How to actually test this
 
@@ -171,7 +170,6 @@ For unit testing the reconnect state machine, mock the SDK's `aio.live.connect` 
 - `GoAway` mid-turn → reconnect with last resumption handle → resume
 - WebSocket close 1006 → reconnect with backoff → eventually succeed
 - Repeated failures → eventually surface `failed` state, daemon pauses
-- Idle reset: connection still healthy but `idle > JASPER_LIVE_CONTEXT_RESET_SEC` → close + reopen fresh
 
 Hardware-free tests run with `pytest`. Don't add hardware-dependent tests.
 
