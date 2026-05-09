@@ -43,7 +43,10 @@ def test_parse_env_file_missing_returns_empty(tmp_path: Path):
 def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
     """`/var/lib/jasper/voice_provider.env` (wizard) must override
     `/etc/jasper/jasper.env` (operator) — same precedence as the
-    systemd unit's `EnvironmentFile=` ordering."""
+    systemd unit's `EnvironmentFile=` ordering. Verified via the
+    explicit-paths form of `load_env_files` so test fixtures don't
+    have to monkeypatch a module-level constant."""
+    from jasper.env_load import load_env_files
     operator = tmp_path / "jasper.env"
     operator.write_text(
         "GEMINI_API_KEY=op-key\n"
@@ -56,9 +59,8 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
     )
     for var in ("GEMINI_API_KEY", "OPENAI_API_KEY", "JASPER_VOICE_PROVIDER"):
         monkeypatch.delenv(var, raising=False)
-    monkeypatch.setattr(doctor, "ENV_FILES", (str(operator), str(wizard)))
 
-    doctor._load_env_files()
+    load_env_files((str(operator), str(wizard)))
 
     assert os_environ_get("GEMINI_API_KEY") == "op-key"
     assert os_environ_get("OPENAI_API_KEY") == "wiz-key"
@@ -68,12 +70,12 @@ def test_load_env_files_wizard_overrides_operator(monkeypatch, tmp_path: Path):
 def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     """A var already in the calling shell must NOT be overwritten by
     the env files. Lets an operator probe with `FOO=bar jasper-doctor`."""
+    from jasper.env_load import load_env_files
     operator = tmp_path / "jasper.env"
     operator.write_text("JASPER_VOICE_PROVIDER=gemini\n")
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
-    monkeypatch.setattr(doctor, "ENV_FILES", (str(operator),))
 
-    doctor._load_env_files()
+    load_env_files((str(operator),))
     assert os_environ_get("JASPER_VOICE_PROVIDER") == "openai"
 
 

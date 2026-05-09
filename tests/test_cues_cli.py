@@ -105,11 +105,24 @@ def test_regenerate_unknown_cue_returns_error(cli_env, capsys):
 
 
 def test_regenerate_without_api_key_reports_runtime_error(tmp_path, monkeypatch, capsys):
+    """With no provider key configured anywhere, the CLI degrades
+    gracefully (no backend, regen exits non-zero with explanation)
+    rather than crashing on a NoneType attribute access."""
     monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
     monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://test.local")
     monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("JASPER_GEMINI_API_KEY", raising=False)
+    # All three provider keys must be absent for the factory to
+    # return None — otherwise the fallback path picks one of them.
+    for key in (
+        "GEMINI_API_KEY", "JASPER_GEMINI_API_KEY",
+        "OPENAI_API_KEY", "XAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    # Also keep the file-loader from picking up real /etc/jasper
+    # creds on a developer machine that has them.
+    monkeypatch.setattr(
+        "jasper.cues.cli.load_env_files", lambda *_: None,
+    )
     code = cli.main(["regenerate"])
     assert code == 3  # RuntimeError mapped to exit 3
     captured = capsys.readouterr()

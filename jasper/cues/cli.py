@@ -29,6 +29,7 @@ import sys
 import urllib.parse
 
 from ..config import Config
+from ..env_load import load_env_files
 from .factory import build_cue_tts_backend
 from .manager import AudioCueManager
 from .registry import CUES, find as find_cue
@@ -53,7 +54,12 @@ def _make_manager(*, tts_playout=None) -> AudioCueManager:
     Config.from_env() requires the active provider's API key; if
     it's missing we still want `list` (which only reads disk) to
     work, so we degrade to a key-less manager rather than raising.
+
+    Auto-loads /etc/jasper/jasper.env and /var/lib/jasper/voice_provider.env
+    so install.sh's `jasper-cues regenerate` invocation sees the same
+    provider/voice the daemon does — including web-wizard overrides.
     """
+    load_env_files()
     try:
         cfg = Config.from_env()
         backend, voice = build_cue_tts_backend(cfg)
