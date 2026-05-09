@@ -214,6 +214,31 @@ they don't get lost in the working tree.
   a parameter. No urgency since the Pi is unaffected and the
   failures are local-only.
 
+- **`jasper.tools.transport`'s active-source resolution loses
+  the recently-paused source.** Reproducible end-to-end with the
+  dial: tap to pause AirPlay → jasper.tools.transport correctly
+  routes the toggle to AirPlay and pauses it. Tap again to resume →
+  the resolver re-evaluates, sees AirPlay is paused (so "not the
+  active source"), falls back to MPD (which has nothing playing),
+  and the second toggle silently no-ops on MPD. Net effect: dial
+  short-press pauses but doesn't unpause. Discovered during the
+  dial v3.x migration but the bug pre-dates it — v0.1.0 dial
+  firmware would have hit the same path.
+
+  Fix shape: source resolution should remember the most recently
+  active source for some bounded window (~30 s seems right) and
+  prefer it for `toggle` even when its current state is "paused".
+  Same logic probably wants to apply to Spotify Connect when it's
+  paused (the source still exists at the renderer level; the
+  resolver just isn't asking it).
+
+  Lives in `jasper/tools/transport.py` and is intertwined with
+  `RendererClient.active_source` semantics. See also
+  `docs/HANDOFF-voice-music-control.md` for the source-routing
+  context. Single-session fix; needs a bench test against AirPlay
+  + Spotify Connect + MPD to confirm none of the other paths
+  regress.
+
 ---
 
 ## Risks worth re-flagging

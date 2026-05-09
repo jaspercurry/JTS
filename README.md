@@ -152,9 +152,9 @@ jasper-voice to consume. Disabled by default — see § below.
   dlog) + Phase 1.2 (on-screen connection-status indicator on
   the SH8601 AMOLED via Arduino_GFX) shipped. Phase 1.3+ (LVGL
   "Tap to Talk", capacitive touch, UDP audio to Pi-side
-  receiver) is the next milestone. Firmware bumped to
-  Arduino-ESP32 v3.x via pioarduino for the SH8601 driver path;
-  the dial intentionally stays on v2.x. See
+  receiver) is the next milestone. Both ESP32 firmware projects
+  (dial + satellite) on Arduino-ESP32 v3.x via pioarduino — one
+  toolchain across the satellite family. See
   [docs/satellites.md](docs/satellites.md) for the family
   overview, multi-mic arbitration design, and per-device
   roadmap.
