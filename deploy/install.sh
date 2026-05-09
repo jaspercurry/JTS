@@ -562,6 +562,66 @@ regenerate_audio_cues() {
     fi
 }
 
+install_camillagui() {
+    # CamillaGUI — official web UI for CamillaDSP. Connects to the same
+    # ws://127.0.0.1:1234 control socket the Python daemon already uses,
+    # exposes a SPA for live config editing, signal levels, and config-
+    # file management. We use the prebuilt PyInstaller bundle from the
+    # upstream release rather than a venv/source install — bundle is
+    # self-contained (Python 3.12 + frontend assets baked in), no apt
+    # deps, no pip resolution. Listens on 0.0.0.0:5005 directly (parity
+    # with /spotify, /voice, /dial — all unauthenticated, all home-LAN-
+    # only). The landing page links straight to http://${HOSTNAME}:5005.
+    local CAMILLAGUI_VERSION="4.1.0"
+    local CAMILLAGUI_DIR="/opt/camillagui"
+    local arch bundle
+    arch=$(uname -m)
+    case "${arch}" in
+        aarch64) bundle="bundle_linux_aarch64.tar.gz" ;;
+        x86_64)  bundle="bundle_linux_amd64.tar.gz"   ;;
+        armv7l)  bundle="bundle_linux_armv7.tar.gz"   ;;
+        *)
+            echo "  WARNING: no CamillaGUI bundle for ${arch} — skipping"
+            return 0
+            ;;
+    esac
+
+    if [[ -x "${CAMILLAGUI_DIR}/camillagui_backend/camillagui_backend" ]]; then
+        echo "  CamillaGUI already at ${CAMILLAGUI_DIR}"
+    else
+        echo "  Downloading CamillaGUI ${CAMILLAGUI_VERSION} (${arch})..."
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        local url="https://github.com/HEnquist/camillagui-backend/releases/download/v${CAMILLAGUI_VERSION}/${bundle}"
+        if ! curl -fsSL -o "${tmpdir}/cg.tar.gz" "${url}"; then
+            echo "  WARNING: CamillaGUI download failed — skipping"
+            rm -rf "${tmpdir}"
+            return 0
+        fi
+        install -d -m 0755 "${CAMILLAGUI_DIR}"
+        tar -xzf "${tmpdir}/cg.tar.gz" -C "${CAMILLAGUI_DIR}"
+        rm -rf "${tmpdir}"
+        echo "  Installed CamillaGUI to ${CAMILLAGUI_DIR}"
+    fi
+
+    # Config + state dirs. /etc/camilladsp/coeffs holds FIR-filter
+    # coefficient files the GUI writes when convolving; we create it
+    # so the GUI's first save doesn't fail with ENOENT.
+    install -d -m 0755 /etc/camillagui /etc/camilladsp/coeffs /var/lib/camillagui
+    install -m 0644 \
+        "${REPO_DIR}/deploy/camillagui/config.yml" \
+        /etc/camillagui/config.yml
+    touch /var/log/camillagui.log
+    chmod 0644 /var/log/camillagui.log
+
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/camillagui.service" \
+        "${SYSTEMD_DIR}/camillagui.service"
+    systemctl daemon-reload
+    systemctl enable --now camillagui.service
+    echo "  CamillaGUI listening on :5005 (LAN-direct, no auth)"
+}
+
 main() {
     require_root
     install_deps
@@ -573,6 +633,7 @@ main() {
     install_avahi_jasper_control
     remove_legacy_https_artifacts
     install_nginx_site
+    install_camillagui
     regenerate_audio_cues
 }
 

@@ -55,6 +55,27 @@
         and push Wi-Fi credentials.
       </div>
     </a>
+
+    <a class="card" id="camilla-card" data-port="5005" data-path="/"
+       href="#" target="_blank" rel="noopener">
+      <div class="name">CamillaDSP &rsaquo;</div>
+      <div class="desc">
+        Tune the speaker's audio processing — filters, mixers, signal
+        levels, and live config switching. Opens in a new tab.
+      </div>
+    </a>
   </div>
+
+  <script>
+    // CamillaGUI runs on its own port (5005) rather than under an
+    // nginx path prefix — the bundled SPA's frontend uses absolute
+    // URLs that don't survive a path rewrite. We can't relative-link
+    // because of the port change, so derive the hostname from
+    // window.location at click time. Works for any speaker hostname
+    // (default jts.local or whatever JASPER_HOSTNAME was set to).
+    document.querySelectorAll('a.card[data-port]').forEach(function(a) {
+      a.href = 'http://' + window.location.hostname + ':' + a.dataset.port + a.dataset.path;
+    });
+  </script>
 </body>
 </html>
