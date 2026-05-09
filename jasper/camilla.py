@@ -153,6 +153,50 @@ class CamillaController:
         return target
 
 
+class CueDuck:
+    """Snapshot-based duck for brief cue playback.
+
+    Async context manager — `__aenter__` snapshots pre-duck camilla
+    main_volume and drops by `duck_db` (additive); `__aexit__`
+    writes the snapshot back. Distinct from `Ducker` (which restores
+    to the live coordinator-canonical target so dial twists during a
+    long voice turn win): cues are short and passive, the user
+    isn't actively adjusting volume mid-cue, so simple snapshot
+    semantics is more predictable than reading a target that may
+    have shifted in the duck window from a 1 Hz source-state poll
+    or other interleaved writer.
+
+    Best-effort across the chain: if camilla is unreachable when we
+    snapshot, we skip ducking entirely (nothing to restore to). If
+    the duck write itself is dropped (camilla restarting), we still
+    write the snapshot on exit — harmless in the common case where
+    that's what camilla already shows.
+    """
+
+    def __init__(self, camilla: "CamillaController", duck_db: float) -> None:
+        self._camilla = camilla
+        self._duck_db = duck_db
+        self._pre_db: float | None = None
+
+    async def __aenter__(self) -> "CueDuck":
+        self._pre_db = await self._camilla.get_volume_db(best_effort=True)
+        if self._pre_db is None:
+            # Camilla unreachable — don't pretend to duck. Exit will
+            # also be a no-op since we have no snapshot to restore.
+            return self
+        await self._camilla.adjust_volume_db(
+            self._duck_db, best_effort=True,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb) -> None:
+        if self._pre_db is None:
+            return
+        await self._camilla.set_volume_db(
+            self._pre_db, best_effort=True,
+        )
+
+
 class Ducker:
     """Voice-session ducking around CamillaDSP main_volume.
 

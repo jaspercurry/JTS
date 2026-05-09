@@ -12,7 +12,7 @@ from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .camilla import CamillaController, Ducker
+from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .renderer import RendererClient
 from .spotify_router import Router, build_clients
@@ -772,6 +772,7 @@ class WakeLoop:
         stop_event: asyncio.Event,
         volume_coordinator: "VolumeCoordinator",
         cues: AudioCueManager | None = None,
+        camilla: CamillaController | None = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -779,6 +780,11 @@ class WakeLoop:
         self._detector = detector
         self._connection = connection
         self._ducker = ducker
+        # Direct camilla handle for `CueDuck` (snapshot-based duck
+        # around dynamic-text cues). Optional for back-compat with
+        # tests / out-of-tree callers; without it, dynamic-text cues
+        # play unducked rather than crashing.
+        self._camilla = camilla
         self._tts_volume_tracker = tts_volume_tracker
         self._usage_store = usage_store
         self._spend_cap = spend_cap
@@ -887,25 +893,31 @@ class WakeLoop:
 
     async def _play_dynamic_text(self, text: str) -> None:
         """Speak arbitrary `text` through the cue manager, with
-        duck/restore wrapping that mirrors `_play_cue`. Used for
-        timer announcements where the duration is in the phrase and
-        a static CueDef would have to enumerate every variant."""
+        snapshot-based duck/restore around the playback. Used for
+        timer announcements (and any future variable-content cue).
+
+        Uses `CueDuck` rather than the daemon's `Ducker` because a
+        cue is a brief, passive interruption: the user isn't
+        actively adjusting volume mid-cue, so the predictable
+        "music returns to exactly where it was" semantics matter
+        more than the dial-twist-wins behavior `Ducker` is designed
+        for. See `jasper/camilla.py:CueDuck` for the rationale."""
         if self._cues is None:
             return
-        try:
-            try:
-                await self._ducker.duck()
-            except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text: duck failed: %s", e)
+        if self._camilla is None:
+            # No camilla handle — degrade to unducked playback rather
+            # than crash. The user hears the cue over un-ducked music
+            # which is loud but recoverable; better than silence.
             try:
                 await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
                 logger.warning("dynamic text play failed: %s", e)
-        finally:
+            return
+        async with CueDuck(self._camilla, self._cfg.duck_db):
             try:
-                await self._ducker.restore()
+                await self._cues.speak_text(text)
             except Exception as e:  # noqa: BLE001
-                logger.warning("dynamic text restore failed: %s", e)
+                logger.warning("dynamic text play failed: %s", e)
 
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for
@@ -1629,6 +1641,7 @@ async def run() -> None:
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
                 cues=cues_manager,
+                camilla=camilla,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after

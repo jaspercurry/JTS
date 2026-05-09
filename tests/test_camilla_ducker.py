@@ -12,7 +12,7 @@ import pytest
 sys.modules.setdefault("camilladsp", types.ModuleType("camilladsp"))
 sys.modules["camilladsp"].CamillaClient = object  # type: ignore[attr-defined]
 
-from jasper.camilla import CamillaUnavailable, Ducker  # noqa: E402
+from jasper.camilla import CamillaUnavailable, CueDuck, Ducker  # noqa: E402
 
 
 class _FakeCamilla:
@@ -252,3 +252,88 @@ async def test_cue_plays_when_camilla_unreachable():
     # Camilla was never written — duck silently no-op'd, restore
     # short-circuited (nothing was latched).
     assert cam.set_calls == []
+
+
+# --- CueDuck -----------------------------------------------------
+# Snapshot-based duck for brief cue playback. Distinct contract from
+# Ducker: restores to the EXACT pre-duck value rather than reading
+# the coordinator's current canonical target. Right behavior for
+# cues (short, passive — user wasn't actively adjusting volume mid-
+# cue, so a coincidental shift in canonical target shouldn't change
+# where the music lands post-cue).
+
+
+@pytest.mark.asyncio
+async def test_cueduck_restores_to_exact_pre_duck_value():
+    """Core contract: enter snapshots, exit writes that exact value.
+    No reference to any 'target provider' — what was, returns."""
+    cam = _FakeCamilla(db=-14.0)  # user's listening level
+    async with CueDuck(cam, duck_db=-10.0):
+        assert cam._db == -24.0  # ducked
+    assert cam._db == -14.0      # exact restore
+
+
+@pytest.mark.asyncio
+async def test_cueduck_restore_is_immune_to_coordinator_drift():
+    """Regression guard for the bug that motivated CueDuck: if any
+    other writer touches camilla during the duck window, the cue's
+    restore must still go to PRE-DUCK, not to whatever's there now.
+    `Ducker.restore` reads a live target on purpose; `CueDuck`
+    explicitly does not."""
+    cam = _FakeCamilla(db=0.0)
+    async with CueDuck(cam, duck_db=-25.0):
+        # Simulate the volume_coordinator's source-aware logic
+        # writing a different camilla target mid-cue (1 Hz poll
+        # observed an AirPlay slider drag, listening_level
+        # reconciliation, etc.).
+        await cam.set_volume_db(-14.0)
+        assert cam._db == -14.0
+    # Snapshot wins — music returns to the exact pre-duck level.
+    assert cam._db == 0.0
+
+
+@pytest.mark.asyncio
+async def test_cueduck_drops_by_duck_db_additive():
+    """Duck is additive (matches `Ducker.duck` so the perceived
+    attenuation is identical between long-turn and brief-cue paths
+    — same audible level drop)."""
+    cam = _FakeCamilla(db=-6.0)
+    async with CueDuck(cam, duck_db=-25.0):
+        assert cam._db == -31.0
+
+
+@pytest.mark.asyncio
+async def test_cueduck_restores_even_if_speak_raises():
+    """The cue body running inside `async with` may raise (network
+    blip, TTS empty response after retries, etc.). `__aexit__` must
+    still write the snapshot — otherwise music stays ducked."""
+    cam = _FakeCamilla(db=-10.0)
+    with pytest.raises(RuntimeError, match="boom"):
+        async with CueDuck(cam, duck_db=-25.0):
+            assert cam._db == -35.0  # ducked
+            raise RuntimeError("boom")
+    assert cam._db == -10.0
+
+
+@pytest.mark.asyncio
+async def test_cueduck_skips_duck_when_camilla_unavailable():
+    """Camilla restarting at cue time → snapshot read returns None.
+    `__aenter__` skips the duck write (nothing to undo); `__aexit__`
+    short-circuits (no snapshot to restore to). Music plays unducked
+    over the cue rather than crashing the daemon."""
+    cam = _FakeCamilla(db=-10.0)
+    cam.unavailable = True
+    async with CueDuck(cam, duck_db=-25.0):
+        pass
+    assert cam.set_calls == []
+
+
+@pytest.mark.asyncio
+async def test_cueduck_writes_no_unnecessary_volume_writes():
+    """Sanity: a CueDuck round-trip writes exactly two values to
+    camilla (the duck delta, then the snapshot back). No spurious
+    intermediate writes."""
+    cam = _FakeCamilla(db=-7.5)
+    async with CueDuck(cam, duck_db=-25.0):
+        pass
+    assert cam.set_calls == [-32.5, -7.5]
