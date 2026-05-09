@@ -25,7 +25,7 @@ Two modes:
 
 Procedure (passive mode):
 
-  1. Read the current `master_gain` so we can sanity-check that
+  1. Read the current `main_volume` so we can sanity-check that
      audio is actually flowing.
   2. Stop jasper-voice for the duration so we can grab the XVF
      capture EP.
@@ -241,7 +241,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--duck-by", type=float, default=20.0,
-        help="When --inject-noise is set, duck master_gain by THIS MANY "
+        help="When --inject-noise is set, duck main_volume by THIS MANY "
         "DB BELOW THE CURRENT LEVEL during the test (default: 20 dB "
         "quieter). The code never raises the volume.",
     )
@@ -264,7 +264,7 @@ def main() -> int:
     original_volume = _camilla_get_volume()
     if original_volume is None:
         original_volume = 0.0
-    logger.info("current master_gain = %.1f dB", original_volume)
+    logger.info("current main_volume = %.1f dB", original_volume)
 
     if args.inject_noise:
         # Compute the test volume: current minus duck_by, AND clamp to

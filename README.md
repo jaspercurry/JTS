@@ -56,7 +56,7 @@ Phone (AirPlay / Spotify Connect / BT)
                                               │
                                               ▼
                                     jasper-camilla (CamillaDSP, port 1234)
-                                    - master_gain mixer (the ducking knob)
+                                    - main_volume (the ducking knob)
                                     - flat passthrough today
                                               │
                                               ▼
@@ -88,19 +88,19 @@ Phone (AirPlay / Spotify Connect / BT)
 
 `jasper-camilla` and `jasper-voice` both write to the same dongle
 dmix (`pcm.jasper_out`); dmix sums their streams. Music ducks on
-wake via a CamillaDSP `SetVolume` call on the `master_gain` mixer
+wake via a CamillaDSP `SetMainVolume` call (the `main_volume`
+property, not the `master_gain` mixer — that mixer is identity)
 over its websocket on port 1234.
 
-> ### Important: two paths, two volume regimes
+> ### Important: two paths to the dongle
 >
-> Music goes **through** CamillaDSP (renderer → Loopback → camilla → dmix
-> → dongle). TTS and any direct `aplay -D plug:jasper_out` go **around**
-> CamillaDSP (writer → dmix → dongle). That means **`main_volume` and
-> `master_gain` only attenuate music**; they have no effect on TTS or
-> test tones written to `jasper_out`. To test the chain at a controlled
-> volume, play to `plughw:Loopback,0,0` (the music input). Full
-> breakdown with a routing table and example commands:
-> [`docs/audio-paths.md`](docs/audio-paths.md).
+> Music goes **through** CamillaDSP. TTS goes **around** it; both sum at
+> the dongle's dmix. `main_volume` only attenuates music — TTS matches
+> user volume via a separate tracker (`TtsVolumeTracker`) that measures
+> the actual music level downstream and scales TTS to match. To test the
+> chain at a controlled volume, play to `plughw:Loopback,0,0` (the music
+> input), not `jasper_out` (which bypasses the DSP). Why the split and
+> what the tracker does: [`docs/audio-paths.md`](docs/audio-paths.md).
 
 `jasper-mux` arbitrates between the three renderers — when a new
 source transitions to playing while another is already active, it

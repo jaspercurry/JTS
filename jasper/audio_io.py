@@ -118,13 +118,15 @@ class TtsPlayout:
     conversion. So we let the caller configure an `output_rate` and
     polyphase-upsample 24 kHz → output_rate inside `write()`.
 
-    Hearing-safety bounds on gain. TTS bypasses CamillaDSP's master_gain
-    mixer, so its level is set by us alone. A bug, malformed env value,
-    or stale main_volume reading must NEVER be allowed to play TTS at
-    a level that could damage hearing. `set_gain_db` clamps every input
-    to [MIN_TTS_GAIN_DB, MAX_TTS_GAIN_DB]; the cap exists even if every
-    other check upstream fails. -6 dB ceiling means TTS peaks max out
-    around -9 dBFS at the dongle (Gemini's source peaks ~-3 dBFS), well
+    Hearing-safety bounds on gain. TTS bypasses CamillaDSP entirely
+    (writes to the dongle's dmix alongside CamillaDSP's output — see
+    docs/audio-paths.md), so its level is set by us alone. A bug,
+    malformed env value, or stale volume reading from TtsVolumeTracker
+    must NEVER be allowed to play TTS at a level that could damage
+    hearing. `set_gain_db` clamps every input to [MIN_TTS_GAIN_DB,
+    MAX_TTS_GAIN_DB]; the cap exists even if every other check
+    upstream fails. -6 dB ceiling means TTS peaks max out around
+    -9 dBFS at the dongle (Gemini's source peaks ~-3 dBFS), well
     below the dongle's reference output level.
     """
 

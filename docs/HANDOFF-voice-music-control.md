@@ -28,8 +28,9 @@ The coordinator dispatches to whichever source's slider is active:
 - Bluetooth A2DP → DBus to bluez-alsa
 - Idle (no source) → CamillaDSP main_volume
 
-CamillaDSP `master_gain` is reserved for the daemon's ducking and
-is NOT user-facing volume.
+CamillaDSP `main_volume` is reserved for the daemon's ducking
+(and for IDLE-mode user volume per the VolumeCoordinator). The
+`master_gain` mixer in v1.yml is identity and not the ducker.
 
 ### 2. Transport (next / previous / pause / resume)
 
@@ -108,8 +109,9 @@ invite further conversation.
 
 - Don't bypass the `ToolRegistry` — every tool goes through it;
   that's how Gemini sees function declarations.
-- Don't change CamillaDSP's `master_gain` from a tool — that's
-  the daemon's ducking knob, not user volume. Use the
+- Don't change CamillaDSP's `main_volume` from a tool — that's
+  the daemon's ducking knob (and the IDLE-mode user volume), not
+  something a tool should drive directly. Use the
   `VolumeCoordinator` instead.
 - Don't try to control AirPlay generically — only the
   AirPlay-carrying-Spotify case has a workaround. Be honest with
