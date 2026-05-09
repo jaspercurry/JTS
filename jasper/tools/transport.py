@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 
 from . import tool
@@ -240,12 +241,13 @@ def make_transport_dispatcher(renderer, router):
                 # No Spotify account playing the AirPlay track — try
                 # DACP for non-Spotify senders that expose it.
                 if not await _airplay_remote_available():
+                    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
                     return {
                         "error": "the airplay sender isn't playing a track "
                         "from any configured spotify account, and the device "
                         "doesn't accept remote control. tell the user to use "
                         "the controls on the device they're casting from, or "
-                        "to link their spotify account at jts.local/spotify.",
+                        f"to link their spotify account at {hostname}/spotify.",
                         "source": "airplay",
                     }
                 # MPRIS PlayPause is a single-call native toggle —

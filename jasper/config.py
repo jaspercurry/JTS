@@ -116,6 +116,13 @@ class Config:
     # systemd RuntimeDirectory.
     librespot_state_path: str
 
+    # The speaker's mDNS hostname — what other devices on the LAN type
+    # into their browser to reach the speaker. Default is `jts.local`
+    # (canonical reference deployment). Override at install time if you
+    # ran `hostnamectl set-hostname` to something else; the URLs below
+    # default to `http://${hostname}` when not explicitly set.
+    hostname: str
+
     spotify_client_id: str
     spotify_redirect_uri: str
     spotify_cache_path: str
@@ -167,8 +174,13 @@ class Config:
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
         openai_key = _env("OPENAI_API_KEY", required=(provider == "openai"))
         grok_key = _env("XAI_API_KEY", required=(provider == "grok"))
+        # Speaker hostname is the single source of truth for "where do
+        # other devices reach this speaker?" — read first so URL
+        # defaults below can derive from it.
+        hostname = _env("JASPER_HOSTNAME", "jts.local")
         return _validate(cls(
             voice_provider=provider,
+            hostname=hostname,
             gemini_api_key=gemini_key,
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             # Pin the TTS voice so it's consistent across sessions.
@@ -339,8 +351,11 @@ class Config:
             # Public URL household members visit to add their Spotify
             # account. Surfaced in error messages so the voice
             # assistant can tell unrecognized users where to go.
+            # Defaults to http://${hostname}/spotify; override only if
+            # the speaker is reverse-proxied behind a different
+            # hostname or path.
             spotify_setup_url=_env(
-                "JASPER_SPOTIFY_SETUP_URL", "http://jts.local/spotify"
+                "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
             ),
             # Where the jasper-web service listens. Reverse-proxied
             # from nginx's port 80 — the public surface stays at
@@ -354,10 +369,10 @@ class Config:
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
             # when something blocks normal voice response (spend cap,
-            # connection failure). Default uses jts.local over plain
-            # HTTP — the speaker no longer ships an HTTPS cert.
+            # connection failure). Defaults to http://${hostname}; the
+            # speaker no longer ships an HTTPS cert.
             management_url=_env(
-                "JASPER_MANAGEMENT_URL", "http://jts.local",
+                "JASPER_MANAGEMENT_URL", f"http://{hostname}",
             ),
             sounds_dir=_env(
                 "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",

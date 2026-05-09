@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-jts.local}"
+PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 
 ssh "${PI_USER}@${PI_HOST}" 'sudo systemctl stop shairport-sync jasper-voice; sleep 1

@@ -6,7 +6,7 @@
 #   sudo bash /home/pi/jts/scripts/pi-bundle.sh
 #
 # Then from your laptop:
-#   scp pi@jasper.local:/tmp/jasper-bundle-*.tar.gz ./logs/
+#   scp pi@jts.local:/tmp/jasper-bundle-*.tar.gz ./logs/
 set -euo pipefail
 
 TS=$(date -u +%Y%m%dT%H%M%SZ)

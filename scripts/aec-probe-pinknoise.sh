@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-jts.local}"
+PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 DURATION="${DURATION:-30}"
 REF_GAIN_DB="${REF_GAIN_DB:-0}"

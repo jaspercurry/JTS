@@ -19,6 +19,35 @@ when editing.
 
 ---
 
+## Speaker hostname — single source of truth
+
+`JASPER_HOSTNAME` (default `jts.local`) is the canonical name other
+devices type in to reach the speaker. Set in `/etc/jasper/jasper.env`.
+
+What derives from it (so you only set it once):
+- Python: `Config.hostname` plus `JASPER_MANAGEMENT_URL` and
+  `JASPER_SPOTIFY_SETUP_URL` defaults (`http://${JASPER_HOSTNAME}` and
+  `http://${JASPER_HOSTNAME}/spotify` respectively).
+- Bash scripts under `scripts/`: every `PI_HOST` default falls back to
+  `${JASPER_HOSTNAME:-jts.local}`. So if you also export
+  `JASPER_HOSTNAME` in your laptop shell, `fetch-pi-logs.sh`,
+  `tail-pi-logs.sh`, `switch-voice-provider.sh`, etc. all target the
+  right host without per-script overrides.
+
+What does NOT derive (intentionally):
+- The Pi's actual mDNS hostname (set with `hostnamectl set-hostname`
+  + Avahi). Setting `JASPER_HOSTNAME` doesn't change what the Pi
+  advertises — that's a separate, OS-level concern. Run hostnamectl
+  first; then point `JASPER_HOSTNAME` at it.
+- The Spotify OAuth bounce page at
+  `https://jaspercurry.github.io/JTS/oauth-callback/` — it's static
+  HTML and hard-codes `jts.local` as the bounce target. Forks running
+  on a different hostname either fork-and-self-host the page (one
+  constant, one re-deploy) or use the manual paste-back OAuth mode
+  instead. Documented in `oauth-callback/README.md`.
+
+---
+
 ## Renderer architecture — file map
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
