@@ -403,43 +403,36 @@ Cost: ~5% of one Pi 5 core, well within budget.
 All satellites talk to the Pi via the same surfaces. **New satellites
 should reuse these patterns rather than inventing new ones.**
 
-### Toolchain — split intentionally
+### Toolchain — Arduino-ESP32 v3.x via pioarduino
 
-The two firmware projects pin to different PlatformIO platforms today:
+Both ESP32 firmware projects (`firmware/dial/` and
+`firmware/satellite-amoled/`) pin to
+[pioarduino/platform-espressif32 @ 55.03.38-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.38-1)
+(Arduino-ESP32 v3.3.8 on ESP-IDF v5.5.4). PlatformIO's stock
+`espressif32@^6.x` is held back at Arduino-ESP32 v2.x and no longer
+tracks upstream — most notably it lacks `esp32-hal-periman.h`, which
+is required by current `Arduino_GFX` (and therefore the SH8601 driver
+the AMOLED satellite uses). pioarduino is the maintained fork that
+follows espressif/arduino-esp32 master. Keeping both projects on the
+same platform release avoids a split toolchain across `firmware/`.
 
-- **`firmware/satellite-amoled/`** uses
-  [pioarduino/platform-espressif32 @ 55.03.38-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.38-1)
-  (Arduino-ESP32 v3.3.8 on ESP-IDF v5.5.4). v3.x is required because
-  `Arduino_GFX`'s SH8601 driver depends on `esp32-hal-periman.h`,
-  which doesn't exist in v2.x.
-- **`firmware/dial/`** stays on PlatformIO's stock
-  `espressif32@^6.7.0` (Arduino-ESP32 v2.x). The deployed dial works
-  fine and the LovyanGFX/LVGL/FastLED stack it uses doesn't need
-  v3.x APIs — keeping the dial on v2.x avoids a destructive re-flash
-  of a working device.
-
-If we ever rebuild the dial firmware substantively (or stock
-`espressif32` stops tracking platform updates), migrating it to v3.x
-is mechanical:
+A few v2.x → v3.x deltas matter for new satellite code:
 - `MDNS.IP(idx)` was renamed to `MDNS.address(idx)`. `MDNS.port(idx)`
   is unchanged.
 - The LEDC PWM API moved from channel-keyed (`ledcSetup` +
   `ledcAttachPin` + `ledcWrite(channel, val)`) to pin-keyed
   (`ledcAttach(pin, freq, res)` + `ledcWrite(pin, val)`).
+- The legacy `<driver/i2s.h>` API survives as a deprecated
+  compatibility shim — the satellite's audio path uses it intentionally;
+  migrating to `<driver/i2s_std.h>` has a PSRAM/GDMA gotcha (see
+  "Audio init footguns" below).
 
-The legacy `<driver/i2s.h>` API survives in v3.x as a deprecated
-compatibility shim — the satellite's audio path uses it intentionally;
-migrating to `<driver/i2s_std.h>` has a PSRAM/GDMA gotcha (see "Audio
-init footguns" below).
-
-Local PlatformIO setup for the satellite (v3.x via pioarduino) needs
-Python ≥ 3.10. On macOS: `brew install python@3.11` then make a venv
-with that Python, `pip install platformio`, and prefix `pio`
-invocations with `PATH="/opt/homebrew/bin:$PATH"` so PIO's subprocess
-can find git (needed for the Improv-WiFi library install). The Pi
-already has Python 3.13 + PIO at `/opt/jasper/.venv/bin/pio`. Stock
-`espressif32@^6.7.0` (the dial) builds fine on the Pi's PIO without
-the Python-version dance.
+Local PlatformIO setup needs Python ≥ 3.10 (pioarduino requires it).
+On macOS: `brew install python@3.11` then make a venv with that
+Python, `pip install platformio`, and prefix `pio` invocations with
+`PATH="/opt/homebrew/bin:$PATH"` so PIO's subprocess can find git
+(needed for the Improv-WiFi library install). The Pi already has
+Python 3.13 + PIO at `/opt/jasper/.venv/bin/pio`.
 
 ### Discovery — `_jasper-control._tcp` over mDNS-SD
 

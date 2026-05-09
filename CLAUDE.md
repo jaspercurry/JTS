@@ -271,9 +271,10 @@ etc.).
 ### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Project at `firmware/satellite-amoled/`. **Arduino-ESP32 v3.x via
-pioarduino** (the dial stays on v2.x intentionally — see
-`docs/satellites.md` "Toolchain — split intentionally").
+Project at `firmware/satellite-amoled/`. Both ESP32 firmware projects
+(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino** — see
+`docs/satellites.md` "Toolchain — Arduino-ESP32 v3.x via pioarduino"
+for the rationale and v2.x→v3.x deltas.
 
 Shipped:
 - Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
