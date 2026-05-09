@@ -341,6 +341,58 @@ Common warnings (non-fatal):
 
 ---
 
+## Phase 9 — Trust the speaker's HTTPS cert on each iPhone (one-time, 1 min per device)
+
+This step is **only required** if you want to use the room-correction
+wizard at `https://jts.local/correction/`. The Spotify, voice, and dial
+settings pages don't need it (they're plain HTTP). If you don't plan
+to run room correction yet, skip this section — you can come back any
+time.
+
+`getUserMedia` (microphone access in the browser) requires a secure
+context, so the correction page is the one route on this speaker that
+has to be HTTPS. `install.sh` provisions a private CA on the Pi the
+first time it runs and signs a server cert for `${JASPER_HOSTNAME}`
+from it; the user-visible step is installing that CA on each iPhone
+(or iPad, or Mac) once.
+
+On each iPhone:
+
+1. In Safari, visit `http://jts.local/jts-root-ca.crt`. Safari
+   downloads the file silently and prompts: *"This website is trying
+   to download a configuration profile. Do you want to allow this?"*
+   Tap **Allow**.
+2. Open the **Settings** app. There will be a new entry near the top:
+   *"Profile Downloaded — JTS Speaker Local CA"*. Tap it.
+3. Tap **Install** (top right). Enter your passcode if asked. Tap
+   **Install** again on the consent screen, then **Done**.
+4. Go to **Settings → General → About → Certificate Trust Settings**.
+   Toggle **JTS Speaker Local CA** on. iOS shows a confirmation
+   dialog warning that "Enabling this certificate for websites will
+   allow third parties to view any private data sent to websites" —
+   this is the standard warning Apple shows for any non-public CA
+   and is fine for a personal smart speaker on your home network.
+   Tap **Continue**.
+
+Verify by visiting `https://jts.local/correction/` in Safari. The
+page should load without a "Connection is not private" warning, and
+tapping **Start mic capture** should bring up the standard iOS
+microphone permission prompt.
+
+If the cert was reissued after a hostname change (`JASPER_HOSTNAME`
+edited and `install.sh` re-run), only the leaf cert changes — the CA
+on the iPhone keeps working, no re-trust needed. If you ever wipe
+`/var/lib/jasper/ca` and run `install.sh` again, the old CA on the
+iPhone still appears in Certificate Trust Settings but no longer
+matches; remove it (Settings → General → VPN & Device Management →
+JTS Speaker Local CA → Remove Profile) and repeat steps 1-4.
+
+To remove the CA from an iPhone (e.g., decommissioning a speaker):
+**Settings → General → VPN & Device Management → JTS Speaker Local CA
+→ Remove Profile**.
+
+---
+
 ## Optional: ESP32 rotary dial
 
 If you have the CrowPanel ESP32-S3 dial:

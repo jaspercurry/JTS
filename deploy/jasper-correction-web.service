@@ -1,0 +1,27 @@
+[Unit]
+Description=Jasper smart-speaker room correction wizard (web)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/jasper/jasper.env
+# Phase 0 — only serves the mic-permission verify page.
+# Phase 1+ will pull in numpy / scipy / pyfar for sweep design,
+# deconvolution, PEQ generation. Heavy deps are why this is its own
+# service rather than colocated with jasper-web (which serves the
+# Spotify / voice settings pages and shouldn't pay the import cost).
+ExecStart=/opt/jasper/.venv/bin/jasper-correction-web --host 127.0.0.1 --port 8770
+Restart=on-failure
+RestartSec=2
+
+# Hardening — needs to read /etc/jasper/jasper.env (for JASPER_HOSTNAME)
+# and bind one loopback port. Phase 1+ will need ReadWritePaths for the
+# correction profile / measurement bundle storage; add then, not now.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
