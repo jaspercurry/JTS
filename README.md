@@ -427,6 +427,7 @@ If the repo is already deployed and you're just pushing changes:
 # from your laptop, with rsync set up to the Pi:
 rsync -avz --delete \
   --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
+  --exclude '.pio' --exclude '.claude/worktrees' \
   ./ pi@jts.local:/home/pi/jts/
 
 ssh pi@jts.local 'sudo bash /home/pi/jts/deploy/install.sh'
