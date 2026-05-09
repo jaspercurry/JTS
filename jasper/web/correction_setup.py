@@ -109,13 +109,21 @@ def _get_or_create_session():
     return _session
 
 
-def _replace_session():
+def _replace_session(
+    *,
+    total_positions: int = 1,
+    target_choice: str = "flat",
+):
     """Replace the global session with a fresh one. Called by /start
     so the user can re-run measurements without restarting the
-    daemon."""
+    daemon. Phase 2 takes total_positions + target_choice from the
+    body so the new session is configured before its first sweep."""
     from jasper.correction.session import MeasurementSession
     global _session
-    _session = MeasurementSession()
+    _session = MeasurementSession(
+        total_positions=total_positions,
+        target_choice=target_choice,
+    )
     return _session
 
 
@@ -231,21 +239,49 @@ _PAGE_HTML = """<!doctype html>
 <div id="measure-section" class="hidden">
   <h2>Measurement</h2>
   <p>Music will pause automatically. The sweep is loud — make sure no one is asleep.</p>
+
+  <div style="background:#f4f4f4; border-radius:6px; padding:0.6em 0.8em; margin:0.8em 0;">
+    <label for="positions-select">Positions to measure</label>
+    <select id="positions-select" form="dummy">
+      <option value="1">1 — quick (single position)</option>
+      <option value="5" selected>5 — recommended (MMM averaging)</option>
+      <option value="3">3 — compromise</option>
+    </select>
+    <p class="hint" style="margin-top:0.3em">5 positions across your couch / listening area give a much better correction than a single point. We'll guide you through each one.</p>
+
+    <label for="target-select" style="margin-top:0.6em">Target curve</label>
+    <select id="target-select" form="dummy">
+      <option value="flat" selected>Flat — neutral, accurate</option>
+      <option value="warm">Warm — Harman-style downward tilt + sub-bass shelf</option>
+      <option value="bright">Bright — slight upward tilt</option>
+    </select>
+  </div>
+
   <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
     <span id="state-detail" class="hint"></span></p>
+
+  <div id="position-prompt" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
+    <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
+    <p class="hint" style="margin-top:0.3em">Pick a different spot on / near your couch — about 30 cm from the previous position. Same orientation: flat, screen up, bottom toward speakers. Tap Continue when ready.</p>
+  </div>
+
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
     <button id="run-measurement" type="button" class="primary" disabled>Run measurement</button>
+    <button id="continue-position" type="button" class="primary hidden">Continue to next position</button>
     <button id="apply-correction" type="button" class="primary hidden">Apply correction</button>
+    <button id="verify-correction" type="button" class="primary hidden">Verify with re-measurement</button>
     <button id="reset-correction" type="button" class="danger hidden">Reset to flat</button>
   </p>
   <div id="result-section" class="hidden">
     <h3>Frequency response</h3>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <p class="hint">
-      <span style="color:#d44">red</span> = measured,
+      <span style="color:#d44">red</span> = measured (averaged across positions),
       <span style="color:#888">gray dashed</span> = target,
       <span style="color:#1db954">green</span> = predicted post-correction.
+      After Verify: <span style="color:#a050d0">purple dashed</span> = post-correction measurement.
     </p>
+    <p id="verify-summary" class="hint hidden"></p>
     <h3>Filters designed</h3>
     <div class="peq-list" id="peq-list"></div>
   </div>
@@ -271,11 +307,19 @@ _PAGE_HTML = """<!doctype html>
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
   var runBtn = document.getElementById('run-measurement');
+  var continueBtn = document.getElementById('continue-position');
   var applyBtn = document.getElementById('apply-correction');
+  var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
+  var positionsSelect = document.getElementById('positions-select');
+  var targetSelect = document.getElementById('target-select');
+  var positionPrompt = document.getElementById('position-prompt');
+  var positionCurrent = document.getElementById('position-current');
+  var positionTotal = document.getElementById('position-total');
   var resultSection = document.getElementById('result-section');
   var canvas = document.getElementById('chart');
   var peqList = document.getElementById('peq-list');
+  var verifySummary = document.getElementById('verify-summary');
 
   var ctx = null;
   var workletNode = null;
@@ -283,6 +327,8 @@ _PAGE_HTML = """<!doctype html>
   var sessionId = null;
   var currentState = null;
   var lastResult = null;
+  var lastVerify = null;
+  var inVerifyMode = false;
 
   function renderConstraints(actual, problems) {
     var rows = [
@@ -516,6 +562,10 @@ _PAGE_HTML = """<!doctype html>
     drawCurve(target, '#888', true);
     drawCurve(measured, '#d44', false);
     drawCurve(predicted, '#1db954', false);
+    // Phase 2: post-correction verify pass overlay (purple dashed).
+    if (lastVerify) {
+      drawCurve(lastVerify, '#a050d0', true);
+    }
   }
 
   // -- Network --
@@ -574,25 +624,64 @@ _PAGE_HTML = """<!doctype html>
 
   async function startMeasurement() {
     runBtn.disabled = true;
+    continueBtn.classList.add('hidden');
     applyBtn.classList.add('hidden');
+    verifyBtn.classList.add('hidden');
     resetBtn.classList.add('hidden');
     resultSection.classList.add('hidden');
+    positionPrompt.classList.add('hidden');
+    verifySummary.classList.add('hidden');
+    lastVerify = null;
+    inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
     try {
-      var resp = await postJson('start', {});
+      var totalPositions = parseInt(positionsSelect.value, 10) || 1;
+      var targetChoice = targetSelect.value || 'flat';
+      var resp = await postJson('start', {
+        total_positions: totalPositions,
+        target_choice: targetChoice
+      });
       sessionId = resp.session_id;
     } catch (e) {
       setStateBadge('failed', e.message);
       runBtn.disabled = false;
       return;
     }
-    // Tell the worklet to begin buffering samples for upload. The
-    // backend's POST /start has already begun the sweep on the
-    // speaker — capture timing aligns naturally because the FFT
-    // deconvolution is offset-invariant (it cross-correlates the
-    // recorded signal against the known sweep, finding the peak in
-    // the result).
     if (workletNode) workletNode.port.postMessage('startCapture');
+    pollState();
+  }
+
+  async function continueToNextPosition() {
+    continueBtn.disabled = true;
+    positionPrompt.classList.add('hidden');
+    setStateBadge('preparing', 'pausing music…');
+    try {
+      await postJson('next-position', {});
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      continueBtn.disabled = false;
+      continueBtn.classList.remove('hidden');
+      return;
+    }
+    if (workletNode) workletNode.port.postMessage('startCapture');
+    continueBtn.disabled = false;
+    pollState();
+  }
+
+  async function startVerify() {
+    verifyBtn.disabled = true;
+    inVerifyMode = true;
+    setStateBadge('verifying', 'pausing music for re-measurement…');
+    try {
+      await postJson('verify', {});
+    } catch (e) {
+      setStateBadge('failed', e.message);
+      verifyBtn.disabled = false;
+      inVerifyMode = false;
+      return;
+    }
+    if (workletNode) workletNode.port.postMessage('startCapture');
+    verifyBtn.disabled = false;
     pollState();
   }
 
@@ -601,36 +690,58 @@ _PAGE_HTML = """<!doctype html>
     try {
       var s = await fetchStatus();
       currentState = s.state;
-      setStateBadge(s.state, s.error || '');
-      if (s.state === 'awaiting_capture') {
-        // Sweep finished — stop buffering and ship the WAV.
+      var detail = s.error || '';
+      if (s.total_positions > 1 && s.current_position !== undefined &&
+          (s.state === 'preparing' || s.state === 'sweeping' ||
+           s.state === 'awaiting_capture' || s.state === 'analyzing')) {
+        detail = 'position ' + (s.current_position + 1) + ' of ' + s.total_positions;
+      }
+      setStateBadge(s.state, detail);
+      if (s.state === 'awaiting_capture' || s.state === 'awaiting_verify_capture') {
         if (workletNode) workletNode.port.postMessage('stopCapture');
-        // Don't poll again until upload completes — onCaptureReady
-        // resumes polling.
+        return;  // upload-capture handler resumes polling
+      }
+      if (s.state === 'needs_next_position') {
+        positionCurrent.textContent = (s.current_position + 1);
+        positionTotal.textContent = s.total_positions;
+        positionPrompt.classList.remove('hidden');
+        continueBtn.classList.remove('hidden');
         return;
       }
       if (s.state === 'ready') {
-        // Result event already arrived; chart may need to be drawn
-        // if the WAV upload completed before we got here.
+        positionPrompt.classList.add('hidden');
         applyBtn.classList.remove('hidden');
+        verifyBtn.classList.add('hidden');
         resetBtn.classList.remove('hidden');
         runBtn.disabled = false;
-        // Fetch the latest result via status (which doesn't include
-        // curves — we keep them on the last 'result' event we got
-        // from the upload response).
         return;
       }
       if (s.state === 'applied') {
+        positionPrompt.classList.add('hidden');
         runBtn.disabled = false;
         applyBtn.classList.add('hidden');
+        verifyBtn.classList.remove('hidden');
         resetBtn.classList.remove('hidden');
+        return;
+      }
+      if (s.state === 'verified') {
+        positionPrompt.classList.add('hidden');
+        runBtn.disabled = false;
+        applyBtn.classList.add('hidden');
+        verifyBtn.classList.remove('hidden');
+        resetBtn.classList.remove('hidden');
+        if (s.verify_metrics) {
+          verifySummary.textContent = 'Post-correction (20–350 Hz): RMS deviation ' +
+            s.verify_metrics.rms_db.toFixed(2) + ' dB, max ' +
+            s.verify_metrics.max_db.toFixed(2) + ' dB.';
+          verifySummary.classList.remove('hidden');
+        }
         return;
       }
       if (s.state === 'failed') {
         runBtn.disabled = false;
         return;
       }
-      // Otherwise keep polling.
       pollTimer = setTimeout(pollState, 500);
     } catch (e) {
       setStateBadge('failed', e.message);
@@ -655,10 +766,19 @@ _PAGE_HTML = """<!doctype html>
       }
       var data = await resp.json();
       lastResult = data;
-      if (data.measured) drawChart(data.measured, data.target, data.predicted);
-      renderPEQs(data.peqs || []);
+      // Verify pass: hold the design curves, overlay the new
+      // measurement as `lastVerify`. Otherwise: redraw with the
+      // freshly designed curves.
+      if (data.verify) {
+        lastVerify = data.verify;
+      }
+      if (data.measured) {
+        drawChart(data.measured, data.target, data.predicted);
+      }
+      if (data.peqs) {
+        renderPEQs(data.peqs);
+      }
       resultSection.classList.remove('hidden');
-      // Resume polling — server should now be in 'ready'.
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
@@ -694,7 +814,9 @@ _PAGE_HTML = """<!doctype html>
 
   startBtn.addEventListener('click', function () { startMicCapture(); });
   runBtn.addEventListener('click', function () { startMeasurement(); });
+  continueBtn.addEventListener('click', function () { continueToNextPosition(); });
   applyBtn.addEventListener('click', function () { applyCorrection(); });
+  verifyBtn.addEventListener('click', function () { startVerify(); });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
 })();
 </script>
@@ -717,29 +839,99 @@ def _render_page(hostname: str) -> bytes:
 # ----------------------------------------------------------------------
 
 
+def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Parse JSON body. Empty body → {}."""
+    length = int(handler.headers.get("Content-Length") or "0")
+    if length <= 0:
+        return {}
+    raw = handler.rfile.read(length)
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /start: replace the session, kick off the measurement
-    pipeline in the background."""
+    """POST /start: replace the session, kick off the first sweep.
+    Body fields:
+      - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
+      - target_choice:   str = 'flat' | 'neutral' | 'warm' | 'bright'
+    """
+    from jasper.correction import coordinator, playback
+
+    body = _read_json_body(handler)
+    total_positions = max(1, min(10, int(body.get("total_positions", 1))))
+    target_choice = str(body.get("target_choice", "flat"))
+
+    sess = _replace_session(
+        total_positions=total_positions,
+        target_choice=target_choice,
+    )
+
+    async def _run_first_sweep() -> None:
+        try:
+            async with coordinator.measurement_window():
+                await sess.prepare_and_play_sweep(playback.play_sweep)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("first sweep failed: %s", e)
+
+    asyncio.run_coroutine_threadsafe(_run_first_sweep(), _ensure_loop())
+
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "total_positions": sess.total_positions,
+        "target_choice": sess.target_choice,
+    }
+
+
+def _handle_next_position(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /next-position: play the next sweep for a multi-position
+    measurement. Only valid in NEEDS_NEXT_POSITION state."""
     from jasper.correction import coordinator, playback
     from jasper.correction.session import SessionState
 
-    sess = _replace_session()
+    sess = _get_or_create_session()
+    if sess.state != SessionState.NEEDS_NEXT_POSITION:
+        raise RuntimeError(
+            f"cannot advance to next position from state {sess.state.value}"
+        )
 
-    async def _run_full_measurement() -> None:
+    async def _run_next_sweep() -> None:
         try:
             async with coordinator.measurement_window():
-                await sess.prepare_and_play_sweep(
-                    playback.play_sweep,
-                )
+                await sess.prepare_and_play_sweep(playback.play_sweep)
         except Exception as e:  # noqa: BLE001
-            logger.exception("measurement failed: %s", e)
-            # session._fail() already called inside the methods that
-            # raised; nothing else to do.
+            logger.exception("next-position sweep failed: %s", e)
 
-    # Schedule the long-running coroutine on the background loop;
-    # don't await — the HTTP request returns immediately and the
-    # browser polls /status.
-    asyncio.run_coroutine_threadsafe(_run_full_measurement(), _ensure_loop())
+    asyncio.run_coroutine_threadsafe(_run_next_sweep(), _ensure_loop())
+
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "current_position": sess.current_position,
+        "total_positions": sess.total_positions,
+    }
+
+
+def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /verify: re-measure after Apply to see the actual effect
+    of the correction. One-position only; result lands in
+    verify_curve / verify_metrics."""
+    from jasper.correction import coordinator, playback
+
+    sess = _get_or_create_session()
+
+    async def _run_verify_sweep() -> None:
+        try:
+            async with coordinator.measurement_window():
+                await sess.start_verify_sweep(playback.play_sweep)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("verify sweep failed: %s", e)
+
+    asyncio.run_coroutine_threadsafe(_run_verify_sweep(), _ensure_loop())
 
     return {"session_id": sess.session_id, "state": sess.state.value}
 
@@ -754,7 +946,11 @@ def _handle_upload_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
     """POST /upload-capture: read the WAV body, write to disk, run
-    the analysis pipeline, return the chart data + designed PEQs."""
+    the analysis pipeline. Routes to either the multi-position
+    capture path (if state == AWAITING_CAPTURE) or the verify path
+    (if state == AWAITING_VERIFY_CAPTURE)."""
+    from jasper.correction.session import SessionState
+
     sess = _get_or_create_session()
     if sess is None:
         raise RuntimeError("no session — POST /start first")
@@ -766,15 +962,22 @@ def _handle_upload_capture(
 
     sess.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
     captured_path = sess.cfg.capture_dir / (
-        f"capture_{sess.session_id}_{int(time.time())}.wav"
+        f"capture_{sess.session_id}_p{sess.current_position}_{int(time.time())}.wav"
     )
     captured_path.write_bytes(body)
 
-    _run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
+    if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
+        _run_async(
+            sess.on_verify_capture_uploaded(captured_path), timeout=30.0,
+        )
+    else:
+        _run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
 
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
+        "current_position": sess.current_position,
+        "total_positions": sess.total_positions,
         "measured": (
             sess.measured_curve.__dict__ if sess.measured_curve else None
         ),
@@ -784,6 +987,10 @@ def _handle_upload_capture(
         "predicted": (
             sess.predicted_curve.__dict__ if sess.predicted_curve else None
         ),
+        "verify": (
+            sess.verify_curve.__dict__ if sess.verify_curve else None
+        ),
+        "verify_metrics": sess.verify_metrics,
         "peqs": [p.__dict__ for p in sess.peqs],
     }
 
@@ -888,6 +1095,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 if path == "/start":
                     self._send_json(_handle_start(self))
+                    return
+                if path == "/next-position":
+                    self._send_json(_handle_next_position(self))
+                    return
+                if path == "/verify":
+                    self._send_json(_handle_verify(self))
                     return
                 if path == "/upload-capture":
                     self._send_json(_handle_upload_capture(self))

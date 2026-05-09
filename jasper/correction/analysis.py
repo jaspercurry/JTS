@@ -92,6 +92,74 @@ def resample_log(
     return log_freqs.astype(np.float64), interp.astype(np.float64)
 
 
+def spatial_average_db(
+    magnitudes_db: list[np.ndarray],
+) -> np.ndarray:
+    """Power-mean averaging of multiple positions' magnitude responses.
+
+    Per Toole / Welti / Olive: room responses average sensibly in
+    LINEAR POWER (squared amplitude), not in dB. Power averaging
+    correctly reflects how the ear integrates energy from
+    decorrelated reflection paths across positions, while dB
+    averaging would over-emphasize deep nulls (a single -30 dB null
+    at one position would drag the whole region down even if the
+    other four positions have flat response there).
+
+    For Phase 2 simplicity we power-average across the WHOLE
+    spectrum. The strict Schroeder split (vector-mean below, power-
+    mean above) requires keeping complex H(f) per position rather
+    than just the magnitude, which our pipeline doesn't currently
+    do — we drop phase right after deconvolution. Power-mean
+    everywhere is what HouseCurve and most simpler tools do, and
+    Toole's published target curves were derived from power-averaged
+    measurements. Strict Schroeder split is a Phase 3 refinement.
+
+    Args:
+      magnitudes_db: list of N dB arrays, each on the same frequency
+        grid. Empty list raises ValueError; 1 element returns itself.
+
+    Returns:
+      Averaged magnitude in dB.
+    """
+    if not magnitudes_db:
+        raise ValueError("need at least one magnitude array")
+    if len(magnitudes_db) == 1:
+        return magnitudes_db[0].astype(np.float64)
+    stack = np.stack([m.astype(np.float64) for m in magnitudes_db], axis=0)
+    # dB → linear power → mean → linear power → dB
+    power = 10.0 ** (stack / 10.0)
+    mean_power = power.mean(axis=0)
+    return 10.0 * np.log10(np.maximum(mean_power, 1e-12))
+
+
+def deviation_metrics(
+    measured_db: np.ndarray,
+    target_db: np.ndarray,
+    freqs: np.ndarray,
+    *,
+    f_low: float = 20.0,
+    f_high: float = 350.0,
+) -> dict[str, float]:
+    """Summary stats for the verify pass.
+
+    Returns RMS deviation, max deviation, and number of points above
+    threshold across the design band. The browser overlays these
+    on the post-correction chart so the user can read the
+    improvement at a glance.
+    """
+    band = (freqs >= f_low) & (freqs <= f_high)
+    if not band.any():
+        return {"rms_db": 0.0, "max_db": 0.0, "n_points": 0}
+    delta = (measured_db - target_db)[band]
+    rms = float(np.sqrt(np.mean(delta ** 2)))
+    max_dev = float(np.max(np.abs(delta)))
+    return {
+        "rms_db": rms,
+        "max_db": max_dev,
+        "n_points": int(band.sum()),
+    }
+
+
 def normalize_to_band(
     freqs: np.ndarray,
     magnitude_db: np.ndarray,
