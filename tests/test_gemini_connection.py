@@ -449,6 +449,32 @@ async def test_idle_context_reset_drops_resumption_handle_and_reopens():
         await conn.stop()
 
 
+async def test_context_reset_disabled_when_threshold_is_zero():
+    """`context_reset_sec=0` disables the idle reset entirely. Even
+    after a long idle gap, the next acquire_turn reuses the existing
+    session and keeps the resumption handle."""
+    conn, factory = _make_conn(context_reset_sec=0.0)
+    registry = ToolRegistry()
+    await conn.start(registry, "system")
+    try:
+        sess1 = factory.sessions[0]
+        sess1.feed(_Resp(session_resumption_update=_ResumptionUpdate(new_handle="hndl-stable")))
+        await _wait_until(lambda: conn._resumption_handle == "hndl-stable")
+        turn1 = await conn.acquire_turn()
+        await turn1.release()
+
+        # Long idle — would trigger reset if enabled.
+        await asyncio.sleep(0.1)
+
+        turn2 = await conn.acquire_turn()
+        # Same session, handle preserved.
+        assert len(factory.sessions) == 1
+        assert conn._resumption_handle == "hndl-stable"
+        await turn2.release()
+    finally:
+        await conn.stop()
+
+
 async def test_acquire_turn_blocks_on_failed_state():
     """Calling acquire_turn() while in FAILED raises immediately
     (doesn't deadlock on the connected_event)."""
