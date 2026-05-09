@@ -5,19 +5,18 @@ can drive volume / transport / session.
 Stack: stdlib http.server (ThreadingHTTPServer), pycamilladsp client,
 VolumeCoordinator (source-aware dispatch).
 
-Phase 1 routes:
-  GET  /healthz             — liveness check
-  GET  /volume              — {"db": float, "percent": int}
-  POST /volume/adjust       — body: {"delta_db": float} → new state
-                              delta_db is interpreted on the legacy
-                              50 dB scale (5 dB == 10 percent points)
-                              for backward-compat with the dial firmware
-  POST /volume/set          — body: {"db": float} → new state
+The route table is in `_make_handler` below — `do_GET` and `do_POST`
+own the dispatch in one place rather than mirroring the list here
+(that mirror went stale several times). Highlights:
 
-Phase 2 routes:
-  POST /transport/toggle    — auto play↔pause based on backend state
-  POST /session/start       — manual wake bypass (long-press)
-  POST /session/end         — finalize input (release)
+- Volume + transport + session-bypass: dial-driven actions.
+- /state: cross-daemon JSON snapshot — voice / audio / renderers /
+  satellites; consumable from the /voice web UI, jasper-doctor, or
+  `curl`.
+- /cue/play: proxy to voice_daemon's UDS so a cue plays through
+  the daemon's already-correctly-gained TtsPlayout.
+- /dial/status: focused dial heartbeat (subset of /state.satellites.dial,
+  kept because jasper-doctor calls it directly).
 
 Volume dispatch: requests build a fresh VolumeCoordinator per call
 (matches the per-request _toggle_transport pattern). The coordinator
