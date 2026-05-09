@@ -59,7 +59,6 @@ install_deps() {
         build-essential libasound2-dev libasound2 portaudio19-dev \
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
-        libspeexdsp-dev libspeexdsp1 swig \
         libwebrtc-audio-processing-dev pkg-config \
         nginx-light openssl
 
@@ -107,9 +106,9 @@ install_camilladsp() {
     # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
     # now a Python software AEC daemon (jasper-aec-bridge, see
     # jasper/cli/aec_bridge.py). The chip's on-chip AEC turned out
-    # to be incompatible with our external-DAC topology, so we do
-    # SpeexDSP cancellation on the host using the XVF chip's raw
-    # mic 0 (channel 2 of 6-ch firmware) + the dsnoop-tapped music
+    # to be incompatible with our external-DAC topology, so we run
+    # WebRTC AEC3 on the host using the XVF chip's raw mic 0
+    # (channel 2 of 6-ch firmware) + the dsnoop-tapped music
     # reference. Old aec-bridge.yml is removed if present from a
     # prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
@@ -317,21 +316,6 @@ install_jasper() {
         requests tqdm 'scipy>=1.3,<2' 'scikit-learn>=1,<2'
 
     "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
-
-    # SpeexDSP Python bindings — used by jasper-aec-bridge for
-    # software echo cancellation. The xiongyihui/speexdsp-python
-    # repo's __init__.py is broken on Python 3.13 (tries to import
-    # a SWIG-generated wrapper that isn't actually built), so we
-    # patch __init__.py post-install to load the SWIG extension
-    # module directly. swig + libspeexdsp-dev are installed by
-    # install_deps.
-    "${INSTALL_DIR}/.venv/bin/pip" install \
-        "git+https://github.com/xiongyihui/speexdsp-python.git"
-    local sx_init
-    sx_init="${INSTALL_DIR}/.venv/lib/python3.13/site-packages/speexdsp/__init__.py"
-    if [[ -f "${sx_init}" ]]; then
-        echo "from ._speexdsp import *" > "${sx_init}"
-    fi
 
     # jasper_aec3 — pybind11 binding around Trixie's
     # libwebrtc-audio-processing-1 (v1.3-3, AEC3). Compiled per-host
