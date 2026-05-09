@@ -157,6 +157,12 @@ class Config:
 
     voice_control_socket: str
 
+    # Timer persistence — SQLite DB tracking active kitchen timers
+    # so a daemon restart doesn't lose the user's pending fire times.
+    # Sits in the same /var/lib/jasper StateDirectory as everything
+    # else under jasper-voice's systemd unit.
+    timer_db_path: str
+
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
@@ -363,6 +369,9 @@ class Config:
             ),
             sounds_dir=_env(
                 "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+            ),
+            timer_db_path=_env(
+                "JASPER_TIMER_DB", "/var/lib/jasper/timers.db",
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.

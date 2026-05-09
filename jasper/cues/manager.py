@@ -31,8 +31,10 @@ from typing import Any
 from .generator import (
     cue_hash,
     cue_path,
+    dynamic_text_path,
     prune_stale,
     write_cue,
+    write_dynamic_text,
 )
 from .registry import CUES, CueDef, find as find_cue
 
@@ -186,6 +188,58 @@ class AudioCueManager:
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
+        )
+        return True
+
+    async def speak_text(self, text: str) -> bool:
+        """Render arbitrary `text` via TTS and play through TtsPlayout.
+
+        Used for dynamic content — timer fire announcements with the
+        elapsed duration, etc. — where a static CueDef would have to
+        enumerate every variant. Cached by hash of (text, voice, model)
+        so repeated identical phrases reuse the same WAV across daemon
+        restarts.
+
+        First synthesis takes ~1 s of network round-trip to Gemini TTS;
+        subsequent plays of the same text are instant (cache hit).
+
+        Failure semantics match `play()` — never raises; returns False
+        on any error (no backend, no TtsPlayout, network failure, IO
+        error). Callers should not need extra error handling.
+        """
+        if self._tts is None:
+            logger.warning("cue speak_text: no TtsPlayout configured")
+            return False
+        if self._backend is None:
+            logger.warning("cue speak_text: no TTS backend configured")
+            return False
+
+        path = dynamic_text_path(self._sounds_dir, text, self._voice)
+        if not os.path.isfile(path):
+            try:
+                await asyncio.to_thread(
+                    write_dynamic_text,
+                    text, self._voice, self._sounds_dir, self._backend,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("cue speak_text: synthesis failed: %s", e)
+                return False
+
+        try:
+            pcm, audio_duration_sec = self._read_wav_pcm(path)
+        except (OSError, wave.Error) as e:
+            logger.warning("cue speak_text: could not read %s: %s", path, e)
+            return False
+
+        try:
+            await self._tts.write(pcm)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
+            return False
+        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+        logger.info(
+            "cue speak_text: %r (%d bytes pcm, audio=%.1fs)",
+            text, len(pcm), audio_duration_sec,
         )
         return True
 

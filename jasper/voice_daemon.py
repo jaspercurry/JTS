@@ -17,10 +17,12 @@ from .config import Config
 from .renderer import RendererClient
 from .spotify_router import Router, build_clients
 from .subway import SubwayClient
+from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
 from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
+from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore, pricing_for_provider
@@ -69,6 +71,10 @@ SYSTEM_INSTRUCTION = (
     "  User: 'Turn it down a lot.'   → [adjust_volume -25] 'Done.'\n"
     "  User: 'Set volume to 30.'     → [set_volume 30] 'Done.'\n"
     "  User: 'Mute.'                 → [mute] 'Done.'\n"
+    "  User: 'Set a timer for 5 minutes.' → [set_timer 300] (speak the response's `confirm` field, e.g. 'Set a 5-minute timer.')\n"
+    "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`)\n"
+    "  User: 'How much time left on my timer?' / 'What timers do I have?' → [list_timers] 'Three minutes and twenty seconds left.' (or summarise multiple)\n"
+    "  User: 'Cancel the pasta timer.' / 'Stop the 5-minute timer.' → [cancel_timer 'pasta'] (speak `confirm`, e.g. 'Cancelled the pasta timer.')\n"
     "  User: 'Who won the game?'     → 'Sorry, I don't have sports scores.'\n"
     "Examples of INCORRECT style (do not produce these):\n"
     "  'Sure! It's 9:47. Anything else I can help you with?'\n"
@@ -116,7 +122,23 @@ SYSTEM_INSTRUCTION = (
     "speaker's home direction, so a bare 'when's the next train' "
     "passes empty strings. Voice answer style: 'Next uptown D trains "
     "in 5, 12, and 19 minutes.' or, when station/line are obvious, "
-    "just 'Next train in 4 minutes, then 11 and 17.'"
+    "just 'Next train in 4 minutes, then 11 and 17.' "
+    # Timer rules.
+    "For timer requests, call set_timer with the duration in seconds — "
+    "convert the user's spoken duration ('5 minutes' → 300, '1 hour' "
+    "→ 3600, '90 seconds' → 90). When the user names the timer "
+    "('pasta timer', 'laundry'), pass that as the label arg. Speak "
+    "the response's `confirm` field verbatim. Multiple timers run in "
+    "parallel — setting a new one does NOT cancel existing ones. The "
+    "speaker plays the announcement when the timer fires; do NOT "
+    "promise to remind or follow up — the system handles it. For "
+    "'how much time left' / 'what timers do I have' / 'list my "
+    "timers', call list_timers and speak a brief summary using the "
+    "remaining field of each entry. For 'cancel the X timer', call "
+    "cancel_timer with the label or duration as the query; on "
+    "success speak `confirm`. If cancel_timer returns "
+    "reason='ambiguous', read out the matches' durations and ask "
+    "the user which one to cancel."
 )
 
 # Refractory after a turn ends before the wake detector is re-armed.
@@ -591,6 +613,7 @@ def _build_registry(
     volume_coordinator: "VolumeCoordinator",
     volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
+    timer_scheduler: TimerScheduler | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -609,6 +632,9 @@ def _build_registry(
         registry.register(fn)
     for fn in make_subway_tools(subway):
         registry.register(fn)
+    if timer_scheduler is not None:
+        for fn in make_timer_tools(timer_scheduler):
+            registry.register(fn)
     return registry
 
 
@@ -821,6 +847,55 @@ class WakeLoop:
         if self._state is State.SESSION:
             return "skipped_session_active"
         return await self.play_cue(slug)
+
+    async def announce_timer(self, timer: "Timer") -> None:
+        """Public hook called by `TimerScheduler` when a timer fires.
+
+        Speaks the announcement via dynamic-text TTS. Defers up to
+        5 s if a voice session is currently active (don't cross-talk
+        the LLM's TTS); after the grace window the announcement is
+        skipped — the user is already engaged and a delayed timer
+        chime would be more confusing than a missed one. The user
+        can `list_timers` to recover state in either case.
+        """
+        text = announcement_text(timer)
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while self._state is State.SESSION:
+            if asyncio.get_event_loop().time() >= deadline:
+                logger.warning(
+                    "timer announce: skipped (id=%s) — session still "
+                    "active after 5s grace window",
+                    timer.id,
+                )
+                return
+            await asyncio.sleep(0.5)
+        logger.info(
+            "timer announce: id=%s label=%r text=%r",
+            timer.id, timer.label, text,
+        )
+        await self._play_dynamic_text(text)
+
+    async def _play_dynamic_text(self, text: str) -> None:
+        """Speak arbitrary `text` through the cue manager, with
+        duck/restore wrapping that mirrors `_play_cue`. Used for
+        timer announcements where the duration is in the phrase and
+        a static CueDef would have to enumerate every variant."""
+        if self._cues is None:
+            return
+        try:
+            try:
+                await self._ducker.duck()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text: duck failed: %s", e)
+            try:
+                await self._cues.speak_text(text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text play failed: %s", e)
+        finally:
+            try:
+                await self._ducker.restore()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text restore failed: %s", e)
 
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for
@@ -1438,11 +1513,20 @@ async def run() -> None:
     )
     await volume_observer.start()
 
+    # Timer scheduler — owns persistence + asyncio task lifecycle for
+    # kitchen timers. Constructed BEFORE _build_registry so set_timer
+    # / list_timers / cancel_timer are visible to the model from the
+    # very first session.start. The on_fire announcement callback is
+    # wired after WakeLoop exists (it can't fire before then anyway —
+    # SQLite restore happens in scheduler.start() further down).
+    timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
+
     registry = _build_registry(
         cfg, camilla, renderer, weather, subway,
         volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
+        timer_scheduler=timer_scheduler,
     )
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
@@ -1531,6 +1615,15 @@ async def run() -> None:
                 connection.set_failure_escalation_cb(
                     wake_loop.play_supervisor_cue,
                 )
+            # Wire timer announcements through the wake loop's
+            # session-aware playback (duck + speak_text + restore,
+            # with up-to-5s deferral if a voice turn is in flight).
+            # set_on_fire BEFORE start() — start() restores persisted
+            # timers and any whose fire_at has passed during downtime
+            # are dropped before they'd hit on_fire anyway, but timers
+            # whose fire_at is < 1s away could fire mid-restore.
+            timer_scheduler.set_on_fire(wake_loop.announce_timer)
+            await timer_scheduler.start()
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
             )
@@ -1543,6 +1636,10 @@ async def run() -> None:
                 except Exception:  # noqa: BLE001
                     pass
     finally:
+        # Stop the scheduler FIRST so any in-flight `_run` tasks that
+        # were about to fire get cancelled before we tear down the
+        # cue manager / TtsPlayout they'd be calling into.
+        await timer_scheduler.stop()
         if tts_volume_tracker is not None:
             await tts_volume_tracker.stop()
         if volume_observer is not None:

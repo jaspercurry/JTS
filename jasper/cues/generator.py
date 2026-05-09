@@ -178,6 +178,45 @@ def write_cue(
     return path
 
 
+def dynamic_text_hash(text: str, voice: str, model: str = TTS_MODEL) -> str:
+    """Cache key for `speak_text(...)` — analogous to `cue_hash` but
+    for arbitrary text not tied to a static CueDef. Uses the same
+    GENERATOR_VERSION + audio-format inputs so a generator change
+    invalidates dynamic and static cues together."""
+    payload = (
+        f"v={GENERATOR_VERSION}|model={model}|voice={voice}"
+        f"|rate={WAV_RATE}|sw={WAV_SAMPLE_WIDTH}"
+        f"|ch={WAV_CHANNELS}|text={text}"
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()[:8]
+
+
+def dynamic_text_path(sounds_dir: str, text: str, voice: str) -> str:
+    h = dynamic_text_hash(text, voice)
+    return os.path.join(sounds_dir, f"dynamic-{h}.wav")
+
+
+def write_dynamic_text(
+    text: str, voice: str, sounds_dir: str, backend: TTSBackend,
+) -> str:
+    """Render arbitrary `text` to a cached WAV at
+    `<sounds_dir>/dynamic-<hash>.wav`. Mirrors `write_cue` but for
+    text not tied to a static CueDef. Returns the absolute path.
+    Idempotent: if the file already exists, just returns the path."""
+    path = dynamic_text_path(sounds_dir, text, voice)
+    if os.path.isfile(path):
+        return path
+    os.makedirs(sounds_dir, exist_ok=True)
+    logger.info(
+        "cue: synthesising dynamic text=%r voice=%s hash=%s",
+        text, voice, dynamic_text_hash(text, voice),
+    )
+    result = backend.synthesise(text)
+    _write_wav_atomic(path, result.pcm_24k)
+    logger.info("cue: wrote %s (%d bytes pcm @ 24kHz)", path, len(result.pcm_24k))
+    return path
+
+
 def prune_stale(sounds_dir: str, cue: CueDef, keep_hash: str) -> int:
     """Remove any `<slug>-*.wav` files in `sounds_dir` whose hash
     doesn't match `keep_hash`. Called after a successful write so
