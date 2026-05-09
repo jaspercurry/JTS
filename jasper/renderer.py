@@ -50,7 +50,11 @@ class RendererClient:
         self._mpd_host = mpd_host
         self._mpd_port = mpd_port
         self._mpd: MPDClient | None = None
-        self._mpd_lock = asyncio.Lock()
+        # Lazy init on first await — see _mpd_call. Constructing
+        # asyncio.Lock() synchronously here used to bind it to the
+        # default event loop, which raises RuntimeError on Python
+        # <3.10 when no loop is running yet (the laptop dev venv).
+        self._mpd_lock: asyncio.Lock | None = None
 
     # ------------------------------------------------------------------
     # State queries — read-only, fail-soft. None of these methods raise
@@ -201,6 +205,8 @@ class RendererClient:
         return self._mpd
 
     async def _mpd_call(self, fn_name: str, *args: Any) -> Any:
+        if self._mpd_lock is None:
+            self._mpd_lock = asyncio.Lock()
         async with self._mpd_lock:
             try:
                 client = await self._mpd_client()
