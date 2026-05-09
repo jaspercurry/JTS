@@ -302,16 +302,16 @@ pcm.jasper_capture  ← type plug → type dsnoop on Loopback,1,sub0
     │       writes to → pcm.jasper_out (dmix on Apple dongle)
     │       → speaker (audible path)
     │
-    └──► reader B: jasper-aec-bridge (Python, alsaaudio + SpeexDSP)
+    └──► reader B: jasper-aec-bridge (Python, alsaaudio + jasper_aec3)
             captures jasper_capture (48k stereo) for FAR-END REFERENCE
             captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
             takes channel 2 of the chip capture (raw mic 0)
             downsamples ref 48k → 16k mono on left
-            runs SpeexDSP EchoCanceller frame by frame
+            runs WebRTC AEC3 (10ms windows) frame by frame
             writes AEC'd mono 16k to → hw:LoopbackAEC,0
                                           │
-                                          ▼ (snd-aloop card 5)
-                                       hw:LoopbackAEC,1 (= hw:5,1)
+                                          ▼ (snd-aloop card 7)
+                                       hw:LoopbackAEC,1 (= hw:7,1)
                                           │
                                           ▼
                                        jasper-voice
@@ -345,33 +345,32 @@ this work cleanly: dsnoop is the canonical ALSA primitive for
 "multiple readers share one capture device" and it does what it
 says.
 
-### Why SpeexDSP
+### Engine choice: WebRTC AEC3 via direct pybind11 binding
 
-Three options were considered for the software AEC implementation:
+The software AEC engine landscape, with how we ended up where we
+are now:
 
-- **WebRTC AEC3** (Google, used by PipeWire's `module-echo-cancel`
-  and Chrome). High quality. But the canonical integration path
-  is via PipeWire, which would require restructuring our ALSA
-  topology. Standalone ALSA-only WebRTC AEC packages don't really
-  exist; we'd be writing or porting one.
-- **SpeexDSP** (xiph). Mature, packaged in Debian
-  (`libspeexdsp-dev`), small. Stuart Naylor's writeups
-  (the most-cited voice on Pi-AEC) report SpeexDSP holds up at
-  higher speaker SPL than WebRTC AEC. The `voice-engine/ec`
-  project is an existing reference implementation that uses
-  SpeexDSP in exactly the bridge pattern we want.
-- **Neural AEC (DeepVQE-S, EchoFree, etc.)**. Best quality on
-  AEC-Challenge benchmarks. But no production-ready
-  ALSA-bridge-shaped integration; we'd be writing a real-time
-  Python or C++ pipeline from scratch. Defer until SpeexDSP
-  proves insufficient.
-
-Picked SpeexDSP. The Python bindings are
-`xiongyihui/speexdsp-python` (small SWIG wrapper around the C
-library), with a known packaging quirk on Python 3.13 — the
-`__init__.py` references a SWIG-generated wrapper file that
-isn't actually built; we patch `__init__.py` post-install to
-import the SWIG extension module directly.
+- **SpeexDSP** (xiph, `libspeexdsp-dev`). Mature, small, simple
+  Python bindings. Project initially shipped this because the
+  integration path was the shortest — `xiongyihui/speexdsp-python`
+  wraps the C library and slots into the bridge pattern cleanly.
+  Speex's own docs warn it can't model speaker non-linearity at
+  high SPL — falls over on music. Best measured was −2 to −8 dB.
+  Removed when AEC3 landed; see git log for the historical
+  config.
+- **WebRTC AEC3** (current production). The modern Google echo
+  controller — frequency-domain canceler with residual suppressor
+  and drift-tolerant delay estimator. Trixie's apt ships
+  `libwebrtc-audio-processing-1` v1.3-3, which IS AEC3 (the 1.x
+  is package-API stability, not algorithm version). We wrote our
+  own pybind11 binding (`jasper_aec3/`) rather than going through
+  PipeWire — PipeWire would have required restructuring our ALSA
+  topology and only forwards top-level `AudioProcessing::Config`
+  knobs anyway (the deep AEC3 config struct isn't exposed; see
+  "Deep tuning landscape" below).
+- **Neural AEC** (DeepVQE-S, DTLN-aec, GTCRN-AEC, etc.). Best
+  quality on AEC-Challenge benchmarks. Deferred — see "Deep
+  tuning landscape" below for staging.
 
 ### Why alsaaudio for the reference capture
 
@@ -417,18 +416,18 @@ firmware version.
 
 ## Hardware vs software AEC — comparison summary
 
-| Dimension | XVF3800 hardware AEC | SpeexDSP software AEC (current) |
+| Dimension | XVF3800 hardware AEC | WebRTC AEC3 software AEC (current) |
 |---|---|---|
 | **Topology fit for our setup** | Designed for chip-driven speaker; doesn't work with external DAC | Topology-agnostic — bridge can capture any reference and any mic |
-| **Effectiveness in our setup** | ≤2 dB sustained attenuation (measured) | −2 to −8 dB (measured); held convergence requires sustained signal |
-| **Host CPU cost** | ~0% (chip handles it) | ~3% of one A76 core |
-| **Host RAM cost** | ~0 MB | ~110 MB RSS (Python + numpy + scipy + speexdsp) |
-| **Latency** | <1 ms (chip-internal) | ~20 ms (frame size) + queue jitter |
-| **Beamforming, NS, AGC, DoA** | Included, professional-grade | Not included; would need separate processing |
-| **Configurability** | Closed binary, ~30 documented parameters | Source-available, fully tunable |
-| **Drift handling** | Internal (chip is single clock domain) | Two-clock-domain capture causes perpetual re-adaptation |
-| **Convergence** | Stable when working | Holds during sustained signal, decays when far-end goes silent |
-| **Worst-case (loud music + soft voice + far-field)** | Designed to handle this | Marginal — limited by SpeexDSP's algorithm |
+| **Effectiveness in our setup** | ≤2 dB sustained attenuation (measured) | −15 to −18 dB mean on music with production tuning; deep-cancel windows to −44 dB |
+| **Host CPU cost** | ~0% (chip handles it) | ~3-8% of one A76 core |
+| **Host RAM cost** | ~0 MB | ~110 MB RSS (Python + numpy + scipy + sounddevice + jasper_aec3) |
+| **Latency** | <1 ms (chip-internal) | ~40 ms ref-to-mic measured; AEC3's delay estimator manages alignment internally |
+| **Beamforming, NS, AGC, DoA** | Included, professional-grade | NS at kModerate is built into AEC3; no BF/AGC/DoA |
+| **Configurability** | Closed binary, ~30 documented parameters | Top-level `AudioProcessing::Config` is public; deep `EchoCanceller3Config` isn't (see "Deep tuning landscape") |
+| **Drift handling** | Internal (chip is single clock domain) | Two-clock-domain capture; AEC3 tolerates some drift via its built-in delay estimator |
+| **Convergence** | Stable when working | Stable; residual suppressor + drift-tolerant delay estimator keep it consistent across music passes |
+| **Worst-case (loud music + soft voice + far-field)** | Designed to handle this | Marginal — see Tuning findings for current numbers and remaining levers |
 
 The honest summary: hardware AEC would be much better for our use
 case if it worked, but it doesn't work in our topology. Software
@@ -438,40 +437,14 @@ mic/speaker swap, hardware redesign).
 
 ---
 
-## Current measured performance
-
-Setup: controlled log sweep (200–3400 Hz, 5% FS, 30 sec) played
-through `plughw:Loopback,0,0` (the same path the renderers use)
-with `jasper-aec-bridge` instrumentation logging per-frame RMS for
-raw mic, reference, and AEC output.
-
-| Time | Reference RMS | Raw mic RMS | AEC out RMS | Attenuation |
-|---|---|---|---|---|
-| 5 sec | 523 | 279 | 219 | −2.1 dB |
-| 10 sec | 818 | 353 | 309 | −1.1 dB |
-| 15 sec | 818 | 323 | 270 | −1.6 dB |
-| 20 sec | 818 | 452 | 418 | −0.7 dB |
-| 25 sec | 817 | 689 | 472 | −3.3 dB |
-| **30 sec** | **818** | **673** | **247** | **−8.7 dB** |
-
-Convergence trajectory: SpeexDSP's adaptive filter takes 20–30
-seconds of sustained reference signal to learn the room transfer
-function. Once converged, it produces ~−8 dB of attenuation at
-peak. After a silent gap, the filter coefficients decay back
-toward neutral; the next adaptation cycle re-converges.
-
-This is meaningfully better than the chip's ≤2 dB but
-substantially worse than the −20 dB that hardware AEC delivers
-in topologies it's designed for.
-
-### Resource cost (measured on Pi 5 1GB)
+## Resource cost (measured on Pi 5)
 
 ```
-jasper-aec-bridge:  3.3% of one CPU core,  110 MB RSS
+jasper-aec-bridge:  3-8% of one A76 core,  ~110 MB RSS
 jasper-camilla:     0.5%,                    8 MB RSS
 jasper-voice:      11.3%,                  265 MB RSS
                   ----                     -----
-                   ~15% of one core        ~380 MB total
+                   ~15-20% of one core      ~380 MB total
 ```
 
 Relative to baseline (Pi 5 idle ≈ 270 MiB used), the bridge adds
@@ -479,20 +452,12 @@ Relative to baseline (Pi 5 idle ≈ 270 MiB used), the bridge adds
 Pi 5 (which BRINGUP.md and PLAN.md have always recommended as the
 v1 target) has comfortable headroom.
 
+For the engine's actual attenuation numbers, see the Tuning
+findings section below.
+
 ---
 
 ## Caveats and open issues
-
-### Convergence doesn't hold
-
-Currently the AEC re-adapts when reference reappears after a
-silent gap. SpeexDSP's NLMS adaptive filter naturally relaxes
-toward zero coefficients during silence. In a real "music
-playing → user speaks → music ducks → user finishes → music
-restores" cycle, the AEC may need a few seconds of sustained
-music to re-converge. Probably acceptable in practice — the
-critical thing is that AEC works **during** music playback,
-which it does once converged.
 
 ### Cross-clock-domain drift between reference and mic
 
@@ -500,37 +465,36 @@ The reference is captured from the snd-aloop loopback (kernel
 timer-driven), and the mic is captured from the XVF chip (USB
 UAC2 SYNC-clocked). These are independent clocks that drift by
 ~tens of ppm relative to each other. Over time, the AEC's
-filter alignment slides and effectiveness degrades. SpeexDSP
-auto-adapts but the perpetual re-tracking limits peak
-effectiveness.
+filter alignment slides. AEC3's delay estimator tolerates some
+drift but not unbounded — over long sessions effectiveness
+degrades.
 
-The classical fix is to add async resampling on one leg to lock
-both to the same clock (e.g. resample the mic to match the
-reference clock, or vice versa). We haven't implemented this.
-The bridge's drift-compensation is currently "let SpeexDSP
-re-adapt every cycle."
+The classical fix is async resampling on one leg to lock both
+to the same clock (e.g. resample the mic to match the reference
+clock via a second CamillaDSP instance with `enable_rate_adjust:
+true`). We haven't implemented this; AEC3 currently rides on its
+own delay-estimator robustness. Listed as a Tier 2 item in
+PLAN.md's tuning roadmap.
 
-### Modest peak attenuation
+### Reference tap is pre-CamillaDSP, speaker is post
 
-−8 dB peak is functional but not transformative. For comparison,
-HA Voice PE in its native topology reportedly delivers −15 to
-−25 dB. Three avenues to push higher:
-
-1. **Tune SpeexDSP**: longer filter (currently 200 ms tail —
-   matches chip's native 192 ms), more aggressive adaptation
-   step. Quick to test.
-2. **Add a nonlinear residual suppressor** (Speex's
-   `EchoSuppress`, or a separate post-filter). Helps with
-   speaker non-linearity at high SPL. Moderate effort.
-3. **Drift compensation** as described above. Significant
-   engineering.
+`jasper_capture` taps the dsnoop on the renderer→camilla
+loopback, *before* CamillaDSP applies `master_gain` ducking.
+What hits the speaker is what comes out of CamillaDSP, *after*
+ducking. So when the bridge ducks during a wake event, the
+reference signal stays at full level while the speaker output
+drops — meaning AEC3 momentarily sees a louder reference than
+the actual echo. AEC3's residual suppressor masks most of this,
+but the architecturally clean fix is to move the dsnoop tap to
+a post-CamillaDSP slave. Listed as a Tier 2 item in PLAN.md.
 
 ### Bridge is Python (RAM-heavy)
 
-The 110 MB RSS for the bridge is mostly Python interpreter +
-numpy + scipy + sounddevice + speexdsp libraries. The bridge
-logic itself is tiny. On the 1GB Pi 5 this is a noticeable
-fraction; on the 2GB Pi 5 it's fine.
+The ~110 MB RSS for the bridge is mostly Python interpreter +
+numpy + scipy + sounddevice. The `jasper_aec3` native binding
+itself is tiny (~5 MB plus the AEC3 library it links against).
+On the 1GB Pi 5 this is a noticeable fraction; on the 2GB Pi 5
+it's fine.
 
 If RAM becomes a constraint, the highest-impact savings are:
 1. Drop scipy (~30 MB). Replace `resample_poly` with a
@@ -562,40 +526,12 @@ better than no AEC" is reasoning, not measurement.
 
 ---
 
-## What we'd try if SpeexDSP isn't enough
-
-In rough order of effort:
-
-1. **Tune SpeexDSP parameters** — filter length, adaptation
-   constants. Hours of effort.
-2. **Add nonlinear residual suppressor** post-AEC. Day or two
-   of work.
-3. **Drift compensation between ref and mic clocks**. Several
-   days. Could do this in CamillaDSP by routing the mic through
-   a second CamillaDSP instance with `enable_rate_adjust:
-   true` to lock its clock to the snd-aloop, then read from the
-   resulting loopback — this shape was used successfully for
-   the chip-side bridge before we abandoned that path.
-4. **Try DeepVQE or another neural AEC** as a drop-in
-   replacement for SpeexDSP in the bridge. Quality upside is
-   significant but engineering cost is real (real-time Python
-   ML pipeline on Pi 5 ARM).
-5. **Push-to-talk fallback** for the cases AEC can't handle.
-   Cheap insurance, ~30 LoC.
-6. **Wyoming satellite pattern** — physical mic-speaker
-   separation. Architecturally elegant but means a hardware
-   addition (an ESP32 satellite or HA Voice PE elsewhere in the
-   room). Ducks the AEC problem entirely by separating the
-   two transducers in space.
-
----
-
 ## File map
 
 Files involved in the AEC subsystem:
 
-- `jasper/cli/aec_bridge.py` — the software AEC daemon (selectable
-  engines: SpeexDSP default, WebRTC AEC3 via `JASPER_AEC_ENGINE=webrtc3`)
+- `jasper/cli/aec_bridge.py` — the software AEC daemon (WebRTC
+  AEC3 via the `jasper_aec3` pybind11 binding)
 - `jasper_aec3/` — sibling package, pybind11 binding for WebRTC AEC3
   (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
 - `jasper/cli/aec_init.py` — boot-time chip init (resets chip,
@@ -614,9 +550,9 @@ Files involved in the AEC subsystem:
 - `deploy/systemd/jasper-aec-bridge.service` — runs
   `jasper-aec-bridge` Python daemon
 - `deploy/systemd/jasper-aec-init.service` — oneshot at boot
-- `deploy/install.sh` — installs all of the above, fetches
-  speexdsp-python from git, patches its broken `__init__.py`,
-  installs swig + libspeexdsp-dev + dfu-util
+- `deploy/install.sh` — installs all of the above; builds the
+  `jasper_aec3` pybind11 binding against `libwebrtc-audio-processing-dev`;
+  installs `dfu-util` for chip firmware operations
 - `pyproject.toml` — registers `jasper-aec-bridge`,
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
@@ -742,6 +678,188 @@ ERLE. We may already be close to passing with current attenuation
 + ducking + good mic placement (the desk + free-floating mic
 geometry is favorable). That test is on the agenda for the next
 session.
+
+---
+
+## Deep tuning landscape — research notes (2026-05-09)
+
+After landing the production tuning above, we did an OSS-ecosystem
+research pass on what AEC3 levers remain if the wake-word acceptance
+test undershoots. The findings calibrate whether deeper AEC3 work
+pays back vs pivoting to other architectural changes.
+
+### Realistic ceiling on deep AEC3 tuning
+
+The honest expected payoff for getting at AEC3's internal config:
+**a few extra dB at most beyond our current −15 to −18 dB on
+music.** AEC3 was tuned for conferencing topologies (near-field
+mic, integrated speaker, moderate SPL); smart-speaker problems
+(loud non-stationary content + far-field mic + speaker
+non-linearity) sit at the edge of what any linear adaptive filter
+can handle. The ICASSP AEC challenges stopped reporting ERLE
+around 2022 because the metric becomes misleading on real
+hardware. To reach the −25 to −35 dB band that commercial smart
+speakers achieve, the ecosystem consensus is hybrid: linear AEC +
+neural residual + retrained wake word.
+
+### `EchoCanceller3Config` is not in the public API
+
+The meaningful AEC3 tuning levers — `filter.refined.length_blocks`,
+`ep_strength.bounded_erl`,
+`suppressor.use_subband_nearend_detection`,
+`dominant_nearend_detection.snr_threshold` — all live inside
+`webrtc::EchoCanceller3Config`, which is **not in the public
+headers** of either v1.x or v2.x of the pulseaudio fork. Trixie's
+`libwebrtc-audio-processing-dev` 1.3-3 only ships
+`webrtc::AudioProcessing::Config` (the top-level), not the
+AEC3-specific config struct.
+
+Cross-reference of the OSS ecosystem confirms this is universal:
+
+- **PipeWire's** `spa/plugins/aec/aec-webrtc{,2}.cpp` only forwards
+  `high_pass_filter`, `noise_suppression`, `gain_control`,
+  `voice_detection`, `extended_filter` (legacy AEC2-only), plus a
+  handful of beamforming/intelligibility flags that are no-ops on
+  the v1.x/v2.x fork. Never instantiates `EchoCanceller3Config`,
+  never calls `SetEchoControlFactory`. The ArchWiki page for
+  `module-echo-cancel` documents this small surface and notes
+  "documentation for the WebRTC echo cancellation library is
+  difficult to find."
+- **GStreamer's** `webrtcdsp` (`gst-plugins-bad`), Mumble, Linphone,
+  Jitsi, Janus, Mediasoup: same pattern — only wrap the top-level
+  config.
+- **The single OSS project that exposes deep AEC3 config** is the
+  Rust crate `tonarino/webrtc-audio-processing`, behind the
+  `experimental-aec3-config` Cargo feature flag. The pattern: vendor
+  the private aec3 headers, build `webrtc-audio-processing` bundled
+  + static, expose a custom `EchoControlFactory` that constructs
+  `EchoCanceller3` with a mutated config, pass through
+  `AudioProcessingBuilder::SetEchoControlFactory`. The README
+  explicitly disclaims semver — these private headers churn between
+  WebRTC milestones. **This is the canonical reference if we ever
+  go deep.**
+
+### If we ever want the deep knobs: vendor v2.1 as a Meson subproject
+
+**Anti-pattern (do not do):** vendoring private aec3 headers against
+apt's `libwebrtc-audio-processing-1.so.3`. Vtable layouts of
+`EchoCanceller3` and the surrounding classes are not ABI-stable
+across Debian rebuilds — compiler version, abseil version, and
+`-D_GLIBCXX_USE_CXX11_ABI` setting all matter. The `auto-abseil`
+transition flagged on `tracker.debian.org/pkg/webrtc-audio-processing`
+is exactly this risk. Header version skew is also acute (v1.3 was cut
+from Chromium WebRTC ~M114; field names inside `EchoCanceller3Config`
+are M-version-dependent). No widely-cited public recipe exists for
+this pattern on Debian/Ubuntu — the closest thing (tonarino) deliberately
+doesn't link against the system .so for this exact reason.
+
+**Clean path:** mirror PipeWire 1.4.x's pattern. Vendor
+`webrtc-audio-processing` v2.1 from upstream as a Meson subproject:
+
+```
+subprojects/webrtc-audio-processing.wrap
+  [wrap-git]
+  url = https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git
+  revision = v2.1
+  [provide]
+  dependency_names = webrtc-audio-processing-2
+```
+
+Build flags `-Dc_args=-fPIC -Dcpp_args=-fPIC -Ddefault_library=static`
+(plus `-march=armv8.2-a+crypto -mtune=cortex-a76` for NEON on Pi 5).
+Static archive ~8-12 MB, RPi5 builds in 3-5 minutes. Bridge links
+statically; we own both sides of the ABI boundary, CI-reproducible
+across Trixie point releases. Reference implementations to crib from:
+
+- `tonarino/webrtc-audio-processing` —
+  `webrtc-audio-processing-sys/src/wrapper.cpp` and `experimental.rs`
+  for the `SetEchoControlFactory` + `EchoCanceller3` construction
+  pattern.
+- PipeWire 1.4's `subprojects/webrtc-audio-processing.wrap` for the
+  Meson wrap file shape.
+
+Bring-up: ~1-3 days. Per-upgrade maintenance: low (pin to upstream
+tag, bump deliberately).
+
+**Don't wait for Trixie to ship `libwebrtc-audio-processing-2`.** The
+Debian package tracker note dated 2025-11-26 says "A new upstream
+version 2.1 is available, you should consider packaging it" but no
+v2.x package exists in trixie-backports, sid, or experimental. v2.x
+is shipping in Arch, Alpine, FreeBSD, and is bundled by
+PipeWire 1.2+ — but Trixie stable won't see it in its lifetime.
+Forky timeline at earliest.
+
+### Updated staged options if AEC3 isn't enough
+
+Run in roughly this cost-ordered sequence; stop early if any stage
+passes the acceptance test. (Supersedes the pre-AEC3 list near the
+top of this section.)
+
+1. **Run the wake-word acceptance test.** Haven't done it. If
+   detection rate ≥ 80% at 75 dB SPL music with current bridge
+   config, no further AEC work needed. ~½ day.
+2. **Drift / reference-tap diagnosis** (per the Caveats section
+   above). ERLE decay over 10 min indicates clock-domain drift; the
+   `jasper_capture` tap is PRE-CamillaDSP while the speaker is POST,
+   so a divergence-fix is moving the dsnoop to a post-camilla
+   slave. ~1-2 days each.
+3. **Vendor v2.1 + custom `EchoCanceller3Config`** (per "Clean
+   path" above). ~1-3 days. Bounded upside (a few extra dB).
+   Suggested config to start from per the cross-reference research:
+   `filter.refined.length_blocks=30`, `ep_strength.bounded_erl=true`,
+   `suppressor.use_subband_nearend_detection=true`,
+   `suppressor.dominant_nearend_detection.snr_threshold=20`.
+4. **Neural residual stage.** `breizhn/DTLN-aec` (Interspeech 2021,
+   MIT-licensed, TFLite, <4 ms/frame on Pi 3B+) is the most-cited
+   option; `SaneBow/PiDTLN` and `rolyantrauts/PiDTLN2` are working
+   RPi integrations. 256-unit quantized model is the RPi5 sweet
+   spot. Alternatives: GTCRN-AEC (ICASSP 2024, smaller), Ultra
+   Dual-Path Compression. Pipeline: AEC3 → neural residual → wake
+   word. ~2-5 days.
+5. **Custom-train "Hey Jarvis" with music/echo augmentation.**
+   dscripka's openWakeWord training notebook explicitly supports
+   mixing positive samples with realistic background music + room-
+   impulse-response convolution. With the AEC3-residual-shaped
+   noise distribution as the augmentation distribution, false-
+   reject rate at −15 dB SNR drops substantially. The
+   cross-reference research flags this as the lever commercial
+   smart speakers actually ship. Highest engineering cost but also
+   highest upside on the user-facing metric — if attenuation is in
+   the right range and detection still misses, retraining the
+   model to expect the residual is more transformative than
+   squeezing another 3 dB out of the canceler. ~1 week.
+6. **Push-to-talk fallback** for residual cases. Already implemented
+   on the dial (long-press) and AMOLED satellite (in progress). ~30
+   LoC if extending to other surfaces.
+
+### What not to do (recorded so future sessions don't re-investigate)
+
+External recommendations that look reasonable but are wrong for our
+build, with reasoning so we don't keep re-litigating:
+
+- **Don't use the XVF3800's "processed left channel" expecting
+  25-40 dB hardware AEC.** External writeups (and ad-hoc research
+  reports) recommend this — the claim is accurate for the chip's
+  intended topology (chip's own codec drives the speaker, as in
+  HA Voice PE / Seeed reference designs) but **not for ours.** The
+  architectural mismatch is documented at length above (XMOS User
+  Guide §3.5, §4.2.1, the `AEC_FAR_EXTGAIN` auto-mirror). Measured
+  ≤−2 dB at every config tested. Already a feedback-memory rule;
+  the rule stands.
+- **Don't pivot to PipeWire `module-echo-cancel`.** Doesn't expose
+  the deep AEC3 knobs (only the top-level `AudioProcessing::Config`
+  surface) and adds an audio server to the dependency graph plus
+  shairport-sync/librespot integration churn.
+- **Don't wait for Trixie to ship `libwebrtc-audio-processing-2`.**
+  Won't happen in Trixie's lifetime per the Debian package tracker.
+- **Don't vendor private AEC3 headers against apt's `1.3-3.so`.**
+  ABI fragility per the anti-pattern note above.
+- **Don't pursue the field-trial mechanism** (e.g.
+  `field_trial::IsEnabled("WebRTC-Aec3ShortHeadroomKillSwitch")`).
+  Symbols are exported in the .so but `field_trial.h` is private,
+  the registry only flips ~a dozen named killswitches (not the
+  deep config struct), and you'd be vendoring private headers
+  anyway with worse ergonomics than the v2.1 path.
 
 ---
 

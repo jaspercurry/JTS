@@ -108,15 +108,15 @@ SSH for. Not blocking anything; flagged as the next polish piece.
 
 ## Wake-word reliability — AEC tuning roadmap (no version, ongoing)
 
-After the WebRTC AEC3 engine landed (2026-05-08), measured attenuation
-on music is **−15 to −18 dB mean** (vs. the −2 to −7 dB baseline that
-SpeexDSP delivered). That's well into "wake-word during music
-plausible" territory, but at high SPL the wake-word still sometimes
-misses. This section tracks what's left on the menu, ordered by
-expected leverage / effort.
+After the WebRTC AEC3 engine landed (2026-05-08, replacing an
+earlier SpeexDSP path that was removed when AEC3 became production),
+measured attenuation on music is **−15 to −18 dB mean**. That's
+well into "wake-word during music plausible" territory, but at
+high SPL the wake-word still sometimes misses. This section tracks
+what's left on the menu, ordered by expected leverage / effort.
 
-The current production config (set 2026-05-08): `JASPER_AEC_ENGINE=
-webrtc3`, `JASPER_AEC_AGC2=0`, `JASPER_AEC_REF_GAIN_DB=25`. See
+The current production config (set 2026-05-08): `JASPER_AEC_AGC2=0`,
+`JASPER_AEC_REF_GAIN_DB=25`, `JASPER_AEC_MIC_GAIN_DB=6`. See
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Tuning findings" for
 the full sweep matrix and reasoning.
 

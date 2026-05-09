@@ -103,8 +103,8 @@ pauses the older one so the user gets "latest source wins" UX.
 
 There's also an opt-in software AEC bridge (`jasper-aec-bridge`)
 that taps the music chain via a `pcm.jasper_capture` dsnoop, runs
-SpeexDSP echo cancellation against the chip's raw mic, and emits
-a cleaned-up mono signal to a second snd-aloop card for
+WebRTC AEC3 echo cancellation against the chip's raw mic, and
+emits a cleaned-up mono signal to a second snd-aloop card for
 jasper-voice to consume. Disabled by default — see § below.
 
 ---
@@ -143,10 +143,9 @@ jasper-voice to consume. Disabled by default — see § below.
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
 chip's codec). Software AEC via WebRTC AEC3 delivers −15 to −18 dB
-on music (the SpeexDSP fallback hits −2 to −8 dB) at ~110 MB RAM
-either way — see the AEC section below for the full setup. Live
-with `NO_INTERRUPTION` on the Gemini session and a 0.7-second wake
-refractory until/unless that changes.
+on music at ~110 MB RAM — see the AEC section below for the full
+setup. Live with `NO_INTERRUPTION` on the Gemini session and a
+0.7-second wake refractory until/unless that changes.
 
 ---
 
@@ -285,16 +284,15 @@ USB capture endpoint). We use that processed channel; just not
 the chip's on-chip AEC.
 
 **Software AEC is BUILT but DISABLED by default.** A Python daemon
-(`jasper-aec-bridge`) runs SpeexDSP echo cancellation between the
-host's music chain (tapped via `pcm.jasper_capture` dsnoop) and
+(`jasper-aec-bridge`) runs WebRTC AEC3 echo cancellation between
+the host's music chain (tapped via `pcm.jasper_capture` dsnoop) and
 the chip's raw mic 0 (channel 2 of the 6-channel firmware). It
 emits an AEC'd mono signal to a second snd-aloop card
-(`hw:7,1` = LoopbackAEC) that jasper-voice can consume instead
-of the chip's processed mic. Two engines are selectable via
-`JASPER_AEC_ENGINE`: SpeexDSP (default, ~−2 to −8 dB on music,
-~1-2% of one CPU core) or WebRTC AEC3 (−15 to −18 dB on music,
-~3-8% of one core, via the bundled `jasper_aec3` pybind11
-binding). Both ~110 MB RAM.
+(`hw:7,1` = LoopbackAEC) that jasper-voice can consume instead of
+the chip's processed mic. The engine is the `jasper_aec3` pybind11
+binding around Trixie's `libwebrtc-audio-processing-1` v1.3-3 —
+delivers −15 to −18 dB on music with the production REF_GAIN/
+MIC_GAIN tunings, at ~3-8% of one Pi 5 core and ~110 MB RAM.
 
 It's disabled by default because:
 - The 1GB Pi 5 is at the edge with 110 MB extra (~60% RAM use,
