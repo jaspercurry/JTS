@@ -242,7 +242,7 @@ class TtsVolumeTracker:
     the music chain that TTS bypasses:
 
         track_loudness × airplay_sender_vol × spotify_connect_vol
-            × mpd_vol × camilla_main_volume × room_correction → DAC
+            × camilla_main_volume × room_correction → DAC
 
     Adding TTS gain = `main_volume + offset` only matches the LAST
     stage. If the user's iPhone AirPlay slider is at 50%, music plays
@@ -1356,8 +1356,6 @@ async def run() -> None:
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     renderer = RendererClient(
-        mpd_host=cfg.mpd_host,
-        mpd_port=cfg.mpd_port,
         librespot_state_path=cfg.librespot_state_path,
     )
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
@@ -1549,7 +1547,6 @@ async def run() -> None:
             await volume_observer.stop()
         await volume_coordinator.aclose()
         await connection.stop()
-        await renderer.aclose()
         await weather.aclose()
 
 

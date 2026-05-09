@@ -47,7 +47,6 @@ units=(
     bluealsa
     bluealsa-aplay
     bt-agent
-    mpd
 )
 
 for u in "${units[@]}"; do

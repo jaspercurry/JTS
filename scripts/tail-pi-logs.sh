@@ -25,4 +25,4 @@ fi
 exec ssh -t "${PI_USER}@${PI_HOST}" \
     "journalctl -f --output=short-iso \
         -u 'jasper-*' -u librespot -u shairport-sync -u nqptp \
-        -u bluealsa -u bluealsa-aplay -u bt-agent -u mpd"
+        -u bluealsa -u bluealsa-aplay -u bt-agent"

@@ -2,9 +2,7 @@
 
 Mocks at the I/O boundary: tmp_path-backed librespot state file
 (which the --onevent hook would write), and asyncio.create_subprocess_exec
-for busctl / bluealsa-cli. MPD calls are mocked per-test since
-`_mpd_call` must work even when MPD is offline (caller
-`get_currentsong` falls back to empty dict).
+for busctl / bluealsa-cli.
 """
 from __future__ import annotations
 
@@ -29,8 +27,6 @@ def renderer(tmp_path):
     # (or leave it absent) to control what source_state.spotify_playing
     # observes via active_renderers.
     return RendererClient(
-        mpd_host="127.0.0.1",
-        mpd_port=6600,
         librespot_state_path=str(tmp_path / "librespot.state.json"),
     )
 
@@ -66,8 +62,6 @@ async def test_active_renderers_all_inactive(renderer):
         "aplactive": False,
         "btactive": False,
         "spotactive": False,
-        "slactive": False,
-        "rbactive": False,
     }
 
 
@@ -138,11 +132,11 @@ async def test_currentsong_spotify_returns_uri(renderer):
 
 
 @pytest.mark.asyncio
-async def test_currentsong_falls_through_to_mpd_when_no_source(renderer):
-    """When no Spotify, AirPlay, or BT is active, currentsong falls
-    through to MPD. If MPD is also down, returns empty dict."""
-    # No librespot state file → no spotify
-    renderer._mpd_call = AsyncMock(side_effect=ConnectionRefusedError())
+async def test_currentsong_returns_empty_when_no_source(renderer):
+    """When no Spotify, AirPlay, or BT is active, currentsong returns
+    {} — the three real renderers are the only sources we introspect."""
+    # No librespot state file → no spotify; subprocess mock → no AirPlay
+    # PlaybackStatus, no BT a2dpsnk.
     with patch(
         "asyncio.create_subprocess_exec",
         new=_mock_subprocess(stdout=b""),

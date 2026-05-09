@@ -1,6 +1,6 @@
 [Unit]
 Description=Jasper voice daemon (wake word + real-time LLM + tools)
-After=jasper-camilla.service network-online.target mpd.service
+After=jasper-camilla.service network-online.target
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go

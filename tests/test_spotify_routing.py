@@ -184,18 +184,6 @@ async def test_resolve_idle_targets_librespot_no_stop():
 
 
 @pytest.mark.asyncio
-async def test_resolve_mpd_radio_stops_mpd_targets_librespot():
-    sp = _FakeSp(playback=None, devices=_devices(("JTS jasper", "renderer-id")))
-    renderer = _FakeRenderer(
-        renderers={},
-        song={"state": "play", "file": "https://radio.example/stream.mp3"},
-    )
-    r = await resolve_target(sp, renderer, "JTS")
-    assert r.device_id == "renderer-id"
-    assert r.stop_renderers == ["mpd"]
-
-
-@pytest.mark.asyncio
 async def test_resolve_librespot_active_no_stop():
     """If librespot is already playing on the Pi, target it without
     touching anything else."""

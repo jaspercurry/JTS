@@ -264,7 +264,7 @@ reference. Currently:
   details — see HANDOFF-voice-providers.md for the cross-provider
   architecture)
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
-  — Source-aware transport (AirPlay/Spotify/MPD) + volume
+  — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
   volume coordinator (one canonical `listening_level`, dispatched
   to whichever source is active, observed inbound at 1 Hz)
@@ -393,9 +393,11 @@ modifying. One-line summaries here:
   paused-resumed connection).
 - **Music transport** ([HANDOFF-voice-music-control.md](docs/HANDOFF-voice-music-control.md))
   — Source-aware `next_track`/`pause`/`resume`/etc. routing
-  across AirPlay (MPRIS via shairport-sync), Spotify Connect
-  (spotipy), and MPD. Gets non-trivial when AirPlay is carrying
-  iPhone-Spotify (the title-match → Web API path).
+  across AirPlay (MPRIS via shairport-sync) and Spotify Connect
+  (spotipy). Gets non-trivial when AirPlay is carrying
+  iPhone-Spotify (the title-match → Web API path). Bluetooth
+  has no graceful pause API; "nothing playing" returns a clean
+  error.
 - **Multi-user Spotify routing** ([multi-user-spotify.md](docs/multi-user-spotify.md))
   — Each household member OAuths their own account against one
   Spotify Developer App. Routing decides whose account a voice

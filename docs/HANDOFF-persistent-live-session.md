@@ -18,7 +18,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 - **Hardware bring-up**: Pi 5 (1 GB) + Raspberry Pi OS Lite Trixie + always-on CamillaDSP + Apple USB-C dongle as DAC + ReSpeaker XVF3800 as mic. AirPlay/Spotify Connect/Bluetooth all flow through CamillaDSP to the dongle. See `BRINGUP.md`.
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis". Currently threshold 0.92 (high — see "what's broken" below).
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
-- **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, MPD transport — all work when Gemini actually responds.
+- **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, source-aware transport — all work when Gemini actually responds.
 - **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music.
 - **Voice pinning**: Aoede prebuilt voice via `speech_config` so style is consistent across sessions.
 - **Time injection**: current local time is added to system instruction at session start.

@@ -319,8 +319,6 @@ in.
 
 Common warnings (non-fatal):
 
-- "MPD not reachable" — MPD is optional. Only install if you want
-  local file / radio playback.
 - "AEC bridge service: disabled" — software AEC is opt-in. See
   CLAUDE.md "Acoustic echo cancellation" if you want to A/B test.
 
