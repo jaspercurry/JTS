@@ -26,7 +26,8 @@ from jasper.renderer import (
 @pytest.fixture
 def renderer(tmp_path):
     # Per-test state file path. Tests write fixture JSON into it
-    # (or leave it absent) to control what _spot_active() observes.
+    # (or leave it absent) to control what source_state.spotify_playing
+    # observes via active_renderers.
     return RendererClient(
         mpd_host="127.0.0.1",
         mpd_port=6600,
@@ -101,9 +102,10 @@ async def test_active_renderers_bluetooth_playing(renderer):
 @pytest.mark.asyncio
 async def test_active_renderers_resilient_to_missing_state_file(renderer):
     """If librespot state file is absent (daemon not started yet, or
-    session never connected), _spot_active() returns False rather
+    session never connected), the spotify probe returns False rather
     than raising — same fail-soft contract as the busctl/bluealsa
-    probes."""
+    probes. (Direct probe-level coverage lives in test_source_state.py;
+    here we just pin the integration behaviour through active_renderers.)"""
     # No state file written → librespot_state.is_playing returns False
     with patch(
         "asyncio.create_subprocess_exec",
@@ -150,27 +152,14 @@ async def test_currentsong_falls_through_to_mpd_when_no_source(renderer):
 
 
 # ----------------------------------------------------------------------
-# disable_renderer — per-source actions
+# pause_airplay — MPRIS Pause on shairport-sync
 # ----------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_disable_renderer_spotify_is_noop_with_advisory_log(renderer, caplog):
-    """librespot 0.8.0 has no local pause API. The renderer logs a
-    debug message; callers (e.g. spotify_router transport layer)
-    should issue Web API pause directly."""
-    import logging
-    caplog.set_level(logging.DEBUG, logger="jasper.renderer")
-    await renderer.disable_renderer("spotify")
-    # No HTTP call was made; method returned cleanly.
-    assert any("no local pause API" in rec.message for rec in caplog.records)
-
-
-@pytest.mark.asyncio
-async def test_disable_renderer_airplay_calls_mpris_pause(renderer):
-    """Verify disable_renderer('airplay') invokes busctl with the
-    Pause method on shairport-sync's MPRIS interface. We capture
-    the args by wrapping create_subprocess_exec rather than
-    replacing it with `new=`."""
+async def test_pause_airplay_calls_mpris_pause(renderer):
+    """Verify pause_airplay() invokes busctl with the Pause method on
+    shairport-sync's MPRIS interface. We capture args by wrapping
+    create_subprocess_exec rather than replacing it with `new=`."""
     captured_args: list[tuple] = []
     fake = _mock_subprocess(returncode=0)
 
@@ -179,21 +168,13 @@ async def test_disable_renderer_airplay_calls_mpris_pause(renderer):
         return await fake(*args, **kwargs)
 
     with patch("asyncio.create_subprocess_exec", side_effect=capturing):
-        await renderer.disable_renderer("airplay")
+        await renderer.pause_airplay()
 
     assert captured_args, "create_subprocess_exec was not called"
     args = captured_args[0]
     assert "busctl" in args[0]
     assert "Pause" in args
     assert "org.mpris.MediaPlayer2.ShairportSync" in args
-
-
-@pytest.mark.asyncio
-async def test_disable_renderer_bluetooth_is_noop(renderer, caplog):
-    """No clean pause API for bluez-alsa A2DP sink. Method returns
-    cleanly; spotify_routing handles fallback."""
-    await renderer.disable_renderer("bluetooth")
-    # No exception; method logs and returns.
 
 
 # ----------------------------------------------------------------------
@@ -232,9 +213,10 @@ def test_parse_mpris_metadata_empty_input():
 
 @pytest.mark.asyncio
 async def test_active_renderers_when_busctl_missing(renderer):
-    """If busctl can't be found (FileNotFoundError), _airplay_playing
-    should return False rather than propagating. Same contract as the
-    other probes."""
+    """If busctl can't be found (FileNotFoundError), the airplay probe
+    must return False rather than propagating — same fail-soft contract
+    as the other probes. Probe-level coverage in test_source_state.py;
+    here we verify active_renderers stays consistent end-to-end."""
     # No librespot state file → spotify inactive
     with patch(
         "asyncio.create_subprocess_exec",

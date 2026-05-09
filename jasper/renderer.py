@@ -25,10 +25,10 @@ import logging
 import re
 from typing import Any
 
-import httpx
 from mpd.asyncio import MPDClient
 
 from . import librespot_state
+from .source_state import airplay_playing, bluetooth_playing, spotify_playing
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,6 @@ class RendererClient:
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
     ) -> None:
         self._librespot_state_path = librespot_state_path
-        self._http = httpx.AsyncClient(timeout=2.0)
         self._mpd_host = mpd_host
         self._mpd_port = mpd_port
         self._mpd: MPDClient | None = None
@@ -64,9 +63,9 @@ class RendererClient:
         installed by default — and remain in the shape so callers
         that iterate the dict don't need backend-specific branches."""
         spot, ap, bt = await asyncio.gather(
-            self._spot_active(),
-            self._ap_active(),
-            self._bt_active(),
+            spotify_playing(self._librespot_state_path),
+            airplay_playing(),
+            bluetooth_playing(),
             return_exceptions=False,
         )
         return {
@@ -76,39 +75,6 @@ class RendererClient:
             "slactive": False,
             "rbactive": False,
         }
-
-    async def _spot_active(self) -> bool:
-        # State file is small (~few hundred bytes); read on every
-        # query. is_playing() returns False on missing file.
-        return librespot_state.is_playing(self._librespot_state_path)
-
-    async def _ap_active(self) -> bool:
-        # busctl returns 's "Playing"' (or "Paused"/"Stopped") for the
-        # PlaybackStatus property. Active = currently playing.
-        out = await _busctl_get_property(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "PlaybackStatus",
-        )
-        return out == "Playing"
-
-    async def _bt_active(self) -> bool:
-        # `bluealsa-cli list-pcms` lists every BlueALSA PCM path. On
-        # an idle box this is empty; with a phone connected and an
-        # A2DP stream open, you get one or more lines like
-        # /org/bluealsa/hci0/dev_XX_../a2dpsnk/source.
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluealsa-cli", "list-pcms",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-        except (FileNotFoundError, asyncio.TimeoutError) as e:
-            logger.debug("bluealsa-cli list-pcms failed: %s", e)
-            return False
-        return b"a2dpsnk/source" in stdout
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at
@@ -207,43 +173,20 @@ class RendererClient:
         await self._mpd_call("play")
 
     # ------------------------------------------------------------------
-    # disable_renderer — pauses the active renderer's session via its
-    # native API (gentler than systemctl-stop) so another source can
-    # take over.
+    # pause_airplay — pauses an active AirPlay session via MPRIS so
+    # another source can take the speaker. Spotify pause goes via the
+    # Spotify Web API at the caller's spotify_router instance (librespot
+    # has no local control HTTP); Bluetooth has no graceful pause API
+    # on bluez-alsa, so its caller logs and moves on.
     # ------------------------------------------------------------------
 
-    _NAME_MAP = {
-        "airplay": "shairport-sync",
-        "spotify": "librespot",
-        "bluetooth": "bluealsa",
-    }
-
-    async def disable_renderer(self, name: str) -> None:
-        if name == "spotify":
-            # librespot has no local control HTTP; pause via Spotify
-            # Web API. jasper-mux owns the multi-account router for
-            # this — disable_renderer() callers (transport tools,
-            # spotify_router) can issue their own pause via the
-            # router they already hold. Best-effort no-op here.
-            logger.debug(
-                "disable_renderer(spotify): no local pause API on "
-                "librespot — caller should issue Web API pause via "
-                "their spotify_router instance",
-            )
-            return
-        if name == "airplay":
-            await _busctl_call_method(
-                "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2",
-                "org.mpris.MediaPlayer2.Player",
-                "Pause",
-            )
-            return
-        # bluetooth: no clean "pause-and-keep-connected" API on
-        # bluez-alsa. The phone remains connected; we just don't have
-        # a way to remotely stop playback. Caller (spotify_routing)
-        # will fall back to MPD pause if applicable.
-        logger.debug("disable_renderer(%s): no-op", name)
+    async def pause_airplay(self) -> None:
+        await _busctl_call_method(
+            "org.mpris.MediaPlayer2.ShairportSync",
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+            "Pause",
+        )
 
     # ------------------------------------------------------------------
     # MPD plumbing — reconnects on disconnect; serialised via a lock
@@ -269,7 +212,6 @@ class RendererClient:
                 return await getattr(client, fn_name)(*args)
 
     async def aclose(self) -> None:
-        await self._http.aclose()
         if self._mpd is not None:
             self._mpd.disconnect()
             self._mpd = None
