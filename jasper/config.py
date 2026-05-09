@@ -126,6 +126,18 @@ class Config:
     spotify_web_bind_host: str
     spotify_web_bind_port: int
 
+    # Google integration: per-household-member Calendar + Gmail OAuth.
+    # CLIENT_ID/SECRET come from a single Google Cloud Console OAuth
+    # client (same shape as Spotify). Per-account refresh tokens live
+    # under the registry path; the wizard at /google/ writes them.
+    google_client_id: str
+    google_client_secret: str
+    google_redirect_uri: str
+    google_accounts_path: str
+    google_setup_url: str
+    google_web_bind_host: str
+    google_web_bind_port: int
+
     # Top-level URL for the speaker's management dashboard. Used by
     # the audio-cue subsystem to tell the user where to go when they
     # hit a wake-blocking failure (e.g., spend cap reached). The
@@ -358,6 +370,27 @@ class Config:
             spotify_web_bind_port=_env_int(
                 "JASPER_SPOTIFY_WEB_PORT", 8765
             ),
+            # Google OAuth client (Calendar + Gmail). One Google Cloud
+            # Console OAuth client serves every household member; per-
+            # member refresh tokens are stored under google_accounts_path.
+            google_client_id=_env("GOOGLE_CLIENT_ID"),
+            google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
+            google_redirect_uri=_env(
+                "GOOGLE_REDIRECT_URI", "https://jts.local/google/callback",
+            ),
+            google_accounts_path=_env(
+                "JASPER_GOOGLE_ACCOUNTS_PATH",
+                "/var/lib/jasper/google/accounts.json",
+            ),
+            google_setup_url=_env(
+                "JASPER_GOOGLE_SETUP_URL", "https://jts.local/google",
+            ),
+            google_web_bind_host=_env(
+                "JASPER_GOOGLE_WEB_HOST", "127.0.0.1",
+            ),
+            google_web_bind_port=_env_int(
+                "JASPER_GOOGLE_WEB_PORT", 8768,
+            ),
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
             # when something blocks normal voice response (spend cap,
@@ -433,3 +466,10 @@ class Config:
     @property
     def spotify_enabled(self) -> bool:
         return bool(self.spotify_client_id and self.spotify_client_secret)
+
+    @property
+    def google_enabled(self) -> bool:
+        """True iff Google CLIENT_ID + CLIENT_SECRET are set. The voice
+        tools also require at least one OAuthed account before they
+        register — see `_build_registry`."""
+        return bool(self.google_client_id and self.google_client_secret)

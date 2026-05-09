@@ -502,10 +502,12 @@ install_self_signed_cert() {
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
-    # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
-    # (rotary-dial onboarding) to their respective jasper-web services.
-    # /spotify/ requires HTTPS — Spotify rejects non-loopback HTTP
-    # redirect URIs as of 2024.
+    # OAuth web flow), /voice/ (voice-provider config wizard), /google/
+    # (Calendar + Gmail OAuth wizard), and /dial/ (rotary-dial
+    # onboarding) to their respective jasper-web services.
+    # /spotify/ + /google/ both require HTTPS — Spotify rejects non-
+    # loopback HTTP redirect URIs as of 2024, and Google requires
+    # HTTPS for any non-loopback OAuth redirect URI.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -530,7 +532,7 @@ install_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — https://<host>/spotify, /voice, /dial are live"
+        echo "  nginx reloaded — https://<host>/spotify, /voice, /google, /dial are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi

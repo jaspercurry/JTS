@@ -648,6 +648,62 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     )
 
 
+def check_google_tokens(cfg: Config) -> CheckResult:
+    """Verify Google OAuth state is healthy.
+
+    Three states matter:
+      - CLIENT_ID/SECRET not set → ok (skipped, not enabled)
+      - CLIENT_ID/SECRET set but no accounts linked → warn (wizard
+        needs visiting; Calendar/Gmail tools are silently unregistered)
+      - At least one account fails to refresh → warn (likely revoked
+        or password-changed; user needs to re-link)
+    """
+    label = "Google OAuth"
+    if not cfg.google_enabled:
+        return CheckResult(
+            label, "ok",
+            f"not configured (skipped — visit {cfg.google_setup_url} "
+            f"to enable Calendar + Gmail tools)",
+        )
+    try:
+        from ..google_creds import GoogleRegistry, valid_access_token
+    except ImportError as e:
+        return CheckResult(
+            label, "fail",
+            f"google-auth import failed: {e}. Re-run install.sh.",
+        )
+    registry = GoogleRegistry.load(cfg.google_accounts_path)
+    if not registry.accounts:
+        return CheckResult(
+            label, "warn",
+            f"CLIENT_ID/SECRET set but no accounts linked. Visit "
+            f"{cfg.google_setup_url} to link a household member's "
+            f"Calendar + Gmail.",
+        )
+    healthy: list[str] = []
+    broken: list[str] = []
+    for a in registry.accounts:
+        token = valid_access_token(
+            a,
+            client_id=cfg.google_client_id,
+            client_secret=cfg.google_client_secret,
+        )
+        if token:
+            healthy.append(a.name)
+        else:
+            broken.append(a.name)
+    if broken:
+        return CheckResult(
+            label, "warn",
+            f"refresh failed for {broken}; healthy: {healthy or 'none'}. "
+            f"Re-link the broken account(s) at {cfg.google_setup_url}.",
+        )
+    return CheckResult(
+        label, "ok",
+        f"{len(healthy)} account(s) refreshed: {', '.join(healthy)}",
+    )
+
+
 def check_state_dir(cfg: Config) -> CheckResult:
     p = Path(cfg.usage_db).parent
     if not p.exists():
@@ -795,6 +851,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_jasper_mux,
         lambda: check_spotify_cache(cfg),
         lambda: check_spotify_connect_device(cfg),
+        lambda: check_google_tokens(cfg),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),

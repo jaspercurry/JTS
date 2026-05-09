@@ -18,12 +18,15 @@ from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
+from .google_creds import GoogleClients, build_google_clients
 from .renderer import RendererClient
 from .spotify_router import Router, build_clients
 from .subway import SubwayClient
 from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
+from .tools.calendar import make_calendar_tools
+from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
 from .tools.timer import make_timer_tools
@@ -79,6 +82,13 @@ SYSTEM_INSTRUCTION = (
     "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`, e.g. 'Set a pasta timer for 10 minutes.')\n"
     "  User: 'How much time left on my timer?' / 'What timers do I have?' → [list_timers] 'Three minutes and twenty seconds left.' (or summarise multiple)\n"
     "  User: 'Cancel the pasta timer.' / 'Stop the 5-minute timer.' → [cancel_timer 'pasta'] (speak `confirm`, e.g. 'Cancelled the pasta timer.')\n"
+    "  User: 'What's on my calendar today?'         → [calendar_today_summary] (read out events with start times)\n"
+    "  User: 'What's on Brittany's calendar today?' → [calendar_today_summary account='brittany']\n"
+    "  User: 'What's coming up this afternoon?'     → [calendar_upcoming hours=6]\n"
+    "  User: 'What's on this week?'                 → [calendar_upcoming hours=168]\n"
+    "  User: 'Any new emails?' / 'What's in my inbox?' → [gmail_unread_summary] (read sender + subject for each)\n"
+    "  User: 'Did Brittany get any emails?'         → [gmail_unread_summary account='brittany']\n"
+    "  User: 'Read me the first one.' / 'Open that email.' → [gmail_read_thread thread_id='<id-from-prior-summary>'] (read sender, then body)\n"
     "  User: 'Who won the game?'     → 'Sorry, I don't have sports scores.'\n"
     "Examples of INCORRECT style (do not produce these):\n"
     "  'Sure! It's 9:47. Anything else I can help you with?'\n"
@@ -142,7 +152,25 @@ SYSTEM_INSTRUCTION = (
     "cancel_timer with the label or duration as the query; on "
     "success speak `confirm`. If cancel_timer returns "
     "reason='ambiguous', read out the matches' durations and ask "
-    "the user which one to cancel."
+    "the user which one to cancel. "
+    # Calendar / Gmail rules.
+    "For calendar questions, call calendar_today_summary (today's events) "
+    "or calendar_upcoming (next N hours; pass the hours arg). For email "
+    "questions, call gmail_unread_summary; if the user then asks to read "
+    "or open one, call gmail_read_thread with the thread_id from the "
+    "prior summary's response. The Google tools route per household "
+    "member: when the user names a person ('Brittany's calendar', "
+    "'Jasper's email'), pass that name as the `account` arg; when no "
+    "person is named, OMIT the account arg and the default account is "
+    "used. If the user names someone who isn't in the linked-accounts "
+    "list (provided in this prompt's addendum), ask which of the "
+    "linked accounts to use — list them by name. On a 'Google access "
+    "for X can't be refreshed' error, speak it verbatim — the user "
+    "needs to re-link at the wizard. Voice answer style: read events "
+    "as 'You have <N> things today: <summary> at <time>, <summary> at "
+    "<time>...'; for emails read 'You have <N> unread: <sender> about "
+    "<subject>, <sender> about <subject>...' — keep it scannable, the "
+    "user can ask for full details on any one."
 )
 
 # Refractory after a turn ends before the wake detector is re-armed.
@@ -466,9 +494,15 @@ class TtsVolumeTracker:
             self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
 
 
-def _build_system_instruction(location: str = "") -> str:
-    """Return the system instruction with current local time and the
-    user's home location injected.
+def _build_system_instruction(
+    location: str = "",
+    *,
+    google_accounts: list[str] | None = None,
+    default_google_account: str = "",
+) -> str:
+    """Return the system instruction with current local time, the
+    user's home location, and the linked Google account names
+    injected.
 
     Called at every connection (re)open — the persistent connection
     lives across the 5-min context-reset window, so calling this on
@@ -477,7 +511,16 @@ def _build_system_instruction(location: str = "") -> str:
     `location` should be the user's home location (a city/neighborhood
     string the geocoder can resolve). When set, Gemini stops asking
     "what city are you in?" for location-sensitive questions outside
-    the weather tool's scope (sunset times, nearby places, traffic)."""
+    the weather tool's scope (sunset times, nearby places, traffic).
+
+    `google_accounts` should be the list of household-member labels
+    that have linked Google accounts (e.g. ["jasper", "brittany"]).
+    When non-empty, the addendum tells the model which `account`
+    values are valid for the calendar/gmail tools. Account changes
+    in the wizard trigger a `systemctl restart jasper-voice`, so
+    capturing the list at startup is fine — the lambda re-reads on
+    every connection open within the same daemon lifetime, but the
+    list itself only changes across restarts."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
     addendum = (
@@ -491,6 +534,18 @@ def _build_system_instruction(location: str = "") -> str:
             "for any location-sensitive question (weather, sunset/sunrise, "
             "nearby places, local time elsewhere) — do not ask the user "
             "where they are."
+        )
+    if google_accounts:
+        names = ", ".join(google_accounts)
+        default = default_google_account or google_accounts[0]
+        addendum += (
+            f" Linked Google accounts on this speaker: {names} "
+            f"(default: {default}). When the user names a person whose "
+            f"calendar or email they want, pass that name as the "
+            f"`account` arg to the calendar/gmail tools. When no person "
+            f"is named, omit the `account` arg — the default ({default}) "
+            f"is used. If the user names someone who isn't in this list, "
+            f"ask which linked account to use."
         )
     return SYSTEM_INSTRUCTION + addendum
 
@@ -626,6 +681,7 @@ def _build_registry(
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
     cues_manager: AudioCueManager | None = None,
+    google_clients: GoogleClients | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -646,6 +702,18 @@ def _build_registry(
         registry.register(fn)
     if timer_scheduler is not None:
         for fn in make_timer_tools(timer_scheduler):
+            registry.register(fn)
+    # Calendar + Gmail are gated on (a) CLIENT_ID/SECRET being present
+    # AND (b) at least one account having an OAuth refresh token. The
+    # tool factories return [] when their accessor is unusable, but we
+    # also skip registration when there are zero accounts so the model
+    # doesn't see tools whose every call would fail with "no accounts
+    # linked". The wizard at /google triggers a daemon restart on add,
+    # so a fresh OAuth flow makes the tools appear on the next session.
+    if google_clients is not None and google_clients.list_account_names():
+        for fn in make_calendar_tools(google_clients):
+            registry.register(fn)
+        for fn in make_gmail_tools(google_clients):
             registry.register(fn)
     return registry
 
@@ -1552,6 +1620,26 @@ async def run() -> None:
     # voice tool registry (transport / spotify_play). Same instance,
     # one OAuth refresh cycle per account.
     volume_spotify_router = _build_router(cfg)
+    # Google Calendar + Gmail clients — built once, used by the tool
+    # registry AND captured by the system-instruction lambda so the
+    # model knows which household members have linked accounts. None
+    # if Google's CLIENT_ID/SECRET aren't configured (the tools are
+    # gated and never appear to the model in that case).
+    google_clients = build_google_clients(cfg)
+    if google_clients is not None:
+        names = google_clients.list_account_names()
+        if names:
+            logger.info(
+                "google: %d account(s) linked: %s (default: %s)",
+                len(names), ", ".join(names),
+                google_clients.default_account_name() or "(none)",
+            )
+        else:
+            logger.info(
+                "google: CLIENT_ID/SECRET configured but no accounts "
+                "linked yet — visit %s to add one",
+                cfg.google_setup_url,
+            )
     volume_coordinator = VolumeCoordinator(
         camilla=camilla,
         persistence=volume_persistence,
@@ -1632,6 +1720,7 @@ async def run() -> None:
         spotify_router=volume_spotify_router,
         timer_scheduler=timer_scheduler,
         cues_manager=cues_manager,
+        google_clients=google_clients,
     )
 
     # Wire the timer pre-render hook so set_timer (and start-time
@@ -1670,9 +1759,24 @@ async def run() -> None:
     connection = _make_connection(cfg)
     tts_volume_tracker: TtsVolumeTracker | None = None
     try:
+        # Capture the linked-Google-accounts list at startup so the
+        # system instruction tells the model which `account` values
+        # are valid for the calendar/gmail tools. Wizard-driven account
+        # changes trigger a daemon restart, so this snapshot stays
+        # accurate for the daemon's lifetime.
+        google_account_names = (
+            google_clients.list_account_names() if google_clients else []
+        )
+        google_default_account = (
+            google_clients.default_account_name() or ""
+        ) if google_clients else ""
         await connection.start(
             registry,
-            lambda: _build_system_instruction(cfg.weather_default_location),
+            lambda: _build_system_instruction(
+                cfg.weather_default_location,
+                google_accounts=google_account_names,
+                default_google_account=google_default_account,
+            ),
         )
         async with MicCapture(
             cfg.mic_device,

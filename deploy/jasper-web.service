@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (Spotify accounts + voice provider)
+Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google)
 After=network-online.target
 Wants=network-online.target
 
@@ -17,9 +17,13 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # defaults. Sourced here so the wizard's process can render the
 # current state correctly even on cold boot.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
-# Single Python process serves BOTH wizards as separate threads:
+# Optional file written by the Google wizard at /google/ — holds
+# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
+EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# Single Python process serves all wizards as separate threads:
 #   /spotify/  →  127.0.0.1:8765
 #   /voice/    →  127.0.0.1:8767
+#   /google/   →  127.0.0.1:8768
 # See jasper/web/__main__.py for the wiring.
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure

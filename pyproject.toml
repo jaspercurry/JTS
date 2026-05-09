@@ -50,6 +50,13 @@ dependencies = [
     # firmware flash. Both are pure-Python and tiny.
     "pyserial>=3.5",
     "esptool>=4.7",
+    # Google integration (Calendar + Gmail voice tools). google-auth and
+    # google-auth-oauthlib drive the per-account OAuth + refresh flow;
+    # google-api-python-client is the discovery-based service factory
+    # (resource shapes for `calendar` and `gmail`). Pure-Python, tiny.
+    "google-auth>=2.36",
+    "google-auth-oauthlib>=1.2",
+    "google-api-python-client>=2.150",
 ]
 
 [project.optional-dependencies]
@@ -62,6 +69,7 @@ dev = [
 [project.scripts]
 jasper-voice = "jasper.voice_daemon:main"
 jasper-spotify-auth = "jasper.cli.spotify_auth:main"
+jasper-google-auth = "jasper.cli.google_auth:main"
 jasper-doctor = "jasper.cli.doctor:main"
 jasper-web = "jasper.web.spotify_setup:main"
 jasper-control = "jasper.control.server:main"

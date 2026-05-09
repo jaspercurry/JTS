@@ -197,6 +197,62 @@ the full sweep matrix and reasoning.
 
 ---
 
+## Pi-side speaker identification (no version, future)
+
+None of the three voice provider APIs we support (OpenAI Realtime,
+Gemini Live, Grok Voice) expose speaker-1-vs-speaker-2 labels —
+they all treat input audio as a single user. If we want the speaker
+to know who's talking (rather than requiring explicit naming like
+"Brittany's calendar"), diarization has to run on the Pi *before*
+audio hits the voice API.
+
+Use cases that motivate it:
+
+- **Auto-routing personal-account commands.** Today a household
+  member has to name themselves in queries like "what's on
+  Brittany's calendar today" or "draft an email from Jasper to..."
+  Speaker ID would let the model implicit-route by who spoke, with
+  explicit naming as the fallback when confidence is low.
+- **Moderator mode** (design TBD) — a conversational mode where the
+  speaker mediates a multi-person discussion. Speaker ID is a hard
+  prerequisite, not a nice-to-have.
+
+Technical shape (mirror of the HA Voice community pattern):
+
+- Per-member enrollment via the management dashboard — 30–60 s of
+  audio per person → `pyannote.audio` or `resemblyzer` embedding →
+  persisted to `/var/lib/jasper/speakers/<name>.npy`.
+- Pi-side inference stage between the chip's processed mic channel
+  and the voice API input. Each ~1 s chunk gets a speaker-ID score
+  against enrolled embeddings. Output: a confidence-tagged speaker
+  label attached to the wake event.
+- Auto-route only when confidence ≥ threshold; below it, fall back
+  to explicit-naming disambiguation ("whose calendar do you mean?").
+  Open-source implementations report ~92% accuracy with
+  `pyannote.audio`, ~1.3% false-accept across 7 households / 90
+  days — good, but not "act on personal data without confirmation"
+  good. The threshold should be conservative for write actions
+  (calendar create, email send) and looser for reads.
+
+Prior art: Apple HomePod's "Hey Siri, learn my voice" (3-utterance
+enrollment + on-device neural adaptation); Google Voice Match and
+Amazon Alexa Profiles (4+ profiles per device with per-account
+linking, both fall back to disambiguation on uncertainty); Home
+Assistant Voice community implementations using `pyannote.audio` or
+`resemblyzer`.
+
+Cost: ~1 day for the enrollment UI + embedding pipeline + voice-
+loop hookup. `resemblyzer` is small enough for the 1 GB Pi 5;
+`pyannote.audio` is heavier and may push to the 2 GB SKU. No cloud
+cost.
+
+Not blocking anything; flagged because it unlocks a meaningful UX
+improvement on the existing per-member tool surface (Spotify,
+Calendar/Gmail once landed) and is the technical prerequisite for
+moderator mode.
+
+---
+
 ## Test/dev follow-ups (no version)
 
 Small infrastructure items not blocking any feature; recorded so
