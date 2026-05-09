@@ -15,7 +15,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_UNITS",
         "JASPER_SUBWAY_STATION_ID", "JASPER_SUBWAY_DEFAULT_DIRECTION",
         "JASPER_SUBWAY_LINES",
-        "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
+        "SPOTIFY_CLIENT_ID",
     ]:
         monkeypatch.delenv(var, raising=False)
 
@@ -62,10 +62,11 @@ def test_missing_gemini_key_raises_when_provider_is_gemini(monkeypatch):
         Config.from_env()
 
 
-def test_spotify_enabled_when_both_creds_present(monkeypatch):
+def test_spotify_enabled_when_client_id_present(monkeypatch):
+    """PKCE: only the client_id is needed. The Client Secret is no
+    longer used — the wizard pastes neither."""
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "abc")
-    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "def")
     cfg = Config.from_env()
     assert cfg.spotify_enabled is True
 

@@ -52,7 +52,7 @@ def _make_manager(*, tts_playout=None) -> AudioCueManager:
     inside an `async with` block (so its underlying ALSA stream
     actually opens) and passes it in here."""
     sounds_dir = _env("JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds")
-    management_url = _env("JASPER_MANAGEMENT_URL", "https://jts.local")
+    management_url = _env("JASPER_MANAGEMENT_URL", "http://jts.local")
     voice = _env("JASPER_GEMINI_VOICE", "Aoede")
     api_key = _env("GEMINI_API_KEY") or _env("JASPER_GEMINI_API_KEY")
 

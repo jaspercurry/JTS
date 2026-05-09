@@ -87,12 +87,11 @@ def _delta_db_to_delta_percent(delta_db: float) -> int:
 
 def _build_spotify_router_or_none():
     """Build a multi-account Spotify router for dial-driven volume.
-    Returns None if SPOTIFY_CLIENT_ID/SECRET aren't set or no
-    accounts have been authorized — _set_spotify in the coordinator
-    treats None as "skip Spotify dispatch", logging a no-op."""
+    Returns None if SPOTIFY_CLIENT_ID isn't set or no accounts have
+    been authorized — _set_spotify in the coordinator treats None as
+    "skip Spotify dispatch", logging a no-op."""
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
-    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
-    if not (client_id and client_secret):
+    if not client_id:
         return None
     try:
         from ..accounts import Registry, maybe_migrate_legacy
@@ -111,10 +110,9 @@ def _build_spotify_router_or_none():
         clients = build_clients(
             registry,
             client_id=client_id,
-            client_secret=client_secret,
             redirect_uri=os.environ.get(
                 "SPOTIFY_REDIRECT_URI",
-                "https://jts.local/spotify/callback",
+                "https://jaspercurry.github.io/JTS/oauth-callback/",
             ),
         )
         if not clients:
@@ -367,8 +365,7 @@ async def _toggle_transport() -> dict:
     )
     router: Router | None = None
     client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
-    client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
-    if client_id and client_secret:
+    if client_id:
         accounts_path = os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
             "/var/lib/jasper/spotify/accounts.json",
@@ -378,14 +375,13 @@ async def _toggle_transport() -> dict:
         )
         redirect_uri = os.environ.get(
             "SPOTIFY_REDIRECT_URI",
-            "https://jasper.local/spotify/callback",
+            "https://jaspercurry.github.io/JTS/oauth-callback/",
         )
         accounts = Registry.load(accounts_path)
         maybe_migrate_legacy(accounts, legacy_cache, default_name="default")
         clients = build_clients(
             accounts,
             client_id=client_id,
-            client_secret=client_secret,
             redirect_uri=redirect_uri,
         )
         if clients:

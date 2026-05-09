@@ -195,10 +195,9 @@ class Mux:
             return self._spotify_router
         self._spotify_router_built = True
         client_id = os.environ.get("SPOTIFY_CLIENT_ID", "")
-        client_secret = os.environ.get("SPOTIFY_CLIENT_SECRET", "")
-        if not (client_id and client_secret):
+        if not client_id:
             logger.debug(
-                "spotify Web API: SPOTIFY_CLIENT_ID/SECRET not set; "
+                "spotify Web API: SPOTIFY_CLIENT_ID not set; "
                 "pause-via-Web-API disabled",
             )
             return None
@@ -217,10 +216,9 @@ class Mux:
             clients = build_clients(
                 registry,
                 client_id=client_id,
-                client_secret=client_secret,
                 redirect_uri=os.environ.get(
                     "SPOTIFY_REDIRECT_URI",
-                    "https://jts.local/spotify/callback",
+                    "https://jaspercurry.github.io/JTS/oauth-callback/",
                 ),
             )
             if not clients:

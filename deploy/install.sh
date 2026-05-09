@@ -476,38 +476,29 @@ Will retry on next boot."
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
 
-install_self_signed_cert() {
-    # Self-signed cert for https://jasper.local — required because
-    # Spotify (post-2024) rejects HTTP redirect URIs unless they're
-    # the loopback exception (127.0.0.1). Each phone clicks through
-    # the cert warning once. 10-year validity so we don't have to
-    # think about renewal in our hobby-project lifespan.
-    local crt="/etc/nginx/ssl/jasper.crt"
-    local key="/etc/nginx/ssl/jasper.key"
-    install -d -m 0755 /etc/nginx/ssl
-    if [[ -f "${crt}" && -f "${key}" ]]; then
-        echo "  (TLS cert already present at ${crt})"
-        return 0
-    fi
-    openssl req -x509 -nodes -days 3650 \
-        -newkey rsa:2048 \
-        -keyout "${key}" \
-        -out "${crt}" \
-        -subj "/CN=jasper.local" \
-        -addext "subjectAltName=DNS:jasper.local,DNS:jasper,IP:127.0.0.1" \
-        2>/dev/null
-    chmod 0644 "${crt}"
-    chmod 0640 "${key}"
-    chgrp www-data "${key}" 2>/dev/null || true
-    echo "  Generated self-signed cert at ${crt}"
+remove_legacy_https_artifacts() {
+    # The old install topology served /spotify/ over HTTPS using a
+    # self-signed cert at /etc/nginx/ssl/jasper.{crt,key} so Spotify's
+    # OAuth-redirect-URI rules accepted it. The cert tripped scary
+    # "connection not private" warnings in every browser, which we now
+    # side-step by terminating Spotify's HTTPS requirement at a static
+    # GitHub Pages bounce page (oauth-callback/index.html in this
+    # repo). Sweep the old cert + key + previous-generation nginx
+    # site files here so upgrading installs end up with the new
+    # plain-HTTP topology.
+    rm -f /etc/nginx/ssl/jasper.crt /etc/nginx/ssl/jasper.key
+    rmdir /etc/nginx/ssl 2>/dev/null || true
+    rm -f /etc/nginx/sites-enabled/jasper-https.conf
+    rm -f /etc/nginx/sites-available/jasper-https.conf
+    rm -f /etc/nginx/jasper-locations.conf
 }
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
     # (rotary-dial onboarding) to their respective jasper-web services.
-    # /spotify/ requires HTTPS — Spotify rejects non-loopback HTTP
-    # redirect URIs as of 2024.
+    # Plain HTTP on port 80 — Spotify's HTTPS requirement is satisfied
+    # by the GitHub Pages bounce page, not by this server.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -517,22 +508,10 @@ install_nginx_site() {
     # `default` symlink; remove it idempotently.
     rm -f /etc/nginx/sites-enabled/default
 
-    # Remove a previous-generation nginx site if present. An earlier
-    # install pattern used `jasper-https.conf` (with `server_name
-    # jts.local jts;`) plus a separate `jasper-locations.conf` include
-    # snippet. Because that vhost's server_name is more specific than
-    # the new jasper.conf's `server_name _`, leaving it in place hides
-    # the new /voice/ location from any browser request that uses
-    # jts.local as Host (i.e. all of them) — which surfaces as 404 on
-    # /voice/ for the user. Idempotent — fine if neither exists.
-    rm -f /etc/nginx/sites-enabled/jasper-https.conf
-    rm -f /etc/nginx/sites-available/jasper-https.conf
-    rm -f /etc/nginx/jasper-locations.conf
-
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — https://<host>/spotify, /voice, /dial are live"
+        echo "  nginx reloaded — http://<host>/spotify, /voice, /dial are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
@@ -583,7 +562,7 @@ main() {
     install_jasper
     install_systemd_units
     install_avahi_jasper_control
-    install_self_signed_cert
+    remove_legacy_https_artifacts
     install_nginx_site
     regenerate_audio_cues
 }

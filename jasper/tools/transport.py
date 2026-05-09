@@ -245,7 +245,7 @@ def make_transport_dispatcher(renderer, router):
                         "from any configured spotify account, and the device "
                         "doesn't accept remote control. tell the user to use "
                         "the controls on the device they're casting from, or "
-                        "to link their spotify account at jasper.local/spotify.",
+                        "to link their spotify account at jts.local/spotify.",
                         "source": "airplay",
                     }
                 # MPRIS PlayPause is a single-call native toggle —

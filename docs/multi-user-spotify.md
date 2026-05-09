@@ -44,8 +44,67 @@ State lives at:
 ```
 /var/lib/jasper/spotify/
     accounts.json              registry index
-    caches/<name>.json         per-user OAuth refresh tokens
+    caches/<name>.json         per-user OAuth refresh tokens (PKCE)
+/var/lib/jasper/spotify_credentials.env
+                               SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
+                               (written by the wizard)
 ```
+
+## OAuth flow
+
+The speaker uses **Authorization Code with PKCE**. PKCE was designed
+for clients that can't keep secrets — which a smart speaker on a
+home network definitely is. The user pastes only the Client ID into
+the wizard; no Client Secret is needed.
+
+Spotify's redirect-URI rules (post-November-2025) require HTTPS for
+any non-loopback host. We side-step the cert problem two ways; the
+wizard offers both as a radio-group choice.
+
+### Bounce mode (default)
+
+Spotify is given a redirect URI on a host that already has a real
+cert: `https://jaspercurry.github.io/JTS/oauth-callback/`. The static
+HTML behind that URL is `oauth-callback/index.html` in this repo —
+checked-in, inspectable, hosted free on GitHub Pages. It does
+nothing except `window.location.href` the browser back to
+`http://jts.local/spotify/oauth-callback?code=…&state=…` over plain
+HTTP. Cross-scheme navigation (HTTPS → HTTP) is a normal cross-origin
+redirect; mixed-content rules apply to subresource fetches, not
+navigations.
+
+If the bounce-back fails (different Wi-Fi, mDNS broken on the device
+that did the OAuth, cellular, etc.), the bounce page's 4-second
+timeout surfaces a fallback: it shows the full speaker callback URL
+so the user can open it on any device that *is* on the home network.
+One tap finishes the flow.
+
+### Manual paste mode
+
+No external infrastructure. The redirect URI is the loopback
+exception Spotify still allows, `http://127.0.0.1:8888/callback`.
+The user's phone obviously can't reach 127.0.0.1 (that's the phone,
+not the speaker), so Safari shows "cannot connect" — the wizard
+pre-warns about this on the page that launches the flow, so it
+doesn't look like an error. The user copies the URL from the
+address bar and pastes it back into the speaker. The wizard parses
+out the code and state and exchanges via PKCE.
+
+This mode is purely UX-ier in exchange for zero dependencies on
+GitHub Pages or any other third party.
+
+### CSRF state
+
+Each `/start` generates a fresh random nonce, stashed server-side in
+a 10-minute pending-flows map keyed to the account name. The nonce
+is sent as Spotify's `state` parameter. On callback, the nonce is
+looked up to recover the account name; unknown or expired nonces are
+rejected. This protects against cross-site request forgery on the
+callback endpoint.
+
+The PKCE code verifier itself lives in the per-account spotipy cache
+file between `/start` and the callback — spotipy writes it during
+`get_authorize_url()` and reads it during `get_access_token(code)`.
 
 ## Setup, end-to-end
 
@@ -54,38 +113,33 @@ State lives at:
 The owner of the speaker creates a single Spotify Developer App at
 https://developer.spotify.com/dashboard. This is the same pattern
 Sonos uses — Sonos owns one Spotify app, and every Sonos owner
-OAuths their personal account against it. Brittany never sees the
-developer dashboard.
+OAuths their personal account against it.
 
 - Name: anything ("Jasper Smart Speaker")
-- Redirect URI: **`https://jasper.local/spotify/callback`** — must
-  be HTTPS. Spotify rejects HTTP for non-loopback hosts as of late
-  2024. The Pi serves HTTPS via a self-signed cert (see TLS section
-  below).
+- Redirect URI: copy whichever one the wizard's settings page shows
+  for your chosen mode:
+  - bounce: `https://jaspercurry.github.io/JTS/oauth-callback/`
+  - manual: `http://127.0.0.1:8888/callback`
 - APIs: just "Web API"
-- Save → copy Client ID + Client Secret → paste into
-  `/etc/jasper/jasper.env`:
-  ```
-  SPOTIFY_CLIENT_ID=…
-  SPOTIFY_CLIENT_SECRET=…
-  ```
+- Save → copy **Client ID** (you do NOT need the Client Secret —
+  PKCE doesn't use it)
 - User Management → add each household member's Spotify-account email
-  (the one they log in with). Development Mode allows up to 25 named
-  users. Past 25, you'd need to apply for Extended Quota.
+  (the one they log in with). Development Mode allows up to 5 named
+  users (was 25 before February 2026). Past 5, you'd need to apply
+  for Extended Quota — and as of May 2025 that's only available to
+  registered businesses with 250k+ MAUs.
 
 ### 2. Each household member visits the setup page
 
-Each person, on their own phone:
+Each person, on their own phone or laptop on the home Wi-Fi:
 
-1. Open `https://jasper.local/spotify` in their browser.
-2. **Click through the cert warning.** Self-signed certs trip
-   "connection not private" warnings. iOS Safari: tap "Show details"
-   → "visit anyway." Chrome: "Advanced" → "Proceed." This is
-   one-time-per-device — the browser remembers.
-3. Pick a label name — a short identifier the speaker uses
+1. Open `http://jts.local/spotify` in their browser. **Plain HTTP** —
+   no cert warning to click through.
+2. Pick a label name — a short identifier the speaker uses
    internally. Lowercase, no spaces. Not a display name.
-4. "Continue with Spotify" → Spotify login → "Agree" → bounced back
-   to the speaker page. Account now appears in the list.
+3. "Continue with Spotify" → Spotify login → "Agree" → bounced back
+   to the speaker page (or, in manual mode, paste the URL from the
+   "cannot connect" page). Account now appears in the list.
 
 That's it. No per-device setup. No "what's the AirPlay name on this
 device" form to fill in.
@@ -98,10 +152,9 @@ the new accounts:
 ```
 sudo systemctl restart jasper-voice
 ```
-Subsequent additions don't strictly need a restart — the router will
-just skip routing to a freshly-added account until next restart, since
-its OAuth token isn't loaded into the in-memory client map yet. A
-restart is the cleanest way to make a new account fully active.
+Subsequent additions don't strictly need a restart — the wizard's
+account-add handler restarts the daemon for you. The "restart once"
+note is for the very first OAuthed account on a fresh install.
 
 ## How routing actually works
 
@@ -133,7 +186,7 @@ When you say "next song" / "previous" / "pause" / "resume":
    older Apple Music builds; silently no-ops on iOS 17.4+ for non-
    Spotify senders.
 5. If DACP isn't available either → tell the user to use the controls
-   on their device, or to link their account at jasper.local/spotify.
+   on their device, or to link their account at jts.local/spotify.
 
 For **Spotify Connect** (no AirPlay) and `spotify_play` cold-starts,
 the title cross-reference doesn't apply (no track to match) — fall
@@ -216,42 +269,43 @@ alternative for controlling iOS Spotify from the receiver side.
 DACP/MPRIS is still wired up as a fallback for non-Spotify AirPlay
 sources that DO expose it (older iOS, Apple Music app on macOS pre-
 14.4, some non-Apple AirPlay senders), so the speaker degrades
-gracefully when somebody's casting a podcast or YouTube tab — it'll
-work for them as long as they're not on iOS 17.4+ Spotify (and if
-they are, they're already on the title-match path anyway).
+gracefully when somebody's casting a podcast or YouTube tab.
 
 **Note on MPRIS metadata reliability:** shairport's MPRIS
-`xesam:title` is populated by both Mac Spotify and iOS Spotify (verified
-on iOS 18 / Spotify 9.x as of 2026-05). Earlier versions of these
-docs incorrectly conflated DACP-broken-on-iOS with MPRIS-metadata-
-broken-on-iOS; only DACP is broken. Metadata flows fine.
+`xesam:title` is populated by both Mac Spotify and iOS Spotify
+(verified on iOS 18 / Spotify 9.x as of 2026-05). Earlier versions
+of these docs incorrectly conflated DACP-broken-on-iOS with
+MPRIS-metadata-broken-on-iOS; only DACP is broken. Metadata flows
+fine.
 
-## TLS / self-signed cert
+## Migrating from the old Code+Secret flow
 
-Spotify's redirect URI rules require HTTPS for any non-loopback
-host. The Pi serves `https://jasper.local` via a self-signed cert
-generated at install time:
+Earlier installs used Authorization Code with a Client Secret pasted
+into the wizard, served over HTTPS with a self-signed cert at
+`/etc/nginx/ssl/jasper.{crt,key}`. The cert tripped scary "connection
+not private" warnings on every browser. The migration to PKCE +
+plain HTTP was a deliberate trade.
 
-- Cert: `/etc/nginx/ssl/jasper.crt` (10-year validity, SANs for
-  `jasper.local`, `jasper`, `127.0.0.1`)
-- Key: `/etc/nginx/ssl/jasper.key`
-- nginx site: `/etc/nginx/sites-enabled/jasper.conf` (port 80
-  redirects to HTTPS; port 443 with the cert above)
+What this means for upgrading installs:
 
-Each device clicks through "not private" once. To eliminate the
-warning, install the cert on the device's trust store (iOS: AirDrop
-the .crt to the phone, Settings → General → VPN & Device
-Management → install profile, then Settings → General → About →
-Certificate Trust Settings → enable trust).
-
-The cert is generated by `install_self_signed_cert` in
-`deploy/install.sh` and re-used on subsequent installs (idempotent).
-To regenerate, delete `/etc/nginx/ssl/jasper.{crt,key}` and re-run
-the install script.
+- The cert + key files are removed by the install script
+  (`remove_legacy_https_artifacts` in `deploy/install.sh`); nginx is
+  reconfigured to plain HTTP only.
+- The wizard's `spotify_credentials.env` schema changed from
+  `SPOTIFY_CLIENT_ID + SPOTIFY_CLIENT_SECRET` to
+  `SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE`. The wizard re-prompts
+  for the Client ID on first visit after the upgrade; the old
+  Client Secret is no longer needed.
+- **Existing per-account refresh tokens become unusable.** They were
+  issued under Code+Secret, which Spotify validates against the
+  Authorization header on refresh. PKCE refresh sends `client_id`
+  in the body and no Authorization header — Spotify rejects this
+  for non-PKCE-issued tokens. Each household member needs to re-link
+  their account once via the wizard.
 
 ## Adding / removing accounts
 
-`https://jasper.local/spotify`:
+`http://jts.local/spotify`:
 - Add: enter a label, OAuth, done.
 - Remove: click "Remove" next to the account. Wipes the cache file
   and removes the registry entry.
@@ -259,34 +313,31 @@ the install script.
   active and no other account is `is_playing` (cold-start commands
   like "play Beyoncé" from silence).
 
-After any change, restart `jasper-voice` to rebuild the in-memory
-router:
-```
-sudo systemctl restart jasper-voice
-```
+The wizard restarts `jasper-voice` automatically after each change.
 
 ## Files / locations cheat-sheet
 
 ```
-/etc/jasper/jasper.env                       env vars (creds, paths)
-/etc/nginx/jasper-locations.conf             nginx /spotify/ proxy block
-/etc/nginx/sites-enabled/jasper-https.conf   nginx HTTPS server block
-/etc/nginx/ssl/jasper.{crt,key}              self-signed cert
+/etc/jasper/jasper.env                       env vars (paths, etc.)
+/etc/nginx/sites-enabled/jasper.conf         nginx /spotify/ + /voice/ + /dial/
 /etc/systemd/system/jasper-web.service       setup web server (port 8765)
 /etc/systemd/system/jasper-voice.service     voice daemon
+/var/lib/jasper/spotify_credentials.env      SPOTIFY_CLIENT_ID + SPOTIFY_OAUTH_MODE
 /var/lib/jasper/spotify/accounts.json        registry index
 /var/lib/jasper/spotify/caches/<name>.json   per-user OAuth refresh tokens
 ```
 
 Code:
 ```
-jasper/accounts.py          Registry / Account
-jasper/spotify_router.py    Router.resolve_for_transport / Router.active
-jasper/spotify_routing.py   resolve_target (cold-start device picker, title _normalise)
-jasper/web/spotify_setup.py jasper-web HTTP service
-jasper/tools/transport.py   AirPlay / Spotify / Bluetooth / no-source dispatch
-jasper/tools/spotify.py     spotify_play / spotify_queue (router-aware)
-deploy/nginx-jasper.conf            /spotify/ proxy block
-deploy/nginx-jasper-https.conf      HTTPS site config
-deploy/jasper-web.service           systemd unit for jasper-web
+oauth-callback/index.html             GitHub Pages bounce page (static)
+jasper/accounts.py                    Registry / Account
+jasper/spotify_router.py              Router.resolve_for_transport / Router.active /
+                                       build_clients (PKCE)
+jasper/spotify_routing.py             resolve_target (cold-start device picker, _normalise)
+jasper/web/spotify_setup.py           jasper-web HTTP service (PKCE wizard)
+jasper/cli/spotify_auth.py            CLI bootstrap (PKCE)
+jasper/tools/transport.py             AirPlay / Spotify / Bluetooth / no-source dispatch
+jasper/tools/spotify.py               spotify_play / spotify_queue (router-aware)
+deploy/nginx-jasper.conf              /spotify/ + /voice/ + /dial/ proxy (HTTP only)
+deploy/jasper-web.service             systemd unit for jasper-web
 ```

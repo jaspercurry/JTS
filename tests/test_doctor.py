@@ -90,7 +90,7 @@ def _fresh_cfg(monkeypatch, **vars_) -> Config:
     drop = [
         "GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
         "JASPER_VOICE_PROVIDER", "JASPER_GEMINI_MODEL",
-        "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
+        "SPOTIFY_CLIENT_ID",
     ]
     for v in drop:
         monkeypatch.delenv(v, raising=False)

@@ -184,7 +184,7 @@ sudo systemctl restart jasper-voice
 ## Phase 3.5 — Pick a voice provider via the wizard (2 min, optional)
 
 This step is optional — the env file you just wrote already
-selects a provider. The wizard at `https://jts.local/voice/` is
+selects a provider. The wizard at `http://jts.local/voice/` is
 the friendlier path: paste keys, pick model and voice from
 curated dropdowns, flip the active provider with a single radio
 group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
@@ -264,16 +264,31 @@ should route to the speaker.
 
 ## Phase 6 — Set up Spotify multi-account (one-time per household member, 5 min each)
 
-If you skipped `SPOTIFY_CLIENT_*` in Phase 3, skip this.
+If you skipped `SPOTIFY_CLIENT_ID` in Phase 3, skip this.
 
 On your phone (or any browser on the same LAN), visit:
 
 ```
-https://jts.local/spotify
+http://jts.local/spotify
 ```
 
-Click through the self-signed cert warning (one time per browser),
-follow the OAuth flow, name your account.
+The wizard will walk you through creating a Spotify Developer App,
+pasting the redirect URI into Spotify's dashboard, and OAuthing each
+household member's account. Auth uses PKCE — only the Client ID is
+needed, no Client Secret.
+
+Two redirect modes are offered; pick whichever fits:
+
+- **Bounce (default)** — Spotify redirects via a static page on
+  GitHub Pages, which forwards back to `http://jts.local/spotify/…`
+  automatically. Smoothest UX. The bounce page is the
+  `oauth-callback/index.html` file in this repo, hosted free at
+  `https://jaspercurry.github.io/JTS/oauth-callback/`.
+- **Manual paste** — no external infrastructure. After you approve
+  on Spotify, your phone shows "cannot connect to 127.0.0.1" — the
+  wizard pre-warns you about this so it doesn't look like a failure.
+  Copy the URL from your address bar, paste it back into the
+  speaker's setup page, done.
 
 Repeat for each household member who wants their own Spotify
 account routed for voice commands.
