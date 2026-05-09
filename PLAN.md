@@ -104,6 +104,46 @@ deployments).
 This is exactly the kind of thing an end-user shouldn't have to
 SSH for. Not blocking anything; flagged as the next polish piece.
 
+### "Configure remotes" wizard — the satellite-onboarding sub-page
+
+Goal end-state UX (per user, 2026-05-09):
+> 1. Get the speaker set up
+> 2. Hear the voice that says "Go to jts.local"
+> 3. Go there and click a button that says "Configure remotes"
+> 4. On that screen it basically says "Plug it in" — you plug it in
+>    and that gets the firmware properly updated, gets the WiFi on
+>    there, away you go.
+
+What exists today:
+- `jasper-dial-web` ([`jasper/web/dial_setup.py`](jasper/web/dial_setup.py))
+  serves `https://jts.local/dial/` with this exact flow for the
+  rotary dial: scan plugged-in ESP32-S3 devices, pick one, click to
+  flash + provision. Shells out to `jasper-dial-onboard`.
+- `jasper-satellite-onboard` ([`jasper/cli/satellite_onboard.py`](jasper/cli/satellite_onboard.py))
+  is the CLI half for the AMOLED satellite. Mirrors `jasper-dial-onboard`'s
+  shape so a generalized wizard can shell out to either.
+
+What's needed:
+- Generalize `dial_setup.py` → `remote_setup.py` (or fork it as
+  `satellite_setup.py`). Choose: a single `/remotes/` page with a
+  device-class dropdown (dial / AMOLED satellite), or two parallel
+  pages (`/dial/`, `/satellite/`) linked from a `/remotes/` index.
+  Single page is the user's stated dream; parallel pages is less
+  refactor.
+- Auto-detect device class on plug-in: the boot-log probe is the
+  cleanest signal — `jasper-dial firmware` vs
+  `jasper-satellite-amoled firmware` in setup() prints. Falls back
+  to user picking from a dropdown for fresh chips with no firmware.
+- nginx route: add `/satellite/` (or `/remotes/`) to the
+  jasper.conf reverse-proxy block.
+- systemd unit for the new web service (or extend `jasper-dial-web`).
+- The audible cue that says "go to {hostname}" should land the user
+  on the management dashboard root, which links into "Configure
+  remotes" — soft prereq for the cue UX completing.
+
+This is the obvious next step after both onboard CLIs are stable.
+Single session of work.
+
 ---
 
 ## Wake-word reliability — AEC tuning roadmap (no version, ongoing)
