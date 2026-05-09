@@ -280,10 +280,12 @@ needed, no Client Secret.
 Two redirect modes are offered; pick whichever fits:
 
 - **Bounce (default)** — Spotify redirects via a static page on
-  GitHub Pages, which forwards back to `http://jts.local/spotify/…`
-  automatically. Smoothest UX. The bounce page is the
-  `oauth-callback/index.html` file in this repo, hosted free at
-  `https://jaspercurry.github.io/JTS/oauth-callback/`.
+  GitHub Pages, which forwards back to `http://${JASPER_HOSTNAME}/spotify/…`
+  automatically. Smoothest UX. The bounce page is a separate public
+  repo, `jaspercurry/spotify-oauth-callback`, served at
+  `https://jaspercurry.github.io/spotify-oauth-callback/`. The wizard
+  shows the exact redirect URI (with `?host=` set to your speaker's
+  hostname) for you to paste into the Spotify dashboard.
 - **Manual paste** — no external infrastructure. After you approve
   on Spotify, your phone shows "cannot connect to 127.0.0.1" — the
   wizard pre-warns you about this so it doesn't look like a failure.

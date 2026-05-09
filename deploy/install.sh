@@ -482,10 +482,10 @@ remove_legacy_https_artifacts() {
     # OAuth-redirect-URI rules accepted it. The cert tripped scary
     # "connection not private" warnings in every browser, which we now
     # side-step by terminating Spotify's HTTPS requirement at a static
-    # GitHub Pages bounce page (oauth-callback/index.html in this
-    # repo). Sweep the old cert + key + previous-generation nginx
-    # site files here so upgrading installs end up with the new
-    # plain-HTTP topology.
+    # GitHub Pages bounce page (separate public repo
+    # jaspercurry/spotify-oauth-callback). Sweep the old cert + key +
+    # previous-generation nginx site files here so upgrading installs
+    # end up with the new plain-HTTP topology.
     rm -f /etc/nginx/ssl/jasper.crt /etc/nginx/ssl/jasper.key
     rmdir /etc/nginx/ssl 2>/dev/null || true
     rm -f /etc/nginx/sites-enabled/jasper-https.conf

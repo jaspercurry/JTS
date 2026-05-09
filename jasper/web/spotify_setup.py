@@ -11,12 +11,13 @@ Spotify post-2025 redirect-URI rules require HTTPS for any non-loopback
 host. Two supported modes side-step that:
 
   - bounce (default) — Spotify redirects the phone to a static page on
-    GitHub Pages (`https://jaspercurry.github.io/JTS/oauth-callback/`),
-    which immediately bounces the browser to
-    `http://jts.local/spotify/oauth-callback?code=…&state=…` over plain
-    HTTP. No cert needed on the speaker. The bounce page is checked
-    into this repo at oauth-callback/index.html — no third-party
-    infrastructure.
+    GitHub Pages (`https://jaspercurry.github.io/spotify-oauth-callback/
+    ?host=<JASPER_HOSTNAME>`), which immediately bounces the browser to
+    `http://<JASPER_HOSTNAME>/spotify/oauth-callback?code=…&state=…`
+    over plain HTTP. No cert needed on the speaker. The bounce page is
+    a separate public repo (`jaspercurry/spotify-oauth-callback`); it's
+    a 100-line static file with no analytics or third-party scripts —
+    inert by design.
 
   - manual — Spotify redirects to `http://127.0.0.1:8888/callback`
     (the loopback exception Spotify still allows). The user's phone
@@ -109,14 +110,22 @@ _CLIENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 # page; `manual` uses the loopback IP and a paste-the-URL fallback.
 OAUTH_MODES = ("bounce", "manual")
 
-# Default redirect URIs per mode. The bounce URL is the canonical
-# JTS-project deployment on GitHub Pages — forks running on a different
-# hostname can override either via env. The static HTML behind that
-# bounce URL lives at oauth-callback/index.html in this repo.
-DEFAULT_BOUNCE_REDIRECT_URI = (
-    "https://jaspercurry.github.io/JTS/oauth-callback/"
+# Default redirect URIs per mode. The bounce URL points at a static
+# page hosted on GitHub Pages from the standalone
+# `jaspercurry/spotify-oauth-callback` repo; the `?host=` query param
+# tells the page which mDNS hostname to forward back to, so a single
+# hosted page works for any speaker hostname.
+DEFAULT_BOUNCE_REDIRECT_URI_BASE = (
+    "https://jaspercurry.github.io/spotify-oauth-callback/"
 )
 DEFAULT_MANUAL_REDIRECT_URI = "http://127.0.0.1:8888/callback"
+
+
+def _default_bounce_redirect_uri(hostname: str) -> str:
+    """Build the canonical bounce-mode redirect URI for the given
+    hostname. Forks may override the entire URL via
+    JASPER_SPOTIFY_BOUNCE_REDIRECT_URI; this is just the default."""
+    return f"{DEFAULT_BOUNCE_REDIRECT_URI_BASE}?host={hostname}"
 
 
 def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
@@ -124,7 +133,10 @@ def _redirect_uri_for_mode(mode: str, cfg: dict[str, Any]) -> str:
     the cfg-level overrides (which come from env vars at startup)."""
     if mode == "manual":
         return cfg.get("manual_redirect_uri") or DEFAULT_MANUAL_REDIRECT_URI
-    return cfg.get("bounce_redirect_uri") or DEFAULT_BOUNCE_REDIRECT_URI
+    return (
+        cfg.get("bounce_redirect_uri")
+        or _default_bounce_redirect_uri(cfg.get("hostname") or "jts.local")
+    )
 
 
 # In-memory pending-flow store: {nonce: (account_name, created_monotonic)}.
@@ -1187,14 +1199,15 @@ def main(argv: list[str] | None = None) -> int:
         "--registry",
         default=os.environ.get("JASPER_SPOTIFY_ACCOUNTS_PATH", DEFAULT_REGISTRY_PATH),
     )
+    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
     parser.add_argument(
         "--bounce-redirect-uri",
         default=os.environ.get(
             "JASPER_SPOTIFY_BOUNCE_REDIRECT_URI",
-            DEFAULT_BOUNCE_REDIRECT_URI,
+            _default_bounce_redirect_uri(hostname),
         ),
-        help="HTTPS redirect URI for bounce mode (defaults to the canonical "
-             "JTS GitHub Pages deployment).",
+        help="HTTPS redirect URI for bounce mode. Defaults to the "
+             "canonical hosted page with `?host=${JASPER_HOSTNAME}`.",
     )
     parser.add_argument(
         "--manual-redirect-uri",

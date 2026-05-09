@@ -64,14 +64,28 @@ wizard offers both as a radio-group choice.
 ### Bounce mode (default)
 
 Spotify is given a redirect URI on a host that already has a real
-cert: `https://jaspercurry.github.io/JTS/oauth-callback/`. The static
-HTML behind that URL is `oauth-callback/index.html` in this repo —
-checked-in, inspectable, hosted free on GitHub Pages. It does
-nothing except `window.location.href` the browser back to
-`http://jts.local/spotify/oauth-callback?code=…&state=…` over plain
+cert. The wizard composes:
+
+```
+https://jaspercurry.github.io/spotify-oauth-callback/?host=${JASPER_HOSTNAME}
+```
+
+That URL serves a tiny static page from a separate public repo
+(`jaspercurry/spotify-oauth-callback`); the page parses `code`,
+`state`, and `host` from its query string, validates `host` against
+an mDNS regex (`*.local`), and `window.location.href`s the browser
+to `http://${host}/spotify/oauth-callback?code=…&state=…` over plain
 HTTP. Cross-scheme navigation (HTTPS → HTTP) is a normal cross-origin
 redirect; mixed-content rules apply to subresource fetches, not
 navigations.
+
+The page is hostname-agnostic by design: a single hosted page works
+for any speaker hostname, with no fork-and-redeploy required. If you
+rename your speaker via `JASPER_HOSTNAME=foo.local`, the wizard's
+default redirect URI becomes
+`https://jaspercurry.github.io/spotify-oauth-callback/?host=foo.local`
+automatically — you just register that exact value in your Spotify
+Developer App.
 
 If the bounce-back fails (different Wi-Fi, mDNS broken on the device
 that did the OAuth, cellular, etc.), the bounce page's 4-second
@@ -118,7 +132,7 @@ OAuths their personal account against it.
 - Name: anything ("Jasper Smart Speaker")
 - Redirect URI: copy whichever one the wizard's settings page shows
   for your chosen mode:
-  - bounce: `https://jaspercurry.github.io/JTS/oauth-callback/`
+  - bounce: `https://jaspercurry.github.io/spotify-oauth-callback/?host=${JASPER_HOSTNAME}`
   - manual: `http://127.0.0.1:8888/callback`
 - APIs: just "Web API"
 - Save → copy **Client ID** (you do NOT need the Client Secret —
@@ -329,7 +343,9 @@ The wizard restarts `jasper-voice` automatically after each change.
 
 Code:
 ```
-oauth-callback/index.html             GitHub Pages bounce page (static)
+jaspercurry/spotify-oauth-callback    GitHub Pages bounce page (separate
+                                       public repo, static, hostname-agnostic
+                                       via `?host=` query param)
 jasper/accounts.py                    Registry / Account
 jasper/spotify_router.py              Router.resolve_for_transport / Router.active /
                                        build_clients (PKCE)

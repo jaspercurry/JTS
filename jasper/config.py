@@ -318,16 +318,16 @@ class Config:
             # The redirect URI is the URL Spotify bounces the OAuth
             # code back to. It must be an exact match for one of the
             # URIs registered in the user's Spotify Developer App.
-            # Default is the canonical JTS GitHub Pages bounce page
-            # (`bounce` mode) — the static HTML lives at
-            # oauth-callback/index.html in this repo and forwards the
-            # code+state back to http://jts.local/spotify/oauth-callback.
-            # For the `manual` mode (no external infrastructure),
-            # override to "http://127.0.0.1:8888/callback" — the
-            # loopback exception Spotify still allows.
+            # Default is the canonical bounce page on GitHub Pages
+            # (separate public repo `jaspercurry/spotify-oauth-callback`),
+            # with `?host=` carrying the speaker's hostname so a single
+            # hosted page works for any speaker. For `manual` mode (no
+            # external infrastructure), override to
+            # "http://127.0.0.1:8888/callback" — the loopback exception
+            # Spotify still allows.
             spotify_redirect_uri=_env(
                 "SPOTIFY_REDIRECT_URI",
-                "https://jaspercurry.github.io/JTS/oauth-callback/",
+                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
             ),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout

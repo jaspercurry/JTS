@@ -213,12 +213,13 @@ class Mux:
                 os.environ.get("SPOTIFY_CACHE_PATH", "/var/lib/jasper/.spotify-cache"),
                 default_name="default",
             )
+            hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
             clients = build_clients(
                 registry,
                 client_id=client_id,
                 redirect_uri=os.environ.get(
                     "SPOTIFY_REDIRECT_URI",
-                    "https://jaspercurry.github.io/JTS/oauth-callback/",
+                    f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
                 ),
             )
             if not clients:

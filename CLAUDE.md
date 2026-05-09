@@ -40,11 +40,13 @@ What does NOT derive (intentionally):
   advertises — that's a separate, OS-level concern. Run hostnamectl
   first; then point `JASPER_HOSTNAME` at it.
 - The Spotify OAuth bounce page at
-  `https://jaspercurry.github.io/JTS/oauth-callback/` — it's static
-  HTML and hard-codes `jts.local` as the bounce target. Forks running
-  on a different hostname either fork-and-self-host the page (one
-  constant, one re-deploy) or use the manual paste-back OAuth mode
-  instead. Documented in `oauth-callback/README.md`.
+  `https://jaspercurry.github.io/spotify-oauth-callback/` — separate
+  public repo (`jaspercurry/spotify-oauth-callback`). It's hostname-
+  agnostic: the local target is passed in as `?host=<JASPER_HOSTNAME>`
+  on the redirect URI registered with Spotify, validated against an
+  mDNS regex, and used as the redirect target. So changing
+  `JASPER_HOSTNAME` here Just Works against the same hosted page —
+  no fork-and-redeploy.
 
 ---
 
