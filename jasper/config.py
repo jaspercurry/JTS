@@ -21,13 +21,35 @@ def _env_int(name: str, default: int) -> int:
     return int(raw) if raw else default
 
 
+# Env vars that previously controlled deliberate idle-based context
+# reset of the live voice connection. Removed 2026-05-09 in favor of
+# OpenAI's `truncation: "auto"` and Gemini's session-resumption
+# handle. Logged once at Config.from_env() so an operator who still
+# has the var set in /etc/jasper/jasper.env knows it's no longer
+# load-bearing. Kept here as a list rather than a one-off check so
+# future deprecations follow the same pattern.
+_DEPRECATED_ENV_VARS: tuple[tuple[str, str], ...] = (
+    (
+        "JASPER_LIVE_CONTEXT_RESET_SEC",
+        "removed; OpenAI uses truncation:auto and Gemini uses "
+        "session-resumption handles to manage long sessions",
+    ),
+)
+
+
+def _warn_on_deprecated_env() -> None:
+    import logging
+    log = logging.getLogger(__name__)
+    for name, reason in _DEPRECATED_ENV_VARS:
+        if os.environ.get(name):
+            log.warning("env: %s is deprecated and ignored — %s", name, reason)
+
+
 def _validate(cfg: "Config") -> "Config":
     if not 0.0 <= cfg.wake_threshold <= 1.0:
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
-    if cfg.live_context_reset_sec <= 0:
-        raise RuntimeError("JASPER_LIVE_CONTEXT_RESET_SEC must be > 0")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
     # Hearing-safety: TTS gain is now an OFFSET applied on top of
@@ -105,7 +127,6 @@ class Config:
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
-    live_context_reset_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
@@ -175,6 +196,7 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
+        _warn_on_deprecated_env()
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
         if provider not in {"gemini", "openai", "grok"}:
             raise RuntimeError(
@@ -309,14 +331,6 @@ class Config:
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
-            # After this many seconds with no turns, the persistent live
-            # connection drops its sessionResumption handle and reopens
-            # with a fresh session — so conversational context from a
-            # query hours earlier doesn't leak into the next one
-            # ("what's the weather" at 9am should NOT influence "what
-            # time is it" at 5pm). 5 min default = long enough to keep
-            # multi-turn dialogues coherent, short enough to feel fresh.
-            live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
             mpd_host=_env("MPD_HOST", "127.0.0.1"),

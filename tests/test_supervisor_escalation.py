@@ -261,7 +261,6 @@ async def test_supervisor_fires_cue_after_5_identical_reconnect_failures():
         api_key="fake",
         model="fake-model",
         voice="Aoede",
-        context_reset_sec=9999.0,
         keepalive_period_sec=9999.0,
         # 6 attempts, all instant. First 5 will fail, 6th succeeds.
         backoff_schedule=(0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -317,7 +316,6 @@ async def test_supervisor_does_not_fire_when_failures_recover_quickly():
         api_key="fake",
         model="fake-model",
         voice="Aoede",
-        context_reset_sec=9999.0,
         keepalive_period_sec=9999.0,
         backoff_schedule=(0.0, 0.0, 0.0, 0.0),
         connect_factory=factory,

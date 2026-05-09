@@ -417,7 +417,6 @@ class OpenAIRealtimeConnection(LiveConnection):
         api_key: str,
         model: str = "gpt-realtime-2",
         voice: str = "marin",
-        context_reset_sec: float = 300.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         temperature: float = DEFAULT_TEMPERATURE,
         # Production: leave None → supervisor reconnects FOREVER with
@@ -436,7 +435,6 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._api_key = api_key
         self._model = model
         self._voice = voice
-        self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
         self._temperature = temperature
         self._backoff_schedule = backoff_schedule
@@ -464,7 +462,6 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._conn_cm = None
         self._send_lock = asyncio.Lock()
 
-        self._last_turn_end_at: float = 0.0
         self._active_turn: OpenAIRealtimeTurn | None = None
         self._turn_lock = asyncio.Lock()
 
@@ -586,8 +583,14 @@ class OpenAIRealtimeConnection(LiveConnection):
                     "openai connection: not connected after backoff window"
                 )
 
-        await self._maybe_reset_context()
-
+        # Deliberate idle-based context reset removed (was triggered
+        # here pre-2026-05-09). With ``truncation: "auto"`` on
+        # session.update, the server prunes old items as the context
+        # grows; with the wake-loop's audio buffer, the hard-cap /
+        # network-blip reconnects no longer eat user audio. Tearing
+        # down the session every 5 min idle was solving a problem
+        # the platform now solves natively — and was costing a full
+        # system-prompt re-bill at the uncached rate on every reset.
         async with self._turn_lock:
             if self._active_turn is not None:
                 raise RuntimeError("openai connection: a turn is already active")
@@ -667,7 +670,6 @@ class OpenAIRealtimeConnection(LiveConnection):
         async with self._turn_lock:
             if self._active_turn is turn:
                 self._active_turn = None
-                self._last_turn_end_at = asyncio.get_event_loop().time()
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
@@ -738,6 +740,22 @@ class OpenAIRealtimeConnection(LiveConnection):
             },
             "tools": tools,
             "tool_choice": "auto",
+            # Auto-truncation: as the conversation grows toward the
+            # context window, the server trims the oldest items
+            # automatically while preserving the prompt-cache prefix.
+            # Replaces our previous strategy of tearing down the
+            # session every ~5 minutes idle — that strategy worked
+            # before this knob existed but cost a full system-prompt
+            # re-bill at the uncached rate on every reconnect, and
+            # the post-2026-05-09 audio-buffer change makes any
+            # eventual reconnect (network blip, 30-min hard cap)
+            # safe to ride out anyway. Grok inherits this through
+            # the OpenAI-compatible wire format; if a future xAI
+            # change rejects the field, the session.update fallback
+            # logs the rejection and the connection still works
+            # (just without server-side truncation, falling back to
+            # the model's own context-window behavior).
+            "truncation": "auto",
         }
         # ``reasoning.effort`` is gated to reasoning-capable models
         # (``gpt-realtime-2``). We detect that from the model name
@@ -1035,37 +1053,6 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         # Other informational events. Logged at DEBUG.
         logger.debug("openai connection: event %s", etype)
-
-    async def _maybe_reset_context(self) -> None:
-        """OpenAI Realtime has no resumption handle, so 'context reset'
-        is just 'tear down and reopen'. Same trigger as Gemini — long
-        idle gaps shouldn't bleed conversational context across hours.
-        Skipped if no prior turn has happened on this connection."""
-        if self._last_turn_end_at <= 0.0:
-            return
-        idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at
-        if idle_for < self._context_reset_sec:
-            return
-        logger.info(
-            "openai context reset: idle for %.0fs > threshold (%.0fs); "
-            "reopening for a fresh session",
-            idle_for, self._context_reset_sec,
-        )
-        await self._teardown_session()
-        try:
-            await self._open_session_with_retry(
-                INITIAL_CONNECT_BACKOFF_SCHEDULE,
-                phase="context-reset-reopen",
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.error(
-                "openai connection: context-reset reopen failed (%s: %s); "
-                "triggering supervisor reconnect",
-                type(e).__name__, e,
-            )
-            self._reconnect_event.set()
-            raise
-        self._last_turn_end_at = asyncio.get_event_loop().time()
 
     async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
         """Dispatch a `response.done` event.

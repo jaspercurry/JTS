@@ -520,7 +520,6 @@ def _make_connection(cfg: Config) -> LiveConnection:
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
             voice=cfg.gemini_voice,
-            context_reset_sec=float(cfg.live_context_reset_sec),
         )
     if cfg.voice_provider == "openai":
         return OpenAIRealtimeConnection(
@@ -528,14 +527,12 @@ def _make_connection(cfg: Config) -> LiveConnection:
             model=cfg.openai_model,
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
-            context_reset_sec=float(cfg.live_context_reset_sec),
         )
     if cfg.voice_provider == "grok":
         return GrokRealtimeConnection(
             api_key=cfg.grok_api_key,
             model=cfg.grok_model,
             voice=cfg.grok_voice,
-            context_reset_sec=float(cfg.live_context_reset_sec),
         )
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 

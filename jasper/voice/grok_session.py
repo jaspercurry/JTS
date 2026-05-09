@@ -63,7 +63,6 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
         api_key: str,
         model: str = "grok-voice-think-fast-1.0",
         voice: str = "eve",
-        context_reset_sec: float = 300.0,
         backoff_schedule: tuple[float, ...] | None = None,
         connect_factory=None,
         base_url: str | None = None,
@@ -72,7 +71,6 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
             api_key=api_key,
             model=model,
             voice=voice,
-            context_reset_sec=context_reset_sec,
             # `reasoning_effort` accepts a string but the parent's
             # `_build_session_payload` only emits it when the model
             # name contains "-2" — Grok models don't, so the field is

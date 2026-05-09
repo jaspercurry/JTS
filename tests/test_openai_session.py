@@ -119,7 +119,6 @@ class _FakeConnectFactory:
 def _make_conn(
     *,
     backoff_schedule=(0.0, 0.0),
-    context_reset_sec: float = 9999.0,
     model: str = "gpt-realtime-2",
     voice: str = "marin",
     reasoning_effort: str = "low",
@@ -129,7 +128,6 @@ def _make_conn(
         api_key="fake",
         model=model,
         voice=voice,
-        context_reset_sec=context_reset_sec,
         reasoning_effort=reasoning_effort,
         backoff_schedule=backoff_schedule,
         connect_factory=factory,
@@ -275,6 +273,17 @@ async def test_session_update_sent_on_connect_with_manual_vad():
         }]
         # Reasoning effort for gpt-realtime-2.
         assert sess_payload["reasoning"] == {"effort": "low"}
+        # `truncation: "auto"` lets the server prune old conversation
+        # items as context fills, preserving the prompt-cache prefix.
+        # Replaces our previous strategy of tearing down the session
+        # every ~5 minutes idle (removed 2026-05-09). Required for
+        # long-lived sessions on the smart-speaker workload.
+        assert sess_payload["truncation"] == "auto", (
+            "truncation:auto must be set so the server manages "
+            "context drift natively — without this, sessions either "
+            "bloat unboundedly or we have to reconnect (which "
+            "re-bills the system prompt at the uncached rate)"
+        )
     finally:
         await conn.stop()
 

@@ -377,7 +377,6 @@ class GeminiLiveConnection(LiveConnection):
         api_key: str,
         model: str,
         voice: str = "Aoede",
-        context_reset_sec: float = 300.0,
         keepalive_period_sec: float = KEEPALIVE_PERIOD_SEC,
         # Production: leave None → supervisor reconnects FOREVER with
         # `_reconnect_backoff_delay(attempt)` (1, 2, 4, 8, 16, 32, 60,
@@ -392,7 +391,6 @@ class GeminiLiveConnection(LiveConnection):
         self._connect_factory = connect_factory
         self._model = model
         self._voice = voice
-        self._context_reset_sec = context_reset_sec
         self._keepalive_period_sec = keepalive_period_sec
         self._backoff_schedule = backoff_schedule
 
@@ -400,7 +398,8 @@ class GeminiLiveConnection(LiveConnection):
         # System-instruction provider. Called at every (re)connect so
         # time-injection ("right now it is Monday, May 4, 3:14 PM") stays
         # accurate across the daemon's lifetime — the connection lives
-        # for hours but reopens on every context-reset (default 5 min idle).
+        # for hours but reopens on natural events (10 min connection
+        # cap, network blip, server goAway) via session resumption.
         self._system_instruction_provider: Callable[[], str] | None = None
         # Initial state set directly (no log) — _set_state requires
         # self._state to already exist. Subsequent transitions go
@@ -420,11 +419,9 @@ class GeminiLiveConnection(LiveConnection):
         self._session_cm = None
 
         # Latest session-resumption handle from the server. Used on
-        # reconnect to resume the conversation. Cleared explicitly when
-        # the idle-context-reset fires.
+        # reconnect to resume the conversation across the natural
+        # ~10 min connection cap and other transient drops.
         self._resumption_handle: str | None = None
-        # Loop-time of the last completed turn (for idle-context-reset).
-        self._last_turn_end_at: float = 0.0
 
         # The slot for the currently active turn, if any. Only one turn
         # may be in flight at a time — wake events are serialised by the
@@ -624,7 +621,14 @@ class GeminiLiveConnection(LiveConnection):
         # Idle-context-reset: if the connection is healthy but has been
         # idle too long, drop the resumption handle and reopen with a
         # fresh session so stale conversational state doesn't leak in.
-        await self._maybe_reset_context()
+        # Deliberate idle-based context reset removed (was triggered
+        # here pre-2026-05-09). Gemini Live's session-resumption
+        # handle already preserves context across the unavoidable
+        # ~10 min connection cap, and on this codebase's smart-
+        # speaker workload the residual context drift is not worth
+        # paying a full reconnect's worth of latency + cache loss
+        # for. Natural reconnects (goAway, network blip) still
+        # exercise the resumption-handle code path below.
 
         async with self._turn_lock:
             if self._active_turn is not None:
@@ -723,7 +727,6 @@ class GeminiLiveConnection(LiveConnection):
         async with self._turn_lock:
             if self._active_turn is turn:
                 self._active_turn = None
-                self._last_turn_end_at = asyncio.get_event_loop().time()
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
@@ -1363,56 +1366,6 @@ class GeminiLiveConnection(LiveConnection):
                 )
         except asyncio.CancelledError:
             raise
-
-    async def _maybe_reset_context(self) -> None:
-        """If the connection has been idle longer than the configured
-        threshold AND we have at least one previous turn, drop the
-        resumption handle and reopen with a fresh session.
-
-        Without this, conversational context bleeds across hour-long
-        gaps — "what time is it?" at 9 AM and 5 PM, the second one
-        shouldn't remember weather queries from the morning."""
-        if self._last_turn_end_at <= 0.0:
-            return
-        idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at
-        if idle_for < self._context_reset_sec:
-            return
-        logger.info(
-            "live context reset: idle for %.0fs > threshold (%.0fs); "
-            "reopening with no resumption handle",
-            idle_for, self._context_reset_sec,
-        )
-        # Drop the handle and roll the session.
-        self._resumption_handle = None
-        await self._teardown_session()
-        # Use the same 409-aware retry wrapper as initial-connect. The
-        # bare `_open_session()` here was the single most common source
-        # of acquire_turn() failures: server-side session release lags
-        # client-side close, and the immediate post-teardown reopen
-        # would race that release and 409. Wrapping in the retry loop
-        # both spaces the attempts AND drops the (already-cleared, but
-        # re-set on error if a server message snuck in) handle.
-        try:
-            await self._open_session_with_409_retry(
-                INITIAL_CONNECT_BACKOFF_SCHEDULE,
-                phase="context-reset-reopen",
-            )
-        except Exception as e:  # noqa: BLE001
-            # Hard failure during context-reset reopen: the connection
-            # is now in an indeterminate state (no session, no
-            # supervisor reconnect triggered, _connected_event clear).
-            # Wake the supervisor so it can drive recovery from a clean
-            # state instead of leaving the daemon stuck waiting on a
-            # connect that nobody will retry.
-            logger.error(
-                "live connection: context-reset reopen failed (%s: %s); "
-                "triggering supervisor reconnect",
-                type(e).__name__, e,
-            )
-            self._reconnect_event.set()
-            raise
-        # Reset the idle marker so we don't immediately re-trigger.
-        self._last_turn_end_at = asyncio.get_event_loop().time()
 
     async def _handle_tool_call(self, tool_call) -> None:
         """Dispatch tool calls from the model with structured timing logs.
