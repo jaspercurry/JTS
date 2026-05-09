@@ -455,10 +455,20 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             return {"error": no_account_msg}
         sp, device_id, stops, account_name, configured_playlists = resolved
         if not device_id:
+            # The speaker's librespot is running and advertising via mDNS
+            # but isn't in this account's Spotify Web API device list.
+            # That happens when no one has tapped the speaker in their
+            # Spotify app since the last librespot restart — pure-zeroconf
+            # devices are invisible to the Web API until they've been
+            # claimed at least once. The system prompt instructs the model
+            # to read the `error` field verbatim, so the message below IS
+            # the user-facing fix instruction.
             return {
-                "error": "no spotify target device available. tell the user "
-                "to open spotify on their phone or check that the speaker's "
-                "spotify connect (librespot) is running.",
+                "error": (
+                    f"Spotify Connect on the speaker isn't linked to your "
+                    f"account yet. Open Spotify, tap the device picker, "
+                    f"and select {librespot_name} once. Then try again."
+                ),
             }
 
         pick = await _resolve_query(
@@ -532,7 +542,14 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             return {"error": no_account_msg}
         sp, device_id, _, account_name, _ = resolved
         if not device_id:
-            return {"error": "no spotify target device available"}
+            # Same root cause as spotify_play — see comment there.
+            return {
+                "error": (
+                    f"Spotify Connect on the speaker isn't linked to your "
+                    f"account yet. Open Spotify, tap the device picker, "
+                    f"and select {librespot_name} once. Then try again."
+                ),
+            }
         results = await asyncio.to_thread(sp.search, q=query, type="track", limit=1)
         items = results.get("tracks", {}).get("items", [])
         if not items:

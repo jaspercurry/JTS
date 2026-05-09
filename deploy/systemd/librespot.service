@@ -20,6 +20,14 @@ Group=audio
 # event (volume_set, playing, paused, stopped, etc).
 RuntimeDirectory=librespot
 RuntimeDirectoryMode=0755
+# CacheDirectory creates /var/cache/librespot/ owned by pi:audio.
+# Used by --system-cache below for credential persistence — without
+# this, librespot runs in pure zeroconf mode and is invisible to the
+# Spotify Web API's `devices()` list until a phone manually claims it
+# via Spotify Connect, breaking voice-driven `spotify_play` cold-starts
+# any time librespot has restarted since the last claim.
+CacheDirectory=librespot
+CacheDirectoryMode=0700
 # Volume curve: --volume-ctrl log + --volume-range 60 gives a
 # perceptually linear slider over 60 dB. go-librespot's hardcoded
 # cubic curve packed all useful loudness into the bottom third —
@@ -45,6 +53,8 @@ ExecStart=/usr/bin/librespot \
     --volume-range 60 \
     --initial-volume 50 \
     --enable-volume-normalisation \
+    --system-cache /var/cache/librespot \
+    --disable-audio-cache \
     --onevent /usr/local/bin/jasper-librespot-event
 Restart=always
 RestartSec=2
