@@ -1111,6 +1111,47 @@ class OpenAIRealtimeConnection(LiveConnection):
             )
 
         if turn is None:
+            # Turn aborted (e.g. user-spoke-too-soon-and-VAD-aborted, or
+            # connection reset interrupted the turn) but the model still
+            # finished generating and emitted function_calls. We can't
+            # invoke the tools (no turn to attribute the result to) but
+            # we MUST send synthetic function_call_outputs back, otherwise
+            # the server-side conversation history retains dangling
+            # function_call items with no matching outputs. The next turn
+            # then sees its previous call as "still in progress" and
+            # responds with confused fallbacks like "It's still starting
+            # up" — even though the user just asked something brand new.
+            # We do NOT send response.create after these synthetic outputs:
+            # we don't want the model to generate an audio response that
+            # has no turn to play through.
+            if function_calls and self._conn is not None:
+                for fc in function_calls:
+                    call_id = _event_field(fc, "call_id") or ""
+                    name = _event_field(fc, "name") or "?"
+                    if not call_id:
+                        continue
+                    try:
+                        await self._send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": json.dumps(
+                                    {"error": "turn cancelled before dispatch"}
+                                ),
+                            },
+                        })
+                        logger.info(
+                            "tool %s: turn-aborted, sent cancelled "
+                            "function_call_output to keep server state clean",
+                            name,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "tool %s: could not send cancelled output (%s: %s); "
+                            "next turn may be confused",
+                            name, type(e).__name__, e,
+                        )
             return
 
         if function_calls:

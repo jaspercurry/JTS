@@ -651,6 +651,107 @@ async def test_response_create_fired_only_once_per_tool_round_with_multiple_call
         await conn.stop()
 
 
+async def test_function_call_after_turn_aborted_sends_cancelled_output():
+    """If the turn is released (e.g. no-speech-detected abort, hard cap)
+    BEFORE the model's response.done arrives, and that response carries
+    function_calls, the dispatcher must still send synthetic
+    ``function_call_output`` items so server-side conversation history
+    has matching outputs for each call. Without this, the next turn
+    sees a dangling function_call and the model responds with confused
+    fallbacks like "It's still starting up" — even when the user is
+    asking something brand new.
+
+    Repro of the live bug: voice 'play X' fired wake → 3-sec context-
+    reset reconnect made the turn miss the user's speech → VAD aborted
+    → response.done arrived 1s later carrying the model's spotify_play
+    function_call → dispatcher early-returned because turn was None →
+    the call sat unanswered in conversation history → next 'play X'
+    attempt got 'It's still starting up' as the model's response.
+
+    Two invariants this test enforces:
+      1. Synthetic ``function_call_output`` is sent for every dangling
+         call_id, with an "error" payload signalling cancellation.
+      2. NO ``response.create`` is fired afterwards — we don't want the
+         model to generate an audio answer that has no turn to play
+         through.
+    """
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    invoked = []
+
+    @tool()
+    def spotify_play(query: str = "") -> dict:
+        """."""
+        invoked.append(query)
+        return {"ok": True}
+
+    registry.register(spotify_play)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        # Simulate the daemon aborting the turn (no-speech detected,
+        # connection lost, etc.) BEFORE response.done arrives.
+        await turn.release()
+        # Drain the cancel-response that release() fires, so we can
+        # later assert "no response.create" without a stale match.
+        sess.sent.clear()
+
+        # Server's response.done lands AFTER the turn is gone.
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_dangling",
+                        "name": "spotify_play",
+                        "arguments": json.dumps({"query": "Release Radar"}),
+                    },
+                ],
+            },
+        })
+
+        # The synthetic cancelled output must land.
+        await _wait_until(
+            lambda: any(
+                e.get("type") == "conversation.item.create"
+                and e.get("item", {}).get("type") == "function_call_output"
+                and e.get("item", {}).get("call_id") == "call_dangling"
+                for e in sess.sent
+            ),
+            timeout=2.0,
+        )
+
+        # Tool was NOT actually invoked — we don't want the side effect
+        # (e.g. starting playback the user never confirmed).
+        assert invoked == []
+
+        # The output payload signals cancellation, so the model on the
+        # next turn doesn't "resume" the dangling call.
+        outputs = [
+            e for e in sess.sent
+            if e.get("type") == "conversation.item.create"
+            and e.get("item", {}).get("type") == "function_call_output"
+        ]
+        assert len(outputs) == 1
+        body = json.loads(outputs[0]["item"]["output"])
+        assert "error" in body
+
+        # No response.create — we deliberately don't want the model to
+        # generate an audio answer that nothing's listening for.
+        creates = [e for e in sess.sent if e.get("type") == "response.create"]
+        assert creates == [], (
+            f"expected zero response.create after sending cancelled "
+            f"function_call_output, got {len(creates)}: {creates}"
+        )
+    finally:
+        await conn.stop()
+
+
 async def test_tool_call_response_done_does_NOT_complete_turn():
     """A tool-using turn produces TWO response.done events from
     OpenAI: one closing the tool-call response (no audio), then one
