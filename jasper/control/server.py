@@ -152,8 +152,6 @@ async def _with_coordinator(
         ),
     )
     backend = RendererClient(
-        mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
-        mpd_port=int(os.environ.get("MPD_PORT", "6600")),
         librespot_state_path=os.environ.get(
             "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
         ),
@@ -180,10 +178,7 @@ async def _with_coordinator(
             await coord.aclose()
         except Exception as e:  # noqa: BLE001
             logger.debug("coordinator aclose warning: %s", e)
-        try:
-            await backend.aclose()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("backend aclose warning: %s", e)
+        # RendererClient has no aclose — it's a stateless probe wrapper.
         # CamillaController has no aclose — sync websocket reconnects
         # on next use. GC handles cleanup of the cached client.
 
@@ -366,8 +361,6 @@ async def _toggle_transport() -> dict:
     from ..tools.transport import make_transport_dispatcher
 
     renderer = RendererClient(
-        mpd_host=os.environ.get("MPD_HOST", "127.0.0.1"),
-        mpd_port=int(os.environ.get("MPD_PORT", "6600")),
         librespot_state_path=os.environ.get(
             "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
         ),
@@ -400,14 +393,8 @@ async def _toggle_transport() -> dict:
                 clients=clients, default_name=accounts.default_name,
             )
 
-    try:
-        dispatch = make_transport_dispatcher(renderer, router)
-        return await dispatch("toggle")
-    finally:
-        try:
-            await renderer.aclose()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("renderer.aclose() warning: %s", e)
+    dispatch = make_transport_dispatcher(renderer, router)
+    return await dispatch("toggle")
 
 
 def _make_handler(

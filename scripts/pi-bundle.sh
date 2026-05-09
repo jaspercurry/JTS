@@ -15,13 +15,13 @@ mkdir -p "$DIR"
 
 since="${SINCE:-2 hours ago}"
 
-units=(jasper-camilla jasper-voice mpd shairport-sync)
+units=(jasper-camilla jasper-voice shairport-sync)
 for u in "${units[@]}"; do
     journalctl -u "$u" --since "$since" --no-pager --output=short-iso \
         > "$DIR/${u}.log" 2>/dev/null || true
 done
 journalctl --since "$since" --no-pager --output=short-iso \
-    -u jasper-camilla -u jasper-voice -u mpd -u shairport-sync \
+    -u jasper-camilla -u jasper-voice -u shairport-sync \
     > "$DIR/combined.log" 2>/dev/null || true
 
 # kernel ring buffer (recent) — useful for USB/ALSA gremlins
@@ -49,7 +49,7 @@ cp /etc/systemd/system/jasper-voice.service "$DIR/" 2>/dev/null || true
 
 # unit status
 systemctl status --no-pager \
-    jasper-camilla jasper-voice mpd shairport-sync \
+    jasper-camilla jasper-voice shairport-sync \
     > "$DIR/systemctl-status.txt" 2>&1 || true
 
 # voice sessions / spend
@@ -61,9 +61,8 @@ sqlite3 /var/lib/jasper/usage.db \
 {
     echo "== uname =="; uname -a
     echo; echo "== os-release =="; cat /etc/os-release
-    echo; echo "== mpd =="; mpd --version 2>/dev/null | head -1
     echo; echo "== camilladsp =="; /opt/camilladsp/camilladsp --version 2>/dev/null
-    echo; echo "== python pkgs =="; /opt/jasper/.venv/bin/pip freeze 2>/dev/null | grep -E '^(google-genai|pycamilladsp|openwakeword|sounddevice|spotipy|python-mpd2|httpx|onnxruntime|numpy)='
+    echo; echo "== python pkgs =="; /opt/jasper/.venv/bin/pip freeze 2>/dev/null | grep -E '^(google-genai|pycamilladsp|openwakeword|sounddevice|spotipy|httpx|onnxruntime|numpy)='
     echo; echo "== meminfo =="; head -3 /proc/meminfo
 } > "$DIR/versions.txt" 2>/dev/null || true
 

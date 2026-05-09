@@ -102,7 +102,7 @@ class CamillaController:
         """Per-channel RMS of CamillaDSP's playback signal in dBFS — the
         level just before the DAC, AFTER every attenuation stage on the
         music chain (source track loudness, AirPlay sender volume,
-        Spotify Connect sender volume, MPD volume, Camilla main_volume,
+        Spotify Connect sender volume, Camilla main_volume,
         room correction filters, etc). This is what the TTS gain
         tracker uses to size TTS to the actual perceived music level
         instead of guessing at any single attenuation stage.

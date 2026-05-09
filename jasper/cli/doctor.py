@@ -565,39 +565,6 @@ def check_bluealsa() -> CheckResult:
     )
 
 
-async def check_mpd(cfg: Config) -> CheckResult:
-    """MPD is optional — only used if the operator installed it for
-    local files / radio. Source-aware transport for AirPlay/Spotify/BT
-    runs without MPD. Default builds skip MPD entirely; treat
-    "connection refused" as "not installed" rather than as a warning,
-    matching the Spotify-not-configured pattern."""
-    from mpd.asyncio import MPDClient
-    client = MPDClient()
-    try:
-        await client.connect(cfg.mpd_host, cfg.mpd_port)
-    except OSError:
-        # ECONNREFUSED / no route → no MPD on the host. Expected for
-        # the default AirPlay/Spotify/BT-only setup.
-        return CheckResult(
-            "MPD", "ok",
-            "not installed (skipped — only needed for local files / radio)",
-        )
-    try:
-        status = await client.status()
-        state = status.get("state", "?")
-        return CheckResult("MPD", "ok", f"{cfg.mpd_host}:{cfg.mpd_port} state={state}")
-    except Exception as e:  # noqa: BLE001
-        return CheckResult(
-            "MPD", "warn",
-            f"connected to {cfg.mpd_host}:{cfg.mpd_port} but status failed: {e}",
-        )
-    finally:
-        try:
-            client.disconnect()
-        except Exception:  # noqa: BLE001
-            pass
-
-
 def check_spotify_cache(cfg: Config) -> CheckResult:
     if not cfg.spotify_enabled:
         return CheckResult("Spotify auth", "ok", "not configured (skipped)")
@@ -868,9 +835,6 @@ async def run_async(cfg: Config) -> list[CheckResult]:
     ]
     results = [c() for c in sync_checks]
     results.append(await check_camilla_websocket(cfg))
-    # MPD is optional (only if the operator installed it for local
-    # files / radio); a "not reachable" result is a warn, not a fail.
-    results.append(await check_mpd(cfg))
     return results
 
 

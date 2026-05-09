@@ -110,9 +110,6 @@ class Config:
     daily_spend_cap_usd: float
     usage_db: str
 
-    mpd_host: str
-    mpd_port: int
-
     # Path to the librespot state file written by the --onevent hook
     # (jasper-librespot-event). Read by mux, volume_observers, and
     # RendererClient. Default written by librespot.service via
@@ -250,8 +247,8 @@ class Config:
             # headroom above the windowed RMS of CamillaDSP's playback
             # signal — so TTS scales with whatever music is actually
             # coming out of the speaker, accounting for renderer-side
-            # volume sliders (AirPlay sender, Spotify Connect, MPD,
-            # etc.) that don't touch CamillaDSP's main_volume.
+            # volume sliders (AirPlay sender, Spotify Connect, etc.)
+            # that don't touch CamillaDSP's main_volume.
             # Headroom is added on top of the windowed music RMS to
             # produce the TTS effective output peak target. Bigger →
             # TTS dominates the music more clearly. 12 dB ≈ TTS source
@@ -303,8 +300,6 @@ class Config:
             live_context_reset_sec=_env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 300),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
-            mpd_host=_env("MPD_HOST", "127.0.0.1"),
-            mpd_port=_env_int("MPD_PORT", 6600),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),

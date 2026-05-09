@@ -14,11 +14,7 @@ class FakeRenderer:
     def __init__(self, renderers=None, currentsong=None) -> None:
         self._renderers = renderers or {}
         self._currentsong = currentsong or {}
-        self.next_track = AsyncMock()
-        self.previous_track = AsyncMock()
-        self.pause = AsyncMock()
-        self.play = AsyncMock()
-        self.toggle_play_pause = AsyncMock()
+        self.pause_airplay = AsyncMock()
 
     async def active_renderers(self) -> dict:
         return self._renderers
@@ -90,9 +86,9 @@ def test_detect_source_bluetooth():
     assert asyncio.run(_detect_source(renderer)) == "bluetooth"
 
 
-def test_detect_source_falls_back_to_mpd():
+def test_detect_source_returns_none_when_no_renderer_active():
     renderer = FakeRenderer(renderers={})
-    assert asyncio.run(_detect_source(renderer)) == "mpd"
+    assert asyncio.run(_detect_source(renderer)) == "none"
 
 
 def test_detect_source_airplay_wins_over_others():
@@ -219,11 +215,13 @@ def test_dispatch_spotify_targets_active_device():
     assert result == {"ok": True, "source": "spotify", "account": "jasper"}
 
 
-def test_dispatch_mpd_uses_renderer_methods():
+def test_dispatch_no_source_returns_nothing_playing_error():
     renderer = FakeRenderer(renderers={})
     tools = _by_name(make_transport_tools(renderer, None))
-    asyncio.run(tools["pause"]())
-    renderer.pause.assert_awaited_once()
+    result = asyncio.run(tools["pause"]())
+    assert "error" in result
+    assert "nothing is playing" in result["error"].lower()
+    assert result["source"] == "none"
 
 
 def test_dispatch_bluetooth_returns_unsupported_error():
@@ -273,12 +271,12 @@ def test_dispatch_failures_return_error_dict():
 # --- toggle action ---
 
 
-def test_toggle_mpd_calls_renderer_native_toggle():
+def test_toggle_no_source_returns_error():
     renderer = FakeRenderer(renderers={})
     dispatch = make_transport_dispatcher(renderer, None)
     result = asyncio.run(dispatch("toggle"))
-    renderer.toggle_play_pause.assert_awaited_once()
-    assert result == {"ok": True, "source": "mpd"}
+    assert "error" in result
+    assert result["source"] == "none"
 
 
 def test_toggle_spotify_pauses_when_playing():
@@ -378,12 +376,8 @@ def test_get_now_playing_routes_to_airplay_mpris_when_no_match():
     assert result == {"title": "T", "artist": "A", "album": "B", "source": "airplay"}
 
 
-def test_get_now_playing_routes_to_mpd_when_no_renderer():
-    renderer = FakeRenderer(
-        renderers={},
-        currentsong={"title": "Local Song", "artist": "Local Artist", "album": "X"},
-    )
+def test_get_now_playing_returns_empty_when_no_source():
+    renderer = FakeRenderer(renderers={})
     tools = _by_name(make_transport_tools(renderer, None))
     result = asyncio.run(tools["get_now_playing"]())
-    assert result["title"] == "Local Song"
-    assert result["source"] == "mpd"
+    assert result == {"title": "", "artist": "", "album": "", "source": "none"}

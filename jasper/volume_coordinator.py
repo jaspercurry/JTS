@@ -18,7 +18,7 @@ whichever source is currently active; inbound observations (iPhone
 slider movement, Spotify app slider, BT slider) update the canonical
 level in real time. CamillaDSP main_volume is pinned at 0 dB while a
 source is active (no double-attenuation) and used directly as the
-volume control during idle/MPD.
+volume control when idle (no renderer producing audio).
 
 Echo prevention. Every outbound write timestamps itself per source.
 When an inbound observer sees a change for that source within

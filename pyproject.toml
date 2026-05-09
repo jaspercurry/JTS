@@ -31,7 +31,6 @@ dependencies = [
     "sounddevice==0.5.5",
     "numpy>=1.26,<3",
     "spotipy==2.24.0",
-    "python-mpd2==3.1.1",
     "httpx==0.28.1",
     "onnxruntime>=1.17",
     "nyct-gtfs==2.0.0",

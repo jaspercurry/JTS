@@ -10,7 +10,7 @@ Two related fields are tracked:
   source-aware coordination (volume_coordinator.py), this is the
   number "volume up" / "set volume to 50%" / dial-knob ticks all
   drive. When a source (AirPlay/Spotify/BT) is active the level is
-  pushed to that source's own slider; during idle/MPD it maps to
+  pushed to that source's own slider; while idle it maps to
   CamillaDSP main_volume.
 
 - `main_volume_db`: the underlying CamillaDSP setting. Still tracked

@@ -108,10 +108,12 @@ async def _mpris_now_playing() -> dict[str, str]:
 
 
 async def _detect_source(renderer) -> str:
-    """Return the active playback source: 'airplay' / 'spotify' / 'bluetooth' / 'mpd'.
+    """Return the active playback source: 'airplay' / 'spotify' /
+    'bluetooth' / 'none'.
 
     Reads the renderer's per-source flags. Order matters when more
-    than one is somehow active: airplay > spotify > bluetooth > mpd.
+    than one is somehow active: airplay > spotify > bluetooth.
+    'none' means no renderer is currently producing audio.
     """
     renderers = await renderer.active_renderers()
     if renderers.get("aplactive"):
@@ -120,7 +122,7 @@ async def _detect_source(renderer) -> str:
         return "spotify"
     if renderers.get("btactive"):
         return "bluetooth"
-    return "mpd"
+    return "none"
 
 
 async def _spotify_active_device_id(sp) -> str | None:
@@ -181,8 +183,9 @@ def make_transport_dispatcher(renderer, router):
     Spotify Connect (no AirPlay): router picks the active or default
     account; spotipy targets that account's active device.
 
-    MPD / Bluetooth: MPD via python-mpd2; Bluetooth is "not supported"
-    (no clean pause API on bluez-alsa A2DP sink).
+    Bluetooth: "not supported" (no clean pause API on bluez-alsa A2DP
+    sink — phone stays in control). No-source: error response telling
+    the model nothing is playing.
 
     Toggle action: query the current is-playing state for the active
     source and dispatch pause-or-play accordingly. MPRIS exposes a
@@ -279,20 +282,13 @@ def make_transport_dispatcher(renderer, router):
                     "error": "bluetooth transport not yet supported. "
                     "tell the user to use the controls on their phone.",
                 }
-            # MPD source. RendererClient.toggle_play_pause consults
-            # MPD's current state in a single call, avoiding a separate
-            # status round-trip.
-            if action == "toggle":
-                await renderer.toggle_play_pause()
-                return {"ok": True, "source": "mpd"}
-            mpd_fn = {
-                "next": renderer.next_track,
-                "previous": renderer.previous_track,
-                "pause": renderer.pause,
-                "play": renderer.play,
-            }[action]
-            await mpd_fn()
-            return {"ok": True, "source": "mpd"}
+            # source == "none" — no renderer is currently producing
+            # audio, so there's nothing to pause/skip.
+            return {
+                "error": "nothing is playing right now. "
+                "use spotify_play to start a track.",
+                "source": "none",
+            }
         except Exception as e:  # noqa: BLE001
             logger.warning("transport %s/%s failed: %s", source, action, e)
             return {"error": f"transport failed: {e}"}
@@ -361,13 +357,9 @@ def make_transport_tools(renderer, router):
                             "account": active.account.name,
                         }
                 return {"title": "", "artist": "", "album": "", "source": "spotify"}
-            song = await renderer.get_currentsong()
-            return {
-                "title": song.get("title") or song.get("Title") or "",
-                "artist": song.get("artist") or song.get("Artist") or "",
-                "album": song.get("album") or song.get("Album") or "",
-                "source": source,
-            }
+            # Bluetooth A2DP has no reliable AVRCP metadata; "none"
+            # means nothing's playing. Either way, no metadata.
+            return {"title": "", "artist": "", "album": "", "source": source}
         except Exception as e:  # noqa: BLE001
             logger.warning("get_now_playing(%s) failed: %s", source, e)
             return {"title": "", "artist": "", "album": "", "source": source, "error": str(e)}

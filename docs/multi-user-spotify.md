@@ -109,7 +109,7 @@ When you say "next song" / "previous" / "pause" / "resume":
 
 1. `_detect_source` reads the renderer's per-source flags and figures
    out the active source: `airplay`, `spotify` (Connect), `bluetooth`,
-   or `mpd`.
+   or `none` (nothing playing).
 2. For **AirPlay**: read shairport's MPRIS `xesam:title` and the
    AirPlay `ClientName`. Then call
    `Router.resolve_for_transport(client_name, mpris_title)`:
@@ -284,7 +284,7 @@ jasper/accounts.py          Registry / Account
 jasper/spotify_router.py    Router.resolve_for_transport / Router.active
 jasper/spotify_routing.py   resolve_target (cold-start device picker, title _normalise)
 jasper/web/spotify_setup.py jasper-web HTTP service
-jasper/tools/transport.py   AirPlay / Spotify / MPD / Bluetooth dispatch
+jasper/tools/transport.py   AirPlay / Spotify / Bluetooth / no-source dispatch
 jasper/tools/spotify.py     spotify_play / spotify_queue (router-aware)
 deploy/nginx-jasper.conf            /spotify/ proxy block
 deploy/nginx-jasper-https.conf      HTTPS site config

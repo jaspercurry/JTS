@@ -312,8 +312,6 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
   format mismatch, websocket connects)
 - `logs/jasper-aec-bridge-latest.log` — software AEC bridge
   (only when enabled)
-- `logs/mpd-latest.log` — MPD (output device errors, rate
-  negotiations)
 - `logs/combined-latest.log` — interleaved timeline
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
@@ -390,7 +388,7 @@ specific project:
   logs and point at the specific line that produced the failure
   before proposing a fix.
 - **Check prior art.** Existing helpers — `pycamilladsp`,
-  `python-mpd2`, `openwakeword`, `google-genai` — handle most of
+  `openwakeword`, `google-genai`, `spotipy` — handle most of
   the integration. Don't reinvent.
 - **Surgical changes — file ownership.** Our files live under
   `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,
