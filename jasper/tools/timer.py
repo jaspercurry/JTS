@@ -1,11 +1,13 @@
 """Timer voice tools — set, list, cancel kitchen timers.
 
-Backed by `jasper.timers.TimerScheduler`, which owns persistence and
-asyncio task lifecycle. This module is the function-tool surface the
-voice loop sees.
+Backed by `jasper.timers.TimerScheduler`, which owns persistence,
+asyncio task lifecycle, AND the optional pre-render hook (so the
+fire-time announcement WAV is cached before fire_at). This module
+is the function-tool surface the voice loop sees.
 """
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 from . import tool
@@ -13,6 +15,8 @@ from ..timers import announcement_text, human_duration
 
 if TYPE_CHECKING:
     from ..timers import Timer, TimerScheduler
+
+logger = logging.getLogger(__name__)
 
 
 def _serialise(timer: "Timer") -> dict:
@@ -29,28 +33,50 @@ def _serialise(timer: "Timer") -> dict:
     }
 
 
+def _set_confirm(timer: "Timer") -> str:
+    """Natural-English spoken confirmation for a freshly set timer.
+
+    Compound-modifier form ("a 5-minute timer") only composes
+    cleanly for single-unit durations; "Your 1-hour-and-30-minute
+    pasta timer" reads worse than "Your pasta timer for 1 hour
+    and 30 minutes". Use noun form universally for consistency.
+    """
+    duration = human_duration(timer.total_seconds)
+    if timer.label:
+        return f"Set a {timer.label} timer for {duration}."
+    return f"Set a timer for {duration}."
+
+
+def _cancel_confirm(timer: "Timer") -> str:
+    if timer.label:
+        return f"Cancelled the {timer.label} timer."
+    duration = human_duration(timer.total_seconds)
+    return f"Cancelled the timer for {duration}."
+
+
 def make_timer_tools(scheduler: "TimerScheduler"):
     """Build the timer CRUD tools. Returns a list of decorated
-    coroutines suitable for `ToolRegistry.register(...)`."""
+    coroutines suitable for `ToolRegistry.register(...)`.
+
+    The scheduler handles its own pre-render hook (set via
+    `scheduler.set_pre_render(...)` on the daemon side); this
+    module doesn't need a cue-manager reference."""
 
     @tool()
     async def set_timer(seconds: int, label: str = "") -> dict:
-        """Schedule a timer that announces when it fires. `seconds` is
-        the timer duration (e.g. 300 for 5 minutes). `label` is
-        optional — when set ('pasta', 'laundry'), the announcement
-        names it ('Your pasta timer is up'); when empty, the
-        announcement uses the duration ('Your 5-minute timer is
-        up'). Multiple timers can run at once."""
+        """Schedule a timer that announces when it fires. `seconds`
+        is the timer duration (300 for 5 minutes, 3600 for 1 hour).
+        `label` is optional — when set ('pasta', 'laundry'), the
+        announcement names it ('Your pasta timer is up'); when
+        empty, the announcement uses the duration ('Your timer for
+        5 minutes is up'). Multiple timers can run concurrently."""
         try:
             timer = scheduler.add(int(seconds), label or None)
         except ValueError as e:
             return {"ok": False, "error": str(e)}
         return {
             "ok": True,
-            "confirm": (
-                f"Set a {human_duration(timer.total_seconds)} "
-                f"{timer.label + ' ' if timer.label else ''}timer."
-            ),
+            "confirm": _set_confirm(timer),
             **_serialise(timer),
         }
 
@@ -77,10 +103,7 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             return {
                 "ok": True,
                 "cancelled": _serialise(t),
-                "confirm": (
-                    f"Cancelled the "
-                    f"{t.label or human_duration(t.total_seconds)} timer."
-                ),
+                "confirm": _cancel_confirm(t),
             }
         if not matches:
             return {

@@ -10,7 +10,13 @@ from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
-from .cues import AudioCueManager, GeminiTTSGenerator
+from .cues import (
+    AudioCueManager,
+    GeminiTTSGenerator,
+    GrokTTSGenerator,
+    OpenAITTSGenerator,
+    TTSBackend,
+)
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
@@ -71,8 +77,8 @@ SYSTEM_INSTRUCTION = (
     "  User: 'Turn it down a lot.'   → [adjust_volume -25] 'Done.'\n"
     "  User: 'Set volume to 30.'     → [set_volume 30] 'Done.'\n"
     "  User: 'Mute.'                 → [mute] 'Done.'\n"
-    "  User: 'Set a timer for 5 minutes.' → [set_timer 300] (speak the response's `confirm` field, e.g. 'Set a 5-minute timer.')\n"
-    "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`)\n"
+    "  User: 'Set a timer for 5 minutes.' → [set_timer 300] (speak `confirm`, e.g. 'Set a timer for 5 minutes.')\n"
+    "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`, e.g. 'Set a pasta timer for 10 minutes.')\n"
     "  User: 'How much time left on my timer?' / 'What timers do I have?' → [list_timers] 'Three minutes and twenty seconds left.' (or summarise multiple)\n"
     "  User: 'Cancel the pasta timer.' / 'Stop the 5-minute timer.' → [cancel_timer 'pasta'] (speak `confirm`, e.g. 'Cancelled the pasta timer.')\n"
     "  User: 'Who won the game?'     → 'Sorry, I don't have sports scores.'\n"
@@ -535,24 +541,117 @@ def _make_connection(cfg: Config) -> LiveConnection:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
-def _build_cues_manager(cfg: Config, tts: TtsPlayout) -> AudioCueManager:
-    """Construct the audio-cue manager with hostname extracted from
-    JASPER_MANAGEMENT_URL and the same voice the assistant uses for
-    Live responses (so the user doesn't hear two different voices
-    coming out of the same speaker). When no API key is configured
-    we still return a manager — playback works off any cached files
-    that already exist; only regeneration is disabled."""
-    import urllib.parse
-    hostname = urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
-    backend = (
-        GeminiTTSGenerator(api_key=cfg.gemini_api_key, voice=cfg.gemini_voice)
-        if cfg.gemini_api_key
-        else None
+def _build_cue_tts_backend(
+    cfg: Config,
+) -> "tuple[TTSBackend | None, str]":
+    """Pick the cue TTS backend matching the active voice provider
+    so cue audio (static failure cues + dynamic timer announcements)
+    speaks in the same voice as the live conversation.
+
+    Returns ``(backend, voice_label)``:
+      - `backend` is the synthesiser passed to AudioCueManager, or
+        None when the active provider's API key isn't configured
+        (cue regen disabled; playback works off any cached files).
+      - `voice_label` flows into the cue cache hash so flipping
+        provider or voice automatically invalidates baked WAVs.
+
+    Active-provider mismatch fallback: if the configured provider
+    has no key but a different provider does, fall back to that one
+    (best effort — better to have wrong-voice cues than silent
+    failures). Logs a warning so the operator notices.
+    """
+    provider = cfg.voice_provider
+    if provider == "openai" and cfg.openai_api_key:
+        return (
+            OpenAITTSGenerator(
+                api_key=cfg.openai_api_key, voice=cfg.openai_voice,
+            ),
+            cfg.openai_voice,
+        )
+    if provider == "gemini" and cfg.gemini_api_key:
+        return (
+            GeminiTTSGenerator(
+                api_key=cfg.gemini_api_key, voice=cfg.gemini_voice,
+                model=cfg.gemini_tts_model,
+            ),
+            cfg.gemini_voice,
+        )
+    if provider == "grok" and cfg.grok_api_key:
+        return (
+            GrokTTSGenerator(
+                api_key=cfg.grok_api_key, voice=cfg.grok_voice,
+            ),
+            cfg.grok_voice,
+        )
+    # Active-provider key missing — fall back to whichever provider
+    # IS configured. Order matters only for the warning text.
+    if cfg.openai_api_key:
+        logger.warning(
+            "cue tts: active provider=%s has no key; falling back to "
+            "OpenAI for cue rendering", provider,
+        )
+        return (
+            OpenAITTSGenerator(
+                api_key=cfg.openai_api_key, voice=cfg.openai_voice,
+            ),
+            cfg.openai_voice,
+        )
+    if cfg.gemini_api_key:
+        logger.warning(
+            "cue tts: active provider=%s has no key; falling back to "
+            "Gemini for cue rendering", provider,
+        )
+        return (
+            GeminiTTSGenerator(
+                api_key=cfg.gemini_api_key, voice=cfg.gemini_voice,
+                model=cfg.gemini_tts_model,
+            ),
+            cfg.gemini_voice,
+        )
+    if cfg.grok_api_key:
+        logger.warning(
+            "cue tts: active provider=%s has no key; falling back to "
+            "Grok for cue rendering", provider,
+        )
+        return (
+            GrokTTSGenerator(
+                api_key=cfg.grok_api_key, voice=cfg.grok_voice,
+            ),
+            cfg.grok_voice,
+        )
+    logger.warning(
+        "cue tts: no provider key configured; cue regen disabled "
+        "(playback still works off cached files)",
     )
+    return None, ""
+
+
+def _build_cues_manager(
+    cfg: Config, tts: TtsPlayout | None = None,
+) -> AudioCueManager:
+    """Construct the audio-cue manager. Hostname for templates is
+    extracted from JASPER_MANAGEMENT_URL ("https://jts.local" →
+    "jts.local") so cues say "visit jts.local" rather than reading
+    out the full URL with scheme/path. The TTS backend is picked to
+    match the active voice provider — see `_build_cue_tts_backend`.
+
+    `tts` may be None at construction time when the daemon needs to
+    register cue-aware tools (timer pre-render) before the
+    TtsPlayout has opened. Call `attach_tts` later once it does."""
+    import urllib.parse
+    hostname = (
+        urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
+    )
+    backend, voice = _build_cue_tts_backend(cfg)
+    if backend is not None:
+        logger.info(
+            "cue tts: provider=%s model=%s voice=%s",
+            cfg.voice_provider, getattr(backend, "model", "?"), voice,
+        )
     return AudioCueManager(
         sounds_dir=cfg.sounds_dir,
         hostname=hostname,
-        voice=cfg.gemini_voice,
+        voice=voice,
         backend=backend,
         tts_playout=tts,
     )
@@ -614,6 +713,7 @@ def _build_registry(
     volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
     timer_scheduler: TimerScheduler | None = None,
+    cues_manager: AudioCueManager | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -1521,13 +1621,29 @@ async def run() -> None:
     # SQLite restore happens in scheduler.start() further down).
     timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
 
+    # Cue manager — built early so timer tools can pre-render their
+    # fire announcements at set_timer time. The TtsPlayout isn't open
+    # yet (that lives inside the async with block below); the manager
+    # is constructed without it and `attach_tts` wires playback once
+    # the playout is up. Pre-render and regen don't need playback.
+    cues_manager = _build_cues_manager(cfg, tts=None)
+
     registry = _build_registry(
         cfg, camilla, renderer, weather, subway,
         volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
         timer_scheduler=timer_scheduler,
+        cues_manager=cues_manager,
     )
+
+    # Wire the timer pre-render hook so set_timer (and start-time
+    # restore for persisted timers) synthesises + caches the
+    # fire-time announcement WAV ahead of time. Saves the user from
+    # a 1–8 s gap between duck and audio at fire time.
+    async def _prerender_timer(t: Timer) -> None:
+        await cues_manager.prerender_text(announcement_text(t))
+    timer_scheduler.set_pre_render(_prerender_timer)
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()
@@ -1587,13 +1703,11 @@ async def run() -> None:
             )
             await tts_volume_tracker.start()
 
-            # Build the audio-cue manager. Hostname for templates is
-            # extracted from JASPER_MANAGEMENT_URL ("https://jts.local"
-            # → "jts.local") so cues say "visit jts.local" rather
-            # than reading out the full URL with scheme/path. The
-            # manager is wired into WakeLoop so failure paths can
-            # call cues.play(slug) instead of just logging.
-            cues_manager = _build_cues_manager(cfg, tts)
+            # Wire the playout into the cue manager that was already
+            # constructed up top so timer tools could register with a
+            # working pre-render path. From here on cues.play() and
+            # cues.speak_text() can write audio out.
+            cues_manager.attach_tts(tts)
             # Kick off background regen for any missing/stale cues.
             # Doesn't block daemon "ready" — if regen fails (no
             # internet / bad API key), cues silently won't play; the

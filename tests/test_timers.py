@@ -106,6 +106,49 @@ def test_announcement_text_unlabelled_compound_duration():
     )
 
 
+# --- Tool confirm strings (spoken verbatim by the model) --------
+
+
+def test_set_confirm_unlabelled_uses_natural_noun_form():
+    """Avoid the awkward 'Set a 30 seconds timer' construction —
+    'Set a timer for 30 seconds' is what humans actually say."""
+    from jasper.tools.timer import _set_confirm
+    t = Timer(
+        id="abc", label=None, fire_at=time.time() + 30,
+        total_seconds=30, created_at=time.time(),
+    )
+    assert _set_confirm(t) == "Set a timer for 30 seconds."
+
+
+def test_set_confirm_labelled_says_label_first():
+    from jasper.tools.timer import _set_confirm
+    t = Timer(
+        id="abc", label="pasta", fire_at=time.time() + 600,
+        total_seconds=600, created_at=time.time(),
+    )
+    assert _set_confirm(t) == "Set a pasta timer for 10 minutes."
+
+
+def test_cancel_confirm_labelled():
+    from jasper.tools.timer import _cancel_confirm
+    t = Timer(
+        id="abc", label="pasta", fire_at=time.time() + 60,
+        total_seconds=600, created_at=time.time(),
+    )
+    assert _cancel_confirm(t) == "Cancelled the pasta timer."
+
+
+def test_cancel_confirm_unlabelled_uses_duration():
+    """Without a label, the duration is the only handle the user has
+    to identify which timer was cancelled."""
+    from jasper.tools.timer import _cancel_confirm
+    t = Timer(
+        id="abc", label=None, fire_at=time.time() + 60,
+        total_seconds=60, created_at=time.time(),
+    )
+    assert _cancel_confirm(t) == "Cancelled the timer for 1 minute."
+
+
 def test_timer_remaining_seconds_floors_at_zero():
     t = Timer(
         id="abc", label=None, fire_at=time.time() - 10,
@@ -413,6 +456,95 @@ async def test_scheduler_stop_prevents_fire():
         await sched.stop()  # cancel before it can fire
         await asyncio.sleep(1.5)
         assert fired == []
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_pre_render_fires_on_add():
+    """Pre-render hook is called as a background task whenever a
+    timer is added — the daemon uses this to render+cache the
+    fire-time announcement WAV before fire_at, so the actual fire
+    is a cache hit and audio plays instantly."""
+    path = _tmp_db_path()
+    rendered: list[Timer] = []
+
+    async def pre_render(t: Timer) -> None:
+        rendered.append(t)
+
+    try:
+        sched = TimerScheduler(pre_render=pre_render, db_path=path)
+        sched.add(60, label="laundry")
+        # Pre-render task is fire-and-forget; give the loop a tick to
+        # run it before asserting.
+        await asyncio.sleep(0.02)
+        assert len(rendered) == 1
+        assert rendered[0].label == "laundry"
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_pre_render_fires_on_restored_timers():
+    """When the daemon restarts and start() restores persisted
+    timers, each restored timer also gets a pre-render — handles the
+    case where the user switched providers between runs (cached
+    cue's hash is now stale, must re-render in new voice)."""
+    path = _tmp_db_path()
+    rendered: list[Timer] = []
+
+    async def pre_render(t: Timer) -> None:
+        rendered.append(t)
+
+    try:
+        # Pre-seed a future timer in the store directly.
+        store = TimerStore(path)
+        store.add(Timer(
+            id="restored1", label="dinner",
+            fire_at=time.time() + 3600, total_seconds=3600,
+            created_at=time.time(),
+        ))
+        store.close()
+
+        sched = TimerScheduler(pre_render=pre_render, db_path=path)
+        await sched.start()
+        await asyncio.sleep(0.02)
+        assert len(rendered) == 1
+        assert rendered[0].id == "restored1"
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_pre_render_failure_doesnt_abort_add():
+    """A failing pre_render must not break timer scheduling — the
+    fire-time fallback (synthesise on demand) still works."""
+    path = _tmp_db_path()
+    fired: list[Timer] = []
+
+    async def bad_pre_render(t: Timer) -> None:
+        raise RuntimeError("simulated TTS outage")
+
+    async def on_fire(t: Timer) -> None:
+        fired.append(t)
+
+    try:
+        sched = TimerScheduler(
+            on_fire=on_fire,
+            pre_render=bad_pre_render,
+            db_path=path,
+        )
+        sched.add(1, label="quick")
+        # Pre-render task runs and explodes silently; timer still
+        # fires its on_fire hook normally.
+        await asyncio.wait_for(_wait_for(lambda: fired), timeout=2.5)
+        assert len(fired) == 1
+        await sched.stop()
     finally:
         if os.path.exists(path):
             os.unlink(path)

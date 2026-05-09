@@ -163,6 +163,16 @@ class Config:
     # else under jasper-voice's systemd unit.
     timer_db_path: str
 
+    # Gemini one-shot TTS model used by the cue subsystem when the
+    # active voice provider is `gemini` (or a fallback path picks
+    # Gemini). Defaults to 3.1 Flash TTS Preview (released
+    # 2026-04-15); the older `gemini-2.5-flash-preview-tts`
+    # returned `FinishReason.OTHER` with empty content for ~60 % of
+    # calls in production, so it's no longer the default — set
+    # JASPER_GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts to keep
+    # the legacy path on for testing.
+    gemini_tts_model: str
+
     @classmethod
     def from_env(cls) -> "Config":
         provider = _env("JASPER_VOICE_PROVIDER", "gemini")
@@ -372,6 +382,9 @@ class Config:
             ),
             timer_db_path=_env(
                 "JASPER_TIMER_DB", "/var/lib/jasper/timers.db",
+            ),
+            gemini_tts_model=_env(
+                "JASPER_GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview",
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.

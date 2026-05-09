@@ -154,11 +154,13 @@ class TimerScheduler:
     def __init__(
         self,
         on_fire: Callable[[Timer], Awaitable[None]] | None = None,
+        pre_render: Callable[[Timer], Awaitable[None]] | None = None,
         *,
         store: TimerStore | None = None,
         db_path: str = DEFAULT_DB_PATH,
     ):
         self._on_fire = on_fire
+        self._pre_render = pre_render
         self._store = store if store is not None else TimerStore(db_path)
         self._timers: dict[str, Timer] = {}
         self._tasks: dict[str, asyncio.Task] = {}
@@ -172,6 +174,19 @@ class TimerScheduler:
         tools can be registered with the model before the wake loop
         exists, then this wires the announcer once it does)."""
         self._on_fire = on_fire
+
+    def set_pre_render(
+        self, pre_render: Callable[[Timer], Awaitable[None]] | None,
+    ) -> None:
+        """Wire the optional pre-render callback. Called as a
+        background task whenever a new timer is added (`add`) or a
+        persisted timer is restored at startup (`start`). Lets the
+        daemon synthesise + cache the fire-time announcement WAV
+        ahead of time so the actual fire is a cache hit — no
+        synthesis-attempt latency eating the user's expected
+        timing. Errors from pre_render are caught and logged; they
+        never abort timer scheduling."""
+        self._pre_render = pre_render
 
     async def start(self) -> None:
         """Restore persisted timers, drop those whose `fire_at` was
@@ -193,6 +208,7 @@ class TimerScheduler:
             self._tasks[t.id] = asyncio.create_task(
                 self._run(t), name=f"timer-{t.id}",
             )
+            self._kick_pre_render(t)
             logger.info(
                 "timer: restored id=%s label=%r remaining=%ds",
                 t.id, t.label, t.remaining_seconds,
@@ -232,11 +248,32 @@ class TimerScheduler:
         self._tasks[timer.id] = asyncio.create_task(
             self._run(timer), name=f"timer-{timer.id}",
         )
+        self._kick_pre_render(timer)
         logger.info(
             "timer: added id=%s label=%r duration=%ds",
             timer.id, timer.label, timer.total_seconds,
         )
         return timer
+
+    def _kick_pre_render(self, timer: Timer) -> None:
+        """Fire-and-forget background task to ensure the fire-time
+        announcement WAV is cached before fire_at. Safe to call when
+        no pre_render callback is wired (no-op)."""
+        if self._pre_render is None:
+            return
+
+        async def _wrapped() -> None:
+            try:
+                await self._pre_render(timer)  # type: ignore[misc]
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "timer pre_render failed (id=%s): %s",
+                    timer.id, e,
+                )
+
+        asyncio.create_task(_wrapped(), name=f"timer-prerender-{timer.id}")
 
     def list_active(self) -> list[Timer]:
         """Active timers, sorted by remaining time (soonest first)."""

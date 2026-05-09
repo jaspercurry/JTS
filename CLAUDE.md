@@ -90,15 +90,21 @@ and is independent of cross-provider switching.
 | `openai` | ~$0.30 | reasoning levels, 128K context, 60-min hard cap, no resumption |
 | `grok` | ~$0.05 | flat $3/hour; spend cap under-counts (logs warning) |
 
-**Cue regeneration**: pre-rendered cue WAVs (`cant_connect`,
-`spend_cap_reached`, `cant_reach_cloud`) are baked from Gemini TTS
-regardless of which voice provider is active for the live loop —
-[`jasper/cues/generator.py`](jasper/cues/generator.py)'s
-`GeminiTTSGenerator` is the only render backend wired up. If you run
-with `JASPER_VOICE_PROVIDER=openai` and no `GEMINI_API_KEY`, cue
-regen silently skips — the daemon plays whatever WAVs already exist
-on disk. Bake them once with a Gemini key set, then you can run
-provider=openai indefinitely.
+**Cue regeneration**: cue WAVs (static failure cues +
+dynamic-content cues like timer fire announcements) are baked from
+the **active provider's TTS endpoint** — Gemini 3.1 Flash TTS,
+OpenAI gpt-4o-mini-tts, or xAI Grok TTS — picked by the factory at
+[`jasper/voice_daemon.py:_build_cue_tts_backend`](jasper/voice_daemon.py).
+Cues sound in the same voice the assistant uses for live replies.
+Switching providers (env or web wizard) auto-invalidates baked
+WAVs via the cache key (model + voice change → new hash).
+Per-provider model defaults are pinned in
+[`jasper/cues/generator.py`](jasper/cues/generator.py) and
+overridable for Gemini via `JASPER_GEMINI_TTS_MODEL`. If the
+active provider's key is missing, the factory falls back to any
+other configured key with a warning so cues still play; with no
+keys at all, regen is disabled and the daemon plays whatever WAVs
+already exist on disk.
 
 **Adding a fourth provider**: see the "Adding a fourth provider"
 checklist in

@@ -4,18 +4,24 @@ Lifecycle:
   - `cue_hash(cue, hostname, voice)` derives the expected filename
     component from everything that should bust the cache (template
     text, hostname substitution, voice, model, audio format).
-  - `write_cue(...)` calls the generator, resamples 24kHz → 48kHz,
-    writes a WAV at `<sounds_dir>/<slug>-<hash>.wav`, and returns
-    the path.
+  - `write_cue(...)` calls the generator, writes a 24 kHz WAV at
+    `<sounds_dir>/<slug>-<hash>.wav`, and returns the path.
 
-The TTS backend (`GeminiTTSGenerator`) is an injectable interface so
-tests can swap in a deterministic fake without hitting the network.
+A TTS backend (`GeminiTTSGenerator` / `OpenAITTSGenerator` /
+`GrokTTSGenerator`) is an injectable interface so tests can swap in
+a deterministic fake without hitting the network. The factory at
+`jasper.voice_daemon._build_cues_manager` picks one to match the
+active `JASPER_VOICE_PROVIDER` so cue audio comes from the same
+provider that drives the live conversation — no Gemini round-trips
+when the user is on OpenAI Realtime, and vice versa.
 """
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
+import time
 import wave
 from dataclasses import dataclass
 from typing import Protocol
@@ -32,17 +38,49 @@ logger = logging.getLogger(__name__)
 # WAV format). Editing a template string OR changing the
 # hostname / voice / model is handled automatically by the hash.
 #
-# WAV files are written at Gemini's native 24kHz mono — same shape
-# as Gemini Live's streaming audio. TtsPlayout assumes 24kHz input
-# and upsamples to its output_rate (48kHz on the dongle); writing
-# WAVs at 48kHz here would be double-upsampled and play at half
-# speed at the output. So: keep the file at 24kHz and let
-# TtsPlayout handle the conversion the same way it does for Live.
-GENERATOR_VERSION = "2"  # v2: WAVs at 24kHz native (was 48k upsampled)
-TTS_MODEL = "gemini-2.5-flash-preview-tts"
-WAV_RATE = 24000           # what Gemini returns AND what TtsPlayout expects
+# WAV files are written at 24kHz mono — same shape as the live
+# audio every supported provider streams (Gemini Live, OpenAI
+# Realtime, Grok Voice). TtsPlayout assumes 24kHz input and
+# upsamples to its output_rate (48kHz on the dongle); writing WAVs
+# at 48kHz here would be double-upsampled and play at half speed
+# at the output. So: keep the file at 24kHz and let TtsPlayout
+# handle the conversion the same way it does for Live.
+GENERATOR_VERSION = "3"  # v3: provider-aware backends (Gemini/OpenAI/Grok)
+
+# Provider-default TTS model identifiers. These flow into the cache
+# hash so swapping JASPER_VOICE_PROVIDER auto-invalidates cached
+# cues into a fresh re-bake in the new provider's voice.
+GEMINI_TTS_MODEL = "gemini-3.1-flash-tts-preview"
+OPENAI_TTS_MODEL = "gpt-4o-mini-tts"
+# xAI's TTS endpoint doesn't take an explicit model parameter — the
+# voice_id selects everything. We still record a stable identifier
+# in the cache hash so future xAI model changes (when they expose
+# them) bust the cache cleanly.
+GROK_TTS_MODEL = "grok-tts-1"
+
+# Legacy default kept as a constant for tests / opt-in users — the
+# old preview-TTS model (2.5) returned `FinishReason.OTHER` with
+# empty content for ~60 % of calls in production, which is why we
+# moved off it. Pinned to the exported name so callers that import
+# `TTS_MODEL` (older external code) get the new sensible default.
+TTS_MODEL = GEMINI_TTS_MODEL
+
+WAV_RATE = 24000           # 24 kHz — what every supported provider returns
 WAV_CHANNELS = 1
-WAV_SAMPLE_WIDTH = 2       # 16-bit
+WAV_SAMPLE_WIDTH = 2       # 16-bit signed little-endian
+
+# Per-attempt synthesis retries. Some provider endpoints
+# intermittently return "successful" HTTP 200 responses with no
+# audio payload (Gemini's preview TTS is the worst offender —
+# `FinishReason.OTHER` with `content=None` for a meaningful
+# fraction of requests, even on innocuous text). 5 retries with
+# brief backoff turn a 60 %-success-per-call model into a >99 %
+# overall-success rate at the cost of up to ~5–8 s of latency on
+# the unlucky paths. Pre-rendering at set_timer time hides that
+# latency from the user for normal timer flows; the retry is the
+# safety net.
+TTS_MAX_ATTEMPTS = 5
+TTS_RETRY_BACKOFF_SEC = 0.4
 
 
 def render_template(cue: CueDef, hostname: str) -> str:
@@ -107,11 +145,18 @@ class TTSBackend(Protocol):
 
 
 class GeminiTTSGenerator:
-    """One-shot TTS via Gemini's audio-modal `generate_content`. Live
-    API isn't used here — it's a streaming bidirectional protocol
-    overkill for baking a few short messages."""
+    """One-shot TTS via Gemini's audio-modal `generate_content`. The
+    Live API isn't used here — it's a streaming bidirectional
+    protocol, overkill for baking a few short messages.
 
-    def __init__(self, api_key: str, voice: str, model: str = TTS_MODEL):
+    Default model is `gemini-3.1-flash-tts-preview` (released
+    2026-04-15). The older `gemini-2.5-flash-preview-tts` returned
+    `FinishReason.OTHER` with empty content for a meaningful
+    fraction of requests — kept reachable via the `model=` kwarg
+    for opt-in compatibility but no longer the default.
+    """
+
+    def __init__(self, api_key: str, voice: str, model: str = GEMINI_TTS_MODEL):
         if not api_key:
             raise ValueError("GeminiTTSGenerator requires an api_key")
         if not voice:
@@ -120,7 +165,28 @@ class GeminiTTSGenerator:
         self._voice = voice
         self._model = model
 
+    @property
+    def model(self) -> str:
+        return self._model
+
     def synthesise(self, text: str) -> TTSResult:
+        last_status: str | None = None
+        for attempt in range(TTS_MAX_ATTEMPTS):
+            status, result = self._attempt(text)
+            if result is not None:
+                return result
+            last_status = status
+            logger.warning(
+                "Gemini TTS empty response on attempt %d/%d (%s); retrying",
+                attempt + 1, TTS_MAX_ATTEMPTS, status,
+            )
+            time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+        raise RuntimeError(
+            f"Gemini TTS returned no audio after {TTS_MAX_ATTEMPTS} "
+            f"attempts (last status={last_status!r}, text={text!r})"
+        )
+
+    def _attempt(self, text: str) -> "tuple[str, TTSResult | None]":
         from google import genai
         from google.genai import types
 
@@ -139,16 +205,187 @@ class GeminiTTSGenerator:
                 ),
             ),
         )
-        parts = response.candidates[0].content.parts
+        candidates = getattr(response, "candidates", None) or []
+        if not candidates:
+            return "no_candidates", None
+        candidate = candidates[0]
+        finish_reason = getattr(candidate, "finish_reason", None)
+        content = getattr(candidate, "content", None)
+        if content is None:
+            return f"finish={finish_reason}_content=None", None
+        parts = getattr(content, "parts", None) or []
         audio_part = next(
             (p for p in parts if getattr(p, "inline_data", None)), None,
         )
         if audio_part is None:
-            raise RuntimeError(
-                f"Gemini TTS returned no audio for text={text!r}"
-            )
+            return f"finish={finish_reason}_no_inline_audio", None
         data = audio_part.inline_data.data
+        if not data:
+            return f"finish={finish_reason}_empty_data", None
+        return "ok", TTSResult(pcm_24k=data)
+
+
+class OpenAITTSGenerator:
+    """One-shot TTS via OpenAI's `audio.speech.create` endpoint.
+
+    Returns 24 kHz mono 16-bit signed little-endian PCM (no header)
+    when `response_format="pcm"`, which slots directly into
+    TtsPlayout. The Realtime API isn't used — same reasoning as
+    Gemini; one-shot caching of short messages doesn't need a
+    bidirectional streaming connection.
+
+    Default model is `gpt-4o-mini-tts` (per OpenAI's recommendation
+    for new integrations); voice catalog overlaps with Realtime
+    (marin / cedar / alloy / ash / ballad / coral / echo / fable /
+    nova / onyx / sage / shimmer / verse).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        voice: str,
+        model: str = OPENAI_TTS_MODEL,
+        base_url: str | None = None,
+    ):
+        if not api_key:
+            raise ValueError("OpenAITTSGenerator requires an api_key")
+        if not voice:
+            raise ValueError("OpenAITTSGenerator requires a voice name")
+        self._api_key = api_key
+        self._voice = voice
+        self._model = model
+        self._base_url = base_url
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def synthesise(self, text: str) -> TTSResult:
+        last_err: Exception | None = None
+        for attempt in range(TTS_MAX_ATTEMPTS):
+            try:
+                return self._attempt(text)
+            except _RetryableTTSError as e:
+                last_err = e
+                logger.warning(
+                    "OpenAI TTS empty response on attempt %d/%d (%s); "
+                    "retrying", attempt + 1, TTS_MAX_ATTEMPTS, e,
+                )
+                time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+        raise RuntimeError(
+            f"OpenAI TTS returned no audio after {TTS_MAX_ATTEMPTS} "
+            f"attempts (last err={last_err!r}, text={text!r})"
+        )
+
+    def _attempt(self, text: str) -> TTSResult:
+        from openai import OpenAI
+
+        kwargs: dict = {"api_key": self._api_key}
+        if self._base_url is not None:
+            kwargs["base_url"] = self._base_url
+        client = OpenAI(**kwargs)
+        with client.audio.speech.with_streaming_response.create(
+            model=self._model,
+            voice=self._voice,
+            input=text,
+            response_format="pcm",  # 24 kHz mono int16, no header
+        ) as response:
+            data = response.read()
+        if not data:
+            raise _RetryableTTSError("openai_empty_pcm")
         return TTSResult(pcm_24k=data)
+
+
+class GrokTTSGenerator:
+    """One-shot TTS via xAI's standalone TTS endpoint at
+    `https://api.x.ai/v1/tts`.
+
+    Not OpenAI-SDK compatible — requires a direct HTTP POST. The
+    response with `output_format.codec="pcm"` and
+    `output_format.sample_rate=24000` is 24 kHz mono 16-bit signed
+    little-endian PCM with no header, matching our existing
+    pipeline. Voice catalog: eve / ara / rex / sal / leo.
+    """
+
+    DEFAULT_ENDPOINT = "https://api.x.ai/v1/tts"
+
+    def __init__(
+        self,
+        api_key: str,
+        voice: str,
+        model: str = GROK_TTS_MODEL,
+        endpoint: str = DEFAULT_ENDPOINT,
+        language: str = "auto",
+    ):
+        if not api_key:
+            raise ValueError("GrokTTSGenerator requires an api_key")
+        if not voice:
+            raise ValueError("GrokTTSGenerator requires a voice name")
+        self._api_key = api_key
+        self._voice = voice
+        self._model = model
+        self._endpoint = endpoint
+        self._language = language
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def synthesise(self, text: str) -> TTSResult:
+        import urllib.error
+        import urllib.request
+
+        body = json.dumps({
+            "text": text,
+            "voice_id": self._voice,
+            "language": self._language,
+            "output_format": {"codec": "pcm", "sample_rate": WAV_RATE},
+        }).encode()
+        last_err: Exception | None = None
+        for attempt in range(TTS_MAX_ATTEMPTS):
+            req = urllib.request.Request(
+                self._endpoint,
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "audio/pcm",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=20) as response:
+                    data = response.read()
+            except urllib.error.HTTPError as e:
+                # 4xx is unrecoverable — bad voice / bad auth /
+                # bad text — don't burn retries on it.
+                if 400 <= e.code < 500:
+                    raise RuntimeError(
+                        f"Grok TTS HTTP {e.code} (text={text!r}): "
+                        f"{e.read()[:200]!r}"
+                    ) from e
+                last_err = e
+            except urllib.error.URLError as e:
+                last_err = e
+            else:
+                if data:
+                    return TTSResult(pcm_24k=data)
+                last_err = RuntimeError("grok_empty_pcm")
+            logger.warning(
+                "Grok TTS empty/failed on attempt %d/%d (%s); retrying",
+                attempt + 1, TTS_MAX_ATTEMPTS, last_err,
+            )
+            time.sleep(TTS_RETRY_BACKOFF_SEC * (attempt + 1))
+        raise RuntimeError(
+            f"Grok TTS failed after {TTS_MAX_ATTEMPTS} attempts "
+            f"(last err={last_err!r}, text={text!r})"
+        )
+
+
+class _RetryableTTSError(Exception):
+    """Marker class for "the call returned but with no audio" — the
+    retry loop catches this and tries again. Other exception types
+    (HTTP 4xx, network unreachable) propagate up immediately."""
 
 
 # --- Public write entry point ---

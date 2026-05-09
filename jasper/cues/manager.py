@@ -62,6 +62,13 @@ class AudioCueManager:
         self._backend = backend
         self._tts = tts_playout
 
+    def attach_tts(self, tts_playout: Any) -> None:
+        """Set the playback target after construction. Useful when
+        the manager is built before the daemon's TtsPlayout is open
+        (so timer tools / cue regen can use the synthesis path
+        without waiting for ALSA to come up)."""
+        self._tts = tts_playout
+
     # --- introspection ---
 
     def expected_path(self, cue: CueDef) -> str:
@@ -190,6 +197,35 @@ class AudioCueManager:
             slug, len(pcm), audio_duration_sec,
         )
         return True
+
+    async def prerender_text(self, text: str) -> bool:
+        """Synthesise + cache `text` ahead of time without playing it.
+
+        Used by callers that know they'll speak `text` later and want
+        the eventual `speak_text(...)` call to be a cache hit (so the
+        audio fires instantly with no synthesis-attempt latency
+        eating the user's expected timing — the timer fire path
+        especially). Idempotent: returns True without re-rendering
+        if already cached. Returns False on any failure (no backend,
+        synthesis error); never raises.
+        """
+        if self._backend is None:
+            return False
+        path = dynamic_text_path(self._sounds_dir, text, self._voice)
+        if os.path.isfile(path):
+            return True
+        try:
+            await asyncio.to_thread(
+                write_dynamic_text,
+                text, self._voice, self._sounds_dir, self._backend,
+            )
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "cue prerender_text: synthesis failed (text=%r): %s",
+                text, e,
+            )
+            return False
 
     async def speak_text(self, text: str) -> bool:
         """Render arbitrary `text` via TTS and play through TtsPlayout.

@@ -202,3 +202,134 @@ def test_prune_stale_handles_missing_dir(tmp_path):
     cue = CUES[0]
     missing = tmp_path / "does-not-exist"
     assert prune_stale(str(missing), cue, "anything") == 0
+
+
+# --- Dynamic text (timer announcements + future variable cues) ---
+
+
+def test_dynamic_text_path_includes_text_in_hash(tmp_path):
+    """Different text → different cache file. Critical because
+    `Your timer for 30 seconds is up.` and `Your timer for 5 minutes
+    is up.` must NOT collide on the same WAV."""
+    from jasper.cues.generator import dynamic_text_path
+    a = dynamic_text_path(str(tmp_path), "Your timer for 30 seconds is up.", "Aoede")
+    b = dynamic_text_path(str(tmp_path), "Your timer for 5 minutes is up.", "Aoede")
+    assert a != b
+
+
+def test_dynamic_text_path_includes_voice_in_hash(tmp_path):
+    """Different voice → different cache file, so swapping providers
+    invalidates baked WAVs automatically."""
+    from jasper.cues.generator import dynamic_text_path
+    a = dynamic_text_path(str(tmp_path), "Test text.", "Aoede")
+    b = dynamic_text_path(str(tmp_path), "Test text.", "marin")
+    assert a != b
+
+
+def test_write_dynamic_text_idempotent_when_cached(tmp_path):
+    """Second call with same args does NOT re-synthesise — that's the
+    whole point of caching. Catches regressions where the cache check
+    falls through and burns a Gemini API call per fire."""
+    from jasper.cues.generator import write_dynamic_text
+    backend = _FakeBackend(samples_24k=240)
+    path1 = write_dynamic_text(
+        "hello world", "Aoede", str(tmp_path), backend,
+    )
+    path2 = write_dynamic_text(
+        "hello world", "Aoede", str(tmp_path), backend,
+    )
+    assert path1 == path2
+    assert len(backend.calls) == 1  # only first call hit the backend
+
+
+# --- Provider TTS backends (smoke tests; real network calls are
+# verified on-Pi during deploy, not here) ---
+
+
+def test_gemini_tts_default_model_is_3_1():
+    """Sanity guard: we explicitly moved off 2.5-preview-tts because
+    of FinishReason.OTHER instability. Don't let a regression silently
+    pin us back to the old model."""
+    from jasper.cues.generator import (
+        GEMINI_TTS_MODEL, GeminiTTSGenerator,
+    )
+    g = GeminiTTSGenerator(api_key="x", voice="Aoede")
+    assert GEMINI_TTS_MODEL == "gemini-3.1-flash-tts-preview"
+    assert g.model == "gemini-3.1-flash-tts-preview"
+
+
+def test_gemini_tts_retries_on_empty_content(monkeypatch):
+    """Core fix: when `_attempt` reports no content (the production
+    failure mode, FinishReason.OTHER content=None), synthesise loops
+    and tries again. Three failures then a success → returns OK with
+    one logged retry warning per failure."""
+    from jasper.cues.generator import GeminiTTSGenerator, TTSResult
+    g = GeminiTTSGenerator(api_key="x", voice="Aoede")
+    calls = {"n": 0}
+
+    def fake_attempt(text):
+        calls["n"] += 1
+        if calls["n"] < 4:
+            return ("finish=OTHER_content=None", None)
+        return ("ok", TTSResult(pcm_24k=b"\x00\x00" * 240))
+
+    monkeypatch.setattr(g, "_attempt", fake_attempt)
+    # Don't actually sleep between retries during tests.
+    monkeypatch.setattr(
+        "jasper.cues.generator.time.sleep", lambda *_: None,
+    )
+    result = g.synthesise("anything")
+    assert calls["n"] == 4
+    assert result.pcm_24k.startswith(b"\x00\x00")
+
+
+def test_gemini_tts_raises_after_max_attempts(monkeypatch):
+    """If every attempt comes back empty, we surface a clean error
+    with the last status (so logs show what Gemini said) instead of
+    a vague AttributeError."""
+    from jasper.cues.generator import (
+        GeminiTTSGenerator, TTS_MAX_ATTEMPTS,
+    )
+    g = GeminiTTSGenerator(api_key="x", voice="Aoede")
+    monkeypatch.setattr(
+        g, "_attempt",
+        lambda text: ("finish=OTHER_content=None", None),
+    )
+    monkeypatch.setattr(
+        "jasper.cues.generator.time.sleep", lambda *_: None,
+    )
+    with pytest.raises(RuntimeError, match="finish=OTHER"):
+        g.synthesise("anything")
+
+
+def test_openai_tts_construction_and_model():
+    """Smoke: OpenAITTSGenerator constructs without doing any IO and
+    pins the recommended model. Real synthesis is verified on-Pi."""
+    from jasper.cues.generator import (
+        OPENAI_TTS_MODEL, OpenAITTSGenerator,
+    )
+    g = OpenAITTSGenerator(api_key="x", voice="marin")
+    assert g.model == OPENAI_TTS_MODEL == "gpt-4o-mini-tts"
+
+
+def test_grok_tts_construction_and_model():
+    """Smoke: GrokTTSGenerator constructs without doing any IO."""
+    from jasper.cues.generator import (
+        GROK_TTS_MODEL, GrokTTSGenerator,
+    )
+    g = GrokTTSGenerator(api_key="x", voice="eve")
+    assert g.model == GROK_TTS_MODEL
+
+
+def test_provider_tts_generators_reject_empty_credentials():
+    """All three backends require api_key + voice up front so a
+    misconfigured Pi fails loudly at startup rather than silently at
+    first cue synthesis."""
+    from jasper.cues.generator import (
+        GeminiTTSGenerator, GrokTTSGenerator, OpenAITTSGenerator,
+    )
+    for cls in (GeminiTTSGenerator, OpenAITTSGenerator, GrokTTSGenerator):
+        with pytest.raises(ValueError):
+            cls(api_key="", voice="anything")  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            cls(api_key="x", voice="")  # type: ignore[arg-type]
