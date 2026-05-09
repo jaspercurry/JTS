@@ -5,9 +5,15 @@ ok/warn/fail. Useful when something breaks at 11 PM — run this instead of
 working through the runbook by hand.
 
 Usage:
-    sudo -E /opt/jasper/.venv/bin/jasper-doctor             # one shot
-    sudo -E /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
-    sudo -E /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
+    sudo /opt/jasper/.venv/bin/jasper-doctor             # one shot
+    sudo /opt/jasper/.venv/bin/jasper-doctor --watch     # loop, 5s
+    sudo /opt/jasper/.venv/bin/jasper-doctor --watch -i 2  # loop, 2s
+
+The doctor reads ``/etc/jasper/jasper.env`` and (if present)
+``/var/lib/jasper/voice_provider.env`` itself — no need to source them
+into the calling shell first. The wizard's voice_provider.env overrides
+operator defaults, mirroring the systemd unit's ``EnvironmentFile=``
+ordering. Variables already set in the calling shell win over both.
 
 Returns 0 if all critical checks pass, 1 otherwise. --watch never
 returns by itself; exits 0 on Ctrl-C.
@@ -48,22 +54,101 @@ def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
+# Env-file load order matches the systemd unit's ``EnvironmentFile=``
+# directives so the doctor sees the same env the daemon does:
+#   1. /etc/jasper/jasper.env       — operator-managed (Phase 3)
+#   2. /var/lib/jasper/voice_provider.env  — wizard-managed (Phase 3.5)
+# Later file wins on conflict. Variables already in the calling shell
+# (`FOO=bar jasper-doctor`) override both — useful for one-off probes.
+ENV_FILES = (
+    "/etc/jasper/jasper.env",
+    "/var/lib/jasper/voice_provider.env",
+)
+
+
+def _parse_env_file(path: str) -> dict[str, str]:
+    """Parse a shell-style KEY=VALUE env file. Strips surrounding single
+    or double quotes; ignores blanks and lines starting with ``#``.
+    Returns ``{}`` for missing or unreadable files (best-effort)."""
+    out: dict[str, str] = {}
+    try:
+        text = Path(path).read_text()
+    except OSError:
+        return out
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if (len(value) >= 2 and value[0] == value[-1]
+                and value[0] in ('"', "'")):
+            value = value[1:-1]
+        out[key] = value
+    return out
+
+
+def _load_env_files() -> None:
+    """Populate ``os.environ`` from ENV_FILES so ``Config.from_env()``
+    sees the same vars the systemd unit does. Calling-shell values are
+    preserved (setdefault semantics)."""
+    merged: dict[str, str] = {}
+    for path in ENV_FILES:
+        merged.update(_parse_env_file(path))
+    for key, value in merged.items():
+        os.environ.setdefault(key, value)
+
+
 def check_env_file() -> CheckResult:
     p = Path("/etc/jasper/jasper.env")
     if not p.exists():
         return CheckResult("env file", "fail", f"{p} missing — re-run install.sh")
+    wizard = Path("/var/lib/jasper/voice_provider.env")
+    if wizard.exists():
+        return CheckResult("env file", "ok", f"{p} (+ wizard {wizard.name})")
     return CheckResult("env file", "ok", str(p))
 
 
-def check_gemini_key(cfg: Config) -> CheckResult:
-    if not cfg.gemini_api_key:
-        return CheckResult("GEMINI_API_KEY", "fail", "not set in /etc/jasper/jasper.env")
-    if not cfg.gemini_api_key.startswith("AIza"):
+# Per-provider expected key prefix and human-readable label. The prefix
+# is a soft signal — providers occasionally rotate the format, so a
+# mismatch is a warn, not a fail. Source: each provider's API docs as
+# of 2026-05-09.
+_PROVIDER_KEY_INFO = {
+    "gemini": ("GEMINI_API_KEY", "AIza", "gemini_api_key"),
+    "openai": ("OPENAI_API_KEY", "sk-", "openai_api_key"),
+    "grok": ("XAI_API_KEY", "xai-", "grok_api_key"),
+}
+
+
+def check_provider_key(cfg: Config) -> CheckResult:
+    """Check that the active provider's API key is set and has the
+    expected prefix. Other providers' keys are intentionally not
+    checked — they may be set (so the wizard can switch without a
+    re-paste) or not, and either is fine."""
+    info = _PROVIDER_KEY_INFO.get(cfg.voice_provider)
+    if info is None:
         return CheckResult(
-            "GEMINI_API_KEY", "warn",
-            "doesn't start with 'AIza' — may be a stale or wrong key",
+            "voice provider key", "fail",
+            f"unsupported JASPER_VOICE_PROVIDER={cfg.voice_provider!r}",
         )
-    return CheckResult("GEMINI_API_KEY", "ok", f"{cfg.gemini_api_key[:8]}...")
+    env_name, prefix, attr = info
+    key = getattr(cfg, attr, "")
+    if not key:
+        return CheckResult(
+            env_name, "fail",
+            f"not set; required because JASPER_VOICE_PROVIDER="
+            f"{cfg.voice_provider!r}. Paste at https://jts.local/voice/ "
+            f"or add to /etc/jasper/jasper.env.",
+        )
+    if not key.startswith(prefix):
+        return CheckResult(
+            env_name, "warn",
+            f"doesn't start with '{prefix}' — may be a stale or wrong key",
+        )
+    return CheckResult(env_name, "ok", f"{key[:8]}...")
 
 
 def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
@@ -81,14 +166,20 @@ def check_alsa_card(name: str, kind: str, label: str) -> CheckResult:
     )
 
 
+_HW_SHORTHAND_RE = re.compile(r"^(?:plug)?hw:(\d+),(\d+)$")
+
+
 def _extract_card_name(device_str: str) -> str | None:
     """Best-effort card name from JASPER_MIC_DEVICE for the arecord -L lookup.
 
     Accepts both legacy ALSA pcm strings (`plughw:CARD=Array`) and the
     current PortAudio-substring format (`Array`, `UMIK-2`, etc.). Returns
-    None if the input is empty or an integer index — those skip the
-    name-match check (the open test still runs)."""
+    None if the input is empty, an integer index, or the ``hw:N,M``
+    positional shorthand — those take a different lookup path
+    (`_check_arecord_l_card_device`) or skip the name-match entirely."""
     if not device_str or device_str.isdigit():
+        return None
+    if _HW_SHORTHAND_RE.match(device_str):
         return None
     m = re.search(r"CARD=([^,\s]+)", device_str)
     if m:
@@ -98,10 +189,54 @@ def _extract_card_name(device_str: str) -> str | None:
     return device_str
 
 
+_ARECORD_L_LINE_RE = re.compile(r"^card (\d+):.*\bdevice (\d+):")
+
+
+def _check_arecord_l_card_device(card: int, device: int) -> bool:
+    """True if ``arecord -l`` lists card N device M.
+
+    `arecord -L` prints PCM names like ``hw:CARD=Loopback,DEV=0`` —
+    those don't include positional indices. `arecord -l` (lowercase L)
+    prints the indexed form, with card and device on the same line:
+        ``card 7: LoopbackAEC [Loopback], device 1: Loopback PCM ...``
+    We parse that to validate the ``hw:N,M`` shorthand."""
+    bin_path = shutil.which("arecord")
+    if bin_path is None:
+        return False
+    proc = _run([bin_path, "-l"])
+    for line in proc.stdout.splitlines():
+        m = _ARECORD_L_LINE_RE.match(line)
+        if m and int(m.group(1)) == card and int(m.group(2)) == device:
+            return True
+    return False
+
+
 def check_mic_card_matches_config(cfg: Config) -> CheckResult:
     """Validate the card configured in JASPER_MIC_DEVICE is actually
-    present according to `arecord -L`. install.sh autodetects on the Pi,
-    so the literal may differ from 'Array'."""
+    present. Two lookup paths depending on the format:
+
+    - Named card (``Array``, ``CARD=UMIK-2``, ``plughw:CARD=Foo``):
+      grep ``arecord -L`` for the substring.
+    - Positional shorthand (``hw:7,1``, ``plughw:0,0``): parse
+      ``arecord -l`` for ``card N: ... device M:``.
+
+    install.sh autodetects on the Pi, so the literal may differ from
+    'Array' — e.g. when the AEC bridge is enabled, mic moves to
+    ``hw:7,1`` (LoopbackAEC capture)."""
+    shorthand = _HW_SHORTHAND_RE.match(cfg.mic_device or "")
+    if shorthand:
+        card = int(shorthand.group(1))
+        device = int(shorthand.group(2))
+        label = f"mic ALSA card ({cfg.mic_device})"
+        if _check_arecord_l_card_device(card, device):
+            return CheckResult(label, "ok", f"card {card} device {device} present")
+        return CheckResult(
+            label, "fail",
+            f"no card {card} / device {device} in `arecord -l` output. "
+            f"AEC bridge may not be running, or snd-aloop didn't load "
+            f"the second card. Check: `aplay -l | grep Loopback` and "
+            f"`systemctl status jasper-aec-bridge`.",
+        )
     card = _extract_card_name(cfg.mic_device)
     if card is None:
         return CheckResult(
@@ -142,7 +277,20 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
         )
 
 
+def _jasper_voice_active() -> bool:
+    """True if jasper-voice.service reports active. Cheap systemctl call."""
+    return _run(["systemctl", "is-active", "jasper-voice.service"]).stdout.strip() == "active"
+
+
 def check_mic_capture(cfg: Config) -> CheckResult:
+    """Probe-open the mic device to confirm it produces non-silent audio.
+
+    Caveat: when jasper-voice is already running, it holds the mic for
+    capture and snd-aloop's exclusive-capture variants (the AEC bridge's
+    LoopbackAEC at ``hw:7,1``, etc.) refuse a second opener. In that
+    case the daemon's continued operation IS the evidence the device
+    works — fall back to checking that jasper-voice is alive and report
+    "skipped" rather than spuriously failing."""
     try:
         import numpy as np
         import sounddevice as sd
@@ -169,6 +317,11 @@ def check_mic_capture(cfg: Config) -> CheckResult:
             )
         return CheckResult("mic capture", "ok", f"peak={peak} from {cfg.mic_device}")
     except Exception as e:  # noqa: BLE001
+        if _jasper_voice_active():
+            return CheckResult(
+                "mic capture", "ok",
+                f"skipped — jasper-voice holds {cfg.mic_device} (probe error: {e})",
+            )
         return CheckResult("mic capture", "fail", f"{cfg.mic_device}: {e}")
 
 
@@ -669,7 +822,7 @@ def render(results: list[CheckResult]) -> int:
 async def run_async(cfg: Config) -> list[CheckResult]:
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
-        lambda: check_gemini_key(cfg),
+        lambda: check_provider_key(cfg),
         lambda: check_mic_card_matches_config(cfg),
         check_loopback,
         lambda: check_mic_capture(cfg),
@@ -897,6 +1050,7 @@ def main() -> None:
         help="Seconds between iterations in --watch mode (default 5).",
     )
     args = parser.parse_args()
+    _load_env_files()
     try:
         cfg = Config.from_env()
     except RuntimeError as e:
