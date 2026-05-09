@@ -185,16 +185,31 @@ To re-provision after a WiFi password change: same command, same
 USB plug. The dial accepts `SUBMIT_SETTINGS` over Improv whenever
 it's connected to USB.
 
-### AMOLED satellite (Phase 0 done, Phase 1 in progress)
+### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Phase 0 (mic capture) shipped 2026-05-08: PlatformIO project at
-`firmware/satellite-amoled/`, captures 16 kHz / 16-bit mono PCM
-over USB-CDC, validated with music playback. See `docs/satellites.md`
-"Hardware gotchas" for the non-obvious ES8311 init quirks
-(I²S stereo + demux for slot alignment; REG02 pre_multi=3 for
-SCLK-derived MCLK). Phase 1 (WiFi + LVGL Tap-to-Talk + UDP audio
-to Pi) is the next milestone.
+Project at `firmware/satellite-amoled/` on **Arduino-ESP32 v3.x
+via pioarduino** (the dial stays on v2.x intentionally).
+
+Shipped:
+- Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
+  USB-CDC. See `docs/satellites.md` "Audio init footguns" for the
+  ES8311 init quirks.
+- Phase 1.1 (2026-05-08) — WiFi from NVS, Improv-over-Serial,
+  mDNS-SD discovery of `_jasper-control._tcp`, dlog over USB-CDC
+  + UDP `:5514`.
+- Phase 1.2 (2026-05-09) — on-screen connection-status indicator
+  on the SH8601 AMOLED via Arduino_GFX. Direct draws (no LVGL);
+  colored circle + label keyed off the `Status` enum;
+  `setStatus()` redraws inline so PROVISION→ONLINE transitions
+  show up immediately. See "Display init footguns" in
+  `docs/satellites.md` for the SH8601 + TCA9554 reset sequence.
+
+Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL
+"Tap to Talk", UDP audio stream to Pi-side receiver.
+
+Flash gotcha: `write_flash 0x0 firmware.factory.bin` wipes NVS.
+Use `pio run -t upload` (piecewise) to preserve WiFi creds.
 
 To capture audio for testing/debugging:
 

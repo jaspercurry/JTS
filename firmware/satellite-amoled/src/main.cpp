@@ -1,19 +1,23 @@
-// Jasper AMOLED Satellite — Phase 1.1 firmware.
+// Jasper AMOLED Satellite — Phase 1.2 firmware.
 //
-// Phase 0 (mic capture, USB-CDC PCM stream) plus WiFi + Improv-over-
-// Serial provisioning. The audio path is unchanged from v0.1.0 — same
-// register sequence, same I²S config. New in this build:
+// Phase 0 (mic capture) + Phase 1.1 (WiFi + Improv) + on-screen status
+// indicator. Audio path is unchanged from v0.1.0 / v0.2.0 — same
+// register sequence, same I²S config. WiFi/Improv path unchanged from
+// v0.2.0. New in this build:
 //
-//   - WiFi connects from creds in NVS at boot (15 s timeout).
-//   - If no creds, sit in PROVISION state and accept Improv pushes
-//     over USB-CDC. After provisioning, creds are stored to NVS so
-//     subsequent boots reconnect automatically.
-//   - mDNS-SD discovery resolves jasper-control on the LAN
-//     (`_jasper-control._tcp`). Falls back to the compile-time
-//     `JASPER_HOST` if no service is advertised.
-//   - dlog() emits each diagnostic line over both USB-CDC (always)
-//     and UDP to the Pi's :5514 (when WiFi is up + endpoint resolved),
-//     mirroring the dial's pattern.
+//   - Toolchain bumped to Arduino-ESP32 v3.x via pioarduino. The legacy
+//     <driver/i2s.h> we use here is preserved as a deprecated
+//     compatibility shim and continues to compile + run unchanged.
+//   - SH8601 AMOLED comes up early in setup() (right after I²C, before
+//     the potentially-15-second WiFi join) and renders a colored circle
+//     + label reflecting the Status enum — see include/status.h and
+//     src/display.cpp. Redraws only on state transitions.
+//
+// Phase 1.1 features carried forward (unchanged):
+//   - WiFi connects from creds in NVS at boot (15 s timeout); if no
+//     creds, sits in PROVISION and accepts Improv pushes over USB-CDC.
+//   - mDNS-SD discovery resolves jasper-control on the LAN.
+//   - dlog() emits diagnostic lines over USB-CDC + UDP :5514.
 //
 // Improv coexistence with the binary PCM stream is intentional. The
 // host's Improv parser scans for the `IMPROV\\x01` magic prefix in the
@@ -42,25 +46,16 @@
 
 #include "config.h"
 #include "discovery.h"
+#include "display.h"
+#include "status.h"
 
 static const i2s_port_t I2S_PORT       = I2S_NUM_0;
 static constexpr int     SAMPLE_RATE_HZ = 16000;
 static constexpr int     MCLK_HZ        = SAMPLE_RATE_HZ * 256;  // = 4.096 MHz
 
-// --- Connection-state model ---
-//
-// Six states. Phase 1.2 wires these to an LVGL status icon; for now
-// they only drive Serial / UDP log output. Mirror of the dial firmware
-// for cross-satellite consistency.
-//
-//   BOOT         power on, before anything has run
-//   PROVISION    no WiFi creds in NVS — awaiting Improv push
-//   CONNECTING   joining WiFi with stored creds
-//   ONLINE       WiFi up + jasper-control endpoint resolved
-//   HTTP_ERROR   WiFi up but a recent jasper-control POST failed
-//                (used in Phase 1.5 once we add transport HTTP)
-//   OFFLINE      WiFi dropped after a successful connect; reconnecting
-enum class Status { BOOT, PROVISION, CONNECTING, ONLINE, HTTP_ERROR, OFFLINE };
+// Connection-state model — six values defined in include/status.h so
+// display.cpp can render them. Default to BOOT so the first loop()
+// pass either redraws (if displayInit succeeded mid-setup) or no-ops.
 static volatile Status g_status = Status::BOOT;
 
 static Preferences     g_prefs;
@@ -68,6 +63,24 @@ static ImprovWiFi      g_improv(&Serial);
 static WiFiUDP         g_logUdp;
 static IPAddress       g_logTarget;     // (0,0,0,0) = not yet resolved
 static ControlEndpoint g_control;        // resolved after every WiFi-up
+
+// Update g_status AND redraw the panel synchronously. Use this instead
+// of `g_status = X` everywhere so transitions show up immediately —
+// the loop's dedupe-redraw is fine when control reaches it, but the
+// loop is blocked inside `i2s_read(..., portMAX_DELAY)` between
+// frames AND inside `g_improv.handleSerial()` for the duration of an
+// Improv-driven WiFi join (~2–5 s while we resolve mDNS, write NVS,
+// etc., before the callback returns). A status flip from inside
+// `onImprovConnected` would otherwise stay invisible until the next
+// I²S frame *and* the loop body actually reaches the dedupe block.
+// Drawing inline removes that dependency on loop scheduling. All
+// callers run on the Arduino loop task — no concurrency on the
+// SH8601 QSPI bus.
+static void setStatus(Status s) {
+    if (g_status == s) return;
+    g_status = s;
+    displayShowStatus(s);
+}
 
 // --- WiFi / Improv / discovery helpers (mirrored from firmware/dial/) ---
 
@@ -139,7 +152,7 @@ static void onImprovConnected(const char *ssid, const char *password) {
     g_prefs.putString("pass", password);
     MDNS.begin(MDNS_HOSTNAME);
     resolveControlEndpoint();
-    g_status = Status::ONLINE;
+    setStatus(Status::ONLINE);
     dlog("[improv] connected, ip=%s, hostname=%s.local",
          WiFi.localIP().toString().c_str(), MDNS_HOSTNAME);
 }
@@ -445,6 +458,19 @@ void setup() {
     print_heap("PSRAM", MALLOC_CAP_SPIRAM);
     print_heap("SRAM",  MALLOC_CAP_INTERNAL);
 
+    // I²C bus + display come up FIRST so the user sees a status
+    // indicator within ~100 ms of power-on, instead of staring at a
+    // black panel through a potentially-15-second WiFi join. The full
+    // I²C device scan stays after WiFi has had a chance to come up so
+    // the scan output dlogs over UDP if we connected.
+    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
+    Wire.setClock(I2C_FREQ_HZ);
+    Serial.printf("[boot] I²C up: SDA=%d SCL=%d @ %u Hz\n",
+                  PIN_I2C_SDA, PIN_I2C_SCL, (unsigned)I2C_FREQ_HZ);
+    if (displayInit()) {
+        displayShowStatus(Status::BOOT);
+    }
+
     // --- WiFi + Improv ---
     //
     // Configure Improv first so handleSerial() in loop() can respond to
@@ -466,24 +492,16 @@ void setup() {
     Serial.println("[boot] improv configured");
 
     if (tryConnectStored()) {
-        g_status = Status::ONLINE;
+        setStatus(Status::ONLINE);
         MDNS.begin(MDNS_HOSTNAME);
         resolveControlEndpoint();
         dlog("[boot] WiFi connected from stored creds, ip=%s, hostname=%s.local",
              WiFi.localIP().toString().c_str(), MDNS_HOSTNAME);
     } else {
-        g_status = Status::PROVISION;
+        setStatus(Status::PROVISION);
         Serial.println("[boot] no stored WiFi creds; awaiting Improv push");
     }
 
-    // I²C bus comes up after WiFi so dlog (which uses UDP once online)
-    // can report the I²C scan results to the Pi. Wire.begin(SDA, SCL)
-    // on Arduino-ESP32 v3.x does the right pin-MUX setup; setClock()
-    // must come AFTER begin().
-    Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-    Wire.setClock(I2C_FREQ_HZ);
-    Serial.printf("[boot] I²C up: SDA=%d SCL=%d @ %u Hz\n",
-                  PIN_I2C_SDA, PIN_I2C_SCL, (unsigned)I2C_FREQ_HZ);
     scan_i2c_bus();
 
     // I²S BEFORE codec config. This starts the master clock generator,
@@ -554,13 +572,13 @@ void loop() {
             String ssid = g_prefs.getString("ssid", "");
             if (ssid.length() > 0) {
                 if (g_status != Status::OFFLINE) {
-                    g_status = Status::OFFLINE;
+                    setStatus(Status::OFFLINE);
                     dlog("[wifi] disconnected; reconnecting…");
                 }
                 g_logTarget = IPAddress();  // re-resolve on reconnect
                 WiFi.reconnect();
             } else if (g_status != Status::PROVISION) {
-                g_status = Status::PROVISION;
+                setStatus(Status::PROVISION);
                 Serial.println("[wifi] no creds; staying in PROVISION");
             }
         } else if (g_status != Status::ONLINE) {
@@ -568,10 +586,21 @@ void loop() {
             // later WiFi.reconnect() succeeded, so we hadn't run
             // resolveControlEndpoint yet.
             if ((uint32_t)g_logTarget == 0) resolveControlEndpoint();
-            g_status = Status::ONLINE;
+            setStatus(Status::ONLINE);
             dlog("[wifi] online, ip=%s",
                  WiFi.localIP().toString().c_str());
         }
+    }
+
+    // Status indicator. Cheap dedupe so the panel only redraws on a
+    // state transition — the SH8601 fillScreen+fillCircle+text takes
+    // ~30 ms and would otherwise compete with the I²S read below for
+    // wall time on every loop pass.
+    static Status lastDrawn = (Status)0xFF;  // sentinel: never drawn
+    Status now = g_status;
+    if (now != lastDrawn) {
+        displayShowStatus(now);
+        lastDrawn = now;
     }
 
     // Continuous I²S read → USB-CDC raw write. After [stream-start]
