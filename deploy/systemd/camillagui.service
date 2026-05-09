@@ -1,0 +1,24 @@
+[Unit]
+Description=CamillaGUI — web UI for CamillaDSP
+Documentation=https://github.com/HEnquist/camillagui-backend
+# CamillaDSP must be up first; the GUI websocket-connects to its
+# control port and would error-loop on startup otherwise.
+After=network.target jasper-camilla.service
+Wants=jasper-camilla.service
+
+[Service]
+Type=simple
+ExecStart=/opt/camillagui/camillagui_backend/camillagui_backend -c /etc/camillagui/config.yml
+Restart=on-failure
+RestartSec=5
+
+# Hardening — read /etc/camilladsp (DSP configs the GUI lists/edits),
+# write /var/lib/camillagui (GUI state), write /var/log (request log).
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/camilladsp /var/lib/camillagui /var/log
+
+[Install]
+WantedBy=multi-user.target
