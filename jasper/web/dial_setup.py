@@ -153,10 +153,14 @@ def _wrap_page(title: str, body: str) -> bytes:
 
 def _landing_html() -> bytes:
     body = """
-<p class="sub">JTS supports an ELECROW CrowPanel ESP32-S3 rotary dial as a
-wireless physical controller — volume, play/pause, hold-to-talk.</p>
+<p class="sub">JTS supports a small family of wireless accessories. This
+page can onboard an ELECROW CrowPanel ESP32-S3 <strong>rotary
+dial</strong> — volume, play/pause, hold-to-talk. A web onboarding
+flow for the Waveshare AMOLED touch satellite is in progress; for
+now that one is onboarded from the Pi shell with
+<code>jasper-satellite-onboard</code>.</p>
 
-<p>To onboard a fresh dial:</p>
+<h2>Onboard a rotary dial</h2>
 
 <ol>
   <li>Plug the dial into a USB-C port on the JTS Pi.</li>
@@ -173,7 +177,7 @@ This wizard runs <code>jasper-dial-onboard</code> behind the scenes —
 the same CLI tool also works directly from the Pi shell if you
 prefer.</p>
 """
-    return _wrap_page("Onboard a Rotary Dial", body)
+    return _wrap_page("Accessories", body)
 
 
 def _setup_html(*, ssid: str) -> bytes:
