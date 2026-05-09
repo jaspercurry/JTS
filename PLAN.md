@@ -242,18 +242,6 @@ the full sweep matrix and reasoning.
 Small infrastructure items not blocking any feature; recorded so
 they don't get lost in the working tree.
 
-- **`jasper/renderer.py` constructs `asyncio.Lock()` synchronously
-  in `RendererClient.__init__`.** Python 3.10+ defers event-loop
-  binding until first use, so this is fine on the Pi (3.13). Python
-  3.9 + macOS (the local dev venv) binds at construction time and
-  raises `RuntimeError: There is no current event loop` once an
-  earlier test in the suite has consumed the default loop —
-  produces 11 collection errors in `tests/test_renderer.py` on a
-  full `pytest` run while passing when those tests are run alone.
-  Fix: lazy-construct the lock on first await, or take the loop as
-  a parameter. No urgency since the Pi is unaffected and the
-  failures are local-only.
-
 - **`jasper.tools.transport`'s active-source resolution loses
   the recently-paused source.** Reproducible end-to-end with the
   dial: tap to pause AirPlay → jasper.tools.transport correctly
