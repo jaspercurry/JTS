@@ -10,13 +10,7 @@ from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_io import MicCapture, TtsPlayout
-from .cues import (
-    AudioCueManager,
-    GeminiTTSGenerator,
-    GrokTTSGenerator,
-    OpenAITTSGenerator,
-    TTSBackend,
-)
+from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, Ducker
 from .config import Config
@@ -541,99 +535,15 @@ def _make_connection(cfg: Config) -> LiveConnection:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
-def _build_cue_tts_backend(
-    cfg: Config,
-) -> "tuple[TTSBackend | None, str]":
-    """Pick the cue TTS backend matching the active voice provider
-    so cue audio (static failure cues + dynamic timer announcements)
-    speaks in the same voice as the live conversation.
-
-    Returns ``(backend, voice_label)``:
-      - `backend` is the synthesiser passed to AudioCueManager, or
-        None when the active provider's API key isn't configured
-        (cue regen disabled; playback works off any cached files).
-      - `voice_label` flows into the cue cache hash so flipping
-        provider or voice automatically invalidates baked WAVs.
-
-    Active-provider mismatch fallback: if the configured provider
-    has no key but a different provider does, fall back to that one
-    (best effort — better to have wrong-voice cues than silent
-    failures). Logs a warning so the operator notices.
-    """
-    provider = cfg.voice_provider
-    if provider == "openai" and cfg.openai_api_key:
-        return (
-            OpenAITTSGenerator(
-                api_key=cfg.openai_api_key, voice=cfg.openai_voice,
-            ),
-            cfg.openai_voice,
-        )
-    if provider == "gemini" and cfg.gemini_api_key:
-        return (
-            GeminiTTSGenerator(
-                api_key=cfg.gemini_api_key, voice=cfg.gemini_voice,
-                model=cfg.gemini_tts_model,
-            ),
-            cfg.gemini_voice,
-        )
-    if provider == "grok" and cfg.grok_api_key:
-        return (
-            GrokTTSGenerator(
-                api_key=cfg.grok_api_key, voice=cfg.grok_voice,
-            ),
-            cfg.grok_voice,
-        )
-    # Active-provider key missing — fall back to whichever provider
-    # IS configured. Order matters only for the warning text.
-    if cfg.openai_api_key:
-        logger.warning(
-            "cue tts: active provider=%s has no key; falling back to "
-            "OpenAI for cue rendering", provider,
-        )
-        return (
-            OpenAITTSGenerator(
-                api_key=cfg.openai_api_key, voice=cfg.openai_voice,
-            ),
-            cfg.openai_voice,
-        )
-    if cfg.gemini_api_key:
-        logger.warning(
-            "cue tts: active provider=%s has no key; falling back to "
-            "Gemini for cue rendering", provider,
-        )
-        return (
-            GeminiTTSGenerator(
-                api_key=cfg.gemini_api_key, voice=cfg.gemini_voice,
-                model=cfg.gemini_tts_model,
-            ),
-            cfg.gemini_voice,
-        )
-    if cfg.grok_api_key:
-        logger.warning(
-            "cue tts: active provider=%s has no key; falling back to "
-            "Grok for cue rendering", provider,
-        )
-        return (
-            GrokTTSGenerator(
-                api_key=cfg.grok_api_key, voice=cfg.grok_voice,
-            ),
-            cfg.grok_voice,
-        )
-    logger.warning(
-        "cue tts: no provider key configured; cue regen disabled "
-        "(playback still works off cached files)",
-    )
-    return None, ""
-
-
 def _build_cues_manager(
     cfg: Config, tts: TtsPlayout | None = None,
 ) -> AudioCueManager:
     """Construct the audio-cue manager. Hostname for templates is
     extracted from JASPER_MANAGEMENT_URL ("https://jts.local" →
     "jts.local") so cues say "visit jts.local" rather than reading
-    out the full URL with scheme/path. The TTS backend is picked to
-    match the active voice provider — see `_build_cue_tts_backend`.
+    out the full URL with scheme/path. The TTS backend is picked
+    by the shared `build_cue_tts_backend` factory so daemon and
+    `jasper-cues` CLI dispatch identically.
 
     `tts` may be None at construction time when the daemon needs to
     register cue-aware tools (timer pre-render) before the
@@ -642,7 +552,7 @@ def _build_cues_manager(
     hostname = (
         urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
     )
-    backend, voice = _build_cue_tts_backend(cfg)
+    backend, voice = build_cue_tts_backend(cfg)
     if backend is not None:
         logger.info(
             "cue tts: provider=%s model=%s voice=%s",

@@ -16,6 +16,7 @@ from .generator import (
     render_template,
     write_cue,
 )
+from .factory import build_cue_tts_backend
 from .manager import AudioCueManager
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "GrokTTSGenerator",
     "OpenAITTSGenerator",
     "TTSBackend",
+    "build_cue_tts_backend",
     "cue_hash",
     "render_template",
     "write_cue",

@@ -21,17 +21,20 @@ class _FakeBackend:
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
     """Standard env for CLI tests: writable sounds dir, deterministic
-    hostname/voice, fake API key (so the CLI builds a backend), and
-    monkey-patched generator that doesn't hit the network."""
+    hostname/voice, fake API key (so the factory builds a backend),
+    and monkey-patched factory that doesn't hit the network."""
     monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
     monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://test.local")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
     monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-tests")
     fake = _FakeBackend()
-    # Replace GeminiTTSGenerator constructor with one that returns
-    # our fake. The CLI calls `GeminiTTSGenerator(api_key=..., voice=...)`
-    # so we patch the class symbol cli imports under.
-    monkeypatch.setattr(cli, "GeminiTTSGenerator", lambda **kw: fake)
+    # The CLI builds its backend via `build_cue_tts_backend(cfg)` —
+    # patch that to return our deterministic fake regardless of
+    # provider so tests don't hit any provider's network.
+    monkeypatch.setattr(
+        cli, "build_cue_tts_backend", lambda cfg: (fake, "Aoede"),
+    )
     return tmp_path, fake
 
 

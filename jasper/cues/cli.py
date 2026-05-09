@@ -6,11 +6,12 @@ Subcommands:
                                 cached file exists.
   regenerate [--cue X]
              [--force]       — synthesise missing (or all, with
-                                --force) cues. Reads
-                                JASPER_MANAGEMENT_URL,
-                                JASPER_GEMINI_VOICE,
-                                JASPER_SOUNDS_DIR,
-                                GEMINI_API_KEY from env.
+                                --force) cues. Uses the same shared
+                                factory the daemon uses to pick a
+                                TTS backend matching the active
+                                JASPER_VOICE_PROVIDER, so install-
+                                time regen and runtime synthesis
+                                agree on which file is canonical.
   play <slug>                — play a cached cue locally for testing.
                                 Uses TtsPlayout the same way the
                                 daemon does. Useful when you change
@@ -24,17 +25,13 @@ from __future__ import annotations
 import argparse
 import asyncio
 import logging
-import os
 import sys
 import urllib.parse
 
-from .generator import GeminiTTSGenerator
+from ..config import Config
+from .factory import build_cue_tts_backend
 from .manager import AudioCueManager
 from .registry import CUES, find as find_cue
-
-
-def _env(name: str, default: str = "") -> str:
-    return os.environ.get(name, default).strip()
 
 
 def _hostname_from_url(url: str) -> str:
@@ -43,27 +40,44 @@ def _hostname_from_url(url: str) -> str:
 
 
 def _make_manager(*, tts_playout=None) -> AudioCueManager:
-    """Build a manager from environment variables. Same env names the
-    daemon uses, so a CLI run and a daemon run agree on which file is
-    canonical for a given cue.
+    """Build a manager from environment variables. Uses the same
+    Config + factory the daemon uses, so the CLI's cue regen and
+    the daemon's runtime synthesis agree on which file is canonical
+    for a given (provider, voice, model, text).
 
     `tts_playout` is optional — `list` and `regenerate` don't need
     audio output, so they pass None. `play` constructs a TtsPlayout
     inside an `async with` block (so its underlying ALSA stream
-    actually opens) and passes it in here."""
-    sounds_dir = _env("JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds")
-    management_url = _env("JASPER_MANAGEMENT_URL", "https://jts.local")
-    voice = _env("JASPER_GEMINI_VOICE", "Aoede")
-    api_key = _env("GEMINI_API_KEY") or _env("JASPER_GEMINI_API_KEY")
+    actually opens) and passes it in here.
 
-    backend = None
-    if api_key:
-        try:
-            backend = GeminiTTSGenerator(api_key=api_key, voice=voice)
-        except ValueError as e:
-            print(f"warning: TTS backend disabled ({e}); regen will fail",
-                  file=sys.stderr)
-
+    Config.from_env() requires the active provider's API key; if
+    it's missing we still want `list` (which only reads disk) to
+    work, so we degrade to a key-less manager rather than raising.
+    """
+    try:
+        cfg = Config.from_env()
+        backend, voice = build_cue_tts_backend(cfg)
+        sounds_dir = cfg.sounds_dir
+        management_url = cfg.management_url
+    except RuntimeError as e:
+        # Missing active-provider key — list still needs to work,
+        # regen will exit cleanly with "no TTS backend" later.
+        print(f"warning: TTS backend disabled ({e})", file=sys.stderr)
+        import os as _os
+        backend = None
+        voice = ""
+        sounds_dir = _os.environ.get(
+            "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
+        )
+        management_url = _os.environ.get(
+            "JASPER_MANAGEMENT_URL", "https://jts.local",
+        )
+    if backend is None:
+        print(
+            "warning: no TTS backend; regen will fail (playback "
+            "still works off cached files)",
+            file=sys.stderr,
+        )
     hostname = _hostname_from_url(management_url) or "this speaker"
     return AudioCueManager(
         sounds_dir=sounds_dir,
