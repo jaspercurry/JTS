@@ -276,8 +276,9 @@ Shipped:
 Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL
 "Tap to Talk", UDP audio stream to Pi-side receiver.
 
-Flash gotcha: `write_flash 0x0 firmware.factory.bin` wipes NVS.
-Use `pio run -t upload` (piecewise) to preserve WiFi creds.
+Onboarding: `sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`
+mirrors `jasper-dial-onboard` — flash + Improv-driven WiFi creds
+push in one go, mDNS-confirmed at `jasper-satellite-amoled.local`.
 
 To capture audio for testing/debugging:
 

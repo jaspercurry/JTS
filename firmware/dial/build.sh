@@ -39,11 +39,13 @@ fi
 echo "Building dial firmware via ${PIO}..."
 "${PIO}" run --project-dir "${DIAL_DIR}" -e "${ENV_NAME}"
 
-# PlatformIO writes the merged-image binary here. esptool wants a single
-# .bin starting at offset 0x0 — `firmware.bin` from PIO is exactly that
-# (bootloader + partitions + app, merged at build time when the env
-# uses the default partition table).
-SRC="${DIAL_DIR}/.pio/build/${ENV_NAME}/firmware.bin"
+# PlatformIO produces both `firmware.bin` (app-only, conceptually at
+# chip flash offset 0x10000) and `firmware.factory.bin` (merged
+# bootloader + partitions + boot_app0 + app, starts at 0x0). The
+# onboard CLI flashes the staged bin at 0x0, so we need the merged
+# variant — using firmware.bin would put the app at 0x0 over the
+# bootloader and brick the device.
+SRC="${DIAL_DIR}/.pio/build/${ENV_NAME}/firmware.factory.bin"
 if [[ ! -f "${SRC}" ]]; then
     echo "Build succeeded but ${SRC} is missing. Inspect ${DIAL_DIR}/.pio/build/${ENV_NAME}/." >&2
     exit 2

@@ -288,10 +288,12 @@ install_jasper() {
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
-    # Stage firmware/ next to the package so jasper-dial-onboard
-    # finds the bin (default --bin path: /opt/jasper/firmware/dial/
-    # jasper-dial.bin). The .pio build dir is excluded — that's local
-    # to whoever ran build.sh and contains absolute paths.
+    # Stage firmware/ next to the package so jasper-{dial,satellite}-onboard
+    # find their respective bins (default --bin paths:
+    # /opt/jasper/firmware/dial/jasper-dial.bin,
+    # /opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin).
+    # The .pio build dir is excluded — that's local to whoever ran the
+    # per-firmware build.sh and contains absolute paths.
     if [[ -d "${REPO_DIR}/firmware" ]]; then
         rsync -a --delete \
             --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \

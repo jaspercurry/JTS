@@ -297,14 +297,15 @@ Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL "Tap
 to Talk" surface, control-plane HTTP, I²S mic capture gated on
 press, UDP audio stream to a new Pi-side `MicSource` endpoint.
 
-**Flash gotcha:** `write_flash 0x0 firmware.factory.bin` overwrites
-the NVS partition (the merged factory image has 0xFF padding over
-the 0x9000–0xe000 NVS region) — the satellite loses its WiFi
-creds and needs re-provisioning via Improv. For incremental
-flashes that preserve NVS, use `pio run -t upload` (piecewise:
-bootloader at 0x0, partitions at 0x8000, boot_app0 at 0xe000,
-firmware at 0x10000). NVS at 0x9000 (size 0x5000) sits between
-partitions and boot_app0 untouched.
+**Onboarding flow:** plug the satellite into a Pi USB-C port, then
+`sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`. Mirrors
+`jasper-dial-onboard`: USB CDC discovery → optional flash from
+`/opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin`
+(populated by `bash firmware/satellite-amoled/build.sh`) → push
+WiFi creds via Improv → wait for `jasper-satellite-amoled.local`.
+The flash itself wipes NVS (factory.bin pads 0x0–0x10000 with
+0xFF, including the 0x9000–0xe000 NVS region) but the cred-push
+that follows refills it — no manual provisioning step.
 
 **Local PIO setup** for the v3.x toolchain (laptop-side):
 pioarduino requires Python ≥ 3.10 — the JTS project venv is
