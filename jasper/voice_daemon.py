@@ -9,6 +9,10 @@ from collections import deque
 from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
+from .audio_buffer import (
+    ACQUIRE_BUFFER_MAX_FRAMES,
+    drain_acquire_buffer,
+)
 from .audio_io import MicCapture, TtsPlayout
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
@@ -163,6 +167,7 @@ SYSTEM_INSTRUCTION = (
 # pre-persistent-connection era when each wake cost a Live slot).
 # Both were over-correcting for a problem refractory can't solve.
 WAKE_REFRACTORY_SEC = 0.7
+
 
 # End-of-utterance: fire activity_end once the user has been silent
 # for this long AFTER they spoke. With manual VAD on the server
@@ -829,6 +834,20 @@ class WakeLoop:
         # the new turn at _begin_turn so the first phoneme of the
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
+        # Buffer for frames captured during the wake → turn-acquired
+        # window. When wake fires, `_handle_wake_frame` kicks off
+        # `_acquire_and_drain` as a background task and sets
+        # `_acquiring=True`. The main mic loop sees the flag and
+        # routes incoming frames here instead of through the wake or
+        # session handlers; the background task drains this buffer
+        # into the turn in order once acquire_turn() resolves. This
+        # keeps the user's full utterance flowing even when a
+        # context reset or network blip stretches the acquire window
+        # to several seconds — the LiveKit / Pipecat / Home Assistant
+        # canonical pattern for not dropping audio across a
+        # connection-establishment gap.
+        self._acquiring: bool = False
+        self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
 
     async def play_cue(self, slug: str) -> str:
         """Public wrapper for `_play_cue`, callable via the control
@@ -971,6 +990,16 @@ class WakeLoop:
             # into the turn so the user's first phoneme isn't lost.
             self._pre_roll.append(frame)
 
+            # Acquire window: between wake firing and the new turn
+            # being ready to accept audio. `_acquire_and_drain`
+            # opens the turn in the background and drains this
+            # buffer into it; the main loop just collects frames
+            # here so a multi-second context reset doesn't truncate
+            # the user's command. See ACQUIRE_BUFFER_MAX_FRAMES.
+            if self._acquiring:
+                self._acquire_buffer.append(frame)
+                continue
+
             if self._state is State.WAKE:
                 await self._handle_wake_frame(frame)
             else:
@@ -1011,18 +1040,67 @@ class WakeLoop:
             await self._play_cue("cant_connect")
             return
 
+        # Spawn `_begin_turn` in the background so the main mic loop
+        # is NOT blocked while `acquire_turn()` runs (which can take
+        # several seconds during a context reset). The flag flips
+        # the loop into "buffer frames into self._acquire_buffer"
+        # mode for the duration of the acquire window. Without this,
+        # frames either pile up in sounddevice's OS-level queue and
+        # arrive in a burst (which broke our wall-clock-based
+        # sustained-speech detector — see test on 2026-05-09 logs:
+        # `silero max=0.53` but `no user speech detected within 5s`)
+        # or get dropped entirely.
+        self._acquiring = True
+        self._acquire_buffer.clear()
+        asyncio.create_task(
+            self._acquire_and_drain(), name="wake-acquire-and-drain",
+        )
+
+    async def _acquire_and_drain(self) -> None:
+        """Background coroutine spawned on wake. Acquires the turn,
+        then replays any frames captured during the acquire window
+        into it before live frames take over.
+
+        Order of audio sent to the model on a SESSION:
+          1. Pre-roll (last 7 frames before wake — `_begin_turn`
+             handles this for us, includes the wake-firing frame).
+          2. Acquire-buffer drain (everything captured between wake
+             and turn-ready, in order — this method).
+          3. Live frames (from the main mic loop's
+             `_handle_session_frame` — automatic once we clear
+             `_acquiring`).
+
+        On error: play `cant_connect`, run the same cleanup the
+        synchronous path used to do, clear the buffer, restore
+        WAKE state. The `_acquiring` flag flips back to False in
+        the finally so the loop returns to wake detection.
+        """
         try:
-            await self._begin_turn()
+            await self._begin_turn()  # ends with state = SESSION
+            try:
+                drained = await drain_acquire_buffer(
+                    self._acquire_buffer, self._turn,  # type: ignore[arg-type]
+                )
+            except Exception as e:  # noqa: BLE001
+                drained = 0
+                logger.warning("acquire-buffer drain failed: %s", e)
+            if drained:
+                logger.info(
+                    "acquire-buffer drained: %d frames (~%.0fms)",
+                    drained, drained * 80.0,
+                )
         except Exception as e:  # noqa: BLE001
-            logger.exception("turn begin failed: %s", e)
-            # Treat "can't begin a turn" the same way as
-            # is_paused — most of the time the underlying cause is
-            # a transient connection issue surfaced inside
-            # acquire_turn (e.g., the timeout-while-waiting-for-
-            # connect path). Play the cue so the user hears
-            # something, then fall through to cleanup.
+            logger.exception("turn acquire failed: %s", e)
             await self._play_cue("cant_connect")
             await self._cleanup_after_failed_begin()
+            self._acquire_buffer.clear()
+        finally:
+            # Flip the flag last — the main loop checks it on every
+            # mic frame to decide whether to buffer or dispatch. With
+            # state already SESSION (set by `_begin_turn`) and the
+            # buffer drained, clearing the flag hands the live mic
+            # stream to `_handle_session_frame` cleanly.
+            self._acquiring = False
 
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
