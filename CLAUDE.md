@@ -187,6 +187,47 @@ back.
 
 ---
 
+## librespot — one-time OAuth claim for cold-start voice
+
+`spotify_play "X"` from silence (no AirPlay carrying Spotify) needs
+the Pi's librespot to be authenticated to a Spotify account, because
+the voice tool calls `start_playback(device=JTS)` via the Web API and
+JTS only appears in an account's `sp.devices()` list once that
+account has logged in to it.
+
+Two ways to authenticate librespot:
+
+1. **Phone tap** — open Spotify on any device on the LAN, tap the
+   device picker, select JTS once. The credential is then cached at
+   `/var/cache/librespot` (via `--system-cache` in the systemd unit)
+   and survives librespot restarts.
+2. **Laptop-side OAuth script** — no phone needed:
+
+   ```sh
+   bash scripts/claim-librespot.sh
+   ```
+
+   SSH-tunnels librespot's hardcoded `127.0.0.1:8091` OAuth callback
+   port to your laptop, runs `librespot --enable-oauth`, opens the
+   Spotify auth page in your browser, writes credentials to the same
+   `--system-cache` path. Same end state as the phone tap, just no
+   phone involved.
+
+Either path is one-time per librespot identity. After that, voice
+cold-starts work indefinitely until the cache is cleared.
+
+**Multi-user caveat**: librespot can only be logged in as one user
+at a time. The household member whose account is currently cached
+is the one voice cold-starts will play through. Other members can
+still use their phone's Spotify Connect to claim JTS ad-hoc — that
+overwrites the cache for that session, and they can also claim it
+back when they want voice to play through their account. Per-user
+librespot instances ("JTS-Jasper" / "JTS-Brittany") OAuth-locked
+to each account is the deeper fix; deferred until the friction
+actually bites.
+
+---
+
 ## AEC bridge — opt-in toggle
 
 Software AEC is **built but disabled by default**. README's
