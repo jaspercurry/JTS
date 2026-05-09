@@ -297,16 +297,46 @@ device-state tie-breakers. Concretely:
 3. `WakeLoop` opens a **debounce window** of ~200 ms after the first
    `WAKE` event. During that window, additional `WAKE` events from
    other sources are collected, not dispatched.
-4. At end of debounce: pick the source with the highest `score`. Ties
-   broken by device-state policy:
-   - If music is currently playing on the main speaker, prefer the
-     satellite mic (chip mic has worse SNR during playback).
-   - If the user has a recent interaction history with one satellite,
-     prefer it (Apple-style "recently used" heuristic).
-   - Otherwise, prefer the chip mic (it has chip-side beamforming + AGC).
-5. Open the Gemini turn, route audio from the winning source for the
+4. **Normalize each `score` by the source's gain calibration offset
+   before comparison.** This is non-optional — see "Per-satellite gain
+   calibration" gotcha below. Without it, cross-device comparison is
+   meaningless.
+5. At end of debounce: pick the winning source via tiebreakers in this
+   priority order (first match wins):
+   1. **Hard touch signal within last 5 s** — recent dial rotation,
+      AMOLED touchscreen tap, or IMU "device was just picked up" event
+      (Phase 4+). The user explicitly told us where they are.
+   2. **DoA agreement** (XVF3800-class satellites only — the AMOLED
+      satellite has a single MEMS and skips this rung). If two
+      satellites both report a DoA pointing at the same physical zone,
+      prefer the one with the user-facing beam.
+   3. **Recently-used satellite** — if any source has been the active
+      mic within the last 30 s, prefer it (Apple-style "session
+      affinity"; reduces ping-pong when the user pauses mid-utterance).
+   4. **Calibrated confidence margin > 0.10** — if the top source's
+      score is more than 0.10 above the runner-up, pick it.
+   5. **Else: chip mic** — when scores are within 0.10 of each other,
+      default to the Pi's chip mic. It has chip-side beamforming + AGC
+      and is the most-validated path; fall back here when the satellite
+      data isn't decisive.
+6. **Session affinity (negative broadcast):** once the winner is
+   chosen, broadcast `{session_active: <source_id>}` to every other
+   source for the duration of the session plus 2 s after end. Peers
+   suppress their own VAD/wake-fire during that window. Prevents the
+   "user shifts position mid-utterance and a different mic captures
+   the second half" failure mode.
+7. Open the Gemini turn, route audio from the winning source for the
    duration of the session. Other sources' audio is dropped until
    session end.
+
+**Reference-side wake suppression** (orthogonal to the above, runs
+continuously on the Pi): an openWakeWord instance reads from the
+post-CamillaDSP playback signal. When *that* detector fires — i.e. the
+music or TV is producing "Hey Jarvis"-shaped phonemes — the Pi
+broadcasts `{suppress_wakes_for_ms: 200}` to every satellite. Filters
+song-lyric and TV-dialog false fires across the entire constellation
+in one place rather than relying on each satellite's per-mic threshold.
+Cost: ~5% of one Pi 5 core, well within budget.
 
 **Why this and not something fancier:**
 - Open-source has *nothing* in this space, so we don't lose
@@ -323,6 +353,17 @@ device-state tie-breakers. Concretely:
   invariant against gain.
 
 **Known gotchas, in order of likelihood:**
+- **Per-satellite gain calibration is REQUIRED, not optional.**
+  openWakeWord scores claim to be a learned invariant against gain,
+  but in practice the dBFS-to-SPL curve still varies across mic
+  hardware (XMOS array vs. ES8311 single MEMS vs. whatever ships next)
+  enough that raw confidence comparison gives ~50/50 winners. The
+  one-time calibration: play a known pink-noise burst through the JTS
+  speaker at known SPL, the satellite measures RMS dBFS at its mic
+  input, the Pi stores the per-source offset. All future scores are
+  normalized by that offset before arbitration. This is a **must-have
+  before multi-source arbitration ships** — otherwise the arbitrator
+  is effectively a coin flip across heterogeneous mics.
 - **Same-room satellite hears its own speaker bleed.** A satellite in
   the same room as the main speaker will pick up TTS / music
   reflections. Either keep satellites in *different* rooms from the
@@ -561,10 +602,10 @@ battery operation. Per-device roadmap below.
 | 0 | **Mic characterization.** Built an end-to-end PlatformIO firmware (boot + I²C scan + ES8311 init + I²S RX + USB-CDC PCM stream) and validated it captures clean 16 kHz mono audio across a typical room. **PASSED 2026-05-08** — music plays back recognizably, voice is clear; capture WAVs in `captures/`. Took 5 firmware iterations to get past two non-obvious bugs (see "Hardware gotchas" below). | ✅ done |
 | 1.1 | **WiFi + Improv-over-Serial provisioning.** Cred storage in NVS, mDNS-SD discovery of `_jasper-control._tcp`, dlog over USB-CDC + UDP :5514, watchdog reconnect. Mirrors `firmware/dial/`'s skeleton. | ✅ shipped 2026-05-08 |
 | 1.2 | **On-screen connection-status indicator.** SH8601 AMOLED (368×448) over QSPI driven directly with Arduino_GFX (no LVGL yet — direct draws). Colored circle + label keyed off the `Status` enum, redrawn only on transitions. Comes up before WiFi join so the user sees a "Boot" / "Awaiting WiFi" frame within ~100 ms of power-on. | ✅ shipped 2026-05-08, pending on-device validation |
-| 1.3+ | **Push-to-talk + audio.** Capacitive touch driver (FT3168), LVGL "Tap to Talk" surface, control-plane HTTP POSTs (`/session/start`, `/session/end`), I²S mic capture gated on touch, UDP audio stream to a new Pi-side endpoint. Absorbs the remainder of the Phase 1 scope. | ⬜ not started |
-| 2 | **Always-streaming "second mic" mode.** Settings toggle on the AMOLED. Satellite streams continuously when enabled. Pi gains a second `MicSource` and runs openWakeWord on the satellite stream as a parallel source. **This is where multi-mic arbitration lands.** | ⬜ not started — depends on Phase 1 |
-| 3 | **On-device wake (microWakeWord).** Port the "hey_jarvis" pretrained microWakeWord model onto the satellite. Only stream after wake fires locally. Required only if battery operation is desired; AC-powered satellite is fine on Phase 2. | ⬜ not started — depends on Phase 2 |
-| 4 | **Display polish.** Now-playing card with album art (368×448 has room for a real art tile), clock, weather glance, listening orb mirroring the dial's. | 🔮 future — independent of audio phases |
+| 1.3+ | **Push-to-talk + audio + measurement gate.** Capacitive touch driver (FT3168), LVGL "Tap to Talk" surface, control-plane HTTP POSTs (`/session/start`, `/session/end`), I²S mic capture gated on touch, UDP audio stream to a new Pi-side endpoint. Includes the FRR/WER measurement pass (see ["Validation methodology"](#validation-methodology--measurement-driven-phase-13-gate) below) that gates whether the constellation buildout continues here or pivots to one of the [Phase 2 fallbacks](#phase-2-fallback-architectures). | ⬜ not started |
+| 2 | **Always-streaming "second mic" mode + multi-source `WakeLoop`.** Settings toggle on the AMOLED. Satellite streams continuously when enabled. Pi gains a second `MicSource` and runs openWakeWord on the satellite stream as a parallel source. **This is where multi-mic arbitration lands** (per-satellite gain calibration, debounce, tiebreakers, negative broadcast, reference-side wake suppression — see "Proposed approach for JTS" above). | ⬜ not started — depends on Phase 1.3+ |
+| 3 | **On-device wake (microWakeWord).** Port the "hey_jarvis" pretrained microWakeWord model onto the satellite (matches HA Voice PE precedent — better-supported pretrained "hey_jarvis" than ESP-SR's WakeNet). Only stream after wake fires locally. Required only if battery operation is desired; AC-powered satellite is fine on Phase 2. | ⬜ not started — depends on Phase 2 |
+| 4 | **Display polish.** Now-playing card with album art (368×448 has room for a real art tile), clock, weather glance, listening orb mirroring the dial's. Software rotation in PSRAM if portrait orientation matters (SH8601 has no hardware 90° rotation). | 🔮 future — independent of audio phases |
 
 ### Hardware gotchas (learned during Phase 0)
 
@@ -688,6 +729,155 @@ FT3168 0x38 (only after release from TCA9554 P1 reset), PCF85063
 
 ---
 
+## Validation methodology — measurement-driven Phase 1.3 gate
+
+**Before the Pi-side multi-source `WakeLoop` and UDP audio infra get
+built (the "Phase 1.3+" roadmap row above), we run a measurement
+pass on a single satellite to find out whether the architecture is
+actually viable in this room with this hardware.** Anecdotal "it
+seems to work" is not data. Architecture decisions need numbers.
+
+### Why this gate exists
+
+The AMOLED satellite's mic is a single MEMS into the ES8311 codec —
+no on-chip beamforming, AGC, or AEC. The Pi-side chip mic is a 4-mic
+XMOS array with all of the above. The bet is that **inverse-square
+law geometry plus close-range placement (1-1.5 m to user) beats
+far-but-good (3-4 m to chip mic)**. That's a measurable claim.
+
+If the bare-mic-at-close-range numbers don't hit acceptable thresholds
+even with `NO_INTERRUPTION` and ducking, none of the multi-source
+infra adds value — we'd be routing worse audio into Gemini. The
+cheap measurement up front saves weeks of building a Pi-side
+arbitrator that can't actually arbitrate well.
+
+### Pass/fail criteria
+
+50 wake-word trials per cell, recorded as `(wake_fired, score,
+post_wake_wer)`:
+
+| Condition                              | FRR pass | post-wake WER pass |
+|----------------------------------------|----------|--------------------|
+| 1 m from user, quiet                   | < 5%     | < 10%              |
+| 1 m from user, music at 65 dB SPL      | < 10%    | < 15%              |
+| 1 m from user, music at 75 dB SPL      | < 25%    | < 25%              |
+| 3 m from user, quiet                   | < 15%    | < 20%              |
+| 3 m from user, music at 65 dB SPL      | < 30%    | < 30%              |
+
+Decision tree:
+- 1 m quiet AND 1 m music-65 both pass → architecture viable, proceed
+  to multi-source `WakeLoop` + push-to-talk.
+- 1 m cells fail FRR by < 10 percentage points → consider satellite-
+  side AEC as a fallback (see "Phase 2 fallback architectures" below)
+  before deciding.
+- 1 m cells fail FRR by > 10 percentage points even with AEC
+  enabled → fall back to Seeed XVF3800-with-XIAO satellites (see
+  fallback architectures below).
+
+### Test harness shape (Pi-side scaffolding)
+
+Sketch — not yet built. Lives in `jasper/cli/satellite_phase1_3_*.py`
+and `jasper/satellites/`:
+
+- **Corpus generator**: pre-render a 50+-utterance "Hey Jarvis"
+  corpus with Piper TTS using multiple voices and varied prosody.
+  Cache to disk; regenerate only on `--regen-corpus`.
+- **SPL calibration helper**: integrates with the user's UMIK-1/
+  UMIK-2 + REW workflow (or a sounddevice-based recorder if
+  simpler) to confirm playback levels at the listener position
+  before each test condition.
+- **Test runner**: plays the corpus through the JTS main speaker at
+  calibrated SPL while the satellite under test is mounted at one
+  of the test distances. Records wake events + confidence scores
+  via the satellite's UDP/HTTP path. Runs Whisper or Gemini STT on
+  the captured post-wake audio and computes WER vs. ground-truth.
+- **Output**: `phase1_3/{date}/{condition}.csv` with columns
+  `utterance_id, wake_fired, score, wake_latency_ms, wer,
+  snr_estimate`. Plus `summary.md` with FRR / FAR / WER mean / p50
+  / p90 per condition.
+
+The PCM streaming infra needs to land first before this harness can
+run end-to-end (the satellite has to be able to deliver post-wake
+audio to the Pi). That makes the measurement pass an artifact of
+the early Phase 1.3 work, not a prerequisite to starting it — but
+the **decision to keep building the constellation** is gated on the
+measurement results.
+
+---
+
+## Phase 2 fallback architectures
+
+Two documented escape hatches if the bare-mic measurement at close
+range doesn't hit thresholds. Both are real options; neither is
+committed to upfront.
+
+### Fallback A — satellite-side AEC via Snapcast reference
+
+The architectural problem with running AEC at a satellite (mic) that
+doesn't drive the main speaker (echo source): the reference signal
+and the mic signal don't share a clock. ESP-SR's AEC pipeline
+assumes a same-I²S-peripheral reference; without that, sample-rate
+offset between the Pi's playback clock and the satellite's mic clock
+diverges the adaptive filter within tens of seconds.
+
+**[Snapcast](https://github.com/badaix/snapcast)** solves the clock
+problem. It's a multi-room audio sync protocol that does adaptive
+resampling on the client side to match the playback content into the
+client's local clock domain. If the satellite runs
+[`CarlosDerSeher/snapclient`](https://github.com/CarlosDerSeher/snapclient)
+(ESP-IDF native ESP32 port) routing the audio into the same I²S
+peripheral that drives the ES8311 DAC at near-zero codec volume, the
+buffer the AEC consumes as a reference is now a clock-locked
+sample-accurate replica of what the main speaker is emitting.
+
+Pi-side adds: snapserver as a systemd unit, an snd-aloop tap on the
+post-CamillaDSP signal feeding it. Satellite-side adds: snapclient
+in firmware, ES8311 playback volume to ~0%, ESP-SR AFE config
+switched from single-mic-no-AEC to single-mic-with-reference.
+
+**Cost:** ~22% of one ESP32-S3 core for AEC + microWakeWord + WiFi
++ Snapcast resampler + app — fits but no slack. Significant new
+infra (snapserver, snd-aloop tap, sync diagnostics, satellite-side
+snapclient integration). Worth investigating only after measurement
+shows mic-only is the bottleneck. The framework choice for ESP-SR is
+cleaner under ESP-IDF than Arduino-ESP32, but ESP-SR can be consumed
+from Arduino-ESP32 as a component — we don't need to migrate the
+whole project to enable this.
+
+### Fallback B — Seeed XVF3800-with-XIAO satellites
+
+The "buy known-good hardware instead of debugging cheap hardware"
+escape. Same XMOS chip family as the Pi-side mic, hardware DSP
+(AEC + multi-adaptive beamforming + AGC + dereverb + DoA) on the
+chip itself. No Snapcast, no satellite-side ESP-SR, no AEC tuning.
+Reference integration:
+[formatBCE/Respeaker-XVF3800-ESPHome-integration](https://github.com/formatBCE/Respeaker-XVF3800-ESPHome-integration).
+
+Cost: ~$54 per satellite vs. ~$30 for the AMOLED. No display, but
+DoA reporting becomes a real arbitration tiebreaker (see "Proposed
+approach for JTS" step 5.2 above).
+
+Caveat: needs custom XVF3800 firmware to act as I²S master because
+ESPHome can't generate the 12.288 MHz MCLK on its own.
+
+### When to fall back
+
+Trigger fallback A or B if any of:
+- Phase 1.3 FRR > 10 percentage points worse than pass criteria at
+  1 m, even with fallback A's Snapcast-AEC enabled.
+- Snapcast clock sync proves unreliable on the user's network
+  (sustained sync error > 1 ms after a week of operation).
+- WiFi airtime contention from a constellation creates noticeable
+  latency spikes in JTS daily use.
+
+The XVF3800 path is the proven path; the AMOLED-with-software-AEC
+path is the experimental one. Don't fall back prematurely (the
+measurement gate above should drive the decision), but don't be
+precious about the experiment either if the data says it's not
+delivering.
+
+---
+
 ## Open questions
 
 These are deliberately undecided. **Update this list as questions get
@@ -748,3 +938,12 @@ answered or as new ones surface.**
   — wake-word framework currently used Pi-side.
 - [Improv-over-Serial protocol](https://www.improv-wifi.com/serial/) —
   satellite WiFi provisioning over USB-CDC.
+- [ESP-SR (Espressif speech recognition)](https://github.com/espressif/esp-sr)
+  — AFE pipeline (NS, AGC, AEC) for on-device pre-processing if the
+  Snapcast-AEC fallback is needed.
+- [Snapcast](https://github.com/badaix/snapcast) — multi-room audio
+  sync; clock-locked reference for satellite-side AEC fallback.
+- [CarlosDerSeher/snapclient](https://github.com/CarlosDerSeher/snapclient)
+  — ESP-IDF native Snapcast client for ESP32-S3.
+- [formatBCE/Respeaker-XVF3800-ESPHome-integration](https://github.com/formatBCE/Respeaker-XVF3800-ESPHome-integration)
+  — reference integration for the Seeed XVF3800-with-XIAO fallback path.
