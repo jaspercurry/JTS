@@ -568,21 +568,34 @@ def check_bluealsa() -> CheckResult:
 async def check_mpd(cfg: Config) -> CheckResult:
     """MPD is optional — only used if the operator installed it for
     local files / radio. Source-aware transport for AirPlay/Spotify/BT
-    runs without MPD."""
+    runs without MPD. Default builds skip MPD entirely; treat
+    "connection refused" as "not installed" rather than as a warning,
+    matching the Spotify-not-configured pattern."""
+    from mpd.asyncio import MPDClient
+    client = MPDClient()
     try:
-        from mpd.asyncio import MPDClient
-        client = MPDClient()
         await client.connect(cfg.mpd_host, cfg.mpd_port)
+    except OSError:
+        # ECONNREFUSED / no route → no MPD on the host. Expected for
+        # the default AirPlay/Spotify/BT-only setup.
+        return CheckResult(
+            "MPD", "ok",
+            "not installed (skipped — only needed for local files / radio)",
+        )
+    try:
         status = await client.status()
-        client.disconnect()
         state = status.get("state", "?")
         return CheckResult("MPD", "ok", f"{cfg.mpd_host}:{cfg.mpd_port} state={state}")
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             "MPD", "warn",
-            f"not reachable at {cfg.mpd_host}:{cfg.mpd_port} ({e}). "
-            f"MPD is optional — only needed for local files / radio.",
+            f"connected to {cfg.mpd_host}:{cfg.mpd_port} but status failed: {e}",
         )
+    finally:
+        try:
+            client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def check_spotify_cache(cfg: Config) -> CheckResult:
@@ -956,12 +969,15 @@ def check_avahi_jasper_control() -> CheckResult:
 
 
 def check_dial_heartbeat() -> CheckResult:
-    """Hit jasper-control's /dial/status — if a dial is on the network
-    and configured to talk to us, it'll have sent at least one UDP log
-    line during boot. Stale heartbeat is a warning (dial offline,
-    asleep, or pointing at a different Pi)."""
+    """Hit jasper-control's /dial/status. The dial firmware doesn't
+    send a true periodic heartbeat — `last_seen_at` only updates when
+    the user touches the dial (encoder turn, button press) or when
+    the dial fires a one-shot dlog line at boot. So a connected-but-
+    idle dial is indistinguishable from an offline one. We can only
+    flag "never seen since the daemon started"; an old age is expected
+    and not a warning."""
     import urllib.request
-    label = "dial heartbeat"
+    label = "dial activity"
     try:
         with urllib.request.urlopen(
             "http://127.0.0.1:8780/dial/status", timeout=3,
@@ -977,21 +993,16 @@ def check_dial_heartbeat() -> CheckResult:
     if last_seen_at is None:
         return CheckResult(
             label, "warn",
-            "no dial UDP log received since jasper-control started. "
-            "Either no dial is on the network, the dial is on a "
-            "different Wi-Fi, or it can't resolve us via mDNS-SD.",
+            "no dial seen since jasper-control started. If you don't "
+            "have a dial, ignore. If you do, check that it's on Wi-Fi "
+            "and resolving us via mDNS-SD.",
         )
     age = data.get("age_seconds")
     ip = data.get("last_seen_ip")
-    if age is not None and age > 300:
-        return CheckResult(
-            label, "warn",
-            f"last dial heartbeat from {ip} was {int(age)}s ago "
-            f"(>5 min). Dial may have lost Wi-Fi or been unplugged.",
-        )
     return CheckResult(
         label, "ok",
-        f"{ip} talking to us {int(age) if age else '<1'}s ago",
+        f"last contact from {ip} {int(age) if age else '<1'}s ago "
+        f"(activity, not heartbeat — an idle dial won't show recent age)",
     )
 
 
