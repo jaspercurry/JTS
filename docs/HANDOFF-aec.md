@@ -298,7 +298,7 @@ pcm.jasper_capture  ← type plug → type dsnoop on Loopback,1,sub0
     │  copy of the audio
     │
     ├──► reader A: jasper-camilla
-    │       master_gain ducking + flat passthrough
+    │       main_volume ducking + flat passthrough
     │       writes to → pcm.jasper_out (dmix on Apple dongle)
     │       → speaker (audible path)
     │
@@ -479,7 +479,7 @@ PLAN.md's tuning roadmap.
 ### Reference tap is pre-CamillaDSP, speaker is post
 
 `jasper_capture` taps the dsnoop on the renderer→camilla
-loopback, *before* CamillaDSP applies `master_gain` ducking.
+loopback, *before* CamillaDSP applies `main_volume` ducking.
 What hits the speaker is what comes out of CamillaDSP, *after*
 ducking. So when the bridge ducks during a wake event, the
 reference signal stays at full level while the speaker output

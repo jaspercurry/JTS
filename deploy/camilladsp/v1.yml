@@ -18,7 +18,9 @@
 # as the only client, dsnoop is functionally equivalent to a direct
 # hw open at zero cost.
 #
-# master_gain mixer is the ducking knob jasper-voice uses on wake.
+# Ducking on wake is via main_volume (set_main_volume websocket call,
+# see jasper/camilla.py Ducker), NOT the master_gain mixer below —
+# that mixer is identity (gain: 0) and exists as a future-EQ hook.
 
 devices:
   samplerate: 48000
