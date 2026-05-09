@@ -225,6 +225,9 @@ scripts/                        Operator helpers (run from laptop)
   switch-voice-provider.sh      Flip JASPER_VOICE_PROVIDER between
                                 gemini / openai / grok
   switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
+  claim-librespot.sh            One-time: OAuth-claim librespot for a
+                                Spotify account so cold-start "play X"
+                                works without phone interaction
 
 tests/                          Hardware-free pytest suite
 ```

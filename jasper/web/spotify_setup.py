@@ -684,6 +684,52 @@ _PLAYLIST_JS = r"""
 """
 
 
+def _claim_speaker_section_html() -> str:
+    """One-time setup notice for cold-start voice playback.
+
+    Linking an account here gives the voice daemon a Web API client
+    for that user, but it does NOT log librespot in as that user.
+    librespot is a separate process with its own Spotify Connect
+    auth — until someone has authenticated it (either by tapping
+    JTS in their Spotify app once, or via the OAuth claim script
+    below), the speaker is invisible to ANY account's `sp.devices()`
+    list and `spotify_play` cold-starts fail with a "device not
+    linked" message.
+
+    Spotify's OAuth flow for librespot redirects to a hardcoded
+    `http://127.0.0.1:8091/login`, so the auth has to land at the
+    Pi via SSH tunnel — we can't drive it from this browser-side
+    page. The script wraps that, plus the start/stop dance.
+    """
+    return """
+<details style="margin-top:2.4em">
+  <summary>Cold-start voice commands (one-time setup)</summary>
+  <div class="claim-section">
+    <p>Voice <code>"play X"</code> from silence (no AirPlay session)
+       needs the Pi's Spotify Connect (librespot) to be logged in to
+       a Spotify account. Linking an account above only sets up the
+       <em>Web API</em> client — librespot is a separate process and
+       needs its own one-time sign-in.</p>
+    <p>Two ways to do that:</p>
+    <ol>
+      <li>Open Spotify on any device on this Wi-Fi, tap the device
+          picker, and select <strong>JTS</strong> once. The credential
+          is then cached locally and survives restarts.</li>
+      <li>Run the OAuth claim script from your laptop — no phone needed:
+          <pre>bash scripts/claim-librespot.sh</pre>
+          It SSH-tunnels librespot's OAuth callback port, opens Spotify
+          auth in your browser, and writes credentials to
+          <code>/var/cache/librespot</code>.</li>
+    </ol>
+    <p class="sub">librespot can only be logged in as one user at a
+       time. Whichever person last claimed it is the account voice
+       cold-starts will play through. Other household members can
+       still use Spotify Connect from their phone normally — that's
+       a separate code path that doesn't depend on this state.</p>
+  </div>
+</details>"""
+
+
 def _management_html(
     registry: Registry, redirect_uri: str, client_id: str, mode: str,
     *, status_msg: str = "",
@@ -710,6 +756,8 @@ def _management_html(
 {''.join(cards)}
 
 {_add_account_form_html()}
+
+{_claim_speaker_section_html()}
 
 <details style="margin-top:2.4em">
   <summary>Spotify app settings (redirect URI, OAuth mode, reset credentials)</summary>
