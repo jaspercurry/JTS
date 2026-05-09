@@ -287,6 +287,60 @@ def test_coordinator_failure_502(server_with_coordinator):
     assert "error" in body
 
 
+# --- /state aggregation ---
+
+
+def test_state_returns_snapshot_with_fail_soft_sections(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """GET /state aggregates across daemons. In a unit test no daemon
+    is reachable (no camilla, no shairport, no voice UDS), so each
+    section comes back as null/None — but the response is still 200
+    with a stable top-level shape."""
+    base, _ = server_with_coordinator
+    state_path = tmp_path / "speaker_volume.json"
+    state_path.write_text('{"listening_level": 73}')
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
+    # Point librespot state at a missing file → empty dict.
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert "ts" in body
+    assert body["voice"]["provider"] == "openai"
+    assert body["voice"]["model"] == "gpt-realtime-2"
+    assert body["voice"]["reachable"] is False
+    assert body["voice"]["session_active"] is False
+    assert body["audio"]["listening_level_percent"] == 73
+    # Camilla isn't reachable from the test → main_volume_db None.
+    assert body["audio"]["main_volume_db"] is None
+    assert body["renderers"]["spotify"]["playing"] is False
+    assert body["active_source"] in {"idle", "airplay"}
+    assert body["satellites"]["dial"]["online"] is False
+
+
+def test_state_502_when_aggregator_raises(
+    server_with_coordinator, monkeypatch,
+):
+    """If _get_state itself blows up — not a fail-soft section, but
+    something unexpected like a JSON serialization error — the route
+    surfaces 502 instead of crashing the server."""
+    import jasper.control.server as srv_mod
+
+    async def boom(**kwargs):  # noqa: ARG001
+        raise RuntimeError("aggregator broken")
+
+    monkeypatch.setattr(srv_mod, "_get_state", boom)
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/state")
+    assert status == 502
+    assert "error" in body
+
+
 # --- /session/* endpoints (phase 3) ---
 
 

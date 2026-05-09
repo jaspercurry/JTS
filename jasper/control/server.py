@@ -213,6 +213,145 @@ async def _voice_socket_command(
     return json.loads(line.decode("utf-8"))
 
 
+async def _get_state(
+    *,
+    camilla_host: str,
+    camilla_port: int,
+    voice_socket_path: str,
+) -> dict[str, Any]:
+    """Aggregate state across daemons for GET /state. Each section
+    fails soft — voice unreachable / camilla restarting / dial never
+    connected → that section reports null instead of erroring out
+    the whole response. Slow probes fan out in parallel so the call
+    completes in ~200 ms typical."""
+    from datetime import datetime, timezone
+
+    from .. import librespot_state
+    from ..camilla import CamillaController
+
+    # Cheap synchronous reads first.
+    voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
+    if voice_provider == "openai":
+        voice_model = os.environ.get("JASPER_OPENAI_MODEL")
+    elif voice_provider == "grok":
+        voice_model = os.environ.get("JASPER_GROK_MODEL")
+    else:
+        voice_model = os.environ.get("JASPER_GEMINI_MODEL")
+
+    listening_level: int | None = None
+    try:
+        path = os.environ.get(
+            "JASPER_VOLUME_STATE_PATH",
+            "/var/lib/jasper/speaker_volume.json",
+        )
+        with open(path) as f:
+            blob = json.load(f)
+        raw_level = blob.get("listening_level")
+        if isinstance(raw_level, (int, float)) and 0 <= raw_level <= 100:
+            listening_level = int(raw_level)
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
+    # Slow probes — fan out in parallel.
+    async def _camilla_volume() -> float | None:
+        try:
+            cam = CamillaController(host=camilla_host, port=camilla_port)
+            return await cam.get_volume_db(best_effort=True)
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def _airplay_playing() -> bool | None:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "busctl", "--system", "call",
+                "org.mpris.MediaPlayer2.ShairportSync",
+                "/org/mpris/MediaPlayer2",
+                "org.freedesktop.DBus.Properties", "Get", "ss",
+                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=2.0,
+            )
+            if proc.returncode != 0:
+                return None
+            return b'"Playing"' in stdout
+        except (FileNotFoundError, asyncio.TimeoutError):
+            return None
+
+    async def _voice_status() -> dict | None:
+        try:
+            return await _voice_socket_command(
+                voice_socket_path, "STATUS", timeout=2.0,
+            )
+        except (FileNotFoundError, OSError, asyncio.TimeoutError, RuntimeError):
+            return None
+
+    cam_db, airplay, voice_st = await asyncio.gather(
+        _camilla_volume(),
+        _airplay_playing(),
+        _voice_status(),
+    )
+
+    spotify_blob = librespot_state.read(
+        os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
+    )
+    spotify = {
+        "playing": bool(spotify_blob.get("playing", False)),
+        "track_id": spotify_blob.get("track_id"),
+        "uri": spotify_blob.get("uri"),
+        "session_active": bool(spotify_blob.get("session_active", False)),
+    }
+
+    voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
+    if voice_session:
+        active_source: str = "voice"
+    elif spotify["playing"]:
+        active_source = "spotify"
+    elif airplay:
+        active_source = "airplay"
+    else:
+        active_source = "idle"
+
+    dial = dict(_dial_heartbeat)
+    if dial["last_seen_at"] is not None:
+        age = round(time.time() - dial["last_seen_at"], 1)
+        dial["age_seconds"] = age
+        dial["online"] = age < 30.0
+    else:
+        dial["age_seconds"] = None
+        dial["online"] = False
+
+    return {
+        "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "voice": {
+            "provider": voice_provider,
+            "model": voice_model,
+            "session_active": voice_session,
+            "spend_allowed": (voice_st or {}).get("spend_allowed"),
+            "connection_paused": (voice_st or {}).get("connection_paused"),
+            "reachable": voice_st is not None,
+        },
+        "audio": {
+            "main_volume_db": (
+                round(cam_db, 2) if cam_db is not None else None
+            ),
+            "listening_level_percent": listening_level,
+        },
+        "renderers": {
+            "spotify": spotify,
+            "airplay": (
+                None if airplay is None else {"playing": airplay}
+            ),
+        },
+        "active_source": active_source,
+        "satellites": {
+            "dial": dial,
+        },
+    }
+
+
 async def _toggle_transport() -> dict:
     """Build renderer + Spotify-router clients in the current event
     loop, dispatch a 'toggle' transport action, then close. We rebuild
@@ -346,6 +485,25 @@ def _make_handler(
                     return
                 self._send_json(self._volume_payload(percent))
                 return
+            if self.path == "/state":
+                # Cross-daemon snapshot — voice / audio / renderers /
+                # satellites. Polled by the /voice web UI for live
+                # status, used by jasper-doctor for one-shot health,
+                # and consumable from `curl jts.local:8780/state | jq`
+                # for ad-hoc debugging. ~200 ms typical (mostly the
+                # parallel busctl + camilla WS probes).
+                try:
+                    state = asyncio.run(_get_state(
+                        camilla_host=camilla_host,
+                        camilla_port=camilla_port,
+                        voice_socket_path=voice_socket_path,
+                    ))
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/state aggregation failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                self._send_json(state)
+                return
             if self.path == "/dial/status":
                 # Heartbeat snapshot — used by jasper-doctor's
                 # "is the dial actually talking to us?" check.
@@ -398,6 +556,10 @@ def _make_handler(
                     logger.exception("adjust volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
+                logger.info(
+                    "event=volume.adjust delta_pct=%d new_pct=%d client=%s",
+                    delta_pct, new_pct, self.address_string(),
+                )
                 self._send_json(self._volume_payload(new_pct))
                 return
 
@@ -433,6 +595,10 @@ def _make_handler(
                     logger.exception("set volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
+                logger.info(
+                    "event=volume.set new_pct=%d client=%s",
+                    new_pct, self.address_string(),
+                )
                 self._send_json(self._volume_payload(new_pct))
                 return
 
