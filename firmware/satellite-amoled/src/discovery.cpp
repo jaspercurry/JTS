@@ -16,7 +16,7 @@ ControlEndpoint discoverControlEndpoint() {
     // hostname, so swapping Pi hardware doesn't require re-flashing.
     int n = MDNS.queryService("jasper-control", "tcp");
     if (n > 0) {
-        IPAddress mip = MDNS.IP(0);
+        IPAddress mip = MDNS.address(0);
         if ((uint32_t)mip != 0) {
             ep.ip = mip;
             ep.hostOrIp = mip.toString();   // IP is fine for HTTPClient

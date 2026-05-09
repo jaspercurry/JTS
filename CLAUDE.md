@@ -268,17 +268,52 @@ even if there's no dial — it costs <10 MB RAM idle and the volume
 endpoints are useful for any LAN client (Home Assistant, shortcuts,
 etc.).
 
-### AMOLED satellite (Phase 0 done, Phase 1 in progress)
+### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Phase 0 (mic capture firmware) shipped 2026-05-08. Project at
-`firmware/satellite-amoled/`, captures 16 kHz / 16-bit mono PCM over
-USB-CDC. Validated against music playback. See `docs/satellites.md`
-"Hardware gotchas" for the non-obvious ES8311 init quirks
-(I²S stereo + demux for slot alignment; REG02 pre_multi=3 for
-SCLK-derived MCLK; the codec sounds bitcrushed without the second).
-Phase 1 (WiFi/Improv + LVGL Tap-to-Talk + UDP audio to Pi + Pi-side
-receiver) is the next milestone.
+Project at `firmware/satellite-amoled/`. **Arduino-ESP32 v3.x via
+pioarduino** (the dial stays on v2.x intentionally — see
+`docs/satellites.md` "Toolchain — split intentionally").
+
+Shipped:
+- Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
+  USB-CDC. Validated against music playback. See
+  `docs/satellites.md` "Audio init footguns" for the non-obvious
+  ES8311 init quirks (I²S stereo + demux for slot alignment;
+  REG02 pre_multi=3 for SCLK-derived MCLK).
+- Phase 1.1 (2026-05-08) — WiFi join from NVS-stored creds,
+  Improv-over-Serial provisioning, mDNS-SD discovery of
+  `_jasper-control._tcp`, dlog over USB-CDC + UDP `:5514`.
+- Phase 1.2 (2026-05-09) — on-screen connection-status indicator
+  on the 368×448 SH8601 AMOLED via Arduino_GFX. Direct draws (no
+  LVGL yet); colored circle + label keyed off the `Status` enum;
+  `setStatus()` helper redraws inline so PROVISION→ONLINE
+  transitions show up immediately. See "Display init footguns"
+  in `docs/satellites.md` for the SH8601 + TCA9554 reset
+  sequence and Arduino_GFX subclass gotchas.
+
+Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL "Tap
+to Talk" surface, control-plane HTTP, I²S mic capture gated on
+press, UDP audio stream to a new Pi-side `MicSource` endpoint.
+
+**Flash gotcha:** `write_flash 0x0 firmware.factory.bin` overwrites
+the NVS partition (the merged factory image has 0xFF padding over
+the 0x9000–0xe000 NVS region) — the satellite loses its WiFi
+creds and needs re-provisioning via Improv. For incremental
+flashes that preserve NVS, use `pio run -t upload` (piecewise:
+bootloader at 0x0, partitions at 0x8000, boot_app0 at 0xe000,
+firmware at 0x10000). NVS at 0x9000 (size 0x5000) sits between
+partitions and boot_app0 untouched.
+
+**Local PIO setup** for the v3.x toolchain (laptop-side):
+pioarduino requires Python ≥ 3.10 — the JTS project venv is
+3.9 — so build inside a separate Python 3.11 venv with
+`brew install python@3.11 && python3.11 -m venv /tmp/jts-pio-venv
+&& /tmp/jts-pio-venv/bin/pip install platformio`. Prefix `pio`
+invocations with `PATH="/opt/homebrew/bin:$PATH"` so PIO's
+subprocess can find git for the Improv-WiFi library install.
+The Pi already has Python 3.13 + PIO and builds cleanly without
+the dance.
 
 To capture audio for testing or SNR comparisons:
 

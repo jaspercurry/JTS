@@ -81,10 +81,57 @@
 // streaming, "press to record", etc. without needing touch yet.
 #define PIN_BTN_BOOT         0
 
-// --- Display + touch (TBD — fill in at Phase 1/4) ---
+// --- AMOLED display: SH8601 over QSPI ---
 //
-// SH8601 AMOLED on QSPI: SCLK=GPIO11, D0..D3=GPIO4..7, CS=GPIO12.
-// Reset is routed through TCA9554 P0 (not a direct GPIO).
-// FT3168 touch: I²C addr 0x38 on the shared bus, INT=GPIO21,
-// reset via TCA9554 P1.
-// Filling in the #defines once we get to that phase.
+// 368×448 SH8601 controller on a 4-bit Quad-SPI bus. Distinct from
+// standard 4-line SPI: command + 24-bit address are clocked on a
+// single line (D0), then payload uses all four data lines (D0..D3).
+// Arduino_GFX's `Arduino_ESP32QSPI` databus implements the framing.
+//
+// Reset is NOT on a direct GPIO — it's behind the TCA9554 expander
+// (see below). Pass GFX_NOT_DEFINED to Arduino_SH8601's reset arg
+// and toggle it externally before calling gfx->begin().
+#define PIN_LCD_QSPI_CS    12
+#define PIN_LCD_QSPI_SCLK  11
+#define PIN_LCD_QSPI_D0     4
+#define PIN_LCD_QSPI_D1     5
+#define PIN_LCD_QSPI_D2     6
+#define PIN_LCD_QSPI_D3     7
+
+// Native panel dimensions, before LCD_ROTATION is applied. Use
+// s_gfx->width() / height() in render code if you need the
+// post-rotation values.
+#define LCD_PANEL_WIDTH   368
+#define LCD_PANEL_HEIGHT  448
+
+// Output rotation. **Stuck at 0 or 2 (= 180°) until we add software
+// rotation support.** Per Arduino_GFX's Arduino_SH8601.cpp ("SH8601
+// does not support rotation"), the chip's MADCTL exposes only X/Y
+// axis flips — there's no MV (row/column exchange) bit, so the
+// hardware can't do 90°/270°. Setting LCD_ROTATION=1 or 3 makes the
+// library report a swapped 448×368 logical canvas while the chip's
+// column window is still 368, and writes spill over → garbage VRAM.
+//
+//   0 = native (USB-C ends up on the LEFT side of the screen content)
+//   2 = 180° flip (USB-C on the RIGHT side)
+//
+// Software rotation (render to a PSRAM framebuffer, transpose on
+// push) is a Phase 1.2.x follow-up if a portrait hold matters.
+#define LCD_ROTATION  0
+
+// --- TCA9554 GPIO expander ---
+//
+// Three peripherals hide behind this expander on the I²C bus
+// (0x20 by default; A0=A1=A2=0). Holding any of these LOW keeps
+// the corresponding peripheral in reset / unpowered.
+#define TCA9554_I2C_ADDR        0x20
+#define TCA9554_EXIO_LCD_RESET     0   // P0 → SH8601 RESN (active low)
+#define TCA9554_EXIO_TP_RESET      1   // P1 → FT3168 RST  (active low)
+#define TCA9554_EXIO_DSI_PWR_EN    2   // P2 → display power rail enable
+
+// --- Capacitive touch (Phase 1.4) ---
+//
+// FT3168 on the shared I²C bus at 0x38. INT line is a direct GPIO;
+// reset is via TCA9554 P1.
+#define PIN_TP_INT             21
+#define FT3168_I2C_ADDR      0x38

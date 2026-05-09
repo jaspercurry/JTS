@@ -113,8 +113,14 @@ that follows.
 
 ### Jasper AMOLED Satellite — Waveshare ESP32-S3-Touch-AMOLED-1.8
 
-**Status:** Hardware in hand. No firmware yet. Phase 0 (mic
-characterization) is the next step — see ["Roadmap"](#roadmap) below.
+**Status:** Phase 0 (mic capture, 2026-05-08) and Phase 1.1 (WiFi +
+Improv-over-Serial provisioning) shipped. Phase 1.2 (on-screen
+connection-status indicator on the SH8601 AMOLED) shipped 2026-05-08
+pending hardware validation — colored circle + text label drawn
+directly with Arduino_GFX (no LVGL yet), redraws on `Status` enum
+transitions, comes up within ~100 ms of power-on so the user sees
+"Awaiting WiFi" before the WiFi join even begins. See
+["Roadmap"](#roadmap) for the full phase list.
 
 **Hardware:** ESP32-S3 (8 MB PSRAM, 16 MB flash), 1.8" 368×448 AMOLED
 (SH8601, QSPI), FT3168 capacitive touch, **ES8311 I²S codec with
@@ -356,6 +362,44 @@ device-state tie-breakers. Concretely:
 All satellites talk to the Pi via the same surfaces. **New satellites
 should reuse these patterns rather than inventing new ones.**
 
+### Toolchain — split intentionally
+
+The two firmware projects pin to different PlatformIO platforms today:
+
+- **`firmware/satellite-amoled/`** uses
+  [pioarduino/platform-espressif32 @ 55.03.38-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.38-1)
+  (Arduino-ESP32 v3.3.8 on ESP-IDF v5.5.4). v3.x is required because
+  `Arduino_GFX`'s SH8601 driver depends on `esp32-hal-periman.h`,
+  which doesn't exist in v2.x.
+- **`firmware/dial/`** stays on PlatformIO's stock
+  `espressif32@^6.7.0` (Arduino-ESP32 v2.x). The deployed dial works
+  fine and the LovyanGFX/LVGL/FastLED stack it uses doesn't need
+  v3.x APIs — keeping the dial on v2.x avoids a destructive re-flash
+  of a working device.
+
+If we ever rebuild the dial firmware substantively (or stock
+`espressif32` stops tracking platform updates), migrating it to v3.x
+is mechanical:
+- `MDNS.IP(idx)` was renamed to `MDNS.address(idx)`. `MDNS.port(idx)`
+  is unchanged.
+- The LEDC PWM API moved from channel-keyed (`ledcSetup` +
+  `ledcAttachPin` + `ledcWrite(channel, val)`) to pin-keyed
+  (`ledcAttach(pin, freq, res)` + `ledcWrite(pin, val)`).
+
+The legacy `<driver/i2s.h>` API survives in v3.x as a deprecated
+compatibility shim — the satellite's audio path uses it intentionally;
+migrating to `<driver/i2s_std.h>` has a PSRAM/GDMA gotcha (see "Audio
+init footguns" below).
+
+Local PlatformIO setup for the satellite (v3.x via pioarduino) needs
+Python ≥ 3.10. On macOS: `brew install python@3.11` then make a venv
+with that Python, `pip install platformio`, and prefix `pio`
+invocations with `PATH="/opt/homebrew/bin:$PATH"` so PIO's subprocess
+can find git (needed for the Improv-WiFi library install). The Pi
+already has Python 3.13 + PIO at `/opt/jasper/.venv/bin/pio`. Stock
+`espressif32@^6.7.0` (the dial) builds fine on the Pi's PIO without
+the Python-version dance.
+
 ### Discovery — `_jasper-control._tcp` over mDNS-SD
 
 The Pi advertises `_jasper-control._tcp` on port 8780 via avahi
@@ -515,7 +559,9 @@ battery operation. Per-device roadmap below.
 | Phase | Description | Status |
 |---|---|---|
 | 0 | **Mic characterization.** Built an end-to-end PlatformIO firmware (boot + I²C scan + ES8311 init + I²S RX + USB-CDC PCM stream) and validated it captures clean 16 kHz mono audio across a typical room. **PASSED 2026-05-08** — music plays back recognizably, voice is clear; capture WAVs in `captures/`. Took 5 firmware iterations to get past two non-obvious bugs (see "Hardware gotchas" below). | ✅ done |
-| 1 | **Push-to-talk firmware.** PlatformIO project mirroring `firmware/dial/` skeleton — Improv, mDNS-SD, status LED → status icon on AMOLED, watchdog, plus LVGL "Tap to talk" button + I²S mic capture only while pressed + UDP audio stream to Pi for the duration of the press. New Pi-side endpoint receiving the audio. | ⬜ not started |
+| 1.1 | **WiFi + Improv-over-Serial provisioning.** Cred storage in NVS, mDNS-SD discovery of `_jasper-control._tcp`, dlog over USB-CDC + UDP :5514, watchdog reconnect. Mirrors `firmware/dial/`'s skeleton. | ✅ shipped 2026-05-08 |
+| 1.2 | **On-screen connection-status indicator.** SH8601 AMOLED (368×448) over QSPI driven directly with Arduino_GFX (no LVGL yet — direct draws). Colored circle + label keyed off the `Status` enum, redrawn only on transitions. Comes up before WiFi join so the user sees a "Boot" / "Awaiting WiFi" frame within ~100 ms of power-on. | ✅ shipped 2026-05-08, pending on-device validation |
+| 1.3+ | **Push-to-talk + audio.** Capacitive touch driver (FT3168), LVGL "Tap to Talk" surface, control-plane HTTP POSTs (`/session/start`, `/session/end`), I²S mic capture gated on touch, UDP audio stream to a new Pi-side endpoint. Absorbs the remainder of the Phase 1 scope. | ⬜ not started |
 | 2 | **Always-streaming "second mic" mode.** Settings toggle on the AMOLED. Satellite streams continuously when enabled. Pi gains a second `MicSource` and runs openWakeWord on the satellite stream as a parallel source. **This is where multi-mic arbitration lands.** | ⬜ not started — depends on Phase 1 |
 | 3 | **On-device wake (microWakeWord).** Port the "hey_jarvis" pretrained microWakeWord model onto the satellite. Only stream after wake fires locally. Required only if battery operation is desired; AC-powered satellite is fine on Phase 2. | ⬜ not started — depends on Phase 2 |
 | 4 | **Display polish.** Now-playing card with album art (368×448 has room for a real art tile), clock, weather glance, listening orb mirroring the dial's. | 🔮 future — independent of audio phases |
@@ -594,6 +640,36 @@ FT3168 0x38 (only after release from TCA9554 P1 reset), PCF85063
    on the Pi side must search for the bare marker `"[stream-start]"`
    (no newline in the search) and skip past whatever line ending
    follows.
+
+**Display init footguns (learned during Phase 1.2):**
+
+7. **SH8601 reset is on the TCA9554 expander (P0), not a direct
+   GPIO.** Arduino_GFX's `Arduino_SH8601` defaults to driving reset
+   over a pin you specify. Our reset line is behind the I²C expander
+   at 0x20, so we pass `GFX_NOT_DEFINED` to the constructor and toggle
+   reset over I²C ourselves before calling `gfx->begin()` —
+   sequence: assert reset (P0 low) for 20 ms, release (P0 high) for
+   20 ms. Without the external toggle, the panel never wakes from
+   reset and `begin()` reports success but the screen stays black.
+
+8. **DSI_PWR_EN (TCA9554 P2) controls the panel's power rail.**
+   It must be driven HIGH before reset is released, otherwise the
+   SH8601 has no power to come up with. ~5 ms settle between
+   power-enable and reset-release is sufficient.
+
+9. **Use `Arduino_SH8601 *` not `Arduino_GFX *` if you need
+   `setBrightness()`.** The brightness API is on the `Arduino_OLED`
+   subclass, not the GFX core. A pointer typed as `Arduino_GFX *` will
+   compile-error on `setBrightness()` even though the underlying
+   object supports it. Drawing primitives (`fillScreen`, `fillCircle`,
+   `print`) are inherited from `Arduino_GFX` so the more-specific
+   pointer type costs nothing.
+
+10. **Arduino_GFX has no `BLACK`/`WHITE` macro defines.** Other GFX
+    libraries (Adafruit_GFX, TFT_eSPI) define color constants;
+    moononournation's library does not. Use raw RGB565 hex values
+    (`0x0000`, `0xFFFF`, `0xF800`, `0x07E0`, `0x001F`) or define your
+    own constants at the top of your display module.
 
 ### Cross-cutting
 

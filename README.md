@@ -147,11 +147,17 @@ jasper-voice to consume. Disabled by default — see § below.
   now-playing) have firmware scaffold but aren't yet on-device
   validated.
 - 🔄 AMOLED touchscreen + mic satellite
-  (Waveshare ESP32-S3-Touch-AMOLED-1.8) — Phase 0 (mic capture
-  firmware) shipped, Phase 1 (WiFi + LVGL Tap-to-Talk + UDP audio
-  to Pi) in progress. See [docs/satellites.md](docs/satellites.md)
-  for the family overview, multi-mic arbitration design, and
-  per-device roadmap.
+  (Waveshare ESP32-S3-Touch-AMOLED-1.8) — Phase 0 (mic capture)
+  + Phase 1.1 (WiFi/Improv-over-Serial provisioning, mDNS-SD,
+  dlog) + Phase 1.2 (on-screen connection-status indicator on
+  the SH8601 AMOLED via Arduino_GFX) shipped. Phase 1.3+ (LVGL
+  "Tap to Talk", capacitive touch, UDP audio to Pi-side
+  receiver) is the next milestone. Firmware bumped to
+  Arduino-ESP32 v3.x via pioarduino for the SH8601 driver path;
+  the dial intentionally stays on v2.x. See
+  [docs/satellites.md](docs/satellites.md) for the family
+  overview, multi-mic arbitration design, and per-device
+  roadmap.
 
 Known marginal items: the chip's onboard AEC isn't usable in this
 topology (we drive the speaker from a separate USB DAC, not the
