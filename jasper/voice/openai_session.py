@@ -195,19 +195,6 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._released = False
         self._turn_lost = False
         self._server_turn_complete = False
-        # True between `response.function_call_arguments.done` and the
-        # next `response.done`. A single user-facing turn produces
-        # multiple OpenAI responses when the model uses a tool:
-        #   response 1: function_call_arguments → response.done (no audio)
-        #   <client sends conversation.item.create(function_call_output)
-        #    + response.create>
-        #   response 2: response.output_audio.delta × N → response.done
-        # We must NOT flip `_server_turn_complete` on response 1's done
-        # — if we do, the daemon's idle watchdog ends the turn before
-        # response 2's audio plays, audibly cutting the model off
-        # mid-sentence. The flag tells the dispatcher to defer
-        # turn-completion to the second response.done.
-        self._tool_call_in_flight = False
         # Polyphase resampler state, persists across send_audio calls.
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
@@ -1127,11 +1114,14 @@ class OpenAIRealtimeConnection(LiveConnection):
             return
 
         if function_calls:
-            # Tool round. Mark in-flight BEFORE we await any tool
-            # dispatch — if a server message races our send_event,
-            # the flag prevents the next response.done from being
-            # mistaken for the final.
-            turn._tool_call_in_flight = True
+            # Tool round. A single user-facing turn produces multiple
+            # OpenAI responses when the model uses a tool:
+            #   response 1: function_call(s) → response.done (this branch)
+            #   <client sends function_call_output items + response.create>
+            #   response 2: response.output_audio.delta × N → response.done
+            # We MUST NOT flip server_turn_complete here — the audio
+            # answer is still in flight. The no-function_calls branch
+            # below is the only place that closes the turn.
             for fc in function_calls:
                 await self._dispatch_function_call(fc)
             # Single response.create at the end of the round, regardless

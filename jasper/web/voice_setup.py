@@ -86,9 +86,17 @@ PROVIDERS = [
             {"id": "gemini-3.1-flash-live-preview", "label": "3.1 Flash Live (preview, recommended)"},
             {"id": "gemini-2.5-flash-native-audio-preview-12-2025", "label": "2.5 Flash native-audio (fallback)"},
         ],
+        # Gender/style hints sourced from Google's prebuilt-voices
+        # catalogue (ai.google.dev/gemini-api/docs/speech-generation).
         "voices": [
-            "Aoede", "Charon", "Fenrir", "Kore",
-            "Puck", "Leda", "Orus", "Zephyr",
+            {"id": "Aoede", "label": "Aoede — feminine, breezy"},
+            {"id": "Charon", "label": "Charon — masculine, informative"},
+            {"id": "Fenrir", "label": "Fenrir — masculine, excitable"},
+            {"id": "Kore", "label": "Kore — feminine, firm"},
+            {"id": "Puck", "label": "Puck — masculine, upbeat"},
+            {"id": "Leda", "label": "Leda — feminine, youthful"},
+            {"id": "Orus", "label": "Orus — masculine, firm"},
+            {"id": "Zephyr", "label": "Zephyr — feminine, bright"},
         ],
     },
     {
@@ -108,9 +116,21 @@ PROVIDERS = [
             {"id": "gpt-realtime-mini", "label": "gpt-realtime-mini (cheaper, no reasoning)"},
             {"id": "gpt-realtime-1.5", "label": "gpt-realtime-1.5 (older GA)"},
         ],
+        # Gender/style hints sourced from OpenAI's voice catalogue
+        # (platform.openai.com/docs/guides/realtime). The user picked
+        # `ash` once expecting feminine and got masculine — these
+        # hints exist to head that off.
         "voices": [
-            "marin", "cedar", "alloy", "ash", "ballad",
-            "coral", "echo", "sage", "shimmer", "verse",
+            {"id": "marin", "label": "marin — feminine, warm"},
+            {"id": "cedar", "label": "cedar — masculine, calm"},
+            {"id": "alloy", "label": "alloy — neutral, balanced"},
+            {"id": "ash", "label": "ash — masculine, soft"},
+            {"id": "ballad", "label": "ballad — masculine, expressive"},
+            {"id": "coral", "label": "coral — feminine, bright"},
+            {"id": "echo", "label": "echo — masculine, smooth"},
+            {"id": "sage", "label": "sage — feminine, even"},
+            {"id": "shimmer", "label": "shimmer — feminine, light"},
+            {"id": "verse", "label": "verse — masculine, melodic"},
         ],
         # gpt-realtime-2 specific: reasoning effort. Field is silently
         # dropped on non-`-2` models by the adapter.
@@ -146,7 +166,15 @@ PROVIDERS = [
         "models": [
             {"id": "grok-voice-think-fast-1.0", "label": "grok-voice-think-fast-1.0 (recommended)"},
         ],
-        "voices": ["eve", "ara", "rex", "sal", "leo"],
+        # Gender/style hints sourced from xAI's voice catalogue
+        # (docs.x.ai/docs/guides/voice/agent).
+        "voices": [
+            {"id": "eve", "label": "eve — feminine, warm"},
+            {"id": "ara", "label": "ara — feminine, casual"},
+            {"id": "rex", "label": "rex — masculine, confident"},
+            {"id": "sal", "label": "sal — masculine, casual"},
+            {"id": "leo", "label": "leo — masculine, smooth"},
+        ],
     },
 ]
 
@@ -345,9 +373,17 @@ def _voice_select_html(provider: dict, current: str) -> str:
     rows = []
     seen = set()
     for v in provider["voices"]:
-        sel = " selected" if v == current else ""
-        rows.append(f'<option value="{html.escape(v)}"{sel}>{html.escape(v)}</option>')
-        seen.add(v)
+        # `voices` entries are {"id": ..., "label": ...} dicts. Plain-
+        # string entries are accepted as a back-compat path so an
+        # operator hand-editing this file with a new voice doesn't
+        # have to remember the schema.
+        if isinstance(v, str):
+            vid, vlabel = v, v
+        else:
+            vid, vlabel = v["id"], v["label"]
+        sel = " selected" if vid == current else ""
+        rows.append(f'<option value="{html.escape(vid)}"{sel}>{html.escape(vlabel)}</option>')
+        seen.add(vid)
     if current and current not in seen:
         rows.insert(
             0,
