@@ -322,12 +322,13 @@ right:
    "back to music." Without it, users won't know the window is
    open.
 
-The current `JASPER_LIVE_CONTEXT_RESET_SEC=60` value (lowered from
-300) is a UX compromise for the no-AEC era: rapid-fire single-shot
-queries reset cleanly between groups but quick-enough follow-ups
-still share context. When the follow-up window lands, this knob
-becomes less critical — context resets when the follow-up window
-times out (re-armed wake), not on a clock.
+(Historical note: this section used to discuss `JASPER_LIVE_CONTEXT_RESET_SEC`
+as a UX knob trading rapid-fire reset against follow-up coherence.
+That env var was removed 2026-05-09 — OpenAI's `truncation: "auto"`
+and Gemini's session-resumption handle handle context management
+natively, and the wake-loop's audio buffer makes any natural
+reconnect lossless. The follow-up window itself doesn't depend on
+context reset.)
 
 ### Un-duck on `turn_complete`, not at turn end
 

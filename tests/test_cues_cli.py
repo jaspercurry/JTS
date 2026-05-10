@@ -21,17 +21,20 @@ class _FakeBackend:
 @pytest.fixture
 def cli_env(tmp_path, monkeypatch):
     """Standard env for CLI tests: writable sounds dir, deterministic
-    hostname/voice, fake API key (so the CLI builds a backend), and
-    monkey-patched generator that doesn't hit the network."""
+    hostname/voice, fake API key (so the factory builds a backend),
+    and monkey-patched factory that doesn't hit the network."""
     monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
     monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://test.local")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
     monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
     monkeypatch.setenv("GEMINI_API_KEY", "fake-key-for-tests")
     fake = _FakeBackend()
-    # Replace GeminiTTSGenerator constructor with one that returns
-    # our fake. The CLI calls `GeminiTTSGenerator(api_key=..., voice=...)`
-    # so we patch the class symbol cli imports under.
-    monkeypatch.setattr(cli, "GeminiTTSGenerator", lambda **kw: fake)
+    # The CLI builds its backend via `build_cue_tts_backend(cfg)` —
+    # patch that to return our deterministic fake regardless of
+    # provider so tests don't hit any provider's network.
+    monkeypatch.setattr(
+        cli, "build_cue_tts_backend", lambda cfg: (fake, "Aoede"),
+    )
     return tmp_path, fake
 
 
@@ -102,11 +105,24 @@ def test_regenerate_unknown_cue_returns_error(cli_env, capsys):
 
 
 def test_regenerate_without_api_key_reports_runtime_error(tmp_path, monkeypatch, capsys):
+    """With no provider key configured anywhere, the CLI degrades
+    gracefully (no backend, regen exits non-zero with explanation)
+    rather than crashing on a NoneType attribute access."""
     monkeypatch.setenv("JASPER_SOUNDS_DIR", str(tmp_path))
     monkeypatch.setenv("JASPER_MANAGEMENT_URL", "https://test.local")
     monkeypatch.setenv("JASPER_GEMINI_VOICE", "Aoede")
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
-    monkeypatch.delenv("JASPER_GEMINI_API_KEY", raising=False)
+    # All three provider keys must be absent for the factory to
+    # return None — otherwise the fallback path picks one of them.
+    for key in (
+        "GEMINI_API_KEY", "JASPER_GEMINI_API_KEY",
+        "OPENAI_API_KEY", "XAI_API_KEY",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    # Also keep the file-loader from picking up real /etc/jasper
+    # creds on a developer machine that has them.
+    monkeypatch.setattr(
+        "jasper.cues.cli.load_env_files", lambda *_: None,
+    )
     code = cli.main(["regenerate"])
     assert code == 3  # RuntimeError mapped to exit 3
     captured = capsys.readouterr()

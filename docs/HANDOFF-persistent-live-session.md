@@ -152,7 +152,6 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 - `live connection: 5 consecutive identical reconnect failures (<exc>, code=<n>, <reason>) — firing cant_reach_cloud cue` (post-rework: tight-retry-loop detector)
 - `live turn: started (activity_start sent)`
 - `live turn: ended in Xms, M chunks received`
-- `live context reset: idle for Xs > threshold; reopening with no resumption handle`
 
 ## How to actually test this
 

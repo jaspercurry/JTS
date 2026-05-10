@@ -9,18 +9,27 @@ from collections import deque
 from enum import Enum
 
 from .accounts import Registry, maybe_migrate_legacy
+from .audio_buffer import (
+    ACQUIRE_BUFFER_MAX_FRAMES,
+    drain_acquire_buffer,
+)
 from .audio_io import MicCapture, TtsPlayout
-from .cues import AudioCueManager, GeminiTTSGenerator
+from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .camilla import CamillaController, Ducker
+from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
+from .google_creds import GoogleClients, build_google_clients
 from .renderer import RendererClient
 from .spotify_router import Router, build_clients
 from .subway import SubwayClient
+from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
+from .tools.calendar import make_calendar_tools
+from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
+from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore, pricing_for_provider
@@ -73,6 +82,17 @@ SYSTEM_INSTRUCTION = (
     "  User: 'Set volume to 30.'     → [set_volume 30] (speak the new `percent`, e.g. 'Volume thirty.')\n"
     "  User: 'What's the volume?'    → [get_volume] 'Volume is at 70%.'\n"
     "  User: 'Mute.'                 → [mute] 'Muted.'\n"
+    "  User: 'Set a timer for 5 minutes.' → [set_timer 300] (speak `confirm`, e.g. 'Set a timer for 5 minutes.')\n"
+    "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`, e.g. 'Set a pasta timer for 10 minutes.')\n"
+    "  User: 'How much time left on my timer?' / 'What timers do I have?' → [list_timers] 'Three minutes and twenty seconds left.' (or summarise multiple)\n"
+    "  User: 'Cancel the pasta timer.' / 'Stop the 5-minute timer.' → [cancel_timer 'pasta'] (speak `confirm`, e.g. 'Cancelled the pasta timer.')\n"
+    "  User: 'What's on my calendar today?'         → [calendar_today_summary] (read out events with start times)\n"
+    "  User: 'What's on Brittany's calendar today?' → [calendar_today_summary account='brittany']\n"
+    "  User: 'What's coming up this afternoon?'     → [calendar_upcoming hours=6]\n"
+    "  User: 'What's on this week?'                 → [calendar_upcoming hours=168]\n"
+    "  User: 'Any new emails?' / 'What's in my inbox?' → [gmail_unread_summary] (read sender + subject for each)\n"
+    "  User: 'Did Brittany get any emails?'         → [gmail_unread_summary account='brittany']\n"
+    "  User: 'Read me the first one.' / 'Open that email.' → [gmail_read_thread thread_id='<id-from-prior-summary>'] (read sender, then body)\n"
     "  User: 'Who won the game?'     → 'Sorry, I don't have sports scores.'\n"
     "Examples of INCORRECT style (do not produce these):\n"
     "  'Sure! It's 9:47. Anything else I can help you with?'\n"
@@ -130,7 +150,41 @@ SYSTEM_INSTRUCTION = (
     "speaker's home direction, so a bare 'when's the next train' "
     "passes empty strings. Voice answer style: 'Next uptown D trains "
     "in 5, 12, and 19 minutes.' or, when station/line are obvious, "
-    "just 'Next train in 4 minutes, then 11 and 17.'"
+    "just 'Next train in 4 minutes, then 11 and 17.' "
+    # Timer rules.
+    "For timer requests, call set_timer with the duration in seconds — "
+    "convert the user's spoken duration ('5 minutes' → 300, '1 hour' "
+    "→ 3600, '90 seconds' → 90). When the user names the timer "
+    "('pasta timer', 'laundry'), pass that as the label arg. Speak "
+    "the response's `confirm` field verbatim. Multiple timers run in "
+    "parallel — setting a new one does NOT cancel existing ones. The "
+    "speaker plays the announcement when the timer fires; do NOT "
+    "promise to remind or follow up — the system handles it. For "
+    "'how much time left' / 'what timers do I have' / 'list my "
+    "timers', call list_timers and speak a brief summary using the "
+    "remaining field of each entry. For 'cancel the X timer', call "
+    "cancel_timer with the label or duration as the query; on "
+    "success speak `confirm`. If cancel_timer returns "
+    "reason='ambiguous', read out the matches' durations and ask "
+    "the user which one to cancel. "
+    # Calendar / Gmail rules.
+    "For calendar questions, call calendar_today_summary (today's events) "
+    "or calendar_upcoming (next N hours; pass the hours arg). For email "
+    "questions, call gmail_unread_summary; if the user then asks to read "
+    "or open one, call gmail_read_thread with the thread_id from the "
+    "prior summary's response. The Google tools route per household "
+    "member: when the user names a person ('Brittany's calendar', "
+    "'Jasper's email'), pass that name as the `account` arg; when no "
+    "person is named, OMIT the account arg and the default account is "
+    "used. If the user names someone who isn't in the linked-accounts "
+    "list (provided in this prompt's addendum), ask which of the "
+    "linked accounts to use — list them by name. On a 'Google access "
+    "for X can't be refreshed' error, speak it verbatim — the user "
+    "needs to re-link at the wizard. Voice answer style: read events "
+    "as 'You have <N> things today: <summary> at <time>, <summary> at "
+    "<time>...'; for emails read 'You have <N> unread: <sender> about "
+    "<subject>, <sender> about <subject>...' — keep it scannable, the "
+    "user can ask for full details on any one."
 )
 
 # Refractory after a turn ends before the wake detector is re-armed.
@@ -155,6 +209,7 @@ SYSTEM_INSTRUCTION = (
 # pre-persistent-connection era when each wake cost a Live slot).
 # Both were over-correcting for a problem refractory can't solve.
 WAKE_REFRACTORY_SEC = 0.7
+
 
 # End-of-utterance: fire activity_end once the user has been silent
 # for this long AFTER they spoke. With manual VAD on the server
@@ -453,9 +508,15 @@ class TtsVolumeTracker:
             self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
 
 
-def _build_system_instruction(location: str = "") -> str:
-    """Return the system instruction with current local time and the
-    user's home location injected.
+def _build_system_instruction(
+    location: str = "",
+    *,
+    google_accounts: list[str] | None = None,
+    default_google_account: str = "",
+) -> str:
+    """Return the system instruction with current local time, the
+    user's home location, and the linked Google account names
+    injected.
 
     Called at every connection (re)open — the persistent connection
     lives across the 5-min context-reset window, so calling this on
@@ -464,7 +525,16 @@ def _build_system_instruction(location: str = "") -> str:
     `location` should be the user's home location (a city/neighborhood
     string the geocoder can resolve). When set, Gemini stops asking
     "what city are you in?" for location-sensitive questions outside
-    the weather tool's scope (sunset times, nearby places, traffic)."""
+    the weather tool's scope (sunset times, nearby places, traffic).
+
+    `google_accounts` should be the list of household-member labels
+    that have linked Google accounts (e.g. ["jasper", "brittany"]).
+    When non-empty, the addendum tells the model which `account`
+    values are valid for the calendar/gmail tools. Account changes
+    in the wizard trigger a `systemctl restart jasper-voice`, so
+    capturing the list at startup is fine — the lambda re-reads on
+    every connection open within the same daemon lifetime, but the
+    list itself only changes across restarts."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
     addendum = (
@@ -478,6 +548,18 @@ def _build_system_instruction(location: str = "") -> str:
             "for any location-sensitive question (weather, sunset/sunrise, "
             "nearby places, local time elsewhere) — do not ask the user "
             "where they are."
+        )
+    if google_accounts:
+        names = ", ".join(google_accounts)
+        default = default_google_account or google_accounts[0]
+        addendum += (
+            f" Linked Google accounts on this speaker: {names} "
+            f"(default: {default}). When the user names a person whose "
+            f"calendar or email they want, pass that name as the "
+            f"`account` arg to the calendar/gmail tools. When no person "
+            f"is named, omit the `account` arg — the default ({default}) "
+            f"is used. If the user names someone who isn't in this list, "
+            f"ask which linked account to use."
         )
     return SYSTEM_INSTRUCTION + addendum
 
@@ -527,24 +609,33 @@ def _make_connection(cfg: Config) -> LiveConnection:
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
 
-def _build_cues_manager(cfg: Config, tts: TtsPlayout) -> AudioCueManager:
-    """Construct the audio-cue manager with hostname extracted from
-    JASPER_MANAGEMENT_URL and the same voice the assistant uses for
-    Live responses (so the user doesn't hear two different voices
-    coming out of the same speaker). When no API key is configured
-    we still return a manager — playback works off any cached files
-    that already exist; only regeneration is disabled."""
+def _build_cues_manager(
+    cfg: Config, tts: TtsPlayout | None = None,
+) -> AudioCueManager:
+    """Construct the audio-cue manager. Hostname for templates is
+    extracted from JASPER_MANAGEMENT_URL ("https://jts.local" →
+    "jts.local") so cues say "visit jts.local" rather than reading
+    out the full URL with scheme/path. The TTS backend is picked
+    by the shared `build_cue_tts_backend` factory so daemon and
+    `jasper-cues` CLI dispatch identically.
+
+    `tts` may be None at construction time when the daemon needs to
+    register cue-aware tools (timer pre-render) before the
+    TtsPlayout has opened. Call `attach_tts` later once it does."""
     import urllib.parse
-    hostname = urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
-    backend = (
-        GeminiTTSGenerator(api_key=cfg.gemini_api_key, voice=cfg.gemini_voice)
-        if cfg.gemini_api_key
-        else None
+    hostname = (
+        urllib.parse.urlparse(cfg.management_url).hostname or "this speaker"
     )
+    backend, voice = build_cue_tts_backend(cfg)
+    if backend is not None:
+        logger.info(
+            "cue tts: provider=%s model=%s voice=%s",
+            cfg.voice_provider, getattr(backend, "model", "?"), voice,
+        )
     return AudioCueManager(
         sounds_dir=cfg.sounds_dir,
         hostname=hostname,
-        voice=cfg.gemini_voice,
+        voice=voice,
         backend=backend,
         tts_playout=tts,
     )
@@ -604,6 +695,9 @@ def _build_registry(
     volume_coordinator: "VolumeCoordinator",
     volume_persistence: VolumePersistence | None = None,
     spotify_router: Router | None = None,
+    timer_scheduler: TimerScheduler | None = None,
+    cues_manager: AudioCueManager | None = None,
+    google_clients: GoogleClients | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -622,6 +716,21 @@ def _build_registry(
         registry.register(fn)
     for fn in make_subway_tools(subway):
         registry.register(fn)
+    if timer_scheduler is not None:
+        for fn in make_timer_tools(timer_scheduler):
+            registry.register(fn)
+    # Calendar + Gmail are gated on (a) CLIENT_ID/SECRET being present
+    # AND (b) at least one account having an OAuth refresh token. The
+    # tool factories return [] when their accessor is unusable, but we
+    # also skip registration when there are zero accounts so the model
+    # doesn't see tools whose every call would fail with "no accounts
+    # linked". The wizard at /google triggers a daemon restart on add,
+    # so a fresh OAuth flow makes the tools appear on the next session.
+    if google_clients is not None and google_clients.list_account_names():
+        for fn in make_calendar_tools(google_clients):
+            registry.register(fn)
+        for fn in make_gmail_tools(google_clients):
+            registry.register(fn)
     return registry
 
 
@@ -749,6 +858,7 @@ class WakeLoop:
         stop_event: asyncio.Event,
         volume_coordinator: "VolumeCoordinator",
         cues: AudioCueManager | None = None,
+        camilla: CamillaController | None = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -756,6 +866,11 @@ class WakeLoop:
         self._detector = detector
         self._connection = connection
         self._ducker = ducker
+        # Direct camilla handle for `CueDuck` (snapshot-based duck
+        # around dynamic-text cues). Optional for back-compat with
+        # tests / out-of-tree callers; without it, dynamic-text cues
+        # play unducked rather than crashing.
+        self._camilla = camilla
         self._tts_volume_tracker = tts_volume_tracker
         self._usage_store = usage_store
         self._spend_cap = spend_cap
@@ -810,6 +925,20 @@ class WakeLoop:
         # the new turn at _begin_turn so the first phoneme of the
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
+        # Buffer for frames captured during the wake → turn-acquired
+        # window. When wake fires, `_handle_wake_frame` kicks off
+        # `_acquire_and_drain` as a background task and sets
+        # `_acquiring=True`. The main mic loop sees the flag and
+        # routes incoming frames here instead of through the wake or
+        # session handlers; the background task drains this buffer
+        # into the turn in order once acquire_turn() resolves. This
+        # keeps the user's full utterance flowing even when a
+        # context reset or network blip stretches the acquire window
+        # to several seconds — the LiveKit / Pipecat / Home Assistant
+        # canonical pattern for not dropping audio across a
+        # connection-establishment gap.
+        self._acquiring: bool = False
+        self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
 
     async def play_cue(self, slug: str) -> str:
         """Public wrapper for `_play_cue`, callable via the control
@@ -844,6 +973,61 @@ class WakeLoop:
         if self._state is State.SESSION:
             return "skipped_session_active"
         return await self.play_cue(slug)
+
+    async def announce_timer(self, timer: "Timer") -> None:
+        """Public hook called by `TimerScheduler` when a timer fires.
+
+        Speaks the announcement via dynamic-text TTS. Defers up to
+        5 s if a voice session is currently active (don't cross-talk
+        the LLM's TTS); after the grace window the announcement is
+        skipped — the user is already engaged and a delayed timer
+        chime would be more confusing than a missed one. The user
+        can `list_timers` to recover state in either case.
+        """
+        text = announcement_text(timer)
+        deadline = asyncio.get_event_loop().time() + 5.0
+        while self._state is State.SESSION:
+            if asyncio.get_event_loop().time() >= deadline:
+                logger.warning(
+                    "timer announce: skipped (id=%s) — session still "
+                    "active after 5s grace window",
+                    timer.id,
+                )
+                return
+            await asyncio.sleep(0.5)
+        logger.info(
+            "timer announce: id=%s label=%r text=%r",
+            timer.id, timer.label, text,
+        )
+        await self._play_dynamic_text(text)
+
+    async def _play_dynamic_text(self, text: str) -> None:
+        """Speak arbitrary `text` through the cue manager, with
+        snapshot-based duck/restore around the playback. Used for
+        timer announcements (and any future variable-content cue).
+
+        Uses `CueDuck` rather than the daemon's `Ducker` because a
+        cue is a brief, passive interruption: the user isn't
+        actively adjusting volume mid-cue, so the predictable
+        "music returns to exactly where it was" semantics matter
+        more than the dial-twist-wins behavior `Ducker` is designed
+        for. See `jasper/camilla.py:CueDuck` for the rationale."""
+        if self._cues is None:
+            return
+        if self._camilla is None:
+            # No camilla handle — degrade to unducked playback rather
+            # than crash. The user hears the cue over un-ducked music
+            # which is loud but recoverable; better than silence.
+            try:
+                await self._cues.speak_text(text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text play failed: %s", e)
+            return
+        async with CueDuck(self._camilla, self._cfg.duck_db):
+            try:
+                await self._cues.speak_text(text)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("dynamic text play failed: %s", e)
 
     async def _play_cue(self, slug: str) -> None:
         """Best-effort cue playback. Ducks music via CamillaDSP for
@@ -907,6 +1091,16 @@ class WakeLoop:
             # last N frames already in this deque are what we replay
             # into the turn so the user's first phoneme isn't lost.
             self._pre_roll.append(frame)
+
+            # Acquire window: between wake firing and the new turn
+            # being ready to accept audio. `_acquire_and_drain`
+            # opens the turn in the background and drains this
+            # buffer into it; the main loop just collects frames
+            # here so a multi-second context reset doesn't truncate
+            # the user's command. See ACQUIRE_BUFFER_MAX_FRAMES.
+            if self._acquiring:
+                self._acquire_buffer.append(frame)
+                continue
 
             if self._state is State.WAKE:
                 await self._handle_wake_frame(frame)
@@ -1016,18 +1210,67 @@ class WakeLoop:
             await self._play_cue("cant_connect")
             return
 
+        # Spawn `_begin_turn` in the background so the main mic loop
+        # is NOT blocked while `acquire_turn()` runs (which can take
+        # several seconds during a context reset). The flag flips
+        # the loop into "buffer frames into self._acquire_buffer"
+        # mode for the duration of the acquire window. Without this,
+        # frames either pile up in sounddevice's OS-level queue and
+        # arrive in a burst (which broke our wall-clock-based
+        # sustained-speech detector — see test on 2026-05-09 logs:
+        # `silero max=0.53` but `no user speech detected within 5s`)
+        # or get dropped entirely.
+        self._acquiring = True
+        self._acquire_buffer.clear()
+        asyncio.create_task(
+            self._acquire_and_drain(), name="wake-acquire-and-drain",
+        )
+
+    async def _acquire_and_drain(self) -> None:
+        """Background coroutine spawned on wake. Acquires the turn,
+        then replays any frames captured during the acquire window
+        into it before live frames take over.
+
+        Order of audio sent to the model on a SESSION:
+          1. Pre-roll (last 7 frames before wake — `_begin_turn`
+             handles this for us, includes the wake-firing frame).
+          2. Acquire-buffer drain (everything captured between wake
+             and turn-ready, in order — this method).
+          3. Live frames (from the main mic loop's
+             `_handle_session_frame` — automatic once we clear
+             `_acquiring`).
+
+        On error: play `cant_connect`, run the same cleanup the
+        synchronous path used to do, clear the buffer, restore
+        WAKE state. The `_acquiring` flag flips back to False in
+        the finally so the loop returns to wake detection.
+        """
         try:
-            await self._begin_turn()
+            await self._begin_turn()  # ends with state = SESSION
+            try:
+                drained = await drain_acquire_buffer(
+                    self._acquire_buffer, self._turn,  # type: ignore[arg-type]
+                )
+            except Exception as e:  # noqa: BLE001
+                drained = 0
+                logger.warning("acquire-buffer drain failed: %s", e)
+            if drained:
+                logger.info(
+                    "acquire-buffer drained: %d frames (~%.0fms)",
+                    drained, drained * 80.0,
+                )
         except Exception as e:  # noqa: BLE001
-            logger.exception("turn begin failed: %s", e)
-            # Treat "can't begin a turn" the same way as
-            # is_paused — most of the time the underlying cause is
-            # a transient connection issue surfaced inside
-            # acquire_turn (e.g., the timeout-while-waiting-for-
-            # connect path). Play the cue so the user hears
-            # something, then fall through to cleanup.
+            logger.exception("turn acquire failed: %s", e)
             await self._play_cue("cant_connect")
             await self._cleanup_after_failed_begin()
+            self._acquire_buffer.clear()
+        finally:
+            # Flip the flag last — the main loop checks it on every
+            # mic frame to decide whether to buffer or dispatch. With
+            # state already SESSION (set by `_begin_turn`) and the
+            # buffer drained, clearing the flag hands the live mic
+            # stream to `_handle_session_frame` cleanly.
+            self._acquiring = False
 
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
@@ -1491,6 +1734,26 @@ async def run() -> None:
     # voice tool registry (transport / spotify_play). Same instance,
     # one OAuth refresh cycle per account.
     volume_spotify_router = _build_router(cfg)
+    # Google Calendar + Gmail clients — built once, used by the tool
+    # registry AND captured by the system-instruction lambda so the
+    # model knows which household members have linked accounts. None
+    # if Google's CLIENT_ID/SECRET aren't configured (the tools are
+    # gated and never appear to the model in that case).
+    google_clients = build_google_clients(cfg)
+    if google_clients is not None:
+        names = google_clients.list_account_names()
+        if names:
+            logger.info(
+                "google: %d account(s) linked: %s (default: %s)",
+                len(names), ", ".join(names),
+                google_clients.default_account_name() or "(none)",
+            )
+        else:
+            logger.info(
+                "google: CLIENT_ID/SECRET configured but no accounts "
+                "linked yet — visit %s to add one",
+                cfg.google_setup_url,
+            )
     volume_coordinator = VolumeCoordinator(
         camilla=camilla,
         persistence=volume_persistence,
@@ -1549,12 +1812,38 @@ async def run() -> None:
     )
     await volume_observer.start()
 
+    # Timer scheduler — owns persistence + asyncio task lifecycle for
+    # kitchen timers. Constructed BEFORE _build_registry so set_timer
+    # / list_timers / cancel_timer are visible to the model from the
+    # very first session.start. The on_fire announcement callback is
+    # wired after WakeLoop exists (it can't fire before then anyway —
+    # SQLite restore happens in scheduler.start() further down).
+    timer_scheduler = TimerScheduler(db_path=cfg.timer_db_path)
+
+    # Cue manager — built early so timer tools can pre-render their
+    # fire announcements at set_timer time. The TtsPlayout isn't open
+    # yet (that lives inside the async with block below); the manager
+    # is constructed without it and `attach_tts` wires playback once
+    # the playout is up. Pre-render and regen don't need playback.
+    cues_manager = _build_cues_manager(cfg, tts=None)
+
     registry = _build_registry(
         cfg, camilla, renderer, weather, subway,
         volume_coordinator=volume_coordinator,
         volume_persistence=volume_persistence,
         spotify_router=volume_spotify_router,
+        timer_scheduler=timer_scheduler,
+        cues_manager=cues_manager,
+        google_clients=google_clients,
     )
+
+    # Wire the timer pre-render hook so set_timer (and start-time
+    # restore for persisted timers) synthesises + caches the
+    # fire-time announcement WAV ahead of time. Saves the user from
+    # a 1–8 s gap between duck and audio at fire time.
+    async def _prerender_timer(t: Timer) -> None:
+        await cues_manager.prerender_text(announcement_text(t))
+    timer_scheduler.set_pre_render(_prerender_timer)
     detector = WakeWordDetector(cfg.wake_model, cfg.wake_threshold)
 
     stop_event = asyncio.Event()
@@ -1584,9 +1873,24 @@ async def run() -> None:
     connection = _make_connection(cfg)
     tts_volume_tracker: TtsVolumeTracker | None = None
     try:
+        # Capture the linked-Google-accounts list at startup so the
+        # system instruction tells the model which `account` values
+        # are valid for the calendar/gmail tools. Wizard-driven account
+        # changes trigger a daemon restart, so this snapshot stays
+        # accurate for the daemon's lifetime.
+        google_account_names = (
+            google_clients.list_account_names() if google_clients else []
+        )
+        google_default_account = (
+            google_clients.default_account_name() or ""
+        ) if google_clients else ""
         await connection.start(
             registry,
-            lambda: _build_system_instruction(cfg.weather_default_location),
+            lambda: _build_system_instruction(
+                cfg.weather_default_location,
+                google_accounts=google_account_names,
+                default_google_account=google_default_account,
+            ),
         )
         async with MicCapture(
             cfg.mic_device,
@@ -1614,13 +1918,11 @@ async def run() -> None:
             )
             await tts_volume_tracker.start()
 
-            # Build the audio-cue manager. Hostname for templates is
-            # extracted from JASPER_MANAGEMENT_URL ("http://jts.local"
-            # → "jts.local") so cues say "visit jts.local" rather
-            # than reading out the full URL with scheme/path. The
-            # manager is wired into WakeLoop so failure paths can
-            # call cues.play(slug) instead of just logging.
-            cues_manager = _build_cues_manager(cfg, tts)
+            # Wire the playout into the cue manager that was already
+            # constructed up top so timer tools could register with a
+            # working pre-render path. From here on cues.play() and
+            # cues.speak_text() can write audio out.
+            cues_manager.attach_tts(tts)
             # Kick off background regen for any missing/stale cues.
             # Doesn't block daemon "ready" — if regen fails (no
             # internet / bad API key), cues silently won't play; the
@@ -1632,6 +1934,7 @@ async def run() -> None:
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
                 cues=cues_manager,
+                camilla=camilla,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
@@ -1642,6 +1945,15 @@ async def run() -> None:
                 connection.set_failure_escalation_cb(
                     wake_loop.play_supervisor_cue,
                 )
+            # Wire timer announcements through the wake loop's
+            # session-aware playback (duck + speak_text + restore,
+            # with up-to-5s deferral if a voice turn is in flight).
+            # set_on_fire BEFORE start() — start() restores persisted
+            # timers and any whose fire_at has passed during downtime
+            # are dropped before they'd hit on_fire anyway, but timers
+            # whose fire_at is < 1s away could fire mid-restore.
+            timer_scheduler.set_on_fire(wake_loop.announce_timer)
+            await timer_scheduler.start()
             control_socket = await _start_control_socket(
                 wake_loop, cfg.voice_control_socket,
             )
@@ -1654,6 +1966,10 @@ async def run() -> None:
                 except Exception:  # noqa: BLE001
                     pass
     finally:
+        # Stop the scheduler FIRST so any in-flight `_run` tasks that
+        # were about to fire get cancelled before we tear down the
+        # cue manager / TtsPlayout they'd be calling into.
+        await timer_scheduler.stop()
         if tts_volume_tracker is not None:
             await tts_volume_tracker.stop()
         if volume_observer is not None:

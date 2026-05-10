@@ -602,13 +602,17 @@ install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
     # (rotary-dial onboarding) on plain HTTP, plus /correction/ (room
-    # correction wizard) on HTTPS. The legacy routes stay HTTP — Spotify's
-    # HTTPS requirement is satisfied by the GitHub Pages bounce, and there's
-    # no point breaking working flows for one new feature.
+    # correction wizard) and /google/ (Calendar + Gmail OAuth wizard) on
+    # HTTPS. The legacy routes stay HTTP — Spotify's HTTPS requirement
+    # is satisfied by the GitHub Pages bounce, and there's no point
+    # breaking working flows for one new feature.
     #
     # /correction/ requires HTTPS because getUserMedia needs a secure
-    # context; provision_correction_tls() (called before this from main)
-    # writes the cert + key + downloadable CA.
+    # context; /google/ requires it because Google rejects non-loopback
+    # OAuth redirect URIs over HTTP. Both ride the same self-signed
+    # cert provisioned by provision_correction_tls() (called before
+    # this from main); the user's one-time CA-install dance covers
+    # both routes.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -630,7 +634,7 @@ install_nginx_site() {
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — http://<host>/{,spotify,voice,dial} + https://<host>/correction are live"
+        echo "  nginx reloaded — http://<host>/{,spotify,voice,dial} + https://<host>/{correction,google} are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
@@ -665,7 +669,13 @@ regenerate_audio_cues() {
         return 0
     fi
     echo "  Regenerating audio cues..."
-    if ! /bin/sh -c '. /etc/jasper/jasper.env && export $(grep -E "^[A-Z_]+=" /etc/jasper/jasper.env | cut -d= -f1) && /opt/jasper/.venv/bin/jasper-cues regenerate'; then
+    # jasper-cues auto-loads /etc/jasper/jasper.env then
+    # /var/lib/jasper/voice_provider.env (web-wizard overrides) via
+    # jasper.env_load — same precedence as the daemon's systemd unit.
+    # We deliberately do NOT pre-source jasper.env here: doing so puts
+    # those vars into the shell's environment first, where load_env_files's
+    # setdefault preserves them and the wizard file can't override.
+    if ! /opt/jasper/.venv/bin/jasper-cues regenerate; then
         echo "  WARNING: cue regenerate failed (network down or API key not set?). " \
              "Daemon will retry at startup. To force a refresh later: " \
              "sudo systemctl restart jasper-voice"

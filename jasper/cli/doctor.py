@@ -54,52 +54,11 @@ def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-# Env-file load order matches the systemd unit's ``EnvironmentFile=``
-# directives so the doctor sees the same env the daemon does:
-#   1. /etc/jasper/jasper.env       — operator-managed (Phase 3)
-#   2. /var/lib/jasper/voice_provider.env  — wizard-managed (Phase 3.5)
-# Later file wins on conflict. Variables already in the calling shell
-# (`FOO=bar jasper-doctor`) override both — useful for one-off probes.
-ENV_FILES = (
-    "/etc/jasper/jasper.env",
-    "/var/lib/jasper/voice_provider.env",
-)
-
-
-def _parse_env_file(path: str) -> dict[str, str]:
-    """Parse a shell-style KEY=VALUE env file. Strips surrounding single
-    or double quotes; ignores blanks and lines starting with ``#``.
-    Returns ``{}`` for missing or unreadable files (best-effort)."""
-    out: dict[str, str] = {}
-    try:
-        text = Path(path).read_text()
-    except OSError:
-        return out
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if (len(value) >= 2 and value[0] == value[-1]
-                and value[0] in ('"', "'")):
-            value = value[1:-1]
-        out[key] = value
-    return out
-
-
-def _load_env_files() -> None:
-    """Populate ``os.environ`` from ENV_FILES so ``Config.from_env()``
-    sees the same vars the systemd unit does. Calling-shell values are
-    preserved (setdefault semantics)."""
-    merged: dict[str, str] = {}
-    for path in ENV_FILES:
-        merged.update(_parse_env_file(path))
-    for key, value in merged.items():
-        os.environ.setdefault(key, value)
+# Re-exported for back-compat with any external callers; the load
+# logic now lives in jasper.env_load so other CLIs (jasper-cues)
+# share the exact same env-file precedence as the doctor.
+from ..env_load import ENV_FILES, load_env_files as _load_env_files
+from ..env_load import parse_env_file as _parse_env_file
 
 
 def check_env_file() -> CheckResult:
@@ -668,6 +627,62 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     )
 
 
+def check_google_tokens(cfg: Config) -> CheckResult:
+    """Verify Google OAuth state is healthy.
+
+    Three states matter:
+      - CLIENT_ID/SECRET not set → ok (skipped, not enabled)
+      - CLIENT_ID/SECRET set but no accounts linked → warn (wizard
+        needs visiting; Calendar/Gmail tools are silently unregistered)
+      - At least one account fails to refresh → warn (likely revoked
+        or password-changed; user needs to re-link)
+    """
+    label = "Google OAuth"
+    if not cfg.google_enabled:
+        return CheckResult(
+            label, "ok",
+            f"not configured (skipped — visit {cfg.google_setup_url} "
+            f"to enable Calendar + Gmail tools)",
+        )
+    try:
+        from ..google_creds import GoogleRegistry, valid_access_token
+    except ImportError as e:
+        return CheckResult(
+            label, "fail",
+            f"google-auth import failed: {e}. Re-run install.sh.",
+        )
+    registry = GoogleRegistry.load(cfg.google_accounts_path)
+    if not registry.accounts:
+        return CheckResult(
+            label, "warn",
+            f"CLIENT_ID/SECRET set but no accounts linked. Visit "
+            f"{cfg.google_setup_url} to link a household member's "
+            f"Calendar + Gmail.",
+        )
+    healthy: list[str] = []
+    broken: list[str] = []
+    for a in registry.accounts:
+        token = valid_access_token(
+            a,
+            client_id=cfg.google_client_id,
+            client_secret=cfg.google_client_secret,
+        )
+        if token:
+            healthy.append(a.name)
+        else:
+            broken.append(a.name)
+    if broken:
+        return CheckResult(
+            label, "warn",
+            f"refresh failed for {broken}; healthy: {healthy or 'none'}. "
+            f"Re-link the broken account(s) at {cfg.google_setup_url}.",
+        )
+    return CheckResult(
+        label, "ok",
+        f"{len(healthy)} account(s) refreshed: {', '.join(healthy)}",
+    )
+
+
 def check_state_dir(cfg: Config) -> CheckResult:
     p = Path(cfg.usage_db).parent
     if not p.exists():
@@ -815,6 +830,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_jasper_mux,
         lambda: check_spotify_cache(cfg),
         lambda: check_spotify_connect_device(cfg),
+        lambda: check_google_tokens(cfg),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),

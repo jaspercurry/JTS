@@ -1,0 +1,1041 @@
+"""Google OAuth setup wizard at /google/.
+
+Multi-account, household-aware — mirrors `jasper.web.spotify_setup` but
+simpler (no playlist management, no transport-routing logic; just paste
+CLIENT_ID/SECRET, OAuth each member, manage defaults).
+
+Three states, single index page renders the appropriate one:
+  1. No CLIENT_ID/SECRET → guided setup wizard (paste creds, link to
+     Google Cloud Console).
+  2. Creds set, no accounts → redirect-URI instructions + add-account
+     form.
+  3. Creds set, accounts exist → management UI (list, default, remove,
+     add more).
+
+Routes (paths the app sees AFTER nginx strips the /google/ prefix):
+  GET  /                    state-aware setup/management UI
+  POST /setup-credentials   save CLIENT_ID/SECRET, restart jasper-voice
+  POST /reset-credentials   clear creds (back to state 1)
+  POST /start               begin OAuth for `name` (303 redirect to
+                            Google's authorize endpoint)
+  GET  /callback            OAuth callback — exchange code, write
+                            token JSON, hit OIDC userinfo for email +
+                            display name, redirect back to /
+  POST /remove              remove an account by name
+  POST /default             change the default account
+"""
+from __future__ import annotations
+
+import argparse
+import html
+import json
+import logging
+import os
+import re
+import urllib.parse
+import urllib.request
+from http import HTTPStatus
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Any
+
+from ..google_creds import (
+    GOOGLE_SCOPES,
+    GoogleAccount,
+    GoogleRegistry,
+    default_token_path_for,
+    save_token,
+)
+from ._common import (
+    PAGE_STYLE,
+    delete_env_file,
+    read_env_file,
+    read_form,
+    restart_voice_daemon,
+    wrap_page,
+    write_env_file,
+)
+
+logger = logging.getLogger(__name__)
+
+
+# Persisted CLIENT_ID/SECRET. Same shape as spotify_credentials.env so
+# the systemd unit picks both up via `EnvironmentFile=`. Mode 0600 by
+# write_env_file's default.
+CREDS_FILE = "/var/lib/jasper/google_credentials.env"
+
+# Google OAuth client IDs end in `.apps.googleusercontent.com`.
+# Loose pattern — Google has changed the leading numeric chunk's
+# length over time, and a strict regex would reject perfectly-valid
+# IDs the next time the format shifts.
+_CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]+\.apps\.googleusercontent\.com$")
+
+_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
+_TOKEN_URI = "https://oauth2.googleapis.com/token"
+_USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
+
+
+# ----------------------------------------------------------------------
+# Persistence helpers — env file + token writes.
+# ----------------------------------------------------------------------
+
+
+def _read_creds_file(path: str = CREDS_FILE) -> dict[str, str]:
+    return read_env_file(path)
+
+
+def _write_creds_file(client_id: str, client_secret: str, *, path: str = CREDS_FILE) -> None:
+    write_env_file(path, {
+        "GOOGLE_CLIENT_ID": client_id,
+        "GOOGLE_CLIENT_SECRET": client_secret,
+    })
+
+
+def _delete_creds_file(path: str = CREDS_FILE) -> None:
+    delete_env_file(path)
+
+
+def _restart_voice_daemon() -> None:
+    restart_voice_daemon()
+
+
+# ----------------------------------------------------------------------
+# HTML rendering.
+# ----------------------------------------------------------------------
+
+
+_GOOGLE_PAGE_STYLE = PAGE_STYLE + """
+  /* Account list — same shape as Spotify's account cards but
+     simpler (no inline playlist management). */
+  ul.accounts { list-style: none; padding: 0; }
+  ul.accounts li {
+    background: #f4f4f4; padding: 0.7em 0.9em;
+    border-radius: 6px; margin-bottom: 0.5em;
+    display: flex; align-items: center; gap: 0.6em;
+    flex-wrap: wrap;
+  }
+  ul.accounts li .name { font-weight: 600; }
+  ul.accounts li .email {
+    color: #666; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.9em;
+  }
+  ul.accounts li .badge {
+    background: #4a8; color: white; padding: 0.1em 0.5em;
+    border-radius: 4px; font-size: 0.8em;
+  }
+  ul.accounts li .actions {
+    margin-left: auto; display: flex; gap: 0.4em;
+  }
+  ul.accounts li .actions form { margin: 0; }
+  ul.accounts li .actions button {
+    padding: 0.3em 0.7em; font-size: 0.85em;
+  }
+
+  /* ---- multi-step wizard (state 1: no creds yet) ---- */
+  ol.wizard-steps {
+    list-style: none; padding: 0; margin: 1.4em 0;
+  }
+  li.wizard-step {
+    background: #fff; border: 1px solid #d8d8d8;
+    border-radius: 7px; margin-bottom: 0.7em;
+    overflow: hidden;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  li.wizard-step.done {
+    background: #f4faf4; border-color: #cde6cd;
+  }
+  li.wizard-step.active {
+    border-color: #1db954; box-shadow: 0 0 0 1px #1db954;
+  }
+  li.wizard-step > details > summary {
+    list-style: none;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    padding: 0.85em 1em;
+    display: flex; align-items: center; gap: 0.8em;
+    font-weight: 600; font-size: 1.04em;
+  }
+  li.wizard-step > details > summary::-webkit-details-marker { display: none; }
+  li.wizard-step > details > summary::after {
+    content: "▸"; color: #999; font-size: 0.9em;
+    transition: transform 0.15s ease;
+    margin-left: auto;
+  }
+  li.wizard-step > details[open] > summary::after { transform: rotate(90deg); }
+  .step-num {
+    display: inline-flex; width: 1.85em; height: 1.85em;
+    border-radius: 50%; background: #ddd; color: #444;
+    font-size: 0.85em; font-weight: 700;
+    align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  li.wizard-step.done .step-num { background: #4a8; color: white; }
+  li.wizard-step.active .step-num { background: #1db954; color: white; }
+  li.wizard-step.done .step-num::before { content: "✓"; }
+  li.wizard-step.done .step-num span { display: none; }
+  .step-title { flex: 1; }
+  .step-status {
+    font-weight: 400; font-size: 0.85em; color: #888;
+    font-variant-numeric: tabular-nums;
+  }
+  li.wizard-step.done .step-status { color: #4a8; }
+  li.wizard-step.done .step-status::before { content: "done — "; }
+  .step-body {
+    padding: 0 1em 1em 1em;
+  }
+  .step-body h3 {
+    font-size: 0.98em; margin: 1.1em 0 0.2em;
+    color: #444; text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  .step-body p { margin: 0.45em 0; }
+  .step-body ol, .step-body ul {
+    padding-left: 1.4em; margin: 0.5em 0;
+  }
+  .step-body li { margin-bottom: 0.35em; }
+  .step-body code {
+    background: #fafafa; border: 1px solid #e0e0e0;
+    border-radius: 3px; padding: 0.05em 0.4em;
+    font-size: 0.92em;
+  }
+  button.mark-done {
+    margin-top: 1.1em; background: #1db954; color: white;
+  }
+  li.wizard-step.done button.mark-done { display: none; }
+
+  /* Callout box for important gotchas inside step bodies. */
+  .callout {
+    background: #fff8e1; border-left: 4px solid #ffb300;
+    padding: 0.7em 0.9em; margin: 0.9em 0;
+    border-radius: 0 6px 6px 0;
+    font-size: 0.96em;
+  }
+  .callout strong:first-child { color: #b07b00; }
+
+  /* The paste-creds form is inside the last wizard step but visually
+     separated — it's the action that completes the whole flow. */
+  .creds-form-wrap {
+    margin-top: 1em; padding-top: 1em;
+    border-top: 1px dashed #d0d0d0;
+  }
+
+  /* "Reset wizard progress" — subtle, top-right. */
+  .wizard-progress-reset {
+    float: right; background: transparent; color: #888;
+    padding: 0.25em 0.6em; font-size: 0.82em;
+    margin-top: -0.4em;
+  }
+  .wizard-progress-reset:hover {
+    color: #d44; background: #fee; filter: none;
+  }
+"""
+
+
+def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
+    page = wrap_page(title, body, status_msg=status_msg).decode()
+    return page.replace(
+        f"<style>{PAGE_STYLE}</style>",
+        f"<style>{_GOOGLE_PAGE_STYLE}</style>",
+    ).encode()
+
+
+def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
+    """State 1: no CLIENT_ID/SECRET configured. Multi-step walkthrough
+    of the Google Cloud Console flow, with progress tracked in
+    browser localStorage so re-loading after each step shows the
+    user where to pick up.
+
+    The four sub-steps mirror Google's actual UI as of May 2026 (the
+    OAuth consent screen is now the "Google Auth platform" with
+    Branding/Audience/Data Access tabs at console.cloud.google.com/auth/...).
+    Each step is collapsible; the first not-done step is auto-opened.
+    The user clicks "I've done this" to advance — we can't detect
+    actions on Google's site, so progress is self-reported.
+
+    The form at the bottom of step 4 is the actual server-side
+    transition: posting valid creds moves the index page to state 2
+    (add-account), at which point this whole wizard is hidden."""
+    redirect_safe = html.escape(redirect_uri)
+    body = f"""
+<button type="button" class="wizard-progress-reset secondary"
+        onclick="if (confirm('Forget which steps you marked done? The form at the bottom still works either way.')) {{ try {{ localStorage.removeItem('jts.google.wizard.done'); }} catch(e) {{}} location.reload(); }}">
+  Reset progress
+</button>
+<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I've done this →</strong> when each is finished.</p>
+
+<ol class="wizard-steps">
+
+  <!-- ===== Step 1: Create or pick a Cloud project ===== -->
+  <li class="wizard-step" data-step="1">
+    <details>
+      <summary>
+        <span class="step-num"><span>1</span></span>
+        <span class="step-title">Create a Google Cloud project</span>
+        <span class="step-status">~30 seconds</span>
+      </summary>
+      <div class="step-body">
+        <p>The OAuth client lives inside a Google Cloud project. If you already have one, you can reuse it — otherwise:</p>
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">the New Project page ↗</a> in a new tab.</li>
+          <li><strong>Project name:</strong> anything you'll recognise — e.g. "JTS Speaker". The Project ID below auto-fills; leave it.</li>
+          <li>Click <strong>CREATE</strong>. Provisioning takes 10–30 seconds. A toast appears bottom-right when done — click it to switch into the new project, or pick it from the top-bar project switcher.</li>
+        </ol>
+        <div class="callout">
+          <strong>Multi-account heads-up:</strong> if you're signed into more than one Google account in this browser, the page uses whatever account loaded first. Mismatch is the #1 setup failure here. Open the link above in an incognito window and sign in with just the account you want to own this project.
+        </div>
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
+
+  <!-- ===== Step 2: Configure OAuth consent screen ===== -->
+  <li class="wizard-step" data-step="2">
+    <details>
+      <summary>
+        <span class="step-num"><span>2</span></span>
+        <span class="step-title">Configure the OAuth consent screen</span>
+        <span class="step-status">~3 minutes</span>
+      </summary>
+      <div class="step-body">
+        <p>This is what each household member will see when they grant the speaker access. Google split this into three sibling tabs in 2025 — the old single-page wizard is gone.</p>
+
+        <h3>2a — Branding</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener">Branding tab ↗</a>. If you see a "Get started" card first, click <strong>GET STARTED</strong>.</li>
+          <li><strong>App name:</strong> what shows up at consent — e.g. "JTS Speaker". Avoid generic names like "test"; Google's heuristics flag them.</li>
+          <li><strong>User support email:</strong> pick your own Gmail from the dropdown.</li>
+          <li><strong>Developer contact information → Email addresses:</strong> same address.</li>
+          <li>Leave logo, home page, privacy policy, terms, and authorized domains blank — those are only needed for verified apps, which this isn't.</li>
+          <li>Click <strong>SAVE</strong>.</li>
+        </ol>
+
+        <h3>2b — Audience</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>.</li>
+          <li>Pick <strong>External</strong>. (Internal is greyed out for personal Google accounts — only Workspace organisations see it.)</li>
+          <li>Under <strong>Test users</strong>, click <strong>+ ADD USERS</strong>. Add your own Gmail and any household members' Gmails (one per line). Click <strong>SAVE</strong>. Cap: 100 test users, all must be Google accounts.</li>
+        </ol>
+
+        <div class="callout">
+          <strong>Important — publish the app to skip the 7-day refresh-token expiry:</strong>
+          Still on the Audience tab, find <strong>Publishing status</strong>. If it says "Testing", click <strong>PUBLISH APP</strong> and confirm the modal. In Testing mode, Google expires refresh tokens every 7 days — you'd have to re-link each household member every week. Publishing turns that off. The trade-off: the FIRST time anyone signs in, they'll see a "Google hasn't verified this app" warning and need to click <strong>Advanced → Go to JTS Speaker (unsafe)</strong>. That's a one-time click, much better than weekly re-auth.
+        </div>
+
+        <h3>2c — Data Access (optional but recommended)</h3>
+        <ol>
+          <li>Open the <a href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener">Data Access tab ↗</a>.</li>
+          <li>Click <strong>ADD OR REMOVE SCOPES</strong>.</li>
+          <li>Search for and tick: <code>.../auth/calendar.readonly</code> and <code>.../auth/gmail.readonly</code>. Click <strong>UPDATE</strong>, then <strong>SAVE</strong> at the bottom.</li>
+        </ol>
+        <p class="hint">Skippable — Google will show the scopes at consent regardless. Adding them here just suppresses one class of "unverified app" friction.</p>
+
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
+
+  <!-- ===== Step 3: Enable Calendar + Gmail APIs ===== -->
+  <li class="wizard-step" data-step="3">
+    <details>
+      <summary>
+        <span class="step-num"><span>3</span></span>
+        <span class="step-title">Enable the Calendar and Gmail APIs</span>
+        <span class="step-status">~30 seconds</span>
+      </summary>
+      <div class="step-body">
+        <p>Each API is a separate "Enable" click. Both are free at personal volume — quotas are 1M+ requests per day, no billing account needed.</p>
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/apis/library/calendar-json.googleapis.com" target="_blank" rel="noopener">the Calendar API page ↗</a>. Confirm the project picker in the top bar shows the project from Step 1, then click the blue <strong>ENABLE</strong> button. Takes ~10 seconds.</li>
+          <li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">the Gmail API page ↗</a>. Same: confirm project, click <strong>ENABLE</strong>.</li>
+        </ol>
+        <p class="hint">If you navigated to either page without a project context, a "Select a project" modal appears first — pick the one from Step 1.</p>
+        <button class="mark-done" type="button">I've done this →</button>
+      </div>
+    </details>
+  </li>
+
+  <!-- ===== Step 4: Create OAuth client + paste creds ===== -->
+  <li class="wizard-step" data-step="4">
+    <details>
+      <summary>
+        <span class="step-num"><span>4</span></span>
+        <span class="step-title">Create the OAuth client and paste it here</span>
+        <span class="step-status">~2 minutes</span>
+      </summary>
+      <div class="step-body">
+        <ol>
+          <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a>. Click <strong>+ CREATE CLIENT</strong> at the top.</li>
+          <li><strong>Application type:</strong> select <strong>Web application</strong> from the dropdown — the form expands when you pick this.</li>
+          <li><strong>Name:</strong> anything cosmetic, e.g. "JTS Speaker Web Client".</li>
+          <li>Leave <strong>Authorized JavaScript origins</strong> blank.</li>
+          <li><strong>Authorized redirect URIs:</strong> click <strong>+ ADD URI</strong> and paste this URL:
+            <div class="copy-row" style="margin-top:0.3em">
+              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
+              <button type="button" onclick="copyStep4Redirect()">Copy</button>
+              <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
+            </div>
+          </li>
+          <li>Click <strong>CREATE</strong> at the bottom of the form.</li>
+          <li>The success modal shows your <strong>Client ID</strong> and <strong>Client Secret</strong>.
+            <div class="callout">
+              <strong>The Client Secret is only shown once.</strong> Click <strong>DOWNLOAD JSON</strong> in the modal as a backup before you dismiss it — the Clients page will only show the last 4 characters of the secret afterwards, and you'd have to reset (which invalidates the old secret) if you lose it.
+            </div>
+          </li>
+          <li>Paste the Client ID and Client Secret below. Saving here finishes the setup; the page will move on to linking the first household member.</li>
+        </ol>
+
+        <div class="creds-form-wrap">
+          <form method="post" action="setup-credentials">
+            <label for="client_id">Client ID</label>
+            <input id="client_id" name="client_id" type="text" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="123456789012-abc….apps.googleusercontent.com">
+
+            <label for="client_secret">Client Secret</label>
+            <input id="client_secret" name="client_secret" type="password" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="GOCSPX-…">
+            <small>Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</small>
+
+            <p style="margin-top:1.4em">
+              <button type="submit">Save credentials →</button>
+            </p>
+          </form>
+        </div>
+      </div>
+    </details>
+  </li>
+</ol>
+
+<script>
+(function () {{
+  // Progress-tracking via localStorage. Each step has a "mark done"
+  // button that adds its step number to a JSON array; on page load
+  // we collapse done steps and auto-open the first not-done one.
+  // The browser's native <details> toggle still works after init
+  // (we only set state once, so manually re-opening a done step to
+  // re-read it stays sticky).
+  var STORAGE_KEY = 'jts.google.wizard.done';
+
+  function loadDone() {{
+    try {{
+      var raw = localStorage.getItem(STORAGE_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    }} catch (e) {{ return []; }}
+  }}
+  function saveDone(arr) {{
+    try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }}
+    catch (e) {{ /* private mode / quota — silent */ }}
+  }}
+
+  function init() {{
+    var done = loadDone();
+    var firstNotDoneOpened = false;
+    document.querySelectorAll('li.wizard-step').forEach(function (el) {{
+      var step = el.dataset.step;
+      var details = el.querySelector('details');
+      if (!details) return;
+      var isDone = done.indexOf(step) !== -1;
+      if (isDone) {{
+        el.classList.add('done');
+        details.removeAttribute('open');
+      }} else if (!firstNotDoneOpened) {{
+        firstNotDoneOpened = true;
+        el.classList.add('active');
+        details.setAttribute('open', '');
+      }}
+    }});
+  }}
+
+  function markDone(stepEl) {{
+    var step = stepEl.dataset.step;
+    var done = loadDone();
+    if (done.indexOf(step) === -1) done.push(step);
+    saveDone(done);
+    stepEl.classList.add('done');
+    stepEl.classList.remove('active');
+    var details = stepEl.querySelector('details');
+    if (details) details.removeAttribute('open');
+    // Open the next not-done sibling (skip already-done ones).
+    var next = stepEl.nextElementSibling;
+    while (next && next.classList.contains('done')) {{
+      next = next.nextElementSibling;
+    }}
+    if (next) {{
+      next.classList.add('active');
+      var nDetails = next.querySelector('details');
+      if (nDetails) nDetails.setAttribute('open', '');
+      setTimeout(function () {{
+        next.scrollIntoView({{behavior: 'smooth', block: 'start'}});
+      }}, 80);
+    }}
+  }}
+
+  document.addEventListener('DOMContentLoaded', function () {{
+    init();
+    document.querySelectorAll('button.mark-done').forEach(function (btn) {{
+      btn.addEventListener('click', function (e) {{
+        e.preventDefault();
+        var stepEl = btn.closest('li.wizard-step');
+        if (stepEl) markDone(stepEl);
+      }});
+    }});
+  }});
+}})();
+
+async function copyStep4Redirect() {{
+  var input = document.getElementById('step4-redirect');
+  var fb = document.getElementById('step4-redirect-fb');
+  try {{
+    await navigator.clipboard.writeText(input.value);
+  }} catch (e) {{
+    input.select();
+    document.execCommand('copy');
+  }}
+  fb.classList.add('shown');
+  setTimeout(function () {{ fb.classList.remove('shown'); }}, 1800);
+}}
+</script>
+"""
+    return _wrap_page(
+        "Set up Google on this speaker", body, status_msg=status_msg,
+    )
+
+
+def _redirect_uri_section_html(redirect_uri: str) -> str:
+    """The 'add this redirect URL to your OAuth client' block.
+    Used as a re-reference in state 2 (when sign-in fails with
+    redirect_uri_mismatch) and state 3 (collapsed under "OAuth
+    client settings"). The setup wizard's step 4 includes this URL
+    inline so the user adds it during initial client creation;
+    this section exists for the cases where they need to re-add
+    or fix it after the fact."""
+    redirect_safe = html.escape(redirect_uri)
+    return f"""
+<h3>The redirect URL</h3>
+<p>Your OAuth client needs this URL in its <strong>Authorized redirect URIs</strong> list. The setup wizard's step 4 included this when you created the client; if you skipped it, add it now.</p>
+
+<div class="copy-row">
+  <input id="redirect-uri" type="text" readonly value="{redirect_safe}"
+         onclick="this.select();">
+  <button type="button" onclick="copyRedirect()">Copy</button>
+  <span id="copy-feedback" class="copy-feedback">Copied!</span>
+</div>
+
+<ol class="steps">
+  <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a> and click your OAuth 2.0 Client ID. (If you bookmarked the old <code>/apis/credentials</code> URL, it still works — Google redirects it here.)</li>
+  <li>You'll land on a page titled <strong>Client ID for Web application</strong>. Scroll to <strong>Authorized redirect URIs</strong>.</li>
+  <li>Click <strong>+ ADD URI</strong>, paste the URL above, then <strong>SAVE</strong> at the bottom.</li>
+</ol>
+
+<p class="hint">
+  <strong>Heads up — propagation delay:</strong> Google says redirect-URI changes can take "5 minutes to a few hours" to take effect, though usually it's well under a minute. If sign-in fails with <code>redirect_uri_mismatch</code>, wait 60 seconds and retry.
+</p>
+
+<script>
+async function copyRedirect() {{
+  const input = document.getElementById('redirect-uri');
+  const fb = document.getElementById('copy-feedback');
+  try {{
+    await navigator.clipboard.writeText(input.value);
+  }} catch (e) {{
+    input.select();
+    document.execCommand('copy');
+  }}
+  fb.classList.add('shown');
+  setTimeout(() => fb.classList.remove('shown'), 1800);
+}}
+</script>
+"""
+
+
+def _add_account_form_html() -> str:
+    return """
+<h2>Add a Google account</h2>
+<form method="post" action="start">
+  <label for="name">Your name (label only)</label>
+  <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
+         placeholder="brittany" autocapitalize="off" autocorrect="off">
+  <small>Lowercase, no spaces. Used by voice ('what's on Brittany's calendar') and shown in the list below.</small>
+
+  <p style="margin-top:1em">
+    <button type="submit">Continue with Google →</button>
+  </p>
+  <small>You'll be sent to Google to sign in once. The refresh token stays on this speaker — read access only (Calendar + Gmail).</small>
+</form>
+"""
+
+
+def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: str = "") -> bytes:
+    """State 2: credentials saved, no accounts linked yet. The user
+    already added the redirect URI during the wizard's step 4, so the
+    primary action here is "link a household member's account". The
+    redirect URI section lives in a collapsible <details> as a
+    fallback for the redirect_uri_mismatch case."""
+    masked = (
+        client_id[:8] + "…" + client_id[-30:]
+        if len(client_id) > 38 else "configured"
+    )
+    body = f"""
+<p class="sub">Credentials saved (Client ID: <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>). One step left — link your first Google account.</p>
+
+{_add_account_form_html()}
+
+<details style="margin-top:2.4em">
+  <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
+  <p style="margin-top:0.8em">If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
+  {_redirect_uri_section_html(redirect_uri)}
+  <form method="post" action="reset-credentials" style="margin-top:2em"
+        onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
+    <button type="submit" class="danger">Reset Google credentials</button>
+  </form>
+</details>
+"""
+    return _wrap_page(
+        "Almost there — link a Google account", body, status_msg=status_msg,
+    )
+
+
+def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
+    name = html.escape(account.name)
+    email = html.escape(account.email or "(unknown email)")
+    badge = '<span class="badge">default</span>' if is_default else ""
+    set_default = (
+        '<button class="secondary" type="submit" disabled>Default</button>'
+        if is_default
+        else '<button class="secondary" type="submit">Set default</button>'
+    )
+    return f"""
+<li>
+  <span class="name">{name}</span>
+  <span class="email">{email}</span>
+  {badge}
+  <span class="actions">
+    <form method="post" action="default">
+      <input type="hidden" name="name" value="{name}">
+      {set_default}
+    </form>
+    <form method="post" action="remove"
+          onsubmit="return confirm('Remove {name}? The refresh token will be deleted from this speaker.');">
+      <input type="hidden" name="name" value="{name}">
+      <button class="danger" type="submit">Remove</button>
+    </form>
+  </span>
+</li>"""
+
+
+def _management_html(
+    registry: GoogleRegistry, redirect_uri: str, *, status_msg: str = "",
+) -> bytes:
+    items = [
+        _account_li_html(a, is_default=(a.name == registry.default_name))
+        for a in registry.accounts
+    ]
+    body = f"""
+<p class="sub">Each household member links their Google account once. The voice loop reads Calendar + Gmail data per-account on demand — say "what's on Brittany's calendar" or "any new emails for Jasper" to disambiguate; bare requests use the default account.</p>
+
+<h2>Linked accounts</h2>
+<ul class="accounts">
+{''.join(items)}
+</ul>
+
+{_add_account_form_html()}
+
+<details style="margin-top:2.4em">
+  <summary>OAuth client settings (redirect URI, reset credentials)</summary>
+  {_redirect_uri_section_html(redirect_uri)}
+  <form method="post" action="reset-credentials" style="margin-top:2em"
+        onsubmit="return confirm('Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.');">
+    <button type="submit" class="danger">Reset Google credentials</button>
+  </form>
+</details>
+"""
+    return _wrap_page(
+        "Google accounts on this speaker", body, status_msg=status_msg,
+    )
+
+
+# ----------------------------------------------------------------------
+# OAuth helpers.
+# ----------------------------------------------------------------------
+
+
+def _build_flow(cfg: dict[str, Any], *, state: str | None = None):
+    """Construct a google_auth_oauthlib Flow with our Web-application
+    client config. Imported lazily so the module is importable in
+    unit tests without the google-auth-oauthlib wheel installed."""
+    from google_auth_oauthlib.flow import Flow
+    flow = Flow.from_client_config(
+        {
+            "web": {
+                "client_id": cfg["client_id"],
+                "client_secret": cfg["client_secret"],
+                "auth_uri": _AUTH_URI,
+                "token_uri": _TOKEN_URI,
+                "redirect_uris": [cfg["redirect_uri"]],
+            }
+        },
+        scopes=GOOGLE_SCOPES,
+        state=state,
+    )
+    flow.redirect_uri = cfg["redirect_uri"]
+    return flow
+
+
+def _fetch_userinfo(access_token: str) -> dict[str, Any]:
+    """Hit Google's OIDC userinfo endpoint with the freshly-issued
+    access token. Returns ``{}`` on any error — the wizard falls back
+    to "(unknown email)" rather than failing the whole link."""
+    if not access_token:
+        return {}
+    req = urllib.request.Request(
+        _USERINFO_URI,
+        headers={"Authorization": f"Bearer {access_token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = json.loads(r.read())
+        return data if isinstance(data, dict) else {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("userinfo fetch failed: %s", e)
+        return {}
+
+
+# ----------------------------------------------------------------------
+# HTTP handler.
+# ----------------------------------------------------------------------
+
+
+def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
+    """Returns a request handler class closed over the config dict.
+
+    `cfg` is mutated when the user submits credentials so the running
+    process can serve the OAuth flow without needing a restart."""
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
+            logger.info("%s - %s", self.address_string(), fmt % args)
+
+        def _redirect(self, location: str) -> None:
+            self.send_response(HTTPStatus.SEE_OTHER)
+            self.send_header("Location", location)
+            self.end_headers()
+
+        def _send_html(self, body: bytes, *, status: int = 200) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        # --- routes ---
+
+        def do_GET(self) -> None:  # noqa: N802
+            url = urllib.parse.urlparse(self.path)
+            path = url.path.rstrip("/") or "/"
+            qs = urllib.parse.parse_qs(url.query)
+
+            if path == "/":
+                self._render_index(status_msg=qs.get("msg", [""])[0])
+                return
+
+            if path == "/callback":
+                code = qs.get("code", [""])[0]
+                state = qs.get("state", [""])[0]  # account name
+                err = qs.get("error", [""])[0]
+                if err:
+                    self._redirect(
+                        f"./?msg=Google+returned+error:+{urllib.parse.quote(err)}"
+                    )
+                    return
+                if not (code and state):
+                    self._redirect("./?msg=Missing+code+or+state+from+Google")
+                    return
+                if not (cfg["client_id"] and cfg["client_secret"]):
+                    self._redirect(
+                        "./?msg=Credentials+were+cleared+mid-flow.+Start+over."
+                    )
+                    return
+                try:
+                    self._exchange_code(state, code)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("oauth exchange failed")
+                    self._redirect(
+                        f"./?msg=Auth+exchange+failed:+{urllib.parse.quote(str(e))}"
+                    )
+                    return
+                _restart_voice_daemon()
+                self._redirect(
+                    f"./?msg=Linked+{urllib.parse.quote(state)}+successfully"
+                )
+                return
+
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        def do_POST(self) -> None:  # noqa: N802
+            url = urllib.parse.urlparse(self.path)
+            path = url.path.rstrip("/") or "/"
+            form = read_form(self)
+
+            if path == "/setup-credentials":
+                self._handle_setup_credentials(form)
+                return
+            if path == "/reset-credentials":
+                self._handle_reset_credentials()
+                return
+            if path == "/start":
+                self._handle_start(form)
+                return
+            if path == "/remove":
+                self._handle_remove(form)
+                return
+            if path == "/default":
+                self._handle_default(form)
+                return
+
+            self.send_error(HTTPStatus.NOT_FOUND)
+
+        # --- route bodies ---
+
+        def _render_index(self, *, status_msg: str = "") -> None:
+            has_creds = bool(cfg["client_id"] and cfg["client_secret"])
+            if not has_creds:
+                self._send_html(_setup_wizard_html(
+                    cfg["redirect_uri"], status_msg=status_msg,
+                ))
+                return
+            registry = GoogleRegistry.load(cfg["registry_path"])
+            if not registry.accounts:
+                self._send_html(_redirect_uri_page_html(
+                    cfg["redirect_uri"], cfg["client_id"],
+                    status_msg=status_msg,
+                ))
+                return
+            self._send_html(_management_html(
+                registry, cfg["redirect_uri"], status_msg=status_msg,
+            ))
+
+        def _handle_setup_credentials(self, form: dict[str, str]) -> None:
+            client_id = form.get("client_id", "").strip()
+            client_secret = form.get("client_secret", "").strip()
+            if not (client_id and client_secret):
+                self._redirect(
+                    "./?msg=Both+Client+ID+and+Client+Secret+are+required."
+                )
+                return
+            if not _CLIENT_ID_RE.fullmatch(client_id):
+                self._redirect(
+                    "./?msg=Client+ID+should+end+in+.apps.googleusercontent.com"
+                    "+-+double-check+the+value+from+Google+Cloud+Console."
+                )
+                return
+            try:
+                _write_creds_file(client_id, client_secret)
+            except OSError as e:
+                logger.exception("could not write credentials file")
+                self._redirect(
+                    f"./?msg=Could+not+save+credentials:+{urllib.parse.quote(str(e))}"
+                )
+                return
+            cfg["client_id"] = client_id
+            cfg["client_secret"] = client_secret
+            _restart_voice_daemon()
+            self._redirect(
+                "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+"
+                "OAuth+client."
+            )
+
+        def _handle_reset_credentials(self) -> None:
+            _delete_creds_file()
+            cfg["client_id"] = ""
+            cfg["client_secret"] = ""
+            _restart_voice_daemon()
+            self._redirect("./?msg=Credentials+cleared.")
+
+        def _handle_start(self, form: dict[str, str]) -> None:
+            if not (cfg["client_id"] and cfg["client_secret"]):
+                self._redirect("./?msg=Set+up+Google+credentials+first.")
+                return
+            name = form.get("name", "").strip()
+            if not re.fullmatch(r"[a-zA-Z0-9_-]+", name):
+                self._redirect(
+                    "./?msg=Invalid+name+(letters/digits/_-+only)"
+                )
+                return
+            registry = GoogleRegistry.load(cfg["registry_path"])
+            token_path = default_token_path_for(name)
+            registry.add_or_update(GoogleAccount(name=name, token_path=token_path))
+            registry.save()
+            try:
+                flow = _build_flow(cfg, state=name)
+                # `prompt='consent'` forces Google to issue a refresh
+                # token even if the user has already consented — the
+                # one we get on first consent is the only one we'll
+                # ever see otherwise, and a re-link would silently
+                # fail.
+                auth_url, _state = flow.authorization_url(
+                    access_type="offline",
+                    prompt="consent",
+                    include_granted_scopes="true",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception("authorize-url build failed")
+                self._redirect(
+                    f"./?msg=Could+not+start+OAuth:+{urllib.parse.quote(str(e))}"
+                )
+                return
+            self._redirect(auth_url)
+
+        def _handle_remove(self, form: dict[str, str]) -> None:
+            name = form.get("name", "")
+            registry = GoogleRegistry.load(cfg["registry_path"])
+            token_path = ""
+            a = registry.get(name)
+            if a is not None:
+                token_path = a.token_path
+            if registry.remove(name):
+                registry.save()
+                if token_path and os.path.isfile(token_path):
+                    try:
+                        os.unlink(token_path)
+                    except OSError:
+                        pass
+                _restart_voice_daemon()
+                self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
+            else:
+                self._redirect("./?msg=Account+not+found")
+
+        def _handle_default(self, form: dict[str, str]) -> None:
+            name = form.get("name", "")
+            registry = GoogleRegistry.load(cfg["registry_path"])
+            if registry.get(name) is not None:
+                registry.default_name = name
+                registry.save()
+                self._redirect(
+                    f"./?msg=Default+set+to+{urllib.parse.quote(name)}"
+                )
+            else:
+                self._redirect("./?msg=Account+not+found")
+
+        def _exchange_code(self, account_name: str, code: str) -> None:
+            registry = GoogleRegistry.load(cfg["registry_path"])
+            account = registry.get(account_name)
+            if account is None:
+                raise RuntimeError(f"unknown account: {account_name}")
+            flow = _build_flow(cfg, state=account_name)
+            flow.fetch_token(code=code)
+            creds = flow.credentials
+            if not creds.refresh_token:
+                # `prompt='consent'` should always produce one. If we
+                # get here Google probably rate-limited the consent
+                # screen for this user — the user can retry.
+                raise RuntimeError(
+                    "Google did not return a refresh token. Try again "
+                    "in a moment, or revoke this app at "
+                    "myaccount.google.com/permissions and re-link."
+                )
+            save_token(
+                account.token_path,
+                refresh_token=creds.refresh_token,
+                scopes=list(creds.scopes or GOOGLE_SCOPES),
+                token_uri=creds.token_uri or _TOKEN_URI,
+            )
+            # Best-effort identity lookup so the management page can
+            # show "jasper@gmail.com" next to the label. Failure here
+            # is non-fatal — the account still works for tools.
+            info = _fetch_userinfo(creds.token or "")
+            email = (info.get("email") or "").strip()
+            display = (info.get("name") or "").strip()
+            if email or display:
+                account.email = email
+                account.display_name = display
+                registry.save()
+
+    return Handler
+
+
+# ----------------------------------------------------------------------
+# Entry points.
+# ----------------------------------------------------------------------
+
+
+def make_server(
+    host: str,
+    port: int,
+    *,
+    registry_path: str = "/var/lib/jasper/google/accounts.json",
+    redirect_uri: str = "https://jts.local/google/callback",
+) -> ThreadingHTTPServer:
+    """Build a configured ThreadingHTTPServer. Used by both the
+    standalone CLI entry point AND by jasper.web.__main__ to colocate
+    this server with the Spotify + voice wizards inside one process."""
+    creds_from_file = _read_creds_file()
+    client_id = (
+        os.environ.get("GOOGLE_CLIENT_ID", "")
+        or creds_from_file.get("GOOGLE_CLIENT_ID", "")
+    )
+    client_secret = (
+        os.environ.get("GOOGLE_CLIENT_SECRET", "")
+        or creds_from_file.get("GOOGLE_CLIENT_SECRET", "")
+    )
+    cfg = {
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+        "registry_path": registry_path,
+    }
+    return ThreadingHTTPServer((host, port), _make_handler(cfg))
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="jasper-google-web",
+        description=(
+            "Google Calendar + Gmail OAuth setup web server "
+            "for the Jasper smart speaker"
+        ),
+    )
+    parser.add_argument(
+        "--host",
+        default=os.environ.get("JASPER_GOOGLE_WEB_HOST", "127.0.0.1"),
+    )
+    parser.add_argument(
+        "--port", type=int,
+        default=int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768")),
+    )
+    parser.add_argument(
+        "--registry",
+        default=os.environ.get(
+            "JASPER_GOOGLE_ACCOUNTS_PATH",
+            "/var/lib/jasper/google/accounts.json",
+        ),
+    )
+    parser.add_argument(
+        "--redirect-uri",
+        default=os.environ.get(
+            "GOOGLE_REDIRECT_URI",
+            "https://jts.local/google/callback",
+        ),
+    )
+    args = parser.parse_args(argv)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    server = make_server(
+        args.host, args.port,
+        registry_path=args.registry,
+        redirect_uri=args.redirect_uri,
+    )
+    logger.info(
+        "jasper-google-web listening on http://%s:%d (state=%s, redirect_uri=%s)",
+        args.host, args.port, args.registry, args.redirect_uri,
+    )
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        return 0
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

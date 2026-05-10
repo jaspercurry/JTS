@@ -1,14 +1,14 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (Spotify accounts + voice provider)
+Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google)
 After=network-online.target time-sync.target
 Wants=network-online.target time-sync.target
 # time-sync.target gate: Pi 5 has no battery-backed RTC, so on first
 # boot the clock can be in 1970 until NTP catches up. The Spotify
-# token-exchange POST to accounts.spotify.com fails cert validation
-# when the system clock is too far off, and the user-visible symptom
-# would be "Auth exchange failed: certificate has expired" right at
-# the end of an otherwise-successful OAuth flow. Waiting on
-# time-sync.target makes that race impossible.
+# (and Google) token-exchange POSTs fail cert validation when the
+# system clock is too far off, and the user-visible symptom would be
+# "Auth exchange failed: certificate has expired" right at the end
+# of an otherwise-successful OAuth flow. Waiting on time-sync.target
+# makes that race impossible.
 
 [Service]
 Type=simple
@@ -24,9 +24,13 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # defaults. Sourced here so the wizard's process can render the
 # current state correctly even on cold boot.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
-# Single Python process serves BOTH wizards as separate threads:
+# Optional file written by the Google wizard at /google/ — holds
+# GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
+EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# Single Python process serves all wizards as separate threads:
 #   /spotify/  →  127.0.0.1:8765
 #   /voice/    →  127.0.0.1:8767
+#   /google/   →  127.0.0.1:8768
 # See jasper/web/__main__.py for the wiring.
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web
 Restart=on-failure

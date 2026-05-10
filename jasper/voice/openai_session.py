@@ -738,6 +738,14 @@ class OpenAIRealtimeConnection(LiveConnection):
             },
             "tools": tools,
             "tool_choice": "auto",
+            # `truncation: "auto"` lets the server prune old conversation
+            # items as context fills, preserving the prompt-cache prefix.
+            # Required for long-lived smart-speaker sessions: complements
+            # (does not replace) the opt-in idle context reset by handling
+            # the steady-state context bloat the reset doesn't address.
+            # When `context_reset_sec` is 0 (default), this is the only
+            # context-management strategy in play.
+            "truncation": "auto",
         }
         # ``reasoning.effort`` is gated to reasoning-capable models
         # (``gpt-realtime-2``). We detect that from the model name
