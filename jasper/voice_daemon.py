@@ -152,9 +152,15 @@ SYSTEM_INSTRUCTION = (
 #
 # Earlier values: 5 s (defensive but felt like a 15-20 s dead zone
 # end-to-end once detector buffer warmup was added), 10 s (original,
-# pre-persistent-connection era when each wake cost a Live slot).
-# Both were over-correcting for a problem refractory can't solve.
-WAKE_REFRACTORY_SEC = 0.7
+# pre-persistent-connection era when each wake cost a Live slot),
+# 0.7 s (May 2026). Even 0.7 s combined with POST_RESPONSE_IDLE_TIMEOUT_SEC
+# (1.5 s tail) produced a ~2.2 s total deadzone after the model finished
+# speaking — long enough that quick follow-ups got dropped silently.
+# The tail already drains the ALSA buffer fully by the time turn-end
+# fires, so the refractory was double-counting the safety margin.
+# 0.2 s is ~2.5x the 85 ms dmix buffer — still a margin, but won't
+# swallow conversational pacing.
+WAKE_REFRACTORY_SEC = 0.2
 
 # End-of-utterance: fire activity_end once the user has been silent
 # for this long AFTER they spoke. With manual VAD on the server
@@ -212,7 +218,14 @@ NO_SPEECH_ABORT_SEC = 5.0
 # turn_complete fired), we switch to this much shorter window so
 # the music un-ducks promptly after Gemini finishes speaking,
 # instead of holding the duck for ~10 s of dead air.
-POST_RESPONSE_IDLE_TIMEOUT_SEC = 1.5
+#
+# Measured anchor is `last_chunk_played_at` — the consumer's dequeue
+# timestamp, which advances at real-time playback rate. After that
+# the only audio still in flight is whatever's in the 85 ms ALSA dmix
+# buffer; 0.5 s gives ~6x margin on buffer drain. Was 1.5 s; the
+# extra second was being eaten as deadzone after the model finished
+# speaking, swallowing quick follow-up wakes.
+POST_RESPONSE_IDLE_TIMEOUT_SEC = 0.5
 
 # Sustained-speech threshold for arming the end-of-utterance silence
 # detector. After wake fires, we wait for Silero to report ≥ THRESHOLD
