@@ -21,8 +21,21 @@ Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF ra
 # turned out to be architecturally incompatible with our external-
 # DAC topology — see jasper/cli/aec_bridge.py header for the
 # detailed analysis.
-After=jasper-camilla.service sound.target
+After=jasper-camilla.service jasper-aec-init.service sound.target
 Requires=jasper-camilla.service
+# `Wants=` so init runs whenever bridge starts (init is a one-shot
+# that applies XVF tuning; bridge depends on chip being initialised).
+# Soft dep — bridge still tries to start even if init failed; AEC
+# quality degrades but the daemon is operational.
+Wants=jasper-aec-init.service
+# `PartOf=` propagates camilla's stop / restart to this unit. Without
+# it, a camilla restart (e.g. during deploy) deactivates the bridge
+# via `Requires=` cascade — but `Restart=on-failure` doesn't trigger
+# on a clean exit (code 0 from cascade-stop), so the bridge stays
+# dead silently. Mic ends up listening to a (now-unfed) loopback,
+# wake events stop firing, speaker appears alive but is deaf. Hit
+# in production on 2026-05-10.
+PartOf=jasper-camilla.service
 
 [Service]
 Type=simple
