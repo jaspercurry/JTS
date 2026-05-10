@@ -204,17 +204,17 @@ _PAGE_HTML = """<!doctype html>
 </head>
 <body>
 <h1>Room correction</h1>
-<p class="sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker. Phase 1 is single-position; Phase 2 will add 5-position averaging.</p>
+<p class="sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
 
 <details class="advice" open>
-  <summary>Place your phone correctly before starting</summary>
+  <summary>Where to put the phone</summary>
   <ol>
-    <li>Lay the phone <strong>flat, screen up</strong>, on the seat where you usually listen.</li>
-    <li>Point the <strong>bottom edge</strong> (the speaker / mic end) toward the speakers.</li>
-    <li>Take it out of any case for the most accurate measurement.</li>
-    <li>Keep the room quiet — close windows, mute other devices, no talking during the sweep.</li>
+    <li><strong>Hold or prop the phone where your head will be when listening</strong> — sitting on the couch / chair, at ear height. <em>Not</em> on the cushion below your head; the cushion absorbs sound your ears would receive.</li>
+    <li>Phone <strong>flat, screen up</strong>, with the <strong>bottom edge</strong> (speaker / mic end) pointing toward the speakers.</li>
+    <li>Take it out of any case if it has one.</li>
+    <li>Keep the room quiet during the sweep — close windows, mute other devices, no talking.</li>
   </ol>
-  <p class="hint">This mirrors WiiM RoomFit and HouseCurve. iOS Safari doesn't expose a mic-selection API, so the bottom-mic-toward-speakers trick is the only way to get a consistent capture orientation.</p>
+  <p class="hint">iOS doesn't let us pick which mic to use; pointing the bottom edge at the speakers gets the most consistent capture. Holding the phone at ear height (rather than putting it on the cushion) means we're measuring what you actually hear.</p>
 </details>
 
 <button id="start" type="button">Start mic capture</button>
@@ -262,16 +262,18 @@ _PAGE_HTML = """<!doctype html>
 
   <div id="position-prompt" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
     <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
-    <p class="hint" style="margin-top:0.3em">Pick a different spot on / near your couch — about 30 cm from the previous position. Same orientation: flat, screen up, bottom toward speakers. Tap Continue when ready.</p>
+    <p class="hint" style="margin-top:0.3em">Move ~30 cm from the previous position — left, right, forward, or back, head-height. Same orientation: phone flat, bottom edge pointing at the speakers. Tap Continue when ready.</p>
   </div>
 
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
+    <button id="test-tone" type="button" class="secondary" disabled>Test speaker volume</button>
     <button id="run-measurement" type="button" class="primary" disabled>Run measurement</button>
     <button id="continue-position" type="button" class="primary hidden">Continue to next position</button>
     <button id="apply-correction" type="button" class="primary hidden">Apply correction</button>
     <button id="verify-correction" type="button" class="primary hidden">Verify with re-measurement</button>
     <button id="reset-correction" type="button" class="danger hidden">Reset to flat</button>
   </p>
+  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Test speaker volume</strong> to play a 5-second 1 kHz tone. While it's playing, watch the mic level bar above and adjust your amp so the bar reaches the <strong>orange/yellow zone</strong> (about &minus;25 to &minus;10 dBFS). If the bar barely moves, the speaker is too quiet for a clean measurement; if it pegs all the way red, it'll clip and the measurement will be invalid.</p>
   <div id="result-section" class="hidden">
     <h3>Frequency response</h3>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
@@ -287,9 +289,16 @@ _PAGE_HTML = """<!doctype html>
   </div>
 </div>
 
-<p class="hint" style="margin-top:2em">
-  Cert trust trouble? <a href="http://__HOSTNAME__/jts-root-ca.crt">Download the JTS root CA</a> on plain HTTP, install via Settings → General → VPN &amp; Device Management, then enable in Settings → General → About → Certificate Trust Settings.
-</p>
+<details style="margin-top:2em; background:#f4f4f4; border-radius:6px; padding:0.5em 0.8em 0.7em">
+  <summary style="cursor:pointer; font-weight:600">Optional: silence Safari's "Not Private" warning on future visits</summary>
+  <p>You're seeing this page because you tapped through Safari's "Not Private" warning — that's fine and the page works correctly. The warning appears on every visit unless you install this speaker's certificate as a trusted authority on this device.</p>
+  <ol>
+    <li>Tap <a href="http://__HOSTNAME__/jts-root-ca.crt">Download the JTS root CA</a> (plain HTTP — necessary because HTTPS isn't trusted yet). Safari prompts <em>"This website is trying to download a configuration profile."</em> Tap <strong>Allow</strong>.</li>
+    <li>Open the <strong>Settings</strong> app. A new entry near the top says <em>"Profile Downloaded — JTS Speaker Local CA"</em>. Tap it → <strong>Install</strong> → enter passcode → <strong>Install</strong> → <strong>Done</strong>.</li>
+    <li>Go to <strong>Settings → General → About → Certificate Trust Settings</strong>. Toggle <strong>JTS Speaker Local CA</strong> on. Tap <strong>Continue</strong> through the warning Apple shows for any non-public CA.</li>
+  </ol>
+  <p class="hint">To remove later: Settings → General → VPN &amp; Device Management → JTS Speaker Local CA → Remove Profile.</p>
+</details>
 
 <script>
 (function () {
@@ -306,6 +315,7 @@ _PAGE_HTML = """<!doctype html>
   var measureSection = document.getElementById('measure-section');
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
+  var testToneBtn = document.getElementById('test-tone');
   var runBtn = document.getElementById('run-measurement');
   var continueBtn = document.getElementById('continue-position');
   var applyBtn = document.getElementById('apply-correction');
@@ -330,16 +340,31 @@ _PAGE_HTML = """<!doctype html>
   var lastVerify = null;
   var inVerifyMode = false;
 
+  // For the three audio-processing flags (echoCancellation,
+  // noiseSuppression, autoGainControl), iOS Safari often returns
+  // `undefined` from getSettings() rather than echoing back the
+  // value we requested. That's NOT a bug — it means Safari simply
+  // doesn't surface the setting (and on iOS, these features are
+  // off by default for getUserMedia anyway). We treat undefined
+  // and false as both "constraint was honored." Only TRUE counts
+  // as bad.
+  function isAudioProcessingOff(value) {
+    return value === false || value === undefined || value === null;
+  }
+
   function renderConstraints(actual, problems) {
     var rows = [
       ['sampleRate', REQUIRED_SR + ' Hz', actual.sampleRate + ' Hz',
        actual.sampleRate === REQUIRED_SR],
-      ['echoCancellation', 'false', String(actual.echoCancellation),
-       actual.echoCancellation === false],
-      ['noiseSuppression', 'false', String(actual.noiseSuppression),
-       actual.noiseSuppression === false],
-      ['autoGainControl', 'false', String(actual.autoGainControl),
-       actual.autoGainControl === false],
+      ['echoCancellation', 'false',
+       (actual.echoCancellation === undefined ? 'undefined (= off)' : String(actual.echoCancellation)),
+       isAudioProcessingOff(actual.echoCancellation)],
+      ['noiseSuppression', 'false',
+       (actual.noiseSuppression === undefined ? 'undefined (= off)' : String(actual.noiseSuppression)),
+       isAudioProcessingOff(actual.noiseSuppression)],
+      ['autoGainControl', 'false',
+       (actual.autoGainControl === undefined ? 'undefined (= off)' : String(actual.autoGainControl)),
+       isAudioProcessingOff(actual.autoGainControl)],
       ['channelCount', '1', String(actual.channelCount),
        actual.channelCount === 1]
     ];
@@ -359,9 +384,11 @@ _PAGE_HTML = """<!doctype html>
         '. The measurement will refuse to start in this state.';
       errBanner.classList.remove('hidden');
       runBtn.disabled = true;
+      testToneBtn.disabled = true;
     } else {
       errBanner.classList.add('hidden');
       runBtn.disabled = false;
+      testToneBtn.disabled = false;
     }
   }
 
@@ -411,9 +438,12 @@ _PAGE_HTML = """<!doctype html>
     };
     var problems = [];
     if (actual.sampleRate !== REQUIRED_SR) problems.push('sampleRate');
-    if (actual.echoCancellation) problems.push('echoCancellation enabled');
-    if (actual.noiseSuppression) problems.push('noiseSuppression enabled');
-    if (actual.autoGainControl) problems.push('autoGainControl enabled');
+    // Only TRUE counts as a problem — undefined / null mean Safari
+    // didn't echo the value back, which on iOS means the feature
+    // is off (it's off by default for getUserMedia on iOS anyway).
+    if (actual.echoCancellation === true) problems.push('echoCancellation enabled');
+    if (actual.noiseSuppression === true) problems.push('noiseSuppression enabled');
+    if (actual.autoGainControl === true) problems.push('autoGainControl enabled');
     renderConstraints(actual, problems);
 
     var workletSrc =
@@ -652,6 +682,12 @@ _PAGE_HTML = """<!doctype html>
   }
 
   async function continueToNextPosition() {
+    // Hide + disable Continue immediately so a double-tap can't fire
+    // a second /next-position before the server transitions out of
+    // NEEDS_NEXT_POSITION. (A user hit this in first-pass testing
+    // — race between a double-tap and the worklet's stopCapture
+    // → upload → state-transition cycle.)
+    continueBtn.classList.add('hidden');
     continueBtn.disabled = true;
     positionPrompt.classList.add('hidden');
     setStateBadge('preparing', 'pausing music…');
@@ -659,13 +695,36 @@ _PAGE_HTML = """<!doctype html>
       await postJson('next-position', {});
     } catch (e) {
       setStateBadge('failed', e.message);
-      continueBtn.disabled = false;
-      continueBtn.classList.remove('hidden');
+      // pollState will reapply the button policy on next tick —
+      // user can retry from the new state.
       return;
     }
     if (workletNode) workletNode.port.postMessage('startCapture');
-    continueBtn.disabled = false;
     pollState();
+  }
+
+  async function startTestTone() {
+    // Plays a 5-second 1 kHz sine through the speaker so the user
+    // can adjust their amp by watching the live mic level meter.
+    // No state-machine entanglement — the tone is brief and
+    // independent of the measurement session.
+    testToneBtn.disabled = true;
+    runBtn.disabled = true;
+    var prevText = testToneBtn.textContent;
+    testToneBtn.textContent = 'Playing…';
+    setStateBadge('analyzing', 'playing 1 kHz test tone — adjust amp until live mic level reaches the orange/yellow zone');
+    try {
+      await postJson('test-tone', {});
+    } catch (e) {
+      setStateBadge('failed', e.message);
+    } finally {
+      testToneBtn.textContent = prevText;
+      // applyButtonPolicy will re-enable from the next pollState.
+      // For an immediate snap-back to idle UI, set state badge here.
+      setStateBadge('idle', 'test tone done — ready to measure');
+      testToneBtn.disabled = false;
+      runBtn.disabled = false;
+    }
   }
 
   async function startVerify() {
@@ -685,6 +744,46 @@ _PAGE_HTML = """<!doctype html>
     pollState();
   }
 
+  // Centralised button-state policy. Every transition through
+  // pollState first hides ALL action buttons, then re-shows the
+  // ones the current state allows. Without this, stale buttons
+  // (e.g. a still-visible Continue button during the next sweep)
+  // accept double-clicks and trigger /next-position from the
+  // wrong state — a real bug a user hit during first-pass testing.
+  function applyButtonPolicy(state) {
+    // Default: everything hidden / disabled.
+    positionPrompt.classList.add('hidden');
+    continueBtn.classList.add('hidden');
+    continueBtn.disabled = false;
+    applyBtn.classList.add('hidden');
+    applyBtn.disabled = false;
+    verifyBtn.classList.add('hidden');
+    verifyBtn.disabled = false;
+    resetBtn.classList.add('hidden');
+    resetBtn.disabled = false;
+    // Run + Test-tone: enabled only at start / after a terminal
+    // state. Disabled during any in-flight measurement step.
+    var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
+    var idle = idleStates.indexOf(state) !== -1;
+    runBtn.disabled = !idle;
+    testToneBtn.disabled = !idle;
+    // Per-state additions:
+    if (state === 'needs_next_position') {
+      positionPrompt.classList.remove('hidden');
+      continueBtn.classList.remove('hidden');
+      // run is still disabled in this state — only Continue moves
+      // forward.
+      runBtn.disabled = true;
+      testToneBtn.disabled = true;
+    } else if (state === 'ready') {
+      applyBtn.classList.remove('hidden');
+      resetBtn.classList.remove('hidden');
+    } else if (state === 'applied' || state === 'verified') {
+      verifyBtn.classList.remove('hidden');
+      resetBtn.classList.remove('hidden');
+    }
+  }
+
   async function pollState() {
     if (pollTimer) clearTimeout(pollTimer);
     try {
@@ -697,55 +796,33 @@ _PAGE_HTML = """<!doctype html>
         detail = 'position ' + (s.current_position + 1) + ' of ' + s.total_positions;
       }
       setStateBadge(s.state, detail);
+      applyButtonPolicy(s.state);
+
+      if (s.state === 'needs_next_position') {
+        positionCurrent.textContent = (s.current_position + 1);
+        positionTotal.textContent = s.total_positions;
+        return;
+      }
       if (s.state === 'awaiting_capture' || s.state === 'awaiting_verify_capture') {
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
       }
-      if (s.state === 'needs_next_position') {
-        positionCurrent.textContent = (s.current_position + 1);
-        positionTotal.textContent = s.total_positions;
-        positionPrompt.classList.remove('hidden');
-        continueBtn.classList.remove('hidden');
+      if (s.state === 'verified' && s.verify_metrics) {
+        verifySummary.textContent = 'Post-correction (20–350 Hz): RMS deviation ' +
+          s.verify_metrics.rms_db.toFixed(2) + ' dB, max ' +
+          s.verify_metrics.max_db.toFixed(2) + ' dB.';
+        verifySummary.classList.remove('hidden');
         return;
       }
-      if (s.state === 'ready') {
-        positionPrompt.classList.add('hidden');
-        applyBtn.classList.remove('hidden');
-        verifyBtn.classList.add('hidden');
-        resetBtn.classList.remove('hidden');
-        runBtn.disabled = false;
+      if (s.state === 'ready' || s.state === 'applied' || s.state === 'failed') {
         return;
       }
-      if (s.state === 'applied') {
-        positionPrompt.classList.add('hidden');
-        runBtn.disabled = false;
-        applyBtn.classList.add('hidden');
-        verifyBtn.classList.remove('hidden');
-        resetBtn.classList.remove('hidden');
-        return;
-      }
-      if (s.state === 'verified') {
-        positionPrompt.classList.add('hidden');
-        runBtn.disabled = false;
-        applyBtn.classList.add('hidden');
-        verifyBtn.classList.remove('hidden');
-        resetBtn.classList.remove('hidden');
-        if (s.verify_metrics) {
-          verifySummary.textContent = 'Post-correction (20–350 Hz): RMS deviation ' +
-            s.verify_metrics.rms_db.toFixed(2) + ' dB, max ' +
-            s.verify_metrics.max_db.toFixed(2) + ' dB.';
-          verifySummary.classList.remove('hidden');
-        }
-        return;
-      }
-      if (s.state === 'failed') {
-        runBtn.disabled = false;
-        return;
-      }
+      // Mid-flight states: keep polling.
       pollTimer = setTimeout(pollState, 500);
     } catch (e) {
       setStateBadge('failed', e.message);
       runBtn.disabled = false;
+      testToneBtn.disabled = false;
     }
   }
 
@@ -818,6 +895,7 @@ _PAGE_HTML = """<!doctype html>
   applyBtn.addEventListener('click', function () { applyCorrection(); });
   verifyBtn.addEventListener('click', function () { startVerify(); });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
+  testToneBtn.addEventListener('click', function () { startTestTone(); });
 })();
 </script>
 </body>
@@ -934,6 +1012,29 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     asyncio.run_coroutine_threadsafe(_run_verify_sweep(), _ensure_loop())
 
     return {"session_id": sess.session_id, "state": sess.state.value}
+
+
+def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /test-tone: play a 5-second 1 kHz sine through the music
+    chain so the user can adjust their amp's volume by watching the
+    live mic level meter. Pauses renderers + voice loop for the tone
+    duration via the same measurement_window the sweep uses.
+
+    Synchronous-feeling from the browser's POV (it returns once the
+    tone has finished playing) so the polling state machine doesn't
+    have to track a "test tone in progress" sub-state.
+    """
+    from jasper.correction import coordinator, playback
+
+    body = _read_json_body(handler)
+    duration_s = max(1.0, min(15.0, float(body.get("duration_s", 5.0))))
+
+    async def _run_test_tone() -> None:
+        async with coordinator.measurement_window():
+            await playback.play_test_tone(duration_s=duration_s)
+
+    _run_async(_run_test_tone(), timeout=duration_s + 30.0)
+    return {"played": True, "duration_s": duration_s}
 
 
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1101,6 +1202,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/verify":
                     self._send_json(_handle_verify(self))
+                    return
+                if path == "/test-tone":
+                    self._send_json(_handle_test_tone(self))
                     return
                 if path == "/upload-capture":
                     self._send_json(_handle_upload_capture(self))

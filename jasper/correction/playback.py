@@ -29,9 +29,17 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
+
+# Test-tone WAV cache. Generated once per (freq, duration, dbfs) tuple
+# and re-used across measurements.
+DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
 
 
 # Default ALSA device the sweep is played to. Matches the Loopback
@@ -102,4 +110,76 @@ async def play_sweep(
     logger.info(
         "sweep played: %s → %s (%d bytes stderr)",
         wav_path, alsa_device, len(stderr or b""),
+    )
+
+
+def _ensure_tone_wav(
+    *,
+    freq_hz: float,
+    duration_s: float,
+    dbfs: float,
+    sample_rate: int,
+    cache_dir: Path = DEFAULT_TONE_DIR,
+) -> Path:
+    """Generate (and cache on disk) a sine-tone WAV. Used by the
+    "test speaker volume" pre-measurement step so the user can
+    adjust their amp before running a sweep.
+
+    Generation is deterministic per (freq, duration, dbfs,
+    sample_rate) tuple — re-use the cached file on subsequent calls.
+    Same fade-in/out shape as the sweep so the tone doesn't click
+    the speaker at the boundaries.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    wav_path = cache_dir / (
+        f"tone_{int(freq_hz)}Hz_{int(duration_s * 1000)}ms_"
+        f"{int(abs(dbfs) * 10)}dbm_{sample_rate}Hz.wav"
+    )
+    if wav_path.exists():
+        return wav_path
+
+    n = int(round(duration_s * sample_rate))
+    amp = 10 ** (dbfs / 20.0)
+    t = np.arange(n, dtype=np.float64) / sample_rate
+    sig = amp * np.sin(2 * math.pi * freq_hz * t)
+
+    fade = max(8, int(0.005 * sample_rate))
+    if fade * 2 < n:
+        sig[:fade] *= np.linspace(0.0, 1.0, fade) ** 2
+        sig[-fade:] *= np.linspace(1.0, 0.0, fade) ** 2
+
+    from scipy.io import wavfile
+    int16 = (np.clip(sig, -1.0, 1.0) * 32767.0).astype(np.int16)
+    wavfile.write(str(wav_path), sample_rate, int16)
+    logger.info(
+        "test tone cached: %s (%.0f Hz, %.1f s, %.1f dBFS)",
+        wav_path, freq_hz, duration_s, dbfs,
+    )
+    return wav_path
+
+
+async def play_test_tone(
+    *,
+    freq_hz: float = 1000.0,
+    duration_s: float = 5.0,
+    dbfs: float = -18.0,
+    sample_rate: int = 48000,
+    alsa_device: str = DEFAULT_ALSA_DEVICE,
+    cache_dir: Path = DEFAULT_TONE_DIR,
+) -> None:
+    """Play a single sine tone through the music chain so the user
+    can adjust their amp's gain to a comfortable level before running
+    a sweep.
+
+    Default 1 kHz / 5 s / -18 dBFS — audible mid-range tone, long
+    enough for the user to read the live mic meter and adjust the
+    amp knob, loud enough to hear clearly but with headroom.
+    """
+    wav_path = _ensure_tone_wav(
+        freq_hz=freq_hz, duration_s=duration_s, dbfs=dbfs,
+        sample_rate=sample_rate, cache_dir=cache_dir,
+    )
+    await play_sweep(
+        wav_path, alsa_device=alsa_device,
+        timeout_s=duration_s + 5.0,
     )

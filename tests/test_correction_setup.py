@@ -136,6 +136,122 @@ def test_render_page_requests_wake_lock():
     assert "screen" in body  # request type
 
 
+def test_render_page_treats_undefined_constraints_as_ok():
+    """iOS Safari often returns `undefined` from getSettings() for
+    echoCancellation / noiseSuppression / autoGainControl rather
+    than echoing back the requested value. Undefined ≠ true ⇒ the
+    feature is off (iOS has these off by default for getUserMedia).
+    The page must NOT mark undefined as 'bad' — that was a
+    real first-pass-test bug. Pin the corrected behavior."""
+    body = correction_setup._render_page("jts.local").decode()
+    # Helper function exists.
+    assert "isAudioProcessingOff" in body
+    # Only TRUE counts as a problem (not 'truthy', because
+    # undefined is falsy and would otherwise be misclassified).
+    assert "actual.echoCancellation === true" in body
+    assert "actual.noiseSuppression === true" in body
+    assert "actual.autoGainControl === true" in body
+
+
+def test_render_page_includes_test_tone_button():
+    """The leveling step (test tone before measurement) was missing
+    in the first cut and became a real first-user complaint.
+    Pin its presence."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="test-tone"' in body
+    assert "Test speaker volume" in body
+    # Frontend handler hooks up the click → POST /test-tone.
+    assert "startTestTone" in body
+    assert "test-tone" in body  # the POST URL
+
+
+def test_render_page_placement_advice_says_head_height():
+    """First-pass instructions said 'on the seat' which is wrong —
+    the cushion absorbs sound and the listener's head is what we
+    care about. Pin the corrected wording."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "head will be" in body or "head height" in body
+    # Negative pin — the bad wording shouldn't come back.
+    assert "on the seat" not in body
+
+
+def test_render_page_continue_button_hidden_outside_needs_next_position():
+    """Bug a user hit: Continue button stayed visible during the next
+    sweep and a double-tap fired /next-position from the wrong
+    state. Fix is the central applyButtonPolicy that hides everything
+    by default and re-shows per state."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "applyButtonPolicy" in body
+    # Default is hidden + disabled.
+    assert "continueBtn.classList.add('hidden')" in body
+    assert "continueBtn.disabled = false" in body
+    # Re-shown only in needs_next_position branch.
+    assert "needs_next_position" in body
+
+
+def test_render_page_cert_section_is_optional_not_a_warning():
+    """First-pass UX framed the cert install as 'cert trouble?' which
+    misled users into thinking it was a fallback. The corrected
+    framing is 'optional: silence the warning' — explicit that the
+    page works without it."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "Optional: silence" in body
+    # Negative pin.
+    assert "Cert trust trouble" not in body
+
+
+# ---------- Test-tone backend (jasper.correction.playback) ------------------
+
+
+def test_test_tone_wav_is_generated_and_cached(tmp_path):
+    """First call generates the WAV; second call reuses the cache
+    file (no re-generation). Cache key is the parameter tuple."""
+    from jasper.correction import playback
+    p1 = playback._ensure_tone_wav(
+        freq_hz=1000, duration_s=2.0, dbfs=-18.0,
+        sample_rate=48000, cache_dir=tmp_path,
+    )
+    assert p1.exists()
+    mtime1 = p1.stat().st_mtime
+    # Second call → same path, cache hit.
+    p2 = playback._ensure_tone_wav(
+        freq_hz=1000, duration_s=2.0, dbfs=-18.0,
+        sample_rate=48000, cache_dir=tmp_path,
+    )
+    assert p2 == p1
+    assert p2.stat().st_mtime == mtime1
+
+
+def test_test_tone_wav_audio_correctness(tmp_path):
+    """The generated WAV should:
+      - have the expected duration (within sample-rate resolution)
+      - contain a single dominant frequency at the requested freq
+      - peak amplitude near the requested dBFS (within fade-edge dip)
+    """
+    import numpy as np
+    from jasper.correction import playback, sweep
+
+    wav_path = playback._ensure_tone_wav(
+        freq_hz=1000, duration_s=1.0, dbfs=-12.0,
+        sample_rate=48000, cache_dir=tmp_path,
+    )
+    sig, sr = sweep.read_wav_mono(wav_path)
+    assert sr == 48000
+    # Length tolerance: ±10 samples for fade-rounding.
+    assert abs(len(sig) - 48000) < 10
+    # Peak amplitude target: 10**(-12/20) = 0.251. Allow a bit of
+    # margin for fade-edge dip.
+    expected_peak = 10 ** (-12.0 / 20)
+    actual_peak = float(np.max(np.abs(sig)))
+    assert actual_peak <= expected_peak + 0.005
+    assert actual_peak > expected_peak * 0.9
+    # FFT — the peak bin should be at ~1000 Hz.
+    spectrum = np.abs(np.fft.rfft(sig))
+    freqs_bin = np.fft.rfftfreq(len(sig), d=1.0 / sr)
+    peak_idx = int(np.argmax(spectrum))
+    assert abs(freqs_bin[peak_idx] - 1000) < 2  # within 2 Hz
+
+
 # ---------- End-to-end via the actual HTTP server --------------------------
 
 
