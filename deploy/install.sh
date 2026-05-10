@@ -625,6 +625,13 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/index.html" \
         /usr/share/jasper-web/index.html
+    # /integrations sub-page (lists external services like Google).
+    # Same static-HTML pattern as the landing page; nginx serves both
+    # via exact-match `location =` blocks. Updates require an
+    # `nginx -s reload` (handled below).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/integrations.html" \
+        /usr/share/jasper-web/integrations.html
 
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
