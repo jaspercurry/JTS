@@ -1,0 +1,30 @@
+# Apple USB-C → 3.5mm Headphone Jack adapter (vendor 05ac, product 110a).
+#
+# Two rules, both keyed on the dongle's USB ids so they survive card-
+# number reordering:
+#
+# 1. **On every (re-)enumeration, re-pin the Headphone mixer control
+#    to 100%.** The dongle's UAC firmware reports its current Headphone
+#    volume via GET_CUR at probe time; the hardware default is 80/120
+#    (-20 dB). `jasper-dac-init` only runs at boot, and Trixie's
+#    `alsa-utils 1.2.14-1` ships a broken `90-alsa-restore.rules`
+#    (GOTO points at the wrong label, see Debian bug #1093057) so
+#    `alsactl restore` never re-fires on hotplug. This rule covers
+#    both: speaker re-plug into the 3.5 mm jack (dongle drops UAC
+#    interfaces without an analog load), USB autosuspend resume
+#    failure, xHCI quirks on the Pi 5. SUBSYSTEM=="sound" filter
+#    means the rule fires AFTER the ALSA controls exist, so amixer
+#    has something to write to.
+#
+# 2. **Disable USB autosuspend on the dongle.** The Pi is wall-powered;
+#    the few mW saved by suspending the dongle isn't worth the risk
+#    of a failed resume re-enumerating the device and resetting its
+#    mixer state.
+#
+# To verify after install: `udevadm test /sys/class/sound/controlC*`
+# (substituting the dongle's controlC node) — the RUN+= line should
+# appear in the output.
+
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100% unmute"
+
+ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ATTR{power/control}="on"

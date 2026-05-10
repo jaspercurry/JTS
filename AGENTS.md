@@ -52,7 +52,7 @@ this section is the operational summary.
 **Two ways to switch.** Either work; pick whichever fits the moment.
 
 **Web UI (preferred, end-user friendly)** — visit
-`https://jts.local/voice/` from any device on the LAN. The page
+`http://jts.local/voice/` from any device on the LAN. The page
 shows one card per provider for pasting API keys, picks model and
 voice from curated dropdowns, and has a single radio group at the
 top for "use this provider". Saving writes
@@ -262,8 +262,8 @@ it's connected to USB.
 ### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Project at `firmware/satellite-amoled/` on **Arduino-ESP32 v3.x
-via pioarduino** (the dial stays on v2.x intentionally).
+Project at `firmware/satellite-amoled/`. Both ESP32 firmware projects
+(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino**.
 
 Shipped:
 - Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
@@ -282,8 +282,9 @@ Shipped:
 Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL
 "Tap to Talk", UDP audio stream to Pi-side receiver.
 
-Flash gotcha: `write_flash 0x0 firmware.factory.bin` wipes NVS.
-Use `pio run -t upload` (piecewise) to preserve WiFi creds.
+Onboarding: `sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`
+mirrors `jasper-dial-onboard` — flash + Improv-driven WiFi creds
+push in one go, mDNS-confirmed at `jasper-satellite-amoled.local`.
 
 To capture audio for testing/debugging:
 
@@ -317,8 +318,6 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
   format mismatch, websocket connects)
 - `logs/jasper-aec-bridge-latest.log` — software AEC bridge
   (only when enabled)
-- `logs/mpd-latest.log` — MPD (output device errors, rate
-  negotiations)
 - `logs/combined-latest.log` — interleaved timeline
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
@@ -336,9 +335,30 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 Live tail (interactive, Ctrl-C to stop):
 
 ```sh
-bash scripts/tail-pi-logs.sh                # all units
+bash scripts/tail-pi-logs.sh                # all jasper-* units + renderers
 bash scripts/tail-pi-logs.sh jasper-voice   # just one
 ```
+
+For just the cross-daemon "events" — duck transitions, source
+preempts, dial volume routing, wake/turn boundaries — the
+`jasper-trace.sh` wrapper filters the live tail down to the
+high-signal lines:
+
+```sh
+bash scripts/jasper-trace.sh                # default: last 5 min, follow
+SINCE='1 hour ago' bash scripts/jasper-trace.sh
+```
+
+For a single JSON snapshot of cross-daemon state (voice provider /
+session / spend, main_volume_db / listening_level, renderer states,
+dial heartbeat), hit jasper-control's `/state` aggregator:
+
+```sh
+curl -s http://jts.local:8780/state | jq
+```
+
+Each `/state` section fails soft — if a daemon is unreachable, that
+section is null instead of the whole call erroring out.
 
 For a one-shot full diagnostic dump (when something's badly
 wrong), run on the Pi:
@@ -374,7 +394,7 @@ specific project:
   logs and point at the specific line that produced the failure
   before proposing a fix.
 - **Check prior art.** Existing helpers — `pycamilladsp`,
-  `python-mpd2`, `openwakeword`, `google-genai` — handle most of
+  `openwakeword`, `google-genai`, `spotipy` — handle most of
   the integration. Don't reinvent.
 - **Surgical changes — file ownership.** Our files live under
   `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,

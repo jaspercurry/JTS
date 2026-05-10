@@ -102,7 +102,7 @@ class CamillaController:
         """Per-channel RMS of CamillaDSP's playback signal in dBFS — the
         level just before the DAC, AFTER every attenuation stage on the
         music chain (source track loudness, AirPlay sender volume,
-        Spotify Connect sender volume, MPD volume, Camilla main_volume,
+        Spotify Connect sender volume, Camilla main_volume,
         room correction filters, etc). This is what the TTS gain
         tracker uses to size TTS to the actual perceived music level
         instead of guessing at any single attenuation stage.
@@ -151,6 +151,62 @@ class CamillaController:
         if not await self.set_volume_db(target, best_effort=best_effort):
             return None
         return target
+
+    async def get_config_file_path(
+        self, *, best_effort: bool = False,
+    ) -> str | None:
+        """Currently-loaded YAML path, e.g. `/etc/camilladsp/v1.yml`
+        on a fresh boot or `/var/lib/camilladsp/configs/correction_*.yml`
+        after the room-correction wizard applied a profile."""
+        try:
+            return str(await self._call(lambda c: c.config.file_path()))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug("camilla unavailable; get_config_file_path → None: %s", e)
+                return None
+            raise
+
+    async def set_config_file_path(
+        self, path: str, *, best_effort: bool = False,
+    ) -> bool:
+        """Tell CamillaDSP to load the YAML at `path` and reload the
+        pipeline. Atomic on the CamillaDSP side — no audio dropout
+        across the swap (same property the Ducker relies on for
+        seamless main_volume changes mid-stream).
+
+        The two-step `set_file_path` + `reload` is what camillagui-
+        backend does and what every CamillaDSP downstream uses for
+        config swap. Bundling them here keeps the call site simple
+        and ensures the order is correct (path before reload).
+        """
+        def write_and_reload(c):
+            c.config.set_file_path(path)
+            c.general.reload()
+            return True
+        try:
+            return bool(await self._call(write_and_reload))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning(
+                    "camilla unavailable; set_config_file_path(%s) skipped: %s",
+                    path, e,
+                )
+                return False
+            raise
+
+    async def reload(self, *, best_effort: bool = False) -> bool:
+        """Reload the currently-set config file path. Used by the
+        room-correction wizard's 'Reset to flat' action when the path
+        is already pointed at /etc/camilladsp/v1.yml — saves a
+        redundant set_file_path call."""
+        try:
+            await self._call(lambda c: c.general.reload())
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning("camilla unavailable; reload skipped: %s", e)
+                return False
+            raise
 
 
 class CueDuck:
@@ -244,6 +300,10 @@ class Ducker:
         if result is None:
             return
         self._ducked = True
+        logger.info(
+            "event=duck on=true new_db=%.1f duck_db=%.1f",
+            result, self._duck_db,
+        )
 
     async def restore(self) -> None:
         if not self._ducked:
@@ -251,5 +311,6 @@ class Ducker:
         try:
             target_db = await self._target_db_provider()
             await self._camilla.set_volume_db(target_db, best_effort=True)
+            logger.info("event=duck on=false target_db=%.1f", target_db)
         finally:
             self._ducked = False

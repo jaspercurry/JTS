@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JTS speaker</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+           max-width: 620px; margin: 2em auto; padding: 0 1em; color: #222; }
+    h1 { margin-bottom: 0.25em; }
+    .sub { color: #666; margin-top: 0; margin-bottom: 2em; }
+    .cards { display: flex; flex-direction: column; gap: 0.7em; }
+    a.card {
+      display: block; padding: 1em 1.2em;
+      background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
+      text-decoration: none; color: inherit;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    a.card:hover {
+      background: #f0fff4; border-color: #1db954;
+    }
+    a.card .name {
+      font-weight: 600; color: #1db954; font-size: 1.05em;
+    }
+    a.card .desc {
+      color: #555; font-size: 0.92em; margin-top: 0.3em; line-height: 1.45;
+    }
+    .cert-note {
+      background: #fff3cd; border: 1px solid #f0d090;
+      border-radius: 6px; padding: 0.7em 0.9em; margin: 1.5em 0;
+      color: #5a4500; font-size: 0.92em; line-height: 1.5;
+    }
+    .cert-note strong { color: #3a2e00; }
+    .cert-note a { color: #1da34d; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <h1>JTS speaker</h1>
+  <p class="sub">Manage your speaker.</p>
+
+  <div class="cards">
+    <a class="card" href="/spotify/">
+      <div class="name">Spotify accounts &rsaquo;</div>
+      <div class="desc">
+        Link each household member's Spotify account so voice commands
+        route to the right person.
+      </div>
+    </a>
+
+    <a class="card" href="/voice/">
+      <div class="name">Voice provider &rsaquo;</div>
+      <div class="desc">
+        Choose which real-time voice backend the speaker uses (Gemini,
+        OpenAI, or Grok) and paste API keys.
+      </div>
+    </a>
+
+    <a class="card" href="/dial/">
+      <div class="name">Accessories &rsaquo;</div>
+      <div class="desc">
+        Onboard a wireless accessory — currently the ESP32 rotary
+        dial; the AMOLED touch satellite is in progress.
+      </div>
+    </a>
+
+    <a class="card" id="correction-card" data-https="1" data-path="/correction/"
+       href="#">
+      <div class="name">Room correction &rsaquo;</div>
+      <div class="desc">
+        Measure your room from your iPhone and apply correction
+        filters to CamillaDSP. Browser will warn "Not Private" the
+        first time — see the note below.
+      </div>
+    </a>
+
+    <a class="card" id="camilla-card" data-port="5005" data-path="/"
+       href="#" target="_blank" rel="noopener">
+      <div class="name">CamillaDSP &rsaquo;</div>
+      <div class="desc">
+        Tune the speaker's audio processing — filters, mixers, signal
+        levels, and live config switching. Opens in a new tab.
+      </div>
+    </a>
+  </div>
+
+  <div class="cert-note">
+    <p style="margin:0 0 0.4em">
+      <strong>About the "Not Private" warning on Room correction:</strong>
+      capturing microphone audio in a browser requires HTTPS. This
+      speaker uses a self-signed certificate (no public CA — it's on
+      your home network), so Safari and Chrome warn the first time.
+    </p>
+    <p style="margin:0">
+      Either tap <strong>Show Details &rarr; visit this website</strong>
+      to dismiss the warning (works fine; reappears every visit), or
+      <a href="/jts-root-ca.crt">download the JTS root certificate</a>
+      and trust it once on this device to silence the warning
+      permanently. The room-correction page itself walks you through
+      the trust steps.
+    </p>
+  </div>
+
+  <script>
+    // CamillaGUI runs on its own port (5005) rather than under an
+    // nginx path prefix — the bundled SPA's frontend uses absolute
+    // URLs that don't survive a path rewrite. We can't relative-link
+    // because of the port change, so derive the hostname from
+    // window.location at click time. Works for any speaker hostname
+    // (default jts.local or whatever JASPER_HOSTNAME was set to).
+    document.querySelectorAll('a.card[data-port]').forEach(function(a) {
+      a.href = 'http://' + window.location.hostname + ':' + a.dataset.port + a.dataset.path;
+    });
+    // /correction/ is on HTTPS (getUserMedia requires a secure
+    // context). The current page is HTTP, so we have to construct an
+    // absolute https URL to switch schemes — a relative link would
+    // hit the http server and 404.
+    document.querySelectorAll('a.card[data-https]').forEach(function(a) {
+      a.href = 'https://' + window.location.hostname + a.dataset.path;
+    });
+  </script>
+</body>
+</html>

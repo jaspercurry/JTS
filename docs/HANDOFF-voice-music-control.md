@@ -42,7 +42,7 @@ queries `renderer.active_renderers()` and picks the right backend:
 | AirPlay (`aplactive`) | shairport-sync MPRIS over busctl. AirPlay-carrying-Spotify gets short-circuited via the title-match path (see below). |
 | Spotify Connect (`spotactive`) | spotipy `next_track()` / `previous_track()` / `pause_playback()` against the user's account |
 | Bluetooth (`btactive`) | Not supported — no transport API on bluez-alsa A2DP sink. Returns a spoken explanation. |
-| MPD (`mpdactive`) | python-mpd2 via `RendererClient` |
+| No active source | Returns "nothing is playing" error so the model can tell the user something concrete instead of silently no-op'ing. |
 
 ### 3. Spotify play (`spotify_play(query, kind)`)
 

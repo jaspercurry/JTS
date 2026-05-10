@@ -71,23 +71,26 @@ def build_clients(
     registry: Registry,
     *,
     client_id: str,
-    client_secret: str,
     redirect_uri: str,
 ) -> dict[str, AccountClient]:
     """Build a spotipy.Spotify client per registered account. Skips any
     account whose cache file is missing or unreadable — they need to
-    complete OAuth via the web flow before they show up in the dict."""
+    complete OAuth via the web flow before they show up in the dict.
+
+    Uses PKCE (no client secret). Refresh tokens issued via the legacy
+    Code+Secret flow will fail to refresh under PKCE — those accounts
+    need to re-link via the web wizard at http://jts.local/spotify/.
+    """
     # spotipy is imported lazily so the module is importable in test
     # environments without the spotipy wheel installed.
     import spotipy
-    from spotipy.oauth2 import SpotifyOAuth
+    from spotipy.oauth2 import SpotifyPKCE
 
     clients: dict[str, AccountClient] = {}
     for account in registry.accounts:
         try:
-            auth = SpotifyOAuth(
+            auth = SpotifyPKCE(
                 client_id=client_id,
-                client_secret=client_secret,
                 redirect_uri=redirect_uri,
                 scope=SPOTIFY_SCOPE,
                 cache_path=account.cache_path,

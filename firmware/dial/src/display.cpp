@@ -111,7 +111,7 @@ static void touch_read(lv_indev_drv_t *drv, lv_indev_data_t *data) {
 }
 
 void display_set_backlight(uint8_t level) {
-    ledcWrite(BACKLIGHT_PWM_CHANNEL, level);
+    ledcWrite(TFT_BACKLIGHT, level);
 }
 
 // LVGL pump task. Pinned to core 0 so it doesn't compete with the
@@ -171,9 +171,8 @@ void display_init() {
     // Backlight is brought up here at full so the test colors are
     // unambiguous. The main caller resets it to its preferred level
     // after display_init returns.
-    ledcSetup(BACKLIGHT_PWM_CHANNEL, BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_PWM_RES_BITS);
-    ledcAttachPin(TFT_BACKLIGHT, BACKLIGHT_PWM_CHANNEL);
-    ledcWrite(BACKLIGHT_PWM_CHANNEL, 255);
+    ledcAttach(TFT_BACKLIGHT, BACKLIGHT_PWM_FREQ_HZ, BACKLIGHT_PWM_RES_BITS);
+    ledcWrite(TFT_BACKLIGHT, 255);
     Serial.println("[disp] panel test: red");
     gfx.fillScreen(0xF800);
     delay(1200);

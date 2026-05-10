@@ -104,6 +104,46 @@ deployments).
 This is exactly the kind of thing an end-user shouldn't have to
 SSH for. Not blocking anything; flagged as the next polish piece.
 
+### "Configure remotes" wizard — the satellite-onboarding sub-page
+
+Goal end-state UX (per user, 2026-05-09):
+> 1. Get the speaker set up
+> 2. Hear the voice that says "Go to jts.local"
+> 3. Go there and click a button that says "Configure remotes"
+> 4. On that screen it basically says "Plug it in" — you plug it in
+>    and that gets the firmware properly updated, gets the WiFi on
+>    there, away you go.
+
+What exists today:
+- `jasper-dial-web` ([`jasper/web/dial_setup.py`](jasper/web/dial_setup.py))
+  serves `https://jts.local/dial/` with this exact flow for the
+  rotary dial: scan plugged-in ESP32-S3 devices, pick one, click to
+  flash + provision. Shells out to `jasper-dial-onboard`.
+- `jasper-satellite-onboard` ([`jasper/cli/satellite_onboard.py`](jasper/cli/satellite_onboard.py))
+  is the CLI half for the AMOLED satellite. Mirrors `jasper-dial-onboard`'s
+  shape so a generalized wizard can shell out to either.
+
+What's needed:
+- Generalize `dial_setup.py` → `remote_setup.py` (or fork it as
+  `satellite_setup.py`). Choose: a single `/remotes/` page with a
+  device-class dropdown (dial / AMOLED satellite), or two parallel
+  pages (`/dial/`, `/satellite/`) linked from a `/remotes/` index.
+  Single page is the user's stated dream; parallel pages is less
+  refactor.
+- Auto-detect device class on plug-in: the boot-log probe is the
+  cleanest signal — `jasper-dial firmware` vs
+  `jasper-satellite-amoled firmware` in setup() prints. Falls back
+  to user picking from a dropdown for fresh chips with no firmware.
+- nginx route: add `/satellite/` (or `/remotes/`) to the
+  jasper.conf reverse-proxy block.
+- systemd unit for the new web service (or extend `jasper-dial-web`).
+- The audible cue that says "go to {hostname}" should land the user
+  on the management dashboard root, which links into "Configure
+  remotes" — soft prereq for the cue UX completing.
+
+This is the obvious next step after both onboard CLIs are stable.
+Single session of work.
+
 ---
 
 ## Wake-word reliability — AEC tuning roadmap (no version, ongoing)
@@ -258,17 +298,27 @@ moderator mode.
 Small infrastructure items not blocking any feature; recorded so
 they don't get lost in the working tree.
 
-- **`jasper/renderer.py` constructs `asyncio.Lock()` synchronously
-  in `RendererClient.__init__`.** Python 3.10+ defers event-loop
-  binding until first use, so this is fine on the Pi (3.13). Python
-  3.9 + macOS (the local dev venv) binds at construction time and
-  raises `RuntimeError: There is no current event loop` once an
-  earlier test in the suite has consumed the default loop —
-  produces 11 collection errors in `tests/test_renderer.py` on a
-  full `pytest` run while passing when those tests are run alone.
-  Fix: lazy-construct the lock on first await, or take the loop as
-  a parameter. No urgency since the Pi is unaffected and the
-  failures are local-only.
+- **`jasper.tools.transport`'s active-source resolution loses
+  the recently-paused source.** Reproducible end-to-end with the
+  dial: tap to pause AirPlay → `jasper.tools.transport` correctly
+  routes the toggle to AirPlay and pauses it. Tap again to resume →
+  the resolver re-evaluates, sees AirPlay is paused (so "not the
+  active source"), falls through to "none" (no source), and the
+  second toggle returns the "nothing is playing" error response
+  instead of resuming. Net effect: dial short-press pauses but
+  doesn't unpause. Same shape applies if the user pauses Spotify
+  Connect — the source still exists but the resolver stops asking
+  about it.
+
+  Fix shape: source resolution should remember the most recently
+  active source for some bounded window (~30 s seems right) and
+  prefer it for `toggle` even when its current state is "paused".
+
+  Lives in `jasper/tools/transport.py` and is intertwined with
+  `RendererClient.active_renderers` semantics. See also
+  `docs/HANDOFF-voice-music-control.md` for the source-routing
+  context. Single-session fix; needs a bench test against AirPlay
+  + Spotify Connect to confirm none of the other paths regress.
 
 ---
 

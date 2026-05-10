@@ -15,7 +15,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_UNITS",
         "JASPER_SUBWAY_STATION_ID", "JASPER_SUBWAY_DEFAULT_DIRECTION",
         "JASPER_SUBWAY_LINES",
-        "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET",
+        "SPOTIFY_CLIENT_ID",
     ]:
         monkeypatch.delenv(var, raising=False)
 
@@ -25,6 +25,11 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.gemini_model == "gemini-3.1-flash-live-preview"
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -25.0
+    # Idle context reset is opt-in (0 = disabled). Per-provider so the
+    # cost/race tradeoffs can be tuned separately.
+    assert cfg.openai_context_reset_sec == 0
+    assert cfg.gemini_context_reset_sec == 0
+    assert cfg.grok_context_reset_sec == 0
     assert cfg.daily_spend_cap_usd == 1.0
     # ALSA defaults must match the templates in /root/.asoundrc and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
@@ -33,8 +38,12 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_capture_channels == 1
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_output_rate == 48000
-    assert cfg.tts_gain_db == -8.0
-    assert cfg.tts_music_headroom_db == 12.0
+    # Defaults updated 2026-05-10: offset 0 (was -8) lets the tracker
+    # drive level instead of stacking conservatism, and headroom 16
+    # (was 12) targets TTS slightly above music RMS so voice reads
+    # as "a touch louder than the song" given the duck.
+    assert cfg.tts_gain_db == 0.0
+    assert cfg.tts_music_headroom_db == 16.0
     assert cfg.tts_silence_threshold_dbfs == -50.0
     assert cfg.tts_music_window_sec == 8.0
     assert cfg.volume_state_path == "/var/lib/jasper/speaker_volume.json"
@@ -61,10 +70,11 @@ def test_missing_gemini_key_raises_when_provider_is_gemini(monkeypatch):
         Config.from_env()
 
 
-def test_spotify_enabled_when_both_creds_present(monkeypatch):
+def test_spotify_enabled_when_client_id_present(monkeypatch):
+    """PKCE: only the client_id is needed. The Client Secret is no
+    longer used — the wizard pastes neither."""
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv("SPOTIFY_CLIENT_ID", "abc")
-    monkeypatch.setenv("SPOTIFY_CLIENT_SECRET", "def")
     cfg = Config.from_env()
     assert cfg.spotify_enabled is True
 
@@ -74,6 +84,10 @@ def test_spotify_enabled_when_both_creds_present(monkeypatch):
     [
         ("JASPER_WAKE_THRESHOLD", "1.2", "JASPER_WAKE_THRESHOLD"),
         ("JASPER_IDLE_TIMEOUT_SEC", "0", "JASPER_IDLE_TIMEOUT_SEC"),
+        # 0 is now valid (= disabled); negative is rejected.
+        ("JASPER_OPENAI_CONTEXT_RESET_SEC", "-1", "JASPER_OPENAI_CONTEXT_RESET_SEC"),
+        ("JASPER_GEMINI_CONTEXT_RESET_SEC", "-1", "JASPER_GEMINI_CONTEXT_RESET_SEC"),
+        ("JASPER_GROK_CONTEXT_RESET_SEC", "-1", "JASPER_GROK_CONTEXT_RESET_SEC"),
         ("JASPER_DAILY_SPEND_CAP_USD", "-1", "JASPER_DAILY_SPEND_CAP_USD"),
         ("JASPER_TTS_GAIN_DB", "8", "JASPER_TTS_GAIN_DB"),
         ("JASPER_TTS_GAIN_DB", "0.5", "JASPER_TTS_GAIN_DB"),

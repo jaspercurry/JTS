@@ -11,10 +11,10 @@ Three real-world cases:
    (the phone) so the song change rides the existing AirPlay stream.
    The user's iPhone hardware volume buttons keep working.
 
-2. User is AirPlaying NON-Spotify (Apple Music, YouTube, podcast),
-   or has Bluetooth A2DP active, or MPD is playing a radio station:
-   stop that source first, then start librespot on the Pi. Voice
-   command is an exclusive override — never two streams at once.
+2. User is AirPlaying NON-Spotify (Apple Music, YouTube, podcast)
+   or has Bluetooth A2DP active: stop that source first, then start
+   librespot on the Pi. Voice command is an exclusive override —
+   never two streams at once.
 
 3. Nothing is playing on the Pi: start librespot. Plain case.
 
@@ -143,18 +143,6 @@ async def resolve_target(
             reason="bluetooth active",
         )
 
-    # MPD playing a radio/local track? (state=play, file is a real path —
-    # not an "Airplay Active"/"Bluetooth Active" placeholder.)
-    state = (song.get("state") or "").lower()
-    file_field = song.get("file") or ""
-    is_placeholder = file_field.lower().startswith(("airplay", "bluetooth"))
-    if state == "play" and file_field and not is_placeholder and not renderers.get("spotactive"):
-        return Resolution(
-            device_id=librespot_id,
-            stop_renderers=["mpd"],
-            reason="mpd playing local/radio",
-        )
-
     # librespot already active or nothing playing → just target librespot.
     return Resolution(
         device_id=librespot_id,
@@ -165,20 +153,25 @@ async def resolve_target(
 
 async def stop_renderers(renderer, names: list[str]) -> None:
     """Stop the renderers named in `names`. Names match
-    Resolution.stop_renderers values. mpd is paused; airplay/bluetooth
-    are disabled via disable_renderer. After disabling, the service
-    takes a beat to actually release the audio device — a small sleep
+    Resolution.stop_renderers values: airplay → pause_airplay()
+    (MPRIS Pause on shairport-sync); bluetooth → no-op (bluez-alsa
+    A2DP sink has no graceful pause API). After pausing AirPlay the
+    service takes a beat to release the audio device — a small sleep
     avoids a race where librespot starts while shairport-sync is still
     draining."""
     for name in names:
         try:
-            if name == "mpd":
-                await renderer.pause()
-            elif name in ("airplay", "bluetooth"):
-                await renderer.disable_renderer(name)
+            if name == "airplay":
+                await renderer.pause_airplay()
+            elif name == "bluetooth":
+                # No graceful pause on bluez-alsa A2DP sink — phone
+                # keeps streaming until the user pauses on phone.
+                logger.debug(
+                    "stop_renderers: bluetooth — no graceful pause API",
+                )
             else:
                 logger.warning("unknown renderer to stop: %s", name)
         except Exception as e:  # noqa: BLE001
             logger.warning("stop_renderers(%s) failed: %s", name, e)
-    if any(n in ("airplay", "bluetooth") for n in names):
+    if "airplay" in names:
         await asyncio.sleep(0.25)

@@ -283,7 +283,7 @@ just changed what it does internally.
 ### The architecture
 
 ```
-renderers (shairport-sync, librespot, bluealsa-aplay, optional MPD)
+renderers (shairport-sync, librespot, bluealsa-aplay)
     │
     │  each writes directly to hw:Loopback,0,0
     ▼

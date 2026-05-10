@@ -1,0 +1,48 @@
+# CamillaGUI backend config. The GUI is a web UI for the CamillaDSP
+# audio processor — it speaks to CamillaDSP over the same websocket
+# (port 1234) the Python daemon already uses, and lets you live-edit
+# filters, monitor signal levels, run measurements, and switch the
+# active config file without restarting CamillaDSP.
+#
+# Path conventions on this speaker:
+#   /etc/camilladsp/v1.yml         repo-deployed baseline DSP config
+#   /etc/camilladsp/coeffs/        FIR-filter coefficient files
+#   /etc/camilladsp/                additional configs the user creates
+#                                    via the GUI live alongside v1.yml
+#   /var/lib/camillagui/            GUI-only state (statefile, prefs)
+#   /var/log/camillagui.log         GUI request log
+
+camilla_host: "127.0.0.1"
+camilla_port: 1234
+
+# 0.0.0.0 = LAN-reachable. Security parity with /spotify, /voice,
+# /dial — all unauthenticated, all home-LAN-only. SPA-on-different-
+# port is simpler than nginx prefix-rewriting (CamillaGUI's frontend
+# uses absolute URLs that don't survive a path prefix).
+bind_address: "0.0.0.0"
+port: 5005
+
+ssl_certificate: null
+ssl_private_key: null
+
+# `config_dir` is what the GUI scans for *.yml files in its config
+# selector. Point it at /etc/camilladsp so v1.yml shows up alongside
+# whatever new configs the user saves via the GUI.
+config_dir: "/etc/camilladsp"
+coeff_dir: "/etc/camilladsp/coeffs"
+default_config: "/etc/camilladsp/v1.yml"
+
+statefile_path: "/var/lib/camillagui/statefile.yml"
+log_file: "/var/log/camillagui.log"
+gui_config_file: "/var/lib/camillagui/gui-config.yml"
+
+# Optional shell hooks the GUI fires when the user toggles configs.
+# Leave null — jasper-camilla.service handles config selection at
+# the systemd level if we ever want it.
+on_set_active_config: null
+on_get_active_config: null
+
+# Capture/playback type allowlist. Null = all types. We don't restrict
+# in v1; if some types prove confusing in the GUI we can prune later.
+supported_capture_types: null
+supported_playback_types: null

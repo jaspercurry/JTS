@@ -217,7 +217,8 @@ The May 2026 voice-music-control phase landed:
   `pause` / `resume` / `get_now_playing`. AirPlay routes via shairport-
   sync's MPRIS interface (`org.mpris.MediaPlayer2.ShairportSync` on
   the system bus → DACP → sender), Spotify Connect routes via spotipy
-  against the active device, MPD routes via `RendererClient`.
+  against the active device, no-active-source returns a clean
+  "nothing is playing" error.
 
 These follow-ons are explicitly in scope for the next phase:
 
@@ -264,12 +265,11 @@ A2DP path is exercised; see `bluez/doc/mediaapi.txt` for the contract.
 
 ### `get_now_playing` is now source-aware
 
-Was MPD-only before, which is why an AirPlay-active false-trigger
-returned `{title: '', artist: '', album: ''}` and Gemini happily
-narrated "I can't tell what's playing." It now reads MPRIS `Metadata`
-when AirPlay is the source and `sp.current_playback` for Spotify
-Connect. Follow-on: also expose `is_playing` / playback position so
-"how much of this song is left?" can be answered without re-querying.
+It reads MPRIS `Metadata` when AirPlay is the source and
+`sp.current_playback` for Spotify Connect, with empty-but-tagged
+returns when no source is active. Follow-on: also expose
+`is_playing` / playback position so "how much of this song is left?"
+can be answered without re-querying.
 
 ## Highest-leverage gating change — RESOLVED in Phase A
 

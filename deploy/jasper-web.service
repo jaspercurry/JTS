@@ -1,7 +1,14 @@
 [Unit]
 Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google)
-After=network-online.target
-Wants=network-online.target
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+# time-sync.target gate: Pi 5 has no battery-backed RTC, so on first
+# boot the clock can be in 1970 until NTP catches up. The Spotify
+# (and Google) token-exchange POSTs fail cert validation when the
+# system clock is too far off, and the user-visible symptom would be
+# "Auth exchange failed: certificate has expired" right at the end
+# of an otherwise-successful OAuth flow. Waiting on time-sync.target
+# makes that race impossible.
 
 [Service]
 Type=simple

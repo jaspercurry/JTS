@@ -71,8 +71,8 @@
 #define PANEL_POWER_PIN_1 1
 #define PANEL_POWER_PIN_2 2
 
-// Backlight PWM channel/freq/resolution.
-#define BACKLIGHT_PWM_CHANNEL    0
+// Backlight PWM. Arduino-ESP32 v3.x's ledcAttach(pin, freq, res) is
+// pin-keyed (no explicit channel — the core picks one).
 #define BACKLIGHT_PWM_FREQ_HZ 5000
 #define BACKLIGHT_PWM_RES_BITS   8
 

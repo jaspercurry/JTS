@@ -184,7 +184,7 @@ sudo systemctl restart jasper-voice
 ## Phase 3.5 — Pick a voice provider via the wizard (2 min, optional)
 
 This step is optional — the env file you just wrote already
-selects a provider. The wizard at `https://jts.local/voice/` is
+selects a provider. The wizard at `http://jts.local/voice/` is
 the friendlier path: paste keys, pick model and voice from
 curated dropdowns, flip the active provider with a single radio
 group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
@@ -264,16 +264,33 @@ should route to the speaker.
 
 ## Phase 6 — Set up Spotify multi-account (one-time per household member, 5 min each)
 
-If you skipped `SPOTIFY_CLIENT_*` in Phase 3, skip this.
+If you skipped `SPOTIFY_CLIENT_ID` in Phase 3, skip this.
 
 On your phone (or any browser on the same LAN), visit:
 
 ```
-https://jts.local/spotify
+http://jts.local/spotify
 ```
 
-Click through the self-signed cert warning (one time per browser),
-follow the OAuth flow, name your account.
+The wizard will walk you through creating a Spotify Developer App,
+pasting the redirect URI into Spotify's dashboard, and OAuthing each
+household member's account. Auth uses PKCE — only the Client ID is
+needed, no Client Secret.
+
+Two redirect modes are offered; pick whichever fits:
+
+- **Bounce (default)** — Spotify redirects via a static page on
+  GitHub Pages, which forwards back to `http://${JASPER_HOSTNAME}/spotify/…`
+  automatically. Smoothest UX. The bounce page is a separate public
+  repo, `jaspercurry/spotify-oauth-callback`, served at
+  `https://jaspercurry.github.io/spotify-oauth-callback/`. The wizard
+  shows the exact redirect URI (with `?host=` set to your speaker's
+  hostname) for you to paste into the Spotify dashboard.
+- **Manual paste** — no external infrastructure. After you approve
+  on Spotify, your phone shows "cannot connect to 127.0.0.1" — the
+  wizard pre-warns you about this so it doesn't look like a failure.
+  Copy the URL from your address bar, paste it back into the
+  speaker's setup page, done.
 
 Repeat for each household member who wants their own Spotify
 account routed for voice commands.
@@ -319,10 +336,60 @@ in.
 
 Common warnings (non-fatal):
 
-- "MPD not reachable" — MPD is optional. Only install if you want
-  local file / radio playback.
 - "AEC bridge service: disabled" — software AEC is opt-in. See
   CLAUDE.md "Acoustic echo cancellation" if you want to A/B test.
+
+---
+
+## Phase 9 — Trust the speaker's HTTPS cert on each iPhone (one-time, 1 min per device)
+
+This step is **only required** if you want to use the room-correction
+wizard at `https://jts.local/correction/`. The Spotify, voice, and dial
+settings pages don't need it (they're plain HTTP). If you don't plan
+to run room correction yet, skip this section — you can come back any
+time.
+
+`getUserMedia` (microphone access in the browser) requires a secure
+context, so the correction page is the one route on this speaker that
+has to be HTTPS. `install.sh` provisions a private CA on the Pi the
+first time it runs and signs a server cert for `${JASPER_HOSTNAME}`
+from it; the user-visible step is installing that CA on each iPhone
+(or iPad, or Mac) once.
+
+On each iPhone:
+
+1. In Safari, visit `http://jts.local/jts-root-ca.crt`. Safari
+   downloads the file silently and prompts: *"This website is trying
+   to download a configuration profile. Do you want to allow this?"*
+   Tap **Allow**.
+2. Open the **Settings** app. There will be a new entry near the top:
+   *"Profile Downloaded — JTS Speaker Local CA"*. Tap it.
+3. Tap **Install** (top right). Enter your passcode if asked. Tap
+   **Install** again on the consent screen, then **Done**.
+4. Go to **Settings → General → About → Certificate Trust Settings**.
+   Toggle **JTS Speaker Local CA** on. iOS shows a confirmation
+   dialog warning that "Enabling this certificate for websites will
+   allow third parties to view any private data sent to websites" —
+   this is the standard warning Apple shows for any non-public CA
+   and is fine for a personal smart speaker on your home network.
+   Tap **Continue**.
+
+Verify by visiting `https://jts.local/correction/` in Safari. The
+page should load without a "Connection is not private" warning, and
+tapping **Start mic capture** should bring up the standard iOS
+microphone permission prompt.
+
+If the cert was reissued after a hostname change (`JASPER_HOSTNAME`
+edited and `install.sh` re-run), only the leaf cert changes — the CA
+on the iPhone keeps working, no re-trust needed. If you ever wipe
+`/var/lib/jasper/ca` and run `install.sh` again, the old CA on the
+iPhone still appears in Certificate Trust Settings but no longer
+matches; remove it (Settings → General → VPN & Device Management →
+JTS Speaker Local CA → Remove Profile) and repeat steps 1-4.
+
+To remove the CA from an iPhone (e.g., decommissioning a speaker):
+**Settings → General → VPN & Device Management → JTS Speaker Local CA
+→ Remove Profile**.
 
 ---
 

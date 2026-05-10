@@ -1,19 +1,14 @@
-"""Renderer state poller + transport dispatcher.
+"""Renderer state poller + AirPlay-pause control.
 
 Consults each renderer daemon directly for its playback state:
 
   librespot     → /run/librespot/state.json (--onevent hook)
   shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
   bluez-alsa    → bluealsa-cli list-pcms (subprocess)
-  MPD           → python-mpd2 (rare on this box — only if user
-                  installed mpd themselves for radio)
 
 `RendererClient.active_renderers()` returns a dict with one boolean
-per renderer (`spotactive`, `aplactive`, `btactive`, plus
-backwards-compatible `slactive`/`rbactive` always-False keys for
-squeezelite/roon-bridge that callers may still check).
+per renderer (`spotactive`, `aplactive`, `btactive`).
 
-Transport (next/prev/pause/play/toggle) routes to MPD if reachable.
 For source-aware AirPlay/Spotify transport, callers should use
 `jasper.tools.transport.make_transport_dispatcher`, which delegates
 to MPRIS / Spotify Web API based on the active source.
@@ -25,33 +20,24 @@ import logging
 import re
 from typing import Any
 
-import httpx
-from mpd.asyncio import MPDClient
-
 from . import librespot_state
+from .source_state import airplay_playing, bluetooth_playing, spotify_playing
 
 logger = logging.getLogger(__name__)
 
 
 class RendererClient:
-    """Renderer state + control. Read-only state queries are
-    fail-soft (log + return safe default on transport errors).
-    Transport methods target MPD; source-aware routing across
-    AirPlay/Spotify lives in `jasper.tools.transport`."""
+    """Renderer state + AirPlay-pause control. Read-only state queries
+    are fail-soft (log + return safe default on transport errors).
+    Source-aware routing across AirPlay/Spotify lives in
+    `jasper.tools.transport`."""
 
     def __init__(
         self,
         *,
-        mpd_host: str,
-        mpd_port: int,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
     ) -> None:
         self._librespot_state_path = librespot_state_path
-        self._http = httpx.AsyncClient(timeout=2.0)
-        self._mpd_host = mpd_host
-        self._mpd_port = mpd_port
-        self._mpd: MPDClient | None = None
-        self._mpd_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
     # State queries — read-only, fail-soft. None of these methods raise
@@ -59,56 +45,18 @@ class RendererClient:
     # ------------------------------------------------------------------
 
     async def active_renderers(self) -> dict[str, bool]:
-        """Returns a dict keyed by renderer name. slactive (squeezelite)
-        and rbactive (roon bridge) are always False — neither is
-        installed by default — and remain in the shape so callers
-        that iterate the dict don't need backend-specific branches."""
+        """Returns a dict keyed by renderer name."""
         spot, ap, bt = await asyncio.gather(
-            self._spot_active(),
-            self._ap_active(),
-            self._bt_active(),
+            spotify_playing(self._librespot_state_path),
+            airplay_playing(),
+            bluetooth_playing(),
             return_exceptions=False,
         )
         return {
             "aplactive": ap,
             "btactive": bt,
             "spotactive": spot,
-            "slactive": False,
-            "rbactive": False,
         }
-
-    async def _spot_active(self) -> bool:
-        # State file is small (~few hundred bytes); read on every
-        # query. is_playing() returns False on missing file.
-        return librespot_state.is_playing(self._librespot_state_path)
-
-    async def _ap_active(self) -> bool:
-        # busctl returns 's "Playing"' (or "Paused"/"Stopped") for the
-        # PlaybackStatus property. Active = currently playing.
-        out = await _busctl_get_property(
-            "org.mpris.MediaPlayer2.ShairportSync",
-            "/org/mpris/MediaPlayer2",
-            "org.mpris.MediaPlayer2.Player",
-            "PlaybackStatus",
-        )
-        return out == "Playing"
-
-    async def _bt_active(self) -> bool:
-        # `bluealsa-cli list-pcms` lists every BlueALSA PCM path. On
-        # an idle box this is empty; with a phone connected and an
-        # A2DP stream open, you get one or more lines like
-        # /org/bluealsa/hci0/dev_XX_../a2dpsnk/source.
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "bluealsa-cli", "list-pcms",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
-        except (FileNotFoundError, asyncio.TimeoutError) as e:
-            logger.debug("bluealsa-cli list-pcms failed: %s", e)
-            return False
-        return b"a2dpsnk/source" in stdout
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at
@@ -123,15 +71,9 @@ class RendererClient:
             return await self._spot_currentsong()
         if active.get("aplactive"):
             return await self._ap_currentsong()
-        # Bluetooth A2DP doesn't have reliable AVRCP metadata via
-        # bluez-alsa; falling back to MPD currentsong covers the
-        # rare case where MPD is the active source.
-        try:
-            song = dict(await self._mpd_call("currentsong"))
-            return song
-        except Exception as e:  # noqa: BLE001
-            logger.debug("mpd currentsong failed: %s", e)
-            return {}
+        # Bluetooth A2DP doesn't expose reliable AVRCP metadata via
+        # bluez-alsa, and there's no other source we can introspect.
+        return {}
 
     async def _spot_currentsong(self) -> dict[str, Any]:
         # librespot's --onevent hook only gives us TRACK_ID / URI;
@@ -167,112 +109,21 @@ class RendererClient:
             "artist": ", ".join(artists) if isinstance(artists, list) else str(artists),
         }
 
-    async def status(self) -> dict[str, Any]:
-        try:
-            return dict(await self._mpd_call("status"))
-        except Exception as e:  # noqa: BLE001
-            logger.debug("mpd status failed: %s", e)
-            return {}
-
     # ------------------------------------------------------------------
-    # Transport — these MPD calls only fire for the MPD source. Without
-    # MPD installed, MPD calls fail soft. Source-aware routing for
-    # AirPlay/Spotify lives in jasper.tools.transport.
+    # pause_airplay — pauses an active AirPlay session via MPRIS so
+    # another source can take the speaker. Spotify pause goes via the
+    # Spotify Web API at the caller's spotify_router instance (librespot
+    # has no local control HTTP); Bluetooth has no graceful pause API
+    # on bluez-alsa, so its caller logs and moves on.
     # ------------------------------------------------------------------
 
-    async def toggle_play_pause(self) -> None:
-        # Only handles the MPD source (and is_playing→pause,
-        # otherwise→play). Callers that need source-aware toggle
-        # should use make_transport_dispatcher.dispatch("toggle").
-        try:
-            client = await self._mpd_client()
-            status = await client.status()
-            if status.get("state") == "play":
-                await client.pause(1)
-            else:
-                await client.play()
-        except Exception as e:  # noqa: BLE001
-            logger.debug("mpd toggle failed (likely no mpd): %s", e)
-
-    async def next_track(self) -> None:
-        await self._mpd_call("next")
-
-    async def previous_track(self) -> None:
-        await self._mpd_call("previous")
-
-    async def pause(self) -> None:
-        await self._mpd_call("pause", 1)
-
-    async def play(self) -> None:
-        await self._mpd_call("play")
-
-    # ------------------------------------------------------------------
-    # disable_renderer — pauses the active renderer's session via its
-    # native API (gentler than systemctl-stop) so another source can
-    # take over.
-    # ------------------------------------------------------------------
-
-    _NAME_MAP = {
-        "airplay": "shairport-sync",
-        "spotify": "librespot",
-        "bluetooth": "bluealsa",
-    }
-
-    async def disable_renderer(self, name: str) -> None:
-        if name == "spotify":
-            # librespot has no local control HTTP; pause via Spotify
-            # Web API. jasper-mux owns the multi-account router for
-            # this — disable_renderer() callers (transport tools,
-            # spotify_router) can issue their own pause via the
-            # router they already hold. Best-effort no-op here.
-            logger.debug(
-                "disable_renderer(spotify): no local pause API on "
-                "librespot — caller should issue Web API pause via "
-                "their spotify_router instance",
-            )
-            return
-        if name == "airplay":
-            await _busctl_call_method(
-                "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2",
-                "org.mpris.MediaPlayer2.Player",
-                "Pause",
-            )
-            return
-        # bluetooth: no clean "pause-and-keep-connected" API on
-        # bluez-alsa. The phone remains connected; we just don't have
-        # a way to remotely stop playback. Caller (spotify_routing)
-        # will fall back to MPD pause if applicable.
-        logger.debug("disable_renderer(%s): no-op", name)
-
-    # ------------------------------------------------------------------
-    # MPD plumbing — reconnects on disconnect; serialised via a lock
-    # since python-mpd2's async client isn't reentrant.
-    # ------------------------------------------------------------------
-
-    async def _mpd_client(self) -> MPDClient:
-        if self._mpd is None:
-            client = MPDClient()
-            await client.connect(self._mpd_host, self._mpd_port)
-            self._mpd = client
-        return self._mpd
-
-    async def _mpd_call(self, fn_name: str, *args: Any) -> Any:
-        async with self._mpd_lock:
-            try:
-                client = await self._mpd_client()
-                return await getattr(client, fn_name)(*args)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("mpd call failed, reconnecting: %s", e)
-                self._mpd = None
-                client = await self._mpd_client()
-                return await getattr(client, fn_name)(*args)
-
-    async def aclose(self) -> None:
-        await self._http.aclose()
-        if self._mpd is not None:
-            self._mpd.disconnect()
-            self._mpd = None
+    async def pause_airplay(self) -> None:
+        await _busctl_call_method(
+            "org.mpris.MediaPlayer2.ShairportSync",
+            "/org/mpris/MediaPlayer2",
+            "org.mpris.MediaPlayer2.Player",
+            "Pause",
+        )
 
 
 # ----------------------------------------------------------------------

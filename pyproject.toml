@@ -30,8 +30,16 @@ dependencies = [
     # tflite-runtime is never imported at runtime. See install.sh.
     "sounddevice==0.5.5",
     "numpy>=1.26,<3",
+    # SciPy is needed for room-correction v2 (jasper.correction.*):
+    # synchronized swept-sine generation, FFT-based deconvolution,
+    # IIR biquad design (peq), and fractional-octave smoothing. Pi 5
+    # 1 GB has plenty of free disk for the install (~200 MB) and
+    # the runtime RAM cost during measurement is bounded by the
+    # measurement_window() pause that frees librespot/shairport/
+    # voice-daemon RAM first. ≥1.13 because we use scipy.signal.iirpeak
+    # and the numpy 2.0 ABI compatibility is patched.
+    "scipy>=1.13,<2",
     "spotipy==2.24.0",
-    "python-mpd2==3.1.1",
     "httpx==0.28.1",
     "onnxruntime>=1.17",
     "nyct-gtfs==2.0.0",
@@ -46,8 +54,9 @@ dependencies = [
     # not custom asoundrc PCMs like `jasper_capture` (the dsnoop tap
     # we capture the AEC reference from).
     "pyalsaaudio>=0.11",
-    # jasper-dial-onboard: pyserial for the dial's USB CDC, esptool for
-    # firmware flash. Both are pure-Python and tiny.
+    # jasper-{dial,satellite}-onboard: pyserial for USB CDC discovery
+    # + Improv handshake; esptool for firmware flash. Both pure-Python
+    # and tiny.
     "pyserial>=3.5",
     "esptool>=4.7",
     # Google integration (Calendar + Gmail voice tools). google-auth and
@@ -79,6 +88,8 @@ jasper-aec-tune = "jasper.cli.aec_tune:main"
 jasper-aec-bridge = "jasper.cli.aec_bridge:main"
 jasper-dial-onboard = "jasper.cli.dial_onboard:main"
 jasper-dial-web = "jasper.web.dial_setup:main"
+jasper-correction-web = "jasper.web.correction_setup:main"
+jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
 
 [build-system]

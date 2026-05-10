@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-jasper.local}"
+PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 SINCE="${SINCE:-1 hour ago}"
 
@@ -27,7 +27,27 @@ remote() {
     ssh -o BatchMode=yes -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}" "$@"
 }
 
-units=(jasper-camilla jasper-voice mpd shairport-sync)
+# All units the install script installs, plus the renderers + their
+# dependencies. Each is fetched independently and gets its own
+# *-latest.log symlink. A unit not installed on this Pi just produces
+# an empty log file (journalctl returns 0 with no rows) — that's fine,
+# the loop reports "0 lines" and moves on.
+units=(
+    jasper-camilla
+    jasper-voice
+    jasper-control
+    jasper-mux
+    jasper-aec-bridge
+    jasper-aec-init
+    jasper-dac-init
+    jasper-headphone-monitor
+    librespot
+    shairport-sync
+    nqptp
+    bluealsa
+    bluealsa-aplay
+    bt-agent
+)
 
 for u in "${units[@]}"; do
     out="$OUT/${u}-${TS}.log"
@@ -42,8 +62,13 @@ for u in "${units[@]}"; do
 done
 
 # Combined log lets you see music + voice + DSP events on one timeline.
+# Build the -u flags from the same units list so this stays in sync.
+combined_flags=()
+for u in "${units[@]}"; do
+    combined_flags+=(-u "$u")
+done
 remote "journalctl --since '$SINCE' --no-pager --output=short-iso \
-    -u jasper-camilla -u jasper-voice -u mpd -u shairport-sync 2>/dev/null" \
+    ${combined_flags[*]} 2>/dev/null" \
     > "$OUT/combined-${TS}.log"
 ln -sf "combined-${TS}.log" "$OUT/combined-latest.log"
 echo "  combined: $(wc -l < "$OUT/combined-${TS}.log") lines" >&2
@@ -69,7 +94,7 @@ remote "echo '== aplay -L =='; aplay -L 2>/dev/null; \
     > "$OUT/alsa-devices-${TS}.txt"
 ln -sf "alsa-devices-${TS}.txt" "$OUT/alsa-devices-latest.txt"
 
-remote "systemctl status --no-pager jasper-camilla jasper-voice mpd shairport-sync 2>/dev/null" \
+remote "systemctl status --no-pager ${units[*]} 2>/dev/null" \
     > "$OUT/systemctl-${TS}.txt" 2>/dev/null || true
 ln -sf "systemctl-${TS}.txt" "$OUT/systemctl-latest.txt" 2>/dev/null || true
 

@@ -18,7 +18,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 - **Hardware bring-up**: Pi 5 (1 GB) + Raspberry Pi OS Lite Trixie + always-on CamillaDSP + Apple USB-C dongle as DAC + ReSpeaker XVF3800 as mic. AirPlay/Spotify Connect/Bluetooth all flow through CamillaDSP to the dongle. See `BRINGUP.md`.
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis". Currently threshold 0.92 (high — see "what's broken" below).
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
-- **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, MPD transport — all work when Gemini actually responds.
+- **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, source-aware transport — all work when Gemini actually responds.
 - **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music.
 - **Voice pinning**: Aoede prebuilt voice via `speech_config` so style is consistent across sessions.
 - **Time injection**: current local time is added to system instruction at session start.
@@ -94,7 +94,7 @@ Refactor the session layer so the daemon holds **one persistent Gemini Live WebS
    - Bounded retries with exponential backoff (1s/2s/4s/8s/cap), give up after N attempts and surface a clear error
    - Reconnect sends the latest `sessionResumption` handle so the server resumes the conversation context
 
-4. **Context drift management** — Gemini Live's session-resumption handle preserves conversation state across the unavoidable ~10 min connection cap. Long sessions are billed at the cached-token rate on the system prompt, so reconnecting just to "freshen context" is the wrong default — let the platform manage it. (We previously tore the session down every 5 min idle; removed 2026-05-09 in favor of provider-native context handling, paired with the wake-loop's audio buffer so any natural reconnect doesn't drop user audio.)
+4. **Idle context reset policy** — per-provider env knobs: `JASPER_OPENAI_CONTEXT_RESET_SEC`, `JASPER_GEMINI_CONTEXT_RESET_SEC`, `JASPER_GROK_CONTEXT_RESET_SEC`. **All default to 0 = disabled.** Originally shipped at 300 s (5 min) with the rationale that "stale context bleeds across hours" — in practice the terse-tool system prompt makes that a hypothetical concern, while the costs are real: each reset busts the OpenAI prompt cache (~$0.008 per reset, $2–4/mo at typical use) and blocks the wake event for 1–6 s while the reopen completes. OpenAI auto-truncates past 128K and caps sessions at 60 min anyway, so unbounded growth is impossible. Set a positive value (e.g. 21600 = 6 h) only as a safety hedge if stale-context glitches actually appear in practice. Legacy `JASPER_LIVE_CONTEXT_RESET_SEC` continues to work as a global fallback when set.
 
 5. **Keepalive** to survive the 10-min server idle timeout (per [Vertex troubleshooting docs](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/live-api/troubleshooting)). Could be a periodic empty `send_realtime_input` or whatever the SDK supports.
 
@@ -158,18 +158,19 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 The Pi is the integration target. The development loop:
 
 1. Make code changes locally on the laptop in `/Users/jaspercurry/Code/JTS/`
-2. Sync to Pi: `rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jasper.local:/home/pi/jts/`
-3. Deploy to `/opt/jasper/`: `ssh pi@jasper.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/"`
-4. Restart daemon: `ssh pi@jasper.local "sudo systemctl restart jasper-voice"`
+2. Sync to Pi: `rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/`
+3. Deploy to `/opt/jasper/`: `ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/"`
+4. Restart daemon: `ssh pi@jts.local "sudo systemctl restart jasper-voice"`
 5. Pull logs: `bash scripts/fetch-pi-logs.sh` (output lands in `./logs/*-latest.log`)
 
-Or live tail: `ssh pi@jasper.local "sudo journalctl -u jasper-voice -f"`.
+Or live tail: `ssh pi@jts.local "sudo journalctl -u jasper-voice -f"`.
 
 For unit testing the reconnect state machine, mock the SDK's `aio.live.connect` and exercise:
 - Successful connect → in-turn → idle → in-turn cycle
 - `GoAway` mid-turn → reconnect with last resumption handle → resume
 - WebSocket close 1006 → reconnect with backoff → eventually succeed
 - Repeated failures → eventually surface `failed` state, daemon pauses
+- Idle reset (opt-in only, off by default): connection still healthy but `idle > JASPER_<PROVIDER>_CONTEXT_RESET_SEC` → close + reopen fresh
 
 Hardware-free tests run with `pytest`. Don't add hardware-dependent tests.
 
@@ -199,7 +200,7 @@ Read these on the branch (all are in the repo root or `docs/`):
 
 ## Pi access
 
-- SSH key already deployed: `ssh pi@jasper.local`
+- SSH key already deployed: `ssh pi@jts.local`
 - sudo password if you need it interactively: `pipass`
 - Service: `systemctl {status,restart,stop} jasper-voice`
 - Daemon code at `/opt/jasper/jasper/`
@@ -218,8 +219,8 @@ bash scripts/switch-gemini-model.sh         # show current
 bash scripts/switch-gemini-model.sh 3.1     # → gemini-3.1-flash-live-preview
 bash scripts/switch-gemini-model.sh 2.5     # → gemini-2.5-flash-native-audio-preview-12-2025
 # sync laptop → Pi → /opt/jasper
-rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jasper.local:/home/pi/jts/
-ssh pi@jasper.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/ && sudo systemctl restart jasper-voice"
+rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/
+ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/ && sudo systemctl restart jasper-voice"
 # tests
 .venv/bin/pytest
 ```

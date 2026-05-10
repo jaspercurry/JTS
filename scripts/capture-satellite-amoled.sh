@@ -29,7 +29,7 @@ set -euo pipefail
 SECONDS_=${1:-10}
 TS=$(date +%Y%m%d-%H%M%S)
 OUT=${2:-captures/satellite-amoled-${TS}.wav}
-PI=${PI_HOST:-pi@jts.local}
+PI=${PI_HOST:-pi@${JASPER_HOSTNAME:-jts.local}}
 
 mkdir -p "$(dirname "$OUT")"
 

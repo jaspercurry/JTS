@@ -288,10 +288,12 @@ install_jasper() {
         "${REPO_DIR}/pyproject.toml" \
         "${INSTALL_DIR}/"
 
-    # Stage firmware/ next to the package so jasper-dial-onboard
-    # finds the bin (default --bin path: /opt/jasper/firmware/dial/
-    # jasper-dial.bin). The .pio build dir is excluded — that's local
-    # to whoever ran build.sh and contains absolute paths.
+    # Stage firmware/ next to the package so jasper-{dial,satellite}-onboard
+    # find their respective bins (default --bin paths:
+    # /opt/jasper/firmware/dial/jasper-dial.bin,
+    # /opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin).
+    # The .pio build dir is excluded — that's local to whoever ran the
+    # per-firmware build.sh and contains absolute paths.
     if [[ -d "${REPO_DIR}/firmware" ]]; then
         rsync -a --delete \
             --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
@@ -366,6 +368,13 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-dial-web.service" \
         "${SYSTEMD_DIR}/jasper-dial-web.service"
+    # /correction/ wizard. Phase 0 = mic-permission verify only;
+    # future phases pull in heavy deps (numpy / scipy / pyfar) so
+    # this lives in its own process rather than colocating with
+    # jasper-web (Spotify + voice settings). Mirrors jasper-dial-web.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-correction-web.service" \
+        "${SYSTEMD_DIR}/jasper-correction-web.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
@@ -394,6 +403,33 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
         "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+    # Custom udev rule: re-pins the dongle's Headphone control to 100%
+    # on every USB (re-)enumeration AND disables autosuspend on the
+    # device. Compensates for two upstream issues:
+    #   * Trixie's alsa-utils 1.2.14-1 ships a broken
+    #     /usr/lib/udev/rules.d/90-alsa-restore.rules where a GOTO
+    #     points at the wrong label, so `alsactl restore` never fires
+    #     on hotplug (Debian bug #1093057, still open).
+    #   * The Apple dongle's UAC firmware default for the Headphone
+    #     control is 80/120 (-20 dB), surfaced via UAC GET_CUR each
+    #     time the device probes. Without our rule, every speaker
+    #     re-plug or USB resume that triggers re-enumeration costs
+    #     the user 20 dB of analog attenuation until they reboot or
+    #     run `systemctl start jasper-dac-init` manually.
+    # Active reset is also done by jasper-headphone-monitor (1 Hz
+    # poller); this rule is the fast path on hotplug, the monitor
+    # catches anything the rule doesn't.
+    install -d -m 0755 /etc/udev/rules.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
+        /etc/udev/rules.d/99-jasper-apple-dongle.rules
+    udevadm control --reload-rules
+    # Trigger the rule once for the currently-attached dongle so we
+    # don't have to wait for the next replug. ATTR{} match is
+    # idempotent: amixer setting Headphone=100% on an already-pinned
+    # control is a no-op.
+    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
+    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
 
     # We own the full systemd units for each renderer + nqptp + bt-agent.
     #
@@ -442,7 +478,8 @@ install_systemd_units() {
 
     systemctl daemon-reload
     systemctl enable jasper-camilla.service jasper-voice.service \
-        jasper-web.service jasper-dial-web.service jasper-control.service \
+        jasper-web.service jasper-dial-web.service \
+        jasper-correction-web.service jasper-control.service \
         jasper-dac-init.service jasper-headphone-monitor.service
     # Apply the dongle Headphone-max pin immediately so a fresh
     # install gets the full analog ceiling without waiting for
@@ -459,6 +496,11 @@ Will retry on next boot."
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
+    # jasper-correction-web is brand-new in this install — restart so
+    # it's live on 127.0.0.1:8770 before nginx is reloaded with the
+    # /correction/ proxy. Doesn't disturb any in-flight measurement
+    # because Phase 0 has no state to lose.
+    systemctl restart jasper-correction-web.service 2>/dev/null || true
 
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
@@ -474,65 +516,125 @@ Will retry on next boot."
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
 
-install_self_signed_cert() {
-    # Self-signed cert for https://jasper.local — required because
-    # Spotify (post-2024) rejects HTTP redirect URIs unless they're
-    # the loopback exception (127.0.0.1). Each phone clicks through
-    # the cert warning once. 10-year validity so we don't have to
-    # think about renewal in our hobby-project lifespan.
-    local crt="/etc/nginx/ssl/jasper.crt"
-    local key="/etc/nginx/ssl/jasper.key"
-    install -d -m 0755 /etc/nginx/ssl
-    if [[ -f "${crt}" && -f "${key}" ]]; then
-        echo "  (TLS cert already present at ${crt})"
-        return 0
+remove_legacy_https_artifacts() {
+    # The old install topology served /spotify/ over HTTPS using a
+    # self-signed cert at /etc/nginx/ssl/jasper.{crt,key} so Spotify's
+    # OAuth-redirect-URI rules accepted it. The cert tripped scary
+    # "connection not private" warnings in every browser, which we now
+    # side-step by terminating Spotify's HTTPS requirement at a static
+    # GitHub Pages bounce page (separate public repo
+    # jaspercurry/spotify-oauth-callback). Sweep the old cert + key +
+    # previous-generation nginx site files here so upgrading installs
+    # end up with the new plain-HTTP topology for the legacy routes.
+    #
+    # NOTE: the new room-correction TLS lives at
+    # /etc/nginx/ssl/jts.local.{crt,key} (different filenames),
+    # provisioned by provision_correction_tls() below. Don't sweep
+    # those.
+    rm -f /etc/nginx/ssl/jasper.crt /etc/nginx/ssl/jasper.key
+    rm -f /etc/nginx/sites-enabled/jasper-https.conf
+    rm -f /etc/nginx/sites-available/jasper-https.conf
+    rm -f /etc/nginx/jasper-locations.conf
+}
+
+provision_correction_tls() {
+    # /correction/ requires HTTPS because getUserMedia (mic capture)
+    # only works in a secure context. There's no way around this in
+    # any browser, so we provision a private CA the user trusts once
+    # on iOS, then issue a server cert from it for jts.local.
+    #
+    # CA is generated once and preserved across reinstalls so the
+    # iOS trust survives upgrades. Server cert is re-issued every
+    # install (cheap, and lets a hostname change propagate).
+    #
+    # 825-day server cert expiry is Apple's hard ceiling — Safari
+    # rejects leaf certs valid longer than that since iOS 13. CA
+    # cert can be longer (10 years).
+    #
+    # See deploy/nginx-jasper.conf "Why HTTPS is added back" and
+    # docs/HANDOFF-correction.md "Decision 1 — TLS" for context.
+    local hostname="${JASPER_HOSTNAME:-jts.local}"
+    local ca_dir=/var/lib/jasper/ca
+    local ssl_dir=/etc/nginx/ssl
+    install -d -m 0700 "${ca_dir}"
+    install -d -m 0755 "${ssl_dir}"
+
+    if [[ ! -f "${ca_dir}/ca.crt" || ! -f "${ca_dir}/ca.key" ]]; then
+        echo "  generating /correction/ private CA at ${ca_dir}/ca.crt"
+        openssl genrsa -out "${ca_dir}/ca.key" 4096 2>/dev/null
+        openssl req -x509 -new -nodes -key "${ca_dir}/ca.key" \
+            -sha256 -days 3650 -out "${ca_dir}/ca.crt" \
+            -subj "/CN=JTS Speaker Local CA" 2>/dev/null
+        chmod 0600 "${ca_dir}/ca.key"
     fi
-    openssl req -x509 -nodes -days 3650 \
-        -newkey rsa:2048 \
-        -keyout "${key}" \
-        -out "${crt}" \
-        -subj "/CN=jasper.local" \
-        -addext "subjectAltName=DNS:jasper.local,DNS:jasper,IP:127.0.0.1" \
-        2>/dev/null
-    chmod 0644 "${crt}"
-    chmod 0640 "${key}"
-    chgrp www-data "${key}" 2>/dev/null || true
-    echo "  Generated self-signed cert at ${crt}"
+
+    local tmp_csr tmp_ext
+    tmp_csr=$(mktemp)
+    tmp_ext=$(mktemp)
+    openssl genrsa -out "${ssl_dir}/jts.local.key" 2048 2>/dev/null
+    openssl req -new -key "${ssl_dir}/jts.local.key" \
+        -out "${tmp_csr}" -subj "/CN=${hostname}" 2>/dev/null
+    # Always include "jts.local" + 127.0.0.1 in SANs so the cert
+    # works whether the user typed the configured hostname or the
+    # default mDNS name. Wildcard covers any future sub-host
+    # (e.g. correction.jts.local if we split routes later).
+    cat > "${tmp_ext}" <<EOF
+subjectAltName = DNS:${hostname}, DNS:*.${hostname}, DNS:jts.local, IP:127.0.0.1
+extendedKeyUsage = serverAuth
+EOF
+    openssl x509 -req -in "${tmp_csr}" -CA "${ca_dir}/ca.crt" \
+        -CAkey "${ca_dir}/ca.key" -CAcreateserial \
+        -out "${ssl_dir}/jts.local.crt" -days 825 -sha256 \
+        -extfile "${tmp_ext}" 2>/dev/null
+    chmod 0600 "${ssl_dir}/jts.local.key"
+    rm -f "${tmp_csr}" "${tmp_ext}"
+
+    # Publish CA for download by iOS (chicken-and-egg: user can't
+    # trust HTTPS until they've installed this file, so it's served
+    # over plain HTTP at http://<host>/jts-root-ca.crt — see the
+    # location block in nginx-jasper.conf).
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 "${ca_dir}/ca.crt" /usr/share/jasper-web/jts-root-ca.crt
+    echo "  /correction/ TLS provisioned (server cert for ${hostname}, CA at /usr/share/jasper-web/jts-root-ca.crt)"
 }
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
-    # OAuth web flow), /voice/ (voice-provider config wizard), /google/
-    # (Calendar + Gmail OAuth wizard), and /dial/ (rotary-dial
-    # onboarding) to their respective jasper-web services.
-    # /spotify/ + /google/ both require HTTPS — Spotify rejects non-
-    # loopback HTTP redirect URIs as of 2024, and Google requires
-    # HTTPS for any non-loopback OAuth redirect URI.
+    # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
+    # (rotary-dial onboarding) on plain HTTP, plus /correction/ (room
+    # correction wizard) and /google/ (Calendar + Gmail OAuth wizard) on
+    # HTTPS. The legacy routes stay HTTP — Spotify's HTTPS requirement
+    # is satisfied by the GitHub Pages bounce, and there's no point
+    # breaking working flows for one new feature.
+    #
+    # /correction/ requires HTTPS because getUserMedia needs a secure
+    # context; /google/ requires it because Google rejects non-loopback
+    # OAuth redirect URIs over HTTP. Both ride the same self-signed
+    # cert provisioned by provision_correction_tls() (called before
+    # this from main); the user's one-time CA-install dance covers
+    # both routes.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
+
+    # Static landing page served at /. Plain HTML, no daemon — nginx
+    # reads it directly via the `location = /` block in jasper.conf.
+    # Updates require an `nginx -s reload` (handled by the reload below)
+    # but no service restart.
+    install -d -m 0755 /usr/share/jasper-web
+    install -m 0644 \
+        "${REPO_DIR}/deploy/index.html" \
+        /usr/share/jasper-web/index.html
 
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
     # `default` symlink; remove it idempotently.
     rm -f /etc/nginx/sites-enabled/default
 
-    # Remove a previous-generation nginx site if present. An earlier
-    # install pattern used `jasper-https.conf` (with `server_name
-    # jts.local jts;`) plus a separate `jasper-locations.conf` include
-    # snippet. Because that vhost's server_name is more specific than
-    # the new jasper.conf's `server_name _`, leaving it in place hides
-    # the new /voice/ location from any browser request that uses
-    # jts.local as Host (i.e. all of them) — which surfaces as 404 on
-    # /voice/ for the user. Idempotent — fine if neither exists.
-    rm -f /etc/nginx/sites-enabled/jasper-https.conf
-    rm -f /etc/nginx/sites-available/jasper-https.conf
-    rm -f /etc/nginx/jasper-locations.conf
-
     if nginx -t 2>/dev/null; then
         systemctl enable --now nginx 2>/dev/null || true
         systemctl reload nginx
-        echo "  nginx reloaded — https://<host>/spotify, /voice, /google, /dial are live"
+        echo "  nginx reloaded — http://<host>/{,spotify,voice,dial} + https://<host>/{correction,google} are live"
     else
         echo "  WARNING: nginx config test failed; not reloading. Run 'nginx -t' to debug."
     fi
@@ -580,6 +682,66 @@ regenerate_audio_cues() {
     fi
 }
 
+install_camillagui() {
+    # CamillaGUI — official web UI for CamillaDSP. Connects to the same
+    # ws://127.0.0.1:1234 control socket the Python daemon already uses,
+    # exposes a SPA for live config editing, signal levels, and config-
+    # file management. We use the prebuilt PyInstaller bundle from the
+    # upstream release rather than a venv/source install — bundle is
+    # self-contained (Python 3.12 + frontend assets baked in), no apt
+    # deps, no pip resolution. Listens on 0.0.0.0:5005 directly (parity
+    # with /spotify, /voice, /dial — all unauthenticated, all home-LAN-
+    # only). The landing page links straight to http://${HOSTNAME}:5005.
+    local CAMILLAGUI_VERSION="4.1.0"
+    local CAMILLAGUI_DIR="/opt/camillagui"
+    local arch bundle
+    arch=$(uname -m)
+    case "${arch}" in
+        aarch64) bundle="bundle_linux_aarch64.tar.gz" ;;
+        x86_64)  bundle="bundle_linux_amd64.tar.gz"   ;;
+        armv7l)  bundle="bundle_linux_armv7.tar.gz"   ;;
+        *)
+            echo "  WARNING: no CamillaGUI bundle for ${arch} — skipping"
+            return 0
+            ;;
+    esac
+
+    if [[ -x "${CAMILLAGUI_DIR}/camillagui_backend/camillagui_backend" ]]; then
+        echo "  CamillaGUI already at ${CAMILLAGUI_DIR}"
+    else
+        echo "  Downloading CamillaGUI ${CAMILLAGUI_VERSION} (${arch})..."
+        local tmpdir
+        tmpdir=$(mktemp -d)
+        local url="https://github.com/HEnquist/camillagui-backend/releases/download/v${CAMILLAGUI_VERSION}/${bundle}"
+        if ! curl -fsSL -o "${tmpdir}/cg.tar.gz" "${url}"; then
+            echo "  WARNING: CamillaGUI download failed — skipping"
+            rm -rf "${tmpdir}"
+            return 0
+        fi
+        install -d -m 0755 "${CAMILLAGUI_DIR}"
+        tar -xzf "${tmpdir}/cg.tar.gz" -C "${CAMILLAGUI_DIR}"
+        rm -rf "${tmpdir}"
+        echo "  Installed CamillaGUI to ${CAMILLAGUI_DIR}"
+    fi
+
+    # Config + state dirs. /etc/camilladsp/coeffs holds FIR-filter
+    # coefficient files the GUI writes when convolving; we create it
+    # so the GUI's first save doesn't fail with ENOENT.
+    install -d -m 0755 /etc/camillagui /etc/camilladsp/coeffs /var/lib/camillagui
+    install -m 0644 \
+        "${REPO_DIR}/deploy/camillagui/config.yml" \
+        /etc/camillagui/config.yml
+    touch /var/log/camillagui.log
+    chmod 0644 /var/log/camillagui.log
+
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/camillagui.service" \
+        "${SYSTEMD_DIR}/camillagui.service"
+    systemctl daemon-reload
+    systemctl enable --now camillagui.service
+    echo "  CamillaGUI listening on :5005 (LAN-direct, no auth)"
+}
+
 main() {
     require_root
     install_deps
@@ -589,8 +751,10 @@ main() {
     install_jasper
     install_systemd_units
     install_avahi_jasper_control
-    install_self_signed_cert
+    remove_legacy_https_artifacts
+    provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site
+    install_camillagui
     regenerate_audio_cues
 }
 

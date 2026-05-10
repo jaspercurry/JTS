@@ -26,6 +26,13 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    for name, value in [
+        ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
+        ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
+        ("JASPER_GROK_CONTEXT_RESET_SEC", cfg.grok_context_reset_sec),
+    ]:
+        if value < 0:
+            raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
     # Hearing-safety: TTS gain is now an OFFSET applied on top of
@@ -103,12 +110,22 @@ class Config:
     camilla_port: int
     duck_db: float
     idle_timeout_sec: int
+    # Per-provider idle context reset thresholds (seconds). 0 = disabled
+    # (default). Without a reset, the persistent live session keeps
+    # conversational context indefinitely; OpenAI Realtime auto-truncates
+    # past 128K and caps sessions at 60 min, so unbounded growth is
+    # impossible. Set a positive value (e.g. 21600 = 6 h) to force a
+    # periodic fresh session as a safety hedge against stale-context
+    # weirdness. Per-provider so e.g. Gemini's resumption-handle path
+    # can be tuned separately from OpenAI's reconnect path. Falls back
+    # to the legacy `JASPER_LIVE_CONTEXT_RESET_SEC` if set, for
+    # backwards-compat with existing /etc/jasper/jasper.env files.
+    openai_context_reset_sec: int
+    gemini_context_reset_sec: int
+    grok_context_reset_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
-
-    mpd_host: str
-    mpd_port: int
 
     # Path to the librespot state file written by the --onevent hook
     # (jasper-librespot-event). Read by mux, volume_observers, and
@@ -116,8 +133,14 @@ class Config:
     # systemd RuntimeDirectory.
     librespot_state_path: str
 
+    # The speaker's mDNS hostname — what other devices on the LAN type
+    # into their browser to reach the speaker. Default is `jts.local`
+    # (canonical reference deployment). Override at install time if you
+    # ran `hostnamectl set-hostname` to something else; the URLs below
+    # default to `http://${hostname}` when not explicitly set.
+    hostname: str
+
     spotify_client_id: str
-    spotify_client_secret: str
     spotify_redirect_uri: str
     spotify_cache_path: str
     spotify_device_name: str
@@ -196,8 +219,13 @@ class Config:
         gemini_key = _env("GEMINI_API_KEY", required=(provider == "gemini"))
         openai_key = _env("OPENAI_API_KEY", required=(provider == "openai"))
         grok_key = _env("XAI_API_KEY", required=(provider == "grok"))
+        # Speaker hostname is the single source of truth for "where do
+        # other devices reach this speaker?" — read first so URL
+        # defaults below can derive from it.
+        hostname = _env("JASPER_HOSTNAME", "jts.local")
         return _validate(cls(
             voice_provider=provider,
+            hostname=hostname,
             gemini_api_key=gemini_key,
             gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
             # Pin the TTS voice so it's consistent across sessions.
@@ -259,32 +287,38 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # OFFSET (dB) applied on top of CamillaDSP's main_volume
-            # to set the TTS playback level. TTS bypasses CamillaDSP
-            # — a background tracker in voice_daemon polls main_volume
-            # every 0.5 s and updates TtsPlayout's gain to
-            # `main_volume + tts_gain_db`, clamped to TtsPlayout's
-            # MIN/MAX safety bounds. Negative values keep TTS quieter
-            # than music at the same nominal level (helps intelligibility
-            # over louder source material); -8 dB is the previous fixed
-            # default and remains a sensible offset. MUST be <= 0 — the
-            # config validator enforces this so a fat-fingered "+8"
-            # cannot blast the speaker.
-            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", -8.0),
+            # OFFSET (dB) applied on top of CamillaDSP's main_volume —
+            # a SECONDARY ceiling alongside the TtsVolumeTracker's
+            # tracker-and-headroom formula (below) and the absolute
+            # hearing-safety cap MAX_TTS_GAIN_DB in audio_io.py. With
+            # music ducking ~25 dB during TTS, voice and music don't
+            # overlap perceptually, so this offset's main historical
+            # role (keep TTS quieter than concurrent music) is mostly
+            # moot. Default 0 lets the tracker drive the level; the
+            # safety cap at -6 still bounds the maximum. Stays useful
+            # as a master-volume-tracking ceiling when no music has
+            # played to update the loudness anchor (sudden master
+            # change with stale anchor → ceiling kicks in proportional
+            # to master). MUST be <= 0 — validator enforces.
+            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", 0.0),
             # When music is playing, TtsVolumeTracker sizes TTS to a
             # headroom above the windowed RMS of CamillaDSP's playback
             # signal — so TTS scales with whatever music is actually
             # coming out of the speaker, accounting for renderer-side
-            # volume sliders (AirPlay sender, Spotify Connect, MPD,
-            # etc.) that don't touch CamillaDSP's main_volume.
+            # volume sliders (AirPlay sender, Spotify Connect, etc.)
+            # that don't touch CamillaDSP's main_volume.
             # Headroom is added on top of the windowed music RMS to
-            # produce the TTS effective output peak target. Bigger →
-            # TTS dominates the music more clearly. 12 dB ≈ TTS source
-            # peaks land around music's typical peak level (since
-            # music peak-to-RMS is ~12-15 dB for typical content),
-            # which is "intelligible above music without being shouty".
+            # produce the TTS effective output peak target. With music
+            # ducking ~25 dB during TTS, the comparison the user
+            # actually feels is "TTS during duck" vs "music when not
+            # ducked", so we want TTS *slightly louder* than the
+            # music level. 16 dB headroom + voice's ~9-12 dB crest
+            # factor ≈ TTS RMS lands ~4-7 dB above music RMS, which
+            # reads as "a touch louder than music" without being
+            # shouty. Higher → more dominance over music; clamped to
+            # -6 dB max gain by audio_io's hearing-safety cap.
             tts_music_headroom_db=_env_float(
-                "JASPER_TTS_MUSIC_HEADROOM_DB", 12.0,
+                "JASPER_TTS_MUSIC_HEADROOM_DB", 16.0,
             ),
             # Below this windowed RMS, the tracker treats the room as
             # silent and falls back to the legacy "main_volume +
@@ -318,23 +352,52 @@ class Config:
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
             idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
+            # Idle context reset is OFF by default. Each turn pays full
+            # uncached price for the system prompt + tool defs on the
+            # first turn after a reset (OpenAI: ~$0.008 vs $0.001
+            # cached), and the reset itself blocks the wake event for
+            # 1-6 s while the session reopens. Worth it only if you
+            # actually observe stale-context glitches. Per-provider
+            # because the cost/race tradeoffs differ:
+            #   - OpenAI: no resumption handle, full reconnect, prompt
+            #     cache busted. Most expensive.
+            #   - Gemini: drops resumption handle, similar reconnect
+            #     cost but cheaper baseline pricing.
+            #   - Grok: inherits OpenAI implementation.
+            # Legacy JASPER_LIVE_CONTEXT_RESET_SEC, if set, supplies a
+            # global default for any provider whose specific var is
+            # unset.
+            openai_context_reset_sec=_env_int(
+                "JASPER_OPENAI_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
+            gemini_context_reset_sec=_env_int(
+                "JASPER_GEMINI_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
+            grok_context_reset_sec=_env_int(
+                "JASPER_GROK_CONTEXT_RESET_SEC",
+                _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),
-            mpd_host=_env("MPD_HOST", "127.0.0.1"),
-            mpd_port=_env_int("MPD_PORT", 6600),
             librespot_state_path=_env(
                 "JASPER_LIBRESPOT_STATE", "/run/librespot/state.json",
             ),
             spotify_client_id=_env("SPOTIFY_CLIENT_ID"),
-            spotify_client_secret=_env("SPOTIFY_CLIENT_SECRET"),
             # The redirect URI is the URL Spotify bounces the OAuth
             # code back to. It must be an exact match for one of the
             # URIs registered in the user's Spotify Developer App.
-            # In multi-user installs this is the public-facing URL
-            # (jasper.local/spotify/callback) reverse-proxied by nginx
-            # to the local jasper-web service.
+            # Default is the canonical bounce page on GitHub Pages
+            # (separate public repo `jaspercurry/spotify-oauth-callback`),
+            # with `?host=` carrying the speaker's hostname so a single
+            # hosted page works for any speaker. For `manual` mode (no
+            # external infrastructure), override to
+            # "http://127.0.0.1:8888/callback" — the loopback exception
+            # Spotify still allows.
             spotify_redirect_uri=_env(
-                "SPOTIFY_REDIRECT_URI", "https://jasper.local/spotify/callback"
+                "SPOTIFY_REDIRECT_URI",
+                f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
             ),
             # Legacy single-user cache. Read once at startup for the
             # one-shot migration into the new multi-account layout
@@ -358,12 +421,15 @@ class Config:
             # Public URL household members visit to add their Spotify
             # account. Surfaced in error messages so the voice
             # assistant can tell unrecognized users where to go.
+            # Defaults to http://${hostname}/spotify; override only if
+            # the speaker is reverse-proxied behind a different
+            # hostname or path.
             spotify_setup_url=_env(
-                "JASPER_SPOTIFY_SETUP_URL", "https://jasper.local/spotify"
+                "JASPER_SPOTIFY_SETUP_URL", f"http://{hostname}/spotify"
             ),
             # Where the jasper-web service listens. Reverse-proxied
             # from nginx's port 80 — the public surface stays at
-            # jasper.local/spotify regardless.
+            # jts.local/spotify regardless.
             spotify_web_bind_host=_env(
                 "JASPER_SPOTIFY_WEB_HOST", "127.0.0.1"
             ),
@@ -394,10 +460,10 @@ class Config:
             # Speaker management dashboard URL. Audio cues extract the
             # hostname from this and tell the user "visit <hostname>"
             # when something blocks normal voice response (spend cap,
-            # connection failure). Default uses jts.local — installs
-            # on a different hostname should override.
+            # connection failure). Defaults to http://${hostname}; the
+            # speaker no longer ships an HTTPS cert.
             management_url=_env(
-                "JASPER_MANAGEMENT_URL", "https://jts.local",
+                "JASPER_MANAGEMENT_URL", f"http://{hostname}",
             ),
             sounds_dir=_env(
                 "JASPER_SOUNDS_DIR", "/var/lib/jasper/sounds",
@@ -465,7 +531,10 @@ class Config:
 
     @property
     def spotify_enabled(self) -> bool:
-        return bool(self.spotify_client_id and self.spotify_client_secret)
+        # PKCE: only the client_id is needed; no secret. A client_id
+        # alone is enough to authorize accounts and refresh their
+        # tokens against Spotify.
+        return bool(self.spotify_client_id)
 
     @property
     def google_enabled(self) -> bool:

@@ -59,7 +59,10 @@ SYSTEM_INSTRUCTION = (
     "me to...', 'do you want me to also...'). Do NOT invite further "
     "conversation ('anything else?', 'let me know if...'). Do NOT "
     "restate the question. Do NOT preface ('sure!', 'of course!', 'let "
-    "me check'). Just answer and stop. Only ask a clarifying question "
+    "me check', 'one moment', 'I'm finding it', 'okay here's...'). Do "
+    "NOT narrate tool use — make tool calls silently and speak only "
+    "the result after the tool returns. Just answer and stop. Only "
+    "ask a clarifying question "
     "when the user's request is genuinely ambiguous and you literally "
     "cannot proceed without more information; in that case ask exactly "
     "one specific question and nothing else. "
@@ -67,17 +70,18 @@ SYSTEM_INSTRUCTION = (
     "Examples of correct style:\n"
     "  User: 'What time is it?'      → 'It's 9:47.'\n"
     "  User: 'What's the weather?'   → '62 and partly cloudy. Rain by Thursday.'\n"
-    "  User: 'Pause.' / 'Stop.'      → [pause] 'Done.'\n"
-    "  User: 'Skip.' / 'Next song.'  → [next_track] 'Done.'\n"
-    "  User: 'Go back.'              → [previous_track] 'Done.'\n"
-    "  User: 'Resume.' / 'Play.'     → [resume] 'Done.'\n"
+    "  User: 'Pause.' / 'Stop.'      → [pause] 'Paused.'\n"
+    "  User: 'Skip.' / 'Next song.'  → [next_track] 'Skipping.'\n"
+    "  User: 'Go back.'              → [previous_track] 'Going back.'\n"
+    "  User: 'Resume.' / 'Play.'     → [resume] 'Resuming.'\n"
     "  User: 'Play some jazz.'       → [spotify_play 'jazz'] (speak the response's `confirm` field, e.g. 'Playing Jazz Vibes.')\n"
     "  User: 'Play my Workout playlist.' → [spotify_play 'Workout' kind=playlist] (speak `confirm`, e.g. 'Now playing your Workout Mix playlist.')\n"
     "  User: 'Shuffle my Workout playlist.' / 'Play my Workout playlist on shuffle.' / 'Play Workout shuffled.' → [spotify_play 'Workout' kind=playlist shuffle=true] (speak `confirm`, e.g. 'Shuffling your Workout Mix playlist.')\n"
-    "  User: 'Volume up.'            → [adjust_volume +10] 'Done.'\n"
-    "  User: 'Turn it down a lot.'   → [adjust_volume -25] 'Done.'\n"
-    "  User: 'Set volume to 30.'     → [set_volume 30] 'Done.'\n"
-    "  User: 'Mute.'                 → [mute] 'Done.'\n"
+    "  User: 'Volume up.'            → [adjust_volume +10] (speak the new `percent` from the tool result, e.g. 'Volume seventy.')\n"
+    "  User: 'Turn it down a lot.'   → [adjust_volume -25] (speak the new `percent`, e.g. 'Volume forty-five.')\n"
+    "  User: 'Set volume to 30.'     → [set_volume 30] (speak the new `percent`, e.g. 'Volume thirty.')\n"
+    "  User: 'What's the volume?'    → [get_volume] 'Volume is at 70%.'\n"
+    "  User: 'Mute.'                 → [mute] 'Muted.'\n"
     "  User: 'Set a timer for 5 minutes.' → [set_timer 300] (speak `confirm`, e.g. 'Set a timer for 5 minutes.')\n"
     "  User: 'Set a pasta timer for 10 minutes.' → [set_timer 600 label='pasta'] (speak `confirm`, e.g. 'Set a pasta timer for 10 minutes.')\n"
     "  User: 'How much time left on my timer?' / 'What timers do I have?' → [list_timers] 'Three minutes and twenty seconds left.' (or summarise multiple)\n"
@@ -94,13 +98,23 @@ SYSTEM_INSTRUCTION = (
     "  'Sure! It's 9:47. Anything else I can help you with?'\n"
     "  'The weather is 62 and partly cloudy. Would you like the full forecast?'\n"
     "  'Pausing now. Let me know when you'd like me to resume!'\n"
+    "  'Let me check the weather. It's 62 and partly cloudy.'\n"
+    "  'Looking that up... Now playing your Release Radar playlist.'\n"
+    "  'One moment. Volume is at 70%.'\n"
+    "  'Okay, here's the weather: 62 and partly cloudy.'\n"
     # Tool-use rules (existing).
     "When the user asks to control music or volume, call the appropriate "
-    "tool — don't ask for confirmation first. After a volume or transport "
-    "tool call, reply with the single word 'Done.' and stop — "
-    "never narrate the action ('Setting volume to 30…') and never "
-    "ask a follow-up. Use the default step of 10% for 'volume up'/'volume "
-    "down'; pass a larger delta (±20-30) for 'a lot louder/quieter'. "
+    "tool — don't ask for confirmation first and don't narrate before "
+    "calling. After set_volume / adjust_volume, restate the new "
+    "`percent` from the tool result ('Volume sixty.'). After mute / "
+    "unmute, say 'Muted.' / 'Unmuted.' For transport tools, restate "
+    "the action: 'Paused.' / 'Skipping.' / 'Going back.' / "
+    "'Resuming.' For get_volume, speak the level ('Volume is at "
+    "70%.'). Never narrate mid-call ('Setting volume to 30…') and "
+    "never ask a follow-up. When the user asks what the volume is, "
+    "call get_volume — don't change it. Use the default step of 10% "
+    "for 'volume up'/'volume down'; pass a larger delta (±20-30) for "
+    "'a lot louder/quieter'. "
     "For bare 'play' / 'resume' / 'keep playing' (no song or artist named), "
     "call resume — that un-pauses paused music. ONLY call spotify_play when "
     "the user names a song, artist, album, or playlist (e.g. 'play Kanye', "
@@ -297,7 +311,7 @@ class TtsVolumeTracker:
     the music chain that TTS bypasses:
 
         track_loudness × airplay_sender_vol × spotify_connect_vol
-            × mpd_vol × camilla_main_volume × room_correction → DAC
+            × camilla_main_volume × room_correction → DAC
 
     Adding TTS gain = `main_volume + offset` only matches the LAST
     stage. If the user's iPhone AirPlay slider is at 50%, music plays
@@ -575,6 +589,7 @@ def _make_connection(cfg: Config) -> LiveConnection:
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
             voice=cfg.gemini_voice,
+            context_reset_sec=float(cfg.gemini_context_reset_sec),
         )
     if cfg.voice_provider == "openai":
         return OpenAIRealtimeConnection(
@@ -582,12 +597,14 @@ def _make_connection(cfg: Config) -> LiveConnection:
             model=cfg.openai_model,
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
+            context_reset_sec=float(cfg.openai_context_reset_sec),
         )
     if cfg.voice_provider == "grok":
         return GrokRealtimeConnection(
             api_key=cfg.grok_api_key,
             model=cfg.grok_model,
             voice=cfg.grok_voice,
+            context_reset_sec=float(cfg.grok_context_reset_sec),
         )
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
@@ -658,7 +675,6 @@ def _build_router(cfg: Config) -> Router | None:
     clients = build_clients(
         accounts,
         client_id=cfg.spotify_client_id,
-        client_secret=cfg.spotify_client_secret,
         redirect_uri=cfg.spotify_redirect_uri,
     )
     if not clients:
@@ -874,6 +890,16 @@ class WakeLoop:
         self._bg_tasks: set[asyncio.Task] = set()
         self._refractory_until: float = 0.0
 
+        # Room-correction measurement window. When set, the WakeLoop
+        # drops mic frames (no wake-word feed, no session forward) and
+        # the TtsVolumeTracker is paused so it doesn't read the sweep
+        # as "loud music" and skew the loudness anchor. Set / cleared
+        # via the MEASURE_PAUSE / MEASURE_RESUME UDS commands; the
+        # `_measurement_safety_task` auto-clears the event after 2 min
+        # so a coordinator crash can't strand the speaker silent.
+        self._measurement_active: asyncio.Event = asyncio.Event()
+        self._measurement_safety_task: asyncio.Task | None = None
+
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
         # moment the user stops speaking — not at turn cleanup. Without
@@ -1050,6 +1076,17 @@ class WakeLoop:
                     await self._end_turn()
                 return
 
+            # Room-correction measurement window: drop the frame
+            # entirely (no wake-word feed, no session dispatch, no
+            # pre-roll append). Dropping pre-roll matters — sweep tail
+            # in the pre-roll would prepend ~1.4 s of test-tone audio
+            # to whatever turn the user starts immediately after the
+            # window closes. Active sessions never reach this branch
+            # because measurement_pause() refuses to set the event
+            # while State.SESSION (returns BUSY).
+            if self._measurement_active.is_set():
+                continue
+
             # Continuously fill the pre-roll ring. When wake fires, the
             # last N frames already in this deque are what we replay
             # into the turn so the user's first phoneme isn't lost.
@@ -1069,6 +1106,74 @@ class WakeLoop:
                 await self._handle_wake_frame(frame)
             else:
                 await self._handle_session_frame(frame)
+
+    async def measurement_pause(self) -> str:
+        """Open a measurement window. Set the gate event, pause the
+        TTS volume tracker, and arm a 2-minute auto-clear safety
+        timer.
+
+        Refuses with `BUSY` when a voice session is currently active
+        — yanking the session would orphan the user's turn. The
+        coordinator (jasper.correction.coordinator) is expected to
+        check STATUS first; this is defense-in-depth.
+
+        Idempotent — calling twice is harmless. Returns:
+          - "ok" when the window is now open.
+          - "BUSY" when refused due to an active session.
+        """
+        if self._state is State.SESSION:
+            return "BUSY"
+        self._measurement_active.set()
+        self._tts_volume_tracker.pause()
+
+        # Cancel any prior safety timer (idempotent re-pause path).
+        prev = self._measurement_safety_task
+        if prev is not None and not prev.done():
+            prev.cancel()
+
+        # Arm new safety timer. If the coordinator crashes (kill -9)
+        # without sending RESUME, this auto-clears the gate so the
+        # speaker doesn't stay silent forever. Logged at WARNING so
+        # the operator can see something went wrong.
+        loop = asyncio.get_running_loop()
+
+        async def _safety() -> None:
+            try:
+                await asyncio.sleep(120.0)
+            except asyncio.CancelledError:
+                return
+            if self._measurement_active.is_set():
+                logger.warning(
+                    "measurement window auto-clearing after 2 min — "
+                    "coordinator likely crashed without sending "
+                    "MEASURE_RESUME"
+                )
+                self._measurement_active.clear()
+                self._tts_volume_tracker.resume()
+
+        # Note: this is a fire-once-and-exit task that we deliberately
+        # do NOT add to self._bg_tasks — the WakeLoop run loop's
+        # bg-task done-checker treats any done task as "turn ended
+        # early," so adding short-lived tasks there would corrupt the
+        # turn lifecycle. Single-slot reference is enough; we cancel
+        # via that slot on RESUME or repeated PAUSE.
+        self._measurement_safety_task = loop.create_task(_safety())
+        return "ok"
+
+    async def measurement_resume(self) -> str:
+        """Close a measurement window: clear the gate, resume the
+        tracker, cancel the safety timer.
+
+        Idempotent — calling twice (or before any PAUSE) is harmless.
+        Always returns "ok".
+        """
+        self._measurement_active.clear()
+        self._tts_volume_tracker.resume()
+        if self._measurement_safety_task is not None:
+            if not self._measurement_safety_task.done():
+                self._measurement_safety_task.cancel()
+            self._measurement_safety_task = None
+        return "ok"
 
     async def _handle_wake_frame(self, frame) -> None:
         # During refractory, swallow frames so TTS bleed doesn't self-trigger.
@@ -1508,6 +1613,13 @@ async def _start_control_socket(
                               standalone CLI doesn't have to recreate
                               the volume math — and can't accidentally
                               blast at -6 dB when the daemon's at -27.
+        MEASURE_PAUSE       → open a room-correction measurement
+                              window. Drops mic frames, pauses the
+                              TTS volume tracker. Refuses (BUSY) if a
+                              session is active. Auto-clears in 2 min
+                              if RESUME is never sent.
+        MEASURE_RESUME      → close the measurement window.
+                              Idempotent.
 
     The socket lives in /run (tmpfs) so it gets created fresh each boot
     via systemd's RuntimeDirectory=jasper. Both jasper-voice and
@@ -1529,6 +1641,10 @@ async def _start_control_socket(
                 result = wake_loop.session_status()
             elif cmd == "CUE_PLAY":
                 result = {"result": await wake_loop.play_cue(arg)}
+            elif cmd == "MEASURE_PAUSE":
+                result = {"result": await wake_loop.measurement_pause()}
+            elif cmd == "MEASURE_RESUME":
+                result = {"result": await wake_loop.measurement_resume()}
             else:
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))
@@ -1596,8 +1712,6 @@ async def run() -> None:
 
     camilla = CamillaController(cfg.camilla_host, cfg.camilla_port)
     renderer = RendererClient(
-        mpd_host=cfg.mpd_host,
-        mpd_port=cfg.mpd_port,
         librespot_state_path=cfg.librespot_state_path,
     )
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
@@ -1862,7 +1976,6 @@ async def run() -> None:
             await volume_observer.stop()
         await volume_coordinator.aclose()
         await connection.stop()
-        await renderer.aclose()
         await weather.aclose()
 
 

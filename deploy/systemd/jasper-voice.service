@@ -1,12 +1,22 @@
 [Unit]
 Description=Jasper voice daemon (wake word + real-time LLM + tools)
-After=jasper-camilla.service network-online.target mpd.service
+After=jasper-camilla.service network-online.target
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go
 # through best_effort=True paths in jasper/camilla.py). After= still
 # orders us behind camilla on cold boot.
 Wants=network-online.target jasper-camilla.service
+
+# Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
+# accumulated silently because the daemon kept hitting transient
+# audio-device unavailability (Apple dongle de-enumerated mid-run),
+# `Restart=on-failure` + `RestartSec=2` re-tried every 2 s forever,
+# and nothing told the operator. With these limits, 20 failures in
+# 5 min puts the unit in `failed` state — visible to `systemctl
+# status` and `jasper-doctor` — instead of an invisible loop.
+StartLimitBurst=20
+StartLimitIntervalSec=300
 
 [Service]
 Type=simple
@@ -31,7 +41,11 @@ EnvironmentFile=-/var/lib/jasper/google_credentials.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 Restart=on-failure
-RestartSec=2
+# 5 s backoff (was 2 s). Audio-device transients (dongle enumerate
+# blip, ALSA card reorder) typically settle within a few seconds; a
+# longer backoff means fewer wasted restart cycles before the device
+# stabilises, and pairs with StartLimitBurst above to cap the spiral.
+RestartSec=5
 StateDirectory=jasper
 StateDirectoryMode=0750
 # RuntimeDirectory creates /run/jasper at service start (auto-cleaned

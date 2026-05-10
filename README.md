@@ -152,9 +152,9 @@ jasper-voice to consume. Disabled by default — see § below.
   dlog) + Phase 1.2 (on-screen connection-status indicator on
   the SH8601 AMOLED via Arduino_GFX) shipped. Phase 1.3+ (LVGL
   "Tap to Talk", capacitive touch, UDP audio to Pi-side
-  receiver) is the next milestone. Firmware bumped to
-  Arduino-ESP32 v3.x via pioarduino for the SH8601 driver path;
-  the dial intentionally stays on v2.x. See
+  receiver) is the next milestone. Both ESP32 firmware projects
+  (dial + satellite) on Arduino-ESP32 v3.x via pioarduino — one
+  toolchain across the satellite family. See
   [docs/satellites.md](docs/satellites.md) for the family
   overview, multi-mic arbitration design, and per-device
   roadmap.
@@ -225,6 +225,9 @@ scripts/                        Operator helpers (run from laptop)
   switch-voice-provider.sh      Flip JASPER_VOICE_PROVIDER between
                                 gemini / openai / grok
   switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
+  claim-librespot.sh            One-time: OAuth-claim librespot for a
+                                Spotify account so cold-start "play X"
+                                works without phone interaction
 
 tests/                          Hardware-free pytest suite
 ```
@@ -264,7 +267,7 @@ reference. Currently:
   details — see HANDOFF-voice-providers.md for the cross-provider
   architecture)
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
-  — Source-aware transport (AirPlay/Spotify/MPD) + volume
+  — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
   volume coordinator (one canonical `listening_level`, dispatched
   to whichever source is active, observed inbound at 1 Hz)
@@ -393,9 +396,11 @@ modifying. One-line summaries here:
   paused-resumed connection).
 - **Music transport** ([HANDOFF-voice-music-control.md](docs/HANDOFF-voice-music-control.md))
   — Source-aware `next_track`/`pause`/`resume`/etc. routing
-  across AirPlay (MPRIS via shairport-sync), Spotify Connect
-  (spotipy), and MPD. Gets non-trivial when AirPlay is carrying
-  iPhone-Spotify (the title-match → Web API path).
+  across AirPlay (MPRIS via shairport-sync) and Spotify Connect
+  (spotipy). Gets non-trivial when AirPlay is carrying
+  iPhone-Spotify (the title-match → Web API path). Bluetooth
+  has no graceful pause API; "nothing playing" returns a clean
+  error.
 - **Multi-user Spotify routing** ([multi-user-spotify.md](docs/multi-user-spotify.md))
   — Each household member OAuths their own account against one
   Spotify Developer App. Routing decides whose account a voice
@@ -431,7 +436,7 @@ rsync -avz --delete \
   ./ pi@jts.local:/home/pi/jts/
 
 ssh pi@jts.local 'sudo bash /home/pi/jts/deploy/install.sh'
-ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice'
+ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice jasper-correction-web'
 ```
 
 The install script is idempotent.
@@ -445,15 +450,24 @@ When something's broken:
 ```sh
 # On the Pi:
 sudo /opt/jasper/.venv/bin/jasper-doctor          # codified smoke tests
+curl -s http://jts.local:8780/state | jq          # cross-daemon snapshot
 
 # From the laptop:
 bash scripts/fetch-pi-logs.sh                     # pull journals to ./logs/
 bash scripts/tail-pi-logs.sh                      # live tail all units
+bash scripts/jasper-trace.sh                      # filter to event= lines
 ```
 
 `jasper-doctor` codifies the smoke tests in BRINGUP.md and runs
 them as code. `fetch-pi-logs.sh` pulls journals + configs +
 ALSA state into `./logs/`, redacting secrets server-side.
+`jasper-trace.sh` is the live-tail equivalent narrowed to the
+cross-daemon `event=` lines emitted by `jasper.camilla.Ducker`,
+the dial volume routes, etc. — useful when you want to see
+duck/preempt/route timing without the rest of each daemon's
+chatter. `GET /state` on `jasper-control` returns one JSON
+snapshot of voice / audio / renderers / satellites, fail-soft
+per section.
 
 Common failure modes are documented at the bottom of
 [BRINGUP.md](BRINGUP.md). For subsystem-specific issues, the

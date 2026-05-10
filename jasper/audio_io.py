@@ -2,11 +2,66 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
 
 import numpy as np
 import sounddevice as sd
 
 logger = logging.getLogger(__name__)
+
+
+def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
+    """Dump environmental state when a sounddevice stream open fails.
+
+    Called from MicCapture / TtsPlayout `__aenter__` immediately
+    before re-raising. The bare exception (typically
+    `ValueError: No <kind> device matching '<name>'`) doesn't tell
+    us whether ALSA can see the device, whether dmesg has a recent
+    USB-disconnect line, or what PortAudio actually has enumerated —
+    all common when the Apple dongle de-enumerates after losing
+    its analog load, or when the AEC bridge's loopback isn't fed.
+    Capturing this snapshot once at failure beats blind reasoning
+    from a stack trace days later.
+
+    Best-effort: a logging helper must NEVER mask or suppress the
+    underlying audio failure, so every snapshot path is wrapped in
+    `try/except` and falls through to `logger.warning` rather than
+    raising. The caller still re-raises the original exception.
+    """
+    logger.error(
+        "audio open failed: role=%s device=%r exc=%s: %s",
+        role, device, type(exc).__name__, exc,
+    )
+    try:
+        # PortAudio's view — what sounddevice could see at the
+        # moment of failure. If our target device isn't in this
+        # list, the dongle/mic disappeared (most common cause).
+        devices = sd.query_devices()
+        logger.error("audio open failed: portaudio devices = %s", list(devices))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("audio open failed: query_devices snapshot failed: %s", e)
+    for cmd, label in (
+        (["aplay", "-l"], "aplay -l"),
+        (["arecord", "-l"], "arecord -l"),
+    ):
+        try:
+            out = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=2.0,
+            ).stdout
+            logger.error("audio open failed: %s =\n%s", label, out.strip())
+        except Exception as e:  # noqa: BLE001
+            logger.warning("audio open failed: %s snapshot failed: %s", label, e)
+    try:
+        # Last 20 lines of dmesg catches USB-disconnect / xhci
+        # reset events that often correlate with dongle dropouts.
+        out = subprocess.run(
+            ["dmesg", "--ctime"],
+            capture_output=True, text=True, timeout=2.0,
+        ).stdout
+        tail = "\n".join(out.strip().splitlines()[-20:])
+        logger.error("audio open failed: dmesg tail =\n%s", tail)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("audio open failed: dmesg snapshot failed: %s", e)
 
 
 class MicCapture:
@@ -87,15 +142,25 @@ class MicCapture:
 
     async def __aenter__(self) -> "MicCapture":
         self._loop = asyncio.get_running_loop()
-        self._stream = sd.InputStream(
-            device=self._device,
-            samplerate=self._capture_rate,
-            channels=self._capture_channels,
-            dtype="int16",
-            blocksize=self._capture_block,
-            callback=self._callback,
-        )
-        self._stream.start()
+        try:
+            self._stream = sd.InputStream(
+                device=self._device,
+                samplerate=self._capture_rate,
+                channels=self._capture_channels,
+                dtype="int16",
+                blocksize=self._capture_block,
+                callback=self._callback,
+            )
+            self._stream.start()
+        except Exception as e:  # noqa: BLE001
+            # Common causes: chip not enumerated (USB-OUT shared
+            # bus reset), AEC bridge configured but bridge daemon
+            # down (`hw:7,1` exists but produces silence — caught
+            # downstream by "no wake events"), or device-name
+            # typo. Dump full ALSA + PortAudio state so the next
+            # restart's log shows what was visible at failure.
+            _log_audio_open_failure("MicCapture", self._device, e)
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:
@@ -223,13 +288,25 @@ class TtsPlayout:
         # were L/R pairs, and audio comes out at half speed with
         # weird amplitude. Manual mono→stereo duplication in write()
         # is unambiguous and matches the dmix's native shape.
-        self._stream = sd.RawOutputStream(
-            device=self._device,
-            samplerate=self._output_rate,
-            channels=2,
-            dtype="int16",
-        )
-        self._stream.start()
+        try:
+            self._stream = sd.RawOutputStream(
+                device=self._device,
+                samplerate=self._output_rate,
+                channels=2,
+                dtype="int16",
+            )
+            self._stream.start()
+        except Exception as e:  # noqa: BLE001
+            # Most common cause of "No output device matching ..." is
+            # the Apple dongle de-enumerating because nothing's
+            # plugged into its 3.5 mm jack (it loses USB Audio class
+            # exposure without an analog load). Dump enough state to
+            # tell that case apart from "device exists but is busy"
+            # or "PortAudio internal error" — the bare ValueError
+            # alone wasn't enough to root-cause the 9000+ restart
+            # spiral on 2026-05-10.
+            _log_audio_open_failure("TtsPlayout", self._device, e)
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:

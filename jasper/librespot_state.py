@@ -52,7 +52,8 @@ def read(path: str | None = None) -> dict[str, Any]:
 
 def is_playing(path: str | None = None) -> bool:
     """True iff librespot is actively producing audio (track playing,
-    not paused, not stopped). Mirrors `_spotify_playing` in mux.py."""
+    not paused, not stopped). Wrapped by `source_state.spotify_playing`,
+    which is the entry point both RendererClient and the mux daemon use."""
     state = read(path)
     if not state:
         return False

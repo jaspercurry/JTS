@@ -19,6 +19,37 @@ when editing.
 
 ---
 
+## Speaker hostname — single source of truth
+
+`JASPER_HOSTNAME` (default `jts.local`) is the canonical name other
+devices type in to reach the speaker. Set in `/etc/jasper/jasper.env`.
+
+What derives from it (so you only set it once):
+- Python: `Config.hostname` plus `JASPER_MANAGEMENT_URL` and
+  `JASPER_SPOTIFY_SETUP_URL` defaults (`http://${JASPER_HOSTNAME}` and
+  `http://${JASPER_HOSTNAME}/spotify` respectively).
+- Bash scripts under `scripts/`: every `PI_HOST` default falls back to
+  `${JASPER_HOSTNAME:-jts.local}`. So if you also export
+  `JASPER_HOSTNAME` in your laptop shell, `fetch-pi-logs.sh`,
+  `tail-pi-logs.sh`, `switch-voice-provider.sh`, etc. all target the
+  right host without per-script overrides.
+
+What does NOT derive (intentionally):
+- The Pi's actual mDNS hostname (set with `hostnamectl set-hostname`
+  + Avahi). Setting `JASPER_HOSTNAME` doesn't change what the Pi
+  advertises — that's a separate, OS-level concern. Run hostnamectl
+  first; then point `JASPER_HOSTNAME` at it.
+- The Spotify OAuth bounce page at
+  `https://jaspercurry.github.io/spotify-oauth-callback/` — separate
+  public repo (`jaspercurry/spotify-oauth-callback`). It's hostname-
+  agnostic: the local target is passed in as `?host=<JASPER_HOSTNAME>`
+  on the redirect URI registered with Spotify, validated against an
+  mDNS regex, and used as the redirect target. So changing
+  `JASPER_HOSTNAME` here Just Works against the same hosted page —
+  no fork-and-redeploy.
+
+---
+
 ## Renderer architecture — file map
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
@@ -162,6 +193,47 @@ back.
 
 ---
 
+## librespot — one-time OAuth claim for cold-start voice
+
+`spotify_play "X"` from silence (no AirPlay carrying Spotify) needs
+the Pi's librespot to be authenticated to a Spotify account, because
+the voice tool calls `start_playback(device=JTS)` via the Web API and
+JTS only appears in an account's `sp.devices()` list once that
+account has logged in to it.
+
+Two ways to authenticate librespot:
+
+1. **Phone tap** — open Spotify on any device on the LAN, tap the
+   device picker, select JTS once. The credential is then cached at
+   `/var/cache/librespot` (via `--system-cache` in the systemd unit)
+   and survives librespot restarts.
+2. **Laptop-side OAuth script** — no phone needed:
+
+   ```sh
+   bash scripts/claim-librespot.sh
+   ```
+
+   SSH-tunnels librespot's hardcoded `127.0.0.1:8091` OAuth callback
+   port to your laptop, runs `librespot --enable-oauth`, opens the
+   Spotify auth page in your browser, writes credentials to the same
+   `--system-cache` path. Same end state as the phone tap, just no
+   phone involved.
+
+Either path is one-time per librespot identity. After that, voice
+cold-starts work indefinitely until the cache is cleared.
+
+**Multi-user caveat**: librespot can only be logged in as one user
+at a time. The household member whose account is currently cached
+is the one voice cold-starts will play through. Other members can
+still use their phone's Spotify Connect to claim JTS ad-hoc — that
+overwrites the cache for that session, and they can also claim it
+back when they want voice to play through their account. Per-user
+librespot instances ("JTS-Jasper" / "JTS-Brittany") OAuth-locked
+to each account is the deeper fix; deferred until the friction
+actually bites.
+
+---
+
 ## AEC bridge — opt-in toggle
 
 Software AEC is **built but disabled by default**. README's
@@ -277,9 +349,10 @@ etc.).
 ### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
-Project at `firmware/satellite-amoled/`. **Arduino-ESP32 v3.x via
-pioarduino** (the dial stays on v2.x intentionally — see
-`docs/satellites.md` "Toolchain — split intentionally").
+Project at `firmware/satellite-amoled/`. Both ESP32 firmware projects
+(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino** — see
+`docs/satellites.md` "Toolchain — Arduino-ESP32 v3.x via pioarduino"
+for the rationale and v2.x→v3.x deltas.
 
 Shipped:
 - Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
@@ -302,14 +375,15 @@ Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL "Tap
 to Talk" surface, control-plane HTTP, I²S mic capture gated on
 press, UDP audio stream to a new Pi-side `MicSource` endpoint.
 
-**Flash gotcha:** `write_flash 0x0 firmware.factory.bin` overwrites
-the NVS partition (the merged factory image has 0xFF padding over
-the 0x9000–0xe000 NVS region) — the satellite loses its WiFi
-creds and needs re-provisioning via Improv. For incremental
-flashes that preserve NVS, use `pio run -t upload` (piecewise:
-bootloader at 0x0, partitions at 0x8000, boot_app0 at 0xe000,
-firmware at 0x10000). NVS at 0x9000 (size 0x5000) sits between
-partitions and boot_app0 untouched.
+**Onboarding flow:** plug the satellite into a Pi USB-C port, then
+`sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`. Mirrors
+`jasper-dial-onboard`: USB CDC discovery → optional flash from
+`/opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin`
+(populated by `bash firmware/satellite-amoled/build.sh`) → push
+WiFi creds via Improv → wait for `jasper-satellite-amoled.local`.
+The flash itself wipes NVS (factory.bin pads 0x0–0x10000 with
+0xFF, including the 0x9000–0xe000 NVS region) but the cred-push
+that follows refills it — no manual provisioning step.
 
 **Local PIO setup** for the v3.x toolchain (laptop-side):
 pioarduino requires Python ≥ 3.10 — the JTS project venv is
@@ -353,8 +427,6 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
   format mismatch, websocket connects)
 - `logs/jasper-aec-bridge-latest.log` — software AEC bridge
   (only when enabled)
-- `logs/mpd-latest.log` — MPD (output device errors, rate
-  negotiations)
 - `logs/combined-latest.log` — interleaved timeline
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
@@ -372,9 +444,30 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 Live tail (interactive, Ctrl-C to stop):
 
 ```sh
-bash scripts/tail-pi-logs.sh                # all units
+bash scripts/tail-pi-logs.sh                # all jasper-* units + renderers
 bash scripts/tail-pi-logs.sh jasper-voice   # just one
 ```
+
+For just the cross-daemon "events" — duck transitions, source
+preempts, dial volume routing, wake/turn boundaries — the
+`jasper-trace.sh` wrapper filters the live tail down to the
+high-signal lines:
+
+```sh
+bash scripts/jasper-trace.sh                # default: last 5 min, follow
+SINCE='1 hour ago' bash scripts/jasper-trace.sh
+```
+
+For a single JSON snapshot of cross-daemon state (voice provider /
+session / spend, main_volume_db / listening_level, renderer states,
+dial heartbeat), hit jasper-control's `/state` aggregator:
+
+```sh
+curl -s http://jts.local:8780/state | jq
+```
+
+Each `/state` section fails soft — if a daemon is unreachable, that
+section is null instead of the whole call erroring out.
 
 For a one-shot full diagnostic dump (when something's badly
 wrong), run on the Pi:
@@ -410,7 +503,7 @@ specific project:
   logs and point at the specific line that produced the failure
   before proposing a fix.
 - **Check prior art.** Existing helpers — `pycamilladsp`,
-  `python-mpd2`, `openwakeword`, `google-genai` — handle most of
+  `openwakeword`, `google-genai`, `spotipy` — handle most of
   the integration. Don't reinvent.
 - **Surgical changes — file ownership.** Our files live under
   `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,

@@ -417,6 +417,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         api_key: str,
         model: str = "gpt-realtime-2",
         voice: str = "marin",
+        context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         temperature: float = DEFAULT_TEMPERATURE,
         # Production: leave None → supervisor reconnects FOREVER with
@@ -435,6 +436,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._api_key = api_key
         self._model = model
         self._voice = voice
+        self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
         self._temperature = temperature
         self._backoff_schedule = backoff_schedule
@@ -462,6 +464,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._conn_cm = None
         self._send_lock = asyncio.Lock()
 
+        self._last_turn_end_at: float = 0.0
         self._active_turn: OpenAIRealtimeTurn | None = None
         self._turn_lock = asyncio.Lock()
 
@@ -583,14 +586,8 @@ class OpenAIRealtimeConnection(LiveConnection):
                     "openai connection: not connected after backoff window"
                 )
 
-        # Deliberate idle-based context reset removed (was triggered
-        # here pre-2026-05-09). With ``truncation: "auto"`` on
-        # session.update, the server prunes old items as the context
-        # grows; with the wake-loop's audio buffer, the hard-cap /
-        # network-blip reconnects no longer eat user audio. Tearing
-        # down the session every 5 min idle was solving a problem
-        # the platform now solves natively — and was costing a full
-        # system-prompt re-bill at the uncached rate on every reset.
+        await self._maybe_reset_context()
+
         async with self._turn_lock:
             if self._active_turn is not None:
                 raise RuntimeError("openai connection: a turn is already active")
@@ -670,6 +667,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         async with self._turn_lock:
             if self._active_turn is turn:
                 self._active_turn = None
+                self._last_turn_end_at = asyncio.get_event_loop().time()
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
@@ -740,21 +738,13 @@ class OpenAIRealtimeConnection(LiveConnection):
             },
             "tools": tools,
             "tool_choice": "auto",
-            # Auto-truncation: as the conversation grows toward the
-            # context window, the server trims the oldest items
-            # automatically while preserving the prompt-cache prefix.
-            # Replaces our previous strategy of tearing down the
-            # session every ~5 minutes idle — that strategy worked
-            # before this knob existed but cost a full system-prompt
-            # re-bill at the uncached rate on every reconnect, and
-            # the post-2026-05-09 audio-buffer change makes any
-            # eventual reconnect (network blip, 30-min hard cap)
-            # safe to ride out anyway. Grok inherits this through
-            # the OpenAI-compatible wire format; if a future xAI
-            # change rejects the field, the session.update fallback
-            # logs the rejection and the connection still works
-            # (just without server-side truncation, falling back to
-            # the model's own context-window behavior).
+            # `truncation: "auto"` lets the server prune old conversation
+            # items as context fills, preserving the prompt-cache prefix.
+            # Required for long-lived smart-speaker sessions: complements
+            # (does not replace) the opt-in idle context reset by handling
+            # the steady-state context bloat the reset doesn't address.
+            # When `context_reset_sec` is 0 (default), this is the only
+            # context-management strategy in play.
             "truncation": "auto",
         }
         # ``reasoning.effort`` is gated to reasoning-capable models
@@ -1054,6 +1044,44 @@ class OpenAIRealtimeConnection(LiveConnection):
         # Other informational events. Logged at DEBUG.
         logger.debug("openai connection: event %s", etype)
 
+    async def _maybe_reset_context(self) -> None:
+        """OpenAI Realtime has no resumption handle, so 'context reset'
+        is just 'tear down and reopen'. Long idle gaps theoretically
+        bleed conversational context across hours — in practice the
+        terse-tool system prompt makes this a hypothetical concern, so
+        the reset is opt-in (default 0 = disabled). When enabled, busts
+        the prompt cache on the first turn after reset and blocks the
+        wake event for 1-6 s during the reopen, so use a long threshold
+        (hours, not minutes) if at all. Skipped if no prior turn has
+        happened on this connection."""
+        if self._context_reset_sec <= 0:
+            return
+        if self._last_turn_end_at <= 0.0:
+            return
+        idle_for = asyncio.get_event_loop().time() - self._last_turn_end_at
+        if idle_for < self._context_reset_sec:
+            return
+        logger.info(
+            "openai context reset: idle for %.0fs > threshold (%.0fs); "
+            "reopening for a fresh session",
+            idle_for, self._context_reset_sec,
+        )
+        await self._teardown_session()
+        try:
+            await self._open_session_with_retry(
+                INITIAL_CONNECT_BACKOFF_SCHEDULE,
+                phase="context-reset-reopen",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "openai connection: context-reset reopen failed (%s: %s); "
+                "triggering supervisor reconnect",
+                type(e).__name__, e,
+            )
+            self._reconnect_event.set()
+            raise
+        self._last_turn_end_at = asyncio.get_event_loop().time()
+
     async def _handle_response_done(self, event, turn: "OpenAIRealtimeTurn | None") -> None:
         """Dispatch a `response.done` event.
 
@@ -1098,6 +1126,47 @@ class OpenAIRealtimeConnection(LiveConnection):
             )
 
         if turn is None:
+            # Turn aborted (e.g. user-spoke-too-soon-and-VAD-aborted, or
+            # connection reset interrupted the turn) but the model still
+            # finished generating and emitted function_calls. We can't
+            # invoke the tools (no turn to attribute the result to) but
+            # we MUST send synthetic function_call_outputs back, otherwise
+            # the server-side conversation history retains dangling
+            # function_call items with no matching outputs. The next turn
+            # then sees its previous call as "still in progress" and
+            # responds with confused fallbacks like "It's still starting
+            # up" — even though the user just asked something brand new.
+            # We do NOT send response.create after these synthetic outputs:
+            # we don't want the model to generate an audio response that
+            # has no turn to play through.
+            if function_calls and self._conn is not None:
+                for fc in function_calls:
+                    call_id = _event_field(fc, "call_id") or ""
+                    name = _event_field(fc, "name") or "?"
+                    if not call_id:
+                        continue
+                    try:
+                        await self._send_event({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type": "function_call_output",
+                                "call_id": call_id,
+                                "output": json.dumps(
+                                    {"error": "turn cancelled before dispatch"}
+                                ),
+                            },
+                        })
+                        logger.info(
+                            "tool %s: turn-aborted, sent cancelled "
+                            "function_call_output to keep server state clean",
+                            name,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "tool %s: could not send cancelled output (%s: %s); "
+                            "next turn may be confused",
+                            name, type(e).__name__, e,
+                        )
             return
 
         if function_calls:

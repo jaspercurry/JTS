@@ -829,7 +829,11 @@ def test_no_device_id_returns_device_error_before_search():
         result = asyncio.run(tools["spotify_play"](query="X", kind="artist"))
 
     assert "error" in result
-    assert "no spotify target device available" in result["error"]
+    # User-facing fix instruction: tap the device name in the Spotify
+    # app to claim librespot. Device name comes from the librespot_name
+    # arg passed to make_spotify_tools (here: "JTS").
+    assert "Spotify Connect on the speaker isn't linked" in result["error"]
+    assert "JTS" in result["error"]
     assert sp.last_search_q is None
 
 
