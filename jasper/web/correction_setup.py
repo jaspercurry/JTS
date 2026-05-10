@@ -267,6 +267,7 @@ _PAGE_HTML = """<!doctype html>
 
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
     <button id="autolevel" type="button" class="secondary" disabled>Auto-level</button>
+    <button id="autolevel-lock" type="button" class="primary hidden">Lock now</button>
     <button id="autolevel-cancel" type="button" class="danger hidden">Cancel</button>
     <button id="run-measurement" type="button" class="primary" disabled>Run measurement</button>
     <button id="continue-position" type="button" class="primary hidden">Continue to next position</button>
@@ -274,7 +275,7 @@ _PAGE_HTML = """<!doctype html>
     <button id="verify-correction" type="button" class="primary hidden">Verify with re-measurement</button>
     <button id="reset-correction" type="button" class="danger hidden">Reset to flat</button>
   </p>
-  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker will play a 1 kHz tone while we gradually increase the volume — once the iPhone mic hears it at the right level, we lock the volume in for the sweep automatically. Takes ~5 seconds.</p>
+  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the iPhone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
   <div id="autolevel-status" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
@@ -321,6 +322,7 @@ _PAGE_HTML = """<!doctype html>
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
   var autolevelBtn = document.getElementById('autolevel');
+  var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
   var autolevelStatus = document.getElementById('autolevel-status');
   var autolevelLine = document.getElementById('autolevel-line');
@@ -731,20 +733,36 @@ _PAGE_HTML = """<!doctype html>
     autolevelBtn.disabled = true;
     runBtn.disabled = true;
     autolevelStatus.classList.remove('hidden');
+    autolevelLockBtn.classList.remove('hidden');
     autolevelCancelBtn.classList.remove('hidden');
     autolevelLine.textContent = 'Starting auto-level…';
-    autolevelDetail.textContent = '';
+    autolevelDetail.textContent = 'Tap Lock now once the tone sounds like a comfortable measurement volume — even if the mic readout doesn\\'t register, this works.';
     autolevelRmsBuffer = [];
 
-    // Track whether we've already POSTed lock so we don't spam it.
     var lockSent = false;
+    var sendLock = function (reason) {
+      if (lockSent) return;
+      lockSent = true;
+      console.log('autolevel lock signal:', reason);
+      fetch('autolevel/lock', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: '{}'
+      }).catch(function (e) { console.warn('lock POST failed', e); });
+    };
+    // Manual Lock button → send lock signal immediately.
+    var prevLockHandler = autolevelLockBtn.onclick;
+    autolevelLockBtn.onclick = function () { sendLock('manual'); };
+    var prevCancelHandler = autolevelCancelBtn.onclick;
+    autolevelCancelBtn.onclick = function () { cancelAutolevel(); };
+
     // Watch the latest mic RMS at 50 ms granularity. As soon as the
-    // smoothed (last ~250 ms) RMS lands in the target range, POST
-    // /autolevel/lock and stop watching.
+    // smoothed (last ~250 ms) RMS lands in the target range, send
+    // auto-lock. (User can also tap Lock now manually at any time.)
     var watcher = setInterval(function () {
       if (lockSent) return;
       var db = latestMicRmsDb;
-      if (db <= -100) return;  // silent — worklet hasn't reported yet
+      if (db <= -100) return;
       autolevelRmsBuffer.push(db);
       if (autolevelRmsBuffer.length > 5) autolevelRmsBuffer.shift();
       var sum = 0;
@@ -753,9 +771,7 @@ _PAGE_HTML = """<!doctype html>
       if (autolevelRmsBuffer.length >= 3 &&
           avg >= AUTOLEVEL_TARGET_DB_LOW &&
           avg <= AUTOLEVEL_TARGET_DB_HIGH) {
-        lockSent = true;
-        fetch('autolevel/lock', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
-          .catch(function (e) { console.warn('lock POST failed', e); });
+        sendLock('mic in target ' + avg.toFixed(1) + ' dBFS');
       }
     }, 50);
 
@@ -763,36 +779,39 @@ _PAGE_HTML = """<!doctype html>
       await postJson('autolevel/start', {});
     } catch (e) {
       clearInterval(watcher);
+      autolevelLockBtn.onclick = prevLockHandler;
+      autolevelCancelBtn.onclick = prevCancelHandler;
       autolevelLine.textContent = 'Auto-level failed: ' + e.message;
+      autolevelLockBtn.classList.add('hidden');
       autolevelCancelBtn.classList.add('hidden');
       autolevelBtn.disabled = false;
       runBtn.disabled = false;
       return;
     }
 
-    // Poll /status every 200 ms until autolevel reaches a terminal
-    // status.
+    // Poll /status every 200 ms until autolevel reaches terminal.
     var pollOnce = async function () {
       try {
         var s = await fetchStatus();
-        if (!s.autolevel) return true;  // unexpected — stop
+        if (!s.autolevel) return true;
         var al = s.autolevel;
-        autolevelLine.textContent = 'Auto-leveling at ' +
-          (al.current_main_volume_db !== null ? al.current_main_volume_db.toFixed(1) : '?') +
-          ' dB (mic: ' + latestMicRmsDb.toFixed(1) + ' dBFS, target ' +
-          AUTOLEVEL_TARGET_DB_LOW + '..' + AUTOLEVEL_TARGET_DB_HIGH + ')';
-        if (al.status === 'ramping') return false;  // keep polling
+        var volStr = (al.current_main_volume_db !== null && al.current_main_volume_db !== undefined)
+          ? al.current_main_volume_db.toFixed(1) : '?';
+        autolevelLine.textContent = 'Auto-leveling at ' + volStr +
+          ' dB (mic: ' + latestMicRmsDb.toFixed(1) + ' dBFS' +
+          (lockSent ? ', lock sent…' : '') + ')';
+        if (al.status === 'ramping') return false;
         if (al.status === 'locked') {
-          autolevelLine.textContent = '✓ Auto-level done — speaker at ' +
+          autolevelLine.textContent = '✓ Locked — speaker at ' +
             al.locked_main_volume_db.toFixed(1) + ' dB. Ready to measure.';
           autolevelDetail.textContent = '';
         } else if (al.status === 'maxed_out') {
           autolevelLine.textContent =
-            'Speaker still too quiet at maximum software volume.';
+            'Tone reached the software volume ceiling (−6 dB).';
           autolevelDetail.textContent =
-            'Please turn up your amplifier, then tap Auto-level again.';
+            'If the tone you just heard sounded like a reasonable measurement level, tap Auto-level again and use Lock now. Otherwise, turn up your amplifier and retry.';
         } else if (al.status === 'cancelled') {
-          autolevelLine.textContent = 'Auto-level cancelled.';
+          autolevelLine.textContent = 'Auto-level cancelled — speaker volume restored.';
           autolevelDetail.textContent = '';
         } else if (al.status === 'error') {
           autolevelLine.textContent = 'Auto-level error.';
@@ -812,6 +831,9 @@ _PAGE_HTML = """<!doctype html>
     }
 
     clearInterval(watcher);
+    autolevelLockBtn.onclick = prevLockHandler;
+    autolevelCancelBtn.onclick = prevCancelHandler;
+    autolevelLockBtn.classList.add('hidden');
     autolevelCancelBtn.classList.add('hidden');
     autolevelBtn.disabled = false;
     runBtn.disabled = false;
@@ -859,7 +881,10 @@ _PAGE_HTML = """<!doctype html>
     verifyBtn.disabled = false;
     resetBtn.classList.add('hidden');
     resetBtn.disabled = false;
+    autolevelLockBtn.classList.add('hidden');
+    autolevelLockBtn.disabled = false;
     autolevelCancelBtn.classList.add('hidden');
+    autolevelCancelBtn.disabled = false;
     // Run + Auto-level: enabled only when nothing is in flight.
     // Disabled during measurement, autolevel ramp, etc.
     var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
@@ -869,6 +894,10 @@ _PAGE_HTML = """<!doctype html>
     autolevelBtn.disabled = !sessionIdle || autolevelRamping;
     // Per-state additions:
     if (autolevelRamping) {
+      // Manual Lock + Cancel always available during the ramp so
+      // the user can override the auto-detection (iOS Safari AGC
+      // makes the mic-based decision unreliable in some setups).
+      autolevelLockBtn.classList.remove('hidden');
       autolevelCancelBtn.classList.remove('hidden');
     }
     if (state === 'needs_next_position') {

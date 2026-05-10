@@ -156,13 +156,20 @@ def test_render_page_treats_undefined_constraints_as_ok():
 def test_render_page_includes_autolevel_controls():
     """The leveling step is now AUTOMATIC — server ramps main_volume
     while client watches mic and posts /autolevel/lock when in
-    target range. Pin the UI presence + JS plumbing."""
+    target range. Pin the UI presence + JS plumbing.
+
+    Also pins the MANUAL Lock button — added as a first-user-test
+    follow-up because iOS Safari sometimes silently AGC's the mic
+    readout, leaving the auto-detection blind. The manual button
+    gives the user a reliable override."""
     body = correction_setup._render_page("jts.local").decode()
-    # Both buttons present (start + cancel-mid-ramp).
+    # All three control buttons present (start + manual-lock + cancel).
     assert 'id="autolevel"' in body
+    assert 'id="autolevel-lock"' in body
     assert 'id="autolevel-cancel"' in body
     assert "Auto-level" in body
-    # JS handler exists + targets the right endpoint.
+    assert "Lock now" in body
+    # JS handlers exist + target the right endpoints.
     assert "startAutolevel" in body
     assert "autolevel/start" in body
     assert "autolevel/lock" in body
