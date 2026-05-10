@@ -167,13 +167,9 @@ async def play_test_tone(
     alsa_device: str = DEFAULT_ALSA_DEVICE,
     cache_dir: Path = DEFAULT_TONE_DIR,
 ) -> None:
-    """Play a single sine tone through the music chain so the user
-    can adjust their amp's gain to a comfortable level before running
-    a sweep.
-
-    Default 1 kHz / 5 s / -18 dBFS — audible mid-range tone, long
-    enough for the user to read the live mic meter and adjust the
-    amp knob, loud enough to hear clearly but with headroom.
+    """Play a single sine tone through the music chain. Used for
+    debugging / standalone level checks; the autolevel flow uses
+    `TonePlayer` instead (continuous + cancellable).
     """
     wav_path = _ensure_tone_wav(
         freq_hz=freq_hz, duration_s=duration_s, dbfs=dbfs,
@@ -183,3 +179,71 @@ async def play_test_tone(
         wav_path, alsa_device=alsa_device,
         timeout_s=duration_s + 5.0,
     )
+
+
+class TonePlayer:
+    """Cancellable continuous tone player.
+
+    Plays a tone WAV via `aplay` and supports early termination via
+    `cancel()`. Used by the autolevel flow: the WAV is long (15 s
+    of safety) and we kill aplay the moment the autolevel loop
+    decides we're done.
+
+    Why aplay-and-kill rather than streaming via sounddevice: same
+    ALSA path the sweep + music use (plughw:Loopback,0,0). Keeps
+    everything going through CamillaDSP so main_volume changes
+    during the ramp apply to the tone in real time.
+    """
+
+    def __init__(
+        self,
+        wav_path: str | Path,
+        *,
+        alsa_device: str = DEFAULT_ALSA_DEVICE,
+    ) -> None:
+        self._wav_path = Path(wav_path)
+        self._alsa_device = alsa_device
+        self._proc: asyncio.subprocess.Process | None = None
+        self._cancelled = False
+
+    async def play(self) -> None:
+        """Block until aplay exits naturally OR `cancel()` is called.
+        Doesn't raise on cancel — caller checks `cancelled` to
+        distinguish a normal end-of-file from a deliberate stop."""
+        if not self._wav_path.exists():
+            raise FileNotFoundError(
+                f"tone WAV not found: {self._wav_path}"
+            )
+        self._proc = await asyncio.create_subprocess_exec(
+            "aplay", "-D", self._alsa_device, "-q", str(self._wav_path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            await self._proc.communicate()
+        except asyncio.CancelledError:
+            self.cancel()
+            # Drain so the proc reaps cleanly.
+            try:
+                await self._proc.wait()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        logger.info(
+            "tone player exit: %s (cancelled=%s rc=%s)",
+            self._wav_path, self._cancelled, self._proc.returncode,
+        )
+
+    def cancel(self) -> None:
+        """Stop playback. Safe to call from any thread (no event-
+        loop interaction)."""
+        self._cancelled = True
+        if self._proc is not None and self._proc.returncode is None:
+            try:
+                self._proc.kill()
+            except ProcessLookupError:
+                pass
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
