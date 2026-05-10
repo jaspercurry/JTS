@@ -403,6 +403,33 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-headphone-monitor.service" \
         "${SYSTEMD_DIR}/jasper-headphone-monitor.service"
+    # Custom udev rule: re-pins the dongle's Headphone control to 100%
+    # on every USB (re-)enumeration AND disables autosuspend on the
+    # device. Compensates for two upstream issues:
+    #   * Trixie's alsa-utils 1.2.14-1 ships a broken
+    #     /usr/lib/udev/rules.d/90-alsa-restore.rules where a GOTO
+    #     points at the wrong label, so `alsactl restore` never fires
+    #     on hotplug (Debian bug #1093057, still open).
+    #   * The Apple dongle's UAC firmware default for the Headphone
+    #     control is 80/120 (-20 dB), surfaced via UAC GET_CUR each
+    #     time the device probes. Without our rule, every speaker
+    #     re-plug or USB resume that triggers re-enumeration costs
+    #     the user 20 dB of analog attenuation until they reboot or
+    #     run `systemctl start jasper-dac-init` manually.
+    # Active reset is also done by jasper-headphone-monitor (1 Hz
+    # poller); this rule is the fast path on hotplug, the monitor
+    # catches anything the rule doesn't.
+    install -d -m 0755 /etc/udev/rules.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
+        /etc/udev/rules.d/99-jasper-apple-dongle.rules
+    udevadm control --reload-rules
+    # Trigger the rule once for the currently-attached dongle so we
+    # don't have to wait for the next replug. ATTR{} match is
+    # idempotent: amixer setting Headphone=100% on an already-pinned
+    # control is a no-op.
+    udevadm trigger --action=add --subsystem-match=sound 2>/dev/null || true
+    udevadm trigger --action=add --subsystem-match=usb 2>/dev/null || true
 
     # We own the full systemd units for each renderer + nqptp + bt-agent.
     #

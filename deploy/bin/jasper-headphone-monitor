@@ -1,17 +1,24 @@
 #!/usr/bin/env bash
-# Diagnostic: watch an ALSA mixer control and log every change.
+# Watch the Apple dongle's Headphone mixer control and ACTIVELY
+# self-heal it back to 100% when something drives it down.
 #
 # Usage: jasper-headphone-monitor <card> <control>
 #
-# Polls amixer at 1Hz, logs to stdout (-> journald via systemd) on
-# every change to the control's [pct%] [dB] [state] tuple. Existed
-# because something on this system was silently moving the Apple
-# dongle's Headphone control between boots; this gives us a
-# timestamped log of every change so we can correlate with other
-# events.
+# Why this exists. The dongle's UAC firmware reports a hardware
+# default of -20 dB (80/120 = 67%) on every USB (re-)enumeration,
+# and Trixie's `alsa-utils 1.2.14-1` ships a broken
+# 90-alsa-restore.rules that silently no-ops on hotplug
+# (Debian #1093057), so nothing automatically re-pins the control.
+# Our own custom udev rule covers the hotplug path; this monitor
+# is belt-and-suspenders for any other source of drift (manual
+# amixer, a quirk we haven't anticipated, etc). Polls at 1 Hz, logs
+# every observed change, and resets to 100% if the value isn't
+# 100% — converting silent drift into a self-healing event with a
+# timestamped audit trail.
 #
-# The first poll logs the current value (so "initial state" is
-# visible too). Subsequent polls log only on change.
+# The first poll logs the current value as "initial"; subsequent
+# polls log only on change. Resets are also logged so the journal
+# shows what self-healing happened and when.
 
 set -uo pipefail
 
@@ -28,6 +35,20 @@ read_state() {
         | head -1
 }
 
+# Reset to 100% if the observed state isn't already 100%. Reset
+# failures (amixer non-zero exit) are logged but the monitor keeps
+# running — a transient amixer error isn't worth crashing the
+# watcher.
+maybe_reset() {
+    local state="$1"
+    if [[ "$state" != *"[100%]"* ]]; then
+        echo "headphone monitor: drift to $state — resetting to 100%"
+        if ! amixer -c "$CARD" sset "$CONTROL" 100% unmute >/dev/null 2>&1; then
+            echo "headphone monitor: reset FAILED (amixer non-zero exit)"
+        fi
+    fi
+}
+
 echo "headphone monitor starting: card=$CARD control=$CONTROL"
 last=""
 while true; do
@@ -35,8 +56,12 @@ while true; do
     if [[ -n "$cur" && "$cur" != "$last" ]]; then
         if [[ -z "$last" ]]; then
             echo "headphone state: $cur (initial)"
+            # If we start up to a non-100% state (daemon restart
+            # while drift was already in effect), self-heal too.
+            maybe_reset "$cur"
         else
             echo "headphone CHANGE: $last -> $cur"
+            maybe_reset "$cur"
         fi
         last="$cur"
     fi
