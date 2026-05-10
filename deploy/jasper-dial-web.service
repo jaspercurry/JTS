@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper smart-speaker rotary-dial onboarding wizard (web)
+Description=Jasper accessories hub (web wizards for rotary dial + BT HID pairing)
 After=network-online.target
 Wants=network-online.target
 

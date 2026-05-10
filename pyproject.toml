@@ -71,6 +71,11 @@ dependencies = [
     # watches for hot-plug via pyudev. Tiny pure-Python deps.
     "evdev>=1.7",
     "pyudev>=0.24",
+    # Web-driven BT pairing for HID accessories. dbus-next is the
+    # asyncio-native bluez D-Bus client; lighter and more reliable
+    # than shelling to `bluetoothctl` (parsing its output is flaky
+    # across versions). Pure-Python, no C extension.
+    "dbus-next>=0.2.3",
 ]
 
 [project.optional-dependencies]

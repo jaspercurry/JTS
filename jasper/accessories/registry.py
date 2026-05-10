@@ -43,6 +43,13 @@ class Device:
     vendor_id: int   # USB VID
     product_id: int  # USB PID
     keymap: Mapping[int, KeyAction]
+    # Optional regex (Python `re` syntax) for the BT advertised name.
+    # When set, the pair wizard filters discovered devices through
+    # this — keeps us from grabbing an unrelated nearby HID device
+    # (a stray Apple Magic Mouse / Surface Dial in pair mode would
+    # otherwise be the "first match"). Match is `re.search`, so
+    # anchors are explicit.
+    bt_name_regex: str | None = None
 
 
 # Anticater VK-01 Desktop Volume Knob (USB-C / BT 5.1 HID).
@@ -64,6 +71,9 @@ VK01 = Device(
         ),
         KEY_MUTE: KeyAction("POST", "/volume/mute", {}),
     },
+    # Anticater's BT advertised name pattern (per the manual). Case-
+    # insensitive — some firmware revs lowercase it.
+    bt_name_regex=r"(?i)anticater",
 )
 
 
