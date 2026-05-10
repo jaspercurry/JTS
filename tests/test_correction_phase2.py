@@ -87,8 +87,42 @@ def test_deviation_metrics_outside_band_zero():
     metrics = analysis.deviation_metrics(
         measured, target, freqs, f_low=20, f_high=350,
     )
-    # Default band is 20-350 Hz; the 1 kHz+ peak is excluded.
+    # 20-350 Hz band; the 1 kHz+ peak is excluded.
     assert metrics["max_db"] == pytest.approx(0.0, abs=0.001)
+
+
+def test_deviation_metrics_default_band_excludes_iphone_hpf_zone():
+    """Real bug a user hit: a verify pass reported "max 56 dB
+    deviation" when the chart visibly showed maybe 15 dB swings —
+    iPhone built-in mic has a 24 dB/oct HPF starting around 250 Hz,
+    so deconvolved magnitudes below ~50 Hz are dominated by the mic's
+    rolloff, not the room. Including 20-50 Hz in the deviation summary
+    produced absurd numbers that scared the user even though the
+    correction was working fine. Default f_low is now 50 Hz so the
+    summary number is honest."""
+    freqs = np.geomspace(20.0, 20000.0, 200)
+    # Synthetic: -50 dB at 20 Hz (mic HPF artifact), flat 0 dB
+    # everywhere else.
+    measured = np.where(freqs < 40, -50.0, 0.0)
+    target = np.zeros_like(freqs)
+    # With OLD default (f_low=20), would include the -50 dB artifact.
+    old_metrics = analysis.deviation_metrics(
+        measured, target, freqs, f_low=20,
+    )
+    assert old_metrics["max_db"] >= 40.0  # artifact dominates
+    # With NEW default (f_low=50), the artifact is excluded.
+    new_metrics = analysis.deviation_metrics(
+        measured, target, freqs,  # use defaults
+    )
+    assert new_metrics["max_db"] == pytest.approx(0.0, abs=0.001)
+
+
+def test_deviation_metrics_f_low_default_is_50():
+    """Pin the default explicitly so a future refactor that "just
+    bumps it back to 20 for symmetry with PEQ design" gets caught."""
+    import inspect
+    sig = inspect.signature(analysis.deviation_metrics)
+    assert sig.parameters["f_low"].default == 50.0
 
 
 # ---------- Session flow ----------------------------------------------------

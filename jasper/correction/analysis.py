@@ -137,15 +137,26 @@ def deviation_metrics(
     target_db: np.ndarray,
     freqs: np.ndarray,
     *,
-    f_low: float = 20.0,
+    f_low: float = 50.0,
     f_high: float = 350.0,
 ) -> dict[str, float]:
     """Summary stats for the verify pass.
 
     Returns RMS deviation, max deviation, and number of points above
-    threshold across the design band. The browser overlays these
-    on the post-correction chart so the user can read the
-    improvement at a glance.
+    threshold across the modal band. The browser overlays these on
+    the post-correction chart so the user can read the improvement
+    at a glance.
+
+    f_low default 50 Hz (not 20 Hz): the iPhone built-in mic has a
+    steep ~24 dB/octave high-pass filter starting around 250 Hz
+    (Apple hardware spec). Below ~50 Hz, what the mic actually
+    captures is dominated by the mic's HPF + system noise floor,
+    not the room. Including 20-50 Hz in the deviation summary
+    produced absurd numbers (e.g. "max 56 dB deviation") that were
+    iPhone-mic artifacts, not room reality, and scared users who'd
+    otherwise have a perfectly fine correction. f_high stays at
+    350 Hz — the same Schroeder-ish boundary the PEQ designer
+    uses, above which we don't try to correct.
     """
     band = (freqs >= f_low) & (freqs <= f_high)
     if not band.any():

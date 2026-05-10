@@ -664,9 +664,18 @@ class MeasurementSession:
             raise
 
         target_db = self._design_target(log_freqs)
+        # Use deviation_metrics' DEFAULT band (50-350 Hz) rather than
+        # the PEQ design band (20-350 Hz). Below ~50 Hz the iPhone
+        # mic's built-in 24 dB/octave HPF dominates the captured
+        # signal — including those frequencies in the deviation
+        # summary produces alarming numbers ("max 56 dB!") that are
+        # mic artifacts, not room reality. PEQ design still goes
+        # down to 20 Hz because the mic captures *enough* there
+        # to inform a useful filter, just not enough for a clean
+        # deviation-from-target readout.
         metrics = analysis.deviation_metrics(
             log_mag, target_db, log_freqs,
-            f_low=self.cfg.peq_f_low, f_high=self.cfg.peq_f_high,
+            f_high=self.cfg.peq_f_high,
         )
 
         self.verify_curve = CurveJSON(
