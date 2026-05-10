@@ -182,6 +182,30 @@ def test_render_page_includes_autolevel_controls():
     assert "Measuring room noise" in body
 
 
+def test_render_page_shows_result_before_drawing_chart():
+    """Bug fix pin: drawChart() must run AFTER `resultSection` is
+    shown, otherwise the canvas's getBoundingClientRect returns
+    0×0 (hidden ancestor) and the chart renders blank. Real user
+    bug — got 5 PEQ filters but an empty frequency-response box.
+    """
+    body = correction_setup._render_page("jts.local").decode()
+    # The fix marker comment must stay so a refactor doesn't silently
+    # reintroduce the old order.
+    assert "show resultSection BEFORE drawing the chart" in body
+    # And the drawChart defensive guard must reject zero-size
+    # bounding rects.
+    assert "drawChart skipped" in body
+
+
+def test_render_page_redraws_chart_on_resize():
+    """Phone rotation / external display change should re-render
+    the chart at the new canvas size, not stretch the old bitmap.
+    Pin the resize + orientationchange listeners."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "scheduleChartRedraw" in body
+    assert "orientationchange" in body
+
+
 def test_render_page_autolevel_target_band_clamps():
     """Pin the absolute clamps: -30 dBFS floor (don't lock super
     quiet even in dead-silent rooms) and -10 dBFS ceiling (avoid
