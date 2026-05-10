@@ -468,6 +468,14 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._active_turn: OpenAIRealtimeTurn | None = None
         self._turn_lock = asyncio.Lock()
 
+        # Count of `response.output_audio.delta` events that arrived
+        # while `_active_turn is None` (server response that landed
+        # AFTER the daemon's idle watchdog already released the turn).
+        # Logging each delta would be 50-200 lines per orphan response;
+        # we accumulate here and surface the total in the matching
+        # `response.done` warning, then reset.
+        self._orphan_delta_count: int = 0
+
         self._receive_task: asyncio.Task | None = None
         self._reconnect_event: asyncio.Event = asyncio.Event()
         self._supervisor_task: asyncio.Task | None = None
@@ -595,6 +603,12 @@ class OpenAIRealtimeConnection(LiveConnection):
             turn = OpenAIRealtimeTurn(self, started_at=now_loop)
             turn._started_at_monotonic = _time.monotonic()
             self._active_turn = turn
+            # Fresh turn — discard any orphan-delta count left over from
+            # a previous response that landed after release. The counter
+            # is also reset inside the orphan response.done handler, so
+            # this is a belt-and-suspenders reset for edge cases where
+            # the orphan response.done never arrives.
+            self._orphan_delta_count = 0
             async with self._state_lock:
                 if self._state is ConnectionState.CONNECTED:
                     self._set_state(ConnectionState.IN_TURN)
@@ -990,8 +1004,15 @@ class OpenAIRealtimeConnection(LiveConnection):
         # Audio chunk for the active turn.
         if etype == "response.output_audio.delta":
             delta = _event_field(event, "delta")
-            if turn is not None and isinstance(delta, str):
-                await turn._on_audio_delta(delta)
+            if isinstance(delta, str):
+                if turn is None:
+                    # Server still streaming a response after the daemon
+                    # released the turn. Tracked here, reported once in
+                    # the trailing response.done — per-delta logging
+                    # would flood the journal.
+                    self._orphan_delta_count += 1
+                else:
+                    await turn._on_audio_delta(delta)
             return
 
         # Track the assistant audio item id for future barge-in support.
@@ -1118,19 +1139,46 @@ class OpenAIRealtimeConnection(LiveConnection):
             )
 
         if turn is None:
-            # Turn aborted (e.g. user-spoke-too-soon-and-VAD-aborted, or
-            # connection reset interrupted the turn) but the model still
-            # finished generating and emitted function_calls. We can't
-            # invoke the tools (no turn to attribute the result to) but
-            # we MUST send synthetic function_call_outputs back, otherwise
+            # Server-completed a response with no active turn to deliver
+            # it to. Two common shapes:
+            #   (a) idle watchdog raced the server: the wake loop ended
+            #       the turn before the first audio chunk arrived,
+            #       _end_turn fired a belated commit+response.create
+            #       during cleanup, the server then generated and
+            #       streamed audio deltas that hit a released turn and
+            #       got silently dropped (see the orphan-delta counter
+            #       in _dispatch_event).
+            #   (b) connection reset / user-spoke-too-soon path: model
+            #       was generating against the prior turn when the turn
+            #       was torn down for unrelated reasons.
+            # Either way, output audio tokens we paid for were not
+            # heard. Surface a single warning per orphan response that
+            # includes the dropped-delta count, so the next debugger
+            # has one log line that says exactly what happened.
+            if usage_dict:
+                out_d_orphan = usage_dict.get("output_token_details") or {}
+                logger.warning(
+                    "openai response.done arrived AFTER turn release: "
+                    "out=%d tokens (audio=%d) — %d audio deltas were "
+                    "silently dropped. Daemon's idle watchdog likely "
+                    "raced the server response; raise "
+                    "JASPER_IDLE_TIMEOUT_SEC or look at why the silence "
+                    "detector didn't trip earlier.",
+                    int(usage_dict.get("output_tokens") or 0),
+                    int(out_d_orphan.get("audio_tokens") or 0),
+                    self._orphan_delta_count,
+                )
+            self._orphan_delta_count = 0
+            # If the orphan response carried function_calls we still
+            # MUST send synthetic function_call_outputs back — otherwise
             # the server-side conversation history retains dangling
-            # function_call items with no matching outputs. The next turn
-            # then sees its previous call as "still in progress" and
-            # responds with confused fallbacks like "It's still starting
-            # up" — even though the user just asked something brand new.
-            # We do NOT send response.create after these synthetic outputs:
-            # we don't want the model to generate an audio response that
-            # has no turn to play through.
+            # function_call items with no matching outputs, and the
+            # next turn sees its previous call as "still in progress"
+            # and responds with confused fallbacks like "It's still
+            # starting up" even though the user just asked something
+            # brand new. We do NOT send response.create after these
+            # synthetic outputs: we don't want the model to generate an
+            # audio response that has no turn to play through.
             if function_calls and self._conn is not None:
                 for fc in function_calls:
                     call_id = _event_field(fc, "call_id") or ""

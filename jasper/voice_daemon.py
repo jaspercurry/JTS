@@ -630,27 +630,49 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
     each write against an interrupt signal so a user-interrupted-the-model
     event immediately cancels in-flight playback and flushes the audio
     buffer. Without this, ALSA/sounddevice buffering causes 100-300ms of
-    overrun where the model talks over the user."""
+    overrun where the model talks over the user.
+
+    Cleanup contract: both per-iteration helpers (the interrupt waiter
+    and the in-flight write) MUST be cancelled and awaited before this
+    function returns, otherwise they leak as `Task destroyed but it is
+    pending` warnings. The waiter is held alive by a reference cycle
+    through `turn._interrupt_event`, so dropping the local without
+    explicit cleanup means GC eventually breaks the cycle and Task.__del__
+    fires. The OpenAI / Grok adapters never set `_interrupt_event` (no
+    barge-in implemented), so the waiter is always pending at turn end
+    and the leak would fire every turn without this try/finally."""
     interrupt_task: asyncio.Task | None = None
-    async for chunk in turn.audio_out():
-        if interrupt_task is None or interrupt_task.done():
-            interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
-        write_task = asyncio.create_task(tts.write(chunk))
-        done, _ = await asyncio.wait(
-            {write_task, interrupt_task},
-            return_when=asyncio.FIRST_COMPLETED,
-        )
-        if interrupt_task in done:
-            write_task.cancel()
+    write_task: asyncio.Task | None = None
+    try:
+        async for chunk in turn.audio_out():
+            if interrupt_task is None or interrupt_task.done():
+                interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
+            write_task = asyncio.create_task(tts.write(chunk))
+            done, _ = await asyncio.wait(
+                {write_task, interrupt_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if interrupt_task in done:
+                write_task.cancel()
+                try:
+                    await write_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                await tts.flush()
+                turn.clear_interrupted()
+                interrupt_task = None
+            # write_task is either in `done` (completed normally) or
+            # was cancelled+awaited above; either way no cleanup left.
+            write_task = None
+    finally:
+        for t in (interrupt_task, write_task):
+            if t is None or t.done():
+                continue
+            t.cancel()
             try:
-                await write_task
+                await t
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
-            await tts.flush()
-            turn.clear_interrupted()
-            interrupt_task = None
-    if interrupt_task is not None:
-        interrupt_task.cancel()
 
 
 async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
@@ -1306,25 +1328,46 @@ class WakeLoop:
                 tokens["output_tokens"],
                 usage=breakdown,
             )
-            # Per-turn silent-failure detection. With the persistent
-            # connection, the original session-level signal ("sent N
-            # bytes, recv 0 chunks") moves down to the turn level —
-            # otherwise multi-turn conversations would mask one bad
-            # turn under another's chunk count. Causes are unchanged:
-            # quota exhaustion, billing not propagated, model outage.
+            # Per-turn no-audio detection. Splits into two distinct
+            # phenomena, gated on whether the wake loop explicitly ended
+            # the user's input (silence detector / hard cap / manual
+            # end). The old combined "SILENT FAILURE" label conflated
+            # both, which masked the more common case: idle watchdog
+            # times out before the silence detector ever trips, and the
+            # only `commit + response.create` is the belated one issued
+            # by _end_turn itself — by then the turn is being released,
+            # so any audio chunks arrive too late and are dropped (see
+            # openai_session._dispatch_event's audio.delta branch and
+            # the orphan-response warning in _handle_response_done).
             bytes_sent = self._turn.bytes_sent()
             chunks_received = self._turn.chunks_received()
             if bytes_sent > 0 and chunks_received == 0 and not self._turn.turn_lost():
                 model = _active_model(self._cfg)
-                logger.warning(
-                    "SILENT FAILURE: sent %d bytes of audio to %s on this "
-                    "turn but received 0 audio chunks back. Likely causes: "
-                    "quota exhausted, billing not yet propagated to this "
-                    "model, or service-side outage of %s. Non-realtime "
-                    "endpoints on the same provider may still work "
-                    "(separate quota bucket).",
-                    bytes_sent, model, model,
-                )
+                if self._input_ended:
+                    logger.warning(
+                        "SILENT RESPONSE: sent %d bytes of audio to %s "
+                        "and called end_input, but received 0 audio "
+                        "chunks back. Likely service-side: quota "
+                        "exhausted, billing not yet propagated to this "
+                        "model, or outage of %s. Non-realtime endpoints "
+                        "on the same provider may still work (separate "
+                        "quota bucket). Switch providers with "
+                        "switch-voice-provider.sh if this keeps happening.",
+                        bytes_sent, model, model,
+                    )
+                else:
+                    logger.warning(
+                        "RECORDING TIMEOUT: sent %d bytes of audio to %s "
+                        "but the silence detector never tripped — idle "
+                        "watchdog ended the turn before the wake loop "
+                        "asked for a response. _end_turn issued a "
+                        "belated commit, so any %s output arrives after "
+                        "turn release and is dropped. Common cause: "
+                        "low-confidence wake firing on background audio, "
+                        "or user speaking continuously past the idle "
+                        "window without a pause.",
+                        bytes_sent, model, model,
+                    )
             logger.info(
                 "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s)",
                 tokens, cost, bytes_sent, chunks_received,
