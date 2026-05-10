@@ -556,6 +556,15 @@ _PAGE_HTML = """<!doctype html>
   function drawChart(measured, target, predicted) {
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.getBoundingClientRect();
+    // Defensive: a hidden canvas (display:none ancestor) reports
+    // 0×0. Drawing into it silently produces an empty chart. Bail
+    // and log — caller is responsible for re-invoking after the
+    // canvas becomes visible.
+    if (rect.width < 10 || rect.height < 10) {
+      console.warn('drawChart skipped — canvas not laid out yet ' +
+        '(' + rect.width + '×' + rect.height + ')');
+      return;
+    }
     canvas.width = Math.round(rect.width * dpr);
     canvas.height = Math.round(rect.height * dpr);
     var c = canvas.getContext('2d');
@@ -1041,13 +1050,28 @@ _PAGE_HTML = """<!doctype html>
       if (data.verify) {
         lastVerify = data.verify;
       }
-      if (data.measured) {
-        drawChart(data.measured, data.target, data.predicted);
-      }
+      // CRITICAL: show resultSection BEFORE drawing the chart. A
+      // hidden canvas has zero bounding-rect dimensions, so
+      // canvas.width gets set to 0 and the chart renders empty —
+      // which is exactly the "frequency response is blank" bug a
+      // user hit on the first measurement. Show, then draw, then
+      // request a follow-up frame to redraw in case layout hadn't
+      // settled (mobile Safari sometimes lags one frame on
+      // display:block transitions).
       if (data.peqs) {
         renderPEQs(data.peqs);
       }
       resultSection.classList.remove('hidden');
+      if (data.measured) {
+        // Force a layout flush so getBoundingClientRect returns
+        // real dimensions on the first draw.
+        void canvas.offsetWidth;
+        drawChart(data.measured, data.target, data.predicted);
+        // Safety redraw next frame.
+        requestAnimationFrame(function () {
+          drawChart(data.measured, data.target, data.predicted);
+        });
+      }
       pollState();
     } catch (e) {
       setStateBadge('failed', e.message);
@@ -1089,6 +1113,21 @@ _PAGE_HTML = """<!doctype html>
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
+
+  // Redraw chart on resize / orientation change — without this, the
+  // canvas's drawing surface stays at the dimensions it had on the
+  // first draw and gets CSS-stretched (blurry) on rotation.
+  var resizeTimer = null;
+  function scheduleChartRedraw() {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () {
+      if (lastResult && lastResult.measured) {
+        drawChart(lastResult.measured, lastResult.target, lastResult.predicted);
+      }
+    }, 150);
+  }
+  window.addEventListener('resize', scheduleChartRedraw);
+  window.addEventListener('orientationchange', scheduleChartRedraw);
 })();
 </script>
 </body>
