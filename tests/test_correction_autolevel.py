@@ -343,14 +343,57 @@ async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
     )
 
 
-def test_autolevel_end_db_default_is_minus_6():
-    """The ramp ceiling defaults to -6 dB (not 0 dB) to avoid
-    blasting the listener at full digital scale. -6 dB is still
-    clearly audible for measurement, but caps the worst-case
-    surprise."""
-    import inspect
-    sig = inspect.signature(MeasurementSession.run_autolevel)
-    assert sig.parameters["end_db"].default == -6.0
+@pytest.mark.asyncio
+async def test_autolevel_end_db_computed_relative_to_original(tmp_path):
+    """end_db now defaults to None and is computed from the user's
+    actual listening volume at the start of the run — NOT a fixed
+    cap. This is the "stop being a menace about volume" fix: cap
+    is original + 6 dB, clamped to [-15, -6]. Verified via
+    sess.autolevel.cap_db which now exposes the computed value.
+    """
+    cases = [
+        # (original main_volume, expected cap)
+        (-20.0, -14.0),  # +6 bump
+        (-10.0, -6.0),   # bump would give -4; clamped at absolute max
+        (-5.0,  -6.0),   # already above; clamped
+        (-45.0, -20.0),  # bump would give -39; clamped at absolute min
+        (-25.0, -19.0),  # +6 bump
+    ]
+    for original, expected_cap in cases:
+        sess = _make_session(tmp_path)
+
+        async def fake_get_vol(_o=original):
+            return _o
+
+        async def fake_set_vol(db):
+            pass
+
+        player = _StubTonePlayer()
+
+        async def _cancel_quickly():
+            # Fire cancel almost immediately so we don't sit through
+            # a multi-second ramp — we just need the cap to land in
+            # autolevel.cap_db before exit.
+            await asyncio.sleep(0.02)
+            await sess.cancel_autolevel()
+
+        asyncio.create_task(_cancel_quickly())
+        await sess.run_autolevel(
+            get_main_volume_db=fake_get_vol,
+            set_main_volume_db=fake_set_vol,
+            play_continuous_tone=player.play,
+            cancel_tone=player.cancel,
+            # end_db left at default (None) — must auto-compute
+            start_db=-40.0,
+            step_db=2.0,
+            step_interval_s=0.05,
+            fade_step_s=0.005,
+        )
+        assert sess.autolevel.original_main_volume_db == original
+        assert sess.autolevel.cap_db == expected_cap, (
+            f"original={original}: expected cap {expected_cap}, "
+            f"got {sess.autolevel.cap_db}"
+        )
 
 
 @pytest.mark.asyncio
