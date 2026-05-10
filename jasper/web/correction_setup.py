@@ -1305,10 +1305,18 @@ def _handle_autolevel_start(
     async def _run_autolevel() -> None:
         try:
             async with coordinator.measurement_window():
+                # Tone source amplitude = -12 dBFS, matching the sweep
+                # amplitude. Earlier this was -6 dBFS — 6 dB louder
+                # than the actual sweep, which made the autolevel
+                # phase startlingly loud AND inflated the user's
+                # expectation of how loud the measurement sweep would
+                # be. With -12 dBFS, the tone and sweep are the same
+                # loudness so leveling-to-tone calibrates leveling-to-
+                # sweep directly.
                 tone_wav = playback._ensure_tone_wav(
                     freq_hz=1000.0,
                     duration_s=15.0,  # safety > max ramp duration
-                    dbfs=-6.0,
+                    dbfs=-12.0,
                     sample_rate=48000,
                 )
                 player = playback.TonePlayer(tone_wav)

@@ -127,12 +127,15 @@ class AutolevelData:
     measurement workflow completes (apply / reset). `current` is
     where the ramp is right now; `locked` is where it ended up
     when the user signalled lock (or where it was when the ramp
-    completed without lock).
+    completed without lock). `cap_db` is the dynamic end-of-ramp
+    cap computed from `original + bump`; exposed so the client and
+    tests can verify what cap the run is operating under.
     """
     status: AutolevelStatus = AutolevelStatus.IDLE
     current_main_volume_db: float = -50.0
     original_main_volume_db: float | None = None
     locked_main_volume_db: float | None = None
+    cap_db: float | None = None
     error: str | None = None
 
     def snapshot(self) -> dict[str, Any]:
@@ -143,6 +146,7 @@ class AutolevelData:
             "current_main_volume_db": r(self.current_main_volume_db),
             "original_main_volume_db": r(self.original_main_volume_db),
             "locked_main_volume_db": r(self.locked_main_volume_db),
+            "cap_db": r(self.cap_db),
             "error": self.error,
         }
 
@@ -690,7 +694,10 @@ class MeasurementSession:
         play_continuous_tone: Callable[[], Awaitable[Any]],
         cancel_tone: Callable[[], None],
         start_db: float = -40.0,
-        end_db: float = -6.0,
+        end_db: float | None = None,
+        end_db_bump: float = 6.0,
+        end_db_absolute_max: float = -6.0,
+        end_db_absolute_min: float = -20.0,
         step_db: float = 1.0,
         step_interval_s: float = 0.15,
         safety_timeout_s: float = 25.0,
@@ -733,10 +740,32 @@ class MeasurementSession:
         measurement-workflow apply/reset handlers can restore the
         user's listening volume after the workflow ends.
 
-        Safety: `end_db` defaults to -6 dB (not 0 dB). Going to full
-        digital scale would peak the amp ~6 dB above any normal
-        listening level — we'd be a menace. -6 dB still produces a
-        clearly audible tone for measurement but caps the risk.
+        Safety — DON'T BLOW THE LISTENER'S EARS OUT:
+
+        Originally end_db was hard-capped at -6 dB. First-user
+        report: even -6 dB was still way too loud — their listening
+        volume was around -20 dB main_volume; -6 dB is 14 dB louder
+        (~4x perceived loudness), painfully blasted them.
+
+        end_db now defaults to None, computed RELATIVE TO the user's
+        existing main_volume:
+
+            end_db = clamp(
+                original_main_volume_db + end_db_bump,
+                [end_db_absolute_min, end_db_absolute_max],
+            )
+
+        Defaults give +6 dB bump over normal listening, clamped to
+        [-15, -6] dB. So:
+          - user at -20 dB → autolevel cap -14 dB (only ~6 dB louder)
+          - user at -5 dB  → cap -6 dB (absolute max)
+          - user at -45 dB → cap -15 dB (boost to usable measurement
+            level)
+
+        Combined with the -12 dBFS tone amplitude (matches the
+        sweep), worst-case dongle output at the cap is -18 dBFS —
+        far quieter than the prior -6 dBFS tone × -6 dB cap = -12
+        dBFS that blasted the user.
         """
         al = self.autolevel = AutolevelData()
         self._autolevel_lock_event = asyncio.Event()
@@ -775,12 +804,23 @@ class MeasurementSession:
 
         try:
             al.original_main_volume_db = float(await get_main_volume_db())
+            # Compute the dynamic cap NOW that we know original.
+            if end_db is None:
+                raw_cap = al.original_main_volume_db + end_db_bump
+                end_db = max(end_db_absolute_min, min(raw_cap, end_db_absolute_max))
+                logger.info(
+                    "autolevel: dynamic end_db=%.1f dB "
+                    "(original=%.1f + bump=%.1f, clamped to [%.1f, %.1f])",
+                    end_db, al.original_main_volume_db, end_db_bump,
+                    end_db_absolute_min, end_db_absolute_max,
+                )
+            al.cap_db = float(end_db)
             al.status = AutolevelStatus.RAMPING
             logger.info(
                 "autolevel: START original_main_volume=%.1f dB "
-                "(ramp %.1f → %.1f dB, step=%.1f dB/%.0f ms, cap=%.1f dB)",
+                "(ramp %.1f → %.1f dB, step=%.1f dB/%.0f ms)",
                 al.original_main_volume_db, start_db, end_db,
-                step_db, step_interval_s * 1000, end_db,
+                step_db, step_interval_s * 1000,
             )
 
             # CRITICAL: set main_volume to the quiet start BEFORE
