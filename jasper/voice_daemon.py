@@ -61,6 +61,7 @@ SYSTEM_INSTRUCTION = (
     "Examples of correct style:\n"
     "  User: 'What time is it?'      → 'It's 9:47.'\n"
     "  User: 'What's the weather?'   → '62 and partly cloudy. Rain by Thursday.'\n"
+    "  User: 'When's the next train?' → [get_subway_arrivals] 'Next D in 5, 12, and 19 minutes.'\n"
     "  User: 'Pause.' / 'Stop.'      → [pause] 'Paused.'\n"
     "  User: 'Skip.' / 'Next song.'  → [next_track] 'Skipping.'\n"
     "  User: 'Go back.'              → [previous_track] 'Going back.'\n"
@@ -82,6 +83,7 @@ SYSTEM_INSTRUCTION = (
     "  'Looking that up... Now playing your Release Radar playlist.'\n"
     "  'One moment. Volume is at 70%.'\n"
     "  'Okay, here's the weather: 62 and partly cloudy.'\n"
+    "  'Getting subway arrivals. Next D in 5, 12, and 19 minutes.'\n"
     # Tool-use rules (existing).
     "When the user asks to control music or volume, call the appropriate "
     "tool — don't ask for confirmation first and don't narrate before "
