@@ -158,10 +158,10 @@ def test_render_page_includes_autolevel_controls():
     while client watches mic and posts /autolevel/lock when in
     target range. Pin the UI presence + JS plumbing.
 
-    Also pins the MANUAL Lock button — added as a first-user-test
-    follow-up because iOS Safari sometimes silently AGC's the mic
-    readout, leaving the auto-detection blind. The manual button
-    gives the user a reliable override."""
+    Also pins the MANUAL Lock button as a reliable override when the
+    auto-detect can't reach the target band (real first-user-test
+    finding — speaker-to-iPhone-at-couch path attenuation can leave
+    the mic below the lock band even at max safe volume)."""
     body = correction_setup._render_page("jts.local").decode()
     # All three control buttons present (start + manual-lock + cancel).
     assert 'id="autolevel"' in body
@@ -173,9 +173,24 @@ def test_render_page_includes_autolevel_controls():
     assert "startAutolevel" in body
     assert "autolevel/start" in body
     assert "autolevel/lock" in body
-    # Target range is documented in the JS for the lock decision.
-    assert "AUTOLEVEL_TARGET_DB_LOW" in body
-    assert "AUTOLEVEL_TARGET_DB_HIGH" in body
+    # Adaptive target band — computed from measured noise floor at
+    # the start of autolevel rather than hard-coded.
+    assert "computeTargetBand" in body
+    assert "AUTOLEVEL_SNR_DESIRED_LOW" in body
+    assert "AUTOLEVEL_SNR_DESIRED_HIGH" in body
+    # Preflight noise-floor measurement step is present.
+    assert "Measuring room noise" in body
+
+
+def test_render_page_autolevel_target_band_clamps():
+    """Pin the absolute clamps: -30 dBFS floor (don't lock super
+    quiet even in dead-silent rooms) and -10 dBFS ceiling (avoid
+    pushing the iPhone mic toward clipping). A regression here
+    would cause silent off-by-default-target failures we'd only
+    catch on hardware."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "AUTOLEVEL_TARGET_DB_FLOOR = -30" in body
+    assert "AUTOLEVEL_TARGET_DB_CEILING = -10" in body
 
 
 def test_render_page_amp_message_is_generic_not_tpa3255():

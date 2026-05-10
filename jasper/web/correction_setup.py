@@ -722,12 +722,41 @@ _PAGE_HTML = """<!doctype html>
     pollState();
   }
 
-  // Auto-level target band for iPhone mic during the 1 kHz tone
-  // ramp. Held at -6 dBFS source amplitude, so the actual sweep
-  // (-12 dBFS source) lands ~6 dB below this at the mic — well
-  // above noise floor, safely below clipping.
-  var AUTOLEVEL_TARGET_DB_LOW = -20;
-  var AUTOLEVEL_TARGET_DB_HIGH = -10;
+  // Auto-level: how much SNR (dB) above the measured room noise
+  // floor we want the tone to sit at when we lock. 20-30 dB above
+  // noise gives 15-25 dB SNR on the sweep (which is 6 dB quieter
+  // than the tone source). Clamped on both ends:
+  //   - lower clamp -30 dBFS: don't lock at very quiet absolute
+  //     levels even in dead-silent rooms (capture would still work
+  //     but the user wouldn't believe a measurement happened).
+  //   - upper clamp -10 dBFS: avoid pushing the iPhone mic near
+  //     its clipping ceiling.
+  //
+  // Previous hard-coded -20..-10 target was unreachable in normal
+  // rooms (user's "decently loud voice at 10 cm" peaked at -25 dBFS
+  // — a speaker tone at couch distance would land around -25 to
+  // -35 dBFS at best). Adaptive band picks a target that's
+  // physically achievable for whatever noise floor you've got.
+  var AUTOLEVEL_SNR_DESIRED_LOW = 20;   // 20 dB above noise = minimum
+  var AUTOLEVEL_SNR_DESIRED_HIGH = 30;  // 30 dB above noise = ideal
+  var AUTOLEVEL_TARGET_DB_FLOOR = -30;  // lower clamp (absolute)
+  var AUTOLEVEL_TARGET_DB_CEILING = -10; // upper clamp (absolute)
+
+  function computeTargetBand(noiseFloorDb) {
+    var high = Math.min(
+      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_HIGH,
+      AUTOLEVEL_TARGET_DB_CEILING,
+    );
+    var low = Math.max(
+      noiseFloorDb + AUTOLEVEL_SNR_DESIRED_LOW,
+      AUTOLEVEL_TARGET_DB_FLOOR,
+    );
+    // In very noisy rooms the clamps can collide. Force a minimum
+    // 5 dB window so a momentary RMS spike can satisfy the lock
+    // condition.
+    if (low > high - 5) low = high - 5;
+    return { low: low, high: high };
+  }
 
   async function startAutolevel() {
     autolevelBtn.disabled = true;
@@ -735,9 +764,38 @@ _PAGE_HTML = """<!doctype html>
     autolevelStatus.classList.remove('hidden');
     autolevelLockBtn.classList.remove('hidden');
     autolevelCancelBtn.classList.remove('hidden');
-    autolevelLine.textContent = 'Starting auto-level…';
-    autolevelDetail.textContent = 'Tap Lock now once the tone sounds like a comfortable measurement volume — even if the mic readout doesn\\'t register, this works.';
     autolevelRmsBuffer = [];
+
+    // Step 1: measure ambient noise floor for ~500 ms BEFORE the
+    // tone starts. This gives us a real number for "what counts as
+    // quiet in this room right now", which we then use to pick a
+    // target SNR band that's actually achievable. Hard-coded bands
+    // from the previous version were unreachable in rooms where
+    // the speaker-to-listener path attenuated more than I'd
+    // assumed (real complaint from first-user test).
+    autolevelLine.textContent = 'Measuring room noise…';
+    autolevelDetail.textContent = '';
+    var noiseSamples = [];
+    var noiseSampler = setInterval(function () {
+      if (latestMicRmsDb > -100) noiseSamples.push(latestMicRmsDb);
+    }, 30);
+    await new Promise(function (r) { setTimeout(r, 500); });
+    clearInterval(noiseSampler);
+    var noiseFloorDb;
+    if (noiseSamples.length >= 3) {
+      var nsum = 0;
+      for (var ni = 0; ni < noiseSamples.length; ni++) nsum += noiseSamples[ni];
+      noiseFloorDb = nsum / noiseSamples.length;
+    } else {
+      // Couldn't measure (mic stream not ready?). Fall back to a
+      // reasonable assumption.
+      noiseFloorDb = -50;
+    }
+    var targetBand = computeTargetBand(noiseFloorDb);
+    autolevelDetail.textContent =
+      'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
+      targetBand.low.toFixed(0) + ' to ' + targetBand.high.toFixed(0) +
+      ' dBFS. Tap Lock now if the tone sounds like a comfortable measurement level.';
 
     var lockSent = false;
     var sendLock = function (reason) {
@@ -758,7 +816,7 @@ _PAGE_HTML = """<!doctype html>
 
     // Watch the latest mic RMS at 50 ms granularity. As soon as the
     // smoothed (last ~250 ms) RMS lands in the target range, send
-    // auto-lock. (User can also tap Lock now manually at any time.)
+    // auto-lock. Target band is the adaptive one computed above.
     var watcher = setInterval(function () {
       if (lockSent) return;
       var db = latestMicRmsDb;
@@ -769,9 +827,10 @@ _PAGE_HTML = """<!doctype html>
       for (var i = 0; i < autolevelRmsBuffer.length; i++) sum += autolevelRmsBuffer[i];
       var avg = sum / autolevelRmsBuffer.length;
       if (autolevelRmsBuffer.length >= 3 &&
-          avg >= AUTOLEVEL_TARGET_DB_LOW &&
-          avg <= AUTOLEVEL_TARGET_DB_HIGH) {
-        sendLock('mic in target ' + avg.toFixed(1) + ' dBFS');
+          avg >= targetBand.low &&
+          avg <= targetBand.high) {
+        sendLock('mic ' + avg.toFixed(1) + ' dBFS in band ' +
+          targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0));
       }
     }, 50);
 
@@ -797,9 +856,10 @@ _PAGE_HTML = """<!doctype html>
         var al = s.autolevel;
         var volStr = (al.current_main_volume_db !== null && al.current_main_volume_db !== undefined)
           ? al.current_main_volume_db.toFixed(1) : '?';
-        autolevelLine.textContent = 'Auto-leveling at ' + volStr +
-          ' dB (mic: ' + latestMicRmsDb.toFixed(1) + ' dBFS' +
-          (lockSent ? ', lock sent…' : '') + ')';
+        autolevelLine.textContent = 'Auto-leveling at main_volume=' + volStr +
+          ' dB · mic ' + latestMicRmsDb.toFixed(1) + ' dBFS · target ' +
+          targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) +
+          (lockSent ? ' · lock sent' : '');
         if (al.status === 'ramping') return false;
         if (al.status === 'locked') {
           autolevelLine.textContent = '✓ Locked — speaker at ' +
@@ -807,7 +867,9 @@ _PAGE_HTML = """<!doctype html>
           autolevelDetail.textContent = '';
         } else if (al.status === 'maxed_out') {
           autolevelLine.textContent =
-            'Tone reached the software volume ceiling (−6 dB).';
+            'Tone reached the software volume ceiling (−6 dB) at ' +
+            latestMicRmsDb.toFixed(1) + ' dBFS — target was ' +
+            targetBand.low.toFixed(0) + '..' + targetBand.high.toFixed(0) + '.';
           autolevelDetail.textContent =
             'If the tone you just heard sounded like a reasonable measurement level, tap Auto-level again and use Lock now. Otherwise, turn up your amplifier and retry.';
         } else if (al.status === 'cancelled') {
