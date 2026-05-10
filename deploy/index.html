@@ -25,6 +25,13 @@
     a.card .desc {
       color: #555; font-size: 0.92em; margin-top: 0.3em; line-height: 1.45;
     }
+    .cert-note {
+      background: #fff3cd; border: 1px solid #f0d090;
+      border-radius: 6px; padding: 0.7em 0.9em; margin: 1.5em 0;
+      color: #5a4500; font-size: 0.92em; line-height: 1.5;
+    }
+    .cert-note strong { color: #3a2e00; }
+    .cert-note a { color: #1da34d; font-weight: 600; }
   </style>
 </head>
 <body>
@@ -60,10 +67,9 @@
        href="#">
       <div class="name">Room correction &rsaquo;</div>
       <div class="desc">
-        Measure your room from your iPhone and apply correction filters
-        to CamillaDSP. Requires HTTPS for mic capture — the first visit
-        will ask you to trust this speaker's certificate
-        (<a href="/jts-root-ca.crt" onclick="event.stopPropagation();">download CA</a>).
+        Measure your room from your iPhone and apply correction
+        filters to CamillaDSP. Browser will warn "Not Private" the
+        first time — see the note below.
       </div>
     </a>
 
@@ -75,6 +81,23 @@
         levels, and live config switching. Opens in a new tab.
       </div>
     </a>
+  </div>
+
+  <div class="cert-note">
+    <p style="margin:0 0 0.4em">
+      <strong>About the "Not Private" warning on Room correction:</strong>
+      capturing microphone audio in a browser requires HTTPS. This
+      speaker uses a self-signed certificate (no public CA — it's on
+      your home network), so Safari and Chrome warn the first time.
+    </p>
+    <p style="margin:0">
+      Either tap <strong>Show Details &rarr; visit this website</strong>
+      to dismiss the warning (works fine; reappears every visit), or
+      <a href="/jts-root-ca.crt">download the JTS root certificate</a>
+      and trust it once on this device to silence the warning
+      permanently. The room-correction page itself walks you through
+      the trust steps.
+    </p>
   </div>
 
   <script>
