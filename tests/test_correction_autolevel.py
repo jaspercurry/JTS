@@ -279,6 +279,154 @@ async def test_autolevel_safety_timeout_restores_main_volume(tmp_path):
     assert set_history[-1] == ORIG
 
 
+# ---------- Order-of-operations + safety -----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
+    """Bug fix from the first user run: the tone was starting at
+    the user's previous main_volume (often loud) BEFORE the ramp
+    dropped it to start_db. Now we set start_db FIRST, then start
+    the tone. Pin the order with a recorder.
+    """
+    sess = _make_session(tmp_path)
+    events: list[tuple[str, float | None]] = []
+
+    async def fake_get_vol():
+        return -10.0
+
+    async def fake_set_vol(db):
+        events.append(("set_vol", float(db)))
+
+    class _RecordingPlayer:
+        def __init__(self):
+            self._cancel = asyncio.Event()
+        async def play(self):
+            events.append(("tone_start", None))
+            try:
+                await asyncio.wait_for(self._cancel.wait(), timeout=20.0)
+            except asyncio.TimeoutError:
+                pass
+            events.append(("tone_end", None))
+        def cancel(self):
+            self._cancel.set()
+
+    player = _RecordingPlayer()
+
+    async def _cancel_after_step():
+        await asyncio.sleep(0.05)
+        await sess.cancel_autolevel()
+
+    asyncio.create_task(_cancel_after_step())
+    await sess.run_autolevel(
+        get_main_volume_db=fake_get_vol,
+        set_main_volume_db=fake_set_vol,
+        play_continuous_tone=player.play,
+        cancel_tone=player.cancel,
+        start_db=-40.0,
+        end_db=-6.0,
+        step_db=2.0,
+        step_interval_s=0.05,
+        fade_step_s=0.01,
+    )
+
+    # First two events should be: set_vol(-40), tone_start.
+    # NEVER tone_start before set_vol(-40).
+    first_set = next(i for i, e in enumerate(events) if e[0] == "set_vol")
+    first_tone = next(i for i, e in enumerate(events) if e[0] == "tone_start")
+    assert first_set < first_tone, (
+        f"tone started before main_volume was set to start_db. "
+        f"events={events[:6]}"
+    )
+    assert events[first_set] == ("set_vol", -40.0), (
+        f"first set_vol should be -40 dB (start_db), got {events[first_set]}"
+    )
+
+
+def test_autolevel_end_db_default_is_minus_6():
+    """The ramp ceiling defaults to -6 dB (not 0 dB) to avoid
+    blasting the listener at full digital scale. -6 dB is still
+    clearly audible for measurement, but caps the worst-case
+    surprise."""
+    import inspect
+    sig = inspect.signature(MeasurementSession.run_autolevel)
+    assert sig.parameters["end_db"].default == -6.0
+
+
+@pytest.mark.asyncio
+async def test_autolevel_lock_fades_down_before_tone_cancel(tmp_path):
+    """When the user locks, we must fade main_volume DOWN to a
+    quiet value before killing the tone. Otherwise the abrupt
+    aplay kill produces an audible click at whatever loud level
+    was last set. Verify the sequence: set_vol going down, then
+    tone_cancel, then set_vol to lock_value."""
+    sess = _make_session(tmp_path)
+    events: list[tuple[str, float | None]] = []
+
+    async def fake_get_vol():
+        return -10.0
+
+    async def fake_set_vol(db):
+        events.append(("set_vol", float(db)))
+
+    class _RecordingPlayer:
+        def __init__(self):
+            self._cancel = asyncio.Event()
+        async def play(self):
+            try:
+                await asyncio.wait_for(self._cancel.wait(), timeout=20.0)
+            except asyncio.TimeoutError:
+                pass
+        def cancel(self):
+            events.append(("tone_cancel", None))
+            self._cancel.set()
+
+    player = _RecordingPlayer()
+
+    async def _lock_after_few_steps():
+        await asyncio.sleep(0.12)  # let ramp climb a bit
+        await sess.lock_autolevel()
+
+    asyncio.create_task(_lock_after_few_steps())
+    await sess.run_autolevel(
+        get_main_volume_db=fake_get_vol,
+        set_main_volume_db=fake_set_vol,
+        play_continuous_tone=player.play,
+        cancel_tone=player.cancel,
+        start_db=-30.0,
+        end_db=-6.0,
+        step_db=2.0,
+        step_interval_s=0.05,
+        fade_down_to_db=-40.0,
+        fade_step_s=0.01,
+    )
+
+    assert sess.autolevel.status == AutolevelStatus.LOCKED
+    lock_db = sess.autolevel.locked_main_volume_db
+
+    # After lock fires, the sequence should be:
+    #   1. Some `set_vol` calls going DOWN toward fade_down_to_db
+    #   2. One `tone_cancel`
+    #   3. One `set_vol(lock_db)` to set the final value
+    cancel_idx = next(i for i, e in enumerate(events) if e[0] == "tone_cancel")
+    # Just before cancel, the volume should be near fade_down_to_db.
+    prev_set_vols = [
+        e[1] for e in events[:cancel_idx] if e[0] == "set_vol"
+    ]
+    assert prev_set_vols[-1] <= -38.0, (
+        f"expected fade-down before cancel; last set_vol pre-cancel="
+        f"{prev_set_vols[-1]}"
+    )
+    # And after cancel, the final set_vol is lock_db.
+    post_set_vols = [
+        e[1] for e in events[cancel_idx:] if e[0] == "set_vol"
+    ]
+    assert post_set_vols[-1] == lock_db, (
+        f"expected final set_vol to lock value {lock_db}, "
+        f"got {post_set_vols[-1]}"
+    )
+
+
 # ---------- Session snapshot includes autolevel ----------------------------
 
 
