@@ -38,8 +38,12 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_capture_channels == 1
     assert cfg.tts_device == "jasper_out"
     assert cfg.tts_output_rate == 48000
-    assert cfg.tts_gain_db == -8.0
-    assert cfg.tts_music_headroom_db == 12.0
+    # Defaults updated 2026-05-10: offset 0 (was -8) lets the tracker
+    # drive level instead of stacking conservatism, and headroom 16
+    # (was 12) targets TTS slightly above music RMS so voice reads
+    # as "a touch louder than the song" given the duck.
+    assert cfg.tts_gain_db == 0.0
+    assert cfg.tts_music_headroom_db == 16.0
     assert cfg.tts_silence_threshold_dbfs == -50.0
     assert cfg.tts_music_window_sec == 8.0
     assert cfg.volume_state_path == "/var/lib/jasper/speaker_volume.json"

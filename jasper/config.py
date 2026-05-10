@@ -259,18 +259,20 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # OFFSET (dB) applied on top of CamillaDSP's main_volume
-            # to set the TTS playback level. TTS bypasses CamillaDSP
-            # — a background tracker in voice_daemon polls main_volume
-            # every 0.5 s and updates TtsPlayout's gain to
-            # `main_volume + tts_gain_db`, clamped to TtsPlayout's
-            # MIN/MAX safety bounds. Negative values keep TTS quieter
-            # than music at the same nominal level (helps intelligibility
-            # over louder source material); -8 dB is the previous fixed
-            # default and remains a sensible offset. MUST be <= 0 — the
-            # config validator enforces this so a fat-fingered "+8"
-            # cannot blast the speaker.
-            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", -8.0),
+            # OFFSET (dB) applied on top of CamillaDSP's main_volume —
+            # a SECONDARY ceiling alongside the TtsVolumeTracker's
+            # tracker-and-headroom formula (below) and the absolute
+            # hearing-safety cap MAX_TTS_GAIN_DB in audio_io.py. With
+            # music ducking ~25 dB during TTS, voice and music don't
+            # overlap perceptually, so this offset's main historical
+            # role (keep TTS quieter than concurrent music) is mostly
+            # moot. Default 0 lets the tracker drive the level; the
+            # safety cap at -6 still bounds the maximum. Stays useful
+            # as a master-volume-tracking ceiling when no music has
+            # played to update the loudness anchor (sudden master
+            # change with stale anchor → ceiling kicks in proportional
+            # to master). MUST be <= 0 — validator enforces.
+            tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", 0.0),
             # When music is playing, TtsVolumeTracker sizes TTS to a
             # headroom above the windowed RMS of CamillaDSP's playback
             # signal — so TTS scales with whatever music is actually
@@ -278,13 +280,17 @@ class Config:
             # volume sliders (AirPlay sender, Spotify Connect, etc.)
             # that don't touch CamillaDSP's main_volume.
             # Headroom is added on top of the windowed music RMS to
-            # produce the TTS effective output peak target. Bigger →
-            # TTS dominates the music more clearly. 12 dB ≈ TTS source
-            # peaks land around music's typical peak level (since
-            # music peak-to-RMS is ~12-15 dB for typical content),
-            # which is "intelligible above music without being shouty".
+            # produce the TTS effective output peak target. With music
+            # ducking ~25 dB during TTS, the comparison the user
+            # actually feels is "TTS during duck" vs "music when not
+            # ducked", so we want TTS *slightly louder* than the
+            # music level. 16 dB headroom + voice's ~9-12 dB crest
+            # factor ≈ TTS RMS lands ~4-7 dB above music RMS, which
+            # reads as "a touch louder than music" without being
+            # shouty. Higher → more dominance over music; clamped to
+            # -6 dB max gain by audio_io's hearing-safety cap.
             tts_music_headroom_db=_env_float(
-                "JASPER_TTS_MUSIC_HEADROOM_DB", 12.0,
+                "JASPER_TTS_MUSIC_HEADROOM_DB", 16.0,
             ),
             # Below this windowed RMS, the tracker treats the room as
             # silent and falls back to the legacy "main_volume +
