@@ -266,14 +266,19 @@ _PAGE_HTML = """<!doctype html>
   </div>
 
   <p style="display:flex; gap:0.6em; flex-wrap:wrap">
-    <button id="test-tone" type="button" class="secondary" disabled>Test speaker volume</button>
+    <button id="autolevel" type="button" class="secondary" disabled>Auto-level</button>
+    <button id="autolevel-cancel" type="button" class="danger hidden">Cancel</button>
     <button id="run-measurement" type="button" class="primary" disabled>Run measurement</button>
     <button id="continue-position" type="button" class="primary hidden">Continue to next position</button>
     <button id="apply-correction" type="button" class="primary hidden">Apply correction</button>
     <button id="verify-correction" type="button" class="primary hidden">Verify with re-measurement</button>
     <button id="reset-correction" type="button" class="danger hidden">Reset to flat</button>
   </p>
-  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Test speaker volume</strong> to play a 5-second 1 kHz tone. While it's playing, watch the mic level bar above and adjust your amp so the bar reaches the <strong>orange/yellow zone</strong> (about &minus;25 to &minus;10 dBFS). If the bar barely moves, the speaker is too quiet for a clean measurement; if it pegs all the way red, it'll clip and the measurement will be invalid.</p>
+  <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker will play a 1 kHz tone while we gradually increase the volume — once the iPhone mic hears it at the right level, we lock the volume in for the sweep automatically. Takes ~5 seconds.</p>
+  <div id="autolevel-status" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
+    <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
+    <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
+  </div>
   <div id="result-section" class="hidden">
     <h3>Frequency response</h3>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
@@ -315,7 +320,11 @@ _PAGE_HTML = """<!doctype html>
   var measureSection = document.getElementById('measure-section');
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
-  var testToneBtn = document.getElementById('test-tone');
+  var autolevelBtn = document.getElementById('autolevel');
+  var autolevelCancelBtn = document.getElementById('autolevel-cancel');
+  var autolevelStatus = document.getElementById('autolevel-status');
+  var autolevelLine = document.getElementById('autolevel-line');
+  var autolevelDetail = document.getElementById('autolevel-detail');
   var runBtn = document.getElementById('run-measurement');
   var continueBtn = document.getElementById('continue-position');
   var applyBtn = document.getElementById('apply-correction');
@@ -339,6 +348,11 @@ _PAGE_HTML = """<!doctype html>
   var lastResult = null;
   var lastVerify = null;
   var inVerifyMode = false;
+  // Latest mic RMS in dBFS, updated by the AudioWorklet at ~20 Hz.
+  // The autolevel loop reads this to decide when the speaker level
+  // has reached the target range.
+  var latestMicRmsDb = -120;
+  var autolevelRmsBuffer = [];  // recent dB samples for smoothing
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -384,11 +398,11 @@ _PAGE_HTML = """<!doctype html>
         '. The measurement will refuse to start in this state.';
       errBanner.classList.remove('hidden');
       runBtn.disabled = true;
-      testToneBtn.disabled = true;
+      autolevelBtn.disabled = true;
     } else {
       errBanner.classList.add('hidden');
       runBtn.disabled = false;
-      testToneBtn.disabled = false;
+      autolevelBtn.disabled = false;
     }
   }
 
@@ -490,9 +504,12 @@ _PAGE_HTML = """<!doctype html>
       if (ev.data && ev.data.type === 'rms') {
         var rms = ev.data.value;
         var db = rms > 0 ? 20 * Math.log10(rms) : -120;
+        // Live meter
         var pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
         levelBar.style.width = pct.toFixed(1) + '%';
         levelReadout.textContent = db.toFixed(1);
+        // Stash for the autolevel loop (which polls this).
+        latestMicRmsDb = db;
       } else if (ev.data && ev.data.type === 'capture') {
         onCaptureReady(ev.data.buffer);
       }
@@ -703,27 +720,108 @@ _PAGE_HTML = """<!doctype html>
     pollState();
   }
 
-  async function startTestTone() {
-    // Plays a 5-second 1 kHz sine through the speaker so the user
-    // can adjust their amp by watching the live mic level meter.
-    // No state-machine entanglement — the tone is brief and
-    // independent of the measurement session.
-    testToneBtn.disabled = true;
+  // Auto-level target band for iPhone mic during the 1 kHz tone
+  // ramp. Held at -6 dBFS source amplitude, so the actual sweep
+  // (-12 dBFS source) lands ~6 dB below this at the mic — well
+  // above noise floor, safely below clipping.
+  var AUTOLEVEL_TARGET_DB_LOW = -20;
+  var AUTOLEVEL_TARGET_DB_HIGH = -10;
+
+  async function startAutolevel() {
+    autolevelBtn.disabled = true;
     runBtn.disabled = true;
-    var prevText = testToneBtn.textContent;
-    testToneBtn.textContent = 'Playing…';
-    setStateBadge('analyzing', 'playing 1 kHz test tone — adjust amp until live mic level reaches the orange/yellow zone');
+    autolevelStatus.classList.remove('hidden');
+    autolevelCancelBtn.classList.remove('hidden');
+    autolevelLine.textContent = 'Starting auto-level…';
+    autolevelDetail.textContent = '';
+    autolevelRmsBuffer = [];
+
+    // Track whether we've already POSTed lock so we don't spam it.
+    var lockSent = false;
+    // Watch the latest mic RMS at 50 ms granularity. As soon as the
+    // smoothed (last ~250 ms) RMS lands in the target range, POST
+    // /autolevel/lock and stop watching.
+    var watcher = setInterval(function () {
+      if (lockSent) return;
+      var db = latestMicRmsDb;
+      if (db <= -100) return;  // silent — worklet hasn't reported yet
+      autolevelRmsBuffer.push(db);
+      if (autolevelRmsBuffer.length > 5) autolevelRmsBuffer.shift();
+      var sum = 0;
+      for (var i = 0; i < autolevelRmsBuffer.length; i++) sum += autolevelRmsBuffer[i];
+      var avg = sum / autolevelRmsBuffer.length;
+      if (autolevelRmsBuffer.length >= 3 &&
+          avg >= AUTOLEVEL_TARGET_DB_LOW &&
+          avg <= AUTOLEVEL_TARGET_DB_HIGH) {
+        lockSent = true;
+        fetch('autolevel/lock', { method: 'POST', headers: {'Content-Type':'application/json'}, body: '{}' })
+          .catch(function (e) { console.warn('lock POST failed', e); });
+      }
+    }, 50);
+
     try {
-      await postJson('test-tone', {});
+      await postJson('autolevel/start', {});
     } catch (e) {
-      setStateBadge('failed', e.message);
-    } finally {
-      testToneBtn.textContent = prevText;
-      // applyButtonPolicy will re-enable from the next pollState.
-      // For an immediate snap-back to idle UI, set state badge here.
-      setStateBadge('idle', 'test tone done — ready to measure');
-      testToneBtn.disabled = false;
+      clearInterval(watcher);
+      autolevelLine.textContent = 'Auto-level failed: ' + e.message;
+      autolevelCancelBtn.classList.add('hidden');
+      autolevelBtn.disabled = false;
       runBtn.disabled = false;
+      return;
+    }
+
+    // Poll /status every 200 ms until autolevel reaches a terminal
+    // status.
+    var pollOnce = async function () {
+      try {
+        var s = await fetchStatus();
+        if (!s.autolevel) return true;  // unexpected — stop
+        var al = s.autolevel;
+        autolevelLine.textContent = 'Auto-leveling at ' +
+          (al.current_main_volume_db !== null ? al.current_main_volume_db.toFixed(1) : '?') +
+          ' dB (mic: ' + latestMicRmsDb.toFixed(1) + ' dBFS, target ' +
+          AUTOLEVEL_TARGET_DB_LOW + '..' + AUTOLEVEL_TARGET_DB_HIGH + ')';
+        if (al.status === 'ramping') return false;  // keep polling
+        if (al.status === 'locked') {
+          autolevelLine.textContent = '✓ Auto-level done — speaker at ' +
+            al.locked_main_volume_db.toFixed(1) + ' dB. Ready to measure.';
+          autolevelDetail.textContent = '';
+        } else if (al.status === 'maxed_out') {
+          autolevelLine.textContent =
+            'Speaker still too quiet at maximum software volume.';
+          autolevelDetail.textContent =
+            'Please turn up your amplifier, then tap Auto-level again.';
+        } else if (al.status === 'cancelled') {
+          autolevelLine.textContent = 'Auto-level cancelled.';
+          autolevelDetail.textContent = '';
+        } else if (al.status === 'error') {
+          autolevelLine.textContent = 'Auto-level error.';
+          autolevelDetail.textContent = al.error || '(no details)';
+        }
+        return true;
+      } catch (e) {
+        autolevelLine.textContent = 'Status fetch failed: ' + e.message;
+        return true;
+      }
+    };
+
+    while (true) {
+      var done = await pollOnce();
+      if (done) break;
+      await new Promise(function (r) { setTimeout(r, 200); });
+    }
+
+    clearInterval(watcher);
+    autolevelCancelBtn.classList.add('hidden');
+    autolevelBtn.disabled = false;
+    runBtn.disabled = false;
+  }
+
+  async function cancelAutolevel() {
+    try {
+      await postJson('autolevel/cancel', {});
+    } catch (e) {
+      autolevelLine.textContent = 'Cancel POST failed: ' + e.message;
     }
   }
 
@@ -749,8 +847,8 @@ _PAGE_HTML = """<!doctype html>
   // ones the current state allows. Without this, stale buttons
   // (e.g. a still-visible Continue button during the next sweep)
   // accept double-clicks and trigger /next-position from the
-  // wrong state — a real bug a user hit during first-pass testing.
-  function applyButtonPolicy(state) {
+  // wrong state.
+  function applyButtonPolicy(state, autolevelStatus) {
     // Default: everything hidden / disabled.
     positionPrompt.classList.add('hidden');
     continueBtn.classList.add('hidden');
@@ -761,20 +859,23 @@ _PAGE_HTML = """<!doctype html>
     verifyBtn.disabled = false;
     resetBtn.classList.add('hidden');
     resetBtn.disabled = false;
-    // Run + Test-tone: enabled only at start / after a terminal
-    // state. Disabled during any in-flight measurement step.
+    autolevelCancelBtn.classList.add('hidden');
+    // Run + Auto-level: enabled only when nothing is in flight.
+    // Disabled during measurement, autolevel ramp, etc.
     var idleStates = ['idle', 'ready', 'applied', 'verified', 'failed'];
-    var idle = idleStates.indexOf(state) !== -1;
-    runBtn.disabled = !idle;
-    testToneBtn.disabled = !idle;
+    var sessionIdle = idleStates.indexOf(state) !== -1;
+    var autolevelRamping = autolevelStatus === 'ramping';
+    runBtn.disabled = !sessionIdle || autolevelRamping;
+    autolevelBtn.disabled = !sessionIdle || autolevelRamping;
     // Per-state additions:
+    if (autolevelRamping) {
+      autolevelCancelBtn.classList.remove('hidden');
+    }
     if (state === 'needs_next_position') {
       positionPrompt.classList.remove('hidden');
       continueBtn.classList.remove('hidden');
-      // run is still disabled in this state — only Continue moves
-      // forward.
       runBtn.disabled = true;
-      testToneBtn.disabled = true;
+      autolevelBtn.disabled = true;
     } else if (state === 'ready') {
       applyBtn.classList.remove('hidden');
       resetBtn.classList.remove('hidden');
@@ -796,7 +897,7 @@ _PAGE_HTML = """<!doctype html>
         detail = 'position ' + (s.current_position + 1) + ' of ' + s.total_positions;
       }
       setStateBadge(s.state, detail);
-      applyButtonPolicy(s.state);
+      applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
       if (s.state === 'needs_next_position') {
         positionCurrent.textContent = (s.current_position + 1);
@@ -895,7 +996,8 @@ _PAGE_HTML = """<!doctype html>
   applyBtn.addEventListener('click', function () { applyCorrection(); });
   verifyBtn.addEventListener('click', function () { startVerify(); });
   resetBtn.addEventListener('click', function () { resetCorrection(); });
-  testToneBtn.addEventListener('click', function () { startTestTone(); });
+  autolevelBtn.addEventListener('click', function () { startAutolevel(); });
+  autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
 })();
 </script>
 </body>
@@ -967,7 +1069,16 @@ def _handle_next_position(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
     """POST /next-position: play the next sweep for a multi-position
-    measurement. Only valid in NEEDS_NEXT_POSITION state."""
+    measurement. Only valid in NEEDS_NEXT_POSITION state.
+
+    The handler intentionally BLOCKS until the background sweep task
+    has transitioned state past NEEDS_NEXT_POSITION (typically
+    100-500 ms). Without this wait, the HTTP response carries stale
+    state, the JS pollState loop sees `needs_next_position` again,
+    shows the Continue button, and stops polling — at which point
+    the next sweep completes silently and the user is stuck. See
+    `MeasurementSession.state_changed_from` for the full rationale.
+    """
     from jasper.correction import coordinator, playback
     from jasper.correction.session import SessionState
 
@@ -986,6 +1097,15 @@ def _handle_next_position(
 
     asyncio.run_coroutine_threadsafe(_run_next_sweep(), _ensure_loop())
 
+    # Wait until the background task has actually advanced state.
+    # measurement_window setup takes ~100-500 ms (systemctl stop x3
+    # + MEASURE_PAUSE UDS) before prepare_and_play_sweep sets
+    # PREPARING; allow up to 5 seconds of slack.
+    _run_async(
+        sess.state_changed_from(SessionState.NEEDS_NEXT_POSITION),
+        timeout=6.0,
+    )
+
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
@@ -997,8 +1117,10 @@ def _handle_next_position(
 def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /verify: re-measure after Apply to see the actual effect
     of the correction. One-position only; result lands in
-    verify_curve / verify_metrics."""
+    verify_curve / verify_metrics. Same stale-state-avoidance wait
+    as /next-position."""
     from jasper.correction import coordinator, playback
+    from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
 
@@ -1011,7 +1133,104 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     asyncio.run_coroutine_threadsafe(_run_verify_sweep(), _ensure_loop())
 
+    _run_async(
+        sess.state_changed_from(
+            {SessionState.APPLIED, SessionState.VERIFIED},
+        ),
+        timeout=6.0,
+    )
+
     return {"session_id": sess.session_id, "state": sess.state.value}
+
+
+def _handle_autolevel_start(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /autolevel/start: ramp CamillaDSP main_volume upward
+    while a continuous 1 kHz tone plays, until the iPhone client
+    POSTs to /autolevel/lock (or the ramp tops out and we report
+    `maxed_out`).
+
+    Client behavior:
+      1. POST /autolevel/start (kicks off the background task).
+      2. Watch the live mic-level meter via AudioWorklet.
+      3. When the captured mic RMS lands in the target range
+         (default −20 .. −10 dBFS), POST /autolevel/lock.
+      4. Poll GET /status; `autolevel.status` becomes `locked`,
+         `maxed_out`, `cancelled`, or `error`.
+    """
+    from jasper.camilla import CamillaController
+    from jasper.correction import coordinator, playback
+    from jasper.correction.session import AutolevelStatus
+
+    sess = _get_or_create_session()
+    if sess.autolevel.status == AutolevelStatus.RAMPING:
+        raise RuntimeError("autolevel already in progress")
+
+    cam = CamillaController(
+        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
+        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
+    )
+
+    async def _run_autolevel() -> None:
+        try:
+            async with coordinator.measurement_window():
+                tone_wav = playback._ensure_tone_wav(
+                    freq_hz=1000.0,
+                    duration_s=15.0,  # safety > max ramp duration
+                    dbfs=-6.0,
+                    sample_rate=48000,
+                )
+                player = playback.TonePlayer(tone_wav)
+
+                async def _get_vol() -> float:
+                    v = await cam.get_volume_db(best_effort=False)
+                    return float(v) if v is not None else 0.0
+
+                async def _set_vol(db: float) -> None:
+                    await cam.set_volume_db(db, best_effort=True)
+
+                await sess.run_autolevel(
+                    get_main_volume_db=_get_vol,
+                    set_main_volume_db=_set_vol,
+                    play_continuous_tone=player.play,
+                    cancel_tone=player.cancel,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("autolevel run failed: %s", e)
+
+    asyncio.run_coroutine_threadsafe(_run_autolevel(), _ensure_loop())
+
+    # Wait briefly for status to leave IDLE so the response is
+    # non-stale (same anti-race pattern as /next-position).
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if sess.autolevel.status != AutolevelStatus.IDLE:
+            break
+        time.sleep(0.05)
+
+    return {"started": True, "autolevel": sess.autolevel.snapshot()}
+
+
+def _handle_autolevel_lock(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /autolevel/lock: signal the autolevel task to stop
+    ramping and freeze main_volume at its current value. The
+    locked level is what subsequent sweeps will play through."""
+    sess = _get_or_create_session()
+    fired = _run_async(sess.lock_autolevel(), timeout=2.0)
+    return {"locked": bool(fired), "autolevel": sess.autolevel.snapshot()}
+
+
+def _handle_autolevel_cancel(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /autolevel/cancel: abort the autolevel run and restore
+    main_volume to whatever it was before the ramp started."""
+    sess = _get_or_create_session()
+    fired = _run_async(sess.cancel_autolevel(), timeout=2.0)
+    return {"cancelled": bool(fired), "autolevel": sess.autolevel.snapshot()}
 
 
 def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1096,8 +1315,41 @@ def _handle_upload_capture(
     }
 
 
+def _maybe_restore_main_volume(sess, cam) -> None:
+    """If autolevel ran and locked a measurement-friendly level,
+    restore main_volume to the pre-autolevel value after the
+    measurement workflow completes (apply or reset). This keeps the
+    user's listening level intact across what otherwise would be a
+    surprising "music is quieter now" experience.
+
+    Idempotent — skips silently if no autolevel ran in this session.
+    """
+    from jasper.correction.session import AutolevelStatus
+
+    al = sess.autolevel
+    if al.original_main_volume_db is None:
+        return
+    # Only restore when autolevel had a "ran and finished" outcome.
+    # If still RAMPING or IDLE, don't interfere.
+    if al.status not in {
+        AutolevelStatus.LOCKED,
+        AutolevelStatus.MAXED_OUT,
+    }:
+        return
+
+    async def _restore() -> None:
+        await cam.set_volume_db(al.original_main_volume_db, best_effort=True)
+
+    _run_async(_restore(), timeout=5.0)
+    logger.info(
+        "restored main_volume to %.1f dB after autolevel workflow",
+        al.original_main_volume_db,
+    )
+
+
 def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /apply: write YAML + reload CamillaDSP."""
+    """POST /apply: write YAML + reload CamillaDSP. Restores
+    pre-autolevel main_volume if autolevel was used."""
     from jasper.camilla import CamillaController
 
     sess = _get_or_create_session()
@@ -1110,6 +1362,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.set_config_file_path(path, best_effort=False)
 
     _run_async(sess.apply(_set), timeout=15.0)
+    _maybe_restore_main_volume(sess, cam)
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
@@ -1120,7 +1373,8 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /reset: roll back to /etc/camilladsp/v1.yml."""
+    """POST /reset: roll back to /etc/camilladsp/v1.yml. Restores
+    pre-autolevel main_volume if autolevel was used."""
     from jasper.camilla import CamillaController
 
     sess = _get_or_create_session()
@@ -1133,6 +1387,7 @@ def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return await cam.set_config_file_path(path, best_effort=False)
 
     _run_async(sess.reset(_set), timeout=15.0)
+    _maybe_restore_main_volume(sess, cam)
     return {"session_id": sess.session_id, "state": sess.state.value}
 
 
@@ -1205,6 +1460,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/test-tone":
                     self._send_json(_handle_test_tone(self))
+                    return
+                if path == "/autolevel/start":
+                    self._send_json(_handle_autolevel_start(self))
+                    return
+                if path == "/autolevel/lock":
+                    self._send_json(_handle_autolevel_lock(self))
+                    return
+                if path == "/autolevel/cancel":
+                    self._send_json(_handle_autolevel_cancel(self))
                     return
                 if path == "/upload-capture":
                     self._send_json(_handle_upload_capture(self))

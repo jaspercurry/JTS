@@ -153,16 +153,34 @@ def test_render_page_treats_undefined_constraints_as_ok():
     assert "actual.autoGainControl === true" in body
 
 
-def test_render_page_includes_test_tone_button():
-    """The leveling step (test tone before measurement) was missing
-    in the first cut and became a real first-user complaint.
-    Pin its presence."""
+def test_render_page_includes_autolevel_controls():
+    """The leveling step is now AUTOMATIC — server ramps main_volume
+    while client watches mic and posts /autolevel/lock when in
+    target range. Pin the UI presence + JS plumbing."""
     body = correction_setup._render_page("jts.local").decode()
-    assert 'id="test-tone"' in body
-    assert "Test speaker volume" in body
-    # Frontend handler hooks up the click → POST /test-tone.
-    assert "startTestTone" in body
-    assert "test-tone" in body  # the POST URL
+    # Both buttons present (start + cancel-mid-ramp).
+    assert 'id="autolevel"' in body
+    assert 'id="autolevel-cancel"' in body
+    assert "Auto-level" in body
+    # JS handler exists + targets the right endpoint.
+    assert "startAutolevel" in body
+    assert "autolevel/start" in body
+    assert "autolevel/lock" in body
+    # Target range is documented in the JS for the lock decision.
+    assert "AUTOLEVEL_TARGET_DB_LOW" in body
+    assert "AUTOLEVEL_TARGET_DB_HIGH" in body
+
+
+def test_render_page_amp_message_is_generic_not_tpa3255():
+    """First pass said 'TPA3255 amp knob' — wrong because (a) users
+    don't know what that is, and (b) they might be on a different
+    amp. Generic 'turn up your amplifier' is the right wording.
+    Pin the wording so a future revision doesn't accidentally
+    reintroduce the brand-specific text."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert "turn up your amplifier" in body.lower() or \
+        "turn up your amp" in body.lower()
+    assert "TPA3255" not in body
 
 
 def test_render_page_placement_advice_says_head_height():
