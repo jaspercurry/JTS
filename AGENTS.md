@@ -115,6 +115,39 @@ supervisor helpers (backoff, fingerprint, escalation cue) live at
 
 ---
 
+## Voice system prompt — read the provider's guide before editing
+
+`SYSTEM_INSTRUCTION` in [`jasper/voice_daemon.py`](jasper/voice_daemon.py)
+is what the realtime LLM sees on every turn. **Don't tune it by
+intuition.** Each provider publishes a prompting guide whose
+structure mirrors how their model was RLHF-trained; aligning with
+that structure makes instructions stick. Fighting it (e.g. absolute
+prohibitions where the model expects conditional rules) gets partial
+compliance at best.
+
+Canonical references:
+- OpenAI Realtime — [Realtime Prompting Guide](https://cookbook.openai.com/examples/realtime_prompting_guide)
+  + [Using realtime models](https://developers.openai.com/api/docs/guides/realtime-models-prompting).
+  Defines the recommended skeleton (Role, Personality, Preambles,
+  Verbosity, Tools, …) and concrete language for common patterns.
+- Gemini Live — [Models guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
+  + [prompt design](https://ai.google.dev/gemini-api/docs/prompting-strategies).
+- xAI Grok Voice — [Voice agent guide](https://docs.x.ai/docs/guides/voice/agent).
+
+**Preamble pitfall (worth knowing).** `gpt-realtime-2` emits short
+preamble audio before tool calls by default ("checking the live
+arrivals now…"). It's intentional UX, but for our sub-2-second
+tools it takes longer than the tool itself. OpenAI's official
+suppression pattern is **conditional, not absolute**: tell the
+model the cases in which preambles should NOT appear, including
+"the tool call is lightweight and the user would not benefit from
+an update." Absolute bans ("never preamble") get partially ignored
+because they conflict with the conditional rules the model was
+trained on. See the `Preambles` block in `SYSTEM_INSTRUCTION` for
+the live version.
+
+---
+
 ## Gemini model switching — read first
 
 **Preferred model: `gemini-3.1-flash-live-preview`** (latest Live
