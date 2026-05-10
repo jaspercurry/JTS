@@ -1009,9 +1009,19 @@ _PAGE_HTML = """<!doctype html>
         return;  // upload-capture handler resumes polling
       }
       if (s.state === 'verified' && s.verify_metrics) {
-        verifySummary.textContent = 'Post-correction (20–350 Hz): RMS deviation ' +
-          s.verify_metrics.rms_db.toFixed(2) + ' dB, max ' +
-          s.verify_metrics.max_db.toFixed(2) + ' dB.';
+        verifySummary.innerHTML =
+          '<strong>Post-correction (50–350 Hz):</strong> RMS deviation ' +
+          s.verify_metrics.rms_db.toFixed(1) + ' dB, max ' +
+          s.verify_metrics.max_db.toFixed(1) + ' dB.<br>' +
+          '<span class="hint">' +
+          'Verify is a <em>single-position</em> measurement vs the ' +
+          'multi-position averaged design — in a modal room (especially a ' +
+          'cube), per-position swings of 10–15 dB at modal frequencies ' +
+          'are normal. Some bands will look corrected, some over-corrected, ' +
+          'some under-corrected. The audible test is what actually matters: ' +
+          'play familiar bass-heavy music and listen for the bass tightening ' +
+          'and modal "boom" reducing without the music sounding thinned-out.' +
+          '</span>';
         verifySummary.classList.remove('hidden');
         return;
       }
