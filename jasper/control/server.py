@@ -425,6 +425,19 @@ def _make_handler(
             camilla_host=camilla_host, camilla_port=camilla_port,
         )
 
+    async def _mute_toggle_op():
+        async def _op(coord):
+            # If currently muted, unmute and return restored level.
+            # Otherwise mute and return 0 (the new actual level).
+            if coord.is_muted():
+                return await coord.unmute()
+            await coord.mute()
+            return 0
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
@@ -581,6 +594,25 @@ def _make_handler(
                     return
                 logger.info(
                     "event=volume.set new_pct=%d client=%s",
+                    new_pct, self.address_string(),
+                )
+                self._send_json(self._volume_payload(new_pct))
+                return
+
+            if self.path == "/volume/mute":
+                # Toggle mute: muted → unmute (restore pre-mute level),
+                # unmuted → mute (save current level, drop to 0).
+                # Used by HID accessory clicks (jasper-input) and any
+                # other one-shot toggle caller. State persistence and
+                # the pre-mute level live inside VolumeCoordinator.
+                try:
+                    new_pct = asyncio.run(_mute_toggle_op())
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("mute toggle failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                logger.info(
+                    "event=volume.mute new_pct=%d client=%s",
                     new_pct, self.address_string(),
                 )
                 self._send_json(self._volume_payload(new_pct))

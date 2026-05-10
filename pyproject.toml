@@ -66,6 +66,11 @@ dependencies = [
     "google-auth>=2.36",
     "google-auth-oauthlib>=1.2",
     "google-api-python-client>=2.150",
+    # jasper-input: third-party HID accessory bridge (volume knobs,
+    # macro pads, etc.) reads /dev/input/event* via python-evdev and
+    # watches for hot-plug via pyudev. Tiny pure-Python deps.
+    "evdev>=1.7",
+    "pyudev>=0.24",
 ]
 
 [project.optional-dependencies]
@@ -91,6 +96,7 @@ jasper-dial-web = "jasper.web.dial_setup:main"
 jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
+jasper-input = "jasper.accessories.bridge:main"
 
 [build-system]
 requires = ["setuptools>=68"]

@@ -206,14 +206,16 @@ class VolumeCoordinator:
         return self._level
 
     def load_persisted_level(self) -> int:
-        """Re-read listening_level from disk into the in-memory cache.
-        Used by sync callers (control daemon HTTP handlers) that build
-        a fresh coordinator per request — they want the current
-        canonical level, not the constructor default. Returns the
-        loaded level."""
-        record = self._persistence.load()
-        if record is not None and record.listening_level is not None:
-            self._level = int(record.listening_level)
+        """Re-read state from disk into the in-memory cache. Used by
+        sync callers (jasper-control HTTP handlers) that build a fresh
+        coordinator per request — they want the current canonical
+        level and mute state, not the constructor defaults.
+
+        Refreshes both listening_level and pre_mute_level so a click
+        on the volume-knob's mute button can correctly detect prior
+        mute state set by an earlier click that ran in a different
+        coordinator instance. Returns the loaded level."""
+        self._refresh_from_disk()
         return self._level
 
     def is_muted(self) -> bool:
@@ -278,6 +280,10 @@ class VolumeCoordinator:
                 await self._dispatch(
                     target_level, persist=False, user_change=False,
                 )
+            # Mute state is per-session — clear any persisted pre_mute
+            # at boot so a power-cycle wakes us in the unmuted state.
+            self._pre_mute_level = None
+            self._persistence.save_pre_mute_level(None)
             self._persistence.save_listening_level(
                 target_level, mark_user_change=False,
             )
@@ -296,6 +302,7 @@ class VolumeCoordinator:
             self._refresh_from_disk()
             self._level = target
             self._pre_mute_level = None  # any explicit set clears mute state
+            self._persistence.save_pre_mute_level(None)
             await self._dispatch(target, persist=True)
         return target
 
@@ -310,18 +317,22 @@ class VolumeCoordinator:
             target = max(0, min(100, self._level + int(delta)))
             self._level = target
             self._pre_mute_level = None
+            self._persistence.save_pre_mute_level(None)
             await self._dispatch(target, persist=True)
         return target
 
     async def mute(self) -> int:
         """Silence the speaker. Saves pre-mute level for unmute.
-        Returns the saved (pre-mute) level."""
+        Returns the saved (pre-mute) level. Persisted so a later
+        unmute on a different coordinator instance (jasper-control
+        builds one per HTTP request) can still see it."""
         async with self._lock:
             self._refresh_from_disk()
             if self._pre_mute_level is None and self._level > 0:
                 self._pre_mute_level = self._level
             saved = self._pre_mute_level or 0
             self._level = 0
+            self._persistence.save_pre_mute_level(self._pre_mute_level)
             await self._dispatch(0, persist=False)
             return saved
 
@@ -329,21 +340,30 @@ class VolumeCoordinator:
         """Restore pre-mute level (or fallback if no prior mute).
         Returns the restored level."""
         async with self._lock:
+            self._refresh_from_disk()
             target = self._pre_mute_level if self._pre_mute_level is not None else fallback_level
             target = max(0, min(100, int(target)))
             self._pre_mute_level = None
+            self._persistence.save_pre_mute_level(None)
             self._level = target
             await self._dispatch(target, persist=True)
             return target
 
     def _refresh_from_disk(self) -> None:
-        """Sync in-memory _level with the persistence file. Cheap (~1ms
+        """Sync in-memory state with the persistence file. Cheap (~1ms
         sync read of a small JSON file) and called on every public
         operation so cross-process writes (jasper-control via dial)
-        don't leave voice_daemon's coordinator with stale state."""
+        don't leave voice_daemon's coordinator with stale state.
+
+        Refreshes both `listening_level` and `pre_mute_level` — the
+        latter so an unmute call on a per-request coordinator can see
+        a prior mute() that ran in a different coordinator instance."""
         record = self._persistence.load()
-        if record is not None and record.listening_level is not None:
+        if record is None:
+            return
+        if record.listening_level is not None:
             self._level = int(record.listening_level)
+        self._pre_mute_level = record.pre_mute_level
 
     # ------------------------------------------------------------------
     # Observer hook — called by inbound DBus/HTTP observers when they
@@ -392,6 +412,7 @@ class VolumeCoordinator:
             )
             self._level = level
             self._pre_mute_level = None
+            self._persistence.save_pre_mute_level(None)
             self._persistence.save_listening_level(level)
 
     # ------------------------------------------------------------------

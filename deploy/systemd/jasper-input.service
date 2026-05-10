@@ -1,0 +1,30 @@
+[Unit]
+Description=Jasper HID accessory bridge (evdev → jasper-control)
+After=network.target jasper-control.service
+# Wants= (not Requires=) so a jasper-control restart blip doesn't
+# cascade-stop the bridge. The bridge's HTTP calls just fail and
+# retry on the next keypress.
+Wants=jasper-control.service
+
+[Service]
+Type=simple
+ExecStart=/opt/jasper/.venv/bin/jasper-input
+Restart=on-failure
+RestartSec=2
+
+# Hardening — daemon reads /dev/input/event*, watches udev, and
+# makes localhost HTTP requests to jasper-control. No writes outside
+# stdout/stderr (journald). Runs as root because /dev/input/event*
+# is root:input on Trixie and we don't run a service account.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Idle: one udev netlink socket + a small number of evdev fds (one
+# per attached known accessory). Reads at human keystroke speed.
+MemoryHigh=80M
+MemoryMax=120M
+
+[Install]
+WantedBy=multi-user.target
