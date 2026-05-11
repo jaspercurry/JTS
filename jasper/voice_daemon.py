@@ -1531,7 +1531,9 @@ class WakeLoop:
         # additive math on camilla.
         self._volume_coordinator.note_voice_session(True)
         await self._ducker.duck()
-        self._session_id = self._usage_store.open_session()
+        self._session_id = self._usage_store.open_session(
+            provider=self._cfg.voice_provider,
+        )
         self._turn = await self._connection.acquire_turn()
         acquire_ms = (_time.monotonic() - t_wake) * 1000
         logger.info(
