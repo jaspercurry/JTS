@@ -399,6 +399,7 @@ def _make_handler(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str,
+    sampler: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
     async def _set_op(percent: int):
@@ -512,6 +513,20 @@ def _make_handler(
                 else:
                     snap["age_seconds"] = None
                 self._send_json(snap)
+                return
+            if self.path == "/system/snapshot":
+                # Snapshot for the /system dashboard. Current values +
+                # 60-min ring buffers for the sparklines + build info.
+                # Sampler may be None in tests / direct CLI invocation;
+                # surface an empty history rather than 500.
+                from .system_metrics import read_build_info
+                payload: dict[str, Any] = {
+                    "build": read_build_info(),
+                    "metrics": (
+                        sampler.snapshot() if sampler is not None else None
+                    ),
+                }
+                self._send_json(payload)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -730,10 +745,11 @@ def build_server(
     camilla_host: str,
     camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
+    sampler: Any = None,
 ) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(
         (host, port),
-        _make_handler(camilla_host, camilla_port, voice_socket_path),
+        _make_handler(camilla_host, camilla_port, voice_socket_path, sampler),
     )
 
 
@@ -822,10 +838,17 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
+    # System metrics sampler — 5 s ring buffer for the /system dashboard.
+    # Daemon thread, exits with the process.
+    from .system_metrics import SystemSampler
+    sampler = SystemSampler()
+    sampler.start()
+
     server = build_server(
         args.host, args.port,
         args.camilla_host, args.camilla_port,
         args.voice_socket,
+        sampler=sampler,
     )
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     logger.info(

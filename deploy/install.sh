@@ -371,6 +371,27 @@ install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     install -d -m 0750 "${STATE_DIR}"
     install -d -m 0750 "${ENV_DIR}"
+
+    # Build manifest — captures the git SHA + install timestamp at the
+    # moment install.sh ran. The /system dashboard reads this to show
+    # "version: <sha>, installed <timestamp>". Falls back to "unknown"
+    # if REPO_DIR isn't a git checkout (e.g. tarball deploy).
+    local git_sha="unknown" git_full="unknown" git_branch="unknown"
+    if [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+        git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
+        git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
+        git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+    fi
+    cat > "${STATE_DIR}/build.txt" <<EOF
+JASPER_GIT_SHA=${git_sha}
+JASPER_GIT_SHA_FULL=${git_full}
+JASPER_GIT_BRANCH=${git_branch}
+JASPER_INSTALL_AT=$(date -Iseconds)
+EOF
+    chmod 0644 "${STATE_DIR}/build.txt"
+    echo "  Build manifest: ${git_sha} on ${git_branch}"
+
+
     # Per-account Google refresh tokens live under here at mode 0600.
     # Tighten the parent dirs too so non-root processes can't even
     # `ls` the per-household-member token filenames (the names are
