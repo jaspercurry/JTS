@@ -594,6 +594,13 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-init.service" \
         "${SYSTEMD_DIR}/jasper-aec-init.service"
+    # Triggered by the udev rule installed below when the Apple dongle
+    # re-enumerates: reset-failed + start of the three daemons that
+    # open hw:CARD=A so a hardware reconnect recovers without manual
+    # intervention. See docs/HANDOFF-resilience.md.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
+        "${SYSTEMD_DIR}/jasper-dongle-recover.service"
     # Pin the Apple dongle's analog Headphone control to 100% at every
     # boot — the dynamic volume control happens in CamillaDSP (or the
     # source's own slider) and the dongle should never be limiting us.

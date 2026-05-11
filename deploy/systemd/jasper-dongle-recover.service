@@ -1,0 +1,27 @@
+[Unit]
+Description=Recover audio daemons after the Apple dongle re-enumerates
+# Triggered by the udev rule in /etc/udev/rules.d/99-jasper-apple-dongle.rules
+# when sound card "A" (the dongle) appears. The daemons that open
+# hw:CARD=A — jasper-camilla, jasper-aec-bridge, jasper-voice — exit
+# at startup if the dongle is absent and trip systemd's StartLimitBurst
+# after ~5 retries. By the time the dongle comes back, systemd has parked
+# them as failed and stops watching. This unit resets the failed state
+# and starts each one so the speaker recovers without manual intervention.
+#
+# Why a separate unit instead of inline RUN+= in the udev rule: systemctl
+# from udev's RUN+= can race with D-Bus and udev's event pipeline is
+# single-threaded per device, so blocking calls slow every other device
+# event. Triggering a unit via SYSTEMD_WANTS keeps udev responsive and
+# lets systemd serialise the recovery itself.
+After=sound.target
+Wants=sound.target
+
+[Service]
+Type=oneshot
+# `reset-failed` clears the StartLimitBurst counter so subsequent
+# `start` calls aren't no-ops. Both commands are idempotent against
+# already-active or non-failed units.
+ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-aec-bridge.service jasper-voice.service
+ExecStart=/bin/systemctl start jasper-camilla.service jasper-aec-bridge.service jasper-voice.service
+StandardOutput=journal
+StandardError=journal

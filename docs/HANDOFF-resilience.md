@@ -116,6 +116,52 @@ that generically.
 
 The honest framing: today's shipped resilience is **Tier 1, Tier 2, and the architectural choice that obviated Tiers 3–4 for the AEC path.** Tier 5 is cheap and worth doing; Tiers 3–4 are kept on the deferred list with a clear trigger ("do this if we hit a wedge that the systemd watchdog can't fix").
 
+### Hardware-event recovery — sidebar to the ladder
+
+Separate from the watchdog ladder above, one failure class is worth
+calling out because the ladder doesn't catch it: daemons that **exit
+cleanly at startup** because a USB device is absent. This is not a
+hang and not a sibling-daemon issue — it's the dependency physically
+missing at the moment the daemon tries to open it.
+
+The 2026-05-11 sequence:
+
+1. Power-cycle the Pi while nothing is plugged into the Apple dongle's
+   3.5 mm jack. The dongle drops its USB Audio Class interfaces
+   without an analog load, so the Pi boots with the dongle
+   USB-enumerated but no Card A.
+2. `jasper-camilla`, `jasper-aec-bridge`, and `jasper-voice` all try
+   to open `hw:CARD=A`, get `ValueError: No output device matching
+   'jasper_out'`, and exit with code 1.
+3. systemd retries each per `Restart=on-failure`, hits
+   `StartLimitBurst` after ~5 attempts, parks the units as failed,
+   stops watching.
+4. User plugs the speaker back into the 3.5 mm jack. Card A appears
+   in `/proc/asound/cards`. Nothing is monitoring for this; the units
+   stay parked and the speaker stays silent until manual
+   `systemctl reset-failed && start`.
+
+`WatchdogSec` doesn't help — the daemons exited cleanly, they didn't
+hang. `Restart=on-watchdog` only catches the watchdog timeout, not
+arbitrary exits. Bumping `StartLimitBurst` higher would just delay
+the same parked-failed outcome.
+
+Fix: a udev rule on the dongle's USB IDs that triggers
+`jasper-dongle-recover.service`
+(`deploy/systemd/jasper-dongle-recover.service`) when Card A appears,
+which runs `systemctl reset-failed` + `start` on the three units.
+Idempotent — when the daemons are already healthy it's a no-op. The
+rule (`deploy/udev/99-jasper-apple-dongle.rules`) uses `SYSTEMD_WANTS`
+rather than `RUN+=` so systemctl dispatches via PID 1 asynchronously
+and udev's event pipeline stays responsive.
+
+Generalisation: if a future hardware dependency (e.g. the XVF mic
+array) exhibits the same pattern, the same shape works — one udev
+match on the device's USB IDs plus a `*-recover.service` that
+reset-fails the relevant daemons. Keep these tightly scoped to the
+specific device; a generic "restart on any USB event" would thrash
+during normal hotplug.
+
 ---
 
 ## Implementation map
@@ -151,6 +197,14 @@ For anyone touching the resilience code:
   services. Includes the legacy-value migration: if an existing
   install has `JASPER_MIC_DEVICE=hw:N,1` (the pre-UDP sentinel),
   it gets auto-flipped on the next install run.
+- `deploy/udev/99-jasper-apple-dongle.rules` — three rules keyed
+  on the dongle's USB IDs: Headphone-100% pin on hotplug, USB
+  autosuspend off, and `SYSTEMD_WANTS` trigger for the recovery
+  service on Card A appearance.
+- `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
+  unit that `reset-failed` + `start`s jasper-camilla,
+  jasper-aec-bridge, and jasper-voice. Triggered by the udev rule
+  above; idempotent so re-fires on rapid replug are harmless.
 - `tests/test_watchdog.py` — sentinel-contract tests
   (fresh/stale/recovery/disabled-fallback).
 - `tests/test_udp_mic_capture.py` — UDP receiver contract
@@ -183,6 +237,17 @@ Smoke test that the watchdog actually catches a wedge:
 sudo kill -STOP $(pgrep -f jasper-aec-bridge | head -1)
 sudo journalctl -fu jasper-aec-bridge
 # within 30 s: "Watchdog timeout (limit 30s)!" → SIGABRT → restart
+```
+
+Smoke test that the dongle-recovery udev rule fires:
+
+```sh
+# Pull the speaker cable from the dongle's 3.5 mm jack, wait until
+# `cat /proc/asound/cards` no longer lists Card A, then re-seat it.
+sudo journalctl -fu jasper-dongle-recover
+# within 1-2 s of re-seat: ExecStart= lines, then exits successfully.
+# `systemctl is-active jasper-camilla jasper-voice` should both
+# return `active` after, regardless of prior state.
 ```
 
 ---

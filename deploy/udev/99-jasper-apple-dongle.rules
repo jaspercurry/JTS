@@ -1,6 +1,6 @@
 # Apple USB-C → 3.5mm Headphone Jack adapter (vendor 05ac, product 110a).
 #
-# Two rules, both keyed on the dongle's USB ids so they survive card-
+# Three rules, all keyed on the dongle's USB ids so they survive card-
 # number reordering:
 #
 # 1. **On every (re-)enumeration, re-pin the Headphone mixer control
@@ -21,6 +21,16 @@
 #    of a failed resume re-enumerating the device and resetting its
 #    mixer state.
 #
+# 3. **Trigger jasper-dongle-recover.service** to reset-failed and
+#    start jasper-camilla, jasper-aec-bridge, and jasper-voice. The
+#    daemons all open hw:CARD=A; if the dongle is absent at boot
+#    (e.g. nothing in the 3.5 mm jack, or analog load briefly removed),
+#    each one exits at startup, trips StartLimitBurst after ~5 retries,
+#    and is parked as failed. Without this rule, no one is watching
+#    when the dongle later re-appears. SYSTEMD_WANTS keeps udev's
+#    event pipeline responsive — systemctl is dispatched asynchronously
+#    by PID 1, not blocked on inside the udev event.
+#
 # To verify after install: `udevadm test /sys/class/sound/controlC*`
 # (substituting the dongle's controlC node) — the RUN+= line should
 # appear in the output.
@@ -28,3 +38,5 @@
 ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ENV{JASPER_DONGLE_CARDNUM}="$attr{device/number}", RUN+="/usr/bin/amixer -c $env{JASPER_DONGLE_CARDNUM} sset Headphone 100% unmute"
 
 ACTION=="add", SUBSYSTEM=="usb", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", ATTR{power/control}="on"
+
+ACTION=="add", SUBSYSTEM=="sound", KERNEL=="controlC*", ATTRS{idVendor}=="05ac", ATTRS{idProduct}=="110a", TAG+="systemd", ENV{SYSTEMD_WANTS}+="jasper-dongle-recover.service"
