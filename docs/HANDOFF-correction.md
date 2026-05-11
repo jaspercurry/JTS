@@ -25,6 +25,17 @@
   2026-05-09. Power-mean spatial averaging across 5 positions;
   post-Apply re-measurement with deviation metrics; target-curve
   choice (flat / warm / bright). 12 new tests, all passing.
+- ✅ **Phase 2.2 — survive `jasper-camilla` restarts.** Merged
+  2026-05-11. The systemd unit now passes
+  `--statefile /var/lib/camilladsp/statefile.yml` to CamillaDSP.
+  Without it, every `systemctl restart jasper-camilla` (install.sh,
+  reboot, ALSA hiccup, manual debugging) reverted the speaker to
+  `v1.yml` with the correction YAML still sitting unreferenced on
+  disk. With it, the wizard's `set_config_file_path()` write is
+  durable — Camilla reads the statefile on startup and reloads
+  whatever was last active. Recovery from a bad correction without
+  hand-editing the statefile: add `--no_config` to the ExecStart
+  args, restart, fix or re-measure, remove the flag.
 - ✅ **Phase 2.1 — current-correction visibility + per-session debug
   bundles.** Merged 2026-05-11.
   - `GET /status` now includes a `current_correction` descriptor

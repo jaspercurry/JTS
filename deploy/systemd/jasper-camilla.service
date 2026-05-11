@@ -17,8 +17,19 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# --statefile lets CamillaDSP persist the currently-loaded config path
+# (and main_volume) across restarts. Without it, every restart drops
+# back to v1.yml regardless of what was applied, silently wiping a
+# user's room correction on reboot / power cycle / install.sh re-run.
+# With it, the room-correction wizard's set_config_file_path() write
+# is durable. On first start (no statefile yet), Camilla falls back
+# to the positional v1.yml argument. To recover from a bad correction
+# without editing the statefile by hand: add --no_config to the
+# args, restart, fix the underlying YAML or apply a new measurement,
+# then remove --no_config.
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
+    --statefile /var/lib/camilladsp/statefile.yml \
     /etc/camilladsp/v1.yml
 Restart=always
 RestartSec=2
