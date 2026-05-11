@@ -54,6 +54,7 @@ rsync -az --delete --stats --quiet \
     --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
     --exclude 'captures/*' --exclude '*.pyc' \
+    --exclude 'jasper_speaker.egg-info' --exclude '*.egg-info' \
     ./ "${PI_USER}@${PI_HOST}:/home/pi/jts/"
 
 if [[ "${SKIP_INSTALL:-}" == "1" ]]; then
