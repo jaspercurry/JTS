@@ -191,6 +191,15 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .peq-list th, .peq-list td { text-align: right; padding: 0.3em 0.6em;
                                 border-bottom: 1px solid #eee; }
   .peq-list th:first-child, .peq-list td:first-child { text-align: left; }
+
+  #current-correction { border-radius: 6px; padding: 0.7em 0.9em;
+                        margin: 0.5em 0 1em; display: flex;
+                        align-items: center; justify-content: space-between;
+                        flex-wrap: wrap; gap: 0.6em; }
+  #current-correction.applied { background: #e6f4ea; border: 1px solid #1db954; }
+  #current-correction.flat    { background: #f4f4f4; border: 1px solid #ddd; color: #555; }
+  #current-correction .label { font-weight: 600; }
+  #current-correction button.danger { background: #d44; }
 """
 
 
@@ -205,6 +214,11 @@ _PAGE_HTML = """<!doctype html>
 <body>
 <h1>Room correction</h1>
 <p class="sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
+
+<div id="current-correction" class="flat" aria-live="polite">
+  <span class="label" id="current-correction-label">Checking current correction…</span>
+  <button id="current-correction-reset" type="button" class="danger hidden">Reset to flat</button>
+</div>
 
 <details class="advice" open>
   <summary>Where to put the phone</summary>
@@ -276,6 +290,7 @@ _PAGE_HTML = """<!doctype html>
     <button id="reset-correction" type="button" class="danger hidden">Reset to flat</button>
   </p>
   <p class="hint" style="margin-top:0.4em">Before measuring, tap <strong>Auto-level</strong>. The speaker plays a 1 kHz tone while we gradually raise the volume from quiet to a measurement-friendly level (capped at −6 dB software volume — your amp's analog gain is still the final say). When the iPhone mic hears it in the target range, we lock automatically. If the volume sounds right to <em>you</em> first, tap <strong>Lock now</strong>. Takes ~6 seconds at most.</p>
+  <p class="hint" style="margin-top:0.4em">Each measurement starts from flat — your current correction (if any) is reset first so the sweep captures the raw room. After you tap <strong>Apply</strong>, the new correction takes over.</p>
   <div id="autolevel-status" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
     <p style="margin:0; font-weight:600" id="autolevel-line">Auto-leveling…</p>
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
@@ -313,6 +328,9 @@ _PAGE_HTML = """<!doctype html>
   var REQUIRED_SR = __REQUIRED_SR__;
 
   var startBtn = document.getElementById('start');
+  var currentCorrectionBanner = document.getElementById('current-correction');
+  var currentCorrectionLabel = document.getElementById('current-correction-label');
+  var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
   var constraintsBlock = document.getElementById('constraints');
   var rowsTbody = document.getElementById('constraint-rows');
   var errBanner = document.getElementById('err-banner');
@@ -535,6 +553,64 @@ _PAGE_HTML = """<!doctype html>
     stateBadge.className = 'state-badge ' + state;
     stateBadge.textContent = state;
     stateDetail.textContent = detail || '';
+  }
+
+  function formatAppliedAt(epoch) {
+    if (!epoch) return '';
+    var d = new Date(epoch * 1000);
+    if (isNaN(d.getTime())) return '';
+    var days = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    var pad = function (n) { return n < 10 ? '0' + n : String(n); };
+    return days[d.getDay()] + ' ' + d.getFullYear() + '-' +
+      pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + ' ' +
+      pad(d.getHours()) + ':' + pad(d.getMinutes());
+  }
+
+  function renderCurrentCorrection(cc) {
+    // `cc` is the parsed descriptor from GET /status (or null when
+    // CamillaDSP is running the base v1.yml).
+    if (cc && cc.applied_at_epoch) {
+      currentCorrectionBanner.className = 'applied';
+      var when = formatAppliedAt(cc.applied_at_epoch);
+      var count = cc.peq_count || 0;
+      var noun = count === 1 ? 'filter' : 'filters';
+      currentCorrectionLabel.textContent =
+        'Current correction: ' + count + ' PEQ ' + noun +
+        (when ? ' applied ' + when : '');
+      currentCorrectionResetBtn.classList.remove('hidden');
+    } else {
+      currentCorrectionBanner.className = 'flat';
+      currentCorrectionLabel.textContent =
+        'No correction applied — speaker is flat.';
+      currentCorrectionResetBtn.classList.add('hidden');
+    }
+  }
+
+  async function refreshCurrentCorrection() {
+    try {
+      var s = await fetchStatus();
+      renderCurrentCorrection(s.current_correction);
+    } catch (e) {
+      currentCorrectionBanner.className = 'flat';
+      currentCorrectionLabel.textContent =
+        'Could not read current correction: ' + e.message;
+      currentCorrectionResetBtn.classList.add('hidden');
+    }
+  }
+
+  async function resetFromBanner() {
+    currentCorrectionResetBtn.disabled = true;
+    currentCorrectionLabel.textContent = 'Resetting to flat…';
+    try {
+      await postJson('reset', {});
+    } catch (e) {
+      currentCorrectionLabel.textContent =
+        'Reset failed: ' + e.message;
+      currentCorrectionResetBtn.disabled = false;
+      return;
+    }
+    await refreshCurrentCorrection();
+    currentCorrectionResetBtn.disabled = false;
   }
 
   function renderPEQs(peqs) {
@@ -1100,6 +1176,7 @@ _PAGE_HTML = """<!doctype html>
     } finally {
       applyBtn.disabled = false;
     }
+    refreshCurrentCorrection();
   }
 
   async function resetCorrection() {
@@ -1113,6 +1190,7 @@ _PAGE_HTML = """<!doctype html>
     } finally {
       resetBtn.disabled = false;
     }
+    refreshCurrentCorrection();
   }
 
   startBtn.addEventListener('click', function () { startMicCapture(); });
@@ -1123,6 +1201,11 @@ _PAGE_HTML = """<!doctype html>
   resetBtn.addEventListener('click', function () { resetCorrection(); });
   autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
+  currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
+
+  // Populate the banner on page load (and after apply / reset so the
+  // user sees the new state without a refresh).
+  refreshCurrentCorrection();
 
   // Redraw chart on resize / orientation change — without this, the
   // canvas's drawing surface stays at the dimensions it had on the
@@ -1171,22 +1254,83 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         return {}
 
 
+def _camilla() -> "Any":
+    """Construct a CamillaController against the configured host/port.
+    Factored so tests can monkeypatch a single seam — and so the
+    /start reset path doesn't drift from the /apply + /reset paths.
+    """
+    from jasper.camilla import CamillaController
+    return CamillaController(
+        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
+        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
+    )
+
+
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /start: replace the session, kick off the first sweep.
+    """POST /start: snapshot any current correction, hard-reset
+    CamillaDSP to the base config, replace the session, kick off the
+    first sweep.
+
     Body fields:
       - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
       - target_choice:   str = 'flat' | 'neutral' | 'warm' | 'bright'
+      - noise_floor_db:  float | None — optional, client autolevel
+        preflight measurement; only saved into the debug bundle.
+
+    Why reset before sweeping: if a correction is already loaded, the
+    sweep traverses the corrected pipeline and the resulting curve
+    reflects the corrected room, not the raw room — designing new
+    filters from that would compound the corrections. Resetting first
+    guarantees every measurement starts from the same flat baseline.
     """
     from jasper.correction import coordinator, playback
+    from jasper.correction.session import parse_current_correction
 
     body = _read_json_body(handler)
     total_positions = max(1, min(10, int(body.get("total_positions", 1))))
     target_choice = str(body.get("target_choice", "flat"))
+    noise_floor_db_raw = body.get("noise_floor_db")
+    noise_floor_db: float | None
+    try:
+        noise_floor_db = (
+            float(noise_floor_db_raw)
+            if noise_floor_db_raw is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        noise_floor_db = None
 
     sess = _replace_session(
         total_positions=total_positions,
         target_choice=target_choice,
     )
+    sess.noise_floor_db = noise_floor_db
+
+    cam = _camilla()
+
+    # Snapshot what was loaded BEFORE we reset, so the bundle records
+    # the prior state. Best-effort: if CamillaDSP is unreachable we
+    # still proceed — the reset call below will also fail soft and
+    # the sweep will go through whatever pipeline is live.
+    async def _snapshot() -> dict[str, Any] | None:
+        path = await cam.get_config_file_path(best_effort=True)
+        return parse_current_correction(path, config_dir=sess.cfg.config_dir)
+
+    try:
+        sess.current_correction_at_start = _run_async(_snapshot(), timeout=3.0)
+    except Exception:  # noqa: BLE001
+        logger.exception("/start: snapshot current_correction failed")
+        sess.current_correction_at_start = None
+
+    async def _reset_to_base() -> None:
+        await cam.set_config_file_path(
+            str(sess.cfg.base_config_path), best_effort=True,
+        )
+
+    try:
+        _run_async(_reset_to_base(), timeout=5.0)
+    except Exception:  # noqa: BLE001
+        logger.exception("/start: reset to base config failed (continuing)")
 
     async def _run_first_sweep() -> None:
         try:
@@ -1202,6 +1346,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         "state": sess.state.value,
         "total_positions": sess.total_positions,
         "target_choice": sess.target_choice,
+        "current_correction_at_start": sess.current_correction_at_start,
     }
 
 
@@ -1405,9 +1550,58 @@ def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """GET /status: snapshot the current session."""
+    """GET /status: snapshot the current session + currently-loaded
+    CamillaDSP config descriptor. `current_correction` is best-effort
+    (returns None if CamillaDSP is unreachable) so the page still
+    renders something useful when the daemon is restarting."""
+    from jasper.correction.session import parse_current_correction
+
     sess = _get_or_create_session()
-    return sess.snapshot()
+    snap = sess.snapshot()
+    cam = _camilla()
+    try:
+        path = _run_async(
+            cam.get_config_file_path(best_effort=True), timeout=2.0,
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception("status: get_config_file_path failed")
+        path = None
+    snap["current_correction"] = parse_current_correction(
+        path, config_dir=sess.cfg.config_dir,
+    )
+    return snap
+
+
+def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """GET /sessions: list recent session bundles for debugging /
+    future UI history. Returns the parsed info.json for each entry,
+    sorted by started_at desc; capped at 20. Bundles without a
+    parseable info.json (in-progress writes, crashed mid-state) are
+    skipped silently."""
+    sess = _get_or_create_session()
+    sessions_dir: Path = sess.cfg.sessions_dir
+    if not sessions_dir.exists():
+        return {"sessions": []}
+    entries: list[dict[str, Any]] = []
+    for sub in sessions_dir.iterdir():
+        if not sub.is_dir():
+            continue
+        info_path = sub / "info.json"
+        if not info_path.exists():
+            continue
+        try:
+            info = json.loads(info_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            continue
+        # Decorate with derived flags the UI cares about without
+        # having to re-stat each bundle.
+        info["bundle_dir"] = str(sub)
+        info["has_result"] = (sub / "result.json").exists()
+        info["has_applied_yml"] = (sub / "applied.yml").exists()
+        info["has_verify_wav"] = (sub / "verify.wav").exists()
+        entries.append(info)
+    entries.sort(key=lambda e: e.get("started_at", 0), reverse=True)
+    return {"sessions": entries[:20]}
 
 
 def _handle_upload_capture(
@@ -1428,10 +1622,11 @@ def _handle_upload_capture(
         raise ValueError("empty body")
     body = handler.rfile.read(length)
 
-    sess.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
-    captured_path = sess.cfg.capture_dir / (
-        f"capture_{sess.session_id}_p{sess.current_position}_{int(time.time())}.wav"
-    )
+    if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
+        captured_path = sess.verify_capture_path()
+    else:
+        captured_path = sess.capture_path_for_position(sess.current_position)
+    captured_path.parent.mkdir(parents=True, exist_ok=True)
     captured_path.write_bytes(body)
 
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
@@ -1498,13 +1693,8 @@ def _maybe_restore_main_volume(sess, cam) -> None:
 def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /apply: write YAML + reload CamillaDSP. Restores
     pre-autolevel main_volume if autolevel was used."""
-    from jasper.camilla import CamillaController
-
     sess = _get_or_create_session()
-    cam = CamillaController(
-        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
+    cam = _camilla()
 
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
@@ -1523,13 +1713,8 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /reset: roll back to /etc/camilladsp/v1.yml. Restores
     pre-autolevel main_volume if autolevel was used."""
-    from jasper.camilla import CamillaController
-
     sess = _get_or_create_session()
-    cam = CamillaController(
-        host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
-        port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
-    )
+    cam = _camilla()
 
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
@@ -1590,6 +1775,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_status(self))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/status failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/sessions":
+                try:
+                    self._send_json(_handle_sessions(self))
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/sessions failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

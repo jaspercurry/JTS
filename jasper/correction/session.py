@@ -37,6 +37,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -51,6 +54,59 @@ from .camilla_yaml import emit_correction_config
 from .peq import PEQ
 
 logger = logging.getLogger(__name__)
+
+
+_CORRECTION_FILENAME_RE = re.compile(
+    r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
+)
+_PEQ_KEY_RE = re.compile(r"^\s+peq_\d+:", re.MULTILINE)
+
+
+def parse_current_correction(
+    path: str | None,
+    *,
+    config_dir: Path = Path("/var/lib/camilladsp/configs"),
+) -> dict[str, Any] | None:
+    """Describe whatever correction (if any) the given CamillaDSP
+    config path represents. Returns None for the base v1.yml or any
+    path we don't recognise as a correction emission.
+
+    The filename shape is fixed by `MeasurementSession.apply`:
+    ``correction_<session_id>_<unixtime>.yml`` under
+    ``/var/lib/camilladsp/configs/``. Anything else (the base
+    `/etc/camilladsp/v1.yml`, a hand-edited config, a missing path)
+    returns None — the UI treats that as "speaker is flat."
+    """
+    if not path:
+        return None
+    p = Path(path)
+    if p.parent != Path(config_dir):
+        return None
+    m = _CORRECTION_FILENAME_RE.match(p.name)
+    if not m:
+        return None
+    try:
+        ts = int(m.group("ts"))
+    except ValueError:
+        return None
+    peq_count = 0
+    try:
+        text = p.read_text()
+    except OSError:
+        text = ""
+    if text:
+        peq_count = len(_PEQ_KEY_RE.findall(text))
+    return {
+        "path": str(p),
+        "session_id": m.group("id"),
+        "applied_at_epoch": ts,
+        "peq_count": peq_count,
+    }
+
+
+def _bundles_enabled() -> bool:
+    """Default ON; opt-out via JASPER_CORRECTION_SAVE_BUNDLES=0."""
+    return os.environ.get("JASPER_CORRECTION_SAVE_BUNDLES", "1").strip() != "0"
 
 
 class SessionState(Enum):
@@ -155,6 +211,7 @@ class AutolevelData:
 class SessionConfig:
     sweep_dir: Path = Path("/var/lib/jasper/correction/sweeps")
     capture_dir: Path = Path("/var/lib/jasper/correction/captures")
+    sessions_dir: Path = Path("/var/lib/jasper/correction/sessions")
     config_dir: Path = Path("/var/lib/camilladsp/configs")
     base_config_path: Path = Path("/etc/camilladsp/v1.yml")
 
@@ -228,10 +285,41 @@ class MeasurementSession:
         self._autolevel_lock_event: asyncio.Event | None = None
         self._autolevel_cancel_event: asyncio.Event | None = None
 
+        # Optional client-reported room noise floor (the autolevel
+        # preflight measures this in the browser before the tone
+        # plays). Saved into info.json so debug bundles preserve the
+        # context that drove the autolevel target band.
+        self.noise_floor_db: float | None = None
+
+        # Snapshot of `current_correction` (path / peq_count / epoch)
+        # at the moment `/start` was hit, BEFORE the auto-reset to
+        # base config. Lets the bundle reproduce what state the
+        # speaker was in when this session began.
+        self.current_correction_at_start: dict[str, Any] | None = None
+
+        # Per-session debug bundle. All artifacts (info.json,
+        # result.json, per-position WAVs, verify.wav, applied.yml)
+        # land here. The directory is created lazily on first
+        # write so tests that pass a SessionConfig pointing at a
+        # tmp_path don't have to pre-mkdir.
+        self.bundle_dir: Path = self.cfg.sessions_dir / self.session_id
+        self.save_bundles: bool = _bundles_enabled()
+
         # Events / SSE.
         self._events: list[SessionEvent] = []
         self._event_seq = 0
-        self._lock = asyncio.Lock()
+        # Lazy-init the asyncio.Lock — Python 3.9 binds it to the
+        # current loop at construction time and raises if none is
+        # running. Construction happens from sync HTTP-handler
+        # threads, so deferring until first async use keeps the
+        # session safe to instantiate anywhere.
+        self._lock_obj: asyncio.Lock | None = None
+
+    @property
+    def _lock(self) -> asyncio.Lock:
+        if self._lock_obj is None:
+            self._lock_obj = asyncio.Lock()
+        return self._lock_obj
 
     # ------------------------------------------------------------------
     # Internal helpers.
@@ -258,6 +346,149 @@ class MeasurementSession:
             self.session_id, prev.value, state.value,
             extra if extra else "",
         )
+        # Bundle artifacts are best-effort — never let a write failure
+        # bring down a measurement state transition.
+        try:
+            self._write_info_json()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "bundle info.json write failed (state=%s)", state.value,
+            )
+
+    # ------------------------------------------------------------------
+    # Bundle artifacts. Each measurement session optionally writes
+    # a self-contained debug bundle at sessions/<session_id>/ — info,
+    # result curves, per-position captures, applied config copy.
+    # ------------------------------------------------------------------
+
+    def _ensure_bundle_dir(self) -> Path | None:
+        if not self.save_bundles:
+            return None
+        try:
+            self.bundle_dir.mkdir(parents=True, exist_ok=True)
+            (self.bundle_dir / "captures").mkdir(exist_ok=True)
+        except OSError as e:
+            logger.warning(
+                "bundle dir create failed for session %s: %s",
+                self.session_id, e,
+            )
+            return None
+        return self.bundle_dir
+
+    def capture_path_for_position(self, idx: int) -> Path:
+        """Where a per-position WAV should be written. Falls back to
+        cfg.capture_dir when bundles are disabled or the per-session
+        dir can't be created — keeps the upload path working even
+        when /var/lib/jasper is read-only or full."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is not None:
+            return bundle / "captures" / f"p{idx}.wav"
+        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
+        return self.cfg.capture_dir / (
+            f"capture_{self.session_id}_p{idx}_{int(time.time())}.wav"
+        )
+
+    def verify_capture_path(self) -> Path:
+        """Where the post-Apply re-measurement WAV should land."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is not None:
+            return bundle / "verify.wav"
+        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
+        return self.cfg.capture_dir / (
+            f"verify_{self.session_id}_{int(time.time())}.wav"
+        )
+
+    def _write_info_json(self) -> None:
+        """Atomically rewrite info.json with the current session
+        snapshot. Cheap (a few hundred bytes) and called on every
+        state transition so a bundle copied off the Pi mid-session
+        is always self-describing."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is None:
+            return
+        info = {
+            "session_id": self.session_id,
+            "state": self.state.value,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+            "error": self.error,
+            "total_positions": self.total_positions,
+            "current_position": self.current_position,
+            "target_choice": self.target_choice,
+            "noise_floor_db": self.noise_floor_db,
+            "current_correction_at_start": self.current_correction_at_start,
+            "autolevel": self.autolevel.snapshot(),
+            "sweep_meta": (
+                self.sweep_meta.to_dict() if self.sweep_meta else None
+            ),
+            "peqs": [p.__dict__ for p in self.peqs],
+            "config_path": (
+                str(self.config_path) if self.config_path else None
+            ),
+            "verify_metrics": self.verify_metrics,
+            "config": {
+                "f1_hz": self.cfg.f1_hz,
+                "f2_hz": self.cfg.f2_hz,
+                "duration_s": self.cfg.duration_s,
+                "sample_rate": self.cfg.sample_rate,
+                "amplitude_dbfs": self.cfg.amplitude_dbfs,
+                "peq_f_low": self.cfg.peq_f_low,
+                "peq_f_high": self.cfg.peq_f_high,
+                "peq_max_filters": self.cfg.peq_max_filters,
+                "peq_max_cut_db": self.cfg.peq_max_cut_db,
+                "peq_max_boost_db": self.cfg.peq_max_boost_db,
+                "peq_cuts_only": self.cfg.peq_cuts_only,
+            },
+        }
+        target_path = bundle / "info.json"
+        tmp_path = target_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(info, indent=2, default=str))
+        tmp_path.replace(target_path)
+
+    def _write_result_json(self) -> None:
+        """Snapshot the chart curves + verify after design / verify.
+        Result.json is the "what did this measurement actually
+        produce" record — separated from info.json so we don't
+        rewrite curve data on every state transition."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is None:
+            return
+        result = {
+            "session_id": self.session_id,
+            "measured": (
+                self.measured_curve.__dict__ if self.measured_curve else None
+            ),
+            "target": (
+                self.target_curve.__dict__ if self.target_curve else None
+            ),
+            "predicted": (
+                self.predicted_curve.__dict__ if self.predicted_curve else None
+            ),
+            "verify": (
+                self.verify_curve.__dict__ if self.verify_curve else None
+            ),
+            "verify_metrics": self.verify_metrics,
+            "peqs": [p.__dict__ for p in self.peqs],
+        }
+        target_path = bundle / "result.json"
+        tmp_path = target_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(result, indent=2, default=str))
+        tmp_path.replace(target_path)
+
+    def _copy_applied_yaml(self) -> None:
+        """Copy the just-emitted correction YAML into the bundle. We
+        copy rather than symlink so the bundle remains self-contained
+        if the user later deletes the file in /var/lib/camilladsp/."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is None or self.config_path is None:
+            return
+        try:
+            shutil.copy2(self.config_path, bundle / "applied.yml")
+        except OSError as e:
+            logger.warning(
+                "applied.yml copy failed for session %s: %s",
+                self.session_id, e,
+            )
 
     async def state_changed_from(
         self,
@@ -481,6 +712,11 @@ class MeasurementSession:
                 await self._fail(f"PEQ design failed: {e}")
             raise
 
+        try:
+            self._write_result_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle result.json write failed")
+
         async with self._lock:
             await self._set_state(
                 SessionState.READY,
@@ -574,6 +810,11 @@ class MeasurementSession:
             async with self._lock:
                 await self._fail(f"CamillaDSP reload failed: {e}")
             raise
+
+        try:
+            self._copy_applied_yaml()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle applied.yml copy failed")
 
         async with self._lock:
             await self._set_state(
@@ -683,6 +924,11 @@ class MeasurementSession:
             magnitude_db=log_mag.tolist(),
         )
         self.verify_metrics = metrics
+
+        try:
+            self._write_result_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle result.json (verify) write failed")
 
         async with self._lock:
             await self._set_state(
