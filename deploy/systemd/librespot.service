@@ -13,6 +13,16 @@ StartLimitBurst=5
 Type=simple
 User=pi
 Group=audio
+# Spotify Connect display name. Sourced from /etc/jasper/jasper.env if
+# JASPER_SPOTIFY_DEVICE_NAME is set there (the EnvironmentFile= below);
+# otherwise falls back to the Environment= default. This keeps a second
+# Pi on the same LAN from crashing librespot with an Avahi name
+# collision — install.sh seeds jasper.env with a hostname-derived
+# default via jasper-derive-device-name (jts2 → "JTS-2", etc.). The
+# leading `-` on EnvironmentFile makes it optional (no error if the
+# file is absent during very early bringup).
+Environment="JASPER_SPOTIFY_DEVICE_NAME=JTS"
+EnvironmentFile=-/etc/jasper/jasper.env
 # RuntimeDirectory creates /run/librespot/ at start with mode 0755.
 # Other components (jasper-mux, jasper-voice volume_observers,
 # jasper-control coordinator) read /run/librespot/state.json — the
@@ -41,7 +51,7 @@ CacheDirectoryMode=0700
 # session_timeout=1 ensures it releases the device promptly so
 # librespot can take over when the user switches sources.
 ExecStart=/usr/bin/librespot \
-    --name JTS \
+    --name ${JASPER_SPOTIFY_DEVICE_NAME} \
     --device-type speaker \
     --bitrate 320 \
     --backend alsa \

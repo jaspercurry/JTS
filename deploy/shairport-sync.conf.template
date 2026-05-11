@@ -14,7 +14,7 @@
 // is AP1-only — install.sh source-builds the AP2 variant.
 
 general = {
-    name = "JTS";
+    name = "__AIRPLAY_NAME__";
     // "auto" picks soxr when CPU has slack, falls back to "basic"
     // (linear) when the audio_backend_buffer is shallow. soxr alone
     // bogged down during voice + AEC concurrency and produced the

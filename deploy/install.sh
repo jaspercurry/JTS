@@ -313,6 +313,15 @@ install_renderers() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
         /usr/local/sbin/jasper-apply-airplay-mode
+    # jasper-derive-device-name maps the system hostname to a display
+    # name shown in Spotify Connect / AirPlay device pickers. Called
+    # by jasper-apply-airplay-mode (and by the jasper.env seeding
+    # block below) as a hostname-driven default so a second/third Pi
+    # on the same LAN doesn't collide with the first on Avahi. See
+    # the script for the mapping (jts → JTS, jts2 → JTS-2, etc.).
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-derive-device-name" \
+        /usr/local/sbin/jasper-derive-device-name
     # Default to synced: with shairport-sync.conf.template setting
     # resync_threshold_in_seconds=0.2, synced mode is glitch-free on
     # this chain (empirically verified over multiple 5-min samples
@@ -477,7 +486,19 @@ EOF
         local mic_card
         mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
         echo "  ReSpeaker mic: ${mic_card}"
-        sed "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
+        # Derive Spotify Connect / AirPlay display names from the
+        # system hostname so a second/third Pi on the same LAN gets
+        # a unique name out of the box (jts → JTS, jts2 → JTS-2).
+        # See deploy/bin/jasper-derive-device-name for the mapping;
+        # the operator can still override either var in jasper.env
+        # for a custom display name like "Living Room".
+        local device_name
+        device_name=$("${REPO_DIR}/deploy/bin/jasper-derive-device-name")
+        echo "  device name: ${device_name}"
+        sed \
+            -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
+            -e "s|^JASPER_SPOTIFY_DEVICE_NAME=.*|JASPER_SPOTIFY_DEVICE_NAME=${device_name}|" \
+            -e "s|^JASPER_AIRPLAY_DEVICE_NAME=.*|JASPER_AIRPLAY_DEVICE_NAME=${device_name}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo

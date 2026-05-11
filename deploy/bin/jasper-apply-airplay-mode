@@ -2,7 +2,9 @@
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
 # template at /etc/shairport-sync.conf.template, substituting the
 # disable_synchronization value based on
-# /var/lib/jasper/airplay_mode.env.
+# /var/lib/jasper/airplay_mode.env and the AirPlay device name based
+# on JASPER_AIRPLAY_DEVICE_NAME (in /etc/jasper/jasper.env), with a
+# fallback to the hostname-derived default via jasper-derive-device-name.
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
@@ -13,6 +15,8 @@
 #
 # Env input:
 #   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "yes".
+#   JASPER_AIRPLAY_DEVICE_NAME  — display name shown in AirPlay pickers.
+#                                 Default: jasper-derive-device-name output.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -23,19 +27,41 @@ set -euo pipefail
 TEMPLATE="${JASPER_SHAIRPORT_TEMPLATE:-/etc/shairport-sync.conf.template}"
 TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
 ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
+JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
+DERIVE_HELPER="${JASPER_DERIVE_DEVICE_NAME:-/usr/local/sbin/jasper-derive-device-name}"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
     exit 1
 fi
 
-# Source the env file if it exists. Default the variable AFTER sourcing
-# so an explicit-but-empty value still falls back to the safe default.
+# Source the airplay_mode.env file if it exists. Default the variable
+# AFTER sourcing so an explicit-but-empty value still falls back to the
+# safe default.
 if [[ -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$ENV_FILE" 2>/dev/null || true
 fi
+# Also source jasper.env (mode 0640, readable by root only — this
+# script runs with the leading `+` privilege escalation from
+# shairport-sync.service's ExecStartPre, so root-read is fine). Used
+# to pick up JASPER_AIRPLAY_DEVICE_NAME if the operator set one.
+if [[ -r "$JASPER_ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$JASPER_ENV_FILE" 2>/dev/null || true
+fi
 mode="${JASPER_AIRPLAY_FREE_RUNNING:-yes}"
+
+# Resolve device name: explicit env var wins; otherwise derive from
+# hostname so two Pis on the same LAN don't both advertise as "JTS".
+airplay_name="${JASPER_AIRPLAY_DEVICE_NAME:-}"
+if [[ -z "$airplay_name" ]]; then
+    if [[ -x "$DERIVE_HELPER" ]]; then
+        airplay_name=$("$DERIVE_HELPER")
+    else
+        airplay_name="JTS"
+    fi
+fi
 
 case "$mode" in
     yes|YES|true|TRUE|1)
@@ -57,13 +83,14 @@ tmp="${TARGET}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 
 sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
+    -e "s/__AIRPLAY_NAME__/${airplay_name}/g" \
     "$TEMPLATE" > "$tmp"
 
 # Validate the substitution actually happened — refuse to install a
-# conf that still contains the placeholder (something went wrong with
+# conf that still contains a placeholder (something went wrong with
 # the template or the sed). shairport would otherwise fail to parse it
 # and crash-loop.
-if grep -q "__DISABLE_SYNCHRONIZATION__" "$tmp"; then
+if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__" "$tmp"; then
     echo "jasper-apply-airplay-mode: placeholder still present in rendered conf — refusing to install" >&2
     exit 2
 fi
@@ -72,4 +99,4 @@ chmod 0644 "$tmp"
 mv -f "$tmp" "$TARGET"
 trap - EXIT
 
-echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human" >&2
+echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name'" >&2
