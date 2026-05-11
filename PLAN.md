@@ -10,6 +10,52 @@ see [docs/HANDOFF-*.md](docs/).
 
 ---
 
+## ⚠️ Urgent — investigate before next major work
+
+### AEC bridge stalls under normal music playback (2026-05-11)
+
+Observed during the 2026-05-11 deploy verification: `jasper-aec-bridge`
+floods `ref queue full, dropping frame` warnings for ~1 s, then trips
+`mic queue empty for 5s — InputStream is dead`, exits non-zero, and
+relies on systemd `Restart=on-failure` to come back. The crash-loop
+eventually trips `StartLimitBurst` and parks the unit as failed,
+leaving the wake-word path silently degraded (mic = clean XVF
+beamform, but no echo cancellation against music output).
+
+Background:
+- The auto-restart on `InputStream is dead` is PR #77's mitigation —
+  it brings the bridge back, but it doesn't fix what caused the
+  stall in the first place.
+- The XVF UAC2 capture underrun was the *original* trigger, but
+  the "ref queue full" flood preceding the mic-empty exit suggests
+  something else: the ref-side (music chain via dsnoop) is producing
+  faster than `_aec_loop` can consume, which would mean `_aec_loop`
+  is starved of mic frames first (matching the eventual exit).
+- Memory entry "AEC bridge mic-stall recovery" notes this pattern.
+  Auto-restart catches the symptom; root cause is open.
+
+Why urgent: the bridge is the only thing standing between music
+playback and the wake-word detector. When it's down, wake-word
+detection on music is back to pre-AEC baseline (works at low SPL,
+fails at conversational SPL).
+
+Starting points:
+- `journalctl -u jasper-aec-bridge --since "1 hour ago" | grep -E
+  "ref queue full|mic queue empty|InputStream is dead"` to see the
+  recurrence frequency on a given Pi.
+- Compare `ref` and `mic` queue depths over time — the asymmetry
+  is the diagnostic. If ref depth grows while mic depth stays at 0,
+  the XVF capture stream stopped delivering callbacks (the original
+  failure mode). If both depths grow, something else is wrong with
+  `_aec_loop` scheduling.
+- `jasper/cli/aec_bridge.py:_aec_loop` and the queue-depth
+  bookkeeping around it.
+- Consider whether the queue-size logging at WARNING level is
+  drowning out the eventual ERROR line — debouncing might make
+  the journal more readable but isn't a fix.
+
+---
+
 ## Sequenced roadmap
 
 | v | Adds | Why this order |
