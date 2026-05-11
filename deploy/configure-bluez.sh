@@ -28,11 +28,21 @@ sudo sed -i 's/^#\?Name = .*/Name = JTS/' "$CONF"
 # A2DP-sink-friendly UI (e.g. iOS shows the speaker icon).
 sudo sed -i 's/^#\?Class = .*/Class = 0x200414/' "$CONF"
 
-# Stay discoverable + pairable indefinitely (we want the speaker to
-# always be findable for re-pairing if the phone forgets it). For a
-# typical home network this is fine; on hostile networks set these
-# to non-zero (timeout in seconds).
-sudo sed -i 's/^#\?DiscoverableTimeout = .*/DiscoverableTimeout = 0/' "$CONF"
+# Discoverable is OFF at boot — the speaker isn't broadcasting to
+# random nearby phones unless the user explicitly toggles it on via
+# /bluetooth/ in the web UI. Pre-paired devices keep working (they
+# don't need us to be discoverable to reconnect); only NEW pairing
+# from a phone's side needs Discoverable=true.
+#
+# DiscoverableTimeout is the *default* auto-off when something flips
+# Discoverable=on. Our web UI overrides this per-toggle (5 min when
+# user clicks the switch); the value here matters only if some other
+# tool — bluetoothctl, a foreign agent — flips Discoverable without
+# also setting a timeout. 300 s is the safety net for that case;
+# 0 (the previous setting) meant "stay on forever" which is exactly
+# the broadcast-to-the-world failure mode we don't want.
+sudo sed -i 's/^#\?Discoverable = .*/Discoverable = false/' "$CONF"
+sudo sed -i 's/^#\?DiscoverableTimeout = .*/DiscoverableTimeout = 300/' "$CONF"
 sudo sed -i 's/^#\?PairableTimeout = .*/PairableTimeout = 0/' "$CONF"
 
 echo "$CONF updated. Restart bluetooth with: sudo systemctl restart bluetooth"

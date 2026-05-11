@@ -444,3 +444,77 @@ def test_regress_listening_level_falls_back_to_updated_at_if_no_last_used():
         rec, now=NOW, stale_after_sec=1800.0, safe_high_pct=70,
     )
     assert pct == 70
+
+
+# ---------- pre_mute_level persistence ------------------------------------
+
+def test_pre_mute_level_round_trip(tmp_path):
+    """Persisting pre_mute_level lets a per-request coordinator (e.g.
+    jasper-control building one per HTTP call) see prior mute state."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(70)
+    p.save_pre_mute_level(70)
+    rec = p.load()
+    assert rec is not None
+    assert rec.pre_mute_level == 70
+
+
+def test_pre_mute_level_clear(tmp_path):
+    """save_pre_mute_level(None) drops the field from disk so a fresh
+    read sees pre_mute=None (the unmuted state)."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(70)
+    p.save_pre_mute_level(70)
+    p.save_pre_mute_level(None)
+    rec = p.load()
+    assert rec is not None
+    assert rec.pre_mute_level is None
+
+
+def test_pre_mute_level_clamps(tmp_path):
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(50)
+    p.save_pre_mute_level(150)
+    rec = p.load()
+    assert rec.pre_mute_level == 100
+
+
+def test_pre_mute_level_out_of_range_in_file_rejected(tmp_path):
+    """A hand-edited / corrupted file with pre_mute outside [0,100] is
+    treated as 'not muted' rather than respected."""
+    path = tmp_path / "speaker_volume.json"
+    path.write_text(json.dumps({
+        "version": 2,
+        "main_volume_db": -20.0,
+        "listening_level": 60,
+        "pre_mute_level": -5,
+        "updated_at": "2026-05-10T10:00:00Z",
+    }))
+    rec = VolumePersistence(str(path)).load()
+    assert rec is not None
+    assert rec.pre_mute_level is None
+
+
+def test_pre_mute_preserved_across_partial_updates(tmp_path):
+    """Saving listening_level shouldn't clobber a previously persisted
+    pre_mute (the field is independent state set by mute())."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_listening_level(70)
+    p.save_pre_mute_level(70)
+    # Independent listening_level update (e.g., observer-driven write
+    # while still muted) must preserve pre_mute.
+    p.save_listening_level(0)
+    rec = p.load()
+    assert rec is not None
+    assert rec.pre_mute_level == 70
+    assert rec.listening_level == 0
+
+
+def test_save_pre_mute_works_on_fresh_persistence(tmp_path):
+    """save_pre_mute_level called before any save_listening_level
+    needs to bootstrap a coherent file — the persistence has no
+    main_volume yet at that point. Either it writes a coherent file
+    with derived main_volume, or it skips silently. Either way it
+    must not crash."""
+    p = VolumePersistence(_path(tmp_path))
+    p.save_pre_mute_level(50)  # No prior state — should be a no-op or no-crash.

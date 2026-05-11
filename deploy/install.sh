@@ -375,9 +375,24 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-correction-web.service" \
         "${SYSTEMD_DIR}/jasper-correction-web.service"
+    # /bluetooth/ control panel — generic BT scan/pair/forget for
+    # phones, knobs, headphones. Drives bluez via dbus-next; per-class
+    # post-pair behaviour lives in jasper/bluetooth/handlers/.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-bluetooth-web.service" \
+        "${SYSTEMD_DIR}/jasper-bluetooth-web.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
+    # jasper-input: third-party HID accessory bridge (Anticater VK-01
+    # volume knob today; future macro pads / foot pedals). Reads
+    # /dev/input/event* via python-evdev, translates known devices'
+    # key events into HTTP calls against jasper-control. Always-on
+    # like jasper-mux — idle cost is negligible if no accessory is
+    # attached. See jasper/accessories/.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-input.service" \
+        "${SYSTEMD_DIR}/jasper-input.service"
     # AEC bridge + boot-time chip init (see asoundrc.jasper header).
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-bridge.service" \
@@ -480,7 +495,8 @@ install_systemd_units() {
     systemctl enable jasper-camilla.service jasper-voice.service \
         jasper-web.service jasper-dial-web.service \
         jasper-correction-web.service jasper-control.service \
-        jasper-dac-init.service jasper-headphone-monitor.service
+        jasper-dac-init.service jasper-headphone-monitor.service \
+        jasper-input.service jasper-bluetooth-web.service
     # Apply the dongle Headphone-max pin immediately so a fresh
     # install gets the full analog ceiling without waiting for
     # next reboot.
@@ -501,6 +517,14 @@ Will retry on next boot."
     # /correction/ proxy. Doesn't disturb any in-flight measurement
     # because Phase 0 has no state to lose.
     systemctl restart jasper-correction-web.service 2>/dev/null || true
+    # jasper-input is brand-new in this install — restart so the HID
+    # accessory bridge picks up any already-plugged-in knob without
+    # waiting for the next boot. Idle if nothing is attached.
+    systemctl restart jasper-input.service 2>/dev/null || true
+    # jasper-bluetooth-web ditto — brand-new in this install. Restart
+    # so /bluetooth/ is live and ready before nginx reloads with the
+    # new location block (which proxies to it).
+    systemctl restart jasper-bluetooth-web.service 2>/dev/null || true
 
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md

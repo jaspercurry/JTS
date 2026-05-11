@@ -1,0 +1,33 @@
+[Unit]
+Description=Jasper Bluetooth control panel (web at /bluetooth/)
+After=network-online.target bluetooth.service
+# Wants= (not Requires=) so a bluetoothd restart doesn't cascade-stop
+# us; the engine reconnects to the system bus on the next request.
+Wants=network-online.target bluetooth.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-web --host 127.0.0.1 --port 8769
+Restart=on-failure
+RestartSec=2
+
+# Run as root for unfettered org.bluez access (Adapter1.Powered et al.
+# require either being in the lp/bluetooth group or root, and we
+# already run the sibling jasper-* services as root for similar
+# reasons). The HTTP listener binds 127.0.0.1, fronted by nginx on
+# jts.local/bluetooth/. No external surface.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+# State for the {mac: handler_id} role map.
+ReadWritePaths=/var/lib/jasper
+
+# Single async loop + a handful of dbus + http threads. The observer
+# keeps an in-memory device map (a few hundred bytes per device).
+MemoryHigh=100M
+MemoryMax=160M
+
+[Install]
+WantedBy=multi-user.target

@@ -30,6 +30,7 @@ class FakeCoordinator:
 
     def __init__(self, level: int = 60) -> None:
         self._level = int(level)
+        self._pre_mute_level: int | None = None
         self.calls: list[tuple[str, int | None]] = []
         self.fail_next = False
 
@@ -46,10 +47,14 @@ class FakeCoordinator:
     def load_persisted_level(self) -> int:
         return self._level
 
+    def is_muted(self) -> bool:
+        return self._pre_mute_level is not None
+
     async def set_listening_level(self, percent: int) -> int:
         self._maybe_fail()
         target = max(0, min(100, int(percent)))
         self._level = target
+        self._pre_mute_level = None
         self.calls.append(("set", target))
         return target
 
@@ -57,7 +62,25 @@ class FakeCoordinator:
         self._maybe_fail()
         target = max(0, min(100, self._level + int(delta)))
         self._level = target
+        self._pre_mute_level = None
         self.calls.append(("adjust", int(delta)))
+        return target
+
+    async def mute(self) -> int:
+        self._maybe_fail()
+        saved = self._pre_mute_level if self._pre_mute_level is not None else self._level
+        if self._level > 0 and self._pre_mute_level is None:
+            self._pre_mute_level = self._level
+        self._level = 0
+        self.calls.append(("mute", saved))
+        return saved or 0
+
+    async def unmute(self, fallback_level: int = 50) -> int:
+        self._maybe_fail()
+        target = self._pre_mute_level if self._pre_mute_level is not None else fallback_level
+        self._pre_mute_level = None
+        self._level = target
+        self.calls.append(("unmute", target))
         return target
 
     async def aclose(self) -> None:
@@ -271,6 +294,32 @@ def test_set_missing_field_400(server_with_coordinator):
     base, _ = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {})
     assert status == 400
+
+
+def test_volume_mute_toggles_off_then_on(server_with_coordinator):
+    """First POST mutes (saves 60% pre-mute, returns 0). Second
+    POST unmutes (restores 60%). Used by the VK-01 knob click."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 200
+    assert body["percent"] == 0
+    assert ("mute", 60) in fake.calls
+
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 200
+    assert body["percent"] == 60
+    assert ("unmute", 60) in fake.calls
+
+
+def test_volume_mute_when_already_silent(server_with_coordinator):
+    """Edge: clicking mute on a 0% volume saves 0 as pre-mute, level
+    stays 0. Click again restores 0. Doesn't blow up — the knob is
+    safe to click when nothing's playing."""
+    base, fake = server_with_coordinator
+    fake._level = 0
+    status, body = _post(f"{base}/volume/mute", {})
+    assert status == 200
+    assert body["percent"] == 0
 
 
 def test_unknown_route_404(server_with_coordinator):

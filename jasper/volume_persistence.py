@@ -108,6 +108,12 @@ class VolumeRecord:
     # the volume. Used by the boot-time idle-reset to decide whether
     # to fall back to a safe default after a long quiet period.
     last_used_at: datetime | None = None
+    # Pre-mute listening_level if the speaker is currently muted; None
+    # otherwise. Persisted so a per-request coordinator (jasper-control
+    # builds a fresh one per HTTP call) can see prior mute state set by
+    # an earlier call. Cleared by initialize() at boot — mute state is
+    # per-session, not per-deployment.
+    pre_mute_level: int | None = None
 
 
 class VolumePersistence:
@@ -144,6 +150,7 @@ class VolumePersistence:
         self._current_anchor_dbfs: float | None = None
         self._current_listening_level: int | None = None
         self._current_last_used_at: datetime | None = None
+        self._current_pre_mute_level: int | None = None
 
     @property
     def path(self) -> Path:
@@ -247,12 +254,31 @@ class VolumePersistence:
                 )
         except (TypeError, ValueError, AttributeError):
             last_used_at = None
+        # pre_mute_level — set when the speaker is in the muted state
+        # so the next unmute (potentially from a different coordinator
+        # instance) can restore the prior level.
+        pre_mute_level: int | None = None
+        try:
+            raw_pre_mute = data.get("pre_mute_level")
+            if raw_pre_mute is not None:
+                pml = int(raw_pre_mute)
+                if 0 <= pml <= 100:
+                    pre_mute_level = pml
+                else:
+                    logger.warning(
+                        "volume persistence: stored pre_mute_level=%d out of "
+                        "[0,100]; ignoring",
+                        pml,
+                    )
+        except (TypeError, ValueError):
+            pre_mute_level = None
         # Cache loaded values so subsequent partial-update writes don't
         # lose any field.
         self._current_main_volume_db = db
         self._current_anchor_dbfs = anchor
         self._current_listening_level = listening_level
         self._current_last_used_at = last_used_at
+        self._current_pre_mute_level = pre_mute_level
         return VolumeRecord(
             main_volume_db=db,
             updated_at=updated_at,
@@ -260,6 +286,7 @@ class VolumePersistence:
             anchor_updated_at=anchor_ts,
             listening_level=listening_level,
             last_used_at=last_used_at,
+            pre_mute_level=pre_mute_level,
         )
 
     def save_now(self, main_volume_db: float) -> None:
@@ -298,6 +325,37 @@ class VolumePersistence:
         self._last_written_db = db
         self._last_written_at_mono = now
         return True
+
+    def save_pre_mute_level(self, level: int | None) -> None:
+        """Persist the pre-mute level (or clear it with None).
+
+        Called by VolumeCoordinator.mute() to record the level we should
+        restore on unmute, and by unmute()/set/adjust to clear once the
+        muted state ends. Persisted so a per-request coordinator (e.g.
+        jasper-control building one per HTTP call) can see prior mute
+        state set by an earlier call.
+        """
+        if level is not None:
+            level = max(0, min(100, int(level)))
+        self._current_pre_mute_level = level
+        # Caller (mute/unmute) may not have populated main_volume_db
+        # yet on a fresh persistence instance — guard against
+        # _write_full's "no main_volume" early-return by deriving it
+        # from listening_level if needed.
+        if self._current_main_volume_db is None:
+            base = self._current_listening_level
+            if base is None:
+                # Nothing on disk yet, nothing in memory. Reading load()
+                # will populate it; pre_mute by itself isn't urgent
+                # enough to force a synthetic main_volume default.
+                self.load()
+            if self._current_main_volume_db is None:
+                logger.debug(
+                    "volume persistence: skipping pre_mute write "
+                    "(no main_volume context yet)",
+                )
+                return
+        self._write_full()
 
     def save_listening_level(
         self, percent: int, *, mark_user_change: bool = True,
@@ -386,6 +444,8 @@ class VolumePersistence:
             payload["last_used_at"] = self._current_last_used_at.isoformat(
                 timespec="seconds",
             ).replace("+00:00", "Z")
+        if self._current_pre_mute_level is not None:
+            payload["pre_mute_level"] = int(self._current_pre_mute_level)
         body = json.dumps(payload, indent=2)
         try:
             # Atomic write: write to a tmp file in the same directory,
