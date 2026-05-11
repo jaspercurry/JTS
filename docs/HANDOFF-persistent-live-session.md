@@ -157,11 +157,13 @@ For your rework, add a similar set of structured logs for the connection lifecyc
 
 The Pi is the integration target. The development loop:
 
-1. Make code changes locally on the laptop in `/Users/jaspercurry/Code/JTS/`
-2. Sync to Pi: `rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/`
-3. Deploy to `/opt/jasper/`: `ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/"`
-4. Restart daemon: `ssh pi@jts.local "sudo systemctl restart jasper-voice"`
-5. Pull logs: `bash scripts/fetch-pi-logs.sh` (output lands in `./logs/*-latest.log`)
+1. Make code changes locally on the laptop in `/Users/jaspercurry/Code/JTS/`.
+2. Deploy: `bash scripts/deploy-to-pi.sh` — captures the local git SHA,
+   rsyncs to `/home/pi/jts/`, runs `sudo install.sh` (which `pip install -e`'s
+   into `/opt/jasper/.venv`), then restarts `jasper-voice` + `jasper-control`.
+   The dashboard's "Software" card on `http://jts.local/system/` confirms
+   the deployed SHA.
+3. Pull logs: `bash scripts/fetch-pi-logs.sh` (output lands in `./logs/*-latest.log`).
 
 Or live tail: `ssh pi@jts.local "sudo journalctl -u jasper-voice -f"`.
 
@@ -218,9 +220,8 @@ bash scripts/tail-pi-logs.sh
 bash scripts/switch-gemini-model.sh         # show current
 bash scripts/switch-gemini-model.sh 3.1     # → gemini-3.1-flash-live-preview
 bash scripts/switch-gemini-model.sh 2.5     # → gemini-2.5-flash-native-audio-preview-12-2025
-# sync laptop → Pi → /opt/jasper
-rsync -avz --delete --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' ./ pi@jts.local:/home/pi/jts/
-ssh pi@jts.local "sudo rsync -a --delete --exclude __pycache__ /home/pi/jts/jasper/ /opt/jasper/jasper/ && sudo systemctl restart jasper-voice"
+# sync laptop → Pi (rsync + install.sh + restart jasper-voice/jasper-control)
+bash scripts/deploy-to-pi.sh
 # tests
 .venv/bin/pytest
 ```

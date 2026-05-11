@@ -76,4 +76,36 @@ ssh "${PI_USER}@${PI_HOST}" \
 echo "==> Build manifest now on Pi:"
 ssh "${PI_USER}@${PI_HOST}" 'sudo cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'
 
+# Restart the Python daemons that run application code so a code
+# change in this deploy actually takes effect. install.sh already
+# restarts jasper-mux + jasper-input + the wizard sockets; it
+# conditionally restarts jasper-voice ONLY when the AEC default
+# block flips, which is a one-time event. So neither jasper-voice
+# nor jasper-control would otherwise see new code on subsequent
+# installs.
+#
+# Notable omissions:
+#   - jasper-camilla — runs the Rust camilladsp binary, no Python.
+#     No restart needed for Python code changes.
+#   - jasper-aec-bridge — Python, but has a known SIGTERM-hang bug
+#     that costs ~90 s on every restart. Tolerable to leave on the
+#     old code path until that's fixed in a follow-up. Set
+#     JASPER_DEPLOY_RESTART_AEC=1 to force it anyway.
+#   - The wizard servers — socket-activated, naturally pick up new
+#     code on the next request.
+if [[ "${SKIP_RESTART:-}" == "1" ]]; then
+    echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
+    echo "==> Done."
+    exit 0
+fi
+
+UNITS_TO_RESTART="jasper-voice.service jasper-control.service"
+if [[ "${JASPER_DEPLOY_RESTART_AEC:-}" == "1" ]]; then
+    UNITS_TO_RESTART="${UNITS_TO_RESTART} jasper-aec-bridge.service"
+fi
+
+echo "==> Restarting code daemons: ${UNITS_TO_RESTART}"
+ssh "${PI_USER}@${PI_HOST}" "sudo systemctl restart ${UNITS_TO_RESTART}" || \
+    echo "  (restart returned non-zero; jasper-voice may still be in stop-sigterm window — see scripts/fetch-pi-logs.sh)"
+
 echo "==> Done."
