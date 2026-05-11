@@ -227,61 +227,10 @@ _GOOGLE_PAGE_STYLE = PAGE_STYLE + """
   }
   .callout strong:first-child { color: #b07b00; }
 
-  /* ---- Top-level disclosures (Connection details, View setup
-     guide, OAuth client settings, etc.) ----
-     The browser-default <summary> is unstyled text with a tiny
-     triangle — barely looks clickable. These rules give the
-     summary a card-style hover affordance and a right-aligned
-     caret that rotates on open. Targets `.disclosure` only so
-     the inner wizard-step <details> (which already have their
-     own card styling) stay untouched. */
-  details.disclosure { margin-top: 1.4em; }
-  details.disclosure > summary {
-    list-style: none;
-    cursor: pointer;
-    user-select: none; -webkit-user-select: none;
-    padding: 0.85em 2.4em 0.85em 1em;
-    background: #f4f4f4;
-    border: 1px solid #e6e6e6;
-    border-radius: 8px;
-    font-weight: 600;
-    color: #222;
-    position: relative;
-    transition: background 0.15s ease, border-color 0.15s ease;
-  }
-  details.disclosure > summary:hover {
-    background: #f0fff4;
-    border-color: #1db954;
-  }
-  details.disclosure[open] > summary {
-    border-bottom-left-radius: 0;
-    border-bottom-right-radius: 0;
-    border-bottom-color: transparent;
-  }
-  details.disclosure > summary::-webkit-details-marker { display: none; }
-  details.disclosure > summary::after {
-    content: "▸";
-    position: absolute;
-    right: 1em; top: 50%;
-    transform: translateY(-50%);
-    color: #888;
-    transition: transform 0.15s ease, color 0.15s ease;
-  }
-  details.disclosure > summary:hover::after,
-  details.disclosure[open] > summary::after {
-    color: #1db954;
-  }
-  details.disclosure[open] > summary::after {
-    transform: translateY(-50%) rotate(90deg);
-  }
-  details.disclosure > .disclosure-body {
-    padding: 0.6em 1em 1em;
-    border: 1px solid #e6e6e6;
-    border-top: none;
-    border-bottom-left-radius: 8px;
-    border-bottom-right-radius: 8px;
-    background: #fff;
-  }
+  /* `details.disclosure` styling — Connection details, Setup
+     guide, OAuth client settings — lives in the shared PAGE_STYLE
+     in jasper/web/_common.py so spotify/google/correction all
+     share the same look. */
 
   /* The paste-creds form is inside the last wizard step but visually
      separated — it's the action that completes the whole flow. */
