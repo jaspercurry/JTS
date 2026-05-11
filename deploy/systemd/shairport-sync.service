@@ -16,6 +16,14 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
+# Render /etc/shairport-sync.conf from the template every time the
+# service starts, picking up the current value of
+# /var/lib/jasper/airplay_mode.env. The leading `+` lets the
+# pre-start helper run as root so it can write /etc; ExecStart drops
+# back to the unprivileged shairport-sync user. The renderer is
+# idempotent and fast (sed substitution), so running it on every
+# start has negligible cost.
+ExecStartPre=+/usr/local/sbin/jasper-apply-airplay-mode
 ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync
 Group=shairport-sync

@@ -22,7 +22,7 @@ import logging
 import os
 import threading
 
-from . import google_setup, spotify_setup, voice_setup
+from . import airplay_setup, google_setup, spotify_setup, voice_setup
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,15 @@ def _serve_google(host: str, port: int, registry_path: str, redirect_uri: str) -
     logger.info(
         "jasper-web /google listening on http://%s:%d (registry=%s)",
         host, port, registry_path,
+    )
+    server.serve_forever()
+
+
+def _serve_airplay(host: str, port: int, state_path: str) -> None:
+    server = airplay_setup.make_server(host, port, state_path=state_path)
+    logger.info(
+        "jasper-web /airplay listening on http://%s:%d (state=%s)",
+        host, port, state_path,
     )
     server.serve_forever()
 
@@ -90,6 +99,20 @@ def main() -> int:
         daemon=True,
     )
     google_thread.start()
+
+    # AirPlay sync-mode toggle — same shape as voice/google, own thread.
+    airplay_host = os.environ.get("JASPER_AIRPLAY_WEB_HOST", "127.0.0.1")
+    airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
+    airplay_state = os.environ.get(
+        "JASPER_AIRPLAY_MODE_FILE", airplay_setup.MODE_FILE,
+    )
+    airplay_thread = threading.Thread(
+        target=_serve_airplay,
+        args=(airplay_host, airplay_port, airplay_state),
+        name="jasper-web-airplay",
+        daemon=True,
+    )
+    airplay_thread.start()
 
     # Spotify wizard server runs on the main thread (blocking call).
     # When systemd sends SIGTERM, spotify_setup.main()'s

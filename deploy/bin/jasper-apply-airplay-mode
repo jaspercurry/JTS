@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
+# template at /etc/shairport-sync.conf.template, substituting the
+# disable_synchronization value based on
+# /var/lib/jasper/airplay_mode.env.
+#
+# Invoked from three places:
+#   1. shairport-sync.service ExecStartPre (so every restart picks up
+#      the current mode).
+#   2. install.sh (so a fresh install lands with the conf rendered).
+#   3. jasper-airplay-mode CLI and the /airplay/ web UI, after they
+#      update the env file and before they restart shairport.
+#
+# Env input:
+#   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "yes".
+# File outputs:
+#   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
+#
+# Exits 0 on success. Logs to stderr.
+
+set -euo pipefail
+
+TEMPLATE="${JASPER_SHAIRPORT_TEMPLATE:-/etc/shairport-sync.conf.template}"
+TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
+ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
+
+if [[ ! -f "$TEMPLATE" ]]; then
+    echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
+    exit 1
+fi
+
+# Source the env file if it exists. Default the variable AFTER sourcing
+# so an explicit-but-empty value still falls back to the safe default.
+if [[ -f "$ENV_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$ENV_FILE" 2>/dev/null || true
+fi
+mode="${JASPER_AIRPLAY_FREE_RUNNING:-yes}"
+
+case "$mode" in
+    yes|YES|true|TRUE|1)
+        disable_sync="yes"
+        human="free-running (music-only, no A/V or multi-room sync)"
+        ;;
+    no|NO|false|FALSE|0)
+        disable_sync="no"
+        human="synced (matches AirPlay sender clock; needed for video A/V sync or multi-room)"
+        ;;
+    *)
+        echo "jasper-apply-airplay-mode: invalid JASPER_AIRPLAY_FREE_RUNNING='$mode'; defaulting to yes" >&2
+        disable_sync="yes"
+        human="free-running (defaulted from invalid value)"
+        ;;
+esac
+
+tmp="${TARGET}.tmp.$$"
+trap 'rm -f "$tmp"' EXIT
+
+sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
+    "$TEMPLATE" > "$tmp"
+
+# Validate the substitution actually happened — refuse to install a
+# conf that still contains the placeholder (something went wrong with
+# the template or the sed). shairport would otherwise fail to parse it
+# and crash-loop.
+if grep -q "__DISABLE_SYNCHRONIZATION__" "$tmp"; then
+    echo "jasper-apply-airplay-mode: placeholder still present in rendered conf — refusing to install" >&2
+    exit 2
+fi
+
+chmod 0644 "$tmp"
+mv -f "$tmp" "$TARGET"
+trap - EXIT
+
+echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human" >&2
