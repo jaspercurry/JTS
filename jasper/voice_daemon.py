@@ -303,6 +303,9 @@ NO_SPEECH_ABORT_SEC = 5.0
 # speaking, swallowing quick follow-up wakes.
 POST_RESPONSE_IDLE_TIMEOUT_SEC = 0.5
 
+# Pad after _play_responses drains, covering the ~60 ms ALSA dmix buffer that outlives the last tts.write.
+TTS_ALSA_DRAIN_SEC = 0.3
+
 # Sustained-speech threshold for arming the end-of-utterance silence
 # detector. After wake fires, we wait for Silero to report ≥ THRESHOLD
 # speech-probability for at least this many seconds *continuously*
@@ -819,6 +822,8 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
             # write_task is either in `done` (completed normally) or
             # was cancelled+awaited above; either way no cleanup left.
             write_task = None
+        # Drain ALSA buffer before the caller disengages the duck.
+        await asyncio.sleep(TTS_ALSA_DRAIN_SEC)
     finally:
         for t in (interrupt_task, write_task):
             if t is None or t.done():
@@ -861,23 +866,11 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
         now = asyncio.get_event_loop().time()
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
-            # Wait POST_RESPONSE_IDLE_TIMEOUT_SEC after the LAST audio
-            # chunk has been DEQUEUED by the playback consumer — not
-            # since it last ARRIVED on the wire. The two timestamps
-            # diverge for OpenAI Realtime: the server delivers all of
-            # a response's audio chunks back-to-back (faster than
-            # real-time), and the consumer plays them at real-time
-            # rate via ALSA. Anchoring on `last_chunk_at` (network
-            # arrival) ended turns ~1.5 s after the last byte hit our
-            # socket — while ~5 s of audio was still in the consumer's
-            # queue waiting to play, audibly cutting the model off
-            # mid-sentence in production. `last_chunk_played_at` is
-            # the consumer-side anchor that advances at real-time as
-            # the queue drains.
-            #
-            # `getattr` guard: the protocol method is new; older turn
-            # implementations without it fall back to the historical
-            # network-arrival anchor.
+            # Defer while chunks are still queued — a slow tts.write isn't "audio finished."
+            pending_getter = getattr(turn, "audio_chunks_pending", None)
+            if callable(pending_getter) and pending_getter() > 0:
+                continue
+            # `getattr` guard: protocol method is new; older implementations fall back to network-arrival anchor.
             played_anchor = 0.0
             getter = getattr(turn, "last_chunk_played_at", None)
             if callable(getter):
