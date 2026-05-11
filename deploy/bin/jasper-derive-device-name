@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# jasper-derive-device-name — print the speaker's display name for the
+# Spotify Connect / AirPlay device pickers, derived from the system
+# hostname.
+#
+# Motivation: librespot's mDNS implementation refuses to start when
+# another device on the LAN is already advertising the same name
+# (`zeroconf collision for name 'JTS'`). When a household runs more
+# than one JTS speaker on the same network, the second + third Pi
+# would crash-loop unless their device names are distinct. shairport's
+# Avahi rename-on-collision masks the same problem on AirPlay but
+# leaves the second speaker as a mystery "JTS-2" in pickers, which is
+# user-hostile. Deriving from hostname makes the names deterministic
+# and unique per Pi without manual config.
+#
+# Mapping:
+#   jts            → JTS              (default single-Pi install)
+#   jts2, jts3, …  → JTS-2, JTS-3, …  (extra Pis on the same LAN)
+#   <anything>     → <anything>       (preserves "kitchen-pi" etc.)
+#
+# Usage:
+#   $(jasper-derive-device-name)        # derive from hostname -s
+#   $(jasper-derive-device-name jts3)   # derive from explicit hostname
+#
+# Consumed by:
+#   1. install.sh — populates /etc/jasper/jasper.env with sane defaults
+#      for JASPER_SPOTIFY_DEVICE_NAME / JASPER_AIRPLAY_DEVICE_NAME on
+#      a fresh install.
+#   2. jasper-apply-airplay-mode — falls back to this when
+#      JASPER_AIRPLAY_DEVICE_NAME isn't set in jasper.env.
+
+set -euo pipefail
+
+host="${1:-$(hostname -s 2>/dev/null || hostname)}"
+# Defensive: if `hostname -s` failed and the fallback returned an FQDN
+# (e.g. "jts.local"), strip the domain so we map "jts.local" → "JTS",
+# not "JTS-.local".
+host="${host%%.*}"
+
+case "$host" in
+    jts)
+        echo "JTS"
+        ;;
+    jts*)
+        suffix="${host#jts}"
+        # Strip a single leading dash so jts-kitchen → JTS-kitchen
+        # (not JTS--kitchen), while still producing JTS-2 for jts2.
+        suffix="${suffix#-}"
+        echo "JTS-${suffix}"
+        ;;
+    *)
+        echo "$host"
+        ;;
+esac
