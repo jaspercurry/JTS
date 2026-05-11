@@ -73,6 +73,24 @@ _AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 _TOKEN_URI = "https://oauth2.googleapis.com/token"
 _USERINFO_URI = "https://openidconnect.googleapis.com/v1/userinfo"
 
+# Google rejects mDNS hostnames (`.local`) and bare LAN IPs as OAuth
+# redirect URIs — only public TLDs or `localhost` are accepted, neither
+# of which fits a Pi accessed from household phones. So we register a
+# public GitHub Pages page that reads `?host=<hostname>` and bounces
+# the browser back to the speaker over HTTP+mDNS. Source repo:
+# https://github.com/jaspercurry/google-oauth-callback. Same pattern
+# as the Spotify wizard (jaspercurry/spotify-oauth-callback).
+_BOUNCE_REDIRECT_URI_BASE = (
+    "https://jaspercurry.github.io/google-oauth-callback/"
+)
+
+
+def default_redirect_uri() -> str:
+    """Default OAuth redirect URI for this speaker — the bounce page
+    parameterised with our mDNS hostname."""
+    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
+    return f"{_BOUNCE_REDIRECT_URI_BASE}?host={hostname}"
+
 
 # ----------------------------------------------------------------------
 # Persistence helpers — env file + token writes.
@@ -242,9 +260,17 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
     browser localStorage so re-loading after each step shows the
     user where to pick up.
 
-    The four sub-steps mirror Google's actual UI as of May 2026 (the
-    OAuth consent screen is now the "Google Auth platform" with
-    Branding/Audience/Data Access tabs at console.cloud.google.com/auth/...).
+    The four steps mirror Google's actual UI as of May 2026:
+      1. Create a Cloud project.
+      2. Configure the Google Auth Platform — a single linear setup
+         wizard launched from "Get started" on the Branding tab
+         (App Information → Audience → Contact Information → Finish),
+         followed by clicking Publish App on the Audience tab.
+      3. Enable the Calendar and Gmail APIs.
+      4. Create an OAuth client and paste creds here. The registered
+         redirect URI is a GitHub Pages bounce page because Google
+         rejects mDNS hostnames — see `default_redirect_uri` above.
+
     Each step is collapsible; the first not-done step is auto-opened.
     The user clicks "I've done this" to advance — we can't detect
     actions on Google's site, so progress is self-reported.
@@ -274,8 +300,8 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
         <p>The OAuth client lives inside a Google Cloud project. If you already have one, you can reuse it — otherwise:</p>
         <ol>
           <li>Open <a href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noopener">the New Project page ↗</a> in a new tab.</li>
-          <li><strong>Project name:</strong> anything you'll recognise — e.g. "JTS Speaker". The Project ID below auto-fills; leave it.</li>
-          <li>Click <strong>CREATE</strong>. Provisioning takes 10–30 seconds. A toast appears bottom-right when done — click it to switch into the new project, or pick it from the top-bar project switcher.</li>
+          <li><strong>Project name:</strong> anything you'll recognise — e.g. "JTS Speaker". The <strong>Project ID</strong> below auto-fills; leave it. <strong>Parent resource</strong> stays as "No organization" (personal Gmail accounts don't have one).</li>
+          <li>Click <strong>CREATE</strong>. Provisioning takes 10–30 seconds; the page auto-switches into the new project when it's ready.</li>
         </ol>
         <div class="callout">
           <strong>Multi-account heads-up:</strong> if you're signed into more than one Google account in this browser, the page uses whatever account loaded first. Mismatch is the #1 setup failure here. Open the link above in an incognito window and sign in with just the account you want to own this project.
@@ -285,46 +311,37 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
     </details>
   </li>
 
-  <!-- ===== Step 2: Configure OAuth consent screen ===== -->
+  <!-- ===== Step 2: Configure the Google Auth Platform ===== -->
   <li class="wizard-step" data-step="2">
     <details>
       <summary>
         <span class="step-num"><span>2</span></span>
-        <span class="step-title">Configure the OAuth consent screen</span>
+        <span class="step-title">Configure the Google Auth Platform</span>
         <span class="step-status">~3 minutes</span>
       </summary>
       <div class="step-body">
-        <p>This is what each household member will see when they grant the speaker access. Google split this into three sibling tabs in 2025 — the old single-page wizard is gone.</p>
+        <p>This is what each household member will see when they grant the speaker access. Google runs a single short setup wizard for fresh projects — you do it once.</p>
 
-        <h3>2a — Branding</h3>
         <ol>
-          <li>Open the <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener">Branding tab ↗</a>. If you see a "Get started" card first, click <strong>GET STARTED</strong>.</li>
-          <li><strong>App name:</strong> what shows up at consent — e.g. "JTS Speaker". Avoid generic names like "test"; Google's heuristics flag them.</li>
-          <li><strong>User support email:</strong> pick your own Gmail from the dropdown.</li>
-          <li><strong>Developer contact information → Email addresses:</strong> same address.</li>
-          <li>Leave logo, home page, privacy policy, terms, and authorized domains blank — those are only needed for verified apps, which this isn't.</li>
-          <li>Click <strong>SAVE</strong>.</li>
-        </ol>
-
-        <h3>2b — Audience</h3>
-        <ol>
-          <li>Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>.</li>
-          <li>Pick <strong>External</strong>. (Internal is greyed out for personal Google accounts — only Workspace organisations see it.)</li>
-          <li>Under <strong>Test users</strong>, click <strong>+ ADD USERS</strong>. Add your own Gmail and any household members' Gmails (one per line). Click <strong>SAVE</strong>. Cap: 100 test users, all must be Google accounts.</li>
+          <li>Open the <a href="https://console.cloud.google.com/auth/branding" target="_blank" rel="noopener">Google Auth Platform ↗</a>. You'll see a "Google Auth Platform not configured yet" placeholder — click <strong>GET STARTED</strong>.</li>
+          <li><strong>App Information</strong>
+            <ul>
+              <li><strong>App name:</strong> "JTS Speaker". Avoid generic names like "test" — Google's heuristics flag them.</li>
+              <li><strong>User support email:</strong> pick your own Gmail from the dropdown.</li>
+            </ul>
+            Click <strong>NEXT</strong>.
+          </li>
+          <li><strong>Audience:</strong> pick <strong>External</strong>. (Internal is selectable but requires a Google Workspace organisation — on a personal Gmail it'll fail downstream.) Click <strong>NEXT</strong>.</li>
+          <li><strong>Contact Information → Email addresses:</strong> same Gmail again (Google uses this for project-change notices). Click <strong>NEXT</strong>.</li>
+          <li><strong>Finish:</strong> tick <strong>"I agree to the Google API Services: User Data Policy"</strong>. Click <strong>CONTINUE</strong>, then <strong>CREATE</strong>.</li>
         </ol>
 
         <div class="callout">
-          <strong>Important — publish the app to skip the 7-day refresh-token expiry:</strong>
-          Still on the Audience tab, find <strong>Publishing status</strong>. If it says "Testing", click <strong>PUBLISH APP</strong> and confirm the modal. In Testing mode, Google expires refresh tokens every 7 days — you'd have to re-link each household member every week. Publishing turns that off. The trade-off: the FIRST time anyone signs in, they'll see a "Google hasn't verified this app" warning and need to click <strong>Advanced → Go to JTS Speaker (unsafe)</strong>. That's a one-time click, much better than weekly re-auth.
+          <strong>Publish the app — skips the 7-day refresh-token expiry.</strong>
+          Open the <a href="https://console.cloud.google.com/auth/audience" target="_blank" rel="noopener">Audience tab ↗</a>. Under <strong>Publishing status</strong> (will say "Testing"), click <strong>PUBLISH APP</strong>. The "Push to production?" modal mentions submitting for verification — that doesn't apply under Google's <a href="https://support.google.com/cloud/answer/13464323" target="_blank" rel="noopener">personal-use exception ↗</a> (fewer than 100 users). Click <strong>CONFIRM</strong>. After publish, refresh tokens stop expiring; the FIRST time anyone signs in they'll see a "Google hasn't verified this app" warning — click <strong>Advanced → Go to JTS Speaker (unsafe)</strong> once per household member; afterwards it's invisible.
         </div>
 
-        <h3>2c — Data Access (optional but recommended)</h3>
-        <ol>
-          <li>Open the <a href="https://console.cloud.google.com/auth/scopes" target="_blank" rel="noopener">Data Access tab ↗</a>.</li>
-          <li>Click <strong>ADD OR REMOVE SCOPES</strong>.</li>
-          <li>Search for and tick: <code>.../auth/calendar.readonly</code> and <code>.../auth/gmail.readonly</code>. Click <strong>UPDATE</strong>, then <strong>SAVE</strong> at the bottom.</li>
-        </ol>
-        <p class="hint">Skippable — Google will show the scopes at consent regardless. Adding them here just suppresses one class of "unverified app" friction.</p>
+        <p class="hint"><strong>Don't visit the "Data Access" tab.</strong> Scopes are requested at consent regardless of what's there, and that tab is for submitting your app for verification — Google won't let you add Gmail-readonly without a written justification and demo video. Not what we want.</p>
 
         <button class="mark-done" type="button">I've done this →</button>
       </div>
@@ -370,6 +387,9 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
               <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
               <button type="button" onclick="copyStep4Redirect()">Copy</button>
               <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
+            </div>
+            <div class="callout">
+              <strong>Why a github.io URL?</strong> Google's OAuth client requires redirect URIs to use a public TLD (<code>.com</code>, <code>.io</code>, …) or <code>localhost</code> — it rejects mDNS names like <code>jts.local</code> and bare LAN IPs outright. The URL above points at <a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">a tiny static page</a> that reads <code>?host=jts.local</code> and bounces the browser back to this speaker. No data passes through it. Same trick the Spotify wizard uses.
             </div>
           </li>
           <li>Click <strong>CREATE</strong> at the bottom of the form.</li>
@@ -511,7 +531,7 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
     redirect_safe = html.escape(redirect_uri)
     return f"""
 <h3>The redirect URL</h3>
-<p>Your OAuth client needs this URL in its <strong>Authorized redirect URIs</strong> list. The setup wizard's step 4 included this when you created the client; if you skipped it, add it now.</p>
+<p>Your OAuth client needs this URL in its <strong>Authorized redirect URIs</strong> list. The setup wizard's step 4 included this when you created the client; if you skipped it or recreated the client, add it now.</p>
 
 <div class="copy-row">
   <input id="redirect-uri" type="text" readonly value="{redirect_safe}"
@@ -519,6 +539,8 @@ def _redirect_uri_section_html(redirect_uri: str) -> str:
   <button type="button" onclick="copyRedirect()">Copy</button>
   <span id="copy-feedback" class="copy-feedback">Copied!</span>
 </div>
+
+<p class="hint" style="margin-top:0.6em">It's a github.io URL because Google rejects <code>.local</code> mDNS names and bare LAN IPs. The page at that URL is a tiny static bouncer (<a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">source</a>) that redirects the browser back here. No data passes through it.</p>
 
 <ol class="steps">
   <li>Open <a href="https://console.cloud.google.com/auth/clients" target="_blank" rel="noopener">the Clients page ↗</a> and click your OAuth 2.0 Client ID. (If you bookmarked the old <code>/apis/credentials</code> URL, it still works — Google redirects it here.)</li>
@@ -962,7 +984,7 @@ def make_server(
     port: int,
     *,
     registry_path: str = "/var/lib/jasper/google/accounts.json",
-    redirect_uri: str = "https://jts.local/google/callback",
+    redirect_uri: str | None = None,
 ) -> ThreadingHTTPServer:
     """Build a configured ThreadingHTTPServer. Used by both the
     standalone CLI entry point AND by jasper.web.__main__ to colocate
@@ -979,7 +1001,7 @@ def make_server(
     cfg = {
         "client_id": client_id,
         "client_secret": client_secret,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": redirect_uri or default_redirect_uri(),
         "registry_path": registry_path,
     }
     return ThreadingHTTPServer((host, port), _make_handler(cfg))
@@ -1012,7 +1034,7 @@ def main(argv: list[str] | None = None) -> int:
         "--redirect-uri",
         default=os.environ.get(
             "GOOGLE_REDIRECT_URI",
-            "https://jts.local/google/callback",
+            default_redirect_uri(),
         ),
     )
     args = parser.parse_args(argv)

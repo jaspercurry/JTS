@@ -442,14 +442,18 @@ class Config:
             google_client_id=_env("GOOGLE_CLIENT_ID"),
             google_client_secret=_env("GOOGLE_CLIENT_SECRET"),
             google_redirect_uri=_env(
-                "GOOGLE_REDIRECT_URI", "https://jts.local/google/callback",
+                # Bounce page (jaspercurry/google-oauth-callback) — see
+                # jasper.web.google_setup.default_redirect_uri for why.
+                "GOOGLE_REDIRECT_URI",
+                "https://jaspercurry.github.io/google-oauth-callback/?host="
+                + _env("JASPER_HOSTNAME", "jts.local"),
             ),
             google_accounts_path=_env(
                 "JASPER_GOOGLE_ACCOUNTS_PATH",
                 "/var/lib/jasper/google/accounts.json",
             ),
             google_setup_url=_env(
-                "JASPER_GOOGLE_SETUP_URL", "https://jts.local/google",
+                "JASPER_GOOGLE_SETUP_URL", "http://jts.local/google",
             ),
             google_web_bind_host=_env(
                 "JASPER_GOOGLE_WEB_HOST", "127.0.0.1",
