@@ -83,6 +83,11 @@ install_camilladsp() {
     systemctl disable camilladsp.service 2>/dev/null || true
 
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
+    # State + emitted-correction-config dirs. The systemd unit's
+    # --statefile points at /var/lib/camilladsp/statefile.yml so
+    # corrections survive Pi restarts; the room-correction wizard
+    # writes correction_<id>_<unixtime>.yml under configs/.
+    install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
         local tmpdir
         tmpdir="$(mktemp -d)"
