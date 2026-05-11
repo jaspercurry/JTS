@@ -7,7 +7,7 @@
 // `resync_threshold_in_seconds` below. Toggle via
 // http://jts.local/airplay/ or `jasper-airplay-mode set
 // [free-running|synced]`. See jasper/web/airplay_setup.py +
-// docs/HANDOFF-airplay-sync.md for the toggle UX and full rationale.
+// docs/HANDOFF-airplay.md for the toggle UX and full rationale.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -46,7 +46,7 @@ general = {
     //   continuous path. Empirically verified over multiple 5-min
     //   samples: zero discrete-correction events, smooth ~149 ms
     //   peak-to-peak fill swing instead of the previous
-    //   crash-and-refill cycle. See docs/HANDOFF-airplay-sync.md.
+    //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
