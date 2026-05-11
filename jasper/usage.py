@@ -255,15 +255,23 @@ class UsageStore:
             )
             """
         )
+        # Migration: add `provider` column for the /system dashboard's
+        # per-provider breakdown. Pre-existing rows get NULL; the
+        # aggregate_by_provider query buckets those under "unknown".
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
+        if "provider" not in cols:
+            self._conn.execute(
+                "ALTER TABLE sessions ADD COLUMN provider TEXT"
+            )
         # Default to Gemini pricing so existing callers (and tests)
         # that don't pass `pricing=` keep working with their historical
         # cost estimates.
         self._pricing: Pricing = pricing or GEMINI_PRICING
 
-    def open_session(self) -> int:
+    def open_session(self, provider: str | None = None) -> int:
         cur = self._conn.execute(
-            "INSERT INTO sessions (started_at) VALUES (?)",
-            (datetime.now(timezone.utc).isoformat(),),
+            "INSERT INTO sessions (started_at, provider) VALUES (?, ?)",
+            (datetime.now(timezone.utc).isoformat(), provider),
         )
         return int(cur.lastrowid)
 
@@ -313,6 +321,92 @@ class UsageStore:
         )
         row = cur.fetchone()
         return float(row[0] if row else 0.0)
+
+    def spend_month_to_date_usd(self) -> float:
+        """Cumulative cost since the start of the current calendar
+        month (UTC). Used by the /system dashboard's cloud-activity
+        card to surface a stable monthly figure (the 24h rolling
+        number bounces too much for an at-a-glance view)."""
+        now = datetime.now(timezone.utc)
+        month_start = now.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0,
+        ).isoformat()
+        cur = self._conn.execute(
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM sessions "
+            "WHERE started_at >= ?",
+            (month_start,),
+        )
+        row = cur.fetchone()
+        return float(row[0] if row else 0.0)
+
+    def aggregate_by_provider(
+        self, since_utc: datetime | None = None,
+    ) -> list[dict]:
+        """Per-provider session/token/cost rollup. Used by the
+        dashboard's "Cloud activity" card. Default window is the
+        current calendar month.
+
+        Returns rows like::
+          {"provider": "gemini", "sessions": 12, "input_tokens": 1234,
+           "output_tokens": 567, "cost_usd": 0.42,
+           "last_session_at": "2026-05-11T..."}
+        Pre-migration rows (NULL provider) bucket under "unknown"."""
+        if since_utc is None:
+            since_utc = datetime.now(timezone.utc).replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0,
+            )
+        cur = self._conn.execute(
+            """
+            SELECT
+              COALESCE(provider, 'unknown') AS p,
+              COUNT(*) AS sessions,
+              COALESCE(SUM(input_tokens), 0) AS input_tokens,
+              COALESCE(SUM(output_tokens), 0) AS output_tokens,
+              COALESCE(SUM(cost_usd), 0) AS cost_usd,
+              MAX(COALESCE(ended_at, started_at)) AS last_session_at
+            FROM sessions
+            WHERE started_at >= ?
+            GROUP BY p
+            ORDER BY sessions DESC
+            """,
+            (since_utc.isoformat(),),
+        )
+        out: list[dict] = []
+        for row in cur.fetchall():
+            out.append({
+                "provider": row[0],
+                "sessions": int(row[1]),
+                "input_tokens": int(row[2]),
+                "output_tokens": int(row[3]),
+                "cost_usd": float(row[4]),
+                "last_session_at": row[5],
+            })
+        return out
+
+    def session_count_today_utc(self) -> int:
+        """Sessions since UTC midnight. Cheap counter for the
+        dashboard's 'turns today' tile."""
+        today = datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        ).isoformat()
+        cur = self._conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE started_at >= ?",
+            (today,),
+        )
+        row = cur.fetchone()
+        return int(row[0]) if row else 0
+
+    def last_successful_turn_at(self) -> str | None:
+        """ISO timestamp of the most recently-ended session, or None
+        if no session has ever closed. The dashboard renders this as
+        '8 min ago' for the cloud-activity card."""
+        cur = self._conn.execute(
+            "SELECT ended_at FROM sessions "
+            "WHERE ended_at IS NOT NULL "
+            "ORDER BY ended_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 class SpendCap:

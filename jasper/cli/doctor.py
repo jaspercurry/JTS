@@ -813,6 +813,30 @@ def render(results: list[CheckResult]) -> int:
     return 0
 
 
+def render_json(results: list[CheckResult]) -> int:
+    """Machine-readable output for the /system dashboard.
+
+    The web UI fetches this via /system/diagnostics → jasper-control →
+    sudo jasper-doctor --json. Returns the same exit-code semantics as
+    text render (0 = ok or warnings only; 1 = at least one fail).
+
+    Schema is intentionally flat — one row per check — so the
+    dashboard can render a table without complex per-check logic."""
+    import json as _json
+    fails = sum(1 for r in results if r.status == "fail")
+    warns = sum(1 for r in results if r.status == "warn")
+    payload = {
+        "fails": fails,
+        "warns": warns,
+        "results": [
+            {"name": r.name, "status": r.status, "detail": r.detail}
+            for r in results
+        ],
+    }
+    print(_json.dumps(payload))
+    return 1 if fails else 0
+
+
 async def run_async(cfg: Config) -> list[CheckResult]:
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
@@ -1039,16 +1063,29 @@ def main() -> None:
         "-i", "--interval", type=float, default=5.0,
         help="Seconds between iterations in --watch mode (default 5).",
     )
+    parser.add_argument(
+        "--json", action="store_true",
+        help="Emit JSON on stdout instead of the ANSI report. Used by "
+             "the /system dashboard's diagnostics disclosure.",
+    )
     args = parser.parse_args()
     _load_env_files()
     try:
         cfg = Config.from_env()
     except RuntimeError as e:
+        if args.json:
+            import json as _json
+            print(_json.dumps({
+                "error": f"config: {e}", "fails": 1, "warns": 0, "results": [],
+            }))
+            sys.exit(1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
     results = asyncio.run(run_async(cfg))
+    if args.json:
+        sys.exit(render_json(results))
     sys.exit(render(results))
 
 

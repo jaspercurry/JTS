@@ -518,6 +518,15 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/jasper-bluetooth-web.socket" \
         "${SYSTEMD_DIR}/jasper-bluetooth-web.socket"
+    # /system/ dashboard — RAM/CPU/temp sparklines + cloud activity
+    # + restart/diagnostics actions. Socket-activated like the other
+    # wizards.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.service" \
+        "${SYSTEMD_DIR}/jasper-system-web.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/jasper-system-web.socket" \
+        "${SYSTEMD_DIR}/jasper-system-web.socket"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-control.service" \
         "${SYSTEMD_DIR}/jasper-control.service"
@@ -635,7 +644,7 @@ install_systemd_units() {
     # topology enables the .socket instead, which pulls in the .service
     # on demand. Idempotent: re-running install.sh after migration is
     # already done is a no-op.
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-dial-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-dial-web jasper-system-web; do
         if systemctl is-enabled "${unit}.service" --quiet 2>/dev/null; then
             # First time through this branch — disable the always-on
             # service. Stop it explicitly so the next request comes up
@@ -670,12 +679,12 @@ Will retry on next boot."
     systemctl restart nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service \
         2>/dev/null || true
-    # The 4 wizard services are socket-activated now. Any currently-
+    # The 5 wizard services are socket-activated now. Any currently-
     # running instance is on the old code; stop it so the next incoming
     # request brings up the new code via the .socket. Idempotent: if the
     # service is already inactive (post-idle-exit or never started), the
     # stop is a no-op.
-    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-dial-web; do
+    for unit in jasper-web jasper-bluetooth-web jasper-correction-web jasper-dial-web jasper-system-web; do
         systemctl stop "${unit}.service" 2>/dev/null || true
     done
     # jasper-input is always-on (HID accessory bridge) — restart so any

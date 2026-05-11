@@ -1,0 +1,34 @@
+[Unit]
+Description=Jasper system dashboard (web at /system/)
+# Socket-activated — exits after 30 min idle. Longer than the other
+# wizards because the dashboard is a monitoring surface; a user may
+# leave it open in a tab.
+Requires=jasper-system-web.socket
+After=jasper-system-web.socket network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+WatchdogSec=30s
+EnvironmentFile=-/etc/jasper/jasper.env
+# Args ignored when socket-activated (the daemon adopts the inherited
+# fd) but kept for direct CLI invocation in dev.
+ExecStart=/opt/jasper/.venv/bin/jasper-system-web --host 127.0.0.1 --port 8772
+Restart=on-failure
+RestartSec=2
+
+# Hardening — needs to read /etc/jasper/jasper.env (for JASPER_HOSTNAME
+# etc.), proxy localhost HTTP to jasper-control. No writes outside
+# stdout/stderr (journald).
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+# Small process: stdlib http.server + per-request proxy connection.
+# In-memory state is the idle tracker only.
+MemoryHigh=60M
+MemoryMax=90M
+
+[Install]
+# Enable the .socket, not the .service.

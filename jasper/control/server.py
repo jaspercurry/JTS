@@ -33,6 +33,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import threading
 import time
 from http import HTTPStatus
@@ -83,6 +84,36 @@ def _delta_db_to_delta_percent(delta_db: float) -> int:
     the same 50 dB span the camilla-only path used. ±5 dB == ±10pp."""
     span = VOLUME_MAX_DB - VOLUME_MIN_DB
     return round(float(delta_db) / span * 100.0)
+
+
+def _read_cloud_activity() -> dict[str, Any]:
+    """Roll up cloud LLM activity for the /system dashboard.
+
+    Queries the UsageStore SQLite for per-provider session/token/cost
+    aggregates this month + last successful turn timestamp. Returns
+    {"available": False, ...} when the DB hasn't been created yet
+    (fresh install, daemon never opened a session). All queries are
+    local SQLite, sub-millisecond on a Pi 5.
+    """
+    db_path = os.environ.get(
+        "JASPER_USAGE_DB", "/var/lib/jasper/usage.db",
+    )
+    if not os.path.exists(db_path):
+        return {"available": False, "reason": "no usage.db yet"}
+    try:
+        from ..usage import UsageStore
+        store = UsageStore(db_path)
+        return {
+            "available": True,
+            "spend_month_to_date_usd": round(store.spend_month_to_date_usd(), 4),
+            "spend_last_24h_usd": round(store.spend_last_24h_usd(), 4),
+            "sessions_today": store.session_count_today_utc(),
+            "last_successful_turn_at": store.last_successful_turn_at(),
+            "by_provider": store.aggregate_by_provider(),
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("cloud-activity read failed: %s", e)
+        return {"available": False, "reason": str(e)}
 
 
 def _build_spotify_router_or_none():
@@ -516,7 +547,9 @@ def _make_handler(
                 return
             if self.path == "/system/snapshot":
                 # Snapshot for the /system dashboard. Current values +
-                # 60-min ring buffers for the sparklines + build info.
+                # 60-min ring buffers for the sparklines + build info
+                # + cloud activity rolled up from UsageStore (per-
+                # provider sessions/tokens/cost month-to-date).
                 # Sampler may be None in tests / direct CLI invocation;
                 # surface an empty history rather than 500.
                 from .system_metrics import read_build_info
@@ -525,8 +558,43 @@ def _make_handler(
                     "metrics": (
                         sampler.snapshot() if sampler is not None else None
                     ),
+                    "cloud": _read_cloud_activity(),
+                    "voice_provider": os.environ.get(
+                        "JASPER_VOICE_PROVIDER", "gemini",
+                    ),
                 }
                 self._send_json(payload)
+                return
+            if self.path == "/system/diagnostics":
+                # Run jasper-doctor --json and proxy its output. ~3-5 s
+                # on a Pi 5; the dashboard surfaces a spinner during
+                # the call. Single-flight semantics not enforced here
+                # (the dashboard disables the button while in flight).
+                try:
+                    proc = subprocess.run(
+                        ["/opt/jasper/.venv/bin/jasper-doctor", "--json"],
+                        capture_output=True, text=True, timeout=30,
+                    )
+                except (subprocess.SubprocessError, FileNotFoundError) as e:
+                    self._send_json(
+                        {"error": f"jasper-doctor invocation failed: {e}"},
+                        status=502,
+                    )
+                    return
+                # jasper-doctor exits 1 when any check failed; that's
+                # a normal "report has failures" outcome, not an HTTP
+                # error. Parse stdout regardless.
+                try:
+                    body = json.loads(proc.stdout)
+                except json.JSONDecodeError:
+                    self._send_json(
+                        {"error": "doctor output not JSON",
+                         "stdout": proc.stdout[:500],
+                         "stderr": proc.stderr[:500]},
+                        status=502,
+                    )
+                    return
+                self._send_json(body)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -732,6 +800,55 @@ def _make_handler(
                 elif result.get("result") != "ok":
                     http_status = 502
                 self._send_json(result, status=http_status)
+                return
+
+            if self.path in ("/system/restart/voice",
+                             "/system/restart/audio",
+                             "/system/reboot"):
+                # Action endpoints for the /system dashboard. All
+                # shell out to systemctl; jasper-control already runs
+                # as root so no sudo needed. Returns immediately —
+                # the restart is async on systemd's side and the
+                # dashboard polls /system/snapshot to know when
+                # things are back up.
+                #
+                # Risk model: LAN-trust (consistent with the wizards).
+                # Anyone on the WiFi can trigger these; the dashboard's
+                # confirm dialogs are UX, not security.
+                if self.path == "/system/restart/voice":
+                    units = ["jasper-voice.service"]
+                    action = "restart-voice"
+                elif self.path == "/system/restart/audio":
+                    units = [
+                        "jasper-camilla.service",
+                        "librespot.service",
+                        "shairport-sync.service",
+                        "bluealsa-aplay.service",
+                    ]
+                    action = "restart-audio"
+                else:
+                    units = []  # systemctl reboot — no units
+                    action = "reboot"
+                try:
+                    if action == "reboot":
+                        subprocess.Popen(["systemctl", "reboot"])
+                    else:
+                        # Use start-after-stop semantics. Don't block
+                        # on the systemctl call (jasper-aec-bridge +
+                        # jasper-voice both take up to 90s to stop
+                        # cleanly under the SIGTERM timeout).
+                        subprocess.Popen(["systemctl", "restart", *units])
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"systemctl invocation failed: {e}"},
+                        status=502,
+                    )
+                    return
+                self._send_json({
+                    "ok": True,
+                    "action": action,
+                    "units": units,
+                })
                 return
 
             self.send_error(HTTPStatus.NOT_FOUND)
