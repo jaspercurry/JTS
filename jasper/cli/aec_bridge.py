@@ -222,6 +222,7 @@ def _ref_thread(ref_q: Queue) -> None:
     gap so the adaptive filter operates near its design point. See
     docs/HANDOFF-aec.md "Tuning findings" for measured impact."""
     import alsaaudio
+    import time as _time
     capture_block = FRAME_SAMPLES * (REF_RATE // SAMPLE_RATE)
     ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
     ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
@@ -240,6 +241,12 @@ def _ref_thread(ref_q: Queue) -> None:
         REF_DEVICE, REF_RATE, REF_CHANNELS, ref_gain_db,
     )
     accum_48 = np.empty(0, dtype=np.float32)
+    # Drop-rate debouncing: during a mic stall the ref keeps producing
+    # at ~50 Hz, so a naive per-frame WARNING floods the journal with
+    # hundreds of entries that all say the same thing. Aggregate the
+    # count and log one summary per second instead.
+    drops_in_window = 0
+    last_drop_log = 0.0
     try:
         while not _shutdown.is_set():
             length, data = pcm.read()
@@ -266,7 +273,16 @@ def _ref_thread(ref_q: Queue) -> None:
                 try:
                     ref_q.put_nowait(mono16.tobytes())
                 except Full:
-                    logger.warning("ref queue full, dropping frame")
+                    drops_in_window += 1
+            now = _time.monotonic()
+            if drops_in_window > 0 and now - last_drop_log >= 1.0:
+                logger.warning(
+                    "ref queue full, dropped %d frames in last %.1fs "
+                    "(mic queue likely empty — see next stall log)",
+                    drops_in_window, now - last_drop_log if last_drop_log else 1.0,
+                )
+                drops_in_window = 0
+                last_drop_log = now
     finally:
         pcm.close()
 
@@ -363,7 +379,14 @@ def _aec_loop(  # noqa: PLR0915
                 consecutive_empty_sec = 0
             except Empty:
                 consecutive_empty_sec += 1
-                logger.warning("mic queue empty for 1s — bridge stalled")
+                # Log once at stall onset, then every 2 s so the journal
+                # shows the stall growing without flooding 1 line/sec.
+                if consecutive_empty_sec == 1 or consecutive_empty_sec % 2 == 0:
+                    logger.warning(
+                        "mic queue empty for %ds — bridge stalled (will exit "
+                        "non-zero at %ds for systemd restart)",
+                        consecutive_empty_sec, stall_restart_sec,
+                    )
                 if (
                     stall_restart_sec > 0
                     and consecutive_empty_sec >= stall_restart_sec
