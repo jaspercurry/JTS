@@ -322,6 +322,49 @@ they don't get lost in the working tree.
 
 ---
 
+## Resilience ladder — deferred tiers (no version)
+
+`docs/HANDOFF-resilience.md` documents the full five-tier ladder.
+Tiers 1+2 (sd_notify watchdog + `Type=notify` + `Restart=on-watchdog`)
+shipped in PRs #77 + #93 alongside the UDP transport that
+eliminated the snd-aloop kernel-state failure class. Tier 5 is the
+cheap remaining one we should not forget. Tiers 3–4 are noted for
+completeness but have weak triggers.
+
+### Tier 5 — BCM2712 hardware watchdog (do this next)
+
+Set `RuntimeWatchdogSec=15s` in a `/etc/systemd/system.conf.d/`
+drop-in. systemd PID 1 pats `/dev/watchdog0` (the BCM2712 driver,
+exposed on Pi OS Lite Trixie 64-bit by default); if PID 1 itself
+hangs, the kernel watchdog reboots the Pi. Covers kernel panics
+and total userspace wedges that no userspace mechanism can recover
+from. ~5 lines of config, no code, no runtime cost.
+
+Sequencing note: stage this AFTER Tiers 1+2 have soaked on the
+speaker for a stretch, so we're not chasing boot-loops caused by
+our own daemons. Confirm `cat /sys/class/watchdog/watchdog0/identity`
+returns `Broadcom BCM2835 Watchdog` (Pi family identifier) before
+enabling. The 15 s ceiling is hardware-imposed.
+
+### Tier 3 — `OnFailure=` cross-service chaining (deferred)
+
+Trigger condition: we hit a failure where one daemon's repeated
+restart-loops fail because a sibling is broken, and the systemd
+watchdog can't fix it alone. The UDP transport eliminated the main
+case (bridge↔voice no longer share kernel state). Wait for evidence
+before wiring.
+
+### Tier 4 — `rmmod snd_aloop && modprobe snd_aloop` recovery script (deferred)
+
+Trigger condition: the music-chain `Loopback` card wedges (no
+incidents of this in production; CamillaDSP is well-behaved). If
+it ever happens, the recovery is a templated `jasper-recover@.service`
+unit that stops the renderers + camilla + voice, reloads the
+module, restarts everything. ~150 lines of bash. Worth doing if
+we see this failure mode; not before.
+
+---
+
 ## Risks worth re-flagging
 
 - **Gemini 3.1 Flash Live is still Preview, not GA.** API can change
