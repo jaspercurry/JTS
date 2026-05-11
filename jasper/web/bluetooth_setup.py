@@ -36,6 +36,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ._common import NAV_BACK_CSS, NAV_BACK_HTML
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
@@ -285,7 +286,7 @@ _PAGE_STYLE = """
   .icon-audio-card::before { content: "\\1F50A"; }
   .icon-input-keyboard::before { content: "\\1F39B"; }
   .icon-device::before { content: "\\1F4E1"; }
-"""
+""" + NAV_BACK_CSS
 
 
 def _landing_html() -> bytes:
@@ -766,6 +767,7 @@ def _wrap_page(title: str, body: str) -> bytes:
 <style>{_PAGE_STYLE}</style>
 </head>
 <body>
+{NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {body}
 </body>

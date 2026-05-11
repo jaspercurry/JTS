@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ._common import PAGE_STYLE
+from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE
 
 logger = logging.getLogger(__name__)
 
@@ -212,6 +212,7 @@ _PAGE_HTML = """<!doctype html>
 <style>__STYLE__</style>
 </head>
 <body>
+__NAV_BACK__
 <h1>Room correction</h1>
 <p class="sub">Measure your room from this iPhone, design correction filters, and apply them to the speaker.</p>
 
@@ -1231,7 +1232,8 @@ _PAGE_HTML = """<!doctype html>
 def _render_page(hostname: str) -> bytes:
     return (
         _PAGE_HTML
-        .replace("__STYLE__", _CORRECTION_PAGE_STYLE)
+        .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
+        .replace("__NAV_BACK__", NAV_BACK_HTML)
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
     ).encode("utf-8")

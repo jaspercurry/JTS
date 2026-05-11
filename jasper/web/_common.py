@@ -102,6 +102,34 @@ PAGE_STYLE = """
   details.account .account-body {
     padding: 0 0.9em 0.9em; border-top: 1px solid #e6e6e6;
   }
+
+  /* Shared back-to-home nav link (NAV_BACK_HTML below). Sits above
+     the page <h1> so every wizard has the same one-click escape
+     back to http://jts.local/. Pages that define their own style
+     block (dial, bluetooth, correction) re-import NAV_BACK_CSS so
+     this rule travels with the link wherever it goes.*/
+  .nav-back {
+    display: inline-block; color: #666; text-decoration: none;
+    font-size: 0.92em; margin-bottom: 0.6em;
+  }
+  .nav-back:hover { color: #222; }
+"""
+
+
+# Single source of truth for the back-to-home link. Imported by every
+# setup page so the markup stays identical even though each page
+# renders its own HTML wrapper.
+NAV_BACK_HTML = '<a class="nav-back" href="/">← JTS speaker</a>'
+
+# CSS for `.nav-back` is included in `PAGE_STYLE` above. Re-exported
+# here as a string fragment for pages that build their own style
+# block instead of using `PAGE_STYLE` (dial / bluetooth / correction).
+NAV_BACK_CSS = """
+  .nav-back {
+    display: inline-block; color: #666; text-decoration: none;
+    font-size: 0.92em; margin-bottom: 0.6em;
+  }
+  .nav-back:hover { color: #222; }
 """
 
 
@@ -127,6 +155,7 @@ def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
 <style>{PAGE_STYLE}</style>
 </head>
 <body>
+{NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {msg_html}
 {body}

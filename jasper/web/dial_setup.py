@@ -37,6 +37,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ._common import NAV_BACK_CSS, NAV_BACK_HTML
+
 logger = logging.getLogger(__name__)
 
 # Same recognized USB IDs as the CLI's find_dial(): Espressif VID + the
@@ -132,7 +134,7 @@ _PAGE_STYLE = """
   @keyframes spin { to { transform: rotate(360deg); } }
   pre { background: #1e1e1e; color: #ddd; padding: 0.8em; border-radius: 6px;
         overflow-x: auto; font-size: 0.85em; }
-"""
+""" + NAV_BACK_CSS
 
 
 def _wrap_page(title: str, body: str) -> bytes:
@@ -145,6 +147,7 @@ def _wrap_page(title: str, body: str) -> bytes:
 <style>{_PAGE_STYLE}</style>
 </head>
 <body>
+{NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {body}
 </body>
