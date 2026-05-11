@@ -115,6 +115,23 @@ QUEUE_MAXSIZE = 32
 
 _shutdown = threading.Event()
 
+
+class BridgeStalled(RuntimeError):
+    """Mic capture has produced no frames for the configured
+    threshold (JASPER_AEC_STALL_RESTART_SEC, default 5s).
+
+    Raised by `_aec_loop` to bail with a non-zero exit code so
+    systemd's `Restart=on-failure` revives us with a fresh
+    `sd.InputStream`. PortAudio's InputStream is one-shot — once
+    its ALSA capture PCM enters an unrecoverable state (typically
+    after a USB underrun on the XVF chip's UAC2 endpoint), the
+    callback simply stops being invoked. There's no in-process
+    recovery path; only a new process gets a working stream.
+    Hit in production 2026-05-11: bridge silently stopped feeding
+    LoopbackAEC for ~10 minutes, wake-word detection got no audio,
+    Hey Jarvis was unresponsive with no audible cue.
+    """
+
 # Clipping counters (module-level for cheap cross-thread access; small
 # race conditions in increment+reset are benign — worst case a single
 # log window's percentage is off by a frame). Tracked separately for
@@ -264,6 +281,13 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Aec3Engine) -> None:  # noqa:
     global _out_clipped_samples, _out_total_samples
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
+    # Stall-recovery threshold: consecutive seconds of empty mic_q
+    # before we bail for a systemd-driven restart. 0 = disabled
+    # (legacy "log forever" behaviour). See BridgeStalled docstring.
+    stall_restart_sec = int(
+        float(os.environ.get("JASPER_AEC_STALL_RESTART_SEC", "5"))
+    )
+    consecutive_empty_sec = 0
     """Drain both queues frame-by-frame, run the selected AEC
     engine, write to Loopback. The two queues drift independently;
     we loosely sync by always pulling one mic frame and the
@@ -295,8 +319,20 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Aec3Engine) -> None:  # noqa:
         while not _shutdown.is_set():
             try:
                 mic_bytes = mic_q.get(timeout=1.0)
+                consecutive_empty_sec = 0
             except Empty:
+                consecutive_empty_sec += 1
                 logger.warning("mic queue empty for 1s — bridge stalled")
+                if (
+                    stall_restart_sec > 0
+                    and consecutive_empty_sec >= stall_restart_sec
+                ):
+                    raise BridgeStalled(
+                        f"mic queue empty for {consecutive_empty_sec}s — "
+                        "InputStream is dead (typically ALSA underrun on "
+                        "XVF UAC2 capture), exiting non-zero so systemd "
+                        "Restart=on-failure can spin up a fresh process"
+                    )
                 continue
 
             # Drain ref queue to its newest frame (best-effort sync).
@@ -402,6 +438,10 @@ def main() -> int:
 
     try:
         _aec_loop(ref_q, mic_q, engine)
+    except BridgeStalled as e:
+        logger.error("%s", e)
+        _shutdown.set()
+        return 1
     except Exception as e:  # noqa: BLE001
         logger.exception("aec loop crashed: %s", e)
         _shutdown.set()
