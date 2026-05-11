@@ -376,8 +376,20 @@ install_jasper() {
     # moment install.sh ran. The /system dashboard reads this to show
     # "version: <sha>, installed <timestamp>". Falls back to "unknown"
     # if REPO_DIR isn't a git checkout (e.g. tarball deploy).
-    local git_sha="unknown" git_full="unknown" git_branch="unknown"
-    if [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; then
+    #
+    # Three sources, in priority order:
+    #   1. JASPER_DEPLOY_SHA / JASPER_DEPLOY_SHA_FULL / JASPER_DEPLOY_BRANCH
+    #      env vars — set by scripts/deploy-to-pi.sh on the laptop before
+    #      sudo-running install.sh. This is the only source that works
+    #      when the standard rsync deploy excludes .git/ (which it does).
+    #   2. Local git checkout in REPO_DIR — when install.sh is run
+    #      directly against a fresh `git clone` on the Pi.
+    #   3. "unknown" — tarball deploys, no git info available.
+    local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
+    local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
+    local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
+    if [[ "${git_sha}" == "unknown" ]] && \
+       { [[ -d "${REPO_DIR}/.git" ]] || git -C "${REPO_DIR}" rev-parse --git-dir >/dev/null 2>&1; }; then
         git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
         git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
         git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
