@@ -227,6 +227,62 @@ _GOOGLE_PAGE_STYLE = PAGE_STYLE + """
   }
   .callout strong:first-child { color: #b07b00; }
 
+  /* ---- Top-level disclosures (Connection details, View setup
+     guide, OAuth client settings, etc.) ----
+     The browser-default <summary> is unstyled text with a tiny
+     triangle — barely looks clickable. These rules give the
+     summary a card-style hover affordance and a right-aligned
+     caret that rotates on open. Targets `.disclosure` only so
+     the inner wizard-step <details> (which already have their
+     own card styling) stay untouched. */
+  details.disclosure { margin-top: 1.4em; }
+  details.disclosure > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none; -webkit-user-select: none;
+    padding: 0.85em 2.4em 0.85em 1em;
+    background: #f4f4f4;
+    border: 1px solid #e6e6e6;
+    border-radius: 8px;
+    font-weight: 600;
+    color: #222;
+    position: relative;
+    transition: background 0.15s ease, border-color 0.15s ease;
+  }
+  details.disclosure > summary:hover {
+    background: #f0fff4;
+    border-color: #1db954;
+  }
+  details.disclosure[open] > summary {
+    border-bottom-left-radius: 0;
+    border-bottom-right-radius: 0;
+    border-bottom-color: transparent;
+  }
+  details.disclosure > summary::-webkit-details-marker { display: none; }
+  details.disclosure > summary::after {
+    content: "▸";
+    position: absolute;
+    right: 1em; top: 50%;
+    transform: translateY(-50%);
+    color: #888;
+    transition: transform 0.15s ease, color 0.15s ease;
+  }
+  details.disclosure > summary:hover::after,
+  details.disclosure[open] > summary::after {
+    color: #1db954;
+  }
+  details.disclosure[open] > summary::after {
+    transform: translateY(-50%) rotate(90deg);
+  }
+  details.disclosure > .disclosure-body {
+    padding: 0.6em 1em 1em;
+    border: 1px solid #e6e6e6;
+    border-top: none;
+    border-bottom-left-radius: 8px;
+    border-bottom-right-radius: 8px;
+    background: #fff;
+  }
+
   /* The paste-creds form is inside the last wizard step but visually
      separated — it's the action that completes the whole flow. */
   .creds-form-wrap {
@@ -643,9 +699,9 @@ def _connection_details_html(client_id: str) -> str:
             'console.cloud.google.com ↗</a> and pick the project from the top-bar switcher.</p>'
         )
     return f"""
-<details style="margin-top:1.4em">
+<details class="disclosure">
   <summary>Connection details (scopes, project, OAuth client)</summary>
-  <div style="padding-top:0.6em">
+  <div class="disclosure-body">
     <h3>What this app reads</h3>
     <ul>
       <li>Google Calendar — <strong>read-only</strong></li>
@@ -709,14 +765,16 @@ def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: st
 
 {_connection_details_html(client_id)}
 
-<details style="margin-top:1.4em">
+<details class="disclosure">
   <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
-  <p style="margin-top:0.8em">If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
-  {_redirect_uri_section_html(redirect_uri)}
-  <form method="post" action="reset-credentials" style="margin-top:2em"
-        onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
-    <button type="submit" class="danger">Reset Google credentials</button>
-  </form>
+  <div class="disclosure-body">
+    <p>If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
+    {_redirect_uri_section_html(redirect_uri)}
+    <form method="post" action="reset-credentials" style="margin-top:2em"
+          onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
+      <button type="submit" class="danger">Reset Google credentials</button>
+    </form>
+  </div>
 </details>
 """
     return _wrap_page(
@@ -783,20 +841,22 @@ def _management_html(
 
 {_connection_details_html(client_id)}
 
-<details style="margin-top:1.4em">
+<details class="disclosure">
   <summary>View setup guide (re-read the original 4-step instructions)</summary>
-  <div style="padding-top:0.6em">
+  <div class="disclosure-body">
     {_setup_wizard_body(redirect_uri, read_only=True)}
   </div>
 </details>
 
-<details style="margin-top:1.4em">
+<details class="disclosure">
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
-  {_redirect_uri_section_html(redirect_uri)}
-  <form method="post" action="reset-credentials" style="margin-top:2em"
-        onsubmit="return confirm('Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.');">
-    <button type="submit" class="danger">Reset Google credentials</button>
-  </form>
+  <div class="disclosure-body">
+    {_redirect_uri_section_html(redirect_uri)}
+    <form method="post" action="reset-credentials" style="margin-top:2em"
+          onsubmit="return confirm('Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.');">
+      <button type="submit" class="danger">Reset Google credentials</button>
+    </form>
+  </div>
 </details>
 """
     return _wrap_page(
