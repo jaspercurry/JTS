@@ -212,7 +212,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation
-  HANDOFF-airplay-sync.md       AirPlay glitch troubleshooting guide
+  HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
   HANDOFF-volume.md             Source-aware volume coordinator
@@ -272,7 +272,7 @@ reference. Currently:
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
   volume coordinator (one canonical `listening_level`, dispatched
   to whichever source is active, observed inbound at 1 Hz)
-- [`HANDOFF-airplay-sync.md`](docs/HANDOFF-airplay-sync.md) — AirPlay
+- [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay
   glitch troubleshooting guide. **Start here if you hear audio
   artifacts on AirPlay.** Symptom → pattern decision flow, concrete
   diagnostic recipes, per-pattern playbooks (with confirmed fixes for

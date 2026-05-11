@@ -766,7 +766,9 @@ from somewhere outside the ALSA output handle. Submit upstream.
 ### Internal
 - [PR #75 — camilla rate_adjust + shairport tuning (Pattern A fix + groundwork)](https://github.com/jaspercurry/JTS/pull/75)
 - [PR #76 — user-toggleable sync mode (initial workaround)](https://github.com/jaspercurry/JTS/pull/76)
-- [PR #81 — original HANDOFF-airplay-sync.md (investigation log)](https://github.com/jaspercurry/JTS/pull/81)
+- [PR #81 — initial version of this HANDOFF doc (was named HANDOFF-airplay-sync.md until PR #85)](https://github.com/jaspercurry/JTS/pull/81)
+- [PR #84 — reshape into troubleshooting guide](https://github.com/jaspercurry/JTS/pull/84)
+- [PR #85 — rename HANDOFF-airplay-sync.md → HANDOFF-airplay.md](https://github.com/jaspercurry/JTS/pull/85)
 - [PR #83 — resync_threshold=0.2 (Pattern B fix, current production)](https://github.com/jaspercurry/JTS/pull/83)
 - [`deploy/shairport-sync.conf.template`](../deploy/shairport-sync.conf.template) — current shairport config template
 - [`deploy/camilladsp/v1.yml`](../deploy/camilladsp/v1.yml) — current CamillaDSP config

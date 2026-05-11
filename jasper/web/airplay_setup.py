@@ -15,7 +15,7 @@ as the default. Later we found the proper fix: raise
 continuous ±1-sample stuffing path (smooth, inaudible) and never
 fires the discrete path. With that change in place, synced mode is
 glitch-free on this hardware. See
-docs/HANDOFF-airplay-sync.md for the full diagnosis.
+docs/HANDOFF-airplay.md for the full diagnosis.
 
 This toggle remains as a safety net: if a future DAC swap or
 firmware change produces sync issues we don't currently see, the
@@ -151,7 +151,7 @@ everything — this toggle is here as a safety net.</p>
     <p>Setting persists across reboots in
     <code>/var/lib/jasper/airplay_mode.env</code>. CLI:
     <code>jasper-airplay-mode set [synced|free-running]</code>. Full
-    history in <code>docs/HANDOFF-airplay-sync.md</code>.</p>
+    history in <code>docs/HANDOFF-airplay.md</code>.</p>
   </div>
 </details>
 """
