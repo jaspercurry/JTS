@@ -334,11 +334,18 @@ DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
 To enable on the Pi (assumes 6-ch firmware already flashed):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:7,1|' \
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=udp:9876|' \
     /etc/jasper/jasper.env
 sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice
 ```
+
+`install.sh` auto-runs this on the 6-ch firmware so the above is
+only needed if you're flipping between chip-direct and AEC manually.
+The bridge→voice transport is UDP localhost (`udp:9876`) since
+May 2026; the prior snd-aloop `LoopbackAEC` topology was retired
+for resilience reasons — see
+[`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md).
 
 To disable:
 
@@ -512,8 +519,9 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
   what the configs expect (`A` for Apple dongle, `Array` for
-  ReSpeaker, `Loopback` for snd-aloop, `LoopbackAEC` for the
-  AEC bridge's output card)
+  ReSpeaker, `Loopback` for snd-aloop). The AEC bridge no longer
+  has an ALSA output — it sends UDP to `127.0.0.1:9876` since
+  May 2026; see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
 - `logs/camilladsp-latest.yml` — current CamillaDSP config on
   the Pi
 - `logs/asoundrc-latest.txt` — current `/root/.asoundrc`

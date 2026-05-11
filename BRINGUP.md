@@ -418,15 +418,20 @@ red=WiFi down.
 
 ## Optional: Software AEC bridge
 
-Disabled by default. To enable on a Pi with the 6-channel XVF
-firmware (see DFU procedure below):
+`install.sh` auto-enables AEC on a Pi running the 6-channel XVF
+firmware. To enable manually (e.g. you flashed 6-ch after install
+and don't want to re-run install.sh):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:7,1|' \
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=udp:9876|' \
     /etc/jasper/jasper.env
 sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice
 ```
+
+The bridge→voice transport is UDP localhost since May 2026 (was
+a second snd-aloop card before that, retired for resilience —
+see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
 
 To disable:
 

@@ -263,6 +263,11 @@ reference. Currently:
   across HA Assist, Sonos, Apple, Amazon ESP).
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation
+- [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
+  five-tier resilience ladder, the 2026-05-11 incident, the
+  decision to swap the bridge→voice transport from snd-aloop to
+  UDP. Read before touching `jasper/watchdog.py` or the
+  `Type=notify` / `WatchdogSec=` blocks in any service unit.
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
   — Long-running Gemini Live connection management (Gemini-specific
   details — see HANDOFF-voice-providers.md for the cross-provider
@@ -330,33 +335,32 @@ and AGC** all run on the conference channel (channel 0 of the
 USB capture endpoint). We use that processed channel; just not
 the chip's on-chip AEC.
 
-**Software AEC is BUILT but DISABLED by default.** A Python daemon
-(`jasper-aec-bridge`) runs WebRTC AEC3 echo cancellation between
-the host's music chain (tapped via `pcm.jasper_capture` dsnoop) and
-the chip's raw mic 0 (channel 2 of the 6-channel firmware). It
-emits an AEC'd mono signal to a second snd-aloop card
-(`hw:7,1` = LoopbackAEC) that jasper-voice can consume instead of
-the chip's processed mic. The engine is the `jasper_aec3` pybind11
-binding around Trixie's `libwebrtc-audio-processing-1` v1.3-3 —
-delivers −15 to −18 dB on music with the production REF_GAIN/
-MIC_GAIN tunings, at ~3-8% of one Pi 5 core and ~110 MB RAM.
+**Software AEC ships ON by default when the chip is on the 6-channel
+firmware variant.** A Python daemon (`jasper-aec-bridge`) runs
+WebRTC AEC3 echo cancellation between the host's music chain
+(tapped via `pcm.jasper_capture` dsnoop) and the chip's raw mic 0
+(channel 2 of the 6-channel firmware). It sends an AEC'd mono signal
+over UDP localhost (`127.0.0.1:9876`) to `jasper-voice`'s
+`UdpMicCapture` instead of the chip's processed mic. The engine is
+the `jasper_aec3` pybind11 binding around Trixie's
+`libwebrtc-audio-processing-1` v1.3-3 — delivers −15 to −18 dB on
+music with the production REF_GAIN/MIC_GAIN tunings, at ~3-8% of
+one Pi 5 core and ~95 MB RAM.
 
-It's disabled by default because:
-- The 1GB Pi 5 is at the edge with 110 MB extra (~60% RAM use,
-  ~160 MB swap when bridge is running) — the 2GB SKU is
-  recommended if you want the bridge on
-- It requires the 6-channel XVF firmware variant (`v2.0.8 6chl`)
-  flashed via DFU (BRINGUP.md Phase 2A.5)
-- The chip's beamformed conference channel (the default mic
-  source) is good enough for typical use with `NO_INTERRUPTION`
-  + ducking — the bridge is most useful when you want wake-word
-  detection during loud music playback
+The transport is UDP (not snd-aloop's `LoopbackAEC` card, which is
+what the original design used) because snd-aloop's kernel-side
+`loopback_cable` wedges when a consumer is SIGKILL'd, requiring a
+reboot to clear. Hit in production May 2026; UDP localhost has no
+kernel state to corrupt and `sendto()` is non-blocking. See
+[docs/HANDOFF-resilience.md](docs/HANDOFF-resilience.md) for the
+full architectural rationale and the multi-tier resilience design
+the speaker now uses.
 
-To turn the bridge on for A/B testing, see [CLAUDE.md](CLAUDE.md)
-"Acoustic echo cancellation" section or [BRINGUP.md](BRINGUP.md)
-Phase 2A.2 (both have the same enable/disable commands). Requires
-the chip to be on the 6-channel firmware variant — `v2.0.8 6chl`,
-DFU procedure in BRINGUP.md Phase 2A.5; reversible.
+The bridge needs the 6-channel XVF firmware variant
+(`v2.0.8 6chl`, flashed via DFU per BRINGUP.md Phase 2A.5) since it
+taps raw mic 0 (channel 2 of 6). On the 2-channel firmware the
+bridge stays disabled and voice reads the chip's processed
+conference channel directly. `install.sh` auto-detects + auto-enables.
 
 ### What's installed and at what cost
 
@@ -377,7 +381,7 @@ and openwakeword stub diet landed.
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
-| Two-card snd-aloop (Loopback + LoopbackAEC) | Loaded at boot | ~0 | ~0 |
+| Single-card snd-aloop (Loopback) | Loaded at boot | ~0 | ~0 |
 | dsnoop tap on music chain | Always present | ~0 | ~0 |
 
 The four web wizards are socket-activated — systemd holds their

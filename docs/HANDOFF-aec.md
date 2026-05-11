@@ -3,9 +3,11 @@
 This document describes the AEC subsystem in detail: why it exists,
 what we tried, what failed, what shipped, and what's still open. It
 is the canonical source for anyone touching `jasper-aec-bridge`,
-`jasper-aec-init`, the `pcm.jasper_capture` dsnoop, the snd-aloop
-two-card setup, the `jasper/xvf/` vendored XMOS control library, or
-any of the supporting documentation in `BRINGUP.md` and
+`jasper-aec-init`, the `pcm.jasper_capture` dsnoop, the bridge↔voice
+UDP transport (see [HANDOFF-resilience.md](HANDOFF-resilience.md)
+for why it's UDP and not a second snd-aloop card), the
+`jasper/xvf/` vendored XMOS control library, or any of the
+supporting documentation in `BRINGUP.md` and
 `docs/audit-pending-followups.md`.
 
 The goal is to make this enough context that a future session can
@@ -15,20 +17,25 @@ pick up the work without re-doing the investigation.
 
 ## TL;DR / current state
 
-**The software AEC bridge is built but DISABLED by default.** It's
-shipped as installed-but-not-enabled because measured attenuation
-(−2 to −8 dB) is modest and RAM cost (~110 MB) is significant on
-the 1GB Pi 5. The code is preserved so it can be flipped on for
-A/B testing; CLAUDE.md has the toggle commands. The chip's
-on-board AEC is not in the audio path either — this doc explains
-why.
+**The software AEC bridge is shipped and auto-enabled when the chip
+is on the 6-channel firmware variant.** `install.sh` calls
+`enable_aec_if_compatible` near the end and (a) flips
+`JASPER_MIC_DEVICE` to `udp:9876` and (b) enables / starts
+`jasper-aec-init` + `jasper-aec-bridge`. The chip's on-board AEC
+is not in the audio path — this doc explains why.
 
-**To turn the bridge on**: see CLAUDE.md "Acoustic echo
-cancellation (software AEC bridge)" section. Two-line operation:
-flip `JASPER_MIC_DEVICE` from `Array` to `hw:5,1` in
-`/etc/jasper/jasper.env`, then
-`systemctl enable --now jasper-aec-init jasper-aec-bridge` and
-restart `jasper-voice`.
+To turn the bridge OFF (or back to chip-direct mic for A/B
+testing): `sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=Array|'
+/etc/jasper/jasper.env` and restart `jasper-voice`. The
+`jasper-aec-bridge` service can then be disabled with `systemctl
+disable --now jasper-aec-bridge jasper-aec-init` if you also want
+to reclaim the ~95 MB the bridge process uses.
+
+The bridge→voice transport is **UDP localhost** (default
+`127.0.0.1:9876`), not snd-aloop. The original `LoopbackAEC`
+two-card snd-aloop topology was retired in May 2026 after a
+kernel-state-corruption incident — see
+[HANDOFF-resilience.md](HANDOFF-resilience.md) for the rationale.
 
 ---
 
@@ -287,7 +294,7 @@ renderers (shairport-sync, librespot, bluealsa-aplay)
     │
     │  each writes directly to hw:Loopback,0,0
     ▼
-hw:Loopback,0,sub0  ← snd-aloop card 0, kernel-clocked
+hw:Loopback,0,sub0  ← snd-aloop card 6, kernel-clocked
     │  cross-wired by snd-aloop
     ▼
 hw:Loopback,1,sub0
@@ -308,24 +315,23 @@ pcm.jasper_capture  ← type plug → type dsnoop on Loopback,1,sub0
             takes channel 2 of the chip capture (raw mic 0)
             downsamples ref 48k → 16k mono on left
             runs WebRTC AEC3 (10ms windows) frame by frame
-            writes AEC'd mono 16k to → hw:LoopbackAEC,0
-                                          │
-                                          ▼ (snd-aloop card 7)
-                                       hw:LoopbackAEC,1 (= hw:7,1)
-                                          │
-                                          ▼
-                                       jasper-voice
-                                          openWakeWord + Gemini Live
+            sends AEC'd mono 16k via UDP → 127.0.0.1:9876
+                                              │
+                                              ▼
+                                           jasper-voice
+                                              UdpMicCapture binds the same port
+                                              openWakeWord + Gemini Live
 ```
 
-Two snd-aloop cards. Card 0 ("Loopback") carries the music chain
-(renderer → camilla → dongle, with the bridge tapping the camilla
-input via dsnoop). Card 5 ("LoopbackAEC") carries only the AEC'd
-mono mic from the bridge to jasper-voice. Two cards instead of
-multiple substreams of one card because PortAudio (sounddevice's
-backend, which jasper-voice uses) doesn't expose ALSA substream
-selection — it addresses cards by name and would default to
-sub0, colliding with the music chain.
+One snd-aloop card. "Loopback" (card 6) carries the music chain —
+renderer → camilla → dongle, with the bridge tapping the camilla
+input via dsnoop. The AEC'd mic from bridge to voice rides UDP
+localhost instead of a second snd-aloop card; see
+[HANDOFF-resilience.md](HANDOFF-resilience.md) for why we retired
+the original `LoopbackAEC` snd-aloop topology in May 2026 (short
+version: snd-aloop's kernel-side `loopback_cable` wedges when a
+consumer is SIGKILL'd, requiring a reboot to clear; UDP localhost
+has no kernel state to corrupt).
 
 Card 5 specifically (rather than 1) because Pi 5's HDMI audio
 already occupies index 1 — the snd-aloop kernel module silently

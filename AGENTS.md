@@ -403,8 +403,9 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
 - `logs/alsa-devices-latest.txt` — `aplay -L` / `arecord -L`
   output. Always sanity-check actual ALSA card names against
   what the configs expect (`A` for Apple dongle, `Array` for
-  ReSpeaker, `Loopback` for snd-aloop, `LoopbackAEC` for the
-  AEC bridge's output card)
+  ReSpeaker, `Loopback` for snd-aloop). The AEC bridge no longer
+  has an ALSA output — it sends UDP to `127.0.0.1:9876` since
+  May 2026; see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
 - `logs/camilladsp-latest.yml` — current CamillaDSP config on
   the Pi
 - `logs/asoundrc-latest.txt` — current `/root/.asoundrc`
