@@ -54,5 +54,18 @@ StateDirectoryMode=0750
 RuntimeDirectory=jasper
 RuntimeDirectoryMode=0750
 
+# Hardening — defense in depth around the highest-attack-surface
+# process on the speaker (parses microphone audio, third-party LLM
+# responses, Spotify/Google API responses). Runs as root because it
+# needs realtime audio + multiple /dev/snd/* + ALSA config in /root,
+# but these flags limit damage if anything ever triggers an
+# exploitable bug. Mirrors jasper-web.service. ProtectHome=read-only
+# (not =true) so ALSA can still read /root/.asoundrc.
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/jasper
+
 [Install]
 WantedBy=multi-user.target

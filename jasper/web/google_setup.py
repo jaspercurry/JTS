@@ -569,6 +569,82 @@ async function copyRedirect() {{
 """
 
 
+def _project_number_from_client_id(client_id: str) -> str | None:
+    """Google OAuth Client IDs look like
+    `123456789012-randomstring.apps.googleusercontent.com` — the leading
+    numeric chunk before the first hyphen is the Cloud project number,
+    which the Cloud Console accepts as a `?project=` query value (same
+    URL surface as project IDs like `jts-speaker-496013`). Return it
+    so the wizard can deep-link into the right project's Branding /
+    Audience / Clients tabs without remembering URLs. Returns None
+    for malformed Client IDs."""
+    if not client_id or "-" not in client_id:
+        return None
+    head = client_id.split("-", 1)[0]
+    return head if head.isdigit() else None
+
+
+def _connection_details_html(client_id: str) -> str:
+    """Read-only inspection panel for a configured connection: scopes,
+    Client ID (masked + reveal-on-click), and deep-links into the
+    Cloud Console for this specific project. Rendered in state 2 and
+    state 3 — anywhere the wizard knows there are credentials to
+    inspect. Distinct from the existing 'OAuth client settings'
+    details, which is for destructive ops (reset credentials)."""
+    masked = (
+        html.escape(client_id[:8] + "…" + client_id[-30:])
+        if len(client_id) > 38 else "configured"
+    )
+    full_json = json.dumps(client_id)  # safe for inline JS
+    project_number = _project_number_from_client_id(client_id)
+    if project_number:
+        n = urllib.parse.quote(project_number)
+        project_links_html = f"""
+<ul>
+  <li><a href="https://console.cloud.google.com/auth/branding?project={n}" target="_blank" rel="noopener">Branding tab ↗</a> — app name, support email, publishing-related branding</li>
+  <li><a href="https://console.cloud.google.com/auth/audience?project={n}" target="_blank" rel="noopener">Audience tab ↗</a> — confirm <em>In production</em>, see your 100-user cap, revert to Testing if you need to</li>
+  <li><a href="https://console.cloud.google.com/auth/clients?project={n}" target="_blank" rel="noopener">OAuth Clients ↗</a> — redirect URIs, regenerate the client secret if it leaks</li>
+  <li><a href="https://console.cloud.google.com/apis/dashboard?project={n}" target="_blank" rel="noopener">Enabled APIs ↗</a> — confirm Calendar + Gmail are still enabled, see request volume</li>
+</ul>"""
+    else:
+        project_links_html = (
+            '<p class="hint">Couldn\'t auto-detect the project from the Client ID. '
+            'Open <a href="https://console.cloud.google.com/" target="_blank" rel="noopener">'
+            'console.cloud.google.com ↗</a> and pick the project from the top-bar switcher.</p>'
+        )
+    return f"""
+<details style="margin-top:1.4em">
+  <summary>Connection details (scopes, project, OAuth client)</summary>
+  <div style="padding-top:0.6em">
+    <h3>What this app reads</h3>
+    <ul>
+      <li>Google Calendar — <strong>read-only</strong></li>
+      <li>Gmail — <strong>read-only</strong>; the speaker cannot send, modify, or delete email</li>
+      <li>Profile + email — used once at link time to label the linked account</li>
+    </ul>
+    <p class="hint">To revoke access from Google's side at any time, visit <a href="https://myaccount.google.com/permissions" target="_blank" rel="noopener">myaccount.google.com/permissions</a> on each linked account and remove the app (its name is whatever you set on the Branding tab — "JTS Speaker" by default). Removing here only deletes the speaker's local refresh token; revoking at Google invalidates it everywhere.</p>
+
+    <h3>OAuth client</h3>
+    <p>Client ID: <code id="client-id-display">{masked}</code>
+       <button type="button" id="reveal-client-id" class="secondary"
+               onclick="revealClientId()" style="padding:0.2em 0.7em">Show full</button>
+    </p>
+    <p>Client Secret: never displayed. To rotate it, regenerate in the Cloud Console (link below) and re-paste it via Reset credentials below.</p>
+
+    <h3>Cloud Console — audit this project</h3>
+    {project_links_html}
+  </div>
+</details>
+
+<script>
+function revealClientId() {{
+  document.getElementById('client-id-display').textContent = {full_json};
+  document.getElementById('reveal-client-id').style.display = 'none';
+}}
+</script>
+"""
+
+
 def _add_account_form_html() -> str:
     return """
 <h2>Add a Google account</h2>
@@ -601,7 +677,9 @@ def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: st
 
 {_add_account_form_html()}
 
-<details style="margin-top:2.4em">
+{_connection_details_html(client_id)}
+
+<details style="margin-top:1.4em">
   <summary>OAuth client troubleshooting (redirect URI, reset credentials)</summary>
   <p style="margin-top:0.8em">If sign-in fails with <code>redirect_uri_mismatch</code>, your OAuth client doesn't have the redirect URL in its allow-list yet — add it here.</p>
   {_redirect_uri_section_html(redirect_uri)}
@@ -645,7 +723,8 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
 
 
 def _management_html(
-    registry: GoogleRegistry, redirect_uri: str, *, status_msg: str = "",
+    registry: GoogleRegistry, redirect_uri: str, client_id: str,
+    *, status_msg: str = "",
 ) -> bytes:
     items = [
         _account_li_html(a, is_default=(a.name == registry.default_name))
@@ -661,7 +740,9 @@ def _management_html(
 
 {_add_account_form_html()}
 
-<details style="margin-top:2.4em">
+{_connection_details_html(client_id)}
+
+<details style="margin-top:1.4em">
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
   {_redirect_uri_section_html(redirect_uri)}
   <form method="post" action="reset-credentials" style="margin-top:2em"
@@ -832,7 +913,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ))
                 return
             self._send_html(_management_html(
-                registry, cfg["redirect_uri"], status_msg=status_msg,
+                registry, cfg["redirect_uri"], cfg["client_id"],
+                status_msg=status_msg,
             ))
 
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:
