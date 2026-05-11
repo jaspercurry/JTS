@@ -23,3 +23,8 @@ logs/*
 # Test recordings from satellite mic captures — large binaries,
 # regenerate via scripts/capture-satellite-amoled.sh.
 captures/
+
+# Phase 1.3 mic validation outputs — corpus, raw recordings, CSVs.
+# Throwaway artifacts of jasper.cli.satellite_validation; regenerate
+# rather than commit. Whole tree is deletable post-validation.
+phase1_3/
