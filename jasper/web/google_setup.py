@@ -904,6 +904,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     f"./?msg=Could+not+start+OAuth:+{urllib.parse.quote(str(e))}"
                 )
                 return
+            # google-auth-oauthlib defaults autogenerate_code_verifier=True,
+            # so authorization_url() generated a PKCE verifier and stored
+            # it on this Flow instance. The /callback handler will build a
+            # fresh Flow (no shared state across requests), so the verifier
+            # has to ride along in `cfg`, keyed by the account name (which
+            # is also the OAuth `state` param Google round-trips back).
+            cfg.setdefault("pending_verifiers", {})[name] = flow.code_verifier
             self._redirect(auth_url)
 
         def _handle_remove(self, form: dict[str, str]) -> None:
@@ -943,6 +950,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if account is None:
                 raise RuntimeError(f"unknown account: {account_name}")
             flow = _build_flow(cfg, state=account_name)
+            # Restore the PKCE verifier that /start stashed in cfg. Pop
+            # so a redo (user clicks Continue again) doesn't reuse a
+            # stale verifier — the next /start will create a new one.
+            pending = cfg.get("pending_verifiers", {})
+            verifier = pending.pop(account_name, None)
+            if verifier is not None:
+                flow.code_verifier = verifier
             flow.fetch_token(code=code)
             creds = flow.credentials
             if not creds.refresh_token:
