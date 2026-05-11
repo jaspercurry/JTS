@@ -30,6 +30,13 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.openai_context_reset_sec == 0
     assert cfg.gemini_context_reset_sec == 0
     assert cfg.grok_context_reset_sec == 0
+    # Proactive pre-cap reconnect: OpenAI fires the watchdog at 55 min
+    # (3600 cap − 300 buffer); Grok is disabled until xAI publishes
+    # a cap.
+    assert cfg.openai_session_max_sec == 3600
+    assert cfg.openai_proactive_buffer_sec == 300
+    assert cfg.grok_session_max_sec == 0
+    assert cfg.grok_proactive_buffer_sec == 0
     assert cfg.daily_spend_cap_usd == 1.0
     # ALSA defaults must match the templates in /root/.asoundrc and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.

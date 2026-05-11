@@ -30,6 +30,10 @@ def _validate(cfg: "Config") -> "Config":
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
         ("JASPER_GROK_CONTEXT_RESET_SEC", cfg.grok_context_reset_sec),
+        ("JASPER_OPENAI_SESSION_MAX_SEC", cfg.openai_session_max_sec),
+        ("JASPER_OPENAI_PROACTIVE_BUFFER_SEC", cfg.openai_proactive_buffer_sec),
+        ("JASPER_GROK_SESSION_MAX_SEC", cfg.grok_session_max_sec),
+        ("JASPER_GROK_PROACTIVE_BUFFER_SEC", cfg.grok_proactive_buffer_sec),
     ]:
         if value < 0:
             raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
@@ -123,6 +127,22 @@ class Config:
     openai_context_reset_sec: int
     gemini_context_reset_sec: int
     grok_context_reset_sec: int
+
+    # Proactive pre-cap reconnect for OpenAI Realtime / Grok. OpenAI
+    # enforces a 60-min session cap with no resumption handle and no
+    # pre-cap warning event; without proactive action, every cap hit
+    # costs the user a ~3 s `cant_connect` cue on the next wake. The
+    # watchdog tears down voluntarily at `(session_max_sec -
+    # proactive_buffer_sec)` so the reconnect lands in an idle window.
+    # Two values, not one, so OpenAI raising the cap (it went 30→60 in
+    # 2025) only requires bumping `session_max_sec` — the safety buffer
+    # ("how much margin we want") stays correct. Set either to 0 to
+    # disable. Gemini handles this server-side via GoAway + resumption
+    # handle, so no equivalent knob is needed there.
+    openai_session_max_sec: int
+    openai_proactive_buffer_sec: int
+    grok_session_max_sec: int
+    grok_proactive_buffer_sec: int
 
     daily_spend_cap_usd: float
     usage_db: str
@@ -378,6 +398,25 @@ class Config:
             grok_context_reset_sec=_env_int(
                 "JASPER_GROK_CONTEXT_RESET_SEC",
                 _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
+            ),
+            # OpenAI Realtime: 60-min hard cap (verified against
+            # developers.openai.com/api/docs/guides/realtime-conversations
+            # as of 2026-05). 5-min buffer leaves comfortable headroom
+            # for an in-flight turn to finish before the proactive
+            # tear-down fires. See `_proactive_reconnect_watchdog`.
+            openai_session_max_sec=_env_int(
+                "JASPER_OPENAI_SESSION_MAX_SEC", 3600,
+            ),
+            openai_proactive_buffer_sec=_env_int(
+                "JASPER_OPENAI_PROACTIVE_BUFFER_SEC", 300,
+            ),
+            # xAI Grok Voice Agent doesn't publish a hard cap; defaults
+            # off. Enable by setting both knobs if a cap is observed.
+            grok_session_max_sec=_env_int(
+                "JASPER_GROK_SESSION_MAX_SEC", 0,
+            ),
+            grok_proactive_buffer_sec=_env_int(
+                "JASPER_GROK_PROACTIVE_BUFFER_SEC", 0,
             ),
             daily_spend_cap_usd=_env_float("JASPER_DAILY_SPEND_CAP_USD", 1.0),
             usage_db=_env("JASPER_USAGE_DB", "/var/lib/jasper/usage.db"),

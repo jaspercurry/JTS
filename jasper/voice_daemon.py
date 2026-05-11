@@ -611,6 +611,8 @@ def _make_connection(cfg: Config) -> LiveConnection:
             voice=cfg.openai_voice,
             reasoning_effort=cfg.openai_reasoning_effort,
             context_reset_sec=float(cfg.openai_context_reset_sec),
+            session_max_sec=float(cfg.openai_session_max_sec),
+            proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
         )
     if cfg.voice_provider == "grok":
         return GrokRealtimeConnection(
@@ -618,6 +620,8 @@ def _make_connection(cfg: Config) -> LiveConnection:
             model=cfg.grok_model,
             voice=cfg.grok_voice,
             context_reset_sec=float(cfg.grok_context_reset_sec),
+            session_max_sec=float(cfg.grok_session_max_sec),
+            proactive_buffer_sec=float(cfg.grok_proactive_buffer_sec),
         )
     raise RuntimeError(f"unsupported voice provider: {cfg.voice_provider}")
 
