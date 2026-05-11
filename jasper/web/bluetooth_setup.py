@@ -497,30 +497,32 @@ function deviceRow(d, isPaired) {
   } else {
     actions = `<button onclick="startPair('${d.address}', '${escapeHtml(label)}')">Pair</button>`;
   }
-  // Metrics. Paired devices always show both Battery + Signal —
-  // missing values render as "—" so the columns stay stable. RSSI
-  // is usually null while connected (bluez only updates it from
-  // active advertisements) but the label staying visible helps
-  // users understand a "—" means "no live reading" rather than
-  // "this device doesn't have a radio".
+  // Metrics. Render each label only when bluez actually has a value
+  // for it — surfacing a "—" placeholder suggests we're polling for
+  // the value and coming up empty, but in fact bluez doesn't expose
+  // RSSI for connected BLE devices at all (they stop advertising
+  // once linked, and HCI Read-RSSI is a BT-Classic-only command).
+  // Showing nothing is more honest than a perpetual dash.
   let metrics = '';
   if (isPaired) {
-    const batteryVal = (d.battery !== null && d.battery !== undefined)
-      ? `${d.battery}%` : '—';
-    const signalVal = (d.rssi !== null && d.rssi !== undefined)
-      ? `<span class="bars">${rssiBars(d.rssi)}</span>` : '—';
-    metrics = `
-      <div class="metrics">
+    const parts = [];
+    if (d.battery !== null && d.battery !== undefined) {
+      parts.push(`
         <div class="metric">
           <div class="label">Battery</div>
-          <div class="value">${batteryVal}</div>
-        </div>
+          <div class="value">${d.battery}%</div>
+        </div>`);
+    }
+    if (d.rssi !== null && d.rssi !== undefined) {
+      parts.push(`
         <div class="metric">
           <div class="label">Signal</div>
-          <div class="value">${signalVal}</div>
-        </div>
-      </div>
-    `;
+          <div class="value"><span class="bars">${rssiBars(d.rssi)}</span></div>
+        </div>`);
+    }
+    if (parts.length) {
+      metrics = `<div class="metrics">${parts.join('')}</div>`;
+    }
   } else if (d.rssi !== null && d.rssi !== undefined) {
     metrics = `<div class="rssi">${rssiBars(d.rssi)}</div>`;
   }
