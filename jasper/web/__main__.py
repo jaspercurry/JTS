@@ -81,7 +81,7 @@ def main() -> int:
         "/var/lib/jasper/google/accounts.json",
     )
     google_redirect = os.environ.get(
-        "GOOGLE_REDIRECT_URI", "https://jts.local/google/callback",
+        "GOOGLE_REDIRECT_URI", google_setup.default_redirect_uri(),
     )
     google_thread = threading.Thread(
         target=_serve_google,

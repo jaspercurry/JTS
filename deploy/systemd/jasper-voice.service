@@ -34,7 +34,7 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # Spotify creds file above. Optional via the leading `-`.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # Google OAuth client ID/SECRET written by the wizard at
-# https://jts.local/google. Calendar + Gmail tools register only
+# http://jts.local/google. Calendar + Gmail tools register only
 # when this file's CLIENT_ID/SECRET are set AND at least one
 # household member has linked an account. Optional via leading `-`.
 EnvironmentFile=-/var/lib/jasper/google_credentials.env
