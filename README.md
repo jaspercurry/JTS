@@ -350,14 +350,37 @@ DFU procedure in BRINGUP.md Phase 2A.5; reversible.
 
 ### What's installed and at what cost
 
-| Component | Default | RAM impact (Pi 5 1GB) | CPU impact |
+Numbers are **Pss** (proportional set size — shared libs deduplicated;
+the honest "private cost" measure) on a Pi 5, after the lazy-import
+and openwakeword stub diet landed.
+
+| Component | Default | RAM (Pss) | CPU |
 |---|---|---|---|
-| `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~8 MB | <1% |
-| `jasper-voice` (wake + Gemini + tools) | Active | ~265 MB | ~12% of one core |
-| `jasper-aec-bridge` (software AEC) | **Disabled** | +110 MB if enabled | +3% of one core if enabled |
-| `jasper-aec-init` (boot-time chip init) | **Disabled** | one-shot, ~0 | ~0 |
+| `jasper-voice` (wake + LLM + tools) | Active | ~140-150 MB | ~12% of one core during a session |
+| `jasper-aec-bridge` (software AEC) | **Active** on 6-ch firmware, **disabled** on 2-ch | +85 MB | +3% of one core |
+| `jasper-aec-init` (boot-time chip init) | follows aec-bridge | one-shot, ~0 | ~0 |
+| `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
+| `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
+| `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
+| `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
+| `jasper-web` (Spotify/voice/Google/AirPlay wizards) | **Socket-activated** | ~0 idle, ~20 MB when open | n/a idle |
+| `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
+| `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
+| `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
 | Two-card snd-aloop (Loopback + LoopbackAEC) | Loaded at boot | ~0 | ~0 |
 | dsnoop tap on music chain | Always present | ~0 | ~0 |
+
+The four web wizards are socket-activated — systemd holds their
+ports open and only spawns the daemon when a tab opens the page.
+They exit after 10 min of no requests, so the resident cost is
+zero between admin sessions. First request after idle takes
+~500-800 ms (Python startup); invisible during the OAuth round-trip
+or BT pair flow.
+
+**Total Pss baseline with AEC on**: ~330 MB jasper-* daemons +
+~80 MB system/OS plumbing + page cache → typically ~770 MB used
+out of 2 GB. On a 1 GB Pi, ~200 MB headroom with AEC on; ~280 MB
+with AEC off.
 
 The two-card snd-aloop and the dsnoop tap stay loaded even when
 the bridge is disabled — they cost essentially nothing and let
@@ -365,6 +388,13 @@ the bridge be enabled later with no further setup. The 6-channel
 XVF firmware (flashed once via DFU) also stays — its channel 0
 is identical to the 2-channel firmware's channel 0, so it's
 benign for non-bridge use.
+
+`install.sh` auto-enables AEC if the chip is on the 6-channel
+firmware variant at install time. On 2-channel firmware (the
+ReSpeaker shipping default), AEC stays disabled and the installer
+prints a one-line hint pointing at the BRINGUP.md DFU procedure.
+Either way, AEC is reversible at runtime — see CLAUDE.md
+"Acoustic echo cancellation" section.
 
 ### The chip control library
 
