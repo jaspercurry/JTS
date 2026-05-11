@@ -3,9 +3,11 @@
 // `jasper-apply-airplay-mode` (script installed to /usr/local/sbin/).
 // The renderer substitutes `__DISABLE_SYNCHRONIZATION__` based on
 // `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env.
-// Default = yes (free-running). Toggle via http://jts.local/airplay/
-// or `jasper-airplay-mode set [free-running|synced]`. See
-// jasper/web/airplay_setup.py for the toggle UX and rationale.
+// Default = no (synced) — synced is glitch-free since we raised
+// `resync_threshold_in_seconds` below. Toggle via
+// http://jts.local/airplay/ or `jasper-airplay-mode set
+// [free-running|synced]`. See jasper/web/airplay_setup.py +
+// docs/HANDOFF-airplay-sync.md for the toggle UX and full rationale.
 //
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
@@ -25,6 +27,27 @@ general = {
     // the audible glitch. 0.1 s lets nqptp-disciplined natural drift
     // play through without intervention.
     drift_tolerance_in_seconds = 0.1;
+    // **The fix.** shairport's drift correction has two paths:
+    // - Continuous ±1-sample stuffing (gated by drift_tolerance) —
+    //   smooth, inaudible.
+    // - Discrete do_flush + silence injection (gated by
+    //   resync_threshold) — drops ~6,600 source frames + injects up
+    //   to 250 ms of zeros = audible "tear".
+    // With our chain (shairport → snd-aloop → CamillaDSP → dmix →
+    //   USB DAC), shairport's snd_pcm_delay() reads the loopback ring
+    //   fill, not the actual DAC latency. The fill ramps up ~42 ms
+    //   over ~60 s due to ~667 ppm crystal drift between the host's
+    //   nominal 48 kHz and the dongle's actual rate. Crossing the
+    //   0.05 s default threshold triggers the audible discrete path
+    //   every ~63 s. The continuous ±1-sample path can absorb up to
+    //   ~2500 ppm drift, so we have 4× headroom — but only if the
+    //   discrete path never fires first.
+    // Raising resync_threshold to 0.2 s keeps shairport in the
+    //   continuous path. Empirically verified over multiple 5-min
+    //   samples: zero discrete-correction events, smooth ~149 ms
+    //   peak-to-peak fill swing instead of the previous
+    //   crash-and-refill cycle. See docs/HANDOFF-airplay-sync.md.
+    resync_threshold_in_seconds = 0.2;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
     // shairport enough headroom to absorb scheduler jitter before

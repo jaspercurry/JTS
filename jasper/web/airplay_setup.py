@@ -1,25 +1,25 @@
 """AirPlay sync mode toggle at /airplay/.
 
-Single setting: free-running (default) vs synced.
+Single setting: synced (default, glitch-free since the resync_threshold
+bump in shairport-sync.conf.template) vs free-running (fallback for
+unforeseen DAC-specific issues).
 
-The JTS audio chain (snd-aloop -> CamillaDSP -> dmix -> USB DAC)
-exhibits a periodic ~1/minute audible glitch when shairport-sync
-actively syncs playback to the AirPlay sender's wall clock. The
-glitches are confirmed traceable to shairport's sample-stuffing/
-silence-insertion logic itself (PR #75 + mikebrady/shairport-sync#1980).
-Disabling that drift correction ("free-running" mode) eliminates the
-glitches but trades two niche guarantees:
+History: shairport-sync's drift-correction logic on this chain
+(shairport → snd-aloop → CamillaDSP → dmix → USB DAC) was firing a
+discrete tear-the-audio path every ~63s because `snd_pcm_delay()` on
+the loopback handle reports ring fill, not actual DAC latency
+(mikebrady/shairport-sync#1980). Initial mitigation was
+`disable_synchronization=yes` ("free-running" mode) which we shipped
+as the default. Later we found the proper fix: raise
+`resync_threshold_in_seconds` to 0.2 so shairport stays in its
+continuous ±1-sample stuffing path (smooth, inaudible) and never
+fires the discrete path. With that change in place, synced mode is
+glitch-free on this hardware. See
+docs/HANDOFF-airplay-sync.md for the full diagnosis.
 
-  - **A/V sync for video AirPlay**: audio routed from a Mac/iPhone
-    while video plays on the sender drifts out of lip-sync over a
-    multi-hour session. Music streaming alone is unaffected.
-  - **Multi-room AirPlay**: JTS playing alongside a HomePod or
-    another AirPlay 2 speaker on the same source drifts out of
-    inter-speaker sync.
-
-Default for JTS is free-running because the dominant use case is
-single-speaker music streaming. Users who AirPlay video or run
-multi-room can flip it via this page.
+This toggle remains as a safety net: if a future DAC swap or
+firmware change produces sync issues we don't currently see, the
+user can flip to free-running. For typical use, synced is correct.
 
 Persistence: /var/lib/jasper/airplay_mode.env, key
 `JASPER_AIRPLAY_FREE_RUNNING=yes|no`. The shairport-sync.service
@@ -56,10 +56,12 @@ ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 
 def _current_mode(path: str = MODE_FILE) -> str:
-    """Return 'free-running' or 'synced'. Default 'free-running' when
-    the env file is missing or holds an unrecognized value."""
+    """Return 'free-running' or 'synced'. Default 'synced' when the
+    env file is missing or holds an unrecognized value — synced is
+    glitch-free on this chain since the resync_threshold fix and is
+    the right default for video A/V sync + multi-room AirPlay."""
     env = read_env_file(path)
-    val = env.get(ENV_VAR, "yes").strip().lower()
+    val = env.get(ENV_VAR, "no").strip().lower()
     if val in ("no", "false", "0"):
         return "synced"
     return "free-running"
@@ -93,30 +95,34 @@ def _index_html(mode: str, *, status_msg: str = "") -> bytes:
     sy_checked = "checked" if mode == "synced" else ""
     body = f"""
 <p class="sub">Controls how the AirPlay receiver handles clock drift between your
-sender (Mac, iPhone, iPad) and the speaker. Two modes; the right
-choice depends on what you AirPlay.</p>
+sender (Mac, iPhone, iPad) and the speaker. The default works for
+everything — this toggle is here as a safety net.</p>
 
 <form method="post" action="./save">
   <label style="font-weight: 400; display: block; padding: 0.6em 0;
                 border: 1px solid #e6e6e6; border-radius: 6px;
                 margin-bottom: 0.6em; padding-left: 0.8em;">
-    <input type="radio" name="mode" value="free-running" {fr_checked}>
-    <strong>Free-running</strong> (default, music only)
+    <input type="radio" name="mode" value="synced" {sy_checked}>
+    <strong>Synced</strong> (default — works for everything)
     <div class="hint" style="padding-left: 1.6em;">
-      Plays smoothly, no periodic glitches. AirPlay audio drifts
-      independently of the sender's clock.
+      Tracks the AirPlay sender's clock. Music plays cleanly, video
+      A/V sync is preserved, and multi-room AirPlay with other
+      speakers stays in sync. Recommended unless you're hitting a
+      DAC-specific issue.
     </div>
   </label>
   <label style="font-weight: 400; display: block; padding: 0.6em 0;
                 border: 1px solid #e6e6e6; border-radius: 6px;
                 margin-bottom: 0.6em; padding-left: 0.8em;">
-    <input type="radio" name="mode" value="synced" {sy_checked}>
-    <strong>Synced</strong> (video / multi-room)
+    <input type="radio" name="mode" value="free-running" {fr_checked}>
+    <strong>Free-running</strong> (fallback)
     <div class="hint" style="padding-left: 1.6em;">
-      Tracks the sender's clock. Necessary when you AirPlay video
-      (Mac/iPhone video with audio on JTS — keeps lip-sync) or run
-      JTS alongside another AirPlay speaker. Costs ~1 audible glitch
-      per minute on this hardware chain.
+      Plays audio without tracking the sender's clock. Use this only
+      if you've swapped to a USB DAC that exhibits periodic glitches
+      in synced mode (very-low-quality crystals can exceed shairport's
+      continuous-correction headroom). Tradeoffs: video A/V sync
+      drifts over multi-hour sessions; multi-room AirPlay drifts
+      between speakers.
     </div>
   </label>
   <button type="submit">Save and restart AirPlay</button>
@@ -126,22 +132,26 @@ choice depends on what you AirPlay.</p>
   <summary>Why this knob exists</summary>
   <div class="disclosure-body">
     <p>The JTS audio chain runs shairport-sync → snd-aloop →
-    CamillaDSP → dmix → USB DAC. With shairport's drift-correction
-    enabled, the receiver periodically inserts samples or silence to
-    keep the playback time-aligned with the AirPlay sender. On this
-    chain, those corrections turn into audible glitches roughly once
-    per minute — confirmed against
+    CamillaDSP → dmix → USB DAC. Earlier in the project, shairport's
+    drift correction periodically misfired on this chain — its
+    <code>snd_pcm_delay()</code> reads the loopback ring fill instead
+    of the actual DAC latency, so a slow clock-drift between the host
+    and the dongle would trigger a discrete "tear" every ~60 s
+    (confirmed against
     <a href="https://github.com/mikebrady/shairport-sync/issues/1980">
-    mikebrady/shairport-sync#1980</a>.</p>
-    <p>Free-running lets the speaker play through without that
-    intervention. The audio still plays in order; it just drifts
-    relative to the sender's wall clock over time. For single-speaker
-    music, that drift is imperceptible. For lip-sync to video on the
-    sender, or for syncing alongside another AirPlay speaker, the
-    drift matters — switch to "synced" temporarily.</p>
-    <p>The setting persists across reboots in
+    mikebrady/shairport-sync#1980</a>).</p>
+    <p>We fixed it by raising shairport's
+    <code>resync_threshold_in_seconds</code> to 0.2 in the conf
+    template, which keeps it in the continuous ±1-sample-stuffing
+    path that smoothly absorbs ~667 ppm of drift. Synced mode is now
+    glitch-free on this hardware. The toggle remains in case a
+    future DAC swap produces drift beyond the continuous path's
+    headroom (~2500 ppm) — flip to free-running and the speaker plays
+    happily without trying to sync.</p>
+    <p>Setting persists across reboots in
     <code>/var/lib/jasper/airplay_mode.env</code>. CLI:
-    <code>jasper-airplay-mode set [free-running|synced]</code>.</p>
+    <code>jasper-airplay-mode set [synced|free-running]</code>. Full
+    history in <code>docs/HANDOFF-airplay-sync.md</code>.</p>
   </div>
 </details>
 """

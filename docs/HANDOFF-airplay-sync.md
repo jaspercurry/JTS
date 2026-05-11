@@ -1,14 +1,11 @@
 # HANDOFF — AirPlay 2 audio glitches with CamillaDSP in the chain
 
-**Status as of 2026-05-11:** Source of truth for an open audio-chain problem.
-Two PRs shipped that materially improved it but did not eliminate it. Final
-solution still TBD; possible paths laid out below.
-
-This document is the canonical reference for the synchronization glitch on
-JTS's AirPlay receiver. It captures the problem, the architecture context,
-what we've measured, what we've tried, the first-principles mechanism we've
-confirmed from source code, and the remaining options ranked by cost. If
-you're touching this subsystem, read this before changing anything.
+**Status as of 2026-05-11: RESOLVED.** Synced mode is glitch-free after the
+`resync_threshold_in_seconds = 0.2` fix in the shairport conf template. Both
+free-running and synced modes remain selectable via the `/airplay/` toggle
+as a safety net. This doc remains the canonical reference for the underlying
+mechanism and the diagnostic history — read it before touching anything on
+the shairport / snd-aloop / CamillaDSP boundary.
 
 ---
 
@@ -19,19 +16,27 @@ is the actual DAC. In JTS's chain (shairport → snd-aloop → CamillaDSP →
 dmix → USB DAC), the output handle is a snd-aloop ring, so
 `snd_pcm_delay()` returns the loopback ring fill, not DAC latency.
 shairport reads the ring fill as drift, periodically misfires its
-resync-threshold path, and emits an audible artifact (drop ~6,600 frames
-+ inject up to 250 ms of silence) every ~63 seconds.
+discrete `resync_threshold` correction path, and emits an audible artifact
+(drop ~6,600 frames + inject up to 250 ms of silence) every ~63 seconds.
 
-We've materially reduced the frequency (every ~11 s → every ~60 s via
-[PR #75](https://github.com/jaspercurry/JTS/pull/75)) and shipped a
-user-facing toggle to opt out of sync entirely
-([PR #76](https://github.com/jaspercurry/JTS/pull/76)). The default is
-"free-running" because that eliminates the glitch outright at the cost of
-A/V lip-sync (only matters when AirPlaying video) and multi-room sync
-(only matters with multiple AirPlay speakers — we don't do that).
+**Fix (shipped):** raise `resync_threshold_in_seconds` to 0.2 in the conf
+template. shairport's continuous ±1-sample stuffing path absorbs the
+drift smoothly (~149 ms peak-to-peak fill swing, no discrete corrections,
+no audible artifacts). Verified over multiple 5-min samples in synced
+mode. Default is now synced. The toggle remains as a safety net for
+unforeseen DAC issues.
 
-A path to truly eliminating the glitch *while keeping sync* is laid out
-in the [Path forward](#path-forward) section.
+**History:**
+- [PR #75](https://github.com/jaspercurry/JTS/pull/75) — fixed CamillaDSP
+  `rate_adjust` + AsyncSinc oscillation. Reduced glitch rate from every
+  ~11 s to every ~60 s.
+- [PR #76](https://github.com/jaspercurry/JTS/pull/76) — shipped
+  toggleable `disable_synchronization` mode (initial workaround:
+  free-running as default).
+- [PR #81](https://github.com/jaspercurry/JTS/pull/81) — this HANDOFF doc,
+  diagnosing the residual ~60 s pattern.
+- **This PR** — raises `resync_threshold_in_seconds = 0.2`, flips the
+  default back to synced. Glitches eliminated.
 
 ---
 
@@ -289,23 +294,29 @@ can toggle when they need sync.
 
 - `/etc/shairport-sync.conf` rendered from
   [`deploy/shairport-sync.conf.template`](../deploy/shairport-sync.conf.template)
-  with `disable_synchronization = "yes"` (free-running, default).
-- `/etc/modprobe.d/snd-aloop.conf` has `timer_source="hw:A,0"` —
-  applied live but NOT yet in repo. Will be reverted or codified
-  depending on which solution we pick next.
-- All shipped tuning from PR #75 + PR #76.
-
-User can toggle to synced mode via `/airplay/` web UI, but it will
-exhibit the glitch every ~63 s in synced mode until we ship a real fix.
+  with `resync_threshold_in_seconds = 0.2` (**the fix**) +
+  `disable_synchronization` toggled by env file (default: "no" / synced).
+- `/etc/modprobe.d/snd-aloop.conf` is the original config — **no
+  `timer_source` set**. The control test confirmed `timer_source` was
+  not load-bearing once `resync_threshold` is raised; we dropped it for
+  DAC portability (the original hypothesis hardcoded the dongle's card
+  name `"A"`).
+- All shipped tuning from PR #75 + PR #76 still applies (CamillaDSP
+  rate_adjust without resampler, shairport priority + buffer + drift
+  tolerance, WiFi power-save disabled).
+- Toggle still available at `/airplay/` for switching to free-running
+  if a future DAC swap exhibits issues. Should never need to be flipped
+  for typical use.
 
 ---
 
-## Path forward
+## Path forward — Option A SHIPPED
 
 Options ranked from cheapest to biggest lift. They are not mutually
-exclusive.
+exclusive. **Option A was tested and shipped; the others remain as
+fallbacks if a future DAC or scenario breaks the current fix.**
 
-### Option A — Raise `resync_threshold_in_seconds` (~5 min test)
+### Option A — Raise `resync_threshold_in_seconds` ✅ SHIPPED
 shairport has two correction paths:
 - Continuous ±1-sample stuffing — gated by `drift_tolerance`, smooth
   and inaudible. Max correction rate ~124 Hz at 44.1 kHz chunk rate
@@ -313,17 +324,23 @@ shairport has two correction paths:
 - Discrete `do_flush` + silence injection — gated by
   `resync_threshold`, audible.
 
-Raising `resync_threshold_in_seconds` from 0.050 to ~0.2 s would keep
+Raising `resync_threshold_in_seconds` from 0.050 to 0.2 keeps
 sync_error below the discrete-correction trigger, leaving only the
-continuous path active. The continuous path should comfortably absorb
-667 ppm drift since the buffer cap is at 533 ms and the continuous
-adjustment headroom is ~5× the observed drift rate.
+continuous path active.
 
-**Pros:** one config knob. Reversible. No architectural change.
-**Cons:** if continuous stuffing can't actually keep up under our exact
-conditions, buffer might keep growing until a larger correction is
-forced eventually.
-**Verdict:** the obvious first test.
+**Verified empirically** (two independent 5-min samples in synced mode,
+with and without `timer_source="hw:A,0"`):
+
+| Metric | Before fix (synced) | After fix (synced) |
+|---|---|---|
+| Large positive / Large negative events | 5 / 10 in 5 min | **0 / 0** |
+| alsa underrun / Broken pipe | 10 / 1-2 | **0 / 0** |
+| Fill p2p swing | 533 ms (crash-and-refill) | **149 ms (smooth)** |
+| Audible glitch frequency | every ~63 s | **none over 5 min** |
+| Subjective listen test | audible tears | clean |
+
+The continuous path absorbs ~667 ppm drift with 4× headroom (max
+~2500 ppm absorbable). Hard limit ~5× more drift than we observe.
 
 ### Option B — Direct shairport → stdin → CamillaDSP pipe
 shairport supports `output_backend = "stdio"` (write raw PCM to
@@ -378,12 +395,14 @@ that queries the dongle's USB UAC2 delay endpoint directly).
 
 ---
 
-## Decision pending
+## Resolution
 
-**Plan:** test Option A. If it works (continuous path absorbs the
-drift, no audible artifacts), ship it via the
-[`shairport-sync.conf.template`](../deploy/shairport-sync.conf.template)
-and we're done. If it doesn't, escalate to Option B or C.
+Option A shipped. Synced mode glitch-free in empirical testing and
+subjective listening. Default flipped from free-running back to synced
+so users get A/V sync + multi-room sync out of the box. Toggle remains
+in place at `/airplay/` for safety net scenarios (e.g., future DAC swap
+exceeding continuous-correction headroom). Options B/C/D remain
+documented above for reference if the current fix ever stops working.
 
 ---
 
