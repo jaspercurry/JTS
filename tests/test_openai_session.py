@@ -1039,6 +1039,40 @@ async def test_stop_is_idempotent():
     assert conn._state is ConnectionState.CLOSED
 
 
+async def test_clean_iteration_exit_triggers_reconnect():
+    """OpenAI Realtime closes the WebSocket with 1001 "going away" when
+    the session hits its 60-minute hard cap. ``websockets`` treats
+    normal closes (1000/1001) as the end of the iterator and exits
+    ``async for`` WITHOUT raising. The receive loop must wake the
+    supervisor on this path too — otherwise the daemon sits on a
+    dead session and every subsequent wake silently fails in
+    ``send_audio``. Real-world symptom: four consecutive wakes within
+    90 s, each producing ``send_audio failed (ConnectionClosedOK:
+    received 1001 (going away) Your session hit the maximum duration
+    of 60 minutes.); turn lost``, with no reconnect."""
+    conn, factory = _make_conn(backoff_schedule=(0.0, 0.05))
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        first = factory.conns[0]
+        # Simulate the OpenAI 60-min-cap close: server sends 1001 and
+        # the iterator ends cleanly (no exception). _FakeConn's
+        # feed_iter_stop() raises StopAsyncIteration on the next
+        # __anext__, exactly mirroring websockets' clean-close
+        # iteration end.
+        first.feed_iter_stop()
+
+        await _wait_until(lambda: len(factory.conns) >= 2, timeout=3.0)
+        await _wait_until(
+            lambda: conn._state is ConnectionState.CONNECTED, timeout=3.0,
+        )
+        # Connection is usable again on the fresh session.
+        turn = await conn.acquire_turn()
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_connection_lost_marks_active_turn_lost():
     """If the WebSocket drops mid-turn, the active turn must flip
     turn_lost() to True so the daemon stops waiting and audio_out()'s

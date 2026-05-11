@@ -974,7 +974,17 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         Accepts both Pydantic-typed events (have ``.type`` attribute and
         ``.model_dump()``) and dict events (test seam) — anything that
-        looks dict-like via ``getattr`` access works."""
+        looks dict-like via ``getattr`` access works.
+
+        A clean iteration exit (no exception) means the remote closed
+        the WebSocket with a normal close code — typically 1001 "going
+        away" when OpenAI Realtime hits its 60-minute hard cap. The
+        ``websockets`` library treats 1000/1001 as the end of the
+        stream and ends ``async for`` without raising, so the only
+        signal we get for the cap is the iterator running out. Both
+        the exception path AND the clean-exit path must wake the
+        supervisor, otherwise the daemon sits on a dead session and
+        every subsequent wake silently fails in ``send_audio``."""
         try:
             async for event in conn:
                 etype = _event_type(event)
@@ -996,6 +1006,13 @@ class OpenAIRealtimeConnection(LiveConnection):
                     "openai connection: receive loop error (%s: %s), reconnecting",
                     type(e).__name__, e,
                 )
+            self._reconnect_event.set()
+            return
+        if not self._stopping.is_set():
+            logger.warning(
+                "openai connection: receive iteration ended cleanly "
+                "(server closed, likely the 60-minute hard cap); reconnecting",
+            )
             self._reconnect_event.set()
 
     async def _dispatch_event(self, etype: str, event) -> None:

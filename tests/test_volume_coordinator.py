@@ -594,6 +594,34 @@ async def test_get_camilla_target_db_push_mode_returns_zero(tmp_path):
     assert target == 0.0
 
 
+async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
+    """Cross-process staleness guard for the duck-restore path. The
+    control daemon (dial / HTTP) writes listening_level to disk on
+    every twist; voice-daemon's in-memory `_level` only auto-refreshes
+    on its own set/adjust/mute/transition calls. Without a refresh
+    here, Ducker.restore() at the end of a wake reads the stale
+    `_level` and writes camilla to the wrong dB — observed as a 56 dB
+    jump (camilla -56 dB → 0 dB) at duck-off after a dial-spin to
+    100% landed between voice-daemon operations.
+
+    Mirrors test_transition_refreshes_from_disk but for the
+    get_camilla_target_db code path that the Ducker actually uses."""
+    coord, _, persistence = _coord(tmp_path, active={"aplactive": True})
+    # voice-daemon coordinator's in-memory state: 38%.
+    coord._level = 38
+    persistence.save_listening_level(38)
+    # Control daemon (different process) writes 100% to disk.
+    persistence.save_listening_level(100)
+    # Ducker.restore() reads this target after a failed turn. With the
+    # refresh, we use 100% → 0 dB; without it we'd use the stale 38%
+    # → -31 dB, and once the dial-truth eventually catches up to the
+    # coordinator (e.g. via an unrelated source-state transition), the
+    # NEXT duck-restore would jump camilla loudly to satisfy 100%.
+    target = await coord.get_camilla_target_db()
+    assert target == 0.0  # 100% → 0 dB
+    assert coord.get_listening_level() == 100
+
+
 async def test_transition_refreshes_from_disk(tmp_path):
     """Cross-process staleness guard. The control daemon (dial / HTTP)
     writes listening_level to disk on every twist. voice_daemon's

@@ -536,7 +536,19 @@ class VolumeCoordinator:
         """The absolute camilla.main_volume that should be in effect
         right now, ignoring any active duck. Used by `Ducker.restore()`
         to land camilla at the canonical level regardless of what the
-        duck delta was or what other writers did during the session."""
+        duck delta was or what other writers did during the session.
+
+        Refreshes from disk before reading `_level`. jasper-control
+        and jasper-voice are separate processes that each cache
+        listening_level in memory; without a refresh here, a dial
+        twist that lands between this daemon's own set/adjust calls
+        leaves `_level` stale. Real symptom: dial spun to 100% via
+        the control daemon, voice-daemon's stale `_level` still
+        reflected the boot value, and `Ducker.restore()` after a
+        failed turn raised camilla by tens of dB to satisfy the
+        out-of-date target. (Or, in the inverse case, dropped it
+        below the user's intent.)"""
+        self._refresh_from_disk()
         source = await self._active_source()
         if await self._camilla_carries_level(source):
             return percent_to_db(self._level)
