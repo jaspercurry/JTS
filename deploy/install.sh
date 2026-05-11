@@ -386,14 +386,19 @@ install_jasper() {
     # "version: <sha>, installed <timestamp>". Falls back to "unknown"
     # if REPO_DIR isn't a git checkout (e.g. tarball deploy).
     #
-    # Three sources, in priority order:
+    # Four sources, in priority order:
     #   1. JASPER_DEPLOY_SHA / JASPER_DEPLOY_SHA_FULL / JASPER_DEPLOY_BRANCH
     #      env vars — set by scripts/deploy-to-pi.sh on the laptop before
     #      sudo-running install.sh. This is the only source that works
     #      when the standard rsync deploy excludes .git/ (which it does).
     #   2. Local git checkout in REPO_DIR — when install.sh is run
     #      directly against a fresh `git clone` on the Pi.
-    #   3. "unknown" — tarball deploys, no git info available.
+    #   3. Existing build.txt — preserve a previously-correct SHA when
+    #      install.sh is re-run directly (e.g. `sudo bash install.sh`
+    #      to regen the TLS cert after a hostname change) without the
+    #      DEPLOY env vars. Otherwise the manifest gets clobbered back
+    #      to "unknown" on every such re-run, surprising the dashboard.
+    #   4. "unknown" — tarball deploys with no git info available.
     local git_sha="${JASPER_DEPLOY_SHA:-unknown}"
     local git_full="${JASPER_DEPLOY_SHA_FULL:-unknown}"
     local git_branch="${JASPER_DEPLOY_BRANCH:-unknown}"
@@ -402,6 +407,16 @@ install_jasper() {
         git_sha=$(git -C "${REPO_DIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)
         git_full=$(git -C "${REPO_DIR}" rev-parse HEAD 2>/dev/null || echo unknown)
         git_branch=$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)
+    fi
+    if [[ "${git_sha}" == "unknown" && -f "${STATE_DIR}/build.txt" ]]; then
+        local prior_sha
+        prior_sha=$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+        if [[ -n "${prior_sha}" && "${prior_sha}" != "unknown" ]]; then
+            git_sha="${prior_sha}"
+            git_full=$(grep -E '^JASPER_GIT_SHA_FULL=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+            git_branch=$(grep -E '^JASPER_GIT_BRANCH=' "${STATE_DIR}/build.txt" | head -1 | cut -d= -f2-)
+            echo "  preserving build manifest from prior install: ${git_sha} on ${git_branch}"
+        fi
     fi
     cat > "${STATE_DIR}/build.txt" <<EOF
 JASPER_GIT_SHA=${git_sha}
