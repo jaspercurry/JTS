@@ -116,10 +116,21 @@ PAGE_STYLE = """
 """
 
 
-# Single source of truth for the back-to-home link. Imported by every
-# setup page so the markup stays identical even though each page
-# renders its own HTML wrapper.
-NAV_BACK_HTML = '<a class="nav-back" href="/">← JTS speaker</a>'
+# Single source of truth for the back-link. Imported by every setup
+# page so the markup stays identical even though each page renders
+# its own HTML wrapper.
+#
+# Behaviour: clicking runs `history.back()` so the user returns to
+# whichever page they actually came from (often `/`, but sometimes
+# `/integrations` for the Spotify/Google wizards). When this tab has
+# no history — direct URL load, restored tab, etc. — the inline JS
+# returns undefined, the click's default kicks in, and the `href="/"`
+# fallback takes them home.
+NAV_BACK_HTML = (
+    '<a class="nav-back" href="/" '
+    'onclick="if (history.length > 1) { history.back(); return false; }">'
+    '← Back</a>'
+)
 
 # CSS for `.nav-back` is included in `PAGE_STYLE` above. Re-exported
 # here as a string fragment for pages that build their own style
