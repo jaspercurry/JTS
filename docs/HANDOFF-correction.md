@@ -25,6 +25,28 @@
   2026-05-09. Power-mean spatial averaging across 5 positions;
   post-Apply re-measurement with deviation metrics; target-curve
   choice (flat / warm / bright). 12 new tests, all passing.
+- ✅ **Phase 2.1 — current-correction visibility + per-session debug
+  bundles.** Merged 2026-05-11.
+  - `GET /status` now includes a `current_correction` descriptor
+    (`{path, session_id, applied_at_epoch, peq_count}`) parsed from
+    `CamillaController.get_config_file_path()`. The page banner at
+    the top of `/correction/` reads this on load so the user knows
+    what's loaded before measuring.
+  - `POST /start` auto-resets CamillaDSP to
+    `/etc/camilladsp/v1.yml` BEFORE the first sweep, so every
+    measurement traverses the raw room (not the corrected pipeline).
+    The prior correction descriptor is preserved in the session's
+    `current_correction_at_start` for the bundle.
+  - Each session writes a self-contained debug bundle at
+    `/var/lib/jasper/correction/sessions/<session_id>/` —
+    `info.json` (params + state), `result.json` (chart curves +
+    verify), `captures/p<N>.wav` (per-position WAVs),
+    `verify.wav` (post-Apply re-measurement, if run), and
+    `applied.yml` (copy of the CamillaDSP config that was applied).
+    Default ON; opt-out via `JASPER_CORRECTION_SAVE_BUNDLES=0`.
+  - `GET /sessions` (debug endpoint) lists the 20 most-recent
+    bundles for `curl`-based debugging / future history UI.
+  - 11 new tests, total 102 in the correction suite.
 - ⏳ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -146,18 +168,31 @@ uses `asyncio.run()` per request to bridge stdlib HTTP into async
 coordinator code; we do the same here for the
 `measurement_window()` async context manager.
 
-**Concrete shape:**
+**Concrete shape (as shipped after Phase 2.1):**
 ```
-GET  /                       page render (Preact SPA + uPlot, served from /usr/share/jasper-web/correction/dist/)
-GET  /jts-root-ca.pem        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
-POST /start                  begin measurement session, returns session_id
-GET  /events?session=…       SSE stream — sweep_started / sweep_done / analysis_done / filter_ready / applied
-POST /upload-capture         multipart, body = WAV blob from AudioWorklet
-POST /apply                  body = {session_id} → SetConfig + Reload
-POST /reset                  body = {} → restore previous correction or pass-through
-GET  /export.frd?session=…   REW-compatible magnitude+phase
-GET  /export-yaml?session=…  generated CamillaDSP YAML
+GET  /                       page render (stdlib HTML + inline AudioWorklet, no SPA)
+GET  /healthz                liveness — "ok"
+GET  /jts-root-ca.crt        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
+GET  /status                 session + currently-loaded correction snapshot
+                             ({state, peqs, autolevel, current_correction: {path,
+                             session_id, applied_at_epoch, peq_count} | null})
+GET  /sessions               debug: 20 most-recent session bundles
+POST /start                  reset to base config, begin measurement, returns session_id;
+                             body: {total_positions, target_choice, noise_floor_db?}
+POST /next-position          advance to position[N+1] sweep
+POST /upload-capture         body = WAV (audio/wav); per-position OR verify capture
+POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
+POST /reset                  → SetConfig(/etc/camilladsp/v1.yml) + Reload
+POST /verify                 fresh single-position sweep for the verify pass
+POST /test-tone              5-second 1 kHz tone through music chain
+POST /autolevel/start        ramp main_volume while tone plays
+POST /autolevel/lock         freeze main_volume at current ramp value
+POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
 ```
+
+Browser polls `GET /status` every 500 ms; SSE was considered but never
+landed because polling is simpler in stdlib and the latency budget
+allows it.
 
 ### Decision 3 — URL: `/correction/`, plus entry on the landing page
 
@@ -674,15 +709,20 @@ not before this doc lands.
    (a) test it (most likely fine, bridge re-converges in ~200 ms);
    (b) explicitly stop `jasper-aec-bridge.service` during measurement.
    **Decision needed by Phase 1 exit; default to (b) defensively.**
-7. **Where do correction profiles persist?** Single active profile
-   in `/var/lib/camilladsp/configs/correction.yml`, or a profile
-   library with timestamps? Phase 1 ships single-profile (overwrite
-   on apply, keep one `.bak`). Library UX is a Phase 2 nice-to-have.
-8. **What does "Reset to flat" do?** Phase 1: `set_config_path()`
-   to a known-good `/etc/camilladsp/v1.yml` (the as-shipped
-   passthrough). Verify this works without losing any other
-   user-applied filter changes — but since we're the only writer,
-   it should.
+7. **Where do correction profiles persist?** **Resolved (Phase 2.1):**
+   each apply emits a new file at
+   `/var/lib/camilladsp/configs/correction_<session_id>_<unixtime>.yml`.
+   Files are never deleted by JTS — they're cheap (a few KB), and a
+   future "restore previous correction" feature can pick from this
+   directory. The currently-loaded path is read via `CamillaController.
+   get_config_file_path()` and surfaced to the UI banner via
+   `parse_current_correction()`.
+8. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
+   `set_config_file_path('/etc/camilladsp/v1.yml')` + `reload()`.
+   Also automatically invoked at the start of every measurement
+   (so sweeps capture the raw room, not the corrected pipeline).
+   Reset is also exposed from the page banner so a user can clear
+   the speaker without running a measurement.
 
 ## Risk register
 
@@ -781,6 +821,47 @@ after `rsync` + `install.sh`:
   events; auto-clear safety-timer warning if a coordinator crashes.
 - `journalctl -u jasper-camilla -f` — config reload events;
   any parse errors on the emitted YAML.
+
+## Debug bundles — operator reference
+
+Every measurement session writes a self-contained bundle at
+`/var/lib/jasper/correction/sessions/<session_id>/`. Layout:
+
+```
+sessions/<session_id>/
+├── info.json        session params, target_choice, autolevel state,
+│                    noise_floor_db, peqs, timestamps,
+│                    current_correction_at_start, sweep_meta
+├── result.json      measured / target / predicted curves; verify_curve
+│                    + verify_metrics when /verify ran
+├── captures/        per-position WAVs (p0.wav, p1.wav, ...)
+├── verify.wav       single-position re-measurement (if /verify ran)
+└── applied.yml      copy of the CamillaDSP config that was applied
+                     (so the bundle is self-contained even if the
+                     configs/ directory is later cleaned up)
+```
+
+`info.json` is rewritten atomically on each state transition (cheap;
+a few hundred bytes). `result.json` lands after design / verify.
+`applied.yml` is copied (not symlinked) in `apply()` so the bundle
+remains valid after a user-driven cleanup.
+
+To pull a bundle off the Pi for debugging:
+
+```sh
+ssh pi@jts.local 'ls -t /var/lib/jasper/correction/sessions/ | head -5'
+scp -r pi@jts.local:/var/lib/jasper/correction/sessions/<id> ./
+```
+
+To list bundles without ssh, hit the debug endpoint:
+
+```sh
+curl -sk https://jts.local/correction/sessions | jq
+```
+
+Default ON. Opt out via `JASPER_CORRECTION_SAVE_BUNDLES=0` in
+`/etc/jasper/jasper.env` — captures then fall back to the legacy
+flat `captures/` directory and no per-session artifacts are written.
 
 ## Known limitations / Phase 3+ refinements
 
