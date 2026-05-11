@@ -469,14 +469,30 @@ through "Hey Jarvis works" in ~3-4 hours.
 If the repo is already deployed and you're just pushing changes:
 
 ```sh
-# from your laptop, with rsync set up to the Pi:
+# from your laptop:
+bash scripts/deploy-to-pi.sh
+# or with a non-default host:
+PI_HOST=192.168.1.42 bash scripts/deploy-to-pi.sh
+```
+
+This is a thin wrapper that captures the current git SHA + branch
+(via `git rev-parse`), rsyncs to `/home/pi/jts/`, then runs install.sh
+under sudo with `JASPER_DEPLOY_SHA` / `JASPER_DEPLOY_BRANCH` env vars
+set. install.sh writes those into `/var/lib/jasper/build.txt` so the
+/system dashboard's "Software" card shows the real deployed version
+instead of "unknown" (.git/ is excluded from the rsync for speed).
+
+If you'd rather drive the rsync + install yourself, the equivalent
+raw form is:
+
+```sh
 rsync -avz --delete \
   --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
   --exclude '.pio' --exclude '.claude/worktrees' \
   ./ pi@jts.local:/home/pi/jts/
 
-ssh pi@jts.local 'sudo bash /home/pi/jts/deploy/install.sh'
-ssh pi@jts.local 'sudo systemctl restart jasper-camilla jasper-voice jasper-correction-web'
+ssh pi@jts.local 'sudo JASPER_DEPLOY_SHA=$(git -C ~/jts rev-parse --short HEAD) \
+    bash /home/pi/jts/deploy/install.sh'
 ```
 
 The install script is idempotent.
