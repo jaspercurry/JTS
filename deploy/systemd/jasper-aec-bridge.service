@@ -68,10 +68,15 @@ TimeoutStopSec=5s
 # safe — but the production tuning values won't be applied.
 EnvironmentFile=-/etc/jasper/jasper.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
-# `Restart=on-watchdog` covers BOTH clean failure (non-zero exit,
-# segfault) AND watchdog timeouts. `on-failure` would miss the
-# watchdog case; this is strictly broader.
-Restart=on-watchdog
+# `Restart=on-failure` covers non-zero exit + signals + watchdog
+# timeouts (per the table in systemd.service(5)). The previous
+# `on-watchdog` setting only restarted on watchdog timeout, so the
+# explicit `BridgeStalled` exit (code 1, raised by _aec_loop when
+# the mic queue stays empty for JASPER_AEC_STALL_RESTART_SEC) was
+# NOT being restarted — the service was just parked as failed, and
+# the wake-word path was offline until manual intervention. Hit in
+# production 2026-05-11.
+Restart=on-failure
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
