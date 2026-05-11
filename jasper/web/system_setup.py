@@ -112,10 +112,10 @@ _PAGE_BODY = """
     <div class="sub"><span id="mem-sub">—</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-memory"></svg>
   </div>
-  <div class="tile" id="tile-load">
-    <div class="label">Load (1m)</div>
+  <div class="tile" id="tile-load" title="Linux 1-minute load average: roughly the average number of processes in the run queue or running over the last 60 s. Not a percentage. On 4 cores: 4.0 = fully utilized, &gt;4 = oversubscribed.">
+    <div class="label">Load avg (1m)</div>
     <div class="value"><span id="load-value">—</span></div>
-    <div class="sub"><span id="load-sub">of 4 cores</span></div>
+    <div class="sub"><span id="load-sub">— / 4 cores</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-load"></svg>
   </div>
   <div class="tile" id="tile-temp">
@@ -295,15 +295,20 @@ _SCRIPT = r"""
     // Load tile
     const load = hist.load_1m[hist.load_1m.length - 1] || 0;
     document.getElementById('load-value').textContent = load.toFixed(2);
+    document.getElementById('load-sub').textContent =
+      load.toFixed(2) + ' / 4 cores · ~' + Math.round((load / 4) * 100) + '% saturated';
     let loadStatus = 'ok';
     if (load > 4) loadStatus = 'fail';
     else if (load > 3) loadStatus = 'warn';
     setTile('tile-load', loadStatus);
     sparkline('spark-load', hist.load_1m, { min: 0, max: Math.max(4, ...hist.load_1m) });
 
-    // Temp tile
+    // Temp tile — show both Celsius and Fahrenheit. Pi-side reads
+    // vcgencmd, which only emits °C; convert in the browser.
     const temp = cur.temp_c || 0;
-    document.getElementById('temp-value').textContent = temp.toFixed(1) + '°C';
+    const tempF = temp * 9 / 5 + 32;
+    document.getElementById('temp-value').textContent =
+      temp.toFixed(1) + '°C · ' + tempF.toFixed(0) + '°F';
     const throttledNow = cur.throttled_now || 0;
     const throttledHist = cur.throttled_history || 0;
     document.getElementById('temp-sub').textContent =
