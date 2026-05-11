@@ -139,7 +139,11 @@ class GoogleRegistry:
             "accounts": [asdict(a) for a in self.accounts],
         }
         tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
+        # 0o600 — accounts.json contains the linked household members'
+        # Gmail addresses, which are PII-adjacent. Token files use the
+        # same mode (see save_token below).
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as f:
             json.dump(payload, f, indent=2)
         os.replace(tmp, self.path)
 

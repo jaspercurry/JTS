@@ -314,6 +314,13 @@ install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     install -d -m 0750 "${STATE_DIR}"
     install -d -m 0750 "${ENV_DIR}"
+    # Per-account Google refresh tokens live under here at mode 0600.
+    # Tighten the parent dirs too so non-root processes can't even
+    # `ls` the per-household-member token filenames (the names are
+    # PII-adjacent — they identify which household members linked
+    # accounts). install -d resets perms on existing dirs, so this
+    # also tightens any pre-existing 755 left from earlier installs.
+    install -d -m 0700 "${STATE_DIR}/google" "${STATE_DIR}/google/tokens"
 
     rsync -a --delete \
         --exclude='.venv' --exclude='__pycache__' --exclude='.git' \
