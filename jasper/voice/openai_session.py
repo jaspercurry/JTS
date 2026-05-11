@@ -420,6 +420,15 @@ class OpenAIRealtimeConnection(LiveConnection):
         context_reset_sec: float = 0.0,
         reasoning_effort: str = DEFAULT_REASONING_EFFORT,
         temperature: float = DEFAULT_TEMPERATURE,
+        # Proactive pre-cap reconnect — see `_proactive_reconnect_watchdog`.
+        # Both default to 0 (disabled) so tests and bare-construction don't
+        # spawn surprise tasks. Production wires production values from
+        # Config (3600 / 300 → fires at 55 min uptime). Cap and buffer
+        # are independent so OpenAI raising the cap to e.g. 7200 s only
+        # requires changing the cap value; buffer (intent: "5 min before
+        # whatever the cap is") stays correct.
+        session_max_sec: float = 0.0,
+        proactive_buffer_sec: float = 0.0,
         # Production: leave None → supervisor reconnects FOREVER with
         # the shared exponential-with-jitter schedule. Tests pass a
         # bounded tuple to make exhaustion observable.
@@ -439,6 +448,8 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._context_reset_sec = context_reset_sec
         self._reasoning_effort = reasoning_effort
         self._temperature = temperature
+        self._session_max_sec = session_max_sec
+        self._proactive_buffer_sec = proactive_buffer_sec
         self._backoff_schedule = backoff_schedule
         self._connect_factory = connect_factory
         self._base_url = base_url
@@ -481,6 +492,15 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._supervisor_task: asyncio.Task | None = None
         self._stopping = asyncio.Event()
         self._connected_event: asyncio.Event = asyncio.Event()
+
+        # Proactive pre-cap reconnect — watchdog state.
+        # Task that fires at (session_max_sec - proactive_buffer_sec); set
+        # by `_open_session`, cancelled by `_teardown_session`.
+        self._proactive_watchdog_task: asyncio.Task | None = None
+        # When the watchdog fires mid-turn we defer the reconnect to
+        # avoid tearing down the user's in-flight conversation; this flag
+        # is checked in `_on_turn_released` to fire the deferred reconnect.
+        self._proactive_reconnect_pending: bool = False
 
         # Tight-retry-loop detection — same logic as Gemini, lifted into
         # ``_supervisor.FailureFingerprint``.
@@ -685,6 +705,14 @@ class OpenAIRealtimeConnection(LiveConnection):
         async with self._state_lock:
             if self._state is ConnectionState.IN_TURN:
                 self._set_state(ConnectionState.CONNECTED)
+        # Fire any reconnect the proactive watchdog deferred for this turn.
+        if self._proactive_reconnect_pending:
+            self._proactive_reconnect_pending = False
+            logger.info(
+                "openai connection: proactive reconnect — turn just ended, "
+                "firing the watchdog-deferred reconnect",
+            )
+            self._reconnect_event.set()
 
     # ------------------------------------------------------------------
     # Internal — connection lifecycle
@@ -872,13 +900,25 @@ class OpenAIRealtimeConnection(LiveConnection):
             self._conn_cm = None
             raise
         self._reconnect_event.clear()
+        self._proactive_reconnect_pending = False
         self._receive_task = asyncio.create_task(self._receive_loop(conn))
         async with self._state_lock:
             self._set_state(ConnectionState.CONNECTED)
         self._connected_event.set()
+        # Kick off the proactive pre-cap watchdog. No-op when either
+        # `session_max_sec` or `proactive_buffer_sec` is 0 (disabled).
+        self._start_proactive_watchdog()
 
     async def _teardown_session(self) -> None:
         t0 = _time.monotonic()
+        # Cancel the proactive watchdog first — its only job is to fire on
+        # a CONNECTED session, and we're about to leave that state.
+        if self._proactive_watchdog_task is not None:
+            self._proactive_watchdog_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await self._proactive_watchdog_task
+            self._proactive_watchdog_task = None
+        self._proactive_reconnect_pending = False
         if self._receive_task is not None:
             self._receive_task.cancel()
             try:
@@ -903,6 +943,80 @@ class OpenAIRealtimeConnection(LiveConnection):
         self._connected_event.clear()
         teardown_ms = (_time.monotonic() - t0) * 1000
         logger.info("openai connection: session torn down in %.0fms", teardown_ms)
+
+    def _start_proactive_watchdog(self) -> None:
+        """Schedule the proactive pre-cap reconnect for the just-opened
+        session.
+
+        OpenAI Realtime enforces a hard cap (60 min today, no resumption,
+        no pre-cap warning event — verified against the realtime-
+        conversations docs as of 2026-05). When the cap fires, the
+        server sends a 1001 close and the supervisor reactively
+        reconnects — that costs the user a ~3 s `cant_connect` cue. The
+        watchdog avoids that by tearing the session down voluntarily a
+        bit before the cap, during an idle window, so the next wake
+        hits a fresh connection.
+
+        Disabled when either knob is 0 — bare construction in tests
+        doesn't spawn a surprise task."""
+        if self._session_max_sec <= 0 or self._proactive_buffer_sec <= 0:
+            return
+        delay = self._session_max_sec - self._proactive_buffer_sec
+        if delay <= 0:
+            # Misconfiguration (buffer ≥ cap). Log loudly and skip — a
+            # zero/negative delay would fire immediately on every
+            # reconnect, which is a worse failure than just not doing
+            # the proactive reconnect at all.
+            logger.warning(
+                "openai connection: proactive watchdog disabled — "
+                "session_max_sec=%.0f ≤ proactive_buffer_sec=%.0f",
+                self._session_max_sec, self._proactive_buffer_sec,
+            )
+            return
+        self._proactive_watchdog_task = asyncio.create_task(
+            self._proactive_reconnect_watchdog(delay),
+            name="jasper-openai-proactive-watchdog",
+        )
+
+    async def _proactive_reconnect_watchdog(self, delay_sec: float) -> None:
+        """Sleep until just before the cap, then trigger a reconnect.
+
+        If a turn is in flight when the timer fires, set a pending flag
+        and let `_on_turn_released` fire the reconnect once the turn
+        ends. The 5-minute default buffer covers any realistic turn —
+        the daemon's own idle watchdog ends turns within ~12 s — so the
+        deferral always resolves well before the real cap.
+        """
+        try:
+            await asyncio.sleep(delay_sec)
+        except asyncio.CancelledError:
+            raise
+        if self._state in (
+            ConnectionState.RECONNECTING,
+            ConnectionState.PAUSED_FOR_BACKOFF,
+            ConnectionState.FAILED,
+            ConnectionState.CLOSED,
+        ):
+            # Already reconnecting / closing for another reason; the
+            # current watchdog task is about to be cancelled by the
+            # teardown path anyway.
+            return
+        if self._active_turn is not None:
+            logger.info(
+                "openai connection: proactive watchdog fired mid-turn — "
+                "deferring reconnect until turn release "
+                "(uptime≈%.0fs, buffer=%.0fs)",
+                delay_sec, self._proactive_buffer_sec,
+            )
+            self._proactive_reconnect_pending = True
+            return
+        logger.info(
+            "openai connection: proactive reconnect — preempting "
+            "%.0f-min cap (firing at %.0fs uptime, %.0fs buffer)",
+            self._session_max_sec / 60.0, delay_sec,
+            self._proactive_buffer_sec,
+        )
+        self._reconnect_event.set()
 
     async def _supervisor_loop(self) -> None:
         try:

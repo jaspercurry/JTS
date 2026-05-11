@@ -64,6 +64,12 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
         model: str = "grok-voice-think-fast-1.0",
         voice: str = "eve",
         context_reset_sec: float = 0.0,
+        # xAI doesn't publish a hard session cap analogous to OpenAI's
+        # 60-min one, so the proactive watchdog defaults to disabled.
+        # Pass both knobs through from Config to enable if a cap is
+        # observed empirically.
+        session_max_sec: float = 0.0,
+        proactive_buffer_sec: float = 0.0,
         backoff_schedule: tuple[float, ...] | None = None,
         connect_factory=None,
         base_url: str | None = None,
@@ -78,6 +84,8 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
             # name contains "-2" — Grok models don't, so the field is
             # naturally skipped without a separate override.
             reasoning_effort="",
+            session_max_sec=session_max_sec,
+            proactive_buffer_sec=proactive_buffer_sec,
             backoff_schedule=backoff_schedule,
             connect_factory=connect_factory,
             base_url=base_url or GROK_WEBSOCKET_BASE_URL,

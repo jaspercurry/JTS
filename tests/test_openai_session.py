@@ -1197,3 +1197,136 @@ async def test_grok_text_delta_normalised_to_openai_event_name():
             await conn.stop()
     finally:
         OpenAIRealtimeConnection._dispatch_event = original
+
+
+# ---------------------------------------------------------------------------
+# Proactive pre-cap reconnect watchdog.
+# ---------------------------------------------------------------------------
+
+
+async def test_proactive_watchdog_fires_before_cap_when_idle():
+    """When the watchdog timer fires and no turn is in flight, it sets
+    `_reconnect_event` directly. The supervisor then tears down and
+    reconnects — same code path as the reactive 60-min cap recovery,
+    just initiated locally and ~5 min early.
+
+    Production uses (3600, 300) → 55-min trigger. Tests use small
+    values (0.10, 0.05) → 0.05 s trigger, so the assertion is fast."""
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        session_max_sec=0.10,
+        proactive_buffer_sec=0.05,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        # First connect happened.
+        assert len(factory.conns) == 1
+        # After ~50 ms the watchdog should set _reconnect_event, the
+        # supervisor should reconnect, and a SECOND session should open.
+        await _wait_until(lambda: len(factory.conns) >= 2, timeout=2.0)
+        assert len(factory.conns) >= 2
+    finally:
+        await conn.stop()
+
+
+async def test_proactive_watchdog_defers_when_turn_active():
+    """If the watchdog fires mid-turn, it does NOT tear down — it sets
+    `_proactive_reconnect_pending` and lets `_on_turn_released` fire
+    the reconnect after the user's turn ends. We don't want to yank a
+    live conversation when we have 5 min of safety margin to wait."""
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        session_max_sec=0.10,
+        proactive_buffer_sec=0.05,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        turn = await conn.acquire_turn()
+        # Give the watchdog time to fire while the turn is active.
+        await asyncio.sleep(0.12)
+        # No new session yet — fire was deferred.
+        assert len(factory.conns) == 1
+        assert conn._proactive_reconnect_pending is True
+        # Release the turn → deferred reconnect fires, supervisor opens
+        # session 2.
+        await turn.release()
+        await _wait_until(lambda: len(factory.conns) >= 2, timeout=2.0)
+        assert conn._proactive_reconnect_pending is False
+    finally:
+        await conn.stop()
+
+
+async def test_proactive_watchdog_cancelled_on_teardown():
+    """Stopping the connection mid-wait must cancel the watchdog cleanly.
+    Without this, the task would either fire against a stopped
+    connection (harmless but noisy) or leak as an orphaned coroutine
+    warning under pytest-asyncio."""
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        # Watchdog wouldn't fire for ~10 s — plenty of time to stop first.
+        session_max_sec=20.0,
+        proactive_buffer_sec=10.0,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    task = conn._proactive_watchdog_task
+    assert task is not None
+    assert not task.done()
+    await conn.stop()
+    # Stop awaits the cancelled task internally; it must be done now.
+    assert task.done()
+    # And only one session was ever opened.
+    assert len(factory.conns) == 1
+
+
+async def test_proactive_watchdog_disabled_when_either_knob_zero():
+    """Either `session_max_sec=0` OR `proactive_buffer_sec=0` disables
+    the watchdog. Default OpenAIRealtimeConnection construction (no
+    knobs passed) must NOT spawn a task — test isolation depends on it.
+    Also covers the Grok production default (both 0)."""
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        # Explicitly disabled — buffer is 0.
+        session_max_sec=3600.0,
+        proactive_buffer_sec=0.0,
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        assert conn._proactive_watchdog_task is None
+    finally:
+        await conn.stop()
+
+
+async def test_proactive_watchdog_disabled_when_buffer_exceeds_cap():
+    """Misconfiguration (buffer ≥ cap) must NOT spawn a task that would
+    fire instantly on every reconnect — that's a worse failure than
+    just leaving the watchdog off."""
+    factory = _FakeConnectFactory()
+    conn = OpenAIRealtimeConnection(
+        api_key="fake",
+        session_max_sec=300.0,
+        proactive_buffer_sec=500.0,  # > cap
+        backoff_schedule=(0.0,),
+        connect_factory=factory,
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        assert conn._proactive_watchdog_task is None
+    finally:
+        await conn.stop()
