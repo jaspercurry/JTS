@@ -46,9 +46,11 @@ echo "==> deploy-to-pi: ${PI_USER}@${PI_HOST}"
 echo "    branch: ${BRANCH}"
 echo "    sha:    ${SHA}${DIRTY} (${SHA_FULL})"
 
-# Rsync — same exclude set documented in CLAUDE.md. Adding --info=stats1
-# to keep the output reasonable.
-rsync -avz --delete --info=stats1 \
+# Rsync — same exclude set documented in CLAUDE.md.
+# macOS ships BSD rsync 2.6.9 (no --info= flag); use --stats which
+# works on both BSD and GNU rsync. Suppress per-file output with
+# --quiet so the wrapper's output is just the start/end summary.
+rsync -az --delete --stats --quiet \
     --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
     --exclude 'captures/*' --exclude '*.pyc' \
