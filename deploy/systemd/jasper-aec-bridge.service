@@ -3,12 +3,15 @@ Description=Software AEC bridge — WebRTC AEC3 cancels speaker echo from XVF ra
 # Captures from pcm.jasper_capture (host-clocked dsnoop on the
 # renderer→camilla loopback, the AEC reference) AND from
 # hw:CARD=Array,DEV=0 channel 2 (raw mic 0, exposed by 6-ch
-# firmware variant 2.0.8). Outputs the AEC'd mono mic to
-# hw:LoopbackAEC,0 (= hw:7,0) for jasper-voice to read at
-# hw:LoopbackAEC,1 (= hw:7,1, the JASPER_MIC_DEVICE setting when the
-# bridge is enabled). LoopbackAEC is a dedicated second snd-aloop
-# card pinned at modprobe index 7, separate from the music-chain
-# Loopback card at index 6.
+# firmware variant 2.0.8). Outputs the AEC'd mono mic over UDP to
+# 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876) for jasper-voice to
+# receive via UdpMicCapture (JASPER_MIC_DEVICE=udp:9876).
+#
+# Historical note: this used to write to a second snd-aloop card
+# (LoopbackAEC) that jasper-voice read via PortAudio. Replaced
+# with UDP in PR 2 of the resilience-ladder series — snd-aloop's
+# kernel-side loopback_cable wedged on consumer SIGKILL and
+# required a reboot to clear. UDP has no such state.
 #
 # Engine: WebRTC AEC3 via the jasper_aec3 pybind11 binding around
 # Trixie's libwebrtc-audio-processing-1 v1.3-3. Tuning knobs
