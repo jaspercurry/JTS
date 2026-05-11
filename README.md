@@ -212,6 +212,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation
+  HANDOFF-airplay-sync.md       AirPlay 2 drift-correction audible glitches
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
   HANDOFF-volume.md             Source-aware volume coordinator
@@ -271,6 +272,13 @@ reference. Currently:
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
   volume coordinator (one canonical `listening_level`, dispatched
   to whichever source is active, observed inbound at 1 Hz)
+- [`HANDOFF-airplay-sync.md`](docs/HANDOFF-airplay-sync.md) —
+  AirPlay 2 audible-glitch investigation: shairport's drift-correction
+  fires on snd-aloop ring fill (not DAC latency), producing periodic
+  audible cuts every ~63s. Documents the chain, the four clocks, the
+  source-cited mechanism, what we've tried (PR #75, PR #76), and
+  remaining options ranked by cost. Read before touching anything
+  shairport- or CamillaDSP-related on the AirPlay path.
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — Per-household-
   member Spotify account routing
 
