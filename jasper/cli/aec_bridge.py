@@ -35,13 +35,19 @@ Topology:
     WebRTC AEC3 (jasper_aec3 binding)
        │  AEC'd mono mic
        ▼
-    hw:LoopbackAEC,0  (write side)
-       │                    (cross-wires within snd-aloop)
+    UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)
+       │  one packet per 1280 samples (80 ms, matches MicCapture frame size)
        ▼
-    hw:LoopbackAEC,1  (read side)
-       │
-       ▼
-    jasper-voice (reads via JASPER_MIC_DEVICE)
+    jasper-voice's UdpMicCapture (binds the same port)
+
+Why UDP instead of the previous snd-aloop `LoopbackAEC` card: see
+the `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
+snd-aloop's `loopback_cable` kernel struct wedges when a consumer
+is SIGKILL'd, requiring a reboot to clear. UDP has no kernel-side
+state and `sendto()` is non-blocking, which orthogonally fixes the
+PortAudio-write SIGTERM-observability bug from the 2026-05-11
+incident. Validated end-to-end in PR 2 of the resilience-ladder
+series.
 
 Caveats this implementation does NOT yet address:
   - Reference and mic are on independent clock domains (kernel
@@ -102,14 +108,28 @@ MIC_DEVICE = "Array"  # matches "Array: USB Audio (hw:N,0)"
 MIC_CHANNELS = 6
 MIC_CHANNEL_INDEX = 2  # raw mic 0
 
-# Output: write AEC'd mono to LoopbackAEC card (kernel index 7 per
-# /etc/modprobe.d/snd-aloop.conf). PortAudio names all snd-aloop
-# devices identically ("Loopback: PCM (hw:N,M)") so the unique
-# substring is the hw:N,M part. jasper-voice reads the mirror
-# device hw:7,1 (configured in jasper.env as JASPER_MIC_DEVICE).
-OUT_DEVICE = "hw:7,0"
-OUT_CHANNELS = 1
+# Output transport: UDP localhost. Bridge sends AEC'd mono int16
+# frames to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's
+# `UdpMicCapture` binds the same port and receives.
+#
+# Why UDP instead of the old snd-aloop `LoopbackAEC` card: see the
+# `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
+# snd-aloop's `loopback_cable` kernel struct wedges if a consumer
+# is SIGKILL'd, requiring `rmmod && modprobe` (with every consumer
+# stopped first) or a reboot to recover. UDP has no kernel-side
+# state to corrupt and `sendto()` is non-blocking, which
+# orthogonally fixes the daemon's SIGTERM-observability bug from
+# the 2026-05-11 incident.
+OUT_HOST = os.environ.get("JASPER_AEC_UDP_HOST", "127.0.0.1")
+OUT_PORT = int(os.environ.get("JASPER_AEC_UDP_PORT", "9876"))
 OUT_RATE = 16000
+# Voice consumes 1280-sample (80 ms) chunks. Aggregating four
+# 320-sample AEC frames into one UDP packet keeps the
+# bridge↔voice contract symmetric with the existing MicCapture
+# frame size and halves packet rate to ~12.5 pps. The AEC engine
+# still works on 320-sample windows internally.
+OUT_FRAME_SAMPLES = 1280
+OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -306,12 +326,27 @@ def _aec_loop(  # noqa: PLR0915
     the echo. Comparing mic_rms vs aec_rms gives the running
     attenuation in dB."""
     import math
+    import socket
     import time
-    out_stream = sd.RawOutputStream(
-        device=OUT_DEVICE, samplerate=OUT_RATE, channels=OUT_CHANNELS,
-        dtype="int16", blocksize=FRAME_SAMPLES,
+    # UDP output: localhost, non-blocking sendto. Replaces the old
+    # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
+    # never blocks on `lo` at our rate (~256 kbps), so the main
+    # thread can always observe SIGTERM and exit cleanly inside
+    # `TimeoutStopSec=5s` — no more SIGKILL, no more snd-aloop
+    # kernel-state corruption.
+    out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out_sock.setblocking(False)
+    out_dest = (OUT_HOST, OUT_PORT)
+    logger.info(
+        "udp output: dest=%s:%d frame=%d samples (%d bytes)",
+        OUT_HOST, OUT_PORT, OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
-    out_stream.start()
+    # Aggregate four AEC frames (320 samples each) into one UDP
+    # packet (1280 samples = MicCapture.OUTPUT_FRAME_SAMPLES) so
+    # voice's UdpMicCapture sees the same chunk size it gets from
+    # the PortAudio path. Bytearray rather than list-of-bytes to
+    # avoid per-frame allocation churn.
+    out_batch = bytearray()
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     frames_processed = 0
     last_log = 0.0
@@ -366,7 +401,19 @@ def _aec_loop(  # noqa: PLR0915
                 # of hard-clipping. Below ±~26000 it's near-linear.
                 arr = 32767.0 * np.tanh(arr / 32767.0)
                 clean = arr.astype(np.int16).tobytes()
-            out_stream.write(clean)
+            out_batch.extend(clean)
+            if len(out_batch) >= OUT_FRAME_BYTES:
+                # `sendto` is non-blocking (setblocking(False) above).
+                # On `lo` at ~256 kbps, the kernel UDP send buffer
+                # never fills, so BlockingIOError essentially never
+                # fires; if it ever does, dropping the packet is the
+                # right call (voice sees an 80 ms gap, recovers next
+                # frame).
+                try:
+                    out_sock.sendto(bytes(out_batch[:OUT_FRAME_BYTES]), out_dest)
+                except BlockingIOError:
+                    logger.warning("udp out sendto would block, dropping frame")
+                del out_batch[:OUT_FRAME_BYTES]
             frames_processed += 1
             if heartbeat is not None:
                 heartbeat.bump()
@@ -412,8 +459,7 @@ def _aec_loop(  # noqa: PLR0915
                 _ref_clipped_samples = _ref_total_samples = 0
                 _out_clipped_samples = _out_total_samples = 0
     finally:
-        out_stream.stop()
-        out_stream.close()
+        out_sock.close()
 
 
 def main() -> int:
@@ -422,9 +468,9 @@ def main() -> int:
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
     logger.info(
-        "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d out=%s@%d",
+        "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d out=udp://%s:%d@%d",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
-        MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_DEVICE, OUT_RATE,
+        MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_HOST, OUT_PORT, OUT_RATE,
     )
 
     engine = _Aec3Engine()
@@ -445,12 +491,14 @@ def main() -> int:
     mic_t.start()
 
     # Tier 1 of the resilience ladder. Bumped after each successful
-    # frame in `_aec_loop`; if the loop wedges (e.g. PortAudio
-    # blocked in `out_stream.write` when LoopbackAEC's kernel-side
-    # timer is stuck), systemd's `WatchdogSec=` expires and revives
-    # us via `Restart=on-watchdog` before we ever reach the SIGKILL
-    # that would corrupt snd-aloop's loopback_cable state. See
-    # jasper/watchdog.py header for the full rationale.
+    # frame in `_aec_loop`; if the loop wedges (e.g. mic InputStream
+    # stops invoking its callback after a USB underrun on the XVF
+    # UAC2 capture), systemd's `WatchdogSec=` expires and revives
+    # us via `Restart=on-watchdog`. The original PortAudio
+    # output-stream wedge that motivated this rung is now gone
+    # under PR 2's UDP transport — `socket.sendto` is non-blocking
+    # on `lo` at our rate — but the heartbeat still protects against
+    # any future in-process hang. See jasper/watchdog.py header.
     heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
     heartbeat.start()
 

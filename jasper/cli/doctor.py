@@ -157,7 +157,7 @@ def _check_arecord_l_card_device(card: int, device: int) -> bool:
     `arecord -L` prints PCM names like ``hw:CARD=Loopback,DEV=0`` —
     those don't include positional indices. `arecord -l` (lowercase L)
     prints the indexed form, with card and device on the same line:
-        ``card 7: LoopbackAEC [Loopback], device 1: Loopback PCM ...``
+        ``card 6: Loopback [Loopback], device 1: Loopback PCM ...``
     We parse that to validate the ``hw:N,M`` shorthand."""
     bin_path = shutil.which("arecord")
     if bin_path is None:
@@ -180,8 +180,19 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
       ``arecord -l`` for ``card N: ... device M:``.
 
     install.sh autodetects on the Pi, so the literal may differ from
-    'Array' — e.g. when the AEC bridge is enabled, mic moves to
-    ``hw:7,1`` (LoopbackAEC capture)."""
+    'Array' — e.g. when the AEC bridge is enabled, mic moves to a
+    UDP-form device (`udp:9876`) and this card check is skipped."""
+    # UDP transport has no ALSA card to validate; just say so. The
+    # `jasper-aec-bridge` running check covers transport liveness.
+    from jasper.audio_io import parse_udp_device
+    try:
+        if parse_udp_device(cfg.mic_device or ""):
+            return CheckResult(
+                f"mic ALSA card ({cfg.mic_device})", "ok",
+                "skipped — UDP transport, no ALSA card to validate",
+            )
+    except ValueError:
+        pass  # `check_mic_capture` will report the malformed form.
     shorthand = _HW_SHORTHAND_RE.match(cfg.mic_device or "")
     if shorthand:
         card = int(shorthand.group(1))
@@ -192,8 +203,10 @@ def check_mic_card_matches_config(cfg: Config) -> CheckResult:
         return CheckResult(
             label, "fail",
             f"no card {card} / device {device} in `arecord -l` output. "
-            f"AEC bridge may not be running, or snd-aloop didn't load "
-            f"the second card. Check: `aplay -l | grep Loopback` and "
+            f"The AEC bridge migrated to UDP in PR 2 and the old "
+            f"LoopbackAEC card no longer exists — update "
+            f"JASPER_MIC_DEVICE to `udp:9876` (or `Array` for chip-direct). "
+            f"Verify with `aplay -l | grep Loopback` and "
             f"`systemctl status jasper-aec-bridge`.",
         )
     card = _extract_card_name(cfg.mic_device)
@@ -245,11 +258,34 @@ def check_mic_capture(cfg: Config) -> CheckResult:
     """Probe-open the mic device to confirm it produces non-silent audio.
 
     Caveat: when jasper-voice is already running, it holds the mic for
-    capture and snd-aloop's exclusive-capture variants (the AEC bridge's
-    LoopbackAEC at ``hw:7,1``, etc.) refuse a second opener. In that
-    case the daemon's continued operation IS the evidence the device
-    works — fall back to checking that jasper-voice is alive and report
-    "skipped" rather than spuriously failing."""
+    capture and snd-aloop's exclusive-capture variants refuse a second
+    opener. In that case the daemon's continued operation IS the
+    evidence the device works — fall back to checking that
+    jasper-voice is alive and report 'skipped' rather than spuriously
+    failing.
+
+    UDP devices (`udp:N` / `udp://HOST:N`, the AEC bridge transport
+    under PR 2) aren't PortAudio devices — there's no `sd.rec` for
+    them. We skip the probe entirely and let jasper-voice's continued
+    operation be the evidence.
+    """
+    # UDP transport: no PortAudio probe possible. The bridge's
+    # heartbeat (Tier 1) and `check_aec_bridge_running` already cover
+    # whether the transport is alive; this check just stays out of
+    # the way.
+    from jasper.audio_io import parse_udp_device
+    try:
+        if parse_udp_device(cfg.mic_device or ""):
+            return CheckResult(
+                "mic capture", "ok",
+                f"skipped — UDP transport ({cfg.mic_device}); "
+                "see `jasper-aec-bridge` for liveness",
+            )
+    except ValueError as e:
+        return CheckResult(
+            "mic capture", "fail",
+            f"malformed UDP device {cfg.mic_device!r}: {e}",
+        )
     try:
         import numpy as np
         import sounddevice as sd
@@ -783,18 +819,14 @@ def check_aec_bridge_running() -> CheckResult:
     )
 
 
-def check_aec_output_card() -> CheckResult:
-    """LoopbackAEC card must be present (snd-aloop loaded with the
-    second card config). Without it, the bridge can't write its
-    AEC'd output and jasper-voice has no mic source."""
-    proc = _run(["aplay", "-l"])
-    if "LoopbackAEC" in proc.stdout:
-        return CheckResult("AEC loopback card", "ok", "LoopbackAEC present")
-    return CheckResult(
-        "AEC loopback card", "fail",
-        "card 'LoopbackAEC' missing. Verify "
-        "/etc/modprobe.d/snd-aloop.conf has index=0,1 id=Loopback,LoopbackAEC.",
-    )
+# `check_aec_output_card` retired in PR 2 of the resilience-ladder
+# series. The bridge previously wrote AEC'd mic to a second
+# snd-aloop card (LoopbackAEC at hw:7) that jasper-voice read from;
+# that card was removed because snd-aloop's kernel-side
+# loopback_cable wedged on consumer SIGKILL, requiring a reboot.
+# The bridge now sends over UDP localhost — no kernel-side state.
+# `check_mic_capture` already verifies the new transport end-to-end
+# by exercising whatever JASPER_MIC_DEVICE points at.
 
 
 def check_xvf_firmware_6ch() -> CheckResult:
@@ -907,7 +939,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_ram,
         lambda: check_spend_cap(cfg),
         check_aec_bridge_running,
-        check_aec_output_card,
+        # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_xvf_firmware_6ch,
         # Rotary dial: avahi advertising the control service so the
         # dial finds us via mDNS-SD, plus a heartbeat from any dial

@@ -106,7 +106,9 @@ class MicCapture:
         # Block size at the capture rate that yields exactly OUTPUT_FRAME_SAMPLES
         # frames at OUTPUT_RATE after downsampling.
         self._capture_block = self.OUTPUT_FRAME_SAMPLES * self._decimation
-        self._queue: asyncio.Queue[np.ndarray] = asyncio.Queue(maxsize=64)
+        # Lazy queue init — see UdpMicCapture for rationale (construct
+        # from sync code shouldn't fail on stale event-loop state).
+        self._queue: asyncio.Queue[np.ndarray] | None = None
         self._stream: sd.InputStream | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -136,6 +138,8 @@ class MicCapture:
         self._loop.call_soon_threadsafe(self._enqueue, chunk)
 
     def _enqueue(self, chunk: np.ndarray) -> None:
+        if self._queue is None:
+            return  # callback fired before __aenter__ completed; drop
         try:
             self._queue.put_nowait(chunk)
         except asyncio.QueueFull:
@@ -143,6 +147,7 @@ class MicCapture:
 
     async def __aenter__(self) -> "MicCapture":
         self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue(maxsize=64)
         try:
             self._stream = sd.InputStream(
                 device=self._device,
@@ -155,11 +160,11 @@ class MicCapture:
             self._stream.start()
         except Exception as e:  # noqa: BLE001
             # Common causes: chip not enumerated (USB-OUT shared
-            # bus reset), AEC bridge configured but bridge daemon
-            # down (`hw:7,1` exists but produces silence — caught
-            # downstream by "no wake events"), or device-name
-            # typo. Dump full ALSA + PortAudio state so the next
-            # restart's log shows what was visible at failure.
+            # bus reset), or device-name typo. (The pre-PR-2
+            # "bridge daemon down" failure mode is now handled by
+            # UdpMicCapture's separate code path.) Dump full ALSA +
+            # PortAudio state so the next restart's log shows what
+            # was visible at failure.
             _log_audio_open_failure("MicCapture", self._device, e)
             raise
         return self
@@ -171,8 +176,178 @@ class MicCapture:
             self._stream = None
 
     async def frames(self):
+        if self._queue is None:
+            raise RuntimeError("MicCapture.frames() called before __aenter__")
         while True:
             yield await self._queue.get()
+
+
+class UdpMicCapture:
+    """Mic capture that receives mono 16 kHz int16 frames over UDP.
+
+    Same `frames()` async-generator contract as `MicCapture` so
+    voice_daemon's WakeLoop is transport-agnostic. Pairs with
+    jasper-aec-bridge sending UDP packets of `OUTPUT_FRAME_SAMPLES`
+    int16 samples to `127.0.0.1:<port>` (the AEC'd mic stream).
+
+    Why UDP instead of snd-aloop LoopbackAEC: snd-aloop's
+    `loopback_cable` struct persists in kernel state across consumer
+    death; a SIGKILL'd consumer leaves the cable half-bound with the
+    internal timer wedged (`hw_ptr=0`), and only `rmmod && modprobe
+    snd_aloop` (after stopping every consumer) or a reboot can
+    recover. Hit in production 2026-05-11.  UDP localhost has no
+    kernel-side state to corrupt: either side can crash without
+    affecting the other, `sendto()` is non-blocking (eliminates the
+    bridge SIGTERM-observability issue), and there's no module to
+    reload.  ~256 kbps loopback traffic is effectively zero-loss on
+    Linux's `lo`.  Standard pattern in Mumble, VoIP gateways, Snapcast.
+    """
+
+    OUTPUT_RATE = MicCapture.OUTPUT_RATE
+    OUTPUT_FRAME_SAMPLES = MicCapture.OUTPUT_FRAME_SAMPLES
+
+    def __init__(
+        self, host: str = "127.0.0.1", port: int = 9876,
+    ) -> None:
+        self._host = host
+        self._port = port
+        # Queue is lazily created in __aenter__ so the class is safe
+        # to construct from sync code (e.g. unit tests that just
+        # assert factory dispatch). In Python 3.9 `asyncio.Queue()`
+        # calls `get_event_loop()` at construction; if there's a
+        # stale-closed loop in the thread (a real-world scenario in
+        # test suites), it raises. Deferring keeps the class
+        # construct-anywhere.
+        self._queue: asyncio.Queue[np.ndarray] | None = None
+        self._transport: asyncio.BaseTransport | None = None
+
+    async def __aenter__(self) -> "UdpMicCapture":
+        loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue(maxsize=64)
+        try:
+            self._transport, _ = await loop.create_datagram_endpoint(
+                lambda: _UdpMicProtocol(self._queue),
+                local_addr=(self._host, self._port),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.error(
+                "UdpMicCapture bind failed: host=%s port=%d exc=%s: %s",
+                self._host, self._port, type(e).__name__, e,
+            )
+            raise
+        logger.info(
+            "UdpMicCapture listening on %s:%d (frame=%d samples @ %d Hz)",
+            self._host, self._port, self.OUTPUT_FRAME_SAMPLES, self.OUTPUT_RATE,
+        )
+        return self
+
+    async def __aexit__(self, *exc) -> None:
+        if self._transport is not None:
+            self._transport.close()
+            self._transport = None
+
+    async def frames(self):
+        if self._queue is None:
+            raise RuntimeError("UdpMicCapture.frames() called before __aenter__")
+        while True:
+            yield await self._queue.get()
+
+
+class _UdpMicProtocol(asyncio.DatagramProtocol):
+    """Translates UDP datagrams of int16 PCM into queue items.
+
+    Each datagram is one mic frame (`OUTPUT_FRAME_SAMPLES` int16
+    samples = 2 * 1280 = 2560 bytes by default). Out-of-order /
+    lost packets are effectively impossible on `lo` at our rate, so
+    no sequence number / reordering buffer.
+    """
+
+    def __init__(self, queue: asyncio.Queue[np.ndarray]) -> None:
+        self._queue = queue
+
+    def datagram_received(self, data: bytes, _addr) -> None:
+        if not data:
+            return
+        # Defensive: a malformed sender could send odd byte counts.
+        # `np.frombuffer` would raise a ValueError; we'd rather drop
+        # the bad packet and keep the daemon healthy.
+        if len(data) % 2 != 0:
+            logger.warning(
+                "UdpMicCapture: dropping malformed packet (%d bytes, odd)",
+                len(data),
+            )
+            return
+        chunk = np.frombuffer(data, dtype=np.int16)
+        try:
+            self._queue.put_nowait(chunk)
+        except asyncio.QueueFull:
+            logger.warning("UdpMicCapture queue full, dropping frame")
+
+
+def parse_udp_device(device: str) -> tuple[str, int] | None:
+    """If `device` denotes a UDP mic source, return (host, port).
+
+    Accepted forms:
+      - `udp://<host>:<port>`     full URL form
+      - `udp:<port>`              shorthand, host = 127.0.0.1
+
+    Returns None if the device string is not a UDP form, so callers
+    fall through to the PortAudio path. Raises ValueError if the
+    string starts with `udp` but is malformed (typo guard).
+    """
+    if not device.lower().startswith("udp"):
+        return None
+    rest = device[3:]
+    if rest.startswith("://"):
+        rest = rest[3:]
+        if ":" not in rest:
+            raise ValueError(
+                f"udp device {device!r} missing port (expected udp://HOST:PORT)"
+            )
+        host, port_str = rest.rsplit(":", 1)
+    elif rest.startswith(":"):
+        host = "127.0.0.1"
+        port_str = rest[1:]
+    else:
+        raise ValueError(
+            f"udp device {device!r} malformed; "
+            f"use 'udp:PORT' or 'udp://HOST:PORT'"
+        )
+    try:
+        port = int(port_str)
+    except ValueError as e:
+        raise ValueError(
+            f"udp device {device!r} has non-integer port {port_str!r}"
+        ) from e
+    if not (1 <= port <= 65535):
+        raise ValueError(f"udp device {device!r} port {port} out of range")
+    return host, port
+
+
+def make_mic_capture(
+    device: str | int,
+    capture_rate: int = MicCapture.OUTPUT_RATE,
+    capture_channels: int = 1,
+):
+    """Construct the right mic-capture flavour for a device string.
+
+    `device` matching `udp:PORT` / `udp://HOST:PORT` → `UdpMicCapture`
+    (the AEC bridge sends post-processed mic to that socket;
+    `capture_rate` / `capture_channels` are ignored because the
+    bridge has already resampled to 16 kHz mono and the format is
+    fixed at the bridge↔voice transport contract).
+
+    Anything else → `MicCapture` (PortAudio + ALSA path: chip-direct
+    via `Array`, or any other USB mic).
+    """
+    if isinstance(device, str):
+        udp = parse_udp_device(device)
+        if udp is not None:
+            host, port = udp
+            return UdpMicCapture(host=host, port=port)
+    return MicCapture(
+        device, capture_rate=capture_rate, capture_channels=capture_channels,
+    )
 
 
 class TtsPlayout:

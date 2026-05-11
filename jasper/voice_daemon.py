@@ -13,7 +13,7 @@ from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
     drain_acquire_buffer,
 )
-from .audio_io import MicCapture, TtsPlayout
+from .audio_io import MicCapture, TtsPlayout, make_mic_capture
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, CueDuck, Ducker
@@ -1987,7 +1987,12 @@ async def run() -> None:
                 default_google_account=google_default_account,
             ),
         )
-        async with MicCapture(
+        # `make_mic_capture` routes to UdpMicCapture for
+        # `JASPER_MIC_DEVICE=udp:PORT` (the AEC bridge's UDP transport
+        # under the resilience-ladder PR 2 architecture) or back to
+        # the PortAudio MicCapture for anything else (`Array` for
+        # chip-direct, a `hw:` substring for any other USB mic).
+        async with make_mic_capture(
             cfg.mic_device,
             capture_rate=cfg.mic_capture_rate,
             capture_channels=cfg.mic_capture_channels,

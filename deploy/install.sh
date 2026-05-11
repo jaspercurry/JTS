@@ -749,35 +749,53 @@ enable_aec_if_compatible() {
         echo "       Flash 6-channel (v2.0.8 6chl) via BRINGUP.md Phase 2A.5 to opt in."
         return
     fi
-    # Discover the LoopbackAEC card index from arecord -l. The
-    # snd-aloop two-card config loads them in deterministic order
-    # (Loopback first, LoopbackAEC second), but the index depends on
-    # how many other ALSA cards were enumerated before — so query
-    # rather than hardcode.
-    local aec_card
-    aec_card=$(arecord -l 2>/dev/null \
-        | awk -F'[: ]+' '/LoopbackAEC/ {print $2; exit}')
-    if [[ -z "${aec_card}" ]]; then
-        echo "  AEC: LoopbackAEC card not present in arecord -l."
-        echo "       snd-aloop two-card setup may have failed; leaving AEC disabled."
-        return
-    fi
-    # Respect any explicit user choice: only flip JASPER_MIC_DEVICE if
-    # the user is still on the legacy "Array" default. Anything else
-    # — including hw:N,1 (already on AEC) or a custom value — is left
-    # alone. This makes the auto-enable safe on existing installs.
+    # Under PR 2 of the resilience-ladder series, the bridge → voice
+    # transport is UDP localhost (default 127.0.0.1:9876). The pre-
+    # PR-2 LoopbackAEC snd-aloop card was retired because SIGKILL'd
+    # consumers wedged its kernel-side loopback_cable, requiring a
+    # reboot to recover. No more `arecord -l` card lookup — the
+    # transport target is just an env-configurable port.
+    # The trailing `|| true` is load-bearing: pre-PR-2 jasper.env files
+    # don't have JASPER_AEC_UDP_PORT, so grep exits 1, and `set -o
+    # pipefail` propagates that out of the command substitution, which
+    # `set -e` then catches and aborts the whole install. With `|| true`
+    # the empty assignment is fine and `:-9876` provides the fallback.
+    local udp_port
+    udp_port=$(grep -E "^JASPER_AEC_UDP_PORT=" "${ENV_DIR}/jasper.env" 2>/dev/null \
+        | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)
+    udp_port=${udp_port:-9876}
+    local udp_device="udp:${udp_port}"
     local current
     current=$(grep -E "^JASPER_MIC_DEVICE=" "${ENV_DIR}/jasper.env" 2>/dev/null \
         | tail -1 | cut -d= -f2- | tr -d '[:space:]')
-    if [[ "${current}" != "Array" ]] && [[ "${current}" != "hw:${aec_card},1" ]]; then
+    # Auto-migrate the pre-PR-2 LoopbackAEC sentinel. `hw:N,1` was
+    # `install.sh`'s own auto-set value for "AEC enabled, snd-aloop
+    # transport" before PR 2 swapped the transport to UDP. The card
+    # it points at no longer exists (we removed the second snd-aloop
+    # entry from /etc/modprobe.d/snd-aloop.conf), so the only thing
+    # leaving it alone accomplishes is breaking wake-word on existing
+    # installs. Treat it like the "Array" default — fall through to
+    # the auto-flip below.
+    if [[ "${current}" =~ ^hw:[0-9]+,1$ ]]; then
+        echo "  AEC: migrating legacy ${current} → ${udp_device} (LoopbackAEC retired in PR 2)."
+        current=""
+    fi
+    # Respect any genuine user customization: only flip
+    # JASPER_MIC_DEVICE if the value is `Array` (the default), the
+    # target `${udp_device}` (already migrated), or empty (just
+    # migrated above). Anything else — a UMIK-2 substring, an
+    # operator-set `hw:` for a different USB mic, etc. — is left
+    # alone. This keeps auto-enable safe on existing installs.
+    if [[ -n "${current}" ]] && [[ "${current}" != "Array" ]] && \
+       [[ "${current}" != "${udp_device}" ]]; then
         echo "  AEC: user has JASPER_MIC_DEVICE=${current} — respecting existing config."
         # Still try to enable the services in case the user did the
         # env edit but not the systemctl enable. Idempotent.
         systemctl enable jasper-aec-init.service jasper-aec-bridge.service 2>/dev/null || true
         return
     fi
-    echo "  AEC: 6-ch firmware detected — enabling software AEC (LoopbackAEC at hw:${aec_card},1)."
-    sed -i "s|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:${aec_card},1|" \
+    echo "  AEC: 6-ch firmware detected — enabling software AEC (UDP transport at ${udp_device})."
+    sed -i "s|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=${udp_device}|" \
         "${ENV_DIR}/jasper.env"
     systemctl enable jasper-aec-init.service jasper-aec-bridge.service
     # aec-init is a oneshot that primes the chip's 6-ch firmware
