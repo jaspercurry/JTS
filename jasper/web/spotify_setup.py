@@ -702,9 +702,9 @@ def _claim_speaker_section_html() -> str:
     page. The script wraps that, plus the start/stop dance.
     """
     return """
-<details style="margin-top:2.4em">
+<details class="disclosure">
   <summary>Cold-start voice commands (one-time setup)</summary>
-  <div class="claim-section">
+  <div class="disclosure-body">
     <p>Voice <code>"play X"</code> from silence (no AirPlay session)
        needs the Pi's Spotify Connect (librespot) to be logged in to
        a Spotify account. Linking an account above only sets up the
@@ -759,23 +759,25 @@ def _management_html(
 
 {_claim_speaker_section_html()}
 
-<details style="margin-top:2.4em">
+<details class="disclosure">
   <summary>Spotify app settings (redirect URI, OAuth mode, reset credentials)</summary>
-  <p style="margin-top:1em">Currently using <strong>{html.escape(mode)}</strong> mode.
-     To switch, reset credentials and choose the other mode when re-pasting
-     your Client ID.</p>
-  {_redirect_uri_section_html(redirect_uri, client_id, mode)}
+  <div class="disclosure-body">
+    <p>Currently using <strong>{html.escape(mode)}</strong> mode.
+       To switch, reset credentials and choose the other mode when re-pasting
+       your Client ID.</p>
+    {_redirect_uri_section_html(redirect_uri, client_id, mode)}
 
-  <h3 style="margin-top:1.6em">If a phone can't reach the speaker after authorizing</h3>
-  <p>This happens on cellular or a different Wi-Fi. Paste the URL from
-     the GitHub Pages bounce-page fallback (or from the address bar in
-     manual mode) here:</p>
-  {_manual_paste_form_html()}
+    <h3 style="margin-top:1.6em">If a phone can't reach the speaker after authorizing</h3>
+    <p>This happens on cellular or a different Wi-Fi. Paste the URL from
+       the GitHub Pages bounce-page fallback (or from the address bar in
+       manual mode) here:</p>
+    {_manual_paste_form_html()}
 
-  <form method="post" action="reset-credentials" style="margin-top:2em"
-        onsubmit="return confirm('Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.');">
-    <button type="submit" class="danger">Reset Spotify credentials</button>
-  </form>
+    <form method="post" action="reset-credentials" style="margin-top:2em"
+          onsubmit="return confirm('Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.');">
+      <button type="submit" class="danger">Reset Spotify credentials</button>
+    </form>
+  </div>
 </details>
 
 {_PLAYLIST_JS}
