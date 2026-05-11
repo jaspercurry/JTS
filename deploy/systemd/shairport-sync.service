@@ -20,6 +20,14 @@ ExecStart=/usr/local/bin/shairport-sync
 User=shairport-sync
 Group=shairport-sync
 SupplementaryGroups=audio
+# Scheduling priority matches jasper-camilla. shairport produces audio
+# that camilla consumes via snd-aloop; if shairport runs at default
+# Nice=0 while camilla + jasper-aec-bridge run at Nice=-10, brief
+# scheduler stalls on shairport let camilla drain the loopback and
+# underrun. Matching priorities removes the asymmetry.
+Nice=-10
+IOSchedulingClass=realtime
+IOSchedulingPriority=4
 Restart=always
 RestartSec=2
 

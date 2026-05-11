@@ -310,6 +310,34 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
+tune_wifi_for_airplay() {
+    # Disable WiFi power-save on the active wlan0 connection.
+    # Pi's brcmfmac driver defaults to power-save ON, which causes
+    # micro-stalls in WiFi RX during radio sleeps. AirPlay 2 streams
+    # over unicast UDP and has no application-level retransmit; even
+    # a few-ms WiFi stall correlates with shairport-sync sync errors
+    # and underruns. nmcli value 2 = disable; the setting persists in
+    # the NetworkManager keyfile, so a future reinstall is a no-op.
+    if ! command -v nmcli >/dev/null 2>&1; then
+        echo "  nmcli not present; skipping WiFi power-save tweak."
+        return 0
+    fi
+    local wlan_conn
+    wlan_conn=$(nmcli -t -f NAME,DEVICE c show --active 2>/dev/null \
+        | awk -F: '$2=="wlan0" {print $1; exit}')
+    if [[ -z "$wlan_conn" ]]; then
+        echo "  no active wlan0 connection; skipping WiFi power-save tweak."
+        return 0
+    fi
+    nmcli c modify "$wlan_conn" 802-11-wireless.powersave 2 \
+        2>/dev/null || true
+    # Apply without dropping the connection. If the driver doesn't
+    # accept a live reapply (some brcmfmac variants), the change
+    # still takes effect on the next reconnect/reboot.
+    nmcli dev reapply wlan0 2>/dev/null || true
+    echo "  WiFi power-save disabled on connection '$wlan_conn'."
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     install -d -m 0750 "${STATE_DIR}"
@@ -821,6 +849,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
+    tune_wifi_for_airplay
     install_jasper
     install_systemd_units
     install_avahi_jasper_control

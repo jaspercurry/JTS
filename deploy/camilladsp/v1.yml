@@ -26,10 +26,18 @@ devices:
   samplerate: 48000
   chunksize: 1024
   queuelimit: 4
+  # Capture rate (48 kHz, from snd-aloop) equals playback rate
+  # (48 kHz, to dongle dmix), so no resampler is needed. With both
+  # ends at the same rate, the canonical CamillaDSP config is
+  # enable_rate_adjust=true and NO resampler block — snd-aloop
+  # supports kernel-side rate adjust, so CamillaDSP nudges the
+  # capture rate to keep the buffer level steady against the
+  # dongle's actual clock. The previous config had AsyncSinc Balanced
+  # doing 1:1 resampling on top of rate_adjust, which CamillaDSP
+  # itself flagged as "Needless 1:1 sample rate conversion active"
+  # and which produced the alternating +50ms/-485ms sync errors
+  # documented in HEnquist/camilladsp#207 and shairport-sync#1980.
   enable_rate_adjust: true
-  resampler:
-    type: AsyncSinc
-    profile: Balanced
   capture:
     type: Alsa
     channels: 2
