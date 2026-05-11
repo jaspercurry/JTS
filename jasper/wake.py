@@ -1,6 +1,30 @@
 from __future__ import annotations
 
 import logging
+import sys
+import types as _types
+
+# Stub openwakeword.custom_verifier_model BEFORE importing anything
+# from openwakeword. The package's __init__.py unconditionally imports
+# custom_verifier_model, which pulls in sklearn — ~67 MB resident on
+# a Pi 5 just for sklearn.linear_model + sklearn.svm. Pre-populating
+# sys.modules with a stub makes Python's import system treat the
+# module as already loaded, skipping the sklearn pull-in.
+#
+# What this DOES break: openwakeword's speaker-verification training
+# feature (`train_custom_verifier`), which fits a per-user verifier
+# on speaker samples to reduce false wakes for the wrong person.
+# We don't use this on the speaker.
+#
+# What this does NOT break: custom wake-word .onnx models. Those are
+# loaded via `Model(wakeword_models=[path_to_custom.onnx], ...)` and
+# go through openwakeword.model, not custom_verifier_model. If you
+# want to train your own "Hey Jasper" wake word and drop the .onnx
+# file into JASPER_OPENWAKEWORD_MODELS_DIR, this stub does not get
+# in your way.
+_cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")
+_cvm_stub.train_custom_verifier = None  # name preserved for openwakeword's __all__
+sys.modules.setdefault("openwakeword.custom_verifier_model", _cvm_stub)
 
 import numpy as np
 from openwakeword.model import Model

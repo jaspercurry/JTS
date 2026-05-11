@@ -33,9 +33,6 @@ from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore, pricing_for_provider
-from .voice.gemini_session import GeminiLiveConnection
-from .voice.openai_session import OpenAIRealtimeConnection
-from .voice.grok_session import GrokRealtimeConnection
 from .voice.session import LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
@@ -620,8 +617,14 @@ def _make_connection(cfg: Config) -> LiveConnection:
     Single switch point — `JASPER_VOICE_PROVIDER` selects which adapter
     runs. Daemon code above this function is provider-agnostic; daemon
     code below it talks only to the `LiveConnection` / `LiveTurn`
-    Protocols and works equally for any provider that implements them."""
+    Protocols and works equally for any provider that implements them.
+
+    Adapter modules are imported lazily inside each branch. Loading
+    `gemini_session` pulls in `google.genai` (~49 MB resident); loading
+    `openai_session`/`grok_session` skips that cost when the active
+    provider isn't Gemini. Symmetric for the OpenAI/Grok branches."""
     if cfg.voice_provider == "gemini":
+        from .voice.gemini_session import GeminiLiveConnection
         return GeminiLiveConnection(
             api_key=cfg.gemini_api_key,
             model=cfg.gemini_model,
@@ -629,6 +632,7 @@ def _make_connection(cfg: Config) -> LiveConnection:
             context_reset_sec=float(cfg.gemini_context_reset_sec),
         )
     if cfg.voice_provider == "openai":
+        from .voice.openai_session import OpenAIRealtimeConnection
         return OpenAIRealtimeConnection(
             api_key=cfg.openai_api_key,
             model=cfg.openai_model,
@@ -639,6 +643,7 @@ def _make_connection(cfg: Config) -> LiveConnection:
             proactive_buffer_sec=float(cfg.openai_proactive_buffer_sec),
         )
     if cfg.voice_provider == "grok":
+        from .voice.grok_session import GrokRealtimeConnection
         return GrokRealtimeConnection(
             api_key=cfg.grok_api_key,
             model=cfg.grok_model,
