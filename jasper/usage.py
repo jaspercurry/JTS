@@ -34,6 +34,7 @@ would be a worthwhile follow-up but is out of scope here.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -256,12 +257,25 @@ class UsageStore:
             """
         )
         # Migration: add `provider` column for the /system dashboard's
-        # per-provider breakdown. Pre-existing rows get NULL; the
-        # aggregate_by_provider query buckets those under "unknown".
+        # per-provider breakdown.
         cols = {row[1] for row in self._conn.execute("PRAGMA table_info(sessions)")}
         if "provider" not in cols:
             self._conn.execute(
                 "ALTER TABLE sessions ADD COLUMN provider TEXT"
+            )
+        # Backfill any NULL provider rows with the currently-active
+        # JASPER_VOICE_PROVIDER (read from env). Imperfect for installs
+        # that historically switched providers — but much better than
+        # showing 'unknown' for every pre-migration session on the
+        # dashboard. Idempotent: only touches rows where provider IS
+        # NULL, so once backfilled it never runs again. Skipped silently
+        # when JASPER_VOICE_PROVIDER isn't set (tests, fresh installs
+        # without env yet).
+        active_provider = os.environ.get("JASPER_VOICE_PROVIDER", "").strip()
+        if active_provider:
+            self._conn.execute(
+                "UPDATE sessions SET provider = ? WHERE provider IS NULL",
+                (active_provider,),
             )
         # Default to Gemini pricing so existing callers (and tests)
         # that don't pass `pricing=` keep working with their historical

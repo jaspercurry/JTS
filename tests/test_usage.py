@@ -193,3 +193,78 @@ def test_old_sessions_excluded_from_24h_window(tmp_path: Path):
         conn.commit()
 
     assert store.spend_last_24h_usd() == 0.0
+
+
+def test_null_provider_rows_backfill_with_active_env(
+    tmp_path: Path, monkeypatch,
+):
+    """Pre-migration sessions (NULL provider) get backfilled with the
+    current JASPER_VOICE_PROVIDER on next UsageStore construction.
+
+    Without this, the dashboard's per-provider table shows the entire
+    pre-PR-#85 history as 'unknown', which is alarming. This pins the
+    backfill behaviour: NULL provider + env var set + construction →
+    rows updated."""
+    db = tmp_path / "usage.db"
+    # Initial construction creates the schema (with provider column).
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    store = UsageStore(str(db))
+    sid1 = store.open_session()  # no provider passed → NULL
+    store.close_session(sid1, input_tokens=100, output_tokens=200)
+    sid2 = store.open_session()
+    store.close_session(sid2, input_tokens=50, output_tokens=100)
+    del store
+    # Both rows have NULL provider — verify directly.
+    with sqlite3.connect(str(db)) as conn:
+        nulls = conn.execute(
+            "SELECT COUNT(*) FROM sessions WHERE provider IS NULL"
+        ).fetchone()[0]
+    assert nulls == 2
+
+    # New construction with the env var set — backfill should fire.
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    UsageStore(str(db))
+    with sqlite3.connect(str(db)) as conn:
+        rows = conn.execute(
+            "SELECT provider FROM sessions"
+        ).fetchall()
+    assert all(r[0] == "openai" for r in rows)
+
+
+def test_backfill_skipped_when_env_unset(tmp_path: Path, monkeypatch):
+    """No JASPER_VOICE_PROVIDER → backfill is silently skipped. Lets
+    tests + fresh installs run without spurious tagging."""
+    db = tmp_path / "usage.db"
+    monkeypatch.delenv("JASPER_VOICE_PROVIDER", raising=False)
+    store = UsageStore(str(db))
+    sid = store.open_session()
+    store.close_session(sid, input_tokens=10, output_tokens=10)
+    del store
+    # Re-construct with env still unset.
+    UsageStore(str(db))
+    with sqlite3.connect(str(db)) as conn:
+        row = conn.execute(
+            "SELECT provider FROM sessions"
+        ).fetchone()
+    assert row[0] is None
+
+
+def test_backfill_idempotent_doesnt_touch_tagged_rows(
+    tmp_path: Path, monkeypatch,
+):
+    """Rows with an existing (non-NULL) provider must not be rewritten
+    on subsequent constructions. Important when JASPER_VOICE_PROVIDER
+    changes between runs — historical tagging is preserved."""
+    db = tmp_path / "usage.db"
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
+    store = UsageStore(str(db))
+    sid = store.open_session(provider="gemini")
+    store.close_session(sid, input_tokens=10, output_tokens=10)
+    del store
+    # Reconstruct — backfill runs but should not touch the tagged row.
+    UsageStore(str(db))
+    with sqlite3.connect(str(db)) as conn:
+        row = conn.execute(
+            "SELECT provider FROM sessions"
+        ).fetchone()
+    assert row[0] == "gemini"
