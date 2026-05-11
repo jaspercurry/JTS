@@ -324,7 +324,7 @@ def test_start_handler_resets_to_base_before_sweep(
     monkeypatch.setattr(correction_setup, "_replace_session", stub_replace)
 
     server = correction_setup.make_server(
-        "127.0.0.1", 0, hostname="jts.local",
+        ("127.0.0.1", 0), hostname="jts.local",
     )
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
@@ -393,7 +393,7 @@ def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
     )
 
     server = correction_setup.make_server(
-        "127.0.0.1", 0, hostname="jts.local",
+        ("127.0.0.1", 0), hostname="jts.local",
     )
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()

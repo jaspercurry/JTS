@@ -386,7 +386,7 @@ def test_mask_secret_shows_prefix_and_suffix_for_real_keys():
 
 def _start_server(tmp_path: Path) -> tuple[ThreadingHTTPServer, str, threading.Thread]:
     state_path = str(tmp_path / "voice_provider.env")
-    server = voice_setup.make_server("127.0.0.1", 0, state_path=state_path)
+    server = voice_setup.make_server(("127.0.0.1", 0), state_path=state_path)
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()

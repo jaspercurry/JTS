@@ -1,14 +1,23 @@
 [Unit]
 Description=Jasper Bluetooth control panel (web at /bluetooth/)
-After=network-online.target bluetooth.service
+# Socket-activated by jasper-bluetooth-web.socket — daemon exits after
+# 10 min idle, .socket re-activates it on next request.
+Requires=jasper-bluetooth-web.socket
+After=jasper-bluetooth-web.socket network-online.target bluetooth.service
 # Wants= (not Requires=) so a bluetoothd restart doesn't cascade-stop
 # us; the engine reconnects to the system bus on the next request.
 Wants=network-online.target bluetooth.service
 
 [Service]
-Type=simple
+# Type=notify — daemon sends READY=1 after fd adoption. WATCHDOG=1
+# keeps systemd from killing us; hang gets re-spawned by next request.
+Type=notify
+WatchdogSec=30s
 EnvironmentFile=-/etc/jasper/jasper.env
+# Args ignored when socket-activated (daemon adopts inherited fd)
+# but kept for direct CLI invocation in dev.
 ExecStart=/opt/jasper/.venv/bin/jasper-bluetooth-web --host 127.0.0.1 --port 8769
+# Restart=on-failure (NOT always) so clean idle-exit stays exited.
 Restart=on-failure
 RestartSec=2
 
@@ -30,4 +39,5 @@ MemoryHigh=100M
 MemoryMax=160M
 
 [Install]
-WantedBy=multi-user.target
+# Enabling the .socket pulls in the service on demand. Use:
+#   systemctl enable jasper-bluetooth-web.socket

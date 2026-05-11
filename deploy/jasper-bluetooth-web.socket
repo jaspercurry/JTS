@@ -1,0 +1,11 @@
+[Unit]
+Description=Jasper Bluetooth control panel — socket activation
+
+[Socket]
+ListenStream=127.0.0.1:8769
+Accept=no
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target

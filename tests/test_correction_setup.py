@@ -321,7 +321,7 @@ def test_test_tone_wav_audio_correctness(tmp_path):
 
 def _start_server() -> tuple[ThreadingHTTPServer, str]:
     server = correction_setup.make_server(
-        "127.0.0.1", 0, hostname="jts.local",
+        ("127.0.0.1", 0), hostname="jts.local",
     )
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()

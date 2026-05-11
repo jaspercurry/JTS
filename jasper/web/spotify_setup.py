@@ -1277,6 +1277,60 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+def _build_cfg(
+    *,
+    registry_path: str,
+    bounce_redirect_uri: str,
+    manual_redirect_uri: str,
+) -> dict[str, Any]:
+    """Resolve cfg from env + on-disk creds; shared by main() and
+    make_server() so direct CLI invocation and the jasper-web
+    multi-wizard process see identical state."""
+    creds_from_file = _read_creds_file()
+    client_id = (
+        os.environ.get("SPOTIFY_CLIENT_ID", "")
+        or creds_from_file.get("SPOTIFY_CLIENT_ID", "")
+    )
+    mode = (
+        os.environ.get("SPOTIFY_OAUTH_MODE", "")
+        or creds_from_file.get("SPOTIFY_OAUTH_MODE", "")
+        or "bounce"
+    )
+    if mode not in OAUTH_MODES:
+        logger.warning("unknown SPOTIFY_OAUTH_MODE=%r; defaulting to bounce", mode)
+        mode = "bounce"
+    return {
+        "client_id": client_id,
+        "mode": mode,
+        "bounce_redirect_uri": bounce_redirect_uri,
+        "manual_redirect_uri": manual_redirect_uri,
+        "registry_path": registry_path,
+    }
+
+
+def make_server(
+    target,
+    *,
+    registry_path: str = DEFAULT_REGISTRY_PATH,
+    bounce_redirect_uri: str | None = None,
+    manual_redirect_uri: str = DEFAULT_MANUAL_REDIRECT_URI,
+    hostname: str = "jts.local",
+) -> ThreadingHTTPServer:
+    """Build a configured server. `target` is either a pre-bound
+    socket.socket (systemd handoff), an (host, port) tuple, or an
+    int port (legacy 127.0.0.1 bind). Mirrors voice_setup.make_server
+    so jasper.web.__main__ can drive both uniformly."""
+    from . import _systemd
+    cfg = _build_cfg(
+        registry_path=registry_path,
+        bounce_redirect_uri=(
+            bounce_redirect_uri or _default_bounce_redirect_uri(hostname)
+        ),
+        manual_redirect_uri=manual_redirect_uri,
+    )
+    return _systemd.make_http_server(target, _make_handler(cfg))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="jasper-web",
@@ -1307,38 +1361,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Loopback redirect URI for manual mode.",
     )
     args = parser.parse_args(argv)
-
-    # Credentials may come from systemd's EnvironmentFile (legacy installs)
-    # OR from the wizard-written file (the supported path on a fresh
-    # install). Prefer env over file when both are set so manual
-    # /etc/jasper/jasper.env edits still win.
-    creds_from_file = _read_creds_file()
-    client_id = (
-        os.environ.get("SPOTIFY_CLIENT_ID", "")
-        or creds_from_file.get("SPOTIFY_CLIENT_ID", "")
-    )
-    mode = (
-        os.environ.get("SPOTIFY_OAUTH_MODE", "")
-        or creds_from_file.get("SPOTIFY_OAUTH_MODE", "")
-        or "bounce"
-    )
-    if mode not in OAUTH_MODES:
-        logger.warning("unknown SPOTIFY_OAUTH_MODE=%r; defaulting to bounce", mode)
-        mode = "bounce"
-
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    cfg: dict[str, Any] = {
-        "client_id": client_id,
-        "mode": mode,
-        "bounce_redirect_uri": args.bounce_redirect_uri,
-        "manual_redirect_uri": args.manual_redirect_uri,
-        "registry_path": args.registry,
-    }
-    state = "configured" if client_id else "needs-setup"
-    server = ThreadingHTTPServer((args.host, args.port), _make_handler(cfg))
+    # Standalone CLI path — bind directly. The jasper-web multi-wizard
+    # process calls make_server() with a target picked per-port from
+    # systemd's handed-off sockets.
+    server = make_server(
+        (args.host, args.port),
+        registry_path=args.registry,
+        bounce_redirect_uri=args.bounce_redirect_uri,
+        manual_redirect_uri=args.manual_redirect_uri,
+        hostname=hostname,
+    )
     logger.info(
-        "jasper-web listening on http://%s:%d (state=%s, mode=%s)",
-        args.host, args.port, state, mode,
+        "jasper-web listening on http://%s:%d",
+        args.host, args.port,
     )
     try:
         server.serve_forever()

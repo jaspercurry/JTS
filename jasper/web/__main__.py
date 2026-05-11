@@ -9,6 +9,16 @@ unit per wizard. nginx routes:
   /spotify/  →  127.0.0.1:8765  (jasper.web.spotify_setup)
   /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
   /google/   →  127.0.0.1:8768  (jasper.web.google_setup)
+  /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
+
+Socket activation:
+  When started by `jasper-web.socket` (systemd), the listening sockets
+  for all four ports are handed to us via LISTEN_FDS at process start.
+  We adopt them by matching `getsockname()` port → wizard. After 10 min
+  of no incoming requests on any wizard, the process exits cleanly and
+  systemd's .socket goes back to listening — saving ~60-90 MB Pss when
+  no one's using a setup page. Falls back to direct bind when launched
+  directly (e.g. for dev/testing).
 
 If any server fails to bind (port collision, permission), the process
 exits non-zero so systemd restarts the unit. We don't try to keep some
@@ -22,42 +32,22 @@ import logging
 import os
 import threading
 
-from . import airplay_setup, google_setup, spotify_setup, voice_setup
+from . import (
+    _systemd,
+    airplay_setup,
+    google_setup,
+    spotify_setup,
+    voice_setup,
+)
 
 logger = logging.getLogger(__name__)
 
 
-def _serve_voice(host: str, port: int, state_path: str) -> None:
-    """Run the voice-provider wizard server forever. Called in a worker
-    thread so the main thread can run the Spotify server (which is the
-    older, busier server — the OAuth callback path matters more for
-    responsiveness than the rarely-touched provider config)."""
-    server = voice_setup.make_server(host, port, state_path=state_path)
-    logger.info(
-        "jasper-web /voice listening on http://%s:%d (state=%s)",
-        host, port, state_path,
-    )
-    server.serve_forever()
-
-
-def _serve_google(host: str, port: int, registry_path: str, redirect_uri: str) -> None:
-    server = google_setup.make_server(
-        host, port, registry_path=registry_path, redirect_uri=redirect_uri,
-    )
-    logger.info(
-        "jasper-web /google listening on http://%s:%d (registry=%s)",
-        host, port, registry_path,
-    )
-    server.serve_forever()
-
-
-def _serve_airplay(host: str, port: int, state_path: str) -> None:
-    server = airplay_setup.make_server(host, port, state_path=state_path)
-    logger.info(
-        "jasper-web /airplay listening on http://%s:%d (state=%s)",
-        host, port, state_path,
-    )
-    server.serve_forever()
+def _serve_forever(server, label: str) -> None:
+    try:
+        server.serve_forever()
+    except Exception:  # noqa: BLE001
+        logger.exception("jasper-web %s worker crashed", label)
 
 
 def main() -> int:
@@ -66,25 +56,52 @@ def main() -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    # Voice-wizard server — starts in a worker thread so the existing
-    # spotify_setup.main() can keep its current "blocks on serve_forever"
-    # shape and remain the system-test path's reference flow.
-    voice_host = os.environ.get("JASPER_VOICE_WEB_HOST", "127.0.0.1")
+    # Port assignments mirror nginx-jasper.conf and each wizard's CLI
+    # default. With socket activation, we still bind these *logically*
+    # via the .socket unit's ListenStream= directives; the per-port
+    # match below maps fds to wizards regardless of the order systemd
+    # passed them.
+    spotify_port = int(os.environ.get("JASPER_SPOTIFY_WEB_PORT", "8765"))
     voice_port = int(os.environ.get("JASPER_VOICE_WEB_PORT", "8767"))
+    google_port = int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768"))
+    airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
+
+    # Distribute systemd-passed sockets by port. Empty dict on legacy
+    # direct invocation — each wizard then falls through to its own
+    # (host, port) bind.
+    by_port = {
+        sock.getsockname()[1]: sock for sock in _systemd.adopt_systemd_sockets()
+    }
+
+    def target_for(port: int) -> object:
+        return by_port.get(port, ("127.0.0.1", port))
+
+    host_default = "127.0.0.1"  # only used for logging if no systemd fd
+
+    # Spotify wizard
+    spotify_server = spotify_setup.make_server(
+        target_for(spotify_port),
+        registry_path=os.environ.get(
+            "JASPER_SPOTIFY_ACCOUNTS_PATH",
+            spotify_setup.DEFAULT_REGISTRY_PATH,
+        ),
+        bounce_redirect_uri=os.environ.get("JASPER_SPOTIFY_BOUNCE_REDIRECT_URI"),
+        manual_redirect_uri=os.environ.get(
+            "JASPER_SPOTIFY_MANUAL_REDIRECT_URI",
+            spotify_setup.DEFAULT_MANUAL_REDIRECT_URI,
+        ),
+        hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
+    )
+
+    # Voice provider wizard
     voice_state = os.environ.get(
         "JASPER_VOICE_PROVIDER_FILE", voice_setup.PROVIDER_FILE,
     )
-    voice_thread = threading.Thread(
-        target=_serve_voice,
-        args=(voice_host, voice_port, voice_state),
-        name="jasper-web-voice",
-        daemon=True,
+    voice_server = voice_setup.make_server(
+        target_for(voice_port), state_path=voice_state,
     )
-    voice_thread.start()
 
-    # Google-wizard server — same shape as voice, on its own thread.
-    google_host = os.environ.get("JASPER_GOOGLE_WEB_HOST", "127.0.0.1")
-    google_port = int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768"))
+    # Google OAuth wizard
     google_registry = os.environ.get(
         "JASPER_GOOGLE_ACCOUNTS_PATH",
         "/var/lib/jasper/google/accounts.json",
@@ -92,33 +109,68 @@ def main() -> int:
     google_redirect = os.environ.get(
         "GOOGLE_REDIRECT_URI", google_setup.default_redirect_uri(),
     )
-    google_thread = threading.Thread(
-        target=_serve_google,
-        args=(google_host, google_port, google_registry, google_redirect),
-        name="jasper-web-google",
-        daemon=True,
+    google_server = google_setup.make_server(
+        target_for(google_port),
+        registry_path=google_registry,
+        redirect_uri=google_redirect,
     )
-    google_thread.start()
 
-    # AirPlay sync-mode toggle — same shape as voice/google, own thread.
-    airplay_host = os.environ.get("JASPER_AIRPLAY_WEB_HOST", "127.0.0.1")
-    airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
+    # AirPlay sync-mode wizard
     airplay_state = os.environ.get(
         "JASPER_AIRPLAY_MODE_FILE", airplay_setup.MODE_FILE,
     )
-    airplay_thread = threading.Thread(
-        target=_serve_airplay,
-        args=(airplay_host, airplay_port, airplay_state),
-        name="jasper-web-airplay",
-        daemon=True,
+    airplay_server = airplay_setup.make_server(
+        target_for(airplay_port), state_path=airplay_state,
     )
-    airplay_thread.start()
 
-    # Spotify wizard server runs on the main thread (blocking call).
-    # When systemd sends SIGTERM, spotify_setup.main()'s
-    # KeyboardInterrupt path returns 0 and the process exits, which
-    # also terminates the daemon worker threads cleanly.
-    return spotify_setup.main()
+    # Idle-exit triggers when NO wizard sees a request for the window.
+    # Each wizard's handler class is a `local` subclass produced inside
+    # `_make_handler()` for that wizard, so they're distinct types —
+    # patch each one's log_request to bump the shared tracker.
+    tracker = _systemd.IdleShutdownTracker()
+    for handler_cls in (
+        spotify_server.RequestHandlerClass,
+        voice_server.RequestHandlerClass,
+        google_server.RequestHandlerClass,
+        airplay_server.RequestHandlerClass,
+    ):
+        _systemd.install_request_idle_bump(handler_cls, tracker)
+    tracker.start()
+
+    for label, port in (
+        ("/spotify", spotify_port),
+        ("/voice", voice_port),
+        ("/google", google_port),
+        ("/airplay", airplay_port),
+    ):
+        if port in by_port:
+            logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
+        else:
+            logger.info("jasper-web %s listening on http://%s:%d", label, host_default, port)
+
+    # Three wizards on worker threads + Spotify on the main thread.
+    # Spotify is the older / busier surface so we leave its
+    # serve_forever on the main thread — keeps SIGTERM delivery
+    # behavior the same as before (KeyboardInterrupt path returns 0).
+    for label, server in (
+        ("/voice", voice_server),
+        ("/google", google_server),
+        ("/airplay", airplay_server),
+    ):
+        threading.Thread(
+            target=_serve_forever,
+            args=(server, label),
+            name=f"jasper-web-{label.strip('/')}",
+            daemon=True,
+        ).start()
+
+    _systemd.notify_ready()
+    try:
+        spotify_server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    _systemd.notify_stopping()
+    return 0
 
 
 if __name__ == "__main__":

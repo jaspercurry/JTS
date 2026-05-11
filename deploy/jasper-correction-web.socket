@@ -1,0 +1,11 @@
+[Unit]
+Description=Jasper room-correction wizard — socket activation
+
+[Socket]
+ListenStream=127.0.0.1:8770
+Accept=no
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target

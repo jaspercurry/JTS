@@ -207,11 +207,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
-def make_server(host: str, port: int, *, state_path: str = MODE_FILE) -> ThreadingHTTPServer:
+def make_server(target, *, state_path: str = MODE_FILE) -> ThreadingHTTPServer:
     """Used by jasper.web.__main__ to colocate this server with the
-    other settings wizards inside one process."""
+    other settings wizards inside one process. `target` is a
+    socket/tuple/int per _systemd.make_http_server's contract."""
+    from . import _systemd
     cfg = {"state_path": state_path}
-    return ThreadingHTTPServer((host, port), _make_handler(cfg))
+    return _systemd.make_http_server(target, _make_handler(cfg))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -230,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server(args.host, args.port, state_path=args.state)
+    server = make_server((args.host, args.port), state_path=args.state)
     logger.info("jasper-airplay-web listening on http://%s:%d", args.host, args.port)
     try:
         server.serve_forever()

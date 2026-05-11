@@ -1089,16 +1089,40 @@ def main(argv: list[str] | None = None) -> int:
     DISPATCH = _AsyncDispatcher()
     DISPATCH.start()
 
-    server = ThreadingHTTPServer((args.host, args.port), _make_handler())
-    logger.info(
-        "jasper-bluetooth-web listening on http://%s:%d (Discoverable "
-        "auto-off after %ds when toggled on)",
-        args.host, args.port, DISCOVERABLE_AUTO_OFF_SEC,
-    )
+    # When socket-activated by systemd, adopt the inherited listener
+    # instead of binding fresh. Direct CLI invocation falls through.
+    from . import _systemd
+    sockets = _systemd.adopt_systemd_sockets()
+    target = sockets[0] if sockets else (args.host, args.port)
+
+    handler_cls = _make_handler()
+    server = _systemd.make_http_server(target, handler_cls)
+
+    # Idle-exit after 10 min of no requests so the resident set goes
+    # to zero between admin sessions. ~17 MB Pss savings when idle.
+    tracker = _systemd.IdleShutdownTracker()
+    _systemd.install_request_idle_bump(handler_cls, tracker)
+    tracker.start()
+
+    if sockets:
+        logger.info(
+            "jasper-bluetooth-web adopting systemd fd (Discoverable "
+            "auto-off after %ds when toggled on)",
+            DISCOVERABLE_AUTO_OFF_SEC,
+        )
+    else:
+        logger.info(
+            "jasper-bluetooth-web listening on http://%s:%d (Discoverable "
+            "auto-off after %ds when toggled on)",
+            args.host, args.port, DISCOVERABLE_AUTO_OFF_SEC,
+        )
+
+    _systemd.notify_ready()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        return 0
+        pass
+    _systemd.notify_stopping()
     return 0
 
 
