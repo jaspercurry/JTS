@@ -66,11 +66,22 @@ fi
 # vars. sudo strips most env by default; explicitly preserve ours
 # with `sudo VAR=value VAR=value command`. install.sh's build-manifest
 # block reads these and prefers them over its REPO_DIR/.git fallback.
+#
+# JASPER_HOSTNAME is also forwarded so install.sh's TLS-cert block
+# generates a server cert with the right CN/SAN for non-default
+# speaker hostnames (jts2.local, jts-kitchen.local, etc.). Without
+# this, every redeploy to a non-default Pi clobbers a previously
+# correct cert with one for "jts.local". The fallback to PI_HOST means
+# operators who set only one of the two env vars still get a coherent
+# install — PI_HOST is what we just SSH'd to, so it's always the right
+# answer for the speaker's hostname.
+HOSTNAME_FOR_INSTALL="${JASPER_HOSTNAME:-${PI_HOST}}"
 echo "==> Running install.sh on ${PI_HOST}..."
 ssh "${PI_USER}@${PI_HOST}" \
     "sudo JASPER_DEPLOY_SHA='${SHA}${DIRTY}' \
           JASPER_DEPLOY_SHA_FULL='${SHA_FULL}${DIRTY}' \
           JASPER_DEPLOY_BRANCH='${BRANCH}' \
+          JASPER_HOSTNAME='${HOSTNAME_FOR_INSTALL}' \
           bash /home/pi/jts/deploy/install.sh"
 
 echo "==> Build manifest now on Pi:"
