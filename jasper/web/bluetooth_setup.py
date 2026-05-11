@@ -40,11 +40,15 @@ from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
     set_powered,
-    start_discovery,
     state as adapter_state,
-    stop_discovery,
 )
 from ..bluetooth.engine import BluetoothEngine
+
+# Default scan duration when the user clicks Scan. Server-side
+# enforced — even if the user closes the tab the scan auto-stops.
+# Long enough to catch slow-advertising devices (knobs are ~1-2 s
+# per advertisement), short enough not to leave the radio hot.
+SCAN_DURATION_SEC = 30.0
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +174,17 @@ _PAGE_STYLE = """
                   border: 1px solid var(--red); }
   button.danger:hover { background: var(--red); color: white; }
   button:hover:not([disabled]) { filter: brightness(1.1); }
+  /* Scan button keeps a stable width between "Scan" and "Scanning"
+     so the layout doesn't jitter as the label flips. */
+  #scan-btn { min-width: 7.5em; }
+  #scan-btn.scanning { background: #4a4a4a; }
+  .btn-spinner {
+    display: inline-block; width: 0.85em; height: 0.85em;
+    border: 2px solid rgba(255,255,255,0.35);
+    border-top-color: white;
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+    vertical-align: -0.15em; margin-right: 0.45em;
+  }
 
   .toggles { background: var(--card); border: 1px solid var(--border);
              border-radius: 8px; padding: 1em 1.2em; margin-bottom: 1em; }
@@ -223,6 +238,21 @@ _PAGE_STYLE = """
   .device .rssi {
     color: var(--soft); font-size: 0.8em; min-width: 3em; text-align: right;
   }
+  .device .metrics {
+    display: flex; gap: 0.9em; align-items: flex-start;
+    margin-right: 0.4em;
+  }
+  .device .metric {
+    text-align: right; line-height: 1.1;
+  }
+  .device .metric .label {
+    color: var(--soft); font-size: 0.7em; text-transform: uppercase;
+    letter-spacing: 0.04em; margin-bottom: 0.15em;
+  }
+  .device .metric .value {
+    font-size: 0.95em; font-weight: 600; color: #222;
+  }
+  .device .metric .value.bars { letter-spacing: 0.04em; }
 
   .pair-card {
     background: #fffbe6; border: 1px solid #d9c97a;
@@ -308,9 +338,12 @@ it back on lets them reconnect. Forget a device to wipe its pair record.
 <script>
 let state = { powered: false, discoverable: false, discovering: false };
 let devices = new Map(); // path → device
-let scanTimer = null;
 let evtSrc = null;
 let pairStreams = new Map(); // mac → EventSource
+let stateTimer = null;
+let scanIntentUntil = 0;  // ms; client-side window where we treat
+                           // the button as scanning even before the
+                           // server polling catches up
 
 // -------- adapter state + toggles --------
 
@@ -333,9 +366,27 @@ function renderToggles() {
   let hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
   if (state.discovering) hint += ' · scanning…';
   document.getElementById('bt-hint').textContent = hint;
-  document.getElementById('scan-btn').textContent =
-    state.discovering ? 'Stop' : 'Scan';
-  document.getElementById('scan-btn').disabled = !state.powered;
+
+  const btn = document.getElementById('scan-btn');
+  btn.disabled = !state.powered;
+  // Treat the button as "scanning" if the server reports Discovering
+  // OR we just clicked Scan in the last ~3 s — bridges the gap
+  // between optimistic click and the polling cycle confirming it.
+  const intent = Date.now() < scanIntentUntil;
+  const scanning = state.discovering || intent;
+  btn.classList.toggle("scanning", scanning);
+  btn.innerHTML = scanning
+    ? "<span class=\\"btn-spinner\\"></span>Scanning"
+    : "Scan";
+
+  // While scanning, poll faster so the button reverts promptly when
+  // the auto-stop fires server-side.
+  schedulePoll(scanning ? 1500 : 5000);
+}
+
+function schedulePoll(ms) {
+  if (stateTimer !== null) clearInterval(stateTimer);
+  stateTimer = setInterval(fetchState, ms);
 }
 
 async function togglePower() {
@@ -359,11 +410,21 @@ async function toggleDisc() {
 
 async function toggleScan() {
   const action = state.discovering ? 'stop' : 'start';
+  // Optimistic UI: assume the click took effect so the button
+  // flips immediately. State polling will correct us if not.
+  if (action === 'start') {
+    scanIntentUntil = Date.now() + 3000;
+  } else {
+    scanIntentUntil = 0;
+  }
+  renderToggles();
   await fetch('scan', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({action}),
   });
-  setTimeout(fetchState, 300);
+  // Pull fresh state a beat after the POST so the button label
+  // matches reality without waiting for the next poll tick.
+  setTimeout(fetchState, 200);
 }
 
 // -------- live device list --------
@@ -412,8 +473,18 @@ function renderDevices() {
 }
 
 function deviceRow(d, isPaired) {
-  const label = d.name || d.address;
-  const meta = d.address + (d.name ? '' : '');
+  // Bluez fills Alias with a MAC-shaped string when the remote
+  // doesn't broadcast a name — server side filters those out into
+  // empty `name`, so we cleanly fall back to a placeholder here
+  // (mirrors iPhone's "Unknown" + MAC layout).
+  const hasName = !!d.name;
+  const label = hasName ? d.name : 'Unknown device';
+  // MAC is shown only when there's no friendly name — most users
+  // don't care about MACs and showing them on every named device
+  // is visual noise. Unknown devices show MAC so they can still
+  // be told apart.
+  const metaLine = hasName ? '' :
+    `<div class="meta">${escapeHtml(d.address)}</div>`;
   let badges = '';
   if (d.connected) badges += '<span class="badge connected">Connected</span>';
   else if (d.paired) badges += '<span class="badge paired">Paired</span>';
@@ -426,17 +497,42 @@ function deviceRow(d, isPaired) {
   } else {
     actions = `<button onclick="startPair('${d.address}', '${escapeHtml(label)}')">Pair</button>`;
   }
-  const rssi = d.rssi !== null && d.rssi !== undefined
-    ? `<div class="rssi">${rssiBars(d.rssi)}</div>` : '';
+  // Metrics. Paired devices always show both Battery + Signal —
+  // missing values render as "—" so the columns stay stable. RSSI
+  // is usually null while connected (bluez only updates it from
+  // active advertisements) but the label staying visible helps
+  // users understand a "—" means "no live reading" rather than
+  // "this device doesn't have a radio".
+  let metrics = '';
+  if (isPaired) {
+    const batteryVal = (d.battery !== null && d.battery !== undefined)
+      ? `${d.battery}%` : '—';
+    const signalVal = (d.rssi !== null && d.rssi !== undefined)
+      ? `<span class="bars">${rssiBars(d.rssi)}</span>` : '—';
+    metrics = `
+      <div class="metrics">
+        <div class="metric">
+          <div class="label">Battery</div>
+          <div class="value">${batteryVal}</div>
+        </div>
+        <div class="metric">
+          <div class="label">Signal</div>
+          <div class="value">${signalVal}</div>
+        </div>
+      </div>
+    `;
+  } else if (d.rssi !== null && d.rssi !== undefined) {
+    metrics = `<div class="rssi">${rssiBars(d.rssi)}</div>`;
+  }
   return `
     <div class="device" id="d-${cssIdSafe(d.address)}">
       <div class="icon icon-${d.icon}"></div>
       <div class="info">
         <div class="name">${escapeHtml(label)} ${badges}</div>
-        <div class="meta">${escapeHtml(meta)}</div>
+        ${metaLine}
         <div id="pair-${cssIdSafe(d.address)}"></div>
       </div>
-      ${rssi}
+      ${metrics}
       <div class="actions">${actions}</div>
     </div>
   `;
@@ -652,7 +748,7 @@ function formatPasskey(p) {
 
 fetchState();
 startDeviceStream();
-setInterval(fetchState, 5000);
+schedulePoll(5000);
 </script>
 """
     return _wrap_page("Bluetooth", body)
@@ -774,16 +870,30 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 if path == "/scan":
                     action = (body.get("action") or "").strip()
                     if action == "start":
-                        _dispatch().run(start_discovery())
-                    elif action == "stop":
-                        _dispatch().run(stop_discovery())
-                    else:
+                        # Engine owns discovery so it stays on our
+                        # long-lived bus (bluez auto-stops when the
+                        # client disconnects — a short-lived helper
+                        # would lose the scan instantly).
+                        _dispatch().run(
+                            _dispatch().engine.start_discovery(
+                                duration_s=SCAN_DURATION_SEC,
+                            ),
+                        )
                         self._send_json(
-                            {"error": "action must be start or stop"},
-                            status=400,
+                            {"ok": True,
+                             "duration_s": SCAN_DURATION_SEC},
                         )
                         return
-                    self._send_json({"ok": True})
+                    if action == "stop":
+                        _dispatch().run(
+                            _dispatch().engine.stop_discovery(),
+                        )
+                        self._send_json({"ok": True})
+                        return
+                    self._send_json(
+                        {"error": "action must be start or stop"},
+                        status=400,
+                    )
                     return
                 if path == "/pair":
                     mac = (body.get("mac") or "").strip()

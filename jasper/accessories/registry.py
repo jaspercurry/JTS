@@ -86,3 +86,23 @@ def lookup(vendor_id: int, product_id: int) -> Device | None:
         if d.vendor_id == vendor_id and d.product_id == product_id:
             return d
     return None
+
+
+def lookup_by_name(name: str) -> Device | None:
+    """Return the registry entry whose `bt_name_regex` matches `name`.
+
+    Used as a fallback when VID/PID lookup misses — over BT-HID the
+    kernel exposes whatever vendor/product the device's HID descriptor
+    advertises (the VK-01 reuses Apple's Magic Mouse IDs, for example),
+    so USB-VID/PID matching alone misses BT-paired versions of devices
+    we already know about. Name matching is the stable identity across
+    transports.
+    """
+    import re
+
+    if not name:
+        return None
+    for d in KNOWN_DEVICES:
+        if d.bt_name_regex and re.search(d.bt_name_regex, name):
+            return d
+    return None

@@ -49,6 +49,11 @@ class BluetoothEngine:
         # agent). The engine creates handles per pair attempt; the
         # web layer resolves them via `respond_prompt()`.
         self._prompts: dict[str, PromptHandle] = {}
+        # Active scan auto-stop task. bluez auto-stops discovery when
+        # the initiating bus client disconnects, so the engine OWNS
+        # discovery on its long-lived bus — `adapter.start_discovery()`
+        # would lose the scan the moment its ephemeral bus closed.
+        self._scan_task: asyncio.Task | None = None
 
     @property
     def observer(self) -> DeviceObserver:
@@ -65,6 +70,8 @@ class BluetoothEngine:
         await self._observer.start()
 
     async def stop(self) -> None:
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
         if self._bus is not None:
             try:
                 await unregister_agent(self._bus)
@@ -76,6 +83,80 @@ class BluetoothEngine:
                 pass
             self._bus = None
         await self._observer.stop()
+
+    # ------------- discovery (scan) -----------------
+
+    async def start_discovery(self, *, duration_s: float = 30.0) -> None:
+        """Start bluez discovery on our long-lived bus and auto-stop
+        after `duration_s`. Idempotent — if a scan is already running
+        the existing auto-stop deadline is replaced by a fresh one.
+
+        Discovery MUST run on the engine's bus, not a fresh ephemeral
+        connection: bluez tracks discovery per-client and auto-stops
+        when the originating bus disconnects, so a short-lived bus
+        would cancel the scan within a millisecond of starting it."""
+        if self._bus is None:
+            return
+        path = f"/org/bluez/{self._adapter}"
+        intro = await self._bus.introspect(BLUEZ_BUS, path)
+        a = self._bus.get_proxy_object(
+            BLUEZ_BUS, path, intro,
+        ).get_interface("org.bluez.Adapter1")
+        try:
+            await a.call_start_discovery()
+        except DBusError as e:
+            if "in progress" not in str(e).lower():
+                raise
+
+        # Replace the auto-stop task. Cancel any prior task; bluez
+        # discovery only runs once at a time, so a new "scan" click
+        # extends the deadline rather than stacking.
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
+        self._scan_task = asyncio.create_task(
+            self._auto_stop_scan(duration_s),
+        )
+
+    async def _auto_stop_scan(self, duration_s: float) -> None:
+        try:
+            await asyncio.sleep(duration_s)
+        except asyncio.CancelledError:
+            return
+        # IMPORTANT: don't call stop_discovery() here — that would
+        # cancel `self._scan_task`, and `self._scan_task` IS us.
+        # Self-cancellation propagates CancelledError into the next
+        # await (the bluez introspect call), so the StopDiscovery
+        # bluez call never lands and the radio keeps scanning.
+        # Drive the bluez call directly instead.
+        try:
+            await self._call_bluez_stop_discovery()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("scan auto-stop failed: %s", e)
+
+    async def stop_discovery(self) -> None:
+        """External entry point. Cancels the auto-stop task (we're
+        stopping early) and tells bluez to stop discovery."""
+        if self._scan_task is not None and not self._scan_task.done():
+            self._scan_task.cancel()
+        await self._call_bluez_stop_discovery()
+
+    async def _call_bluez_stop_discovery(self) -> None:
+        """The actual bluez StopDiscovery call. Pulled out of
+        stop_discovery() so the auto-stop task can use it without
+        cancelling itself mid-await."""
+        if self._bus is None:
+            return
+        path = f"/org/bluez/{self._adapter}"
+        try:
+            intro = await self._bus.introspect(BLUEZ_BUS, path)
+            a = self._bus.get_proxy_object(
+                BLUEZ_BUS, path, intro,
+            ).get_interface("org.bluez.Adapter1")
+            await a.call_stop_discovery()
+        except DBusError as e:
+            # "Not Authorized" / "No Discovery started" are both fine
+            # — caller doesn't need to care whether we were scanning.
+            logger.debug("stop_discovery non-fatal: %s", e)
 
     async def pair(
         self, mac: str, *, timeout_s: float = 60.0,

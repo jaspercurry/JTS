@@ -34,10 +34,22 @@ class DeviceObserver:
 
     One instance per process. The web server keeps it running for
     the lifetime of the daemon; per-request streams hook into its
-    event queue."""
+    event queue.
+
+    Tracks both `org.bluez.Device1` properties and `org.bluez.Battery1`
+    properties (when present) so the merged BluetoothDevice carries
+    a battery percentage. Battery is a separate D-Bus interface that
+    can appear after a device pairs; we subscribe to InterfacesAdded
+    to catch it.
+    """
 
     def __init__(self) -> None:
         self._devices: dict[str, BluetoothDevice] = {}
+        # Cached raw prop dicts so PropertiesChanged deltas can rebuild
+        # the BluetoothDevice without losing any field. Keyed by
+        # device D-Bus path.
+        self._device_props: dict[str, dict] = {}
+        self._battery_props: dict[str, dict] = {}
         self._listeners: set[asyncio.Queue] = set()
         self._bus: MessageBus | None = None
         self._om = None
@@ -69,40 +81,65 @@ class DeviceObserver:
             BLUEZ_BUS, "/", intro,
         ).get_interface("org.freedesktop.DBus.ObjectManager")
 
-        # Snapshot existing devices.
+        # Snapshot existing devices + battery interfaces.
         managed = await self._om.call_get_managed_objects()
         for path, ifaces in managed.items():
             dev_props = ifaces.get("org.bluez.Device1")
             if dev_props is None:
                 continue
-            self._devices[path] = BluetoothDevice.from_props(path, dev_props)
+            self._device_props[path] = dict(dev_props)
+            batt_props = ifaces.get("org.bluez.Battery1")
+            if batt_props is not None:
+                self._battery_props[path] = dict(batt_props)
+            self._devices[path] = self._build(path)
 
         # Live signals.
         def _on_added(path: str, ifaces: dict) -> None:
-            props = ifaces.get("org.bluez.Device1")
-            if props is None:
-                return
-            dev = BluetoothDevice.from_props(path, props)
-            self._devices[path] = dev
-            self._broadcast("add", dev)
-            # Subscribe to this device's PropertiesChanged.
-            asyncio.create_task(self._watch_device_props(path))
+            dev_props = ifaces.get("org.bluez.Device1")
+            batt_props = ifaces.get("org.bluez.Battery1")
+            if dev_props is not None:
+                self._device_props[path] = dict(dev_props)
+                if batt_props is not None:
+                    self._battery_props[path] = dict(batt_props)
+                self._devices[path] = self._build(path)
+                self._broadcast("add", self._devices[path])
+                asyncio.create_task(self._watch_device_props(path))
+                if batt_props is not None:
+                    asyncio.create_task(self._watch_battery_props(path))
+            elif batt_props is not None and path in self._device_props:
+                # Battery interface appeared on an existing device
+                # (typical right after pairing — bluez attaches
+                # Battery1 once it reads the GATT 0x180f service).
+                self._battery_props[path] = dict(batt_props)
+                self._devices[path] = self._build(path)
+                self._broadcast("update", self._devices[path])
+                asyncio.create_task(self._watch_battery_props(path))
 
         def _on_removed(path: str, interfaces: list[str]) -> None:
-            if "org.bluez.Device1" not in interfaces:
-                return
-            dev = self._devices.pop(path, None)
-            if dev is not None:
-                self._broadcast("remove", dev)
+            if "org.bluez.Device1" in interfaces:
+                self._device_props.pop(path, None)
+                self._battery_props.pop(path, None)
+                dev = self._devices.pop(path, None)
+                if dev is not None:
+                    self._broadcast("remove", dev)
+            elif "org.bluez.Battery1" in interfaces:
+                # Battery interface dropped (device disconnected).
+                # Keep the device entry but clear the battery field.
+                self._battery_props.pop(path, None)
+                if path in self._device_props:
+                    self._devices[path] = self._build(path)
+                    self._broadcast("update", self._devices[path])
 
         self._om.on_interfaces_added(_on_added)
         self._om.on_interfaces_removed(_on_removed)
         self._unsubscribes.append(lambda: self._om.off_interfaces_added(_on_added))
         self._unsubscribes.append(lambda: self._om.off_interfaces_removed(_on_removed))
 
-        # Subscribe to PropertiesChanged on every existing device.
+        # Subscribe to PropertiesChanged on every existing device + battery.
         for path in list(self._devices.keys()):
             asyncio.create_task(self._watch_device_props(path))
+            if path in self._battery_props:
+                asyncio.create_task(self._watch_battery_props(path))
 
     async def stop(self) -> None:
         for unsub in self._unsubscribes:
@@ -117,6 +154,14 @@ class DeviceObserver:
             except Exception:  # noqa: BLE001
                 pass
             self._bus = None
+
+    def _build(self, path: str) -> BluetoothDevice:
+        """Construct a BluetoothDevice from the cached prop dicts."""
+        return BluetoothDevice.from_props(
+            path,
+            self._device_props.get(path, {}),
+            self._battery_props.get(path),
+        )
 
     async def _watch_device_props(self, path: str) -> None:
         if self._bus is None:
@@ -135,27 +180,48 @@ class DeviceObserver:
         def _on_changed(iface: str, changed: dict, invalidated: list) -> None:
             if iface != "org.bluez.Device1":
                 return
-            existing = self._devices.get(path)
-            if existing is None:
-                return
-            # Merge changed into the existing props by rebuilding from
-            # the changed delta over the dataclass.
-            merged_props: dict = {}
-            # Reverse-build a "raw" dict from existing fields so we can
-            # mutate selectively.
-            merged_props["Address"] = _wrap(existing.address)
-            merged_props["Name"] = _wrap(existing.name)
-            merged_props["Icon"] = _wrap(existing.icon)
-            merged_props["Class"] = _wrap(existing.class_of_device)
-            merged_props["RSSI"] = _wrap(existing.rssi)
-            merged_props["Paired"] = _wrap(existing.paired)
-            merged_props["Connected"] = _wrap(existing.connected)
-            merged_props["Trusted"] = _wrap(existing.trusted)
-            merged_props["UUIDs"] = _wrap(existing.uuids)
-            merged_props.update(changed)
-            new = BluetoothDevice.from_props(path, merged_props)
+            # Merge the delta into our cached Device1 props.
+            cur = self._device_props.setdefault(path, {})
+            cur.update(changed)
+            for k in invalidated:
+                cur.pop(k, None)
+            new = self._build(path)
             self._devices[path] = new
             self._broadcast("update", new)
+
+        try:
+            props.on_properties_changed(_on_changed)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _watch_battery_props(self, path: str) -> None:
+        """Watch org.bluez.Battery1.Percentage changes. Same shape as
+        device-props watcher; updates the cached battery dict and
+        rebuilds the merged BluetoothDevice."""
+        if self._bus is None:
+            return
+        try:
+            intro = await self._bus.introspect(BLUEZ_BUS, path)
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            props = self._bus.get_proxy_object(
+                BLUEZ_BUS, path, intro,
+            ).get_interface("org.freedesktop.DBus.Properties")
+        except Exception:  # noqa: BLE001
+            return
+
+        def _on_changed(iface: str, changed: dict, invalidated: list) -> None:
+            if iface != "org.bluez.Battery1":
+                return
+            cur = self._battery_props.setdefault(path, {})
+            cur.update(changed)
+            for k in invalidated:
+                cur.pop(k, None)
+            if path in self._device_props:
+                new = self._build(path)
+                self._devices[path] = new
+                self._broadcast("update", new)
 
         try:
             props.on_properties_changed(_on_changed)
@@ -208,15 +274,3 @@ class _Subscription:
                 raise
 
 
-class _Wrap:
-    """Tiny pseudo-Variant so we can put already-unwrapped python
-    values back into a props dict for `BluetoothDevice.from_props`,
-    which expects bluez Variant wrappers."""
-    __slots__ = ("value",)
-
-    def __init__(self, v):
-        self.value = v
-
-
-def _wrap(v):
-    return _Wrap(v)

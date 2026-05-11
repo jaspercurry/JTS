@@ -24,7 +24,7 @@ import logging
 import httpx
 import pyudev
 
-from .registry import KNOWN_DEVICES, Device, KeyAction, lookup
+from .registry import KNOWN_DEVICES, Device, KeyAction, lookup, lookup_by_name
 
 logger = logging.getLogger(__name__)
 
@@ -144,9 +144,16 @@ async def _read_device(
         )
         return
 
+    # Log the runtime identity (bus + actual kernel-reported vid/pid)
+    # rather than the registry's canonical USB IDs — otherwise a BT-
+    # paired accessory shows up in the journal as its USB IDs, which
+    # is confusing when troubleshooting "is this plugged in over USB
+    # or BT?". bustype: 3=USB, 5=BLUETOOTH.
+    transport = {3: "usb", 5: "bt"}.get(dev.info.bustype, f"bus={dev.info.bustype:#x}")
     logger.info(
-        "event=knob.open device=%s path=%s vid=%04x pid=%04x",
-        device.name, device_path, device.vendor_id, device.product_id,
+        "event=knob.open device=%s path=%s transport=%s vid=%04x pid=%04x",
+        device.name, device_path, transport,
+        dev.info.vendor, dev.info.product,
     )
 
     coalescers: dict[int, _Coalescer] = {}
@@ -207,11 +214,16 @@ async def _supervise(control_url: str) -> None:
         except OSError:
             return
         vid, pid = dev.info.vendor, dev.info.product
+        name = dev.name or ""
         try:
             dev.close()
         except Exception:  # noqa: BLE001
             pass
-        entry = lookup(vid, pid)
+        # USB VID/PID is the strict match; BT-HID falls back to
+        # name match because the same physical device often advertises
+        # different USB IDs over BLE (e.g. VK-01 reuses Apple Magic
+        # Mouse IDs 05AC:022C when paired over BT).
+        entry = lookup(vid, pid) or lookup_by_name(name)
         if entry is None:
             return
         existing = active.get(path)
