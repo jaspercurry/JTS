@@ -313,17 +313,20 @@ install_renderers() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
         /usr/local/sbin/jasper-apply-airplay-mode
-    # Default to free-running: it eliminates the periodic glitches on
-    # this audio chain (PR #75 + mikebrady/shairport-sync#1980).
-    # Users who AirPlay video or run multi-room AirPlay flip to
-    # "synced" via /airplay/. Preserve an existing setting across
-    # reinstalls — the user may have toggled to synced deliberately.
+    # Default to synced: with shairport-sync.conf.template setting
+    # resync_threshold_in_seconds=0.2, synced mode is glitch-free on
+    # this chain (empirically verified over multiple 5-min samples
+    # after the fix; see docs/HANDOFF-airplay-sync.md). Synced is the
+    # right default because it gives users video A/V sync + multi-room
+    # AirPlay sync for free. Users can still flip to free-running via
+    # /airplay/ if they hit DAC-specific issues. Existing env files
+    # are preserved across reinstalls.
     if [[ ! -e /var/lib/jasper/airplay_mode.env ]]; then
         install -d -m 0755 /var/lib/jasper
-        printf 'JASPER_AIRPLAY_FREE_RUNNING=yes\n' \
+        printf 'JASPER_AIRPLAY_FREE_RUNNING=no\n' \
             > /var/lib/jasper/airplay_mode.env
         chmod 0644 /var/lib/jasper/airplay_mode.env
-        echo "  /var/lib/jasper/airplay_mode.env defaulted to free-running."
+        echo "  /var/lib/jasper/airplay_mode.env defaulted to synced."
     fi
     # Seed /etc/shairport-sync.conf so the first start of shairport-sync
     # has a valid config. ExecStartPre re-renders on every subsequent
