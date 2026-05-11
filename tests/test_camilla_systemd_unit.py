@@ -36,12 +36,41 @@ def test_unit_passes_statefile_to_camilladsp():
     assert "/var/lib/camilladsp/statefile.yml" in body
 
 
-def test_unit_falls_back_to_v1_yml_when_statefile_missing():
-    """The positional config arg (`/etc/camilladsp/v1.yml`) is the
-    fall-back Camilla uses on first boot before any statefile exists.
-    Without it, a fresh install would fail to start."""
+def test_unit_has_no_positional_configfile():
+    """CamillaDSP behavior we hit on first cutover: when both a
+    positional CONFIGFILE and --statefile are given, the positional
+    WINS on startup AND clobbers the statefile with the positional
+    path on every start. So having `/etc/camilladsp/v1.yml` as a
+    positional arg here defeats the entire persistence feature.
+    Fresh installs are handled by install.sh seeding the statefile.
+    Pin the absence so this doesn't quietly come back."""
     body = UNIT_PATH.read_text()
-    assert "/etc/camilladsp/v1.yml" in body
+    # The positional arg would appear on its own line after the
+    # other ExecStart args. Verify the ExecStart's last non-comment
+    # non-blank line is the --statefile arg, not a CONFIGFILE path.
+    in_exec = False
+    last_line = None
+    for raw in body.splitlines():
+        stripped = raw.strip()
+        if stripped.startswith("#") or not stripped:
+            continue
+        if stripped.startswith("ExecStart="):
+            in_exec = True
+            last_line = stripped
+            continue
+        if in_exec:
+            if stripped.endswith("\\"):
+                last_line = stripped
+                continue
+            # First non-continuation line ends the ExecStart.
+            last_line = stripped
+            break
+    assert last_line is not None
+    assert "v1.yml" not in last_line, (
+        f"ExecStart ends with a positional config — clobbers statefile. "
+        f"Last line: {last_line!r}"
+    )
+    assert "--statefile" in last_line
 
 
 def test_unit_restarts_always_not_on_failure():
@@ -65,6 +94,21 @@ def test_install_sh_creates_camilladsp_state_dirs():
     write its statefile and the wizard fails on apply."""
     body = INSTALL_SH.read_text()
     assert "install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs" in body
+
+
+def test_install_sh_seeds_statefile_when_missing():
+    """Because the unit's ExecStart has no positional CONFIGFILE,
+    a fresh install with no statefile would leave CamillaDSP with
+    nothing to load. install.sh seeds the statefile to point at
+    v1.yml on first install — and importantly, never overwrites an
+    existing statefile (idempotent), so re-running install.sh on a
+    speaker with an applied correction doesn't silently reset it."""
+    body = INSTALL_SH.read_text()
+    assert "/var/lib/camilladsp/statefile.yml" in body
+    # The idempotency guard — must check existence first.
+    assert "if [[ ! -f /var/lib/camilladsp/statefile.yml ]]" in body
+    # The seed contents point at v1.yml (so first-boot has a config).
+    assert "config_path: /etc/camilladsp/v1.yml" in body
 
 
 def test_unit_documents_no_config_recovery_path():

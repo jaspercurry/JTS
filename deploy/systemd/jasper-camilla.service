@@ -21,16 +21,24 @@ Type=simple
 # (and main_volume) across restarts. Without it, every restart drops
 # back to v1.yml regardless of what was applied, silently wiping a
 # user's room correction on reboot / power cycle / install.sh re-run.
-# With it, the room-correction wizard's set_config_file_path() write
-# is durable. On first start (no statefile yet), Camilla falls back
-# to the positional v1.yml argument. To recover from a bad correction
-# without editing the statefile by hand: add --no_config to the
-# args, restart, fix the underlying YAML or apply a new measurement,
-# then remove --no_config.
+#
+# CRITICAL: there is intentionally NO positional CONFIGFILE arg.
+# CamillaDSP behavior in v4.x: when both a positional config and
+# --statefile are given, the positional wins on startup AND the
+# statefile gets OVERWRITTEN with the positional's path on every
+# start. So passing `/etc/camilladsp/v1.yml` here would make this
+# whole feature a no-op. install.sh seeds the statefile to point
+# at v1.yml on a fresh install so first-boot still has a config
+# to load.
+#
+# Recovery from a bad correction without editing the statefile by
+# hand: add --no_config to the args (which makes Camilla ignore
+# the statefile's config and start with no config loaded), restart,
+# fix the underlying YAML or apply a new measurement, then remove
+# --no_config.
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
-    --statefile /var/lib/camilladsp/statefile.yml \
-    /etc/camilladsp/v1.yml
+    --statefile /var/lib/camilladsp/statefile.yml
 Restart=always
 RestartSec=2
 Nice=-10
