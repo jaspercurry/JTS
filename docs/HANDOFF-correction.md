@@ -26,16 +26,21 @@
   post-Apply re-measurement with deviation metrics; target-curve
   choice (flat / warm / bright). 12 new tests, all passing.
 - ✅ **Phase 2.2 — survive `jasper-camilla` restarts.** Merged
-  2026-05-11. The systemd unit now passes
-  `--statefile /var/lib/camilladsp/statefile.yml` to CamillaDSP.
-  Without it, every `systemctl restart jasper-camilla` (install.sh,
-  reboot, ALSA hiccup, manual debugging) reverted the speaker to
-  `v1.yml` with the correction YAML still sitting unreferenced on
-  disk. With it, the wizard's `set_config_file_path()` write is
-  durable — Camilla reads the statefile on startup and reloads
-  whatever was last active. Recovery from a bad correction without
-  hand-editing the statefile: add `--no_config` to the ExecStart
-  args, restart, fix or re-measure, remove the flag.
+  2026-05-11 (#62) + hotfix 2026-05-11. The systemd unit passes
+  `--statefile /var/lib/camilladsp/statefile.yml` to CamillaDSP
+  and intentionally *omits the positional CONFIGFILE arg*. The
+  initial #62 version included the positional v1.yml as a
+  "fallback" — which made the whole feature a no-op because
+  CamillaDSP overwrites the statefile with the positional path on
+  every start when both are given. The hotfix removes the
+  positional; `install.sh` instead seeds
+  `/var/lib/camilladsp/statefile.yml` with `config_path:
+  /etc/camilladsp/v1.yml` on first install so a fresh Pi has a
+  config to load. Subsequent `set_config_file_path()` calls from
+  the wizard update the statefile in place; future restarts read
+  it back. Recovery from a bad correction without hand-editing the
+  statefile: add `--no_config` to the ExecStart args, restart, fix
+  or re-measure, remove the flag.
 - ✅ **Phase 2.1 — current-correction visibility + per-session debug
   bundles.** Merged 2026-05-11.
   - `GET /status` now includes a `current_correction` descriptor

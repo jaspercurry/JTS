@@ -88,6 +88,36 @@ install_camilladsp() {
     # corrections survive Pi restarts; the room-correction wizard
     # writes correction_<id>_<unixtime>.yml under configs/.
     install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
+
+    # Seed the statefile if missing. The unit's ExecStart deliberately
+    # has NO positional CONFIGFILE — CamillaDSP would clobber the
+    # statefile with the positional path on every start, defeating
+    # the whole persistence story. Instead, on first install, we
+    # write a minimal statefile pointing at v1.yml. Subsequent
+    # `set_config_file_path()` calls from the room-correction wizard
+    # update this file in place; future restarts read it back.
+    # NOTE: this block is idempotent — we never overwrite an existing
+    # statefile, so a user who's applied a correction won't have it
+    # silently reset by a re-run of install.sh.
+    if [[ ! -f /var/lib/camilladsp/statefile.yml ]]; then
+        cat > /var/lib/camilladsp/statefile.yml <<'EOF'
+config_path: /etc/camilladsp/v1.yml
+mute:
+- false
+- false
+- false
+- false
+- false
+volume:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+EOF
+        chmod 0644 /var/lib/camilladsp/statefile.yml
+        echo "  Seeded /var/lib/camilladsp/statefile.yml → v1.yml (no correction yet)"
+    fi
     if [[ ! -x "${CAMILLA_DIR}/camilladsp" ]]; then
         local tmpdir
         tmpdir="$(mktemp -d)"
