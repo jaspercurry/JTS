@@ -433,6 +433,50 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         await conn.stop()
 
 
+async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
+    """``response.done`` is the server's "no more audio coming" signal.
+    The adapter pushes a sentinel onto the audio queue so the playback
+    consumer can drain every queued chunk and then exit naturally,
+    instead of relying on the idle watchdog's dequeue-timestamp tail
+    timer (which can fire mid-playback when a single tts.write blocks
+    longer than the tail timeout).
+
+    Three properties this test pins:
+      * The sentinel arrives AFTER all real audio chunks, not before.
+      * ``audio_chunks_pending()`` reports the sentinel as pending work
+        so the watchdog defers while the consumer drains.
+      * The consumer's ``audio_out()`` generator returns cleanly when
+        the sentinel is dequeued — no infinite hang."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        for payload in (b"chunk_a", b"chunk_b", b"chunk_c"):
+            sess.feed({
+                "type": "response.output_audio.delta",
+                "delta": _b64(payload),
+                "response_id": "resp_1",
+            })
+        sess.feed({
+            "type": "response.done",
+            "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
+        })
+        await asyncio.sleep(0.05)
+
+        assert turn.server_turn_complete() is True
+        assert turn.audio_chunks_pending() == 4
+
+        chunks: list[bytes] = []
+        async for chunk in turn.audio_out():
+            chunks.append(chunk)
+        assert chunks == [b"chunk_a", b"chunk_b", b"chunk_c"]
+        assert turn.audio_chunks_pending() == 0
+    finally:
+        await conn.stop()
+
+
 async def test_last_chunk_played_at_tracks_consumer_dequeues():
     """The idle watchdog uses ``last_chunk_played_at`` to know when
     the consumer has finished draining the audio queue. The whole

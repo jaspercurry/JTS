@@ -189,6 +189,10 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._started_at_monotonic: float = _time.monotonic()
         self._bytes_sent: int = 0
         self._chunks_received: int = 0
+        # Tracks chunk-size distribution per turn; logged at release so a uniform vs. front-loaded delivery is visible post hoc.
+        self._chunk_bytes_total: int = 0
+        self._chunk_bytes_max: int = 0
+        self._first_chunk_bytes: int = 0
         # Tracks whether `commit()` + `response.create()` has been sent.
         # Idempotent like Gemini's _activity_end_sent.
         self._committed = False
@@ -273,10 +277,20 @@ class OpenAIRealtimeTurn(LiveTurn):
                     type(e).__name__, e,
                 )
         await self._conn._on_turn_released(self)
-        logger.info(
-            "openai turn: ended in %.0fms, %d chunks received (sent=%dB)",
-            elapsed_ms, self._chunks_received, self._bytes_sent,
-        )
+        if self._chunks_received > 0:
+            avg = self._chunk_bytes_total // self._chunks_received
+            logger.info(
+                "openai turn: ended in %.0fms, %d chunks received "
+                "(sent=%dB, audio=%dB first=%dB max=%dB avg=%dB ~%.0fms total)",
+                elapsed_ms, self._chunks_received, self._bytes_sent,
+                self._chunk_bytes_total, self._first_chunk_bytes,
+                self._chunk_bytes_max, avg, self._chunk_bytes_total / 48.0,
+            )
+        else:
+            logger.info(
+                "openai turn: ended in %.0fms, %d chunks received (sent=%dB)",
+                elapsed_ms, self._chunks_received, self._bytes_sent,
+            )
 
     def last_activity_at(self) -> float:
         return self._last_activity_at
@@ -289,6 +303,9 @@ class OpenAIRealtimeTurn(LiveTurn):
 
     def server_turn_complete(self) -> bool:
         return self._server_turn_complete
+
+    def audio_chunks_pending(self) -> int:
+        return self._audio_q.qsize()
 
     def bytes_sent(self) -> int:
         return self._bytes_sent
@@ -336,12 +353,18 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._last_activity_at = now
         self._last_chunk_at = now
         self._chunks_received += 1
+        chunk_bytes = len(data)
+        self._chunk_bytes_total += chunk_bytes
+        if chunk_bytes > self._chunk_bytes_max:
+            self._chunk_bytes_max = chunk_bytes
         if not self._first_chunk_logged:
             self._first_chunk_logged = True
+            self._first_chunk_bytes = chunk_bytes
             first_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
             logger.info(
-                "first audio chunk from OpenAI in %.0fms (turn start→1st chunk)",
-                first_ms,
+                "first audio chunk from OpenAI in %.0fms (turn start→1st chunk, "
+                "%d bytes ~%.0fms audio)",
+                first_ms, chunk_bytes, chunk_bytes / 48.0,
             )
         await self._audio_q.put(data)
 
@@ -385,6 +408,9 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._last_activity_at = asyncio.get_event_loop().time()
         self._server_turn_complete = True
         self._record_usage(usage)
+        # Sentinel lets consumer drain queued chunks then exit; barge-in (if added later) must use a distinct signal.
+        with contextlib.suppress(asyncio.QueueFull):
+            self._audio_q.put_nowait(None)
 
     def _on_assistant_item_id(self, item_id: str | None) -> None:
         if item_id:

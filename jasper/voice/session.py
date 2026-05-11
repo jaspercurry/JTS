@@ -123,6 +123,17 @@ class LiveTurn(Protocol):
         without racing mid-response chunk gaps that look like idleness."""
         ...
 
+    def audio_chunks_pending(self) -> int:
+        """How many audio chunks are queued waiting for the playback
+        consumer to dequeue. The idle watchdog reads this to defer its
+        tail-timer firing while there's still work to play — without it,
+        a single tts.write that blocks longer than the tail timeout
+        looks indistinguishable from "audio finished" and the turn ends
+        mid-playback. Adapters that don't track this can return 0; the
+        watchdog falls back to its dequeue-timestamp heuristic, which is
+        correct for providers whose chunks arrive at real-time rate."""
+        ...
+
     def interrupted(self) -> bool:
         """True if the model reported being interrupted by user audio.
         Cleared by clear_interrupted() once the daemon has flushed

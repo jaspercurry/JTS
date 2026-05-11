@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import subprocess
+import time
 
 import numpy as np
 import sounddevice as sd
@@ -350,7 +351,17 @@ class TtsPlayout:
         # exact byte layout it expects.
         mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
         stereo_i16 = np.repeat(mono_i16, 2)
+        write_start = time.monotonic()
         await asyncio.to_thread(self._stream.write, stereo_i16.tobytes())
+        write_ms = (time.monotonic() - write_start) * 1000
+        chunk_ms = len(mono_i16) * 1000 / self._output_rate
+        # Slow writes stall consumer dequeue, letting the idle watchdog's tail timer fire mid-playback.
+        if write_ms > chunk_ms + 100:
+            logger.warning(
+                "tts.write slow: %.0fms for %.0fms of audio "
+                "(%d frames @ %d Hz)",
+                write_ms, chunk_ms, len(mono_i16), self._output_rate,
+            )
 
     async def flush(self) -> None:
         """Drop any audio currently buffered inside sounddevice / ALSA so
