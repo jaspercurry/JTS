@@ -501,20 +501,6 @@ def _make_handler(
                     return
                 self._send_json(state)
                 return
-            if self.path == "/accessories/list":
-                # Paired BT HID accessories on the Pi — for the
-                # /dial/ web UI's accessory dashboard. Queries bluez
-                # via D-Bus; returns [] on bluez errors (so the page
-                # still renders if Bluetooth is off).
-                try:
-                    from ..accessories.pairing import list_paired_hids
-                    items = asyncio.run(list_paired_hids())
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("/accessories/list failed")
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                self._send_json({"accessories": items})
-                return
             if self.path == "/dial/status":
                 # Heartbeat snapshot — used by jasper-doctor's
                 # "is the dial actually talking to us?" check.
@@ -680,34 +666,6 @@ def _make_handler(
                     else:
                         http_status = 502
                 self._send_json(result, status=http_status)
-                return
-
-            if self.path == "/accessories/forget":
-                # POST /accessories/forget  body: {"mac": "AA:BB:..."}
-                # Removes a paired BT device from bluez. The web UI
-                # offers this on each card in the accessories list.
-                body = self._read_json()
-                mac = (body.get("mac") or "").strip()
-                if not mac:
-                    self._send_json(
-                        {"error": "missing 'mac' in body"}, status=400,
-                    )
-                    return
-                try:
-                    from ..accessories.pairing import forget as _forget
-                    ok, msg = asyncio.run(_forget(mac))
-                except Exception as e:  # noqa: BLE001
-                    logger.exception("forget %s failed", mac)
-                    self._send_json({"error": str(e)}, status=502)
-                    return
-                if not ok:
-                    self._send_json({"error": msg}, status=502)
-                    return
-                logger.info(
-                    "event=accessory.forget mac=%s client=%s",
-                    mac, self.address_string(),
-                )
-                self._send_json({"result": msg})
                 return
 
             if self.path == "/cue/play":

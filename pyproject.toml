@@ -102,6 +102,7 @@ jasper-correction-web = "jasper.web.correction_setup:main"
 jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
 jasper-input = "jasper.accessories.bridge:main"
+jasper-bluetooth-web = "jasper.web.bluetooth_setup:main"
 
 [build-system]
 requires = ["setuptools>=68"]
