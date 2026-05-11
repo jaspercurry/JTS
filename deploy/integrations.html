@@ -43,8 +43,17 @@
   <p class="sub">Connect external services to your speaker.</p>
 
   <div class="cards">
-    <a class="card" id="google-card" data-https="1" data-path="/google/"
-       href="#">
+    <a class="card" href="/spotify/">
+      <div class="name">Spotify &rsaquo;</div>
+      <div class="desc">
+        Per-household-member OAuth — link each person's Spotify
+        account so voice commands route music to the right person
+        (e.g. "play Brittany's Daily Mix"). Default account handles
+        bare requests.
+      </div>
+    </a>
+
+    <a class="card" href="/google/">
       <div class="name">Google &rsaquo;</div>
       <div class="desc">
         Calendar and Gmail. Per-household-member OAuth — link each
@@ -56,20 +65,10 @@
   </div>
 
   <div class="more-soon">
-    More integrations coming. The first cut covers Google because
-    Calendar and email are the queries that come up daily; future
-    candidates depend on what's actually useful day-to-day.
+    More integrations coming. Today's cut covers Spotify (the music
+    streamer the household actually uses) and Google (Calendar and
+    email — the queries that come up daily). Future candidates depend
+    on what's actually useful day-to-day.
   </div>
-
-  <script>
-    // The Google wizard runs on HTTPS (the OAuth callback requires
-    // HTTPS — Google rejects non-loopback HTTP redirect URIs). This
-    // page is HTTP, so we have to construct an absolute https URL
-    // to switch schemes; a relative link would 404 against the http
-    // server. Same pattern the landing page uses for /correction/.
-    document.querySelectorAll('a.card[data-https]').forEach(function(a) {
-      a.href = 'https://' + window.location.hostname + a.dataset.path;
-    });
-  </script>
 </body>
 </html>
