@@ -658,18 +658,75 @@ Will retry on next boot."
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
 
-    # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
-    # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
-    # "Acoustic echo cancellation" section for the on/off procedure
-    # and the trade-off rationale (modest attenuation, ~110 MB RAM
-    # cost on 1GB Pi 5). To enable:
-    #   systemctl enable --now jasper-aec-init jasper-aec-bridge
-    #   sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
-    #       /etc/jasper/jasper.env
-    #   systemctl restart jasper-voice
-
+    # Auto-enable software AEC when the chip is on the 6-channel
+    # firmware that supports it. The bridge taps raw mic 0 (channel 2
+    # of 6) — only present on the 6-ch variant; 2-ch firmware can't
+    # support it and the daemon would no-op. The web wizard + voice
+    # daemon diet (lazy imports, socket-activated wizards) freed up
+    # ~120 MB Pss, so we can afford the ~85 MB AEC bridge by default
+    # without pushing past ~770 MB on a 1 GB Pi.
+    enable_aec_if_compatible
     echo
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
+}
+
+enable_aec_if_compatible() {
+    # Hard precondition: chip on 6-channel firmware (the v2.0.8 6chl
+    # DFU image — see BRINGUP.md Phase 2A.5). 2-channel firmware has
+    # no raw-mic-0 stream for the bridge to consume.
+    if ! [[ -f /proc/asound/Array/stream0 ]]; then
+        echo "  AEC: ReSpeaker XVF3800 not detected. Skipping (no /proc/asound/Array)."
+        return
+    fi
+    if ! grep -q "Channels: 6" /proc/asound/Array/stream0; then
+        echo "  AEC: chip on 2-channel firmware. Leaving AEC disabled."
+        echo "       Flash 6-channel (v2.0.8 6chl) via BRINGUP.md Phase 2A.5 to opt in."
+        return
+    fi
+    # Discover the LoopbackAEC card index from arecord -l. The
+    # snd-aloop two-card config loads them in deterministic order
+    # (Loopback first, LoopbackAEC second), but the index depends on
+    # how many other ALSA cards were enumerated before — so query
+    # rather than hardcode.
+    local aec_card
+    aec_card=$(arecord -l 2>/dev/null \
+        | awk -F'[: ]+' '/LoopbackAEC/ {print $2; exit}')
+    if [[ -z "${aec_card}" ]]; then
+        echo "  AEC: LoopbackAEC card not present in arecord -l."
+        echo "       snd-aloop two-card setup may have failed; leaving AEC disabled."
+        return
+    fi
+    # Respect any explicit user choice: only flip JASPER_MIC_DEVICE if
+    # the user is still on the legacy "Array" default. Anything else
+    # — including hw:N,1 (already on AEC) or a custom value — is left
+    # alone. This makes the auto-enable safe on existing installs.
+    local current
+    current=$(grep -E "^JASPER_MIC_DEVICE=" "${ENV_DIR}/jasper.env" 2>/dev/null \
+        | tail -1 | cut -d= -f2- | tr -d '[:space:]')
+    if [[ "${current}" != "Array" ]] && [[ "${current}" != "hw:${aec_card},1" ]]; then
+        echo "  AEC: user has JASPER_MIC_DEVICE=${current} — respecting existing config."
+        # Still try to enable the services in case the user did the
+        # env edit but not the systemctl enable. Idempotent.
+        systemctl enable jasper-aec-init.service jasper-aec-bridge.service 2>/dev/null || true
+        return
+    fi
+    echo "  AEC: 6-ch firmware detected — enabling software AEC (LoopbackAEC at hw:${aec_card},1)."
+    sed -i "s|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:${aec_card},1|" \
+        "${ENV_DIR}/jasper.env"
+    systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+    # aec-init is a oneshot that primes the chip's 6-ch firmware
+    # config; run it now so the bridge has what it needs on its
+    # first start.
+    systemctl start jasper-aec-init.service 2>/dev/null || \
+        echo "  WARN: jasper-aec-init failed at install time. Will retry on next boot."
+    systemctl restart jasper-aec-bridge.service 2>/dev/null || \
+        echo "  WARN: jasper-aec-bridge failed to start. Check logs with: journalctl -u jasper-aec-bridge -e"
+    # jasper-voice needs to pick up the new JASPER_MIC_DEVICE value
+    # — restart only if it's currently active (don't start a daemon
+    # that the user has deliberately stopped).
+    if systemctl is-active jasper-voice.service --quiet; then
+        systemctl restart jasper-voice.service 2>/dev/null || true
+    fi
 }
 
 remove_legacy_https_artifacts() {
