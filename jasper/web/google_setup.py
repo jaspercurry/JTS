@@ -254,11 +254,124 @@ def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     ).encode()
 
 
+# Standalone (non-f-string) so the script body uses normal `{`/`}`
+# rather than f-string `{{`/`}}` escapes. Inserted into the active
+# wizard body but omitted from the read-only "View setup guide"
+# rendering — there's nothing to track when the wizard is reference-only.
+_SETUP_WIZARD_SCRIPT = """
+<script>
+(function () {
+  // Progress-tracking via localStorage. Each step has a "mark done"
+  // button that adds its step number to a JSON array; on page load
+  // we collapse done steps and auto-open the first not-done one.
+  // The browser's native <details> toggle still works after init
+  // (we only set state once, so manually re-opening a done step to
+  // re-read it stays sticky).
+  var STORAGE_KEY = 'jts.google.wizard.done';
+
+  function loadDone() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      var arr = raw ? JSON.parse(raw) : [];
+      return Array.isArray(arr) ? arr : [];
+    } catch (e) { return []; }
+  }
+  function saveDone(arr) {
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }
+    catch (e) { /* private mode / quota — silent */ }
+  }
+
+  function init() {
+    var done = loadDone();
+    var firstNotDoneOpened = false;
+    document.querySelectorAll('li.wizard-step').forEach(function (el) {
+      var step = el.dataset.step;
+      var details = el.querySelector('details');
+      if (!details) return;
+      var isDone = done.indexOf(step) !== -1;
+      if (isDone) {
+        el.classList.add('done');
+        details.removeAttribute('open');
+      } else if (!firstNotDoneOpened) {
+        firstNotDoneOpened = true;
+        el.classList.add('active');
+        details.setAttribute('open', '');
+      }
+    });
+  }
+
+  function markDone(stepEl) {
+    var step = stepEl.dataset.step;
+    var done = loadDone();
+    if (done.indexOf(step) === -1) done.push(step);
+    saveDone(done);
+    stepEl.classList.add('done');
+    stepEl.classList.remove('active');
+    var details = stepEl.querySelector('details');
+    if (details) details.removeAttribute('open');
+    // Open the next not-done sibling (skip already-done ones).
+    var next = stepEl.nextElementSibling;
+    while (next && next.classList.contains('done')) {
+      next = next.nextElementSibling;
+    }
+    if (next) {
+      next.classList.add('active');
+      var nDetails = next.querySelector('details');
+      if (nDetails) nDetails.setAttribute('open', '');
+      setTimeout(function () {
+        next.scrollIntoView({behavior: 'smooth', block: 'start'});
+      }, 80);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', function () {
+    init();
+    document.querySelectorAll('button.mark-done').forEach(function (btn) {
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var stepEl = btn.closest('li.wizard-step');
+        if (stepEl) markDone(stepEl);
+      });
+    });
+  });
+})();
+
+async function copyStep4Redirect() {
+  var input = document.getElementById('step4-redirect');
+  var fb = document.getElementById('step4-redirect-fb');
+  try {
+    await navigator.clipboard.writeText(input.value);
+  } catch (e) {
+    input.select();
+    document.execCommand('copy');
+  }
+  fb.classList.add('shown');
+  setTimeout(function () { fb.classList.remove('shown'); }, 1800);
+}
+</script>
+"""
+
+
 def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
-    """State 1: no CLIENT_ID/SECRET configured. Multi-step walkthrough
-    of the Google Cloud Console flow, with progress tracked in
-    browser localStorage so re-loading after each step shows the
-    user where to pick up.
+    """State 1: no CLIENT_ID/SECRET configured. Wraps `_setup_wizard_body`
+    with the page chrome. The body itself is also rendered, in
+    read-only mode, inside the state-3 management page as a
+    "View setup guide" disclosure — see `_setup_wizard_body`."""
+    body = _setup_wizard_body(redirect_uri, read_only=False)
+    return _wrap_page(
+        "Set up Google on this speaker", body, status_msg=status_msg,
+    )
+
+
+def _setup_wizard_body(redirect_uri: str, *, read_only: bool = False) -> str:
+    """The 4-step setup walkthrough body. In active mode (read_only=False)
+    rendered as the State 1 wizard with localStorage progress tracking
+    + the paste-creds form at step 4. In read-only mode (rendered
+    inside the state-3 management page) it's a static reference: no
+    Reset Progress button, no "I've done this →" buttons, no script,
+    no paste-creds form, and the redirect URI in step 4 displays as
+    inline text rather than a copy widget (the management page has
+    its own redirect URI section with a copy button).
 
     The four steps mirror Google's actual UI as of May 2026:
       1. Create a Cloud project.
@@ -270,21 +383,51 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
       4. Create an OAuth client and paste creds here. The registered
          redirect URI is a GitHub Pages bounce page because Google
          rejects mDNS hostnames — see `default_redirect_uri` above.
-
-    Each step is collapsible; the first not-done step is auto-opened.
-    The user clicks "I've done this" to advance — we can't detect
-    actions on Google's site, so progress is self-reported.
-
-    The form at the bottom of step 4 is the actual server-side
-    transition: posting valid creds moves the index page to state 2
-    (add-account), at which point this whole wizard is hidden."""
+    """
     redirect_safe = html.escape(redirect_uri)
-    body = f"""
-<button type="button" class="wizard-progress-reset secondary"
-        onclick="if (confirm('Forget which steps you marked done? The form at the bottom still works either way.')) {{ try {{ localStorage.removeItem('jts.google.wizard.done'); }} catch(e) {{}} location.reload(); }}">
+    if read_only:
+        progress_button = ""
+        intro = (
+            '<p class="sub">Reference copy of the 4-step setup. Credentials are already saved on this speaker — see <strong>Connection details</strong> above for which Cloud project the wizard pointed at. Use these steps to re-verify any decision, or to share the setup story with someone building their own JTS.</p>'
+        )
+        mark_done = ""
+        redirect_widget = f'<p style="margin-top:0.3em"><code>{redirect_safe}</code></p>'
+        creds_form = ""
+        script = ""
+    else:
+        progress_button = """<button type="button" class="wizard-progress-reset secondary"
+        onclick="if (confirm('Forget which steps you marked done? The form at the bottom still works either way.')) { try { localStorage.removeItem('jts.google.wizard.done'); } catch(e) {} location.reload(); }">
   Reset progress
-</button>
-<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I've done this →</strong> when each is finished.</p>
+</button>"""
+        intro = '<p class="sub">Connect this speaker to Google Calendar + Gmail. Takes about 5 minutes the first time. Each step has a link to the right Google page — open them in new tabs and click <strong>I\'ve done this →</strong> when each is finished.</p>'
+        mark_done = '<button class="mark-done" type="button">I\'ve done this →</button>'
+        redirect_widget = f"""<div class="copy-row" style="margin-top:0.3em">
+              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
+              <button type="button" onclick="copyStep4Redirect()">Copy</button>
+              <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
+            </div>"""
+        creds_form = """<div class="creds-form-wrap">
+          <form method="post" action="setup-credentials">
+            <label for="client_id">Client ID</label>
+            <input id="client_id" name="client_id" type="text" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="123456789012-abc….apps.googleusercontent.com">
+
+            <label for="client_secret">Client Secret</label>
+            <input id="client_secret" name="client_secret" type="password" required
+                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+                   placeholder="GOCSPX-…">
+            <small>Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</small>
+
+            <p style="margin-top:1.4em">
+              <button type="submit">Save credentials →</button>
+            </p>
+          </form>
+        </div>"""
+        script = _SETUP_WIZARD_SCRIPT
+    return f"""
+{progress_button}
+{intro}
 
 <ol class="wizard-steps">
 
@@ -306,7 +449,7 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
         <div class="callout">
           <strong>Multi-account heads-up:</strong> if you're signed into more than one Google account in this browser, the page uses whatever account loaded first. Mismatch is the #1 setup failure here. Open the link above in an incognito window and sign in with just the account you want to own this project.
         </div>
-        <button class="mark-done" type="button">I've done this →</button>
+        {mark_done}
       </div>
     </details>
   </li>
@@ -343,7 +486,7 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
 
         <p class="hint"><strong>Don't visit the "Data Access" tab.</strong> Scopes are requested at consent regardless of what's there, and that tab is for submitting your app for verification — Google won't let you add Gmail-readonly without a written justification and demo video. Not what we want.</p>
 
-        <button class="mark-done" type="button">I've done this →</button>
+        {mark_done}
       </div>
     </details>
   </li>
@@ -363,7 +506,7 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
           <li>Open <a href="https://console.cloud.google.com/apis/library/gmail.googleapis.com" target="_blank" rel="noopener">the Gmail API page ↗</a>. Same: confirm project, click <strong>ENABLE</strong>.</li>
         </ol>
         <p class="hint">If you navigated to either page without a project context, a "Select a project" modal appears first — pick the one from Step 1.</p>
-        <button class="mark-done" type="button">I've done this →</button>
+        {mark_done}
       </div>
     </details>
   </li>
@@ -383,11 +526,7 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
           <li><strong>Name:</strong> anything cosmetic, e.g. "JTS Speaker Web Client".</li>
           <li>Leave <strong>Authorized JavaScript origins</strong> blank.</li>
           <li><strong>Authorized redirect URIs:</strong> click <strong>+ ADD URI</strong> and paste this URL:
-            <div class="copy-row" style="margin-top:0.3em">
-              <input id="step4-redirect" type="text" readonly value="{redirect_safe}" onclick="this.select();">
-              <button type="button" onclick="copyStep4Redirect()">Copy</button>
-              <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
-            </div>
+            {redirect_widget}
             <div class="callout">
               <strong>Why a github.io URL?</strong> Google's OAuth client requires redirect URIs to use a public TLD (<code>.com</code>, <code>.io</code>, …) or <code>localhost</code> — it rejects mDNS names like <code>jts.local</code> and bare LAN IPs outright. The URL above points at <a href="https://github.com/jaspercurry/google-oauth-callback" target="_blank" rel="noopener">a tiny static page</a> that reads <code>?host=jts.local</code> and bounces the browser back to this speaker. No data passes through it. Same trick the Spotify wizard uses.
             </div>
@@ -401,123 +540,14 @@ def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
           <li>Paste the Client ID and Client Secret below. Saving here finishes the setup; the page will move on to linking the first household member.</li>
         </ol>
 
-        <div class="creds-form-wrap">
-          <form method="post" action="setup-credentials">
-            <label for="client_id">Client ID</label>
-            <input id="client_id" name="client_id" type="text" required
-                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                   placeholder="123456789012-abc….apps.googleusercontent.com">
-
-            <label for="client_secret">Client Secret</label>
-            <input id="client_secret" name="client_secret" type="password" required
-                   autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
-                   placeholder="GOCSPX-…">
-            <small>Stored on this speaker only at <code>/var/lib/jasper/google_credentials.env</code>. Never sent anywhere except Google.</small>
-
-            <p style="margin-top:1.4em">
-              <button type="submit">Save credentials →</button>
-            </p>
-          </form>
-        </div>
+        {creds_form}
       </div>
     </details>
   </li>
 </ol>
 
-<script>
-(function () {{
-  // Progress-tracking via localStorage. Each step has a "mark done"
-  // button that adds its step number to a JSON array; on page load
-  // we collapse done steps and auto-open the first not-done one.
-  // The browser's native <details> toggle still works after init
-  // (we only set state once, so manually re-opening a done step to
-  // re-read it stays sticky).
-  var STORAGE_KEY = 'jts.google.wizard.done';
-
-  function loadDone() {{
-    try {{
-      var raw = localStorage.getItem(STORAGE_KEY);
-      var arr = raw ? JSON.parse(raw) : [];
-      return Array.isArray(arr) ? arr : [];
-    }} catch (e) {{ return []; }}
-  }}
-  function saveDone(arr) {{
-    try {{ localStorage.setItem(STORAGE_KEY, JSON.stringify(arr)); }}
-    catch (e) {{ /* private mode / quota — silent */ }}
-  }}
-
-  function init() {{
-    var done = loadDone();
-    var firstNotDoneOpened = false;
-    document.querySelectorAll('li.wizard-step').forEach(function (el) {{
-      var step = el.dataset.step;
-      var details = el.querySelector('details');
-      if (!details) return;
-      var isDone = done.indexOf(step) !== -1;
-      if (isDone) {{
-        el.classList.add('done');
-        details.removeAttribute('open');
-      }} else if (!firstNotDoneOpened) {{
-        firstNotDoneOpened = true;
-        el.classList.add('active');
-        details.setAttribute('open', '');
-      }}
-    }});
-  }}
-
-  function markDone(stepEl) {{
-    var step = stepEl.dataset.step;
-    var done = loadDone();
-    if (done.indexOf(step) === -1) done.push(step);
-    saveDone(done);
-    stepEl.classList.add('done');
-    stepEl.classList.remove('active');
-    var details = stepEl.querySelector('details');
-    if (details) details.removeAttribute('open');
-    // Open the next not-done sibling (skip already-done ones).
-    var next = stepEl.nextElementSibling;
-    while (next && next.classList.contains('done')) {{
-      next = next.nextElementSibling;
-    }}
-    if (next) {{
-      next.classList.add('active');
-      var nDetails = next.querySelector('details');
-      if (nDetails) nDetails.setAttribute('open', '');
-      setTimeout(function () {{
-        next.scrollIntoView({{behavior: 'smooth', block: 'start'}});
-      }}, 80);
-    }}
-  }}
-
-  document.addEventListener('DOMContentLoaded', function () {{
-    init();
-    document.querySelectorAll('button.mark-done').forEach(function (btn) {{
-      btn.addEventListener('click', function (e) {{
-        e.preventDefault();
-        var stepEl = btn.closest('li.wizard-step');
-        if (stepEl) markDone(stepEl);
-      }});
-    }});
-  }});
-}})();
-
-async function copyStep4Redirect() {{
-  var input = document.getElementById('step4-redirect');
-  var fb = document.getElementById('step4-redirect-fb');
-  try {{
-    await navigator.clipboard.writeText(input.value);
-  }} catch (e) {{
-    input.select();
-    document.execCommand('copy');
-  }}
-  fb.classList.add('shown');
-  setTimeout(function () {{ fb.classList.remove('shown'); }}, 1800);
-}}
-</script>
+{script}
 """
-    return _wrap_page(
-        "Set up Google on this speaker", body, status_msg=status_msg,
-    )
 
 
 def _redirect_uri_section_html(redirect_uri: str) -> str:
@@ -730,6 +760,16 @@ def _management_html(
         _account_li_html(a, is_default=(a.name == registry.default_name))
         for a in registry.accounts
     ]
+    # Clarification copy above the Add account form — only meaningful
+    # when at least one account is already linked (state 3). State 2
+    # uses _redirect_uri_page_html, which has its own intro framing.
+    add_account_clarification = (
+        '<p class="hint" style="margin-top:1.6em"><strong>Adding another '
+        'household member?</strong> They just sign in with their own '
+        'Google account below — no Google Cloud setup to redo. The '
+        "speaker's OAuth client serves everyone (up to the 100-user "
+        'cap on this Cloud project).</p>'
+    )
     body = f"""
 <p class="sub">Each household member links their Google account once. The voice loop reads Calendar + Gmail data per-account on demand — say "what's on Brittany's calendar" or "any new emails for Jasper" to disambiguate; bare requests use the default account.</p>
 
@@ -738,9 +778,17 @@ def _management_html(
 {''.join(items)}
 </ul>
 
+{add_account_clarification}
 {_add_account_form_html()}
 
 {_connection_details_html(client_id)}
+
+<details style="margin-top:1.4em">
+  <summary>View setup guide (re-read the original 4-step instructions)</summary>
+  <div style="padding-top:0.6em">
+    {_setup_wizard_body(redirect_uri, read_only=True)}
+  </div>
+</details>
 
 <details style="margin-top:1.4em">
   <summary>OAuth client settings (redirect URI, reset credentials)</summary>
