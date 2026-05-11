@@ -1133,15 +1133,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(
-    host: str,
-    port: int,
+    target,
     *,
     registry_path: str = "/var/lib/jasper/google/accounts.json",
     redirect_uri: str | None = None,
 ) -> ThreadingHTTPServer:
-    """Build a configured ThreadingHTTPServer. Used by both the
-    standalone CLI entry point AND by jasper.web.__main__ to colocate
-    this server with the Spotify + voice wizards inside one process."""
+    """Build a configured server. `target` is socket/tuple/int per
+    _systemd.make_http_server's contract."""
+    from . import _systemd
     creds_from_file = _read_creds_file()
     client_id = (
         os.environ.get("GOOGLE_CLIENT_ID", "")
@@ -1157,7 +1156,7 @@ def make_server(
         "redirect_uri": redirect_uri or default_redirect_uri(),
         "registry_path": registry_path,
     }
-    return ThreadingHTTPServer((host, port), _make_handler(cfg))
+    return _systemd.make_http_server(target, _make_handler(cfg))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1197,7 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     server = make_server(
-        args.host, args.port,
+        (args.host, args.port),
         registry_path=args.registry,
         redirect_uri=args.redirect_uri,
     )

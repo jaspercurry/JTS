@@ -764,12 +764,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 # ----------------------------------------------------------------------
 
 
-def make_server(host: str, port: int, *, state_path: str = PROVIDER_FILE) -> ThreadingHTTPServer:
-    """Build a configured ThreadingHTTPServer. Used by both the standalone
-    CLI entry point AND by jasper.web.__main__ to colocate this server
-    with the Spotify wizard inside one process."""
+def make_server(target, *, state_path: str = PROVIDER_FILE) -> ThreadingHTTPServer:
+    """Build a configured server. `target` is one of:
+      - `socket.socket` — pre-bound listener handed off by systemd
+      - `(host, port)` tuple — explicit bind
+      - `int` — port, binds 127.0.0.1
+    Mirrors the other wizard `make_server` signatures so jasper.web.__main__
+    can drive all four uniformly."""
+    from . import _systemd
     cfg = {"state_path": state_path}
-    return ThreadingHTTPServer((host, port), _make_handler(cfg))
+    return _systemd.make_http_server(target, _make_handler(cfg))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -792,7 +796,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server(args.host, args.port, state_path=args.state)
+    server = make_server((args.host, args.port), state_path=args.state)
     logger.info(
         "jasper-voice-web listening on http://%s:%d (state=%s)",
         args.host, args.port, args.state,

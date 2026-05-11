@@ -470,12 +470,28 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    server = ThreadingHTTPServer((args.host, args.port), _make_handler())
-    logger.info("jasper-dial-web listening on http://%s:%d", args.host, args.port)
+    from . import _systemd
+    sockets = _systemd.adopt_systemd_sockets()
+    target = sockets[0] if sockets else (args.host, args.port)
+
+    handler_cls = _make_handler()
+    server = _systemd.make_http_server(target, handler_cls)
+
+    tracker = _systemd.IdleShutdownTracker()
+    _systemd.install_request_idle_bump(handler_cls, tracker)
+    tracker.start()
+
+    if sockets:
+        logger.info("jasper-dial-web adopting systemd fd")
+    else:
+        logger.info("jasper-dial-web listening on http://%s:%d", args.host, args.port)
+
+    _systemd.notify_ready()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        return 0
+        pass
+    _systemd.notify_stopping()
     return 0
 
 

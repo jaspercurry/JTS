@@ -1833,10 +1833,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
 
 def make_server(
-    host: str, port: int, *, hostname: str = "jts.local",
+    target, *, hostname: str = "jts.local",
 ) -> ThreadingHTTPServer:
+    """Build the wizard server. `target` is socket/tuple/int per
+    _systemd.make_http_server's contract."""
+    from . import _systemd
     cfg = {"hostname": hostname}
-    return ThreadingHTTPServer((host, port), _make_handler(cfg))
+    return _systemd.make_http_server(target, _make_handler(cfg))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1862,15 +1865,34 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server(args.host, args.port, hostname=args.hostname)
-    logger.info(
-        "jasper-correction-web listening on http://%s:%d (hostname=%s)",
-        args.host, args.port, args.hostname,
-    )
+
+    from . import _systemd
+    sockets = _systemd.adopt_systemd_sockets()
+    target = sockets[0] if sockets else (args.host, args.port)
+    server = make_server(target, hostname=args.hostname)
+
+    handler_cls = server.RequestHandlerClass
+    tracker = _systemd.IdleShutdownTracker()
+    _systemd.install_request_idle_bump(handler_cls, tracker)
+    tracker.start()
+
+    if sockets:
+        logger.info(
+            "jasper-correction-web adopting systemd fd (hostname=%s)",
+            args.hostname,
+        )
+    else:
+        logger.info(
+            "jasper-correction-web listening on http://%s:%d (hostname=%s)",
+            args.host, args.port, args.hostname,
+        )
+
+    _systemd.notify_ready()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        return 0
+        pass
+    _systemd.notify_stopping()
     return 0
 
 

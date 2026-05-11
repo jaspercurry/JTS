@@ -1,10 +1,13 @@
 [Unit]
 Description=Jasper accessories hub (web wizards for rotary dial + BT HID pairing)
-After=network-online.target
+# Socket-activated — daemon exits after 10 min idle, .socket re-spawns.
+Requires=jasper-dial-web.socket
+After=jasper-dial-web.socket network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+Type=notify
+WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
 # The wizard scans for ESP32-S3 USB devices via pyserial (reads
 # /dev/ttyACM*) and shells out to /opt/jasper/.venv/bin/jasper-dial-onboard
@@ -28,4 +31,4 @@ NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper
 
 [Install]
-WantedBy=multi-user.target
+# systemctl enable jasper-dial-web.socket

@@ -1,0 +1,27 @@
+[Unit]
+Description=Jasper web setup wizards (Spotify, voice, Google, AirPlay) — socket
+# When any of these ports gets a connection, systemd will activate
+# jasper-web.service to handle it. The service exits after 10 min
+# of no activity; this .socket stays listening throughout, so
+# nginx-fronted requests transparently re-spawn the daemon.
+
+[Socket]
+# 4 ListenStream= → 4 fds passed to the daemon at LISTEN_FDS_START.
+# Order is undefined per systemd issue #16647, so the Python side
+# matches by getsockname()[1] (port) rather than by fd index.
+ListenStream=127.0.0.1:8765
+ListenStream=127.0.0.1:8767
+ListenStream=127.0.0.1:8768
+ListenStream=127.0.0.1:8771
+# Accept=no — single daemon for all fds; Python startup cost forbids
+# per-connection accept.
+Accept=no
+# Default backlog (128) is fine for a setup wizard.
+# Bump TriggerLimitBurst above the systemd default (20) — dev reload
+# loops + nginx healthchecks can otherwise trip the rate-limit and
+# leave the socket in failure state requiring `reset-failed`.
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target
