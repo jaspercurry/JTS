@@ -19,6 +19,54 @@ when editing.
 
 ---
 
+## Deploying code changes to the Pi
+
+From the laptop, one command:
+
+```sh
+bash scripts/deploy-to-pi.sh
+```
+
+This is the **only** supported deploy path. It does, in order:
+
+1. `git rev-parse` → captures local SHA + branch (writes `-dirty`
+   suffix if working tree has uncommitted changes)
+2. `rsync` to `pi@jts.local:/home/pi/jts/` (excludes `.git/`,
+   `.venv/`, `*.egg-info`, etc.)
+3. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
+   set — `pip install -e`'s into `/opt/jasper/.venv` (the runtime),
+   writes `/var/lib/jasper/build.txt`, migrates units to socket
+   activation, conditionally enables AEC on 6-ch firmware
+4. `systemctl restart jasper-voice jasper-control` — picks up
+   the new code on the Python daemons that actually run application
+   code. `jasper-camilla` is the Rust camilladsp binary (not
+   restarted); `jasper-aec-bridge` is opt-in
+   (`JASPER_DEPLOY_RESTART_AEC=1`) because of a known SIGTERM hang.
+
+**Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
+That flow exists historically but misses:
+- the laptop-side SHA capture (dashboard's "Software" card shows
+  "unknown")
+- the post-install daemon restart on subsequent deploys (install.sh
+  only conditionally restarts `jasper-voice` when the AEC default
+  flips — a one-time event)
+
+**Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
+(install but don't restart), `JASPER_DEPLOY_RESTART_AEC=1`,
+`PI_HOST=...`, `PI_USER=...`.
+
+**Verify the deploy landed:**
+- `http://jts.local/system/` → Software card shows the matching
+  short-SHA and recent install timestamp
+- Or `ssh pi@jts.local 'sudo cat /var/lib/jasper/build.txt'`
+
+The one exception: a **fresh Pi** doing first-time setup runs
+`sudo bash deploy/install.sh` natively after `git clone` on the
+Pi itself (see [BRINGUP.md](BRINGUP.md)). The wrapper isn't
+applicable until there's a laptop checkout.
+
+---
+
 ## Speaker hostname — single source of truth
 
 `JASPER_HOSTNAME` (default `jts.local`) is the canonical name other
