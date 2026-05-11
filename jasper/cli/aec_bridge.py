@@ -68,10 +68,13 @@ import signal
 import sys
 import threading
 from queue import Queue, Empty, Full
+from typing import Optional
 
 import numpy as np
 import sounddevice as sd
 from scipy.signal import resample_poly
+
+from jasper.watchdog import Heartbeat
 
 logger = logging.getLogger("jasper.aec_bridge")
 
@@ -269,7 +272,10 @@ def _mic_thread(mic_q: Queue) -> None:
         _shutdown.wait()
 
 
-def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Aec3Engine) -> None:  # noqa: PLR0915
+def _aec_loop(  # noqa: PLR0915
+    ref_q: Queue, mic_q: Queue, engine: _Aec3Engine,
+    heartbeat: Optional[Heartbeat] = None,
+) -> None:
     # Post-AEC static gain applied to the engine output before it
     # reaches LoopbackAEC. Restores level into openWakeWord's training
     # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
@@ -362,6 +368,8 @@ def _aec_loop(ref_q: Queue, mic_q: Queue, engine: _Aec3Engine) -> None:  # noqa:
                 clean = arr.astype(np.int16).tobytes()
             out_stream.write(clean)
             frames_processed += 1
+            if heartbeat is not None:
+                heartbeat.bump()
 
             mic_arr = np.frombuffer(mic_bytes, dtype=np.int16).astype(np.float32)
             ref_arr = np.frombuffer(ref_bytes, dtype=np.int16).astype(np.float32)
@@ -436,8 +444,18 @@ def main() -> int:
     ref_t.start()
     mic_t.start()
 
+    # Tier 1 of the resilience ladder. Bumped after each successful
+    # frame in `_aec_loop`; if the loop wedges (e.g. PortAudio
+    # blocked in `out_stream.write` when LoopbackAEC's kernel-side
+    # timer is stuck), systemd's `WatchdogSec=` expires and revives
+    # us via `Restart=on-watchdog` before we ever reach the SIGKILL
+    # that would corrupt snd-aloop's loopback_cable state. See
+    # jasper/watchdog.py header for the full rationale.
+    heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
+    heartbeat.start()
+
     try:
-        _aec_loop(ref_q, mic_q, engine)
+        _aec_loop(ref_q, mic_q, engine, heartbeat=heartbeat)
     except BridgeStalled as e:
         logger.error("%s", e)
         _shutdown.set()
@@ -447,6 +465,7 @@ def main() -> int:
         _shutdown.set()
         return 1
     finally:
+        heartbeat.stop()
         engine.close()
         ref_t.join(timeout=2)
         mic_t.join(timeout=2)

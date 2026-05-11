@@ -18,6 +18,7 @@ from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
+from .watchdog import Heartbeat
 from .google_creds import GoogleClients, build_google_clients
 from .renderer import RendererClient
 from .spotify_router import Router, build_clients
@@ -927,6 +928,7 @@ class WakeLoop:
         volume_coordinator: "VolumeCoordinator",
         cues: AudioCueManager | None = None,
         camilla: CamillaController | None = None,
+        heartbeat: "Heartbeat | None" = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -945,6 +947,13 @@ class WakeLoop:
         self._stop_event = stop_event
         self._volume_coordinator = volume_coordinator
         self._cues = cues
+        # Tier 1 of the resilience ladder. Bumped on every mic frame
+        # — i.e. proof that audio capture is alive AND the async loop
+        # is iterating. If either dies (PortAudio wedge, asyncio
+        # deadlock, mic device disappearance), the heartbeat thread
+        # stops patting systemd and `Restart=on-watchdog` revives us
+        # with a fresh process. See jasper/watchdog.py.
+        self._heartbeat = heartbeat
 
         # Local Silero VAD for in-session barge-in gating. While the
         # model is producing TTS, mic frames are forwarded to Gemini
@@ -1139,6 +1148,8 @@ class WakeLoop:
 
     async def run(self) -> None:
         async for frame in self._mic.frames():
+            if self._heartbeat is not None:
+                self._heartbeat.bump()
             if self._stop_event.is_set():
                 if self._state is State.SESSION:
                     await self._end_turn()
@@ -2020,12 +2031,22 @@ async def run() -> None:
             # daemon's other voice paths still work.
             _schedule_cue_regen(cues_manager)
 
+            # Tier 1 of the resilience ladder. Bumped on every mic
+            # frame inside WakeLoop.run; pairs with `Type=notify` +
+            # `WatchdogSec=30s` in jasper-voice.service. If the
+            # async loop wedges or mic capture dies, the heartbeat
+            # stops patting and systemd revives us cleanly via
+            # `Restart=on-watchdog` before SIGKILL is needed. See
+            # jasper/watchdog.py header.
+            heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
+            heartbeat.start()
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
                 volume_coordinator=volume_coordinator,
                 cues=cues_manager,
                 camilla=camilla,
+                heartbeat=heartbeat,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
@@ -2051,6 +2072,7 @@ async def run() -> None:
             try:
                 await wake_loop.run()
             finally:
+                heartbeat.stop()
                 control_socket.close()
                 try:
                     await control_socket.wait_closed()

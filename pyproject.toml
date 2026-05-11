@@ -76,6 +76,15 @@ dependencies = [
     # than shelling to `bluetoothctl` (parsing its output is flaky
     # across versions). Pure-Python, no C extension.
     "dbus-next>=0.2.3",
+    # systemd watchdog notification (sd_notify protocol). The Tier 1
+    # rung of the resilience ladder: each daemon's main loop bumps
+    # a `last_progress` sentinel; a heartbeat thread reads it and
+    # only pats systemd if the loop is actually making progress.
+    # If progress stops (e.g. PortAudio blocked in a syscall holding
+    # the GIL — the bridge failure mode from 2026-05-11), systemd's
+    # WatchdogSec= timer expires and `Restart=on-watchdog` revives
+    # the daemon with a fresh process. Pure-Python, ~5 kB.
+    "sdnotify>=0.3.2",
 ]
 
 [project.optional-dependencies]

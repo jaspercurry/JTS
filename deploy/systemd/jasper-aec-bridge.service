@@ -38,7 +38,25 @@ Wants=jasper-aec-init.service
 PartOf=jasper-camilla.service
 
 [Service]
-Type=simple
+# Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
+# emit `READY=1` (via sdnotify, see jasper/watchdog.py) before
+# systemd considers it active. `WatchdogSec=30s` requires the daemon
+# to pat the watchdog every < 30 s; the daemon's heartbeat thread
+# only pats if its work loop has made progress recently (sentinel
+# pattern). If the loop wedges (PortAudio blocked in a syscall
+# holding the GIL — the 2026-05-11 incident), `WATCHDOG=1` stops
+# firing, this timer expires, and `Restart=on-watchdog` revives us
+# with a fresh process. Critically, this happens BEFORE the SIGTERM
+# timeout / SIGKILL that would otherwise corrupt snd-aloop's
+# kernel-side loopback_cable state and require a reboot.
+#
+# `TimeoutStopSec=5s` is the matching shorter SIGTERM grace period
+# (down from systemd's default 90 s). If the daemon can't shut down
+# in 5 s, it's wedged and we want to get to SIGKILL+restart fast
+# rather than accumulating wedge time.
+Type=notify
+WatchdogSec=30s
+TimeoutStopSec=5s
 # Pull JASPER_AEC_REF_GAIN_DB, JASPER_AEC_MIC_GAIN_DB, JASPER_AEC_AGC2
 # from the same env file jasper-voice uses. Leading `-` makes systemd
 # skip the file silently if it's absent (e.g. fresh install before
@@ -47,7 +65,10 @@ Type=simple
 # safe — but the production tuning values won't be applied.
 EnvironmentFile=-/etc/jasper/jasper.env
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
-Restart=on-failure
+# `Restart=on-watchdog` covers BOTH clean failure (non-zero exit,
+# segfault) AND watchdog timeouts. `on-failure` would miss the
+# watchdog case; this is strictly broader.
+Restart=on-watchdog
 RestartSec=2
 Nice=-10
 IOSchedulingClass=realtime
