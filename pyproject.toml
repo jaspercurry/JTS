@@ -103,6 +103,8 @@ jasper-satellite-onboard = "jasper.cli.satellite_onboard:main"
 jasper-cues = "jasper.cues.cli:main"
 jasper-input = "jasper.accessories.bridge:main"
 jasper-bluetooth-web = "jasper.web.bluetooth_setup:main"
+jasper-airplay-mode = "jasper.cli.airplay_mode:main"
+jasper-airplay-web = "jasper.web.airplay_setup:main"
 
 [build-system]
 requires = ["setuptools>=68"]

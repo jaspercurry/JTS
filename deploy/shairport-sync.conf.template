@@ -1,4 +1,12 @@
-// JTS shairport-sync config — AirPlay 2 receiver into snd-aloop.
+// JTS shairport-sync config TEMPLATE — AirPlay 2 receiver into
+// snd-aloop. Rendered to /etc/shairport-sync.conf by
+// `jasper-apply-airplay-mode` (script installed to /usr/local/sbin/).
+// The renderer substitutes `__DISABLE_SYNCHRONIZATION__` based on
+// `JASPER_AIRPLAY_FREE_RUNNING` in /var/lib/jasper/airplay_mode.env.
+// Default = yes (free-running). Toggle via http://jts.local/airplay/
+// or `jasper-airplay-mode set [free-running|synced]`. See
+// jasper/web/airplay_setup.py for the toggle UX and rationale.
+//
 // Requires source-built shairport-sync with --with-airplay-2 plus
 // nqptp.service running (UDP 319/320). The Debian Trixie apt package
 // is AP1-only — install.sh source-builds the AP2 variant.
@@ -63,7 +71,14 @@ alsa = {
     // plug layer.
     output_format = "S32";
     use_mmap_if_available = "no";
-    disable_synchronization = "no";
+    // Templated — see file header. With JTS's snd-aloop -> CamillaDSP
+    // -> dmix -> USB DAC chain, shairport's sample-stuffing fires
+    // audible glitches every ~60s even after the priority/buffer/drift
+    // fixes (mikebrady/shairport-sync#1980). Free-running ("yes")
+    // eliminates them — trades A/V sync for video AirPlay and inter-
+    // speaker sync for multi-room. Default for JTS is "yes" because
+    // typical use is single-speaker music.
+    disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
 };
 
 metadata = {

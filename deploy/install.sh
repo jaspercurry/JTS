@@ -300,9 +300,35 @@ install_renderers() {
         useradd -r -M -s /usr/sbin/nologin -g shairport-sync -G audio shairport-sync
     fi
 
+    # shairport-sync config is templated: deploy/shairport-sync.conf.template
+    # has a __DISABLE_SYNCHRONIZATION__ placeholder substituted by
+    # /usr/local/sbin/jasper-apply-airplay-mode based on
+    # /var/lib/jasper/airplay_mode.env. shairport-sync.service's
+    # ExecStartPre re-renders on every restart, so toggling the mode
+    # (via /airplay/ web UI or jasper-airplay-mode CLI) is just an
+    # env-file write + systemctl restart shairport-sync.
     install -m 0644 \
-        "${REPO_DIR}/deploy/shairport-sync.conf" \
-        /etc/shairport-sync.conf
+        "${REPO_DIR}/deploy/shairport-sync.conf.template" \
+        /etc/shairport-sync.conf.template
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
+        /usr/local/sbin/jasper-apply-airplay-mode
+    # Default to free-running: it eliminates the periodic glitches on
+    # this audio chain (PR #75 + mikebrady/shairport-sync#1980).
+    # Users who AirPlay video or run multi-room AirPlay flip to
+    # "synced" via /airplay/. Preserve an existing setting across
+    # reinstalls — the user may have toggled to synced deliberately.
+    if [[ ! -e /var/lib/jasper/airplay_mode.env ]]; then
+        install -d -m 0755 /var/lib/jasper
+        printf 'JASPER_AIRPLAY_FREE_RUNNING=yes\n' \
+            > /var/lib/jasper/airplay_mode.env
+        chmod 0644 /var/lib/jasper/airplay_mode.env
+        echo "  /var/lib/jasper/airplay_mode.env defaulted to free-running."
+    fi
+    # Seed /etc/shairport-sync.conf so the first start of shairport-sync
+    # has a valid config. ExecStartPre re-renders on every subsequent
+    # restart, picking up any changes made via the web UI / CLI.
+    /usr/local/sbin/jasper-apply-airplay-mode
 
     # bluez-alsa-utils + bluez-tools were apt-installed in install_deps.
     # Configure /etc/bluetooth/main.conf for speaker-mode (Just Works
@@ -595,6 +621,11 @@ Will retry on next boot."
     # so /bluetooth/ is live and ready before nginx reloads with the
     # new location block (which proxies to it).
     systemctl restart jasper-bluetooth-web.service 2>/dev/null || true
+    # jasper-web hosts /spotify/, /voice/, /google/, and /airplay/.
+    # Restart so code changes (e.g. new wizard threads or page tweaks)
+    # land without waiting for the next reboot. It uses Restart=on-failure,
+    # so it stays on stale code through an upgrade otherwise.
+    systemctl restart jasper-web.service 2>/dev/null || true
 
     # NOTE: jasper-aec-bridge + jasper-aec-init are installed but
     # NOT enabled by default. Software AEC is opt-in — see CLAUDE.md
