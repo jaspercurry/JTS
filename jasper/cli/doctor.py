@@ -285,26 +285,38 @@ def check_mic_capture(cfg: Config) -> CheckResult:
 
 
 def check_tts_open(cfg: Config) -> CheckResult:
+    """Verify TTS output device is enumerable. Doesn't actually open the
+    stream — opening + starting a `sd.RawOutputStream` against a dmix
+    device races with the running jasper-voice (which holds a writer
+    open) and historically produced false-negative "can't open" errors
+    while TTS was provably working. `query_devices` is enough to confirm
+    the device exists in PortAudio's enumeration and has output
+    channels available."""
     try:
         import sounddevice as sd
-        # Open at the configured output_rate (TtsPlayout upsamples
-        # Gemini's 24 kHz to that). Just open + close — playing audio
-        # would surprise the user.
-        s = sd.RawOutputStream(
-            device=cfg.tts_device, samplerate=cfg.tts_output_rate,
-            channels=1, dtype="int16",
-        )
-        s.start()
-        s.stop()
-        s.close()
+        info = sd.query_devices(cfg.tts_device)
+        if not isinstance(info, dict):
+            return CheckResult(
+                "tts output", "fail",
+                f"sd.query_devices({cfg.tts_device!r}) returned unexpected "
+                f"shape {type(info).__name__}",
+            )
+        if int(info.get("max_output_channels", 0)) < 1:
+            return CheckResult(
+                "tts output", "fail",
+                f"{cfg.tts_device} enumerated but reports 0 output channels. "
+                f"Check /root/.asoundrc and that jasper-camilla is running.",
+            )
         return CheckResult(
             "tts output", "ok",
-            f"{cfg.tts_device} @ {cfg.tts_output_rate} Hz",
+            f"{cfg.tts_device} present (default rate "
+            f"{int(info.get('default_samplerate', 0))} Hz, "
+            f"out channels {info.get('max_output_channels')})",
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             "tts output", "fail",
-            f"can't open {cfg.tts_device}: {e}. "
+            f"can't enumerate {cfg.tts_device}: {e}. "
             f"Check /root/.asoundrc and that jasper-camilla is running.",
         )
 
@@ -525,15 +537,49 @@ def check_bluealsa() -> CheckResult:
 
 
 def check_spotify_cache(cfg: Config) -> CheckResult:
+    """Verify Spotify is authenticated. Prefers the multi-account
+    registry (per-household-member accounts, the modern path) over the
+    legacy single-account cache. Reports OK if either has a usable
+    refresh token. The earlier "cache missing" warning was a false
+    positive on installs using only the multi-account setup."""
     if not cfg.spotify_enabled:
         return CheckResult("Spotify auth", "ok", "not configured (skipped)")
+    # Modern path: per-account registry at spotify_accounts_path.
+    try:
+        from ..accounts import Registry
+        registry = Registry.load(cfg.spotify_accounts_path)
+    except Exception:  # noqa: BLE001
+        registry = None
+    if registry is not None and registry.accounts:
+        authed = []
+        for acct in registry.accounts:
+            try:
+                if Path(acct.cache_path).exists():
+                    authed.append(acct.name)
+            except (OSError, AttributeError):
+                pass
+        if authed:
+            return CheckResult(
+                "Spotify auth", "ok",
+                f"{len(authed)} account(s) cached: {', '.join(authed)}",
+            )
+        return CheckResult(
+            "Spotify auth", "warn",
+            f"{len(registry.accounts)} account(s) registered but no token "
+            f"caches found under {Path(cfg.spotify_accounts_path).parent}/"
+            f"caches/. Visit {cfg.spotify_setup_url} to re-link.",
+        )
+    # Fall back to legacy single-account cache for installs that
+    # haven't migrated to the multi-account registry.
     p = Path(cfg.spotify_cache_path)
     if not p.exists():
         return CheckResult(
             "Spotify auth", "warn",
-            f"cache missing at {p}. Run `jasper-spotify-auth` once.",
+            f"no accounts registered ({cfg.spotify_accounts_path}) and "
+            f"no legacy cache at {p}. Visit {cfg.spotify_setup_url} to "
+            f"link an account.",
         )
-    return CheckResult("Spotify auth", "ok", f"refresh token cached at {p}")
+    return CheckResult("Spotify auth", "ok", f"legacy cache at {p}")
 
 
 def check_spotify_connect_device(cfg: Config) -> CheckResult:
