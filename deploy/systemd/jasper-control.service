@@ -36,7 +36,15 @@ RestartSec=2
 # WebSocket to CamillaDSP, and binds an HTTP port. No filesystem
 # writes outside transient sockets.
 ProtectSystem=full
-ProtectHome=true
+# `read-only` (not `true`) so subprocesses inherited by jasper-control
+# can read /root/.asoundrc. The /system dashboard runs jasper-doctor
+# as a subprocess for the diagnostics card; its ALSA-enumeration
+# probes (sd.query_devices for jasper_out) need /root/.asoundrc to
+# be readable. With ProtectHome=true the dir is mode 0 inside the
+# unit's namespace and ALSA can't find any of the custom PCMs.
+# Read-only still blocks the security-relevant case (write to
+# user home dirs); we don't need write access for diagnostics.
+ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
 
