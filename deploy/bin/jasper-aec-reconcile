@@ -225,27 +225,36 @@ run_systemctl() {
     "$SYSTEMCTL" "$@" || true
 }
 
+reset_failed_units() {
+    local unit
+    for unit in "$@"; do
+        if "$SYSTEMCTL" is-failed --quiet "$unit"; then
+            run_systemctl reset-failed "$unit"
+        fi
+    done
+}
+
 stop_disable_aec() {
     run_systemctl stop jasper-aec-bridge.service jasper-aec-init.service
     run_systemctl disable jasper-aec-bridge.service jasper-aec-init.service
-    run_systemctl reset-failed jasper-aec-bridge.service jasper-aec-init.service
+    reset_failed_units jasper-aec-bridge.service jasper-aec-init.service
 }
 
 enable_start_aec() {
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
-    run_systemctl reset-failed jasper-aec-init.service jasper-aec-bridge.service
+    reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
     run_systemctl start jasper-aec-init.service
     run_systemctl restart jasper-aec-bridge.service
 }
 
 restart_voice() {
-    run_systemctl reset-failed jasper-voice.service
+    reset_failed_units jasper-voice.service
     run_systemctl restart jasper-voice.service
 }
 
 stop_voice() {
     run_systemctl stop jasper-voice.service
-    run_systemctl reset-failed jasper-voice.service
+    reset_failed_units jasper-voice.service
 }
 
 load_env_file "$ENV_FILE"
