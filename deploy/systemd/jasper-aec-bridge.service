@@ -67,6 +67,10 @@ TimeoutStopSec=5s
 # (ref_gain=0 dB, mic_gain=0 dB, agc2=off) so a missing env file is
 # safe — but the production tuning values won't be applied.
 EnvironmentFile=-/etc/jasper/jasper.env
+# Skip cleanly when the XVF Array is absent, on 2-channel firmware, or
+# the operator has disabled AEC. The reconciler owns env/service state;
+# this condition keeps manual starts from re-entering a crash loop.
+ExecCondition=/usr/local/sbin/jasper-aec-reconcile --check-aec-ready
 ExecStart=/opt/jasper/.venv/bin/jasper-aec-bridge
 # `Restart=on-failure` covers non-zero exit + signals + watchdog
 # timeouts (per the table in systemd.service(5)). The previous

@@ -1,0 +1,339 @@
+#!/usr/bin/env bash
+# Reconcile JTS mic/AEC state with the audio hardware currently present.
+#
+# This is intentionally a small policy layer around /etc/jasper/jasper.env
+# and systemd. It keeps a stale JASPER_MIC_DEVICE=udp:PORT from stranding
+# jasper-voice when the XVF Array is unplugged, while leaving a narrow config
+# hook for future microphones via JASPER_MIC_DEVICE_CANDIDATES.
+
+set -euo pipefail
+
+ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
+MODE_FILE="${JASPER_AEC_MODE_FILE:-/var/lib/jasper/aec_mode.env}"
+ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
+SYSTEMCTL="${JASPER_SYSTEMCTL:-systemctl}"
+REASON="manual"
+CHECK_ONLY=0
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-aec-reconcile [--reason TEXT] [--check-aec-ready]
+
+Reconcile microphone/AEC systemd state:
+  - auto + 6-channel Array present -> JASPER_MIC_DEVICE=udp:PORT, AEC on
+  - auto + direct mic present only -> JASPER_MIC_DEVICE=<mic>, AEC off
+  - owned mic config + no mic present -> clear stale UDP, stop voice
+  - custom JASPER_MIC_DEVICE -> leave voice config alone, keep AEC off
+
+--check-aec-ready exits 0 only when AEC mode is auto and the configured
+AEC mic is present with 6 channels. It performs no mutations and is used as
+jasper-aec-bridge.service's ExecCondition.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            REASON="${2:-manual}"
+            shift 2
+            ;;
+        --check-aec-ready)
+            CHECK_ONLY=1
+            shift
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+log() {
+    echo "jasper-aec-reconcile[$REASON]: $*" >&2
+}
+
+load_env_file() {
+    local file="$1"
+    if [[ -f "$file" ]]; then
+        # shellcheck disable=SC1090
+        set -a
+        source "$file"
+        set +a
+    fi
+}
+
+ensure_mode_file() {
+    if [[ -f "$MODE_FILE" ]]; then
+        return
+    fi
+    install -d -m 0755 "$(dirname "$MODE_FILE")"
+    printf 'JASPER_AEC_MODE=auto\n' > "$MODE_FILE"
+    chmod 0644 "$MODE_FILE"
+}
+
+quote_env_value() {
+    printf '%q' "$1"
+}
+
+set_env_var() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local dir tmp quoted
+
+    dir="$(dirname "$file")"
+    install -d -m 0755 "$dir"
+    tmp="$(mktemp "${dir}/.${key}.XXXXXX")"
+    quoted="$(quote_env_value "$value")"
+
+    if [[ -f "$file" ]]; then
+        awk -v key="$key" -v line="${key}=${quoted}" '
+            $0 ~ "^[[:space:]]*" key "=" {
+                if (!done) {
+                    print line
+                    done = 1
+                }
+                next
+            }
+            { print }
+            END {
+                if (!done) {
+                    print line
+                }
+            }
+        ' "$file" > "$tmp"
+    else
+        printf '%s=%s\n' "$key" "$quoted" > "$tmp"
+    fi
+
+    chmod 0600 "$tmp"
+    mv "$tmp" "$file"
+}
+
+normalize_mode() {
+    local mode="${1:-auto}"
+    mode="$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+    case "$mode" in
+        auto|"")
+            echo "auto"
+            ;;
+        disabled|disable|off|false|0|no)
+            echo "disabled"
+            ;;
+        *)
+            log "unknown JASPER_AEC_MODE=${mode}; treating as disabled"
+            echo "disabled"
+            ;;
+    esac
+}
+
+card_id_from_spec() {
+    local spec="$1"
+    if [[ "$spec" =~ CARD=([^,]+) ]]; then
+        echo "${BASH_REMATCH[1]}"
+    elif [[ "$spec" =~ ^(hw|plughw):([^,]+) ]]; then
+        echo "${BASH_REMATCH[2]}"
+    else
+        echo "$spec"
+    fi
+}
+
+card_stream_file() {
+    local spec="$1"
+    local card
+    card="$(card_id_from_spec "$spec")"
+    echo "${ASOUND_ROOT}/${card}/stream0"
+}
+
+mic_present() {
+    local spec="$1"
+    [[ -f "$(card_stream_file "$spec")" ]]
+}
+
+mic_channels() {
+    local spec="$1"
+    local stream channels
+    stream="$(card_stream_file "$spec")"
+    if [[ ! -f "$stream" ]]; then
+        echo 0
+        return
+    fi
+    channels="$(grep -E "Channels:[[:space:]]*[0-9]+" "$stream" \
+        | head -1 \
+        | grep -oE "[0-9]+" \
+        || true)"
+    echo "${channels:-0}"
+}
+
+aec_ready() {
+    local mic="$1"
+    [[ "$(mic_channels "$mic")" == "6" ]]
+}
+
+split_candidates() {
+    local raw="$1"
+    raw="${raw//,/ }"
+    # shellcheck disable=SC2206
+    MIC_CANDIDATES=($raw)
+}
+
+first_candidate() {
+    if [[ ${#MIC_CANDIDATES[@]} -gt 0 ]]; then
+        echo "${MIC_CANDIDATES[0]}"
+    else
+        echo "$AEC_MIC_DEVICE"
+    fi
+}
+
+first_present_candidate() {
+    local candidate
+    for candidate in "${MIC_CANDIDATES[@]}"; do
+        if mic_present "$candidate"; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+is_candidate_value() {
+    local value="$1"
+    local candidate
+    for candidate in "${MIC_CANDIDATES[@]}"; do
+        [[ "$value" == "$candidate" ]] && return 0
+    done
+    return 1
+}
+
+is_owned_mic_value() {
+    local value="$1"
+    local udp_device="$2"
+    [[ -z "$value" ]] && return 0
+    [[ "$value" == "$udp_device" ]] && return 0
+    [[ "$value" == udp:* ]] && return 0
+    [[ "$value" =~ ^hw:[0-9]+,1$ ]] && return 0
+    is_candidate_value "$value" && return 0
+    return 1
+}
+
+run_systemctl() {
+    "$SYSTEMCTL" "$@" || true
+}
+
+stop_disable_aec() {
+    run_systemctl stop jasper-aec-bridge.service jasper-aec-init.service
+    run_systemctl disable jasper-aec-bridge.service jasper-aec-init.service
+    run_systemctl reset-failed jasper-aec-bridge.service jasper-aec-init.service
+}
+
+enable_start_aec() {
+    run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+    run_systemctl reset-failed jasper-aec-init.service jasper-aec-bridge.service
+    run_systemctl start jasper-aec-init.service
+    run_systemctl restart jasper-aec-bridge.service
+}
+
+restart_voice() {
+    run_systemctl reset-failed jasper-voice.service
+    run_systemctl restart jasper-voice.service
+}
+
+stop_voice() {
+    run_systemctl stop jasper-voice.service
+    run_systemctl reset-failed jasper-voice.service
+}
+
+load_env_file "$ENV_FILE"
+if [[ "$CHECK_ONLY" != "1" ]]; then
+    ensure_mode_file
+fi
+load_env_file "$MODE_FILE"
+
+AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
+AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-Array}"
+AEC_UDP_PORT="${JASPER_AEC_UDP_PORT:-9876}"
+UDP_DEVICE="udp:${AEC_UDP_PORT}"
+split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-$AEC_MIC_DEVICE}"
+CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+    if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
+        exit 0
+    fi
+    exit 1
+fi
+
+FALLBACK_MIC="$(first_candidate)"
+PRESENT_MIC=""
+if PRESENT_MIC="$(first_present_candidate)"; then
+    :
+else
+    PRESENT_MIC=""
+fi
+
+log "mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>}"
+
+if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
+    log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"
+    stop_disable_aec
+    exit 0
+fi
+
+if [[ "$AEC_MODE" == "disabled" ]]; then
+    stop_disable_aec
+    if [[ -n "$PRESENT_MIC" ]]; then
+        if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
+            set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
+            log "AEC disabled; selected direct mic ${PRESENT_MIC}"
+        else
+            log "AEC disabled; direct mic already ${PRESENT_MIC}"
+        fi
+        restart_voice
+    else
+        if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" ]]; then
+            set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$FALLBACK_MIC"
+            log "AEC disabled and no candidate mic present; cleared stale UDP to ${FALLBACK_MIC}"
+        else
+            log "AEC disabled and no candidate mic present"
+        fi
+        stop_voice
+    fi
+    exit 0
+fi
+
+if aec_ready "$AEC_MIC_DEVICE"; then
+    if [[ "$CURRENT_MIC" != "$UDP_DEVICE" ]]; then
+        set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
+        log "6-channel ${AEC_MIC_DEVICE} present; selected AEC UDP mic ${UDP_DEVICE}"
+    else
+        log "6-channel ${AEC_MIC_DEVICE} present; AEC UDP mic already selected"
+    fi
+    enable_start_aec
+    restart_voice
+    exit 0
+fi
+
+stop_disable_aec
+if [[ -n "$PRESENT_MIC" ]]; then
+    if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
+        set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
+        log "AEC mic not 6-channel; selected direct mic ${PRESENT_MIC}"
+    else
+        log "AEC mic not 6-channel; direct mic already ${PRESENT_MIC}"
+    fi
+    restart_voice
+    exit 0
+fi
+
+if [[ "$CURRENT_MIC" == udp:* || -z "$CURRENT_MIC" || "$CURRENT_MIC" =~ ^hw:[0-9]+,1$ ]]; then
+    set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$FALLBACK_MIC"
+    log "no candidate mic present; cleared stale ${CURRENT_MIC:-<unset>} to ${FALLBACK_MIC}"
+else
+    log "no candidate mic present"
+fi
+stop_voice

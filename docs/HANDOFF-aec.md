@@ -18,18 +18,33 @@ pick up the work without re-doing the investigation.
 ## TL;DR / current state
 
 **The software AEC bridge is shipped and auto-enabled when the chip
-is on the 6-channel firmware variant.** `install.sh` calls
-`enable_aec_if_compatible` near the end and (a) flips
-`JASPER_MIC_DEVICE` to `udp:9876` and (b) enables / starts
-`jasper-aec-init` + `jasper-aec-bridge`. The chip's on-board AEC
-is not in the audio path — this doc explains why.
+is on the 6-channel firmware variant.** `install.sh` seeds
+`/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, enables
+`jasper-aec-reconcile.service`, and runs the reconciler once. The
+reconciler flips `JASPER_MIC_DEVICE` to `udp:9876` only when the
+configured AEC mic is actually present with 6-channel firmware, then
+enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The chip's
+on-board AEC is not in the audio path — this doc explains why.
 
-To turn the bridge OFF (or back to chip-direct mic for A/B
-testing): `sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=Array|'
-/etc/jasper/jasper.env` and restart `jasper-voice`. The
-`jasper-aec-bridge` service can then be disabled with `systemctl
-disable --now jasper-aec-bridge jasper-aec-init` if you also want
-to reclaim the ~95 MB the bridge process uses.
+To turn the bridge OFF (or back to chip-direct mic for A/B testing),
+set the state file to disabled and run the reconciler:
+
+```sh
+printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
+```
+
+To return to auto mode:
+
+```sh
+printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
+```
+
+The reconciler also handles stale hardware state. If the Array is
+absent after a previous AEC-enabled boot, it clears the stale
+`JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice
+instead of leaving wake-word on an unfed UDP socket.
 
 The bridge→voice transport is **UDP localhost** (default
 `127.0.0.1:9876`), not snd-aloop. The original `LoopbackAEC`
@@ -556,14 +571,21 @@ Files involved in the AEC subsystem:
 - `deploy/systemd/jasper-aec-bridge.service` — runs
   `jasper-aec-bridge` Python daemon
 - `deploy/systemd/jasper-aec-init.service` — oneshot at boot
+- `deploy/bin/jasper-aec-reconcile` +
+  `deploy/systemd/jasper-aec-reconcile.service` — keeps
+  `JASPER_MIC_DEVICE`, AEC service enablement, and current mic
+  hardware in sync so stale `udp:9876` does not strand voice when
+  the Array is absent
 - `deploy/install.sh` — installs all of the above; builds the
   `jasper_aec3` pybind11 binding against `libwebrtc-audio-processing-dev`;
-  installs `dfu-util` for chip firmware operations
+  installs `dfu-util` for chip firmware operations; seeds
+  `/var/lib/jasper/aec_mode.env` and runs the reconciler once
 - `pyproject.toml` — registers `jasper-aec-bridge`,
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
-- `.env.example` — `JASPER_MIC_DEVICE=udp:9876` for bridge→voice
-  UDP transport
+- `.env.example` — mic/AEC env knobs:
+  `JASPER_AEC_MIC_DEVICE`, `JASPER_MIC_DEVICE_CANDIDATES`, UDP
+  transport settings, and tuning gains
 - `scripts/aec-probe-latency.sh` — chirp + cross-correlation
   measurement of end-to-end ref-to-mic delay (used to set the AEC3
   binding's `stream_delay_ms` default)

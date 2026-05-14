@@ -798,10 +798,10 @@ def check_aec_bridge_running() -> CheckResult:
     renderer→camilla loopback as far-end reference. Output goes over
     UDP localhost, which jasper-voice consumes as its mic source.
 
-    The bridge is OPT-IN (not enabled by default) — see CLAUDE.md
-    "Acoustic echo cancellation" for the rationale. So an
-    "inactive + disabled" state is fine, and we differentiate it
-    from "enabled but crashed"."""
+    The bridge is reconciler-managed: enabled when the configured
+    AEC mic is present with 6-channel firmware, disabled otherwise.
+    So an "inactive + disabled" state is fine, and we differentiate
+    it from "enabled but crashed"."""
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
     if is_active == "active":
@@ -809,7 +809,7 @@ def check_aec_bridge_running() -> CheckResult:
     if is_enabled in ("disabled", "static"):
         return CheckResult(
             "AEC bridge service", "ok",
-            "disabled (software AEC opt-in; jasper-voice reads chip directly)",
+            "disabled (reconciler selected direct mic or no AEC-capable mic)",
         )
     # enabled but not active = crashed
     return CheckResult(
