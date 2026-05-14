@@ -37,11 +37,11 @@ This is the **only** supported deploy path. It does, in order:
    set — `pip install -e`'s into `/opt/jasper/.venv` (the runtime),
    writes `/var/lib/jasper/build.txt`, migrates units to socket
    activation, conditionally enables AEC on 6-ch firmware
-4. `systemctl restart jasper-voice jasper-control` — picks up
-   the new code on the Python daemons that actually run application
-   code. `jasper-camilla` is the Rust camilladsp binary (not
-   restarted); `jasper-aec-bridge` is reconciler-managed and only
-   restarted during deploy when `JASPER_DEPLOY_RESTART_AEC=1` is set.
+4. `systemctl restart jasper-control` + `systemctl start
+   jasper-aec-reconcile` — picks up Python control code and lets the
+   mic/AEC reconciler restart or park `jasper-voice` according to the
+   hardware actually present. `jasper-camilla` is the Rust camilladsp
+   binary (not restarted).
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
 That flow exists historically but misses:
@@ -52,8 +52,7 @@ That flow exists historically but misses:
   flips — a one-time event)
 
 **Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
-(install but don't restart), `JASPER_DEPLOY_RESTART_AEC=1`,
-`PI_HOST=...`, `PI_USER=...`.
+(install but don't restart/reconcile), `PI_HOST=...`, `PI_USER=...`.
 
 **Verify the deploy landed:**
 - `http://jts.local/system/` → Software card shows the matching
