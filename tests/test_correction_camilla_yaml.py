@@ -36,10 +36,15 @@ def test_empty_peqs_yields_pipeline_with_only_flat():
     yaml = emit_correction_config([])
     # Devices.
     assert "samplerate: 48000" in yaml
+    assert "target_level: 4096" in yaml
     assert 'device: "plug:jasper_capture"' in yaml
     assert "format: S32_LE" in yaml
     assert 'device: "jasper_out"' in yaml
     assert "format: S16_LE" in yaml
+    # v1.yml contract: kernel-side rate adjust OR AsyncSinc, never both.
+    assert "enable_rate_adjust: true" in yaml
+    assert "resampler:" not in yaml
+    assert "AsyncSinc" not in yaml
     # master_gain mixer preserved.
     assert "master_gain:" in yaml
     assert "{ in: 2, out: 2 }" in yaml

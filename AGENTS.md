@@ -66,6 +66,37 @@ applicable until there's a laptop checkout.
 
 ---
 
+## Speaker hostname — single source of truth
+
+`JASPER_HOSTNAME` (default `jts.local`) is the canonical name other
+devices type in to reach the speaker. Set in `/etc/jasper/jasper.env`.
+
+What derives from it (so you only set it once):
+- Python: `Config.hostname` plus `JASPER_MANAGEMENT_URL` and
+  `JASPER_SPOTIFY_SETUP_URL` defaults (`http://${JASPER_HOSTNAME}` and
+  `http://${JASPER_HOSTNAME}/spotify` respectively).
+- Bash scripts under `scripts/`: every `PI_HOST` default falls back to
+  `${JASPER_HOSTNAME:-jts.local}`. So if you also export
+  `JASPER_HOSTNAME` in your laptop shell, `fetch-pi-logs.sh`,
+  `tail-pi-logs.sh`, `switch-voice-provider.sh`, etc. all target the
+  right host without per-script overrides.
+
+What does NOT derive (intentionally):
+- The Pi's actual mDNS hostname (set with `hostnamectl set-hostname`
+  + Avahi). Setting `JASPER_HOSTNAME` doesn't change what the Pi
+  advertises — that's a separate, OS-level concern. Run hostnamectl
+  first; then point `JASPER_HOSTNAME` at it.
+- The Spotify OAuth bounce page at
+  `https://jaspercurry.github.io/spotify-oauth-callback/` — separate
+  public repo (`jaspercurry/spotify-oauth-callback`). It's hostname-
+  agnostic: the local target is passed in as `?host=<JASPER_HOSTNAME>`
+  on the redirect URI registered with Spotify, validated against an
+  mDNS regex, and used as the redirect target. So changing
+  `JASPER_HOSTNAME` here Just Works against the same hosted page —
+  no fork-and-redeploy.
+
+---
+
 ## Renderer architecture — file map
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
@@ -242,12 +273,55 @@ back.
 
 ---
 
+## librespot — one-time OAuth claim for cold-start voice
+
+`spotify_play "X"` from silence (no AirPlay carrying Spotify) needs
+the Pi's librespot to be authenticated to a Spotify account, because
+the voice tool calls `start_playback(device=JTS)` via the Web API and
+JTS only appears in an account's `sp.devices()` list once that
+account has logged in to it.
+
+Two ways to authenticate librespot:
+
+1. **Phone tap** — open Spotify on any device on the LAN, tap the
+   device picker, select JTS once. The credential is then cached at
+   `/var/cache/librespot` (via `--system-cache` in the systemd unit)
+   and survives librespot restarts.
+2. **Laptop-side OAuth script** — no phone needed:
+
+   ```sh
+   bash scripts/claim-librespot.sh
+   ```
+
+   SSH-tunnels librespot's hardcoded `127.0.0.1:8091` OAuth callback
+   port to your laptop, runs `librespot --enable-oauth`, opens the
+   Spotify auth page in your browser, writes credentials to the same
+   `--system-cache` path. Same end state as the phone tap, just no
+   phone involved.
+
+Either path is one-time per librespot identity. After that, voice
+cold-starts work indefinitely until the cache is cleared.
+
+**Multi-user caveat**: librespot can only be logged in as one user
+at a time. The household member whose account is currently cached
+is the one voice cold-starts will play through. Other members can
+still use their phone's Spotify Connect to claim JTS ad-hoc — that
+overwrites the cache for that session, and they can also claim it
+back when they want voice to play through their account. Per-user
+librespot instances ("JTS-Jasper" / "JTS-Brittany") OAuth-locked
+to each account is the deeper fix; deferred until the friction
+actually bites.
+
+---
+
 ## AEC bridge — opt-in toggle
 
 Software AEC is **built but disabled by default**. README's
-"Acoustic echo cancellation" section explains the trade-off
-(modest attenuation, ~110 MB RAM cost on 1GB Pi 5). The full
-investigation is in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
+"Acoustic echo cancellation" section covers the engine (WebRTC
+AEC3 via the `jasper_aec3` pybind11 binding, −15 to −18 dB on
+music with the production REF_GAIN/MIC_GAIN tunings) and the
+~110 MB RAM cost. The full investigation is in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant (`v2.0.8 6chl`) — the bridge reads raw mic 0 from
@@ -259,11 +333,18 @@ DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
 To enable on the Pi (assumes 6-ch firmware already flashed):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=hw:5,1|' \
+sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=udp:9876|' \
     /etc/jasper/jasper.env
 sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
 sudo systemctl restart jasper-voice
 ```
+
+`install.sh` auto-runs this on the 6-ch firmware so the above is
+only needed if you're flipping between chip-direct and AEC manually.
+The bridge→voice transport is UDP localhost (`udp:9876`) since
+May 2026; the prior snd-aloop `LoopbackAEC` topology was retired
+for resilience reasons — see
+[`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md).
 
 To disable:
 
@@ -468,8 +549,7 @@ them into the calling shell.
 
 ## Behavioral rules for working in this codebase
 
-Per the user's broader rules
-(`github.com/jaspercurry/Codex-rules`) and reinforced for this
+Per the user's CLAUDE.md / broader rules and reinforced for this
 specific project:
 
 - **Diagnose before solving.** If something's broken, fetch the
@@ -487,11 +567,12 @@ specific project:
 - **No silent failure paths.** Any new code path that would
   prevent the speaker from responding to a wake event MUST also
   trigger an audio cue (so the user hears why nothing happened).
-  Add cues by appending a `CueDef` to `jasper/cues/registry.py`
-  and calling `cues.play("<slug>")` from the failure handler —
-  see `docs/HANDOFF-audible-feedback.md` for the full pattern.
-  Cue text must stay provider-agnostic (no "Google" / "Gemini" —
-  voice backend is replaceable).
+  Add cues by appending a `CueDef` to
+  [`jasper/cues/registry.py`](jasper/cues/registry.py) and calling
+  `cues.play("<slug>")` from the failure handler — see
+  [docs/HANDOFF-audible-feedback.md](docs/HANDOFF-audible-feedback.md)
+  for the full pattern. Cue text must stay provider-agnostic
+  (no "Google" / "Gemini" — voice backend is replaceable).
 
 ---
 

@@ -151,9 +151,14 @@ class BridgeStalled(RuntimeError):
     callback simply stops being invoked. There's no in-process
     recovery path; only a new process gets a working stream.
     Hit in production 2026-05-11: bridge silently stopped feeding
-    LoopbackAEC for ~10 minutes, wake-word detection got no audio,
+    the voice mic path for ~10 minutes, wake-word detection got no audio,
     Hey Jarvis was unresponsive with no audible cue.
     """
+
+
+class MicDeviceUnavailable(RuntimeError):
+    """The configured PortAudio mic device is not currently present."""
+
 
 # Clipping counters (module-level for cheap cross-thread access; small
 # race conditions in increment+reset are benign — worst case a single
@@ -197,6 +202,23 @@ class _Aec3Engine:
         # is freed when the Python Aec3 instance is GC'd. No
         # explicit teardown needed.
         pass
+
+
+def _validate_mic_device() -> None:
+    """Fail before opening the shared reference tap if the mic is absent.
+
+    The ref capture reads from `jasper_capture`, the same dsnoop PCM
+    CamillaDSP uses for music. If the mic device is missing, starting
+    the ref reader anyway creates a pointless second reader until the
+    stall watchdog exits. Validate the mic first so missing hardware
+    cannot perturb the music path.
+    """
+    try:
+        sd.query_devices(MIC_DEVICE, "input")
+    except Exception as e:  # noqa: BLE001
+        raise MicDeviceUnavailable(
+            f"mic device {MIC_DEVICE!r} unavailable: {e}"
+        ) from e
 
 
 def _ref_thread(ref_q: Queue) -> None:
@@ -313,7 +335,7 @@ def _aec_loop(  # noqa: PLR0915
     heartbeat: Optional[Heartbeat] = None,
 ) -> None:
     # Post-AEC static gain applied to the engine output before it
-    # reaches LoopbackAEC. Restores level into openWakeWord's training
+    # reaches jasper-voice over UDP. Restores level into openWakeWord's training
     # distribution — the HA Voice PE pattern (`gain_factor: 4`) — when
     # the chip's mic preamp delivers a quiet AEC output. Default 0 dB
     # (off). Soft-clipped via tanh on the way out so high gain doesn't
@@ -495,6 +517,12 @@ def main() -> int:
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_HOST, OUT_PORT, OUT_RATE,
     )
+
+    try:
+        _validate_mic_device()
+    except MicDeviceUnavailable as e:
+        logger.error("%s", e)
+        return 1
 
     engine = _Aec3Engine()
 

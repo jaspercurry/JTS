@@ -9,8 +9,8 @@ no error code, no recovery hook. The bridge sits there, draining
 nothing onto its mic queue.
 
 Without stall detection, `_aec_loop` would log a per-second
-warning forever, never freeing LoopbackAEC to fresh audio, and
-the wake-word detector reading hw:7,1 would stay deaf. This was
+    warning forever, never sending fresh UDP mic frames, and the
+    wake-word detector reading udp:9876 would stay deaf. This was
 hit in production on 2026-05-11: ~10 minutes of silent failure,
 "Hey Jarvis" got no response, no audible cue.
 
@@ -43,8 +43,10 @@ from jasper.cli import aec_bridge  # noqa: E402
 from jasper.cli.aec_bridge import (  # noqa: E402
     BridgeStalled,
     FRAME_SAMPLES,
+    MicDeviceUnavailable,
     _aec_loop,
     _shutdown,
+    _validate_mic_device,
 )
 
 
@@ -147,3 +149,33 @@ def test_disabled_when_threshold_is_zero(monkeypatch):
 
     _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(script), engine)
     engine.process.assert_not_called()
+
+
+def test_validate_mic_device_raises_before_bridge_starts(monkeypatch):
+    """A missing XVF/Array device must fail before the bridge opens the
+    shared `jasper_capture` reference tap used by the music path."""
+    sd_mod = MagicMock()
+    sd_mod.query_devices.side_effect = ValueError(
+        "No input device matching 'Array'"
+    )
+    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+
+    with pytest.raises(MicDeviceUnavailable):
+        _validate_mic_device()
+
+    sd_mod.query_devices.assert_called_once_with("Array", "input")
+
+
+def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
+    """If the mic is absent, do not construct the AEC engine or start
+    capture threads that would touch `jasper_capture`."""
+    sd_mod = MagicMock()
+    sd_mod.query_devices.side_effect = ValueError(
+        "No input device matching 'Array'"
+    )
+    monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    engine_cls = MagicMock()
+    monkeypatch.setattr(aec_bridge, "_Aec3Engine", engine_cls)
+
+    assert aec_bridge.main() == 1
+    engine_cls.assert_not_called()

@@ -109,8 +109,8 @@ pauses the older one so the user gets "latest source wins" UX.
 There's also an opt-in software AEC bridge (`jasper-aec-bridge`)
 that taps the music chain via a `pcm.jasper_capture` dsnoop, runs
 WebRTC AEC3 echo cancellation against the chip's raw mic, and
-emits a cleaned-up mono signal to a second snd-aloop card for
-jasper-voice to consume. Disabled by default — see § below.
+emits a cleaned-up mono signal over UDP localhost for jasper-voice
+to consume. Disabled by default — see § below.
 
 ---
 
@@ -204,7 +204,7 @@ deploy/
   systemd/                      jasper-{camilla,voice,control,mux,aec-bridge,aec-init}
                                 + librespot, shairport-sync, nqptp, bt-agent
   modules-load.d/               snd-aloop autoload
-  modprobe.d/                   snd-aloop two-card config
+  modprobe.d/                   snd-aloop single-card config
   bin/                          jasper-librespot-event (--onevent hook)
   configure-bluez.sh            Speaker-mode pairing config
   shairport-sync.conf           AirPlay 2 receiver config
@@ -396,12 +396,12 @@ or BT pair flow.
 out of 2 GB. On a 1 GB Pi, ~200 MB headroom with AEC on; ~280 MB
 with AEC off.
 
-The two-card snd-aloop and the dsnoop tap stay loaded even when
-the bridge is disabled — they cost essentially nothing and let
-the bridge be enabled later with no further setup. The 6-channel
-XVF firmware (flashed once via DFU) also stays — its channel 0
-is identical to the 2-channel firmware's channel 0, so it's
-benign for non-bridge use.
+The single-card music-chain snd-aloop and the dsnoop tap stay loaded
+even when the bridge is disabled — they cost essentially nothing and
+let the bridge be enabled later with no further setup. The bridge's
+output path is UDP, not a second snd-aloop card. The 6-channel XVF
+firmware (flashed once via DFU) also stays — its channel 0 is identical
+to the 2-channel firmware's channel 0, so it's benign for non-bridge use.
 
 `install.sh` auto-enables AEC if the chip is on the 6-channel
 firmware variant at install time. On 2-channel firmware (the

@@ -22,7 +22,7 @@ general = {
     interpolation = "auto";
     output_backend = "alsa";
     // Default 0.002 s is unachievable in this topology (snd-aloop +
-    // CamillaDSP AsyncSinc + Apple dongle PLL drift). With the default,
+    // CamillaDSP + Apple dongle PLL drift). With the default,
     // shairport corrects on every cycle and the correction itself is
     // the audible glitch. 0.1 s lets nqptp-disciplined natural drift
     // play through without intervention.
@@ -48,6 +48,15 @@ general = {
     //   peak-to-peak fill swing instead of the previous
     //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
+    // Derived by jasper-apply-airplay-mode from the active CamillaDSP
+    // config as:
+    //   -((target_level - chunksize) / samplerate)
+    // Shairport's ALSA handle is the Loopback device, so it cannot
+    // see Camilla/dmix buffering via snd_pcm_delay(). A negative
+    // offset tells shairport to feed audio to Loopback early so
+    // AirPlay video/multi-room sync accounts for the fixed DSP buffer
+    // above CamillaDSP's implicit one-chunk baseline.
+    audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
     // shairport enough headroom to absorb scheduler jitter before
@@ -95,11 +104,10 @@ alsa = {
     use_mmap_if_available = "no";
     // Templated — see file header. With JTS's snd-aloop -> CamillaDSP
     // -> dmix -> USB DAC chain, shairport's sample-stuffing fires
-    // audible glitches every ~60s even after the priority/buffer/drift
-    // fixes (mikebrady/shairport-sync#1980). Free-running ("yes")
-    // eliminates them — trades A/V sync for video AirPlay and inter-
-    // speaker sync for multi-room. Default for JTS is "yes" because
-    // typical use is single-speaker music.
+    // audible glitches every ~60s before the resync_threshold fix
+    // (mikebrady/shairport-sync#1980). Free-running ("yes") is kept
+    // as a fallback — it trades A/V sync for video AirPlay and inter-
+    // speaker sync for multi-room. Default for JTS is "no" (synced).
     disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
 };
 

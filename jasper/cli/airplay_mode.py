@@ -1,10 +1,7 @@
 """jasper-airplay-mode — toggle shairport's drift-correction mode.
 
-Free-running (default) eliminates the periodic glitches the JTS audio
-chain exhibits when shairport tries to actively sync to the AirPlay
-sender's clock (see PR #75 + mikebrady/shairport-sync#1980). Synced
-restores the upstream behavior — needed only for A/V sync when
-AirPlaying video, or for inter-speaker sync in multi-room AirPlay.
+Synced (default) keeps AirPlay video A/V sync and multi-room timing
+intact. Free-running is a fallback for unforeseen DAC-specific issues.
 
 Usage:
     jasper-airplay-mode show
@@ -32,7 +29,7 @@ ENV_VAR = "JASPER_AIRPLAY_FREE_RUNNING"
 
 def _read_mode() -> str:
     """Return 'free-running' or 'synced' based on the env file. Default
-    free-running when the file is missing or the value is unrecognized.
+    synced when the file is missing or the value is unrecognized.
     Raises PermissionError if the file exists but we can't read it
     (caller surfaces a clean message)."""
     try:
@@ -47,10 +44,12 @@ def _read_mode() -> str:
                 v = v.strip()
                 if v.lower() in ("no", "false", "0"):
                     return "synced"
-                return "free-running"
+                if v.lower() in ("yes", "true", "1"):
+                    return "free-running"
+                return "synced"
     except FileNotFoundError:
         pass
-    return "free-running"
+    return "synced"
 
 
 def _write_mode(mode: str) -> None:

@@ -11,10 +11,16 @@ shairport-sync path. It bundles:
   source-cited mechanism details, the diagnostic experiments we've run)
 - An escalation ladder for unknown failure modes
 
-The shipped status is **green** as of 2026-05-11 — synced mode is glitch-free
-on the Apple USB-C dongle after [PR #83](https://github.com/jaspercurry/JTS/pull/83).
-If you're hearing artifacts, something has changed (DAC swap, software
-update, network change, hardware fault). This doc helps you find what.
+The target shipped path is **green** as of 2026-05-14 — synced mode is
+glitch-free on the Apple USB-C dongle with
+[PR #83](https://github.com/jaspercurry/JTS/pull/83)'s shairport fix,
+CamillaDSP `target_level: 4096` on the dsnoop/dmix path, and
+shairport's derived `audio_backend_latency_offset_in_seconds` to keep
+AirPlay video/multi-room timing honest after the larger DSP buffer. With
+the current values, the rendered offset is `-0.064000`. If you're hearing
+artifacts, something has changed (active correction profile, DAC swap,
+software update, network change, hardware fault). This doc helps you
+find what.
 
 ---
 
@@ -35,6 +41,17 @@ mechanism applies to all three), but the diagnostic recipes below
 emphasize AirPlay-specific log signatures. For Spotify Connect issues
 see also [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md).
 
+Also check for sidecar churn before blaming AirPlay. `jasper-voice` and
+`jasper-aec-bridge` are not in the AirPlay music path, but a watchdog
+restart loop can perturb scheduling and make music diagnostics noisy:
+
+```sh
+systemctl is-active jasper-camilla shairport-sync jasper-voice jasper-aec-bridge
+```
+
+If voice/AEC is flapping, pause that investigation separately and get a
+clean music-only window before changing shairport or CamillaDSP knobs.
+
 ---
 
 ## Pattern match: what does your glitch sound like?
@@ -46,6 +63,7 @@ guide.
 | Symptom (audible) | Symptom (in logs) | Likely cause | Section |
 |---|---|---|---|
 | Glitches every ~5–15 s, broken audio | CamillaDSP `Capture read short` floods + `Prepare playback after buffer underrun` every ~5 s | rate_adjust + AsyncSinc oscillating | [Pattern A](#pattern-a--camilladsp-rate_adjust--asyncsinc-oscillation) |
+| Periodic small tears, shairport clean | CamillaDSP `Prepare playback after buffer underrun`, no `Capture read short` flood | CamillaDSP playback target too shallow for dsnoop/dmix path | [Pattern A2](#pattern-a2--camilladsp-playback-buffer-too-shallow) |
 | Glitches every ~60 s, brief tear then quiet | shairport `Large positive sync error +50ms` → `alsa underrun` → `Large negative sync error -485ms` | shairport `resync_threshold` misfire on snd-aloop fill (NOT actual DAC drift) | [Pattern B](#pattern-b--shairport-resync_threshold-misfire-the-classic) |
 | Similar to B but interval varies; appeared after DAC swap | Same as B; possibly with shorter or irregular intervals | DAC crystal drift exceeded continuous-correction headroom (~2500 ppm) | [Pattern C](#pattern-c--dac-swap-drift-exceeds-continuous-correction-headroom) |
 | Random / non-periodic, sometimes worse on busy Pi or at certain times | shairport log mostly clean except occasional events; possibly `Broken pipe`; WiFi RX errors increment | Network, sender, WiFi, or CPU contention | [Pattern D](#pattern-d--non-periodic-glitches-network--sender--cpu) |
@@ -84,6 +102,12 @@ sudo journalctl -u jasper-camilla --since "5 minutes ago" -o cat \
 echo "shairport sync errors: $(sudo journalctl -u shairport-sync --since '5 minutes ago' -o cat | grep -c 'Large positive')"
 echo "camilla short reads:   $(sudo journalctl -u jasper-camilla --since '5 minutes ago' -o cat | grep -c 'Capture read')"
 echo "camilla underruns:     $(sudo journalctl -u jasper-camilla --since '5 minutes ago' -o cat | grep -c 'Prepare playback after buffer underrun')"
+
+# Active Camilla config + live playback-buffer snapshot
+sudo cat /var/lib/camilladsp/statefile.yml
+ACTIVE=$(sudo awk '/config_path:/ {print $2}' /var/lib/camilladsp/statefile.yml)
+sudo grep -nE 'target_level|enable_rate_adjust|resampler|device:' "$ACTIVE"
+/opt/jasper/.venv/bin/python -c 'from camilladsp import CamillaClient; c=CamillaClient("127.0.0.1",1234); c.connect(); print("buffer", c.query("GetBufferLevel"), "rate_adjust", c.query("GetRateAdjust"), "capture_rate", c.query("GetCaptureRate")); c.disconnect()'
 ```
 
 **Expected counts in a healthy state** (5 min sample, music playing):
@@ -96,11 +120,19 @@ camilla underruns:      0
 
 Anything non-zero needs diagnosis.
 
+Decision rule:
+- shairport events non-zero → Pattern B/C/D first.
+- Camilla short reads non-zero → Pattern A first.
+- Camilla underruns non-zero while shairport and short reads are zero → Pattern A2 first.
+- Active config under `/var/lib/camilladsp/configs/` → inspect it; room-correction profiles can persist stale settings even when `/etc/camilladsp/v1.yml` is clean.
+
 ### Full polling diagnostic (5-min run, ~5 min wall time)
 
 Use this when log signatures are inconclusive or you want to characterize
-buffer behavior empirically. Polls the loopback ring fill at 2 Hz alongside
-shairport's journal.
+Pattern B/C behavior empirically. Polls the loopback ring fill at 2 Hz
+alongside shairport's journal. It does **not** measure CamillaDSP's
+playback buffer; for Pattern A2 use `GetBufferLevel` via the CamillaDSP
+websocket command in the fast scan above.
 
 ```sh
 ssh pi@jts.local '
@@ -203,7 +235,8 @@ Not needed since capture device supports rate adjust
 ```
 
 ### Fix
-In `deploy/camilladsp/v1.yml`: **pick exactly one**.
+In every music-path CamillaDSP config, including generated correction
+profiles: **pick exactly one**.
 
 Our shipped config (when capture rate == playback rate, both 48 kHz):
 
@@ -225,9 +258,161 @@ devices:
 Never both. If you see the `Needless 1:1 sample rate conversion` warning
 in `journalctl -u jasper-camilla`, the config is wrong.
 
+Important gotcha: room-correction profiles are generated under
+`/var/lib/camilladsp/configs/` and can be the active config even when
+`/etc/camilladsp/v1.yml` is clean. Check the statefile first:
+
+```sh
+sudo cat /var/lib/camilladsp/statefile.yml
+sudo grep -nE 'enable_rate_adjust|resampler|AsyncSinc' \
+  "$(sudo awk '/config_path:/ {print $2}' /var/lib/camilladsp/statefile.yml)"
+```
+
+If a correction profile contains both `enable_rate_adjust: true` and
+`AsyncSinc`, reset to `/etc/camilladsp/v1.yml` or regenerate after the
+generator fix in `jasper/correction/camilla_yaml.py`.
+
 ### Verify the fix
 After restarting `jasper-camilla`, the 5-min log scan should show **zero**
 `Capture read short` warnings.
+
+---
+
+## Pattern A2 — CamillaDSP playback buffer too shallow
+
+**Status: fixed in the 2026-05-14 target-level + latency-offset update.**
+
+### Symptom
+Small periodic tears while AirPlay is otherwise stable. The important
+distinction from Pattern B: shairport-sync is quiet. The sender is not
+being resynced; CamillaDSP is running out of playback-side buffer.
+
+### Log signature
+
+```text
+shairport-sync: no Large positive / Large negative / underrun entries
+jasper-camilla: PB: Prepare playback after buffer underrun
+jasper-camilla: no Capture read short flood
+```
+
+Live CamillaDSP websocket snapshot in the broken state typically shows
+the playback buffer below the default 1024-sample target:
+
+```text
+buffer 647 rate_adjust 1.0003161 capture_rate 47935
+buffer 761 rate_adjust 1.0003043 capture_rate 47936
+```
+
+Healthy steady state after the fix sits around the new 4096-sample
+target:
+
+```text
+buffer 4046 rate_adjust 1.0004227
+buffer 4472 rate_adjust 1.0004344
+```
+
+### Root cause
+CamillaDSP's default `target_level` is `chunksize`. In this topology,
+that means a 1024-sample playback target (~21 ms at 48 kHz), which can be
+too shallow once capture goes through `plug:jasper_capture` (dsnoop) and
+playback goes through `jasper_out` (dmix). CamillaDSP's own docs say too
+small a `target_level` can produce occasional buffer underruns, and usable
+values can range up to `(2 + queuelimit) * chunksize` when latency is less
+important than underrun margin.
+
+First-principles split:
+- `enable_rate_adjust` handles **long-term clock drift** by nudging the
+  effective capture rate.
+- `target_level` handles **short-term underrun margin** by deciding how
+  much playback-buffer audio should be present when the next processed
+  chunk arrives.
+
+The 2026-05-14 investigation isolated this from the shairport layer:
+- `plug:jasper_capture` + default target: shairport events 0, Camilla
+  playback underruns every few dozen seconds.
+- Direct `plughw:Loopback,1,0` test: shairport events 0, Camilla events 0
+  for the watch window.
+- `plug:jasper_capture` + `target_level: 4096`: one initial fill underrun
+  immediately after restart, then steady-state shairport events 0 and
+  Camilla events 0.
+
+Interpretation: dsnoop itself is still the right architecture because it
+lets CamillaDSP and the optional AEC bridge share the music reference.
+The missing piece was playback-buffer margin, not removing dsnoop.
+
+Latency implication: `target_level: 4096` is intentionally larger than
+the old implicit one-chunk target, so it adds a fixed downstream delay of
+3072 samples. At CamillaDSP's 48 kHz runtime rate, that is 64 ms. That
+amount is large enough to matter for video, but it is also exactly the
+kind of fixed backend delay shairport-sync can compensate.
+
+### Fix
+Set `target_level: 4096` in every music-path CamillaDSP config, including
+generated room-correction profiles. With `chunksize: 1024` and
+`queuelimit: 4`, this is four chunks (~85 ms), below the documented max
+of 6144 samples and still modest for whole-room speaker playback.
+
+Pair that buffer change with the rendered shairport latency offset:
+
+```libconfig
+general = {
+    audio_backend_latency_offset_in_seconds = -0.064000;  // current rendered value
+};
+```
+
+This does **not** shrink CamillaDSP's underrun-protection buffer. It tells
+shairport to feed the hidden downstream DSP path 64 ms early so that the
+sound leaving the speaker lands at the AirPlay-scheduled time.
+
+Do not hard-code this value by hand in the template. The template contains
+`__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__`; `jasper-apply-airplay-mode`
+derives it from the active CamillaDSP config as
+`-((target_level - chunksize) / samplerate)`. If `target_level` changes,
+the next shairport render/restart follows automatically.
+
+Required places:
+- `deploy/camilladsp/v1.yml`
+- `jasper/correction/camilla_yaml.py` generated configs
+- Any already-active correction profile under `/var/lib/camilladsp/configs/`
+- `deploy/shairport-sync.conf.template` +
+  `deploy/bin/jasper-apply-airplay-mode` for the derived fixed latency
+  offset
+
+Do **not** ship direct `plughw:Loopback,1,0` as the permanent fix. It is
+a useful isolation test, but it prevents the AEC bridge from opening the
+`pcm.jasper_capture` dsnoop slave later.
+
+### Verify the fix
+After the initial restart/fill, a 2-5 minute scan should show zero
+`Prepare playback after buffer underrun` entries and zero shairport
+sync/discrete-correction entries.
+
+```sh
+START=$(date '+%Y-%m-%d %H:%M:%S')
+sleep 120
+SH=$(sudo journalctl -u shairport-sync --since "$START" --no-pager | grep -Ec 'Large positive|Large negative|underrun|Broken pipe|Too much|resync')
+CM=$(sudo journalctl -u jasper-camilla --since "$START" --no-pager | grep -Ec 'Capture read [0-9]+ frames|PB: Prepare playback after buffer underrun|Broken pipe|Could not write')
+echo "shairport_events=$SH"
+echo "camilla_events=$CM"
+/opt/jasper/.venv/bin/python -c 'from camilladsp import CamillaClient; c=CamillaClient("127.0.0.1",1234); c.connect(); print("buffer", c.query("GetBufferLevel"), "rate_adjust", c.query("GetRateAdjust")); c.disconnect()'
+grep -n 'audio_backend_latency_offset_in_seconds' /etc/shairport-sync.conf
+```
+
+### Isolation recipe
+Use this only to prove whether the dsnoop wrapper is part of the symptom;
+restore `plug:jasper_capture` afterward.
+
+```sh
+sudo cp /etc/camilladsp/v1.yml /var/lib/camilladsp/configs/test_direct_plughw.yml
+sudo sed -i 's|device: "plug:jasper_capture"|device: "plughw:Loopback,1,0"|' \
+  /var/lib/camilladsp/configs/test_direct_plughw.yml
+sudo sed -i 's|^config_path:.*|config_path: /var/lib/camilladsp/configs/test_direct_plughw.yml|' \
+  /var/lib/camilladsp/statefile.yml
+sudo systemctl restart jasper-camilla
+```
+
+If direct capture is clean but `plug:jasper_capture` underruns, increase
+`target_level` on the dsnoop config before considering topology changes.
 
 ---
 
@@ -497,6 +682,10 @@ arecord -l > /tmp/arecord.txt
 cat /proc/asound/cards > /tmp/cards.txt
 cat /etc/shairport-sync.conf > /tmp/shairport-conf.txt
 cat /etc/camilladsp/v1.yml > /tmp/camilla-yml.txt
+sudo cat /var/lib/camilladsp/statefile.yml > /tmp/camilla-statefile.yml
+ACTIVE=$(sudo awk '/config_path:/ {print $2}' /var/lib/camilladsp/statefile.yml)
+sudo cat "$ACTIVE" > /tmp/camilla-active-yml.txt
+sudo cat /root/.asoundrc > /tmp/asoundrc.txt
 cat /etc/modprobe.d/snd-aloop.conf > /tmp/aloop-modprobe.txt
 
 # 5. Process state:
@@ -524,7 +713,7 @@ shairport-sync (AirPlay 2 receiver, source-built v4.3.7)
 snd-aloop kernel module (Card 6 "Loopback", 8 substreams)
         │  pcm.jasper_capture (dsnoop on Loopback,1,0 @ 48 kHz S16_LE)
         ▼
-CamillaDSP (Rust, capture+playback, enable_rate_adjust=true, NO resampler)
+CamillaDSP (Rust, enable_rate_adjust=true, target_level=4096, NO resampler)
         │  48 kHz S16_LE → pcm.jasper_out (dmix on Apple USB-C dongle)
         ▼
 Apple USB-C → 3.5mm dongle (USB 1.1, 12 Mbit/s, async UAC2)
@@ -533,9 +722,12 @@ Apple USB-C → 3.5mm dongle (USB 1.1, 12 Mbit/s, async UAC2)
 TPA3255 class-D amp + speakers
 ```
 
-Other renderers (librespot, bluealsa-aplay) write to the same Loopback,
-just different substreams. CamillaDSP reads from sub0 only — librespot
-and bluealsa use sub1+, snd-aloop sums them via dsnoop.
+Other renderers (librespot, bluealsa-aplay) write into the same music
+loopback path. `pcm.jasper_capture` is a dsnoop reader on
+`hw:Loopback,1,0`; it does not mix renderers, it lets multiple readers
+(CamillaDSP and optional AEC bridge) safely tap the same capture side.
+The summing point for music + TTS is downstream at `pcm.jasper_out`
+(dmix on the dongle).
 
 The Apple dongle's actual card name is detected at install time by
 `detect_card aplay 'usb-c to 3.5mm'` in install.sh, falling back to
@@ -566,9 +758,11 @@ real audio clock.
 | `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
 | `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
 | `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
+| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize) / samplerate)` | Compensates the fixed downstream-delay increase from CamillaDSP's target buffer; currently renders as `-0.064000` |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
 | `deploy/camilladsp/v1.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
+| `deploy/camilladsp/v1.yml` | `target_level: 4096` | Four-chunk playback target; avoids dsnoop/dmix underruns without abandoning the AEC-compatible capture path |
 | `deploy/modprobe.d/snd-aloop.conf` | Default (no `timer_source`) | Ruled out as load-bearing; default keeps DAC-agnostic |
 | `deploy/install.sh` | Disables NM WiFi power-save | brcmfmac default-ON would micro-stall AP2 RX |
 | Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` (synced) | Synced is glitch-free, works for video + multi-room |
@@ -581,6 +775,66 @@ real audio clock.
 The deep technical material that makes the patterns above explainable
 from code. If you're debugging a new pattern, this section is the
 reference for what shairport actually does.
+
+### CamillaDSP has two separate stability controls
+
+CamillaDSP's `enable_rate_adjust` and `target_level` solve different
+classes of problem:
+
+- `enable_rate_adjust: true` is long-term drift control. It watches the
+  playback buffer level and nudges the capture rate so independent clocks
+  don't slowly drift apart.
+- `target_level` is short-term buffer margin. It is the playback-buffer
+  level CamillaDSP tries to have available when the next processed chunk
+  arrives. Too small means normal scheduler, dsnoop, or dmix jitter can
+  produce playback underruns even if long-term drift correction is working.
+
+CamillaDSP defaults `target_level` to `chunksize`. With our
+`chunksize: 1024`, that is ~21 ms at 48 kHz. The shipped target is 4096
+samples (~85 ms), still below CamillaDSP's documented ceiling of
+`(2 + queuelimit) * chunksize` = 6144 samples for our `queuelimit: 4`.
+
+Practical implication: if shairport logs are clean but Camilla logs
+`PB: Prepare playback after buffer underrun`, do not touch
+`resync_threshold` first. Check `target_level` and `GetBufferLevel`.
+
+### AirPlay timing compensation is explicit, but not automatic here
+
+AirPlay's core synchronization model gives each audio packet a playback
+time relative to the sender/PTP clock, and shairport-sync schedules output
+so the samples emerge at that time. The receiver still needs an accurate
+view of backend latency to do that scheduling correctly.
+
+On a simple hardware ALSA device, shairport's `snd_pcm_delay()` view is a
+reasonable proxy for the DAC queue. On JTS, shairport writes to
+`plughw:Loopback,0,0`; the real audible path is downstream:
+
+```text
+shairport -> snd-aloop -> CamillaDSP target buffer -> dmix -> USB DAC
+```
+
+That means shairport can see the loopback handle but cannot dynamically
+see CamillaDSP's target buffer, dmix queue, or DAC processing delay. The
+correct way to expose a known fixed downstream delay is therefore
+shairport's documented `audio_backend_latency_offset_in_seconds` setting,
+not the deprecated per-source AirPlay latency settings and not
+`disable_synchronization`. JTS renders this value programmatically from
+the active CamillaDSP config instead of keeping a second hard-coded copy.
+
+For the 2026-05-14 target-level fix, compensate only the delay we newly
+introduced:
+
+```text
+old implicit target = 1024 samples
+new target          = 4096 samples
+extra delay         = 3072 / 48000 = 0.064 seconds
+offset              = -0.064
+```
+
+The negative sign is intentional. Upstream's own example says a backend
+that takes 100 ms to process audio should use `-0.1`, so shairport feeds
+the backend 100 ms early. We use the same principle for CamillaDSP's
+hidden fixed buffer.
 
 ### What shairport logs actually mean
 
@@ -707,6 +961,10 @@ So future operators don't re-walk the same paths.
 | USB port move (mic + dongle on different host hubs) | **No effect**. USB scheduling contention was not the cause. |
 | Stop `jasper-aec-bridge` | **No effect**. AEC bridge is not involved. |
 | `resync_threshold_in_seconds = 0.2` | **THIS is the fix.** Eliminated all Pattern B events. PR #83. |
+| Active correction profile still had `AsyncSinc` | **Real regression path.** `/etc/camilladsp/v1.yml` can be clean while `/var/lib/camilladsp/configs/correction_*.yml` remains active and stale. Fix generator and regenerate/reset active profile. |
+| Direct `plughw:Loopback,1,0` instead of `plug:jasper_capture` | Clean in the 2026-05-14 isolation test, proving shairport was not the tear source. **Not shippable** because it breaks AEC bridge sharing. |
+| `target_level: 4096` with `plug:jasper_capture` | **Fix for Pattern A2.** Preserves dsnoop/AEC-compatible topology and eliminated steady-state Camilla underruns in the watch window. |
+| Derived `audio_backend_latency_offset_in_seconds` | **Required companion for video/multi-room sync.** Does not affect underrun margin; exposes the fixed CamillaDSP buffer delay to shairport's AirPlay timing model without duplicating target-level constants. |
 
 ---
 
@@ -782,7 +1040,11 @@ from somewhere outside the ALSA output handle. Submit upstream.
 - [shairport-sync #1942 — iOS vs macOS sender differences](https://github.com/mikebrady/shairport-sync/issues/1942)
 - [shairport-sync source — player.c (4.3.7)](https://github.com/mikebrady/shairport-sync/blob/4.3.7/player.c) — sync error code
 - [shairport-sync source — audio_alsa.c (4.3.7)](https://github.com/mikebrady/shairport-sync/blob/4.3.7/audio_alsa.c) — `precision_delay_and_status`
+- [shairport-sync AdjustingSync.md](https://github.com/mikebrady/shairport-sync/blob/master/ADVANCED%20TOPICS/AdjustingSync.md) — upstream guidance for fixed backend latency offsets
+- [shairport-sync sample config](https://github.com/mikebrady/shairport-sync/blob/master/scripts/shairport-sync.conf) — documents negative offsets for slow output backends
 - [shairport-sync TROUBLESHOOTING.md](https://github.com/mikebrady/shairport-sync/blob/master/TROUBLESHOOTING.md)
+- [Apple TV User Guide — calibrate video and audio](https://support.apple.com/guide/tv/calibrate-video-and-audio-atvb228b7711/tvos) — Apple-side Wireless Audio Sync calibration context
+- [CamillaDSP docs — Devices / `target_level` / rate adjust](https://github.com/HEnquist/camilladsp) — Pattern A2's buffer-margin root
 - [HEnquist/camilladsp issue #207 — rate_adjust + AsyncSinc oscillation](https://github.com/HEnquist/camilladsp/issues/207) — Pattern A's root
 - [rubato AsyncSinc source](https://github.com/HEnquist/rubato/blob/master/src/asynchro_sinc.rs)
 - [Linux aloop.c (kernel snd-aloop driver)](https://github.com/torvalds/linux/blob/master/sound/drivers/aloop.c)

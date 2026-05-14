@@ -38,6 +38,7 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
+DEFAULT_TARGET_LEVEL = 4096
 
 
 def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
@@ -109,6 +110,7 @@ def emit_correction_config(
     playback_format: str = DEFAULT_PLAYBACK_FORMAT,
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
     out_path: str | Path | None = None,
     measurement_id: str | None = None,
 ) -> str:
@@ -119,8 +121,8 @@ def emit_correction_config(
         Empty list ⇒ identity config (functionally equivalent to
         v1.yml).
       capture_device, playback_device, capture_format, playback_format,
-        sample_rate, chunksize: device + sample-rate config. Defaults
-        match v1.yml; override only if the audio path changes.
+        sample_rate, chunksize, target_level: device + sample-rate config.
+        Defaults match v1.yml; override only if the audio path changes.
       out_path: write the YAML here as well as returning it. Parent
         directory must exist.
       measurement_id: opaque tag (e.g. timestamp) embedded in the
@@ -150,10 +152,8 @@ devices:
   samplerate: {sample_rate}
   chunksize: {chunksize}
   queuelimit: 4
+  target_level: {target_level}
   enable_rate_adjust: true
-  resampler:
-    type: AsyncSinc
-    profile: Balanced
   capture:
     type: Alsa
     channels: 2

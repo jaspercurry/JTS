@@ -26,6 +26,15 @@ devices:
   samplerate: 48000
   chunksize: 1024
   queuelimit: 4
+  # `plug:jasper_capture` is a dsnoop wrapper so the optional AEC bridge
+  # can tap the same music stream as CamillaDSP. On the Pi, the default
+  # target_level=chunksize left the playback buffer too shallow and
+  # produced periodic `PB: Prepare playback after buffer underrun` warnings
+  # with otherwise clean shairport logs. 4096 samples is 4 chunks (~85 ms),
+  # comfortably below CamillaDSP's documented max of
+  # `(2 + queuelimit) * chunksize` while leaving headroom for dsnoop/dmix
+  # scheduling jitter.
+  target_level: 4096
   # Capture rate (48 kHz, from snd-aloop) equals playback rate
   # (48 kHz, to dongle dmix), so no resampler is needed. With both
   # ends at the same rate, the canonical CamillaDSP config is

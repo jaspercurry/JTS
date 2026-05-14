@@ -2,9 +2,10 @@
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
 # template at /etc/shairport-sync.conf.template, substituting the
 # disable_synchronization value based on
-# /var/lib/jasper/airplay_mode.env and the AirPlay device name based
-# on JASPER_AIRPLAY_DEVICE_NAME (in /etc/jasper/jasper.env), with a
-# fallback to the hostname-derived default via jasper-derive-device-name.
+# /var/lib/jasper/airplay_mode.env, the AirPlay device name based on
+# JASPER_AIRPLAY_DEVICE_NAME (in /etc/jasper/jasper.env), and the
+# fixed backend latency offset derived from the active CamillaDSP
+# config's samplerate/chunksize/target_level.
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
@@ -14,9 +15,13 @@
 #      update the env file and before they restart shairport.
 #
 # Env input:
-#   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "yes".
+#   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "no".
 #   JASPER_AIRPLAY_DEVICE_NAME  — display name shown in AirPlay pickers.
 #                                 Default: jasper-derive-device-name output.
+#   JASPER_CAMILLA_STATEFILE    — CamillaDSP statefile path.
+#                                 Default: /var/lib/camilladsp/statefile.yml.
+#   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
+#                                   Default: /etc/camilladsp/v1.yml.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -29,11 +34,109 @@ TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
 ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
 JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 DERIVE_HELPER="${JASPER_DERIVE_DEVICE_NAME:-/usr/local/sbin/jasper-derive-device-name}"
+CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/statefile.yml}"
+CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/v1.yml}"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
     exit 1
 fi
+
+camilla_config_path() {
+    local configured=""
+    if [[ -r "$CAMILLA_STATEFILE" ]]; then
+        configured="$(
+            awk '
+                /^[[:space:]]*config_path[[:space:]]*:/ {
+                    sub(/^[^:]*:[[:space:]]*/, "")
+                    sub(/[[:space:]]*$/, "")
+                    print
+                    exit
+                }
+            ' "$CAMILLA_STATEFILE"
+        )"
+    fi
+
+    if [[ -n "$configured" && -r "$configured" ]]; then
+        printf '%s\n' "$configured"
+    else
+        printf '%s\n' "$CAMILLA_DEFAULT_CONFIG"
+    fi
+}
+
+camilla_devices_int() {
+    local config="$1"
+    local key="$2"
+    awk -v key="$key" '
+        /^[[:space:]]*devices:[[:space:]]*($|#)/ {
+            in_devices = 1
+            next
+        }
+        in_devices && /^[^[:space:]#][^:]*:[[:space:]]*($|#)/ {
+            exit
+        }
+        in_devices {
+            line = $0
+            sub(/[[:space:]]*#.*/, "", line)
+            pattern = "^[[:space:]]*" key "[[:space:]]*:[[:space:]]*"
+            if (line ~ pattern) {
+                sub(pattern, "", line)
+                sub(/[[:space:]]*$/, "", line)
+                if (line ~ /^[0-9]+$/) {
+                    print line
+                    exit
+                }
+            }
+        }
+    ' "$config"
+}
+
+derive_audio_backend_latency_offset() {
+    local config
+    local sample_rate
+    local chunksize
+    local target_level
+
+    config="$(camilla_config_path)"
+    if [[ ! -r "$config" ]]; then
+        echo "jasper-apply-airplay-mode: Camilla config missing at $config; using latency offset 0.0" >&2
+        printf '0.000000'
+        return
+    fi
+
+    sample_rate="$(camilla_devices_int "$config" samplerate || true)"
+    chunksize="$(camilla_devices_int "$config" chunksize || true)"
+    target_level="$(camilla_devices_int "$config" target_level || true)"
+
+    if [[ -z "$sample_rate" || -z "$chunksize" ]]; then
+        echo "jasper-apply-airplay-mode: could not read samplerate/chunksize from $config; using latency offset 0.0" >&2
+        printf '0.000000'
+        return
+    fi
+
+    # CamillaDSP defaults target_level to chunksize when target_level is
+    # absent. The AirPlay offset compensates only the added fixed backend
+    # delay above that implicit one-chunk baseline.
+    if [[ -z "$target_level" ]]; then
+        target_level="$chunksize"
+    fi
+
+    awk -v sample_rate="$sample_rate" \
+        -v chunksize="$chunksize" \
+        -v target_level="$target_level" '
+        BEGIN {
+            if (sample_rate <= 0) {
+                printf "0.000000"
+                exit
+            }
+            offset = -((target_level - chunksize) / sample_rate)
+            if ((offset > -0.0000005) && (offset < 0.0000005)) {
+                offset = 0
+            }
+            printf "%.6f", offset
+        }
+    '
+}
 
 # Source the airplay_mode.env file if it exists. Default the variable
 # AFTER sourcing so an explicit-but-empty value still falls back to the
@@ -50,7 +153,7 @@ if [[ -r "$JASPER_ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$JASPER_ENV_FILE" 2>/dev/null || true
 fi
-mode="${JASPER_AIRPLAY_FREE_RUNNING:-yes}"
+mode="${JASPER_AIRPLAY_FREE_RUNNING:-no}"
 
 # Resolve device name: explicit env var wins; otherwise derive from
 # hostname so two Pis on the same LAN don't both advertise as "JTS".
@@ -73,24 +176,27 @@ case "$mode" in
         human="synced (matches AirPlay sender clock; needed for video A/V sync or multi-room)"
         ;;
     *)
-        echo "jasper-apply-airplay-mode: invalid JASPER_AIRPLAY_FREE_RUNNING='$mode'; defaulting to yes" >&2
-        disable_sync="yes"
-        human="free-running (defaulted from invalid value)"
+        echo "jasper-apply-airplay-mode: invalid JASPER_AIRPLAY_FREE_RUNNING='$mode'; defaulting to no" >&2
+        disable_sync="no"
+        human="synced (defaulted from invalid value)"
         ;;
 esac
+
+latency_offset="$(derive_audio_backend_latency_offset)"
 
 tmp="${TARGET}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 
 sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
     -e "s/__AIRPLAY_NAME__/${airplay_name}/g" \
+    -e "s/__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__/${latency_offset}/g" \
     "$TEMPLATE" > "$tmp"
 
 # Validate the substitution actually happened — refuse to install a
 # conf that still contains a placeholder (something went wrong with
 # the template or the sed). shairport would otherwise fail to parse it
 # and crash-loop.
-if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__" "$tmp"; then
+if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__|__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" "$tmp"; then
     echo "jasper-apply-airplay-mode: placeholder still present in rendered conf — refusing to install" >&2
     exit 2
 fi
@@ -99,4 +205,4 @@ chmod 0644 "$tmp"
 mv -f "$tmp" "$TARGET"
 trap - EXIT
 
-echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name'" >&2
+echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name', latency offset ${latency_offset}s" >&2

@@ -547,11 +547,11 @@ Files involved in the AEC subsystem:
 - `jasper/xvf/xvf_host.py` — vendored from
   respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY
 - `jasper/cli/doctor.py` — `check_aec_bridge_running`,
-  `check_aec_output_card`, `check_xvf_firmware_6ch`
+  `check_mic_capture`, `check_xvf_firmware_6ch`
 - `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
   (the dsnoop tap) and `pcm.jasper_out` (dongle dmix)
-- `deploy/modprobe.d/snd-aloop.conf` — two-card snd-aloop
-  config (`index=6,7 id=Loopback,LoopbackAEC`)
+- `deploy/modprobe.d/snd-aloop.conf` — single-card music-chain
+  snd-aloop config (`index=6 id=Loopback`)
 - `deploy/modules-load.d/snd-aloop.conf` — auto-load at boot
 - `deploy/systemd/jasper-aec-bridge.service` — runs
   `jasper-aec-bridge` Python daemon
@@ -562,8 +562,8 @@ Files involved in the AEC subsystem:
 - `pyproject.toml` — registers `jasper-aec-bridge`,
   `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
   `pyusb`, `libusb_package`, `pyalsaaudio` deps
-- `.env.example` — `JASPER_MIC_DEVICE=hw:7,1` (the LoopbackAEC
-  capture-side substream)
+- `.env.example` — `JASPER_MIC_DEVICE=udp:9876` for bridge→voice
+  UDP transport
 - `scripts/aec-probe-latency.sh` — chirp + cross-correlation
   measurement of end-to-end ref-to-mic delay (used to set the AEC3
   binding's `stream_delay_ms` default)

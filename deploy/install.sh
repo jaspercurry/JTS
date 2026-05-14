@@ -301,12 +301,14 @@ install_renderers() {
     fi
 
     # shairport-sync config is templated: deploy/shairport-sync.conf.template
-    # has a __DISABLE_SYNCHRONIZATION__ placeholder substituted by
-    # /usr/local/sbin/jasper-apply-airplay-mode based on
-    # /var/lib/jasper/airplay_mode.env. shairport-sync.service's
-    # ExecStartPre re-renders on every restart, so toggling the mode
-    # (via /airplay/ web UI or jasper-airplay-mode CLI) is just an
-    # env-file write + systemctl restart shairport-sync.
+    # has placeholders substituted by /usr/local/sbin/jasper-apply-airplay-mode:
+    #   - __DISABLE_SYNCHRONIZATION__ from /var/lib/jasper/airplay_mode.env
+    #   - __AIRPLAY_NAME__ from /etc/jasper/jasper.env / hostname fallback
+    #   - __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__ from the active CamillaDSP
+    #     samplerate/chunksize/target_level.
+    # shairport-sync.service's ExecStartPre re-renders on every restart, so
+    # toggling the mode (via /airplay/ web UI or jasper-airplay-mode CLI) is
+    # just an env-file write + systemctl restart shairport-sync.
     install -m 0644 \
         "${REPO_DIR}/deploy/shairport-sync.conf.template" \
         /etc/shairport-sync.conf.template
