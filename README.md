@@ -106,11 +106,13 @@ over its websocket on port 1234.
 source transitions to playing while another is already active, it
 pauses the older one so the user gets "latest source wins" UX.
 
-There's also an opt-in software AEC bridge (`jasper-aec-bridge`)
-that taps the music chain via a `pcm.jasper_capture` dsnoop, runs
-WebRTC AEC3 echo cancellation against the chip's raw mic, and
-emits a cleaned-up mono signal over UDP localhost for jasper-voice
-to consume. Disabled by default — see § below.
+There's also a reconciler-managed software AEC bridge
+(`jasper-aec-bridge`) that taps the music chain via a
+`pcm.jasper_capture` dsnoop, runs WebRTC AEC3 echo cancellation
+against the chip's raw mic, and emits a cleaned-up mono signal over
+UDP localhost for jasper-voice to consume. It runs automatically only
+when the configured AEC mic is present with 6-channel firmware — see
+§ below.
 
 ---
 
@@ -139,7 +141,7 @@ to consume. Disabled by default — see § below.
   routed by AirPlay title-match)
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation completed and documented
-- ⚠️  Software AEC infrastructure built but disabled by default
+- ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
 - ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
   short-press, hold-to-talk long-press all working on hardware.
@@ -360,7 +362,10 @@ The bridge needs the 6-channel XVF firmware variant
 (`v2.0.8 6chl`, flashed via DFU per BRINGUP.md Phase 2A.5) since it
 taps raw mic 0 (channel 2 of 6). On the 2-channel firmware the
 bridge stays disabled and voice reads the chip's processed
-conference channel directly. `install.sh` auto-detects + auto-enables.
+conference channel directly. `install.sh` runs
+`jasper-aec-reconcile`, which auto-detects + auto-enables when the
+hardware is ready and clears stale UDP mic config when the Array is
+missing.
 
 ### What's installed and at what cost
 
@@ -403,12 +408,13 @@ output path is UDP, not a second snd-aloop card. The 6-channel XVF
 firmware (flashed once via DFU) also stays — its channel 0 is identical
 to the 2-channel firmware's channel 0, so it's benign for non-bridge use.
 
-`install.sh` auto-enables AEC if the chip is on the 6-channel
-firmware variant at install time. On 2-channel firmware (the
-ReSpeaker shipping default), AEC stays disabled and the installer
-prints a one-line hint pointing at the BRINGUP.md DFU procedure.
-Either way, AEC is reversible at runtime — see CLAUDE.md
-"Acoustic echo cancellation" section.
+`install.sh` enables `jasper-aec-reconcile.service`, seeds
+`/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, and runs
+the reconciler once. On 6-channel firmware it selects
+`JASPER_MIC_DEVICE=udp:9876` and starts the bridge; on 2-channel
+firmware or no Array it leaves voice on direct mic when possible and
+keeps the bridge off. Either way, AEC is reversible at runtime — see
+CLAUDE.md "Acoustic echo cancellation" section.
 
 ### The chip control library
 

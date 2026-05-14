@@ -22,14 +22,14 @@
 #    mixer state.
 #
 # 3. **Trigger jasper-dongle-recover.service** to reset-failed and
-#    start jasper-camilla, jasper-aec-bridge, and jasper-voice. The
-#    daemons all open hw:CARD=A; if the dongle is absent at boot
-#    (e.g. nothing in the 3.5 mm jack, or analog load briefly removed),
-#    each one exits at startup, trips StartLimitBurst after ~5 retries,
-#    and is parked as failed. Without this rule, no one is watching
-#    when the dongle later re-appears. SYSTEMD_WANTS keeps udev's
-#    event pipeline responsive — systemctl is dispatched asynchronously
-#    by PID 1, not blocked on inside the udev event.
+#    start jasper-camilla, then delegate mic/AEC/voice policy to
+#    jasper-aec-reconcile. If the dongle is absent at boot (e.g.
+#    nothing in the 3.5 mm jack, or analog load briefly removed),
+#    audio daemons can trip StartLimitBurst and park as failed.
+#    Without this rule, no one is watching when the dongle later
+#    re-appears. SYSTEMD_WANTS keeps udev's event pipeline responsive
+#    — systemctl is dispatched asynchronously by PID 1, not blocked on
+#    inside the udev event.
 #
 # To verify after install: `udevadm test /sys/class/sound/controlC*`
 # (substituting the dongle's controlC node) — the RUN+= line should

@@ -1,0 +1,16 @@
+[Unit]
+Description=Reconcile microphone and software AEC state
+Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
+After=sound.target jasper-camilla.service
+Wants=sound.target jasper-camilla.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/aec_mode.env
+ExecStart=/usr/local/sbin/jasper-aec-reconcile --reason systemd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

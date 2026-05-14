@@ -2,11 +2,12 @@
 Description=Recover audio daemons after the Apple dongle re-enumerates
 # Triggered by the udev rule in /etc/udev/rules.d/99-jasper-apple-dongle.rules
 # when sound card "A" (the dongle) appears. The daemons that open
-# hw:CARD=A — jasper-camilla, jasper-aec-bridge, jasper-voice — exit
-# at startup if the dongle is absent and trip systemd's StartLimitBurst
-# after ~5 retries. By the time the dongle comes back, systemd has parked
-# them as failed and stops watching. This unit resets the failed state
-# and starts each one so the speaker recovers without manual intervention.
+# hw:CARD=A exit at startup if the dongle is absent and trip
+# systemd's StartLimitBurst after ~5 retries. By the time the dongle
+# comes back, systemd has parked them as failed and stops watching.
+# This unit resets Camilla and then delegates mic/AEC/voice policy to
+# jasper-aec-reconcile so a missing mic array does not leave voice
+# pointed at a stale, unfed UDP socket.
 #
 # Why a separate unit instead of inline RUN+= in the udev rule: systemctl
 # from udev's RUN+= can race with D-Bus and udev's event pipeline is
@@ -22,6 +23,7 @@ Type=oneshot
 # `start` calls aren't no-ops. Both commands are idempotent against
 # already-active or non-failed units.
 ExecStart=/bin/systemctl reset-failed jasper-camilla.service jasper-aec-bridge.service jasper-voice.service
-ExecStart=/bin/systemctl start jasper-camilla.service jasper-aec-bridge.service jasper-voice.service
+ExecStart=/bin/systemctl start jasper-camilla.service
+ExecStart=/bin/systemctl start jasper-aec-reconcile.service
 StandardOutput=journal
 StandardError=journal

@@ -146,21 +146,44 @@ hang. `Restart=on-watchdog` only catches the watchdog timeout, not
 arbitrary exits. Bumping `StartLimitBurst` higher would just delay
 the same parked-failed outcome.
 
-Fix: a udev rule on the dongle's USB IDs that triggers
+Fix, part one: a udev rule on the dongle's USB IDs that triggers
 `jasper-dongle-recover.service`
 (`deploy/systemd/jasper-dongle-recover.service`) when Card A appears,
-which runs `systemctl reset-failed` + `start` on the three units.
-Idempotent — when the daemons are already healthy it's a no-op. The
-rule (`deploy/udev/99-jasper-apple-dongle.rules`) uses `SYSTEMD_WANTS`
+which runs `systemctl reset-failed`, starts `jasper-camilla`, and
+then starts `jasper-aec-reconcile.service`. Idempotent — when the
+daemons are already healthy it's a no-op. The rule
+(`deploy/udev/99-jasper-apple-dongle.rules`) uses `SYSTEMD_WANTS`
 rather than `RUN+=` so systemctl dispatches via PID 1 asynchronously
 and udev's event pipeline stays responsive.
 
-Generalisation: if a future hardware dependency (e.g. the XVF mic
-array) exhibits the same pattern, the same shape works — one udev
-match on the device's USB IDs plus a `*-recover.service` that
-reset-fails the relevant daemons. Keep these tightly scoped to the
-specific device; a generic "restart on any USB event" would thrash
-during normal hotplug.
+Fix, part two: `jasper-aec-reconcile` owns the mic/AEC policy that
+the old install-time `enable_aec_if_compatible` could not express.
+The stale-state bug was: an earlier healthy boot could set
+`JASPER_MIC_DEVICE=udp:9876`, then a later boot without the XVF
+Array would make `jasper-aec-bridge` fail because `/proc/asound/Array`
+was gone while `jasper-voice` still listened on UDP for packets that
+would never arrive. The reconciler closes that loop:
+
+- `JASPER_AEC_MODE=auto` + 6-channel `JASPER_AEC_MIC_DEVICE` present:
+  set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
+  `jasper-aec-init` + `jasper-aec-bridge`, restart voice.
+- A configured direct mic candidate is present but AEC is unavailable
+  (2-channel firmware or AEC disabled): set `JASPER_MIC_DEVICE` to
+  that candidate, keep the bridge off, restart voice.
+- No candidate mic is present and the current value is one JTS owns
+  (`Array`, `udp:<port>`, or legacy `hw:N,1`): clear stale UDP back to
+  the first candidate and stop voice so it does not watchdog-loop.
+- A genuinely custom `JASPER_MIC_DEVICE` is left untouched. This is the
+  escape hatch for future mics while we keep the production default
+  simple.
+
+The future-mic hook is intentionally small: `JASPER_AEC_MIC_DEVICE`
+defaults to `Array`, and `JASPER_MIC_DEVICE_CANDIDATES` defaults to
+`Array`. If we add another supported mic later, add it to the
+candidate list (comma-separated, or shell-quoted if using spaces) and
+the same reconciler can select it as the direct fallback. If the future
+mic needs its own AEC path, that should be a deliberate second policy
+branch rather than baking more assumptions into the Array path.
 
 ---
 
@@ -192,23 +215,34 @@ For anyone touching the resilience code:
   (`enable=1 index=6 id=Loopback pcm_substreams=8`); the
   historical-note comment block explains the retirement of
   `LoopbackAEC`.
-- `deploy/install.sh:enable_aec_if_compatible` — auto-detects 6-ch
-  firmware, sets `JASPER_MIC_DEVICE=udp:9876`, enables the bridge
-  services. Includes the legacy-value migration: if an existing
-  install has `JASPER_MIC_DEVICE=hw:N,1` (the pre-UDP sentinel),
-  it gets auto-flipped on the next install run.
+- `deploy/bin/jasper-aec-reconcile` — the mic/AEC policy reconciler.
+  It reads `/etc/jasper/jasper.env` plus
+  `/var/lib/jasper/aec_mode.env`, detects the configured mic card under
+  `/proc/asound`, clears stale UDP when the Array is absent, and starts
+  or parks `jasper-aec-*` + `jasper-voice` accordingly.
+- `deploy/systemd/jasper-aec-reconcile.service` — oneshot wrapper used
+  at install, boot, and udev-triggered hardware changes.
+- `deploy/install.sh:reconcile_aec_state` — seeds
+  `/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, enables
+  the reconciler unit, and runs it once at install time.
 - `deploy/udev/99-jasper-apple-dongle.rules` — three rules keyed
   on the dongle's USB IDs: Headphone-100% pin on hotplug, USB
   autosuspend off, and `SYSTEMD_WANTS` trigger for the recovery
   service on Card A appearance.
+- `deploy/udev/99-jasper-aec-reconcile.rules` — generic ALSA
+  `controlC*` add/remove trigger for the reconciler. The service itself
+  is what stays conservative about which mic config it owns.
 - `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
-  unit that `reset-failed` + `start`s jasper-camilla,
-  jasper-aec-bridge, and jasper-voice. Triggered by the udev rule
-  above; idempotent so re-fires on rapid replug are harmless.
+  unit that `reset-failed`s the audio daemons, starts jasper-camilla,
+  then runs the reconciler so mic/AEC/voice state matches present
+  hardware. Triggered by the udev rule above; idempotent so re-fires
+  on rapid replug are harmless.
 - `tests/test_watchdog.py` — sentinel-contract tests
   (fresh/stale/recovery/disabled-fallback).
 - `tests/test_udp_mic_capture.py` — UDP receiver contract
   (parse-forms, factory dispatch, end-to-end frame yield).
+- `tests/test_aec_reconcile.py` — stale-UDP and hardware-mode tests
+  for the reconciler.
 
 ---
 
@@ -230,6 +264,10 @@ manual verification.
   @ 16000 Hz)`.
 - `ss -ulpn | grep 9876` shows the voice process owning the UDP
   socket.
+- If the Array is absent, `journalctl -u jasper-aec-reconcile -e`
+  should show stale UDP being cleared to `Array`; `jasper-aec-bridge`
+  should be disabled/inactive and `jasper-voice` should be stopped
+  rather than watchdog-looping.
 
 Smoke test that the watchdog actually catches a wedge:
 

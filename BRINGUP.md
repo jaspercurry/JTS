@@ -336,7 +336,8 @@ in.
 
 Common warnings (non-fatal):
 
-- "AEC bridge service: disabled" — software AEC is opt-in. See
+- "AEC bridge service: disabled" — expected when the Array is absent,
+  on 2-channel firmware, or when `JASPER_AEC_MODE=disabled`. See
   CLAUDE.md "Acoustic echo cancellation" if you want to A/B test.
 
 ---
@@ -418,15 +419,14 @@ red=WiFi down.
 
 ## Optional: Software AEC bridge
 
-`install.sh` auto-enables AEC on a Pi running the 6-channel XVF
-firmware. To enable manually (e.g. you flashed 6-ch after install
-and don't want to re-run install.sh):
+`install.sh` runs `jasper-aec-reconcile`, which auto-enables AEC on
+a Pi running the 6-channel XVF firmware and clears stale UDP mic
+config when the Array is absent. To enable manually (e.g. you flashed
+6-ch after install and don't want to re-run install.sh):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=udp:9876|' \
-    /etc/jasper/jasper.env
-sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
-sudo systemctl restart jasper-voice
+printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
 ```
 
 The bridge→voice transport is UDP localhost since May 2026 (was
@@ -436,10 +436,8 @@ see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
 To disable:
 
 ```sh
-sudo systemctl disable --now jasper-aec-bridge jasper-aec-init
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=Array|' \
-    /etc/jasper/jasper.env
-sudo systemctl restart jasper-voice
+printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
 ```
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.

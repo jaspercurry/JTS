@@ -104,7 +104,8 @@ REF_CHANNELS = 2
 # Device names are PortAudio substring matches (sounddevice's
 # backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
 # cards by their card description, not by hw:CARD= syntax.
-MIC_DEVICE = "Array"  # matches "Array: USB Audio (hw:N,0)"
+# Default matches "Array: USB Audio (hw:N,0)".
+MIC_DEVICE = os.environ.get("JASPER_AEC_MIC_DEVICE", "Array")
 MIC_CHANNELS = 6
 MIC_CHANNEL_INDEX = 2  # raw mic 0
 

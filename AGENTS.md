@@ -39,8 +39,8 @@ This is the **only** supported deploy path. It does, in order:
 4. `systemctl restart jasper-voice jasper-control` — picks up
    the new code on the Python daemons that actually run application
    code. `jasper-camilla` is the Rust camilladsp binary (not
-   restarted); `jasper-aec-bridge` is opt-in
-   (`JASPER_DEPLOY_RESTART_AEC=1`) because of a known SIGTERM hang.
+   restarted); `jasper-aec-bridge` is reconciler-managed and only
+   restarted during deploy when `JASPER_DEPLOY_RESTART_AEC=1` is set.
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
 That flow exists historically but misses:
@@ -314,9 +314,11 @@ actually bites.
 
 ---
 
-## AEC bridge — opt-in toggle
+## AEC bridge — reconciler toggle
 
-Software AEC is **built but disabled by default**. README's
+Software AEC is **built by default and managed by the reconciler**:
+it runs automatically only when `JASPER_AEC_MODE=auto` and the
+configured AEC mic is present with 6-channel firmware. README's
 "Acoustic echo cancellation" section covers the engine (WebRTC
 AEC3 via the `jasper_aec3` pybind11 binding, −15 to −18 dB on
 music with the production REF_GAIN/MIC_GAIN tunings) and the
@@ -333,14 +335,19 @@ DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
 To enable on the Pi (assumes 6-ch firmware already flashed):
 
 ```sh
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=udp:9876|' \
-    /etc/jasper/jasper.env
-sudo systemctl enable --now jasper-aec-init jasper-aec-bridge
-sudo systemctl restart jasper-voice
+printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
 ```
 
-`install.sh` auto-runs this on the 6-ch firmware so the above is
-only needed if you're flipping between chip-direct and AEC manually.
+`install.sh` enables and runs `jasper-aec-reconcile` automatically.
+The reconciler is the source of truth for AEC mode: in `auto`, it
+selects `JASPER_MIC_DEVICE=udp:9876` only when the configured AEC mic
+(`JASPER_AEC_MIC_DEVICE`, default `Array`) is present with 6-channel
+firmware. If the Array is absent after a previous AEC-enabled boot, it
+clears stale UDP back to a direct mic candidate and stops voice rather
+than letting it watchdog-loop on an unfed socket. Future direct mics can
+be added to `JASPER_MIC_DEVICE_CANDIDATES` without changing this logic.
+
 The bridge→voice transport is UDP localhost (`udp:9876`) since
 May 2026; the prior snd-aloop `LoopbackAEC` topology was retired
 for resilience reasons — see
@@ -349,10 +356,8 @@ for resilience reasons — see
 To disable:
 
 ```sh
-sudo systemctl disable --now jasper-aec-bridge jasper-aec-init
-sudo sed -i 's|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=Array|' \
-    /etc/jasper/jasper.env
-sudo systemctl restart jasper-voice
+printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo systemctl start jasper-aec-reconcile
 ```
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.

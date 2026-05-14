@@ -589,17 +589,25 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-input.service" \
         "${SYSTEMD_DIR}/jasper-input.service"
-    # AEC bridge + boot-time chip init (see asoundrc.jasper header).
+    # AEC bridge + boot-time chip init + reconciler. The reconciler is
+    # the policy layer that keeps JASPER_MIC_DEVICE, AEC services, and
+    # the currently attached mic hardware in sync.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-bridge.service" \
         "${SYSTEMD_DIR}/jasper-aec-bridge.service"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-aec-init.service" \
         "${SYSTEMD_DIR}/jasper-aec-init.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-aec-reconcile.service" \
+        "${SYSTEMD_DIR}/jasper-aec-reconcile.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
+        /usr/local/sbin/jasper-aec-reconcile
     # Triggered by the udev rule installed below when the Apple dongle
-    # re-enumerates: reset-failed + start of the three daemons that
-    # open hw:CARD=A so a hardware reconnect recovers without manual
-    # intervention. See docs/HANDOFF-resilience.md.
+    # re-enumerates: reset-failed, restart Camilla, then run the
+    # mic/AEC reconciler so a hardware reconnect recovers without
+    # manual intervention. See docs/HANDOFF-resilience.md.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-dongle-recover.service" \
         "${SYSTEMD_DIR}/jasper-dongle-recover.service"
@@ -641,6 +649,9 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/udev/99-jasper-apple-dongle.rules" \
         /etc/udev/rules.d/99-jasper-apple-dongle.rules
+    install -m 0644 \
+        "${REPO_DIR}/deploy/udev/99-jasper-aec-reconcile.rules" \
+        /etc/udev/rules.d/99-jasper-aec-reconcile.rules
     udevadm control --reload-rules
     # Trigger the rule once for the currently-attached dongle so we
     # don't have to wait for the next replug. ATTR{} match is
@@ -748,93 +759,26 @@ Will retry on next boot."
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
 
-    # Auto-enable software AEC when the chip is on the 6-channel
-    # firmware that supports it. The bridge taps raw mic 0 (channel 2
-    # of 6) — only present on the 6-ch variant; 2-ch firmware can't
-    # support it and the daemon would no-op. The web wizard + voice
-    # daemon diet (lazy imports, socket-activated wizards) freed up
-    # ~120 MB Pss, so we can afford the ~85 MB AEC bridge by default
-    # without pushing past ~770 MB on a 1 GB Pi.
-    enable_aec_if_compatible
+    # Reconcile software AEC against whatever mic hardware is actually
+    # present right now. This replaces the old one-way "enable if
+    # Array is 6-ch" install step: if a previous install left voice on
+    # udp:9876 but the Array is currently absent, reconcile actively
+    # clears that stale state and parks voice instead of letting it
+    # watchdog-loop on an unfed UDP socket.
+    reconcile_aec_state
     echo
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
 
-enable_aec_if_compatible() {
-    # Hard precondition: chip on 6-channel firmware (the v2.0.8 6chl
-    # DFU image — see BRINGUP.md Phase 2A.5). 2-channel firmware has
-    # no raw-mic-0 stream for the bridge to consume.
-    if ! [[ -f /proc/asound/Array/stream0 ]]; then
-        echo "  AEC: ReSpeaker XVF3800 not detected. Skipping (no /proc/asound/Array)."
-        return
+reconcile_aec_state() {
+    install -d -m 0755 "${STATE_DIR}"
+    if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
+        printf 'JASPER_AEC_MODE=auto\n' > "${STATE_DIR}/aec_mode.env"
+        chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi
-    if ! grep -q "Channels: 6" /proc/asound/Array/stream0; then
-        echo "  AEC: chip on 2-channel firmware. Leaving AEC disabled."
-        echo "       Flash 6-channel (v2.0.8 6chl) via BRINGUP.md Phase 2A.5 to opt in."
-        return
-    fi
-    # Under PR 2 of the resilience-ladder series, the bridge → voice
-    # transport is UDP localhost (default 127.0.0.1:9876). The pre-
-    # PR-2 LoopbackAEC snd-aloop card was retired because SIGKILL'd
-    # consumers wedged its kernel-side loopback_cable, requiring a
-    # reboot to recover. No more `arecord -l` card lookup — the
-    # transport target is just an env-configurable port.
-    # The trailing `|| true` is load-bearing: pre-PR-2 jasper.env files
-    # don't have JASPER_AEC_UDP_PORT, so grep exits 1, and `set -o
-    # pipefail` propagates that out of the command substitution, which
-    # `set -e` then catches and aborts the whole install. With `|| true`
-    # the empty assignment is fine and `:-9876` provides the fallback.
-    local udp_port
-    udp_port=$(grep -E "^JASPER_AEC_UDP_PORT=" "${ENV_DIR}/jasper.env" 2>/dev/null \
-        | tail -1 | cut -d= -f2- | tr -d '[:space:]' || true)
-    udp_port=${udp_port:-9876}
-    local udp_device="udp:${udp_port}"
-    local current
-    current=$(grep -E "^JASPER_MIC_DEVICE=" "${ENV_DIR}/jasper.env" 2>/dev/null \
-        | tail -1 | cut -d= -f2- | tr -d '[:space:]')
-    # Auto-migrate the pre-PR-2 LoopbackAEC sentinel. `hw:N,1` was
-    # `install.sh`'s own auto-set value for "AEC enabled, snd-aloop
-    # transport" before PR 2 swapped the transport to UDP. The card
-    # it points at no longer exists (we removed the second snd-aloop
-    # entry from /etc/modprobe.d/snd-aloop.conf), so the only thing
-    # leaving it alone accomplishes is breaking wake-word on existing
-    # installs. Treat it like the "Array" default — fall through to
-    # the auto-flip below.
-    if [[ "${current}" =~ ^hw:[0-9]+,1$ ]]; then
-        echo "  AEC: migrating legacy ${current} → ${udp_device} (LoopbackAEC retired in PR 2)."
-        current=""
-    fi
-    # Respect any genuine user customization: only flip
-    # JASPER_MIC_DEVICE if the value is `Array` (the default), the
-    # target `${udp_device}` (already migrated), or empty (just
-    # migrated above). Anything else — a UMIK-2 substring, an
-    # operator-set `hw:` for a different USB mic, etc. — is left
-    # alone. This keeps auto-enable safe on existing installs.
-    if [[ -n "${current}" ]] && [[ "${current}" != "Array" ]] && \
-       [[ "${current}" != "${udp_device}" ]]; then
-        echo "  AEC: user has JASPER_MIC_DEVICE=${current} — respecting existing config."
-        # Still try to enable the services in case the user did the
-        # env edit but not the systemctl enable. Idempotent.
-        systemctl enable jasper-aec-init.service jasper-aec-bridge.service 2>/dev/null || true
-        return
-    fi
-    echo "  AEC: 6-ch firmware detected — enabling software AEC (UDP transport at ${udp_device})."
-    sed -i "s|^JASPER_MIC_DEVICE=.*|JASPER_MIC_DEVICE=${udp_device}|" \
-        "${ENV_DIR}/jasper.env"
-    systemctl enable jasper-aec-init.service jasper-aec-bridge.service
-    # aec-init is a oneshot that primes the chip's 6-ch firmware
-    # config; run it now so the bridge has what it needs on its
-    # first start.
-    systemctl start jasper-aec-init.service 2>/dev/null || \
-        echo "  WARN: jasper-aec-init failed at install time. Will retry on next boot."
-    systemctl restart jasper-aec-bridge.service 2>/dev/null || \
-        echo "  WARN: jasper-aec-bridge failed to start. Check logs with: journalctl -u jasper-aec-bridge -e"
-    # jasper-voice needs to pick up the new JASPER_MIC_DEVICE value
-    # — restart only if it's currently active (don't start a daemon
-    # that the user has deliberately stopped).
-    if systemctl is-active jasper-voice.service --quiet; then
-        systemctl restart jasper-voice.service 2>/dev/null || true
-    fi
+    systemctl enable jasper-aec-reconcile.service
+    /usr/local/sbin/jasper-aec-reconcile --reason install || \
+        echo "  WARN: AEC/mic reconcile failed. Check logs with: journalctl -u jasper-aec-reconcile -e"
 }
 
 remove_legacy_https_artifacts() {
