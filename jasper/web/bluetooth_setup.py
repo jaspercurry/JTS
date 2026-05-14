@@ -234,6 +234,7 @@ _PAGE_STYLE = """
     background: #eef; color: #336;
   }
   .device .badge.connected { background: #def9d9; color: #163; }
+  .device .badge.connecting { background: #fff3cf; color: #6b4a00; }
   .device .badge.paired { background: #f0e8ff; color: #436; }
   .device .actions { display: flex; gap: 0.4em; }
   .device .rssi {
@@ -487,7 +488,11 @@ function deviceRow(d, isPaired) {
   const metaLine = hasName ? '' :
     `<div class="meta">${escapeHtml(d.address)}</div>`;
   let badges = '';
-  if (d.connected) badges += '<span class="badge connected">Connected</span>';
+  if (d.connected && d.servicesResolved === false) {
+    badges += '<span class="badge connecting">Connecting</span>';
+  } else if (d.connected) {
+    badges += '<span class="badge connected">Connected</span>';
+  }
   else if (d.paired) badges += '<span class="badge paired">Paired</span>';
   let actions = '';
   if (isPaired) {
@@ -512,6 +517,12 @@ function deviceRow(d, isPaired) {
         <div class="metric">
           <div class="label">Battery</div>
           <div class="value">${d.battery}%</div>
+        </div>`);
+    } else if (d.connected && d.batteryCapable) {
+      parts.push(`
+        <div class="metric">
+          <div class="label">Battery</div>
+          <div class="value">No reading</div>
         </div>`);
     }
     if (d.rssi !== null && d.rssi !== undefined) {

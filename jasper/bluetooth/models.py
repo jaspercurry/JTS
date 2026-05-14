@@ -14,6 +14,7 @@ UUID_A2DP_SOURCE = "0000110a-"   # Audio Source (rare for us)
 UUID_HFP_HF = "0000111e-"        # Hands-Free
 UUID_AVRCP = "0000110e-"         # Audio/Video Remote Control
 UUID_HID = "00001124-"           # Human Interface Device
+UUID_BATTERY = "0000180f-"       # BLE Battery Service
 
 
 def _icon_for(class_of_device: int, uuids: list[str], icon_hint: str) -> str:
@@ -98,8 +99,10 @@ class BluetoothDevice:
     rssi: int | None   # -dBm, or None when not currently seen
     battery: int | None  # 0..100 percent, or None if device doesn't
                          # advertise org.bluez.Battery1
+    battery_capable: bool  # advertises BLE Battery Service UUID
     paired: bool
     connected: bool
+    services_resolved: bool
     trusted: bool
     uuids: list[str]   # advertised service UUIDs
 
@@ -117,6 +120,7 @@ class BluetoothDevice:
             return getattr(v, "value", v) if v is not None else default
 
         uuids_raw = _v(device_props, "UUIDs", []) or []
+        uuids = [str(u) for u in uuids_raw]
         battery = None
         if battery_props is not None:
             raw_pct = _v(battery_props, "Percentage")
@@ -140,10 +144,12 @@ class BluetoothDevice:
             class_of_device=int(_v(device_props, "Class", 0) or 0),
             rssi=_v(device_props, "RSSI"),
             battery=battery,
+            battery_capable=UUID_BATTERY in " ".join(uuids).lower(),
             paired=bool(_v(device_props, "Paired", False)),
             connected=bool(_v(device_props, "Connected", False)),
+            services_resolved=bool(_v(device_props, "ServicesResolved", False)),
             trusted=bool(_v(device_props, "Trusted", False)),
-            uuids=[str(u) for u in uuids_raw],
+            uuids=uuids,
         )
 
     def to_json(self) -> dict[str, Any]:
@@ -156,8 +162,10 @@ class BluetoothDevice:
             "class": self.class_of_device,
             "rssi": self.rssi,
             "battery": self.battery,
+            "batteryCapable": self.battery_capable,
             "paired": self.paired,
             "connected": self.connected,
+            "servicesResolved": self.services_resolved,
             "trusted": self.trusted,
             "uuids": self.uuids,
         }
