@@ -346,10 +346,12 @@ fine, surface the exact fix when not):
 - **XVF mixer state** — kernel ALSA mixer can have ch2-5 muted
   even when firmware is 6-ch (a trap on chips flashed 2-ch → 6-ch
   mid-bringup). Reconciler self-heals; doctor flags drift.
-- **AEC bridge service** — three legitimate `ok` states (running,
-  disabled-because-no-6ch-firmware, disabled-because-AEC_MODE=disabled).
-  A `fail` here means the conditions for AEC are met but the
-  bridge isn't running — paste the suggested commands.
+- **AEC bridge service** — software AEC is the *desired* state, so:
+  - `ok (running)` — bridge active, AEC on
+  - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
+  - `warn (off — XVF on 2-channel firmware)` — gentle nudge to DFU-flash
+  - `warn (off — Array chip not present)` — XVF needs to be plugged in
+  - `fail` — conditions for AEC are met but bridge isn't running (real bug; paste the suggested commands)
 
 If you want to go deeper on any mic issue, the canonical reference
 is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) and the

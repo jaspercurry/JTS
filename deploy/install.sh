@@ -512,10 +512,20 @@ EOF
         local device_name
         device_name=$("${REPO_DIR}/deploy/bin/jasper-derive-device-name")
         echo "  device name: ${device_name}"
+        # Derive JASPER_HOSTNAME from the OS hostname so a fresh Pi
+        # named "jts2" in Raspberry Pi Imager ends up with
+        # JASPER_HOSTNAME=jts2.local — otherwise other devices on the
+        # LAN type jts2.local but Spotify/AirPlay setup URLs advertise
+        # the wrong name. Override path stays clean: deploy-to-pi.sh
+        # exports JASPER_HOSTNAME explicitly, which wins over the
+        # autodetected fallback.
+        local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
+        echo "  hostname: ${hostname_value}"
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
             -e "s|^JASPER_SPOTIFY_DEVICE_NAME=.*|JASPER_SPOTIFY_DEVICE_NAME=${device_name}|" \
             -e "s|^JASPER_AIRPLAY_DEVICE_NAME=.*|JASPER_AIRPLAY_DEVICE_NAME=${device_name}|" \
+            -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo

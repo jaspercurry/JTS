@@ -840,33 +840,45 @@ def check_aec_bridge_running() -> CheckResult:
     renderer→camilla loopback as far-end reference. Output goes over
     UDP localhost, which jasper-voice consumes as its mic source.
 
-    The bridge is reconciler-managed: enabled when the configured
-    AEC mic is present with 6-channel firmware AND JASPER_AEC_MODE
-    is auto. We cross-check those conditions here so a silently-
-    disabled bridge (as happened with the May 2026 reconciler bug
-    that mis-read Playback Channels: 2 as the capture count) shows
-    up as a clear failure instead of a misleading 'ok (disabled)'."""
+    AEC is the *desired* state — wake word fires more cleanly and
+    false wakes during music playback drop dramatically. So we treat
+    any "AEC could be on but isn't" state as a warning (gentle
+    nudge), only suppressing it to ok when the operator explicitly
+    opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
+    (the May 2026 reconciler bug that mis-read Playback Channels: 2
+    as the capture count) shows up as a hard fail."""
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
 
     if is_active == "active":
         return CheckResult("AEC bridge service", "ok", "running (software AEC enabled)")
 
-    # Should it be running? Cross-check the conditions the reconciler uses.
     aec_mode = _aec_mode_setting()
     capture_ch = _stream0_capture_channels("Array")
     chip_present = capture_ch is not None
     is_6ch = capture_ch == 6
-    expected_on = aec_mode == "auto" and is_6ch
 
-    if not expected_on:
-        if aec_mode != "auto":
-            reason = f"JASPER_AEC_MODE={aec_mode}"
-        elif not chip_present:
-            reason = "Array chip not present"
-        else:
-            reason = f"chip is {capture_ch}-channel firmware (need 6-ch)"
-        return CheckResult("AEC bridge service", "ok", f"disabled ({reason})")
+    if aec_mode != "auto":
+        # Explicit operator opt-out is fine.
+        return CheckResult(
+            "AEC bridge service", "ok",
+            f"disabled (JASPER_AEC_MODE={aec_mode})",
+        )
+
+    if not chip_present:
+        return CheckResult(
+            "AEC bridge service", "warn",
+            "off — Array chip not present. Software AEC needs the XVF mic; "
+            "plug it in and the reconciler will enable AEC on next event.",
+        )
+
+    if not is_6ch:
+        return CheckResult(
+            "AEC bridge service", "warn",
+            f"off — XVF chip is on {capture_ch}-channel firmware (need 6-ch). "
+            "DFU-flash to v2.0.8 6chl per BRINGUP.md Phase 2A.5, then: "
+            "sudo systemctl start jasper-aec-reconcile",
+        )
 
     return CheckResult(
         "AEC bridge service", "fail",
