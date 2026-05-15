@@ -32,6 +32,53 @@
     }
     .cert-note strong { color: #3a2e00; }
     .cert-note a { color: #1da34d; font-weight: 600; }
+
+    /* Volume slider card. The whole card surface is a drag target —
+       tap or drag anywhere on it to set volume. Bar is 36 px (good
+       visual size) but the card height pushes the touch target above
+       Apple's 44 pt minimum. touch-action:none stops the browser from
+       interpreting horizontal swipes as page scrolls. */
+    .volume-card {
+      background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
+      padding: 0.9em 1.2em 1em;
+      cursor: ew-resize;
+      user-select: none; -webkit-user-select: none;
+      touch-action: none;
+    }
+    .volume-card:focus-visible { outline: 2px solid #1db954; outline-offset: 2px; }
+    .vol-label {
+      font-size: 0.85em; color: #666; font-weight: 500;
+      margin-bottom: 0.5em;
+    }
+    .vol-bar {
+      position: relative;
+      height: 36px;
+      background: #e6e6e6;
+      border-radius: 18px;
+      margin-bottom: 0.5em;
+    }
+    .vol-fill {
+      position: absolute; inset: 0 auto 0 0;
+      width: 0%;
+      background: #1db954;
+      border-radius: 18px;
+    }
+    .vol-thumb {
+      position: absolute; top: 50%; left: 0%;
+      width: 14px; height: 14px;
+      margin-left: -7px; margin-top: -7px;
+      background: #1db954;
+      border: 2px solid #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+      pointer-events: none;
+    }
+    .vol-percent {
+      text-align: center;
+      font-size: 2em; font-weight: 600; color: #222;
+      font-variant-numeric: tabular-nums;
+      line-height: 1.1;
+    }
   </style>
 </head>
 <body>
@@ -39,6 +86,18 @@
   <p class="sub">Manage your speaker.</p>
 
   <div class="cards">
+    <div class="volume-card" id="volume-card"
+         role="slider" tabindex="0"
+         aria-label="Volume"
+         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+      <div class="vol-label">Volume</div>
+      <div class="vol-bar">
+        <div class="vol-fill" id="vol-fill"></div>
+        <div class="vol-thumb" id="vol-thumb"></div>
+      </div>
+      <div class="vol-percent" id="vol-percent">—</div>
+    </div>
+
     <a class="card" href="/voice/">
       <div class="name">Voice provider &rsaquo;</div>
       <div class="desc">
@@ -143,6 +202,136 @@
     document.querySelectorAll('a.card[data-https]').forEach(function(a) {
       a.href = 'https://' + window.location.hostname + a.dataset.path;
     });
+
+    // Volume slider. Talks to jasper-control's /volume endpoints
+    // (proxied through nginx so this stays same-origin). Optimistic
+    // UI: bar follows the pointer instantly; we throttle POSTs and
+    // reconcile from the server response and a 1.5 s poll.
+    (function() {
+      var card = document.getElementById('volume-card');
+      var fill = document.getElementById('vol-fill');
+      var thumb = document.getElementById('vol-thumb');
+      var percentEl = document.getElementById('vol-percent');
+      var dragging = false;
+      var pending = null;     // queued percent waiting to send
+      var inFlight = false;
+      var lastSentAt = 0;
+      var THROTTLE_MS = 150;
+      var POLL_MS = 1500;
+
+      function setUI(pct) {
+        pct = Math.max(0, Math.min(100, Math.round(pct)));
+        fill.style.width = pct + '%';
+        thumb.style.left = pct + '%';
+        percentEl.textContent = pct + '%';
+        card.setAttribute('aria-valuenow', String(pct));
+      }
+
+      function xToPercent(clientX) {
+        var rect = card.querySelector('.vol-bar').getBoundingClientRect();
+        var x = clientX - rect.left;
+        return (x / rect.width) * 100;
+      }
+
+      // Throttled sender. pending=most-recent target; only one POST in
+      // flight at a time. When a POST completes we re-check pending and
+      // fire the next, so a fast drag coalesces to the latest position.
+      function sendThrottled(pct) {
+        pending = pct;
+        if (inFlight) return;
+        flush();
+      }
+      async function flush() {
+        while (pending !== null) {
+          var wait = Math.max(0, lastSentAt + THROTTLE_MS - Date.now());
+          if (wait > 0) await new Promise(function(r) { setTimeout(r, wait); });
+          var toSend = pending;
+          pending = null;
+          inFlight = true;
+          lastSentAt = Date.now();
+          try {
+            var resp = await fetch('/volume/set', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify({percent: toSend}),
+            });
+            if (resp.ok) {
+              var data = await resp.json();
+              // Only reconcile UI from server when not dragging — we
+              // don't want a late response to yank the bar away from
+              // the user's finger.
+              if (!dragging && typeof data.percent === 'number') {
+                setUI(data.percent);
+              }
+            }
+          } catch (e) {
+            // Network blip — leave optimistic value in place. Next
+            // poll will reconcile.
+          } finally {
+            inFlight = false;
+          }
+        }
+      }
+
+      card.addEventListener('pointerdown', function(e) {
+        dragging = true;
+        try { card.setPointerCapture(e.pointerId); } catch (_) {}
+        var pct = xToPercent(e.clientX);
+        setUI(pct);
+        sendThrottled(Math.round(pct));
+        e.preventDefault();
+      });
+      card.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        var pct = xToPercent(e.clientX);
+        setUI(pct);
+        sendThrottled(Math.round(pct));
+      });
+      function endDrag(e) {
+        if (!dragging) return;
+        dragging = false;
+        try { card.releasePointerCapture(e.pointerId); } catch (_) {}
+        var pct = xToPercent(e.clientX);
+        setUI(pct);
+        sendThrottled(Math.round(pct));
+      }
+      card.addEventListener('pointerup', endDrag);
+      card.addEventListener('pointercancel', endDrag);
+
+      card.addEventListener('keydown', function(e) {
+        var current = parseInt(card.getAttribute('aria-valuenow') || '0', 10);
+        var next = current;
+        switch (e.key) {
+          case 'ArrowLeft':
+          case 'ArrowDown':  next = current - 5;  break;
+          case 'ArrowRight':
+          case 'ArrowUp':    next = current + 5;  break;
+          case 'PageDown':   next = current - 10; break;
+          case 'PageUp':     next = current + 10; break;
+          case 'Home':       next = 0;            break;
+          case 'End':        next = 100;          break;
+          default: return;
+        }
+        e.preventDefault();
+        next = Math.max(0, Math.min(100, next));
+        setUI(next);
+        sendThrottled(next);
+      });
+
+      async function poll() {
+        if (dragging || inFlight) return;
+        if (document.visibilityState === 'hidden') return;
+        try {
+          var resp = await fetch('/volume');
+          if (resp.ok) {
+            var data = await resp.json();
+            if (typeof data.percent === 'number') setUI(data.percent);
+          }
+        } catch (_) {}
+      }
+      setInterval(poll, POLL_MS);
+      poll();
+    })();
   </script>
 </body>
 </html>
