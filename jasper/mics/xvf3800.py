@@ -1,0 +1,183 @@
+"""Seeed ReSpeaker XVF3800 (USB UA variant) — mic profile.
+
+Canonical reference: docs/HANDOFF-xvf3800.md (hardware identity,
+parameter space, firmware variants, failure modes).
+
+Chip control library: jasper/xvf/xvf_host.py (vendored from
+respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY upstream — used for
+chip-side parameter reads/writes and the REBOOT path).
+
+This module holds the mic-family-specific knowledge consulted by
+doctor checks, the AEC bridge, and operator tooling. The bash
+reconciler at deploy/bin/jasper-aec-reconcile carries its own
+copies (it can't import Python); when changing constants here,
+update there too.
+"""
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+# ---------------------------------------------------------------------
+# Identity
+# ---------------------------------------------------------------------
+
+USB_VID_PID = "2886:001a"
+DISPLAY_NAME = "Seeed ReSpeaker XVF3800 (USB UA)"
+
+# ALSA card name as enumerated by snd-usb-audio (the kernel's literal
+# `id` field). Stable across reboots and across the 2-ch / 6-ch
+# firmware variants — both expose the same iProduct string.
+ALSA_CARD_NAME = "Array"
+
+
+# ---------------------------------------------------------------------
+# Firmware variants
+# ---------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class FirmwareVariant:
+    bld_msg: str               # BLD_MSG string the chip reports (xvf_host BLD_MSG)
+    capture_channels: int      # USB capture endpoint channel count
+    raw_mic_indices: tuple[int, ...]  # capture channels carrying raw PDM mic data
+
+
+# The two USB firmware variants Seeed publishes. Both share the same
+# repo hash and chip silicon — the 6-ch variant just adds the raw-mic
+# capture channels needed by the software AEC bridge.
+VARIANT_2CH = FirmwareVariant(
+    bld_msg="ua-io16-sqr",
+    capture_channels=2,
+    raw_mic_indices=(),
+)
+VARIANT_6CH = FirmwareVariant(
+    bld_msg="ua-io16-6ch-sqr",
+    capture_channels=6,
+    raw_mic_indices=(2, 3, 4, 5),
+)
+
+# Required for software AEC — the bridge reads MIC_CHANNEL_INDEX
+# (channel 2 = raw mic 0) from this variant's capture endpoint.
+RECOMMENDED_FIRMWARE = VARIANT_6CH
+
+
+# ---------------------------------------------------------------------
+# DFU re-flash
+# ---------------------------------------------------------------------
+
+# In DFU mode the chip enumerates with a different VID:PID than its
+# runtime mode. The XMOS bootloader is at 20b1:0008.
+DFU_VID_PID = "20b1:0008"
+
+# Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
+# partition where firmware actually gets written. Earlier BRINGUP.md
+# drafts used `-a 0` which silently no-op'd. See HANDOFF-xvf3800.md §2.4.
+DFU_ALT_SETTING = 1
+
+# Filename of the 6-ch firmware blob in the upstream respeaker repo.
+FIRMWARE_BLOB_6CH = "respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin"
+
+
+# ---------------------------------------------------------------------
+# ALSA mixer invariants
+# ---------------------------------------------------------------------
+
+# When the chip is flashed from 2-ch to 6-ch firmware mid-bringup,
+# ALSA assigns new per-channel mixer slots for ch2-5 with defaults
+# of off / 0. `alsactl restore` then persists that silently across
+# reboot, killing the raw mics in spite of correct chip-side state.
+# `ensure_capture_open()` resets both controls to known-good values;
+# the reconciler calls it on every pass to self-heal.
+#
+# These names are looked up via `amixer -c <card> cset name='...'`
+# (cset, not get — these controls aren't in any aggregated "simple
+# control" group, so the plain `amixer set` form misses them).
+MIXER_CAPTURE_SWITCH = "Headset Capture Switch"
+MIXER_CAPTURE_VOLUME = "Headset Capture Volume"
+MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
+
+
+# ---------------------------------------------------------------------
+# AEC bridge wiring
+# ---------------------------------------------------------------------
+
+# Raw mic 0 — the input the WebRTC AEC3 bridge processes for near-end.
+# Index into the 6-ch capture endpoint (ch0=conference, ch1=ASR,
+# ch2-5=raw mics 0-3). See aec_bridge.py for the pipeline.
+MIC_CHANNEL_INDEX = 2
+
+
+# ---------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------
+
+def is_present() -> bool:
+    """True if the chip's ALSA card has enumerated under /proc/asound."""
+    return Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0").exists()
+
+
+def capture_channels() -> int | None:
+    """Return the chip's USB capture endpoint channel count from
+    /proc/asound/<card>/stream0, or None if the card is absent.
+
+    Pinned to the ^Capture: section — /proc/asound/<card>/stream0
+    has Playback first (Channels: 2 for the XVF chip's playback
+    endpoint) then Capture (Channels: 6 on 6-ch firmware). A naive
+    `grep Channels:` returns the Playback value, which was the May
+    2026 reconciler bug that silently disabled software AEC."""
+    p = Path(f"/proc/asound/{ALSA_CARD_NAME}/stream0")
+    if not p.exists():
+        return None
+    in_capture = False
+    for line in p.read_text().split("\n"):
+        if line.startswith("Capture:"):
+            in_capture = True
+            continue
+        if in_capture and "Channels:" in line:
+            try:
+                return int(line.split("Channels:", 1)[1].strip().split()[0])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def is_recommended_firmware() -> bool:
+    """True if the chip is on the 6-ch firmware variant — the one the
+    software AEC bridge needs."""
+    return capture_channels() == RECOMMENDED_FIRMWARE.capture_channels
+
+
+def ensure_capture_open() -> bool:
+    """Reset capture switch + volume to known-good values, then
+    `alsactl store`. Idempotent — safe to call on every reconcile
+    pass. Returns True if the commands succeeded, False otherwise.
+
+    Caller is responsible for sudo: this runs `amixer` directly with
+    no privilege escalation. The reconciler invokes us as root."""
+    on = ",".join(["on"] * RECOMMENDED_FIRMWARE.capture_channels)
+    max_vol = ",".join([str(MIXER_VOLUME_MAX)] * RECOMMENDED_FIRMWARE.capture_channels)
+    try:
+        subprocess.run(
+            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+             f"name={MIXER_CAPTURE_SWITCH}", on],
+            check=True, capture_output=True, timeout=5,
+        )
+        subprocess.run(
+            ["amixer", "-c", ALSA_CARD_NAME, "cset",
+             f"name={MIXER_CAPTURE_VOLUME}", max_vol],
+            check=True, capture_output=True, timeout=5,
+        )
+        subprocess.run(["alsactl", "store"], check=False, timeout=5)
+        return True
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+def dfu_flash_command(firmware_path: str = "") -> str:
+    """Return the canonical DFU flash command as a string. Useful for
+    doctor remediation messages and BRINGUP cross-references. The
+    chip must be in DFU mode (different VID:PID) before this runs."""
+    blob = firmware_path or FIRMWARE_BLOB_6CH
+    return f"sudo dfu-util -a {DFU_ALT_SETTING} -D {blob}"

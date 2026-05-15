@@ -792,30 +792,77 @@ def check_ram() -> CheckResult:
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
 
+def _aec_mode_setting() -> str:
+    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
+    'auto' (the install.sh default) when the file is missing or
+    unreadable, matching the reconciler's behaviour."""
+    p = Path("/var/lib/jasper/aec_mode.env")
+    if not p.exists():
+        return "auto"
+    try:
+        for line in p.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith("JASPER_AEC_MODE="):
+                return line.split("=", 1)[1].strip().strip("'\"") or "auto"
+    except OSError:
+        pass
+    return "auto"
+
+
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
     chip's raw mic 0 (channel 2 of 6-ch firmware), with the
     renderer→camilla loopback as far-end reference. Output goes over
     UDP localhost, which jasper-voice consumes as its mic source.
 
-    The bridge is reconciler-managed: enabled when the configured
-    AEC mic is present with 6-channel firmware, disabled otherwise.
-    So an "inactive + disabled" state is fine, and we differentiate
-    it from "enabled but crashed"."""
+    AEC is the *desired* state — wake word fires more cleanly and
+    false wakes during music playback drop dramatically. So we treat
+    any "AEC could be on but isn't" state as a warning (gentle
+    nudge), only suppressing it to ok when the operator explicitly
+    opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
+    (the May 2026 reconciler bug that mis-read Playback Channels: 2
+    as the capture count) shows up as a hard fail."""
+    from ..mics import xvf3800
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
+
     if is_active == "active":
         return CheckResult("AEC bridge service", "ok", "running (software AEC enabled)")
-    if is_enabled in ("disabled", "static"):
+
+    aec_mode = _aec_mode_setting()
+    capture_ch = xvf3800.capture_channels()
+    chip_present = capture_ch is not None
+    is_6ch = capture_ch == xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+
+    if aec_mode != "auto":
+        # Explicit operator opt-out is fine.
         return CheckResult(
             "AEC bridge service", "ok",
-            "disabled (reconciler selected direct mic or no AEC-capable mic)",
+            f"disabled (JASPER_AEC_MODE={aec_mode})",
         )
-    # enabled but not active = crashed
+
+    if not chip_present:
+        return CheckResult(
+            "AEC bridge service", "warn",
+            f"off — {xvf3800.DISPLAY_NAME} not present. Software AEC needs it; "
+            "plug it in and the reconciler will enable AEC on next event.",
+        )
+
+    if not is_6ch:
+        return CheckResult(
+            "AEC bridge service", "warn",
+            f"off — XVF chip is on {capture_ch}-channel firmware "
+            f"(need {xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch). "
+            "DFU-flash per BRINGUP.md Phase 2A.5, then: "
+            "sudo systemctl start jasper-aec-reconcile",
+        )
+
     return CheckResult(
         "AEC bridge service", "fail",
-        f"is-active='{is_active}', is-enabled='{is_enabled}'. Bridge is "
-        f"enabled but not running. Check `journalctl -u jasper-aec-bridge`.",
+        f"is-active='{is_active}', is-enabled='{is_enabled}'. "
+        f"AEC should be on (mode=auto, 6-ch firmware loaded) but bridge isn't running. "
+        f"Run: sudo systemctl start jasper-aec-reconcile && "
+        f"journalctl -u jasper-aec-bridge -e",
     )
 
 
@@ -832,17 +879,77 @@ def check_aec_bridge_running() -> CheckResult:
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
     capture endpoint. The bridge depends on this — it reads channel 2."""
-    p = Path("/proc/asound/Array/stream0")
-    if not p.exists():
-        return CheckResult("XVF firmware 6-ch", "fail", "Array card missing")
-    text = p.read_text()
-    if "Channels: 6" in text:
-        return CheckResult("XVF firmware 6-ch", "ok", "capture is 6-channel")
+    from ..mics import xvf3800
+    capture_ch = xvf3800.capture_channels()
+    if capture_ch is None:
+        return CheckResult("XVF firmware 6-ch", "warn",
+                           f"{xvf3800.ALSA_CARD_NAME} card not present")
+    target = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    if capture_ch == target:
+        return CheckResult("XVF firmware 6-ch", "ok",
+                           f"capture is {target}-channel")
     return CheckResult(
         "XVF firmware 6-ch", "warn",
-        "XVF capture is not 6-channel — likely 2-ch firmware loaded. "
-        "Re-flash with respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin "
-        "via dfu-util to expose raw mics for the bridge.",
+        f"capture is {capture_ch}-channel — re-flash for software AEC. "
+        f"Put chip in DFU mode (BRINGUP.md Phase 2A.5) then: "
+        f"{xvf3800.dfu_flash_command()}",
+    )
+
+
+def check_xvf_mixer_state() -> CheckResult:
+    """The XVF chip exposes each capture channel as a kernel ALSA
+    mixer slot. When the chip is flashed from 2-ch to 6-ch firmware
+    mid-bringup, ALSA assigns new slots for ch2-5 with defaults of
+    off / 0 dB, and `alsactl restore` persists that across reboot —
+    silently killing raw mics in spite of correct chip state. The
+    reconciler self-heals via xvf3800.ensure_capture_open(); this
+    check flags drift if anything sets them back."""
+    from ..mics import xvf3800
+    if not xvf3800.is_present():
+        return CheckResult("XVF mixer state", "warn",
+                           f"{xvf3800.ALSA_CARD_NAME} card not present")
+    # Use cget (not get) — these controls aren't part of any aggregated
+    # "simple control" group, so `amixer get` misses them.
+    sw = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+               f"name={xvf3800.MIXER_CAPTURE_SWITCH}"])
+    vol = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+                f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
+    if sw.returncode != 0 or vol.returncode != 0:
+        return CheckResult("XVF mixer state", "warn", "amixer cget failed")
+
+    def _extract_values(out: str) -> str | None:
+        for line in out.split("\n"):
+            if ": values=" in line:
+                return line.split("values=", 1)[1].strip()
+        return None
+
+    switch = _extract_values(sw.stdout) or ""
+    volume = _extract_values(vol.stdout) or ""
+    switch_norm = switch.replace(" ", "")
+    nch = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    expected_sw = ",".join(["on"] * nch)
+    try:
+        volume_vals = [int(v.strip()) for v in volume.split(",") if v.strip()]
+    except ValueError:
+        volume_vals = []
+    volume_ok = len(volume_vals) >= nch and all(v >= 50 for v in volume_vals[:nch])
+
+    if switch_norm == expected_sw and volume_ok:
+        return CheckResult(
+            "XVF mixer state", "ok",
+            f"all {nch} capture channels open (switch={switch_norm}, vol={volume})",
+        )
+
+    issues = []
+    if switch_norm != expected_sw:
+        issues.append(f"Capture Switch is {switch_norm or '<empty>'} (expected {expected_sw})")
+    if not volume_ok:
+        issues.append(f"Capture Volume is {volume or '<empty>'} (expected ≥50 on all {nch})")
+    return CheckResult(
+        "XVF mixer state", "fail",
+        " | ".join(issues)
+        + ". Heal: sudo /usr/local/sbin/jasper-aec-reconcile --reason heal "
+        "(reconciler will reset switch/volume + alsactl store)",
     )
 
 
@@ -941,6 +1048,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_xvf_firmware_6ch,
+        check_xvf_mixer_state,
         # Rotary dial: avahi advertising the control service so the
         # dial finds us via mDNS-SD, plus a heartbeat from any dial
         # currently on the network.

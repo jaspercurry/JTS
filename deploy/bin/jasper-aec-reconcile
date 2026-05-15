@@ -163,16 +163,45 @@ mic_channels() {
         echo 0
         return
     fi
-    channels="$(grep -E "Channels:[[:space:]]*[0-9]+" "$stream" \
-        | head -1 \
+    # /proc/asound/<card>/stream0 has separate Playback and Capture
+    # blocks, each with its own "Channels:" line. We need the Capture
+    # one — the XVF chip's Playback endpoint is 2-ch even when Capture
+    # is 6-ch on the 6-ch firmware. Pinning to ^Capture: prevents a
+    # silent fallback to direct-mic when AEC should be enabled.
+    channels="$(awk '/^Capture:/{cap=1} cap && /Channels:[[:space:]]*[0-9]+/{print; exit}' "$stream" \
         | grep -oE "[0-9]+" \
-        || true)"
+        | head -1)"
     echo "${channels:-0}"
 }
 
 aec_ready() {
     local mic="$1"
     [[ "$(mic_channels "$mic")" == "6" ]]
+}
+
+# When the chip is flashed from the 2-ch firmware to the 6-ch firmware
+# (the BRINGUP path), ALSA assigns mixer slots for the new ch2-5 with
+# default values of off / 0 dB. `alsactl restore` then persists that
+# state across reboot — silencing the raw mics in the kernel
+# independently of the chip's own configuration, with no surface that
+# would let the operator notice. Force the capture channels open
+# whenever we confirm the chip is on 6-ch firmware. Idempotent; safe
+# to run on every reconcile pass.
+#
+# Canonical reference for these mixer names + the rationale: the
+# `jasper.mics.xvf3800` Python profile. This reconciler is bash and
+# can't import Python; if the names or channel count change in the
+# profile, update them here too. The doctor's `check_xvf_mixer_state`
+# reads from the profile and flags drift if the two get out of sync.
+ensure_capture_mixer_open() {
+    local spec="$1"
+    local card
+    card="$(card_id_from_spec "$spec")"
+    amixer -c "$card" cset name='Headset Capture Switch' \
+        on,on,on,on,on,on >/dev/null 2>&1 || true
+    amixer -c "$card" cset name='Headset Capture Volume' \
+        60,60,60,60,60,60 >/dev/null 2>&1 || true
+    alsactl store >/dev/null 2>&1 || true
 }
 
 split_candidates() {
@@ -316,6 +345,7 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
 fi
 
 if aec_ready "$AEC_MIC_DEVICE"; then
+    ensure_capture_mixer_open "$AEC_MIC_DEVICE"
     if [[ "$CURRENT_MIC" != "$UDP_DEVICE" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
         log "6-channel ${AEC_MIC_DEVICE} present; selected AEC UDP mic ${UDP_DEVICE}"

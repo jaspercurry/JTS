@@ -334,11 +334,29 @@ this runbook's smoke tests. The doctor reads
 provider's key is checked regardless of which env file you put it
 in.
 
-Common warnings (non-fatal):
+`install.sh` runs the doctor at the end of every install, so
+nothing should be surprising here — this phase is just a sanity
+check that everything's still healthy after the manual steps.
 
-- "AEC bridge service: disabled" — expected when the Array is absent,
-  on 2-channel firmware, or when `JASPER_AEC_MODE=disabled`. See
-  CLAUDE.md "Acoustic echo cancellation" if you want to A/B test.
+**Mic-side checks worth knowing about** (they pass silently when
+fine, surface the exact fix when not):
+
+- **XVF firmware 6-ch** — bridge can't run without 6-channel
+  firmware. If it warns, jump to the DFU section below.
+- **XVF mixer state** — kernel ALSA mixer can have ch2-5 muted
+  even when firmware is 6-ch (a trap on chips flashed 2-ch → 6-ch
+  mid-bringup). Reconciler self-heals; doctor flags drift.
+- **AEC bridge service** — software AEC is the *desired* state, so:
+  - `ok (running)` — bridge active, AEC on
+  - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
+  - `warn (off — XVF on 2-channel firmware)` — gentle nudge to DFU-flash
+  - `warn (off — Array chip not present)` — XVF needs to be plugged in
+  - `fail` — conditions for AEC are met but bridge isn't running (real bug; paste the suggested commands)
+
+If you want to go deeper on any mic issue, the canonical reference
+is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) and the
+deep-diagnostic tool is `bash scripts/xvf-interrogate.sh --host
+<pi>` (run from your laptop, captures everything to `logs/`).
 
 ---
 
@@ -455,11 +473,39 @@ AEC bridge.
 sudo apt install -y dfu-util
 # Boot the chip into DFU mode (button combo varies by board rev;
 # see ReSpeaker docs for your specific revision)
-sudo dfu-util -d 20b1:0008 -a 0 \
+sudo dfu-util -d 20b1:0008 -a 1 \
     -D /path/to/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin -R
-# Re-plug the mic, then verify:
-cat /proc/asound/Array/stream0 | grep Channels
+# Re-plug the mic, then verify the chip now exposes 6 capture channels:
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 # Expect "Channels: 6"
+
+# Trigger the reconciler to pick up the new firmware, enable the
+# AEC bridge, and reset the ALSA mixer to known-good values.
+sudo systemctl start jasper-aec-reconcile
+
+# Confirm:
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(AEC bridge|XVF)'
+# Expect three "✓" lines: AEC bridge running, XVF firmware 6-ch,
+# XVF mixer state all 6 channels open.
+```
+
+**Alt-setting `-a 1` is intentional** — alt 0 is the read-only Factory
+slot (writes silently no-op), alt 1 is the Upgrade slot where firmware
+actually gets written. Earlier drafts of this guide had `-a 0` which
+appeared to flash successfully but left the chip on whatever firmware
+was already loaded.
+
+**The reconciler step matters.** Without it, the kernel ALSA mixer can
+persist a stale ch2-5 mute state from before the DFU flash — silently
+killing the raw mics in spite of the new firmware. The reconciler runs
+`ensure_capture_mixer_open` to reset switch + volume to all-on and
+`alsactl store`s the result. If you ever need the manual recovery
+(e.g. doctor is unavailable):
+
+```sh
+sudo amixer -c Array cset name='Headset Capture Switch' on,on,on,on,on,on
+sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
+sudo alsactl store
 ```
 
 The 6-ch firmware's channel 0 is identical to the 2-ch firmware's
@@ -477,6 +523,11 @@ certain firmware versions (respeaker repo issue #8).
 - Check `journalctl -u jasper-voice -f` — wake events log there.
   No log = mic isn't being captured. Verify `JASPER_MIC_DEVICE`
   matches what `arecord -l` shows.
+- For deeper mic debugging (chip identity, USB descriptors,
+  ALSA state, XVF firmware, per-channel activity), run
+  `bash scripts/xvf-interrogate.sh --host jts.local` from your
+  laptop. Output lands in `logs/` tagged by chip iSerial. The
+  canonical reference is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md).
 
 **Wake fires but no voice response.**
 - The active provider's API key might be missing/invalid. Check

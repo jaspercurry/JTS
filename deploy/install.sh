@@ -512,10 +512,20 @@ EOF
         local device_name
         device_name=$("${REPO_DIR}/deploy/bin/jasper-derive-device-name")
         echo "  device name: ${device_name}"
+        # Derive JASPER_HOSTNAME from the OS hostname so a fresh Pi
+        # named "jts2" in Raspberry Pi Imager ends up with
+        # JASPER_HOSTNAME=jts2.local — otherwise other devices on the
+        # LAN type jts2.local but Spotify/AirPlay setup URLs advertise
+        # the wrong name. Override path stays clean: deploy-to-pi.sh
+        # exports JASPER_HOSTNAME explicitly, which wins over the
+        # autodetected fallback.
+        local hostname_value="${JASPER_HOSTNAME:-$(hostname).local}"
+        echo "  hostname: ${hostname_value}"
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
             -e "s|^JASPER_SPOTIFY_DEVICE_NAME=.*|JASPER_SPOTIFY_DEVICE_NAME=${device_name}|" \
             -e "s|^JASPER_AIRPLAY_DEVICE_NAME=.*|JASPER_AIRPLAY_DEVICE_NAME=${device_name}|" \
+            -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo
@@ -1014,6 +1024,33 @@ install_camillagui() {
     echo "  CamillaGUI listening on :5005 (LAN-direct, no auth)"
 }
 
+run_doctor_summary() {
+    # Final pre-flight: run jasper-doctor so the operator sees status of
+    # every subsystem (env file, mic, firmware, AEC bridge, renderers,
+    # provider keys, …) at install time. Non-blocking — install is done
+    # by the time we get here; this is just a status report.
+    #
+    # Critical for catching the "silent productization gaps" — e.g. an
+    # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
+    # which used to be invisible until a wake-word test failed days
+    # later. Doctor flags it inline now.
+    if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
+        return 0
+    fi
+    echo
+    echo "=== jasper-doctor pre-flight ==="
+    if /opt/jasper/.venv/bin/jasper-doctor; then
+        echo "✓ all critical doctor checks pass."
+    else
+        echo
+        echo "─────────────────────────────────────────────────────────────"
+        echo " jasper-doctor reports failures (see above)."
+        echo " Install finished, but at least one subsystem isn't healthy."
+        echo " Re-run after fixing: sudo /opt/jasper/.venv/bin/jasper-doctor"
+        echo "─────────────────────────────────────────────────────────────"
+    fi
+}
+
 main() {
     require_root
     install_deps
@@ -1029,6 +1066,7 @@ main() {
     install_nginx_site
     install_camillagui
     regenerate_audio_cues
+    run_doctor_summary
 }
 
 main "$@"

@@ -81,6 +81,7 @@ import sounddevice as sd
 from scipy.signal import resample_poly
 
 from jasper.watchdog import Heartbeat
+from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
 
@@ -100,14 +101,16 @@ REF_CHANNELS = 2
 # Capture device for the raw mic. Chip's 6-ch firmware exposes
 # channels 0=conference, 1=ASR (both post-AEC + BF + NS + AGC),
 # 2-5=raw mics 0-3. We use channel 2 (raw mic 0) — clean linear
-# input perfect for software AEC.
+# input perfect for software AEC. All XVF-specific values come from
+# the mic profile (jasper.mics.xvf3800) so a future mic change has
+# one place to update.
 # Device names are PortAudio substring matches (sounddevice's
 # backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
 # cards by their card description, not by hw:CARD= syntax.
 # Default matches "Array: USB Audio (hw:N,0)".
-MIC_DEVICE = os.environ.get("JASPER_AEC_MIC_DEVICE", "Array")
-MIC_CHANNELS = 6
-MIC_CHANNEL_INDEX = 2  # raw mic 0
+MIC_DEVICE = os.environ.get("JASPER_AEC_MIC_DEVICE", _mic_profile.ALSA_CARD_NAME)
+MIC_CHANNELS = _mic_profile.RECOMMENDED_FIRMWARE.capture_channels
+MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 
 # Output transport: UDP localhost. Bridge sends AEC'd mono int16
 # frames to `127.0.0.1:JASPER_AEC_UDP_PORT`; jasper-voice's
