@@ -10,10 +10,11 @@ unit per wizard. nginx routes:
   /voice/    →  127.0.0.1:8767  (jasper.web.voice_setup)
   /google/   →  127.0.0.1:8768  (jasper.web.google_setup)
   /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
+  /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
-  for all four ports are handed to us via LISTEN_FDS at process start.
+  for all five ports are handed to us via LISTEN_FDS at process start.
   We adopt them by matching `getsockname()` port → wizard. After 10 min
   of no incoming requests on any wizard, the process exits cleanly and
   systemd's .socket goes back to listening — saving ~60-90 MB Pss when
@@ -36,6 +37,7 @@ from . import (
     _systemd,
     airplay_setup,
     google_setup,
+    sources_setup,
     spotify_setup,
     voice_setup,
 )
@@ -65,6 +67,7 @@ def main() -> int:
     voice_port = int(os.environ.get("JASPER_VOICE_WEB_PORT", "8767"))
     google_port = int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768"))
     airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
+    sources_port = int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -123,6 +126,10 @@ def main() -> int:
         target_for(airplay_port), state_path=airplay_state,
     )
 
+    # Sources wizard — three toggles, no persistent state file. Shells
+    # out to systemctl for AirPlay + Spotify Connect; DBus for BT.
+    sources_server = sources_setup.make_server(target_for(sources_port))
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -133,6 +140,7 @@ def main() -> int:
         voice_server.RequestHandlerClass,
         google_server.RequestHandlerClass,
         airplay_server.RequestHandlerClass,
+        sources_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -142,6 +150,7 @@ def main() -> int:
         ("/voice", voice_port),
         ("/google", google_port),
         ("/airplay", airplay_port),
+        ("/sources", sources_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -156,6 +165,7 @@ def main() -> int:
         ("/voice", voice_server),
         ("/google", google_server),
         ("/airplay", airplay_server),
+        ("/sources", sources_server),
     ):
         threading.Thread(
             target=_serve_forever,
