@@ -80,9 +80,8 @@ honoring it as the user's master-volume intent would mean the
 canonical level bounces around with whatever the phone/Mac is
 showing, disconnected from what camilla (the actual master) is
 doing. So we ignore the iPhone/Mac AirPlay slider and let the dial
-own the canonical level. (Practical implication: ask users to leave
-the sender slider at 100% — see "AirPlay is always camilla-as-master"
-below.)
+and voice tools own the canonical JTS speaker level. The sender
+slider remains upstream trim, not the JTS volume source of truth.
 
 ### Echo prevention
 
@@ -93,8 +92,7 @@ like user input. So every outbound write timestamps itself per source
 
 ```
 if observed.source.was_written_by_us within ECHO_WINDOW_SEC (500 ms):
-    if observed_level matches what we wrote (±1pp):
-        ignore
+    ignore
 ```
 
 500 ms covers DBus round-trip + bus latency on a busy Pi 5 with
@@ -170,13 +168,24 @@ my eardrums out"); defense in depth is the design.
 ## AirPlay is always camilla-as-master
 
 shairport-sync exposes `SetAirplayVolume` as a method that should
-forward volume changes back to the AirPlay sender via the DACP
-back-channel. In practice, Apple's AirPlay 2 receivers (iOS 17+
-*and* macOS Sequoia) accept the DBus call but silently no-op the
-sender-side slider. The DACP `Available` flag isn't a reliable
-predictor either — empirically it flips true and false during a
-single session, and even when it reports true `SetAirplayVolume`
-often still no-ops.
+forward volume changes back to the AirPlay sender via the legacy DACP
+back-channel. In modern AirPlay 2 sessions, this is not a reliable
+control surface. Real hardware validation on 2026-05-14 showed both
+macOS and iOS sessions reporting:
+
+```
+RemoteControl.Available = false
+SETUP AP2 no Active-Remote information
+SETUP AP2 doesn't include DACP-ID string information
+```
+
+Calling `SetAirplayVolume` returned success at the DBus layer but left
+`AirplayVolume` unchanged and did not move the sender UI or audible
+level. This matches upstream shairport-sync issue #1822: iOS 17.4 /
+macOS 14.4 stopped providing the DACP-ID / Active-Remote headers in
+AirPlay 2 mode, so DBus/MPRIS receiver-originated commands are ignored
+or impossible. shairport-sync's AirPlay 2 documentation also states
+that modern remote-control facilities are not implemented.
 
 So instead of trying to drive the AirPlay sender's slider, we
 attenuate at camilla — `main_volume` sits *downstream* of
@@ -187,8 +196,8 @@ a master volume on every source.
 
 **Trade:** the iPhone/Mac AirPlay slider on the sender does not
 visibly move when the dial turns. The audio at the speaker does.
-Acceptable for a smart speaker — the user's primary controller is
-the dial, not the phone.
+Voice volume control and the rotary dial share the same coordinator
+path, so both remain reliable during AirPlay.
 
 **The four transitions** at the camilla-as-master / push-mode
 boundary all flow through `apply_active_source_transition`:
@@ -211,19 +220,51 @@ calls `_refresh_from_disk()` before dispatch. The control daemon
 the refresh, voice_daemon's in-memory cache lags and a transition
 that fires between voice operations would dispatch a stale level.
 
-**Recommended user setup for AirPlay sessions:** leave the
-iPhone/Mac slider at 100%. Then `audio = 100% × camilla(listening_level)` ≈
-`camilla(listening_level)` — the dial maps cleanly to perceived
-loudness on the camilla −50..0 dB scale. If the sender slider is
-below 100% it pre-attenuates upstream of camilla and the dial
-position stops being a 1:1 read of perceived loudness; not
-catastrophic (user just turns the dial further) but worth knowing.
+If the sender slider is below 100%, it pre-attenuates upstream of
+camilla and the dial position stops being a 1:1 read of perceived
+loudness. JTS still responds audibly; the user may just turn the dial
+further. Do not add hidden fallback behavior that sometimes treats
+AirPlay as push-mode — that recreates two competing product contracts.
 
-A previous iteration of this code gated on
-`_airplay_dacp_available()` — push-mode when DACP=true, fall back
-to camilla when false. That gating was unreliable for the reasons
-above (DACP flips, even DACP=true frequently no-ops). Removed in
-favor of the simpler "always camilla" rule.
+A previous iteration tried to make AirPlay push-mode by calling
+`SetAirplayVolume` and treating `AirplayVolume` observations as
+canonical. That worked in unit tests but failed on real iOS/macOS
+AirPlay 2 sessions for the protocol reasons above. The code now leans
+fully into the robust contract: AirPlay is camilla-as-master.
+
+### Future research: Bose/HomePod-style reflection
+
+Commercial AirPlay 2 speakers such as Bose can reflect receiver-side
+hardware volume back into the iPhone/Mac slider. That does not appear
+to use shairport-sync's legacy DACP/DBus path. Public reverse-
+engineering points to the modern AirPlay 2 control plane: `/info`
+capabilities such as `initialVolume` / `volumeControlType`,
+`POST /command`, event/data channels, HomeKit/HAP-derived encryption,
+and MRP-style protobuf messages.
+
+If we revisit AirPlay slider reflection, keep it separate from the
+production volume path and test it as protocol research:
+
+1. Capture Bose or HomePod traffic while changing physical speaker
+   volume and compare it with JTS/shairport.
+2. Look specifically for `/info` volume capability fields,
+   `POST /command`, event/data-channel traffic, and MRP volume messages.
+3. Check whether shairport-sync receives, ignores, or never establishes
+   the needed channel.
+4. Prototype below the Python coordinator layer, likely as a
+   shairport-sync patch or AirPlay 2 sidecar. Do not reintroduce
+   `SetAirplayVolume` as the normal JTS AirPlay volume path unless
+   hardware proves receiver-originated slider reflection works on
+   current iOS/macOS.
+
+Useful references:
+
+- https://github.com/mikebrady/shairport-sync/issues/1822
+- https://github.com/mikebrady/shairport-sync/blob/master/AIRPLAY2.md
+- https://emanuelecozzi.net/docs/airplay2/rtsp/
+- https://emanuelecozzi.net/docs/airplay2/protocols/
+- https://pyatv.dev/documentation/protocols/
+- https://openairplay.github.io/airplay-spec/audio/volume_control.html
 
 ## What's NOT here
 

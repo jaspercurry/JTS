@@ -3,7 +3,7 @@
 Covers:
 - mapping helpers round-trip
 - set/adjust/mute/unmute on each source
-- camilla pinned at 0 dB during source-active operation
+- camilla-as-master for idle/AirPlay; push-mode for Spotify/BT
 - echo prevention: own-write within window is ignored on observe
 - observe out-of-window changes update listening_level + persist
 - initialize() applies regression and DOES NOT bump last_used_at
@@ -122,15 +122,18 @@ class _RecordingCoordinator(VolumeCoordinator):
     """Subclass that records source-side dispatch calls without
     actually invoking subprocess busctl / HTTP. Replaces `_set_*`
     methods with capture lists. Mirrors production semantics:
-    AIRPLAY is always camilla-as-master, so _set_airplay falls
-    through to _set_camilla; only SPOTIFY and BLUETOOTH are
-    push-mode."""
+    idle/AirPlay use camilla; Spotify/BT are push-mode."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
+        self.airplay_writes: list[int] = []
         self.spotify_writes: list[int] = []
         self.bt_writes: list[int] = []
         self.camilla_writes: list[int] = []
+
+    async def _set_airplay(self, level: int) -> None:
+        self.airplay_writes.append(level)
+        await self._set_camilla(level)
 
     async def _set_spotify(self, level: int) -> None:
         self.spotify_writes.append(level)
@@ -175,17 +178,16 @@ async def test_set_volume_idle_writes_camilla(tmp_path):
 
 
 async def test_set_volume_airplay_active_routes_to_camilla(tmp_path):
-    """AirPlay is camilla-as-master in this codebase. The dial controls
-    audio via camilla.main_volume rather than pushing to the AirPlay
-    sender's slider (which Apple silently no-ops on AirPlay 2)."""
+    """AirPlay is camilla-as-master: dial/voice/HTTP changes must be
+    audible even though modern AirPlay 2 sender slider reflection via
+    shairport-sync is unavailable."""
     coord, cam, _ = _coord(
         tmp_path, active={"aplactive": True}, db=0.0,
     )
     await coord.set_listening_level(50)
-    # listening_level → camilla, not the AirPlay sender.
+    assert coord.airplay_writes == [50]
     assert coord.camilla_writes == [50]
     assert coord.spotify_writes == []
-    # Camilla received -25 dB (50% on -50..0 scale).
     assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
 
 
@@ -209,8 +211,7 @@ async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path):
 
 async def test_idle_to_push_source_transition_pins_camilla(tmp_path):
     """idle→push-mode-source transition pins camilla to 0 dB and
-    pushes listening_level to the new source's slider. Uses SPOTIFY
-    because AIRPLAY is camilla-as-master both sides (idle ↔ AP)."""
+    pushes listening_level to the new source's slider."""
     coord, cam, _ = _coord(tmp_path, active={"spotactive": True}, db=-25.0)
     await coord.set_listening_level(50)
     # Push-mode dispatch: spotify_writes captures, camilla untouched.
@@ -248,21 +249,21 @@ async def test_transition_suppressed_during_voice_session(tmp_path):
     assert cam.set_calls == initial_calls
     coord.note_voice_session(False)
     await coord.apply_active_source_transition(Source.IDLE, Source.SPOTIFY)
-    # Now the transition fires: idle (camilla-as-master) → spotify
+    # Now the transition fires: idle → spotify
     # (push-mode) pins camilla at 0 dB.
     assert 0.0 in cam.set_calls
 
 
 async def test_airplay_priority_over_spotify_over_bt(tmp_path):
     """When multiple sources report active (transition window),
-    coordinator picks airplay > spotify > bt. AirPlay → camilla
-    (camilla-as-master)."""
+    coordinator picks airplay > spotify > bt."""
     coord, _, _ = _coord(
         tmp_path,
         active={"aplactive": True, "spotactive": True, "btactive": True},
     )
     await coord.set_listening_level(50)
-    # AirPlay won the priority chain → camilla path fired.
+    # AirPlay won the priority chain → AirPlay path fired.
+    assert coord.airplay_writes == [50]
     assert coord.camilla_writes == [50]
     assert coord.spotify_writes == []
     assert coord.bt_writes == []
@@ -308,9 +309,7 @@ async def test_unmute_without_prior_mute_uses_fallback(tmp_path):
 # ---------- echo prevention ------------------------------------------------
 
 
-# Echo-prevention tests use SPOTIFY because AirPlay is unconditionally
-# camilla-as-master in this codebase (observer always skips it). Spotify
-# is the canonical push-mode source where echo prevention matters.
+# Echo-prevention tests use SPOTIFY as a representative push-mode source.
 
 
 async def test_observe_within_echo_window_ignored(tmp_path):
@@ -335,13 +334,13 @@ async def test_observe_outside_echo_window_updates_level(tmp_path, monkeypatch):
     assert coord.spotify_writes == [60]
 
 
-async def test_observe_different_value_within_window_still_updates(tmp_path):
-    """If we wrote 60% and observe 30% within the window, the value
-    differs enough to be a real user-side change — don't ignore."""
+async def test_observe_different_value_within_window_is_ignored(tmp_path):
+    """A poll can briefly see stale source state right after our write,
+    especially during source handoff; ignore the whole echo window."""
     coord, _, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(60)
     await coord.observe_source_volume(Source.SPOTIFY, 30)
-    assert coord.get_listening_level() == 30
+    assert coord.get_listening_level() == 60
 
 
 async def test_observe_persists_listening_level(tmp_path, monkeypatch):
@@ -353,6 +352,25 @@ async def test_observe_persists_listening_level(tmp_path, monkeypatch):
     rec = persistence.load()
     assert rec is not None
     assert rec.listening_level == 40
+
+
+async def test_observe_respects_recent_cross_process_write(tmp_path):
+    """Hardware knobs hit jasper-control, which has a separate
+    coordinator and no shared outbound stamp. A stale observer poll
+    should not undo the freshly persisted knob level."""
+    coord, _, persistence = _coord(tmp_path, active={"spotactive": True})
+    coord._level = 70
+    persistence.save_listening_level(70)
+
+    # Simulate jasper-control in another process handling a knob twist.
+    persistence.save_listening_level(80)
+
+    assert coord._is_recent_cross_process_write(70)
+    await coord.observe_source_volume(Source.SPOTIFY, 70)
+
+    assert coord.get_listening_level() == 80
+    rec = persistence.load()
+    assert rec is not None and rec.listening_level == 80
 
 
 # ---------- initialize / boot regression ----------------------------------
@@ -403,17 +421,12 @@ async def test_user_change_bumps_last_used_at(tmp_path):
     assert 0 <= age < 5
 
 
-# ---------- AirPlay dispatch is always camilla-as-master ------------------
-# Empirically, Apple's AirPlay 2 receivers (iOS 17+ and macOS Sequoia)
-# accept shairport's SetAirplayVolume DBus call but silently no-op the
-# sender slider. We always use camilla — the dial works regardless.
+# ---------- AirPlay camilla-master dispatch --------------------------------
 
 
-async def test_set_airplay_uses_camilla_unconditionally(tmp_path):
-    """Real _set_airplay path: always falls through to _set_camilla,
-    no busctl SetAirplayVolume call ever fires, no AIRPLAY outbound
-    stamp (we didn't write to AirPlay's slider)."""
-    from jasper.volume_persistence import percent_to_db
+async def test_set_airplay_delegates_to_camilla(tmp_path, monkeypatch):
+    """Real _set_airplay path: use CamillaDSP as the reliable audible
+    AirPlay volume surface, not shairport-sync DACP/DBus."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={})
@@ -421,18 +434,22 @@ async def test_set_airplay_uses_camilla_unconditionally(tmp_path):
         camilla=cam, persistence=persistence, backend=backend,
         spotify_router=None,
     )
+    async def fail_call(*args, **kwargs):
+        raise AssertionError("AirPlay should not call shairport DBus")
+
+    monkeypatch.setattr(
+        "jasper.volume_coordinator._busctl_call_method", fail_call,
+    )
 
     await coord._set_airplay(75)
 
-    # Camilla received percent_to_db(75) — the always-camilla path.
-    assert cam.set_calls and abs(cam.set_calls[-1] - percent_to_db(75)) < 0.01
-    # No AIRPLAY outbound stamp — we didn't write to AirPlay's slider.
+    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(-12.5)
     assert Source.AIRPLAY not in coord._last_outbound
 
 
-async def test_observe_airplay_always_skipped(tmp_path):
-    """observe_source_volume(AIRPLAY) is unconditionally a no-op:
-    the sender's slider isn't the user's master volume in this model."""
+async def test_observe_airplay_is_ignored(tmp_path):
+    """AirPlay sender slider is upstream trim, not canonical JTS
+    volume, while AirPlay is camilla-as-master."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"aplactive": True})
@@ -443,7 +460,6 @@ async def test_observe_airplay_always_skipped(tmp_path):
     coord._level = 70
     persistence.save_listening_level(70)
 
-    # Even with a strongly-different reading, observer must skip.
     db = listening_level_to_airplay_db(30)
     await coord.observe_source_volume(Source.AIRPLAY, db)
 
@@ -452,57 +468,68 @@ async def test_observe_airplay_always_skipped(tmp_path):
     assert rec is not None and rec.listening_level == 70
 
 
-# ---------- transitions across camilla-as-master / push-mode boundary -----
+async def test_observe_inactive_source_is_ignored(tmp_path):
+    """Stale readings from a non-current renderer must not steal the
+    canonical level from the active source."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70)
+
+    await coord.observe_source_volume(
+        Source.AIRPLAY, listening_level_to_airplay_db(30),
+    )
+
+    assert coord.get_listening_level() == 70
 
 
-async def test_transition_airplay_to_spotify_clears_camilla(tmp_path):
-    """Dial drove camilla as master while AirPlay was active; user
-    starts Spotify Connect; camilla must reset to 0 dB and Spotify's
-    slider takes over carrying the level."""
+# ---------- transitions across idle / active-renderer boundary -------------
+
+
+async def test_transition_airplay_to_spotify_clears_camilla_and_pushes_spotify(tmp_path):
+    """AirPlay is camilla-master; Spotify is push-mode. Switching to
+    Spotify clears residual Camilla attenuation and pushes the same
+    listening_level to Spotify."""
     coord, cam, _ = _coord(tmp_path, active={"aplactive": True})
-    # User dials level to 60% during AirPlay. Camilla gets the
-    # attenuation since AirPlay is camilla-as-master.
     await coord.set_listening_level(60)
+    assert coord.airplay_writes == [60]
     assert coord.camilla_writes == [60]
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-20.0)) < 0.01
     # Now the user switches to Spotify Connect. Active flips to spot.
     coord._backend = _FakeBackend(active={"spotactive": True})
     await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
-    # Camilla reset to 0 dB — no residual attenuation to double-stack
-    # against Spotify's own slider.
-    assert 0.0 in cam.set_calls
     assert cam.set_calls[-1] == 0.0
-    # Spotify got pushed the listening_level so its slider carries the
-    # user's intent.
     assert coord.spotify_writes == [60]
 
 
-async def test_transition_spotify_to_airplay_hands_camilla_back(tmp_path):
-    """Push source → camilla-as-master: camilla must take over carrying
-    listening_level so the dial keeps doing real work."""
-    from jasper.volume_persistence import percent_to_db
+async def test_transition_spotify_to_airplay_restores_camilla(tmp_path):
+    """Spotify is push-mode; AirPlay is camilla-master. Switching to
+    AirPlay restores Camilla to the remembered listening_level."""
     coord, cam, _ = _coord(tmp_path, active={"spotactive": True})
     await coord.set_listening_level(50)
     assert coord.spotify_writes == [50]
-    # Switch to AirPlay. Camilla must take over (camilla-as-master).
+    assert cam.set_calls == []
     coord._backend = _FakeBackend(active={"aplactive": True})
     await coord.apply_active_source_transition(Source.SPOTIFY, Source.AIRPLAY)
-    # Camilla now at percent_to_db(50) — dial controls loudness via
-    # camilla while AirPlay carries the audio.
-    assert any(
-        abs(c - percent_to_db(50)) < 0.01 for c in cam.set_calls
-    ), f"expected camilla → {percent_to_db(50)} dB, got {cam.set_calls}"
+    assert coord.airplay_writes == []
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
 
 
-async def test_transition_idle_to_airplay_no_camilla_change(tmp_path):
-    """Both sides camilla-as-master (idle ↔ AirPlay). Camilla already
-    carries listening_level; transition shouldn't write."""
+async def test_transition_idle_to_airplay_keeps_camilla_level(tmp_path):
+    """Idle and AirPlay both use camilla, so no handoff write or
+    sender push is needed."""
     coord, cam, _ = _coord(tmp_path, active={})
     await coord.set_listening_level(40)
-    calls_before = list(cam.set_calls)
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-30.0)) < 0.01
     coord._backend = _FakeBackend(active={"aplactive": True})
     await coord.apply_active_source_transition(Source.IDLE, Source.AIRPLAY)
-    # No additional camilla writes — both modes are camilla-as-master.
-    assert cam.set_calls == calls_before
+    assert cam.set_calls[-1] == pytest.approx(-30.0)
+    assert coord.airplay_writes == []
     assert coord.spotify_writes == []
 
 
@@ -527,7 +554,7 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
     Ducker.restore lands at the user's intended level."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=-25.0)  # already ducked
-    backend = _FakeBackend(active={})  # idle (camilla-as-master)
+    backend = _FakeBackend(active={})  # idle (camilla carries level)
     # Real coordinator, not the recording subclass — we want the
     # production _set_camilla path with its gate.
     coord = VolumeCoordinator(
@@ -565,9 +592,8 @@ async def test_get_camilla_target_db_idle_returns_listening_level_db(tmp_path):
 
 
 async def test_get_camilla_target_db_airplay_returns_listening_level_db(tmp_path):
-    """AirPlay is camilla-as-master (Apple silently no-ops the sender
-    slider) so the target is percent_to_db(listening_level), same as
-    idle."""
+    """AirPlay is camilla-master, so ducker restore targets the JTS
+    listening level."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={"aplactive": True})
@@ -577,7 +603,7 @@ async def test_get_camilla_target_db_airplay_returns_listening_level_db(tmp_path
     )
     await coord.set_listening_level(40)
     target = await coord.get_camilla_target_db()
-    assert abs(target - (-30.0)) < 0.01  # 40% → -30 dB
+    assert target == pytest.approx(-30.0)
 
 
 async def test_get_camilla_target_db_push_mode_returns_zero(tmp_path):
@@ -610,16 +636,16 @@ async def test_get_camilla_target_db_refreshes_from_disk(tmp_path):
     # voice-daemon coordinator's in-memory state: 38%.
     coord._level = 38
     persistence.save_listening_level(38)
-    # Control daemon (different process) writes 100% to disk.
-    persistence.save_listening_level(100)
+    # Control daemon (different process) writes 80% to disk.
+    persistence.save_listening_level(80)
     # Ducker.restore() reads this target after a failed turn. With the
-    # refresh, we use 100% → 0 dB; without it we'd use the stale 38%
+    # refresh, we use 80% → -10 dB; without it we'd use the stale 38%
     # → -31 dB, and once the dial-truth eventually catches up to the
     # coordinator (e.g. via an unrelated source-state transition), the
     # NEXT duck-restore would jump camilla loudly to satisfy 100%.
     target = await coord.get_camilla_target_db()
-    assert target == 0.0  # 100% → 0 dB
-    assert coord.get_listening_level() == 100
+    assert target == pytest.approx(-10.0)  # 80% → -10 dB
+    assert coord.get_listening_level() == 80
 
 
 async def test_transition_refreshes_from_disk(tmp_path):

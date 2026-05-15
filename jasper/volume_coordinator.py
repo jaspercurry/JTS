@@ -13,17 +13,19 @@ remaining 70% of perceived loudness — and feels disconnected from the
 
 This module owns the coordination. There is one canonical
 `listening_level` (0-100), persisted in /var/lib/jasper/speaker_volume.json.
-Outbound commands (voice tool, dial, "louder") push this level to
-whichever source is currently active; inbound observations (iPhone
-slider movement, Spotify app slider, BT slider) update the canonical
-level in real time. CamillaDSP main_volume is pinned at 0 dB while a
-source is active (no double-attenuation) and used directly as the
-volume control when idle (no renderer producing audio).
+Outbound commands (voice tool, dial, "louder") apply this level to the
+current source's reliable volume surface. Spotify and Bluetooth are
+push-mode: their own protocol sliders carry `listening_level` and
+CamillaDSP stays at 0 dB. Idle and AirPlay are camilla-as-master:
+CamillaDSP `main_volume` carries `listening_level`. Spotify and
+Bluetooth inbound observations update the canonical level in real time;
+AirPlay sender volume is treated as upstream trim and ignored.
 
 Echo prevention. Every outbound write timestamps itself per source.
-When an inbound observer sees a change for that source within
-`ECHO_WINDOW_SEC` (500 ms), it is treated as our own echo and ignored.
-This is the standard "PropertiesChanged-on-our-own-write" loop guard.
+When an inbound observer sees that source within `ECHO_WINDOW_SEC`
+(500 ms), it is treated as our own echo and ignored. This guards both
+matching PropertiesChanged echoes and a short stale-read window where a
+poll lands before the protocol surface has caught up with our write.
 
 This file is the dispatch layer (Phase 1, "Paradigm B"). The
 inbound observers live in `volume_observers.py` and are started by
@@ -38,6 +40,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -118,13 +121,12 @@ def bt_volume_to_listening_level(vol: int) -> int:
 # enough that a real user-touched slider movement that happens to
 # land just after our write isn't swallowed.
 ECHO_WINDOW_SEC = 0.5
+PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
 @dataclass
 class _OutboundStamp:
-    """Per-source last-outbound timestamp + the value we wrote.
-    Observers cross-check both fields: a change of magnitude > epsilon
-    OR an arrival outside the echo window means it's a real user input."""
+    """Per-source last-outbound timestamp + the value we wrote."""
     at_mono: float
     level: int
 
@@ -257,18 +259,12 @@ class VolumeCoordinator:
         async with self._lock:
             self._level = target_level
             source = await self._active_source()
-            # Make camilla consistent with the boot mode (see
-            # `_camilla_carries_level`): camilla-as-master → camilla
-            # tracks listening_level; push-mode → camilla pinned at
-            # 0 dB and source carries the level.
+            # Make camilla consistent with the boot mode. Idle and
+            # AirPlay use camilla as the remembered/audible volume;
+            # Spotify and Bluetooth carry listening_level on their own
+            # protocol surfaces.
             if await self._camilla_carries_level(source):
                 await self._set_camilla(target_level)
-                if source != Source.IDLE:
-                    logger.info(
-                        "boot: %s active (camilla-as-master); "
-                        "camilla → %d%%",
-                        source.value, target_level,
-                    )
             else:
                 await self._camilla.set_volume_db(0.0, best_effort=True)
                 self._persistence.save_now(0.0)
@@ -377,25 +373,35 @@ class VolumeCoordinator:
         """Inbound observer entrypoint. `native_value` is in the
         source's own units (dB for AirPlay, percent for Spotify,
         uint16 for BT). The coordinator converts and updates the
-        canonical level if this isn't an echo."""
+        canonical level if this isn't an echo.
+
+        AirPlay is deliberately excluded. Modern AirPlay 2 senders
+        expose inbound sender-side volume to shairport-sync, but
+        receiver-originated volume reflection via shairport's DACP/DBus
+        path is no longer reliable. JTS therefore treats AirPlay sender
+        volume as upstream trim and keeps the JTS canonical volume on
+        camilla for AirPlay sessions.
+        """
         if source == Source.AIRPLAY:
-            # AirPlay is always camilla-as-master in this codebase;
-            # the sender's slider isn't the user's master-volume
-            # intent. Honoring it would bounce listening_level around
-            # with whatever the phone/Mac is showing (often pre-
-            # attenuated and disconnected from what the speaker is
-            # actually doing). Always skip.
             logger.debug(
-                "observe airplay: ignoring sender slider "
-                "(camilla is master via dial)",
+                "observe airplay: ignoring sender-side %.1f dB "
+                "(AirPlay uses camilla-as-master)",
+                float(native_value),
             )
             return
-        if source == Source.SPOTIFY:
+        elif source == Source.SPOTIFY:
             level = spotify_percent_to_listening_level(int(native_value))
         elif source == Source.BLUETOOTH:
             level = bt_volume_to_listening_level(int(native_value))
         else:
             logger.debug("observe_source_volume: unknown source %s", source)
+            return
+        active = await self._active_source()
+        if active != source:
+            logger.debug(
+                "observe %s: ignoring %d%% because active source is %s",
+                source.value, level, active.value,
+            )
             return
         if self._is_own_echo(source, level):
             logger.debug(
@@ -404,6 +410,14 @@ class VolumeCoordinator:
             )
             return
         async with self._lock:
+            if self._is_recent_cross_process_write(level):
+                self._refresh_from_disk()
+                logger.debug(
+                    "observe %s: %d%% within persistence echo window — "
+                    "ignoring (recent external write)",
+                    source.value, level,
+                )
+                return
             if level == self._level:
                 return  # no-op; nothing to update
             logger.info(
@@ -429,15 +443,14 @@ class VolumeCoordinator:
         determines whether `last_used_at` is bumped. Default True
         for set/adjust/observe paths; False for boot-time restore.
 
-        Camilla is NOT touched in source-active mode. The ducker
-        (jasper.camilla.Ducker) operates on camilla via additive
-        delta around voice sessions; if the coordinator also
-        muscled camilla mid-dispatch, the ducker's restore would
-        overshoot by the duck delta — exactly the bug that put
-        camilla at +15 dB after a voice command during AirPlay
-        playback. Camilla coordination across the idle⇄source
-        boundary happens in `apply_active_source_transition`,
-        called by the observer when active_source changes.
+        Camilla is not touched for push-mode sources (Spotify/BT). The
+        ducker (jasper.camilla.Ducker) operates on camilla via additive
+        delta around voice sessions; if the coordinator also muscled
+        camilla mid-dispatch for a push-mode source, the ducker's
+        restore would overshoot by the duck delta. AirPlay is the
+        explicit exception: shairport-sync cannot reliably reflect
+        receiver-originated AirPlay 2 volume back to iOS/macOS, so JTS
+        uses camilla as the AirPlay speaker-volume surface.
         """
         source = await self._active_source()
         try:
@@ -463,15 +476,15 @@ class VolumeCoordinator:
         source-state change. Single point that touches camilla
         across the boundary, driven by `_camilla_carries_level`:
 
-        - camilla-as-master → push-mode (e.g. AirPlay → Spotify):
-          clear the residual camilla attenuation that was carrying
-          our master volume, and push level to the new source.
-        - push-mode → camilla-as-master (e.g. Spotify → AirPlay):
-          hand camilla back the current listening_level so the dial
-          keeps doing real work.
-        - push → push (e.g. spotify → bt): camilla already at 0 dB;
+        - camilla-master → push-mode (AirPlay/idle → Spotify/BT):
+          pin camilla to 0 dB and push the remembered listening_level
+          to the new renderer.
+        - push-mode → camilla-master (Spotify/BT → AirPlay/idle):
+          hand camilla back the current listening_level.
+        - push → push (e.g. Spotify → BT): camilla already at 0 dB;
           just enforce listening_level on the new source.
-        - camilla → camilla (idle ↔ AirPlay): no change.
+        - camilla-master → camilla-master (idle ↔ AirPlay): no
+          volume handoff is needed; camilla already carries the level.
 
         We DON'T fire this mid-voice-session (ducked state — would
         race with Ducker.restore's additive math). The ducker hooks
@@ -498,10 +511,10 @@ class VolumeCoordinator:
             # when the next source-state transition fires.
             self._refresh_from_disk()
             if prev_carries and not curr_carries:
-                # Camilla-as-master → push-mode. Clear the residual
-                # camilla attenuation that was carrying our master
-                # volume, and push the level to the new source's
-                # slider. This is the AirPlay → Spotify edge.
+                # Camilla-master → push-mode renderer. Clear the
+                # residual camilla attenuation that carried our
+                # remembered volume, then push the level to the new
+                # source's slider.
                 await self._camilla.set_volume_db(0.0, best_effort=True)
                 self._persistence.save_now(0.0)
                 logger.info(
@@ -513,8 +526,9 @@ class VolumeCoordinator:
                     self._level, persist=False, user_change=False,
                 )
             elif curr_carries and not prev_carries:
-                # Push-mode → camilla-as-master. Hand listening_level
-                # back to camilla so the dial keeps doing real work.
+                # Push-mode renderer → camilla-master. Hand
+                # listening_level back to camilla so the remembered
+                # level stays audible.
                 target_db = percent_to_db(self._level)
                 await self._camilla.set_volume_db(target_db, best_effort=True)
                 self._persistence.save_now(target_db)
@@ -535,7 +549,8 @@ class VolumeCoordinator:
                     self._level, persist=False, user_change=False,
                 )
             else:
-                # Camilla → camilla (idle ↔ AirPlay). No change.
+                # Idle ↔ AirPlay: both are camilla-master modes, so
+                # camilla already carries listening_level.
                 logger.debug(
                     "active source: %s → %s (no camilla change)",
                     prev_source.value, current_source.value,
@@ -573,8 +588,8 @@ class VolumeCoordinator:
         source = await self._active_source()
         if await self._camilla_carries_level(source):
             return percent_to_db(self._level)
-        # Push mode (Spotify, BT): camilla is pinned at 0 dB; the
-        # source's own slider carries listening_level.
+        # Push-mode renderer: camilla is pinned at 0 dB; the source's
+        # own slider carries listening_level.
         return 0.0
 
     async def _active_source(self) -> Source:
@@ -600,31 +615,13 @@ class VolumeCoordinator:
         for `source`, vs. delegating to a downstream slider.
 
         True (camilla-as-master): camilla tracks listening_level. Used
-        for IDLE (nothing playing) and AIRPLAY (always — see below).
+        for IDLE and AIRPLAY.
 
         False (push-mode): camilla pinned at 0 dB and the source's own
-        slider carries listening_level. Used for SPOTIFY (Web API push)
-        and BLUETOOTH (AVRCP).
-
-        Why AirPlay is unconditionally camilla-as-master: empirically,
-        Apple's AirPlay 2 receivers (iOS 17+ and macOS Sequoia) accept
-        shairport's SetAirplayVolume DBus call but silently no-op the
-        sender slider. The DACP `Available` flag isn't a reliable
-        predictor — it flips true and false during a session, and even
-        when true the Set still no-ops on Apple senders. Camilla
-        (downstream of shairport's receiver in the audio chain) always
-        works, so we attenuate there.
-
-        Trade: the iPhone/Mac AirPlay slider on the sender doesn't
-        visibly move when the dial turns. Audio at the speaker does.
-        Recommended pairing: leave the sender slider at 100% so audio
-        isn't pre-attenuated upstream of camilla.
+        slider carries listening_level. Used for SPOTIFY (Web API) and
+        BLUETOOTH (AVRCP).
         """
-        if source == Source.IDLE:
-            return True
-        if source == Source.AIRPLAY:
-            return True
-        return False
+        return source in (Source.IDLE, Source.AIRPLAY)
 
     def _stamp_outbound(self, source: Source, level: int) -> None:
         self._last_outbound[source] = _OutboundStamp(
@@ -637,26 +634,54 @@ class VolumeCoordinator:
             return False
         if time.monotonic() - stamp.at_mono > ECHO_WINDOW_SEC:
             return False
-        # Within the window: treat as echo if the observed value
-        # matches what we wrote (allow ±1% rounding slack across the
-        # source-unit conversions).
-        return abs(observed_level - stamp.level) <= 1
+        # Within the window, ignore even a different value. Polling can
+        # race the source's own state update after an outbound write,
+        # especially on source handoff. If the user really changed the
+        # sender slider, the next 1 Hz poll will pick up the stable
+        # value outside this short window.
+        return True
+
+    def _is_recent_cross_process_write(self, observed_level: int) -> bool:
+        """Suppress stale polls after another process changed volume.
+
+        jasper-control creates its own coordinator for LAN / hardware
+        knob requests, so voice_daemon's observer does not see that
+        coordinator's in-memory outbound stamp. `last_used_at` is the
+        durable cross-process echo stamp: if disk moved ahead of this
+        coordinator very recently and the source reports a different
+        level, prefer the persisted knob/HTTP/voice truth for one short
+        poll window.
+        """
+        record = self._persistence.load()
+        if (
+            record is None
+            or record.last_used_at is None
+            or record.listening_level is None
+        ):
+            return False
+        if int(record.listening_level) == int(observed_level):
+            return False
+        if int(record.listening_level) == int(self._level):
+            return False
+        age = (datetime.now(timezone.utc) - record.last_used_at).total_seconds()
+        # VolumePersistence writes timestamps at second precision, so
+        # this needs to be wider than the in-memory monotonic window.
+        return 0.0 <= age <= PERSISTENCE_ECHO_WINDOW_SEC
 
     # ------------------------------------------------------------------
     # Source-side dispatchers
     # ------------------------------------------------------------------
 
     async def _set_airplay(self, level: int) -> None:
-        # AirPlay is always camilla-as-master in this codebase — see
-        # `_camilla_carries_level` for the why. We don't even try
-        # SetAirplayVolume; Apple's AirPlay 2 receivers accept the
-        # call and silently no-op the sender slider, regardless of
-        # what DACP `Available` reports. Camilla (downstream of
-        # shairport's receiver in the audio chain) always works.
-        # We deliberately don't _stamp_outbound(AIRPLAY) — we didn't
-        # write to AirPlay, and observe_source_volume always skips
-        # AirPlay observations in this model.
-        logger.info("airplay → camilla as master for %d%%", level)
+        """AirPlay is camilla-as-master.
+
+        shairport-sync still exposes SetAirplayVolume, but modern
+        iOS/macOS AirPlay 2 sessions often omit DACP-ID/Active-Remote
+        and receiver-originated volume reflection silently no-ops.
+        The reliable product contract is therefore audible speaker
+        volume via CamillaDSP, while the sender slider remains upstream
+        trim.
+        """
         await self._set_camilla(level)
 
     async def _set_spotify(self, level: int) -> None:
@@ -829,6 +854,42 @@ async def _busctl_set_property(
         logger.debug(
             "busctl set-property %s.%s rc=%d stderr=%s",
             interface, prop, proc.returncode,
+            stderr.decode("utf-8", "replace") if stderr else "",
+        )
+        return False
+    return True
+
+
+async def _busctl_call_method(
+    bus_name: str,
+    object_path: str,
+    interface: str,
+    method: str,
+    signature: str,
+    value: str,
+    *,
+    bus: str = "--system",
+) -> bool:
+    """Run `busctl call` for one method with one typed value.
+
+    Returns True on success, False on any error. The `--` before the
+    value keeps negative dB values from being parsed as busctl flags.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "busctl", bus, "call",
+            bus_name, object_path, interface, method, signature, "--", value,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except (FileNotFoundError, asyncio.TimeoutError) as e:
+        logger.debug("busctl call %s.%s failed: %s", interface, method, e)
+        return False
+    if proc.returncode != 0:
+        logger.debug(
+            "busctl call %s.%s rc=%d stderr=%s",
+            interface, method, proc.returncode,
             stderr.decode("utf-8", "replace") if stderr else "",
         )
         return False

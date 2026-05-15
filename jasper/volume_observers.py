@@ -1,11 +1,17 @@
 """Inbound source-volume observers for the volume coordinator.
 
-When the user moves the iPhone Control Center slider with their finger,
-or drags the Spotify app's slider, or hits the BT volume buttons on
-their phone, the corresponding receiver-side daemon sees the change
-immediately. We poll those daemons at 1 Hz so the coordinator's
+When the user drags the Spotify app's slider or hits the BT volume
+buttons on their phone, the corresponding receiver-side daemon sees the
+change immediately. We poll those daemons at 1 Hz so the coordinator's
 canonical `listening_level` reflects user-side movements without
 requiring the user to also tell Jarvis.
+
+AirPlay is intentionally different. shairport-sync can observe
+sender-side AirPlay volume, but cannot reliably reflect receiver-side
+volume changes back to modern iOS/macOS AirPlay 2 senders. JTS treats
+AirPlay sender volume as upstream trim and keeps AirPlay speaker volume
+on CamillaDSP, so AirPlay observations are read only for diagnostics and
+are not fed into the canonical volume.
 
 Why polling (not DBus PropertiesChanged subscriptions). The codebase
 already uses `busctl` subprocess for DBus one-shot calls (renderer.py,
@@ -23,9 +29,9 @@ busctl, Bluetooth busctl); the whole tick is well under 100 ms typical.
 Echo prevention. The coordinator tracks the timestamp of every
 outbound write per source. When an observer reports a value it just
 wrote (within ECHO_WINDOW_SEC), the coordinator ignores it as its
-own echo. So pushing 50% to AirPlay → polling sees 50% on next tick →
+own echo. So pushing 50% to Spotify → polling sees 50% on next tick →
 ignored; pushing 50% then user touches slider to 30% → polling sees
-30% (outside echo window OR different value) → propagated.
+30% outside the window → propagated.
 
 """
 from __future__ import annotations
@@ -151,11 +157,16 @@ class VolumeObserver:
             self._read_bluetooth_volume(),
             return_exceptions=False,
         )
-        if airplay_db is not None:
-            await self._maybe_observe(Source.AIRPLAY, airplay_db)
-        if spotify_pct is not None:
+        if current_active == Source.AIRPLAY and airplay_db is not None:
+            self._last_seen[Source.AIRPLAY] = airplay_db
+            logger.debug(
+                "airplay sender volume observed at %.1f dB "
+                "(ignored; AirPlay uses camilla-as-master)",
+                airplay_db,
+            )
+        if current_active == Source.SPOTIFY and spotify_pct is not None:
             await self._maybe_observe(Source.SPOTIFY, float(spotify_pct))
-        if bt_vol is not None:
+        if current_active == Source.BLUETOOTH and bt_vol is not None:
             await self._maybe_observe(Source.BLUETOOTH, float(bt_vol))
 
     async def _maybe_observe(self, source: Source, value: float) -> None:

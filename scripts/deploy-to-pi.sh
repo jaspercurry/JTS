@@ -51,7 +51,7 @@ echo "    sha:    ${SHA}${DIRTY} (${SHA_FULL})"
 # works on both BSD and GNU rsync. Suppress per-file output with
 # --quiet so the wrapper's output is just the start/end summary.
 rsync -az --delete --stats --quiet \
-    --exclude .venv --exclude __pycache__ --exclude '.git/' --exclude 'logs/*' \
+    --exclude .venv --exclude __pycache__ --exclude '.git' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
     --exclude 'captures/*' --exclude '*.pyc' \
     --exclude 'jasper_speaker.egg-info' --exclude '*.egg-info' \

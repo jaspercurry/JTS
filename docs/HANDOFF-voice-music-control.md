@@ -23,13 +23,15 @@ explains the design and the non-obvious cases.
 Goes through `VolumeCoordinator` (see
 [HANDOFF-volume.md](HANDOFF-volume.md) for the full design).
 The coordinator dispatches to whichever source's slider is active:
-- AirPlay → DBus to shairport-sync's volume
+- AirPlay → CamillaDSP `main_volume` as the JTS speaker volume
+  (shairport-sync's AirPlay 2 receiver-originated volume reflection is
+  not reliable on modern iOS/macOS)
 - Spotify Connect → Spotify Web API per the active account
 - Bluetooth A2DP → DBus to bluez-alsa
 - Idle (no source) → CamillaDSP main_volume
 
 CamillaDSP `main_volume` is reserved for the daemon's ducking
-(and for IDLE-mode user volume per the VolumeCoordinator). The
+(and for IDLE/AirPlay user volume per the VolumeCoordinator). The
 `master_gain` mixer in v1.yml is identity and not the ducker.
 
 ### 2. Transport (next / previous / pause / resume)
@@ -109,9 +111,9 @@ invite further conversation.
 
 - Don't bypass the `ToolRegistry` — every tool goes through it;
   that's how Gemini sees function declarations.
-- Don't change CamillaDSP's `main_volume` from a tool — that's
-  the daemon's ducking knob (and the IDLE-mode user volume), not
-  something a tool should drive directly. Use the
+- Don't change CamillaDSP's `main_volume` directly from a tool —
+  that's the daemon's ducking knob and the IDLE/AirPlay user volume
+  surface, not something a transport or source tool should drive. Use the
   `VolumeCoordinator` instead.
 - Don't try to control AirPlay generically — only the
   AirPlay-carrying-Spotify case has a workaround. Be honest with

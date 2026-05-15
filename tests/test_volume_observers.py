@@ -9,7 +9,8 @@ tmp_path-backed state file for Spotify. Coverage:
 - Spotify reader maps librespot's raw 0-65535 volume to 0-100 percent
 - BT reader resolves transport path then reads MediaTransport1.Volume
 - _maybe_observe fires only on real change (>0.5 unit delta)
-- a tick fires observe_source_volume per source change
+- a tick fires observe_source_volume only for active Spotify/BT
+- AirPlay ticks read but do not dispatch canonical observations
 - observer ignores readers that return None (source not active)
 """
 from __future__ import annotations
@@ -21,8 +22,16 @@ from jasper.volume_coordinator import Source
 
 
 class _FakeCoordinator:
-    def __init__(self) -> None:
+    def __init__(self, active: Source = Source.AIRPLAY) -> None:
+        self.active = active
         self.observed: list[tuple[Source, float]] = []
+        self.transitions: list[tuple[Source, Source]] = []
+
+    async def _active_source(self):
+        return self.active
+
+    async def apply_active_source_transition(self, prev, current):
+        self.transitions.append((prev, current))
 
     async def observe_source_volume(self, source, value):
         self.observed.append((source, float(value)))
@@ -208,11 +217,21 @@ async def test_maybe_observe_fires_on_real_change():
 # ---------- full tick -------------------------------------------------------
 
 
-async def test_tick_dispatches_per_source(monkeypatch, tmp_path):
-    """A single tick reads all three sources and propagates each
-    observed value to the coordinator."""
+@pytest.mark.parametrize(
+    ("active", "expected"),
+    [
+        (Source.AIRPLAY, None),
+        (Source.SPOTIFY, Source.SPOTIFY),
+        (Source.BLUETOOTH, Source.BLUETOOTH),
+    ],
+)
+async def test_tick_dispatches_only_active_source(
+    active, expected, monkeypatch, tmp_path,
+):
+    """A single tick reads all sources, but only the active source's
+    volume is allowed to update the canonical listening_level."""
     import json
-    coord = _FakeCoordinator()
+    coord = _FakeCoordinator(active=active)
     state = tmp_path / "librespot.state.json"
     state.write_text(json.dumps({"volume": 65535}))  # 100%
     obs = VolumeObserver(
@@ -239,14 +258,12 @@ async def test_tick_dispatches_per_source(monkeypatch, tmp_path):
 
     await obs._tick()
 
-    sources = {s for s, _ in coord.observed}
-    assert Source.AIRPLAY in sources
-    assert Source.SPOTIFY in sources
-    assert Source.BLUETOOTH in sources
+    expected_sources = [] if expected is None else [expected]
+    assert [s for s, _ in coord.observed] == expected_sources
 
 
 async def test_tick_skips_inactive_sources(monkeypatch, tmp_path):
-    coord = _FakeCoordinator()
+    coord = _FakeCoordinator(active=Source.IDLE)
     obs = VolumeObserver(
         coord,
         librespot_state_path=str(tmp_path / "missing.json"),
