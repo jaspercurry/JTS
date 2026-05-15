@@ -11,6 +11,13 @@ Documentation=https://github.com/HEnquist/camillagui-backend
 # control port and would error-loop on startup otherwise.
 After=network.target jasper-camilla.service
 Wants=jasper-camilla.service
+# The point of all this. When the proxy goes idle and exits, the
+# Requires= edge drops, and StopWhenUnneeded sees that no active
+# unit needs us — we shut down. ~50 MB Pss reclaimed.
+# (Belongs in [Unit], not [Service] — systemd ignores it silently
+# if placed in [Service] and the backend then stays resident
+# forever, defeating the design.)
+StopWhenUnneeded=yes
 
 [Service]
 Type=simple
@@ -30,11 +37,6 @@ ExecStartPost=/bin/bash -c 'for i in $(seq 1 50); do exec 3<>/dev/tcp/127.0.0.1/
 # the idle-exit lifecycle.
 Restart=on-failure
 RestartSec=5
-
-# The point of all this. When the proxy goes idle and exits, the
-# Requires= edge drops, and StopWhenUnneeded sees that no active
-# unit needs us — we shut down. ~50 MB Pss reclaimed.
-StopWhenUnneeded=yes
 
 # Hardening — read /etc/camilladsp (DSP configs the GUI lists/edits),
 # write /var/lib/camillagui (GUI state), write /var/log (request log).
