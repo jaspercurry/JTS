@@ -63,16 +63,6 @@
       background: #1db954;
       border-radius: 18px;
     }
-    .vol-thumb {
-      position: absolute; top: 50%; left: 0%;
-      width: 14px; height: 14px;
-      margin-left: -7px; margin-top: -7px;
-      background: #1db954;
-      border: 2px solid #fff;
-      border-radius: 50%;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.25);
-      pointer-events: none;
-    }
     .vol-percent {
       text-align: center;
       font-size: 2em; font-weight: 600; color: #222;
@@ -93,7 +83,6 @@
       <div class="vol-label">Volume</div>
       <div class="vol-bar">
         <div class="vol-fill" id="vol-fill"></div>
-        <div class="vol-thumb" id="vol-thumb"></div>
       </div>
       <div class="vol-percent" id="vol-percent">—</div>
     </div>
@@ -210,7 +199,6 @@
     (function() {
       var card = document.getElementById('volume-card');
       var fill = document.getElementById('vol-fill');
-      var thumb = document.getElementById('vol-thumb');
       var percentEl = document.getElementById('vol-percent');
       var dragging = false;
       var pending = null;     // queued percent waiting to send
@@ -222,7 +210,6 @@
       function setUI(pct) {
         pct = Math.max(0, Math.min(100, Math.round(pct)));
         fill.style.width = pct + '%';
-        thumb.style.left = pct + '%';
         percentEl.textContent = pct + '%';
         card.setAttribute('aria-valuenow', String(pct));
       }
