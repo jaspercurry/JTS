@@ -55,6 +55,48 @@ absent after a previous AEC-enabled boot, it clears the stale
 `JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice
 instead of leaving wake-word on an unfed UDP socket.
 
+### High-pass filter architecture
+
+The mic in this project is consumed only by software (openWakeWord
+at 16 kHz mono, then a real-time speech LLM). No human listens to
+it. Per [memory note](https://github.com/jaspercurry/JTS — internal
+memory `project_mic_consumed_by_robots_only`) and the research
+findings below, we band-limit the signal to the speech range
+because everything outside it is noise the consumers don't use AND
+content AEC3's adaptive filter wastes capacity trying to model.
+
+The HPF stack, layered defense:
+
+| Layer | Filter | Cutoff | Where | Tuning knob |
+|---|---|---|---|---|
+| Chip mic ingress | 4th-order Butterworth | 125 Hz | XVF3800 `AEC_HPFONOFF`, set in `jasper-aec-init` | `JASPER_AEC_CHIP_HPF_HZ` env, values 0/70/125/150/180 |
+| AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, enabled in `jasper_aec3/src/aec3_binding.cpp` | always on (compile-time) |
+| Bridge ref pipeline | 2nd-order Butterworth | 100 Hz | `_ref_thread` in `jasper/cli/aec_bridge.py`, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 100 Hz |
+
+**Why two HPFs at 100 Hz are not redundant**: AEC3 applies its
+internal HPF to the **capture** (mic) signal only. The reference
+signal arrives untouched at AEC3's adaptive filter. Without the
+bridge-side ref HPF, AEC3 sees asymmetric inputs (HPF'd mic, full-
+band ref) and its matched filter wastes coefficients on an LF
+relationship that doesn't exist in the capture. Symmetric HPF at
+both legs is the documented design intent (see WebRTC commit
+"AEC3: High-pass filter delay estimator signals").
+
+**Why 125 Hz on the chip vs 70 Hz**: openWakeWord's preprocessor
+(Google `speech_embedding`) has a 60 Hz mel floor. 70 Hz is
+provably free (nulls only ~10 Hz of the lowest bin); 125 Hz nulls
+2-3 of 32 mel bins (small unverified risk to wake accuracy). We
+chose 125 Hz because XMOS ships it as their smart-speaker default
+and it provides more LF rejection at the source. If wake-word
+reliability regresses, drop to 70 Hz via the env var without a
+code change.
+
+**Why 100 Hz on the ref vs 125 Hz**: 100 Hz matches AEC3's
+internal capture HPF exactly. The reference doesn't pass through
+openWakeWord (it's subtracted away before the mic feeds the wake
+model), so there's no ML reason to push the cutoff higher; matching
+AEC3's 100 Hz keeps the matched filter aligned.
+
 The bridge→voice transport is **UDP localhost** (default
 `127.0.0.1:9876`), not snd-aloop. The original `LoopbackAEC`
 two-card snd-aloop topology was retired in May 2026 after a
