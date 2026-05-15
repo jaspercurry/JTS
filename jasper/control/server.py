@@ -355,6 +355,7 @@ async def _get_state(
             "session_active": voice_session,
             "spend_allowed": (voice_st or {}).get("spend_allowed"),
             "connection_paused": (voice_st or {}).get("connection_paused"),
+            "mic_muted": (voice_st or {}).get("mic_muted"),
             "reachable": voice_st is not None,
         },
         "audio": {
@@ -513,6 +514,27 @@ def _make_handler(
                     self._send_json({"error": str(e)}, status=502)
                     return
                 self._send_json(self._volume_payload(percent))
+                return
+            if self.path == "/mic":
+                # Read mic mute state from the voice daemon's STATUS
+                # response. If the daemon isn't reachable, surface that
+                # explicitly so the UI can grey out the toggle instead
+                # of pretending we know the state.
+                try:
+                    st = asyncio.run(_voice_socket_command(
+                        voice_socket_path, "STATUS", timeout=2.0,
+                    ))
+                except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
+                    self._send_json(
+                        {"error": f"voice_daemon unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("mic STATUS failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                self._send_json({"muted": bool(st.get("mic_muted", False))})
                 return
             if self.path == "/state":
                 # Cross-daemon snapshot — voice / audio / renderers /
@@ -800,6 +822,55 @@ def _make_handler(
                 elif result.get("result") != "ok":
                     http_status = 502
                 self._send_json(result, status=http_status)
+                return
+
+            if self.path == "/mic/mute":
+                # POST /mic/mute  body: {"muted": bool}
+                # Idempotent set. Forwards MUTE or UNMUTE to the voice
+                # daemon's control socket, which drops mic frames at
+                # the wake-loop gate (mute) or resumes (unmute) and
+                # plays a short click on either edge for feedback.
+                body = self._read_json()
+                if "muted" not in body:
+                    self._send_json(
+                        {"error": "missing 'muted' in body"}, status=400,
+                    )
+                    return
+                cmd = "MUTE" if bool(body["muted"]) else "UNMUTE"
+                try:
+                    result = asyncio.run(_voice_socket_command(
+                        voice_socket_path, cmd, timeout=3.0,
+                    ))
+                except FileNotFoundError:
+                    self._send_json(
+                        {"error": "voice_daemon not running"}, status=503,
+                    )
+                    return
+                except (OSError, asyncio.TimeoutError) as e:
+                    self._send_json(
+                        {"error": f"voice_daemon unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("mic %s failed", cmd)
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                logger.info(
+                    "event=mic.set muted=%s client=%s",
+                    bool(body["muted"]), self.address_string(),
+                )
+                # Read back the truth from the daemon. STATUS is cheap
+                # and the daemon's flag is authoritative.
+                try:
+                    st = asyncio.run(_voice_socket_command(
+                        voice_socket_path, "STATUS", timeout=2.0,
+                    ))
+                    muted_now = bool(st.get("mic_muted", False))
+                except Exception:  # noqa: BLE001
+                    # If readback fails, trust the set and move on.
+                    muted_now = bool(body["muted"])
+                self._send_json({"muted": muted_now, "result": result.get("result")})
                 return
 
             if self.path in ("/system/restart/voice",

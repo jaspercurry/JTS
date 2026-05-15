@@ -970,6 +970,17 @@ class WakeLoop:
         self._measurement_active: asyncio.Event = asyncio.Event()
         self._measurement_safety_task: asyncio.Task | None = None
 
+        # User-driven mic mute. Set via mute_mic()/unmute_mic() (driven
+        # through the MUTE / UNMUTE UDS commands). When True, the wake
+        # loop drains frames from the mic queue but skips both wake
+        # detection and session forwarding — frames never reach
+        # openWakeWord, and any active session is ended at the moment
+        # of mute so the user gets "stop NOW" semantics. Runtime-only
+        # by design: a daemon restart un-mutes. Persisting it would
+        # risk the user muting once, forgetting, and the speaker
+        # silently never responding to "Hey Jarvis" after a reboot.
+        self._mic_muted: bool = False
+
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
         # moment the user stops speaking — not at turn cleanup. Without
@@ -1159,6 +1170,16 @@ class WakeLoop:
             if self._measurement_active.is_set():
                 continue
 
+            # User has muted the mic. Drain the frame (don't backpressure
+            # the AEC bridge / mic capture upstream) but skip wake
+            # detection and session forwarding entirely. No pre-roll
+            # append either — when unmuted, the user's first "Hey Jarvis"
+            # is the natural start of their utterance; carrying a mute-
+            # era pre-roll would prepend silence (or whatever room
+            # ambience leaked through) to the next turn.
+            if self._mic_muted:
+                continue
+
             # Continuously fill the pre-roll ring. When wake fires, the
             # last N frames already in this deque are what we replay
             # into the turn so the user's first phoneme isn't lost.
@@ -1230,6 +1251,71 @@ class WakeLoop:
         # turn lifecycle. Single-slot reference is enough; we cancel
         # via that slot on RESUME or repeated PAUSE.
         self._measurement_safety_task = loop.create_task(_safety())
+        return "ok"
+
+    def _generate_mute_click(self, *, going_on: bool) -> bytes:
+        """Synthesize a short decay-sine click as 24 kHz int16 mono PCM
+        — same shape `TtsPlayout.write()` accepts. Higher pitch on
+        unmute, lower on mute, so the user gets a directional cue.
+
+        Intentionally not a registered cue: cues are TTS-generated and
+        spoken, this is a sub-100 ms synthesized blip. Kept inline so
+        the cue cache / regen system isn't paid for two trivial WAVs.
+        """
+        import math
+        sr = 24000
+        dur_samples = int(sr * 0.06)  # 60 ms
+        freq = 900.0 if going_on else 600.0
+        peak = 0.25  # ~-12 dBFS before TtsPlayout's gain stage
+        out = bytearray(dur_samples * 2)
+        for i in range(dur_samples):
+            t = i / sr
+            env = math.exp(-t * 50.0)  # ~20 ms half-life
+            s = int(math.sin(2.0 * math.pi * freq * t) * env * peak * 32767.0)
+            if s > 32767:
+                s = 32767
+            elif s < -32768:
+                s = -32768
+            # little-endian int16
+            out[2 * i] = s & 0xFF
+            out[2 * i + 1] = (s >> 8) & 0xFF
+        return bytes(out)
+
+    async def _play_mute_click(self, *, going_on: bool) -> None:
+        """Best-effort. If the TTS stream isn't open or write fails,
+        the visual feedback on the web UI is enough — never raise."""
+        try:
+            await self._tts.write(self._generate_mute_click(going_on=going_on))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mic mute click failed: %s", e)
+
+    async def mute_mic(self) -> str:
+        """Stop listening: drop mic frames at the wake-loop gate. If a
+        voice session is currently active, end the turn first so the
+        user gets "stop NOW" semantics rather than the model finishing
+        a half-sentence before going silent.
+
+        Idempotent — calling twice is harmless. Always returns "ok".
+        """
+        if self._mic_muted:
+            return "ok"
+        if self._state is State.SESSION:
+            try:
+                await self._end_turn()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("ending turn on mic mute: %s", e)
+        self._mic_muted = True
+        logger.info("event=mic.mute")
+        await self._play_mute_click(going_on=False)
+        return "ok"
+
+    async def unmute_mic(self) -> str:
+        """Resume listening. Idempotent."""
+        if not self._mic_muted:
+            return "ok"
+        self._mic_muted = False
+        logger.info("event=mic.unmute")
+        await self._play_mute_click(going_on=True)
         return "ok"
 
     async def measurement_resume(self) -> str:
@@ -1500,6 +1586,7 @@ class WakeLoop:
             "input_ended": self._input_ended,
             "spend_allowed": self._spend_cap.allowed(),
             "connection_paused": self._connection.is_paused(),
+            "mic_muted": self._mic_muted,
         }
 
     async def _begin_turn(self) -> None:
@@ -1715,6 +1802,12 @@ async def _start_control_socket(
                               if RESUME is never sent.
         MEASURE_RESUME      → close the measurement window.
                               Idempotent.
+        MUTE                → user-driven mic mute. Drops mic frames
+                              at the wake-loop gate, ends any active
+                              session, plays a low-pitch click. Runtime
+                              only (no persistence). Idempotent.
+        UNMUTE              → resume listening. Plays a higher-pitch
+                              click. Idempotent.
 
     The socket lives in /run (tmpfs) so it gets created fresh each boot
     via systemd's RuntimeDirectory=jasper. Both jasper-voice and
@@ -1740,6 +1833,10 @@ async def _start_control_socket(
                 result = {"result": await wake_loop.measurement_pause()}
             elif cmd == "MEASURE_RESUME":
                 result = {"result": await wake_loop.measurement_resume()}
+            elif cmd == "MUTE":
+                result = {"result": await wake_loop.mute_mic()}
+            elif cmd == "UNMUTE":
+                result = {"result": await wake_loop.unmute_mic()}
             else:
                 result = {"result": "UNKNOWN", "command": cmd}
             writer.write((_json.dumps(result) + "\n").encode("utf-8"))

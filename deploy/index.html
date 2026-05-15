@@ -71,6 +71,43 @@
       font-variant-numeric: tabular-nums;
       line-height: 1.1;
     }
+
+    /* Mic mute toggle row beneath the volume bar. Same card as the
+       volume control because both are fundamental I/O: volume is
+       "how loud is OUTPUT"; mic mute is "is INPUT listening". */
+    .mic-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding-top: 0.9em; margin-top: 0.8em;
+      border-top: 1px solid #e6e6e6;
+    }
+    .mic-label { font-weight: 500; color: #444; font-size: 0.95em; }
+    .mic-toggle {
+      position: relative; display: inline-block; flex-shrink: 0;
+      width: 54px; height: 30px;
+    }
+    .mic-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .mic-toggle .track {
+      position: absolute; inset: 0;
+      background-color: #ccc;
+      border-radius: 30px;
+      cursor: pointer;
+      transition: background-color 0.18s ease;
+    }
+    .mic-toggle .track::before {
+      position: absolute; content: "";
+      width: 24px; height: 24px;
+      top: 3px; left: 3px;
+      background-color: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+      transition: transform 0.18s ease;
+    }
+    .mic-toggle input:checked + .track { background-color: #1db954; }
+    .mic-toggle input:checked + .track::before { transform: translateX(24px); }
+    .mic-toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+    .mic-toggle input:focus-visible + .track {
+      outline: 2px solid #1db954; outline-offset: 2px;
+    }
   </style>
 </head>
 <body>
@@ -89,6 +126,14 @@
         </div>
       </div>
       <div class="vol-percent" id="vol-percent">—</div>
+      <div class="mic-row">
+        <span class="mic-label">Microphone</span>
+        <label class="mic-toggle">
+          <input type="checkbox" id="mic-toggle" disabled
+                 aria-label="Microphone listening">
+          <span class="track"></span>
+        </label>
+      </div>
     </div>
 
     <a class="card" href="/sources/">
@@ -330,6 +375,77 @@
       }
       setInterval(poll, POLL_MS);
       poll();
+    })();
+
+    // Mic mute toggle. Talks to jasper-control's /mic endpoints
+    // (proxied via nginx). Optimistic flip on click; reconcile from
+    // POST response and a 3 s poll while the tab is visible so dial
+    // / SSH-driven changes show up live. The toggle reads as
+    // "Microphone listening: ON/OFF" (checked = listening, NOT
+    // muted) — the server-side flag is `muted` (the inverse).
+    (function() {
+      var input = document.getElementById('mic-toggle');
+      var POLL_MS = 3000;
+      var dirty = false;
+      var inFlight = false;
+      var ignorePollUntil = 0;
+
+      function applyMuted(muted, available) {
+        if (dirty) return;
+        input.disabled = available === false;
+        input.checked = !muted;
+      }
+
+      async function fetchState() {
+        if (document.visibilityState === 'hidden') return;
+        if (Date.now() < ignorePollUntil) return;
+        try {
+          var resp = await fetch('/mic', {cache: 'no-store'});
+          if (resp.ok) {
+            var data = await resp.json();
+            applyMuted(!!data.muted, true);
+          } else if (resp.status === 503) {
+            // voice_daemon not running → grey out the toggle.
+            applyMuted(false, false);
+          }
+        } catch (_) {}
+      }
+
+      async function postMute(want_muted) {
+        dirty = true; inFlight = true;
+        ignorePollUntil = Date.now() + 1500;
+        try {
+          var resp = await fetch('/mic/mute', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({muted: want_muted}),
+          });
+          if (resp.ok) {
+            var data = await resp.json();
+            dirty = false;
+            applyMuted(!!data.muted, true);
+          } else {
+            // Server refused — roll back the optimistic flip.
+            // checked = listening = NOT muted; rollback inverts the
+            // attempted state.
+            dirty = false;
+            input.checked = !want_muted;
+          }
+        } catch (_) {
+          dirty = false;
+          input.checked = !want_muted;
+        } finally {
+          inFlight = false;
+        }
+      }
+
+      input.addEventListener('change', function() {
+        // checked = listening = NOT muted. So muted = !checked.
+        postMute(!input.checked);
+      });
+
+      setInterval(fetchState, POLL_MS);
+      fetchState();
     })();
   </script>
 </body>
