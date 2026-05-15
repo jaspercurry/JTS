@@ -792,31 +792,6 @@ def check_ram() -> CheckResult:
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
 
-def _stream0_capture_channels(card: str = "Array") -> int | None:
-    """Read /proc/asound/<card>/stream0 and return the Capture section's
-    Channels: count, or None if missing/unreadable.
-
-    The file has Playback first (Channels: 2 for the XVF chip's 2-ch
-    playback endpoint) then Capture (Channels: 6 on 6-ch firmware). A
-    naive `grep Channels:` returns the Playback value — the bug we hit
-    in jasper-aec-reconcile that silently disabled software AEC on
-    every Pi. Pin to the Capture: section."""
-    p = Path(f"/proc/asound/{card}/stream0")
-    if not p.exists():
-        return None
-    in_capture = False
-    for line in p.read_text().split("\n"):
-        if line.startswith("Capture:"):
-            in_capture = True
-            continue
-        if in_capture and "Channels:" in line:
-            try:
-                return int(line.split("Channels:", 1)[1].strip().split()[0])
-            except (ValueError, IndexError):
-                return None
-    return None
-
-
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
     'auto' (the install.sh default) when the file is missing or
@@ -847,6 +822,7 @@ def check_aec_bridge_running() -> CheckResult:
     opted out via JASPER_AEC_MODE=disabled. A silent-disabled bridge
     (the May 2026 reconciler bug that mis-read Playback Channels: 2
     as the capture count) shows up as a hard fail."""
+    from ..mics import xvf3800
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
 
@@ -854,9 +830,9 @@ def check_aec_bridge_running() -> CheckResult:
         return CheckResult("AEC bridge service", "ok", "running (software AEC enabled)")
 
     aec_mode = _aec_mode_setting()
-    capture_ch = _stream0_capture_channels("Array")
+    capture_ch = xvf3800.capture_channels()
     chip_present = capture_ch is not None
-    is_6ch = capture_ch == 6
+    is_6ch = capture_ch == xvf3800.RECOMMENDED_FIRMWARE.capture_channels
 
     if aec_mode != "auto":
         # Explicit operator opt-out is fine.
@@ -868,15 +844,16 @@ def check_aec_bridge_running() -> CheckResult:
     if not chip_present:
         return CheckResult(
             "AEC bridge service", "warn",
-            "off — Array chip not present. Software AEC needs the XVF mic; "
+            f"off — {xvf3800.DISPLAY_NAME} not present. Software AEC needs it; "
             "plug it in and the reconciler will enable AEC on next event.",
         )
 
     if not is_6ch:
         return CheckResult(
             "AEC bridge service", "warn",
-            f"off — XVF chip is on {capture_ch}-channel firmware (need 6-ch). "
-            "DFU-flash to v2.0.8 6chl per BRINGUP.md Phase 2A.5, then: "
+            f"off — XVF chip is on {capture_ch}-channel firmware "
+            f"(need {xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch). "
+            "DFU-flash per BRINGUP.md Phase 2A.5, then: "
             "sudo systemctl start jasper-aec-reconcile",
         )
 
@@ -901,43 +878,42 @@ def check_aec_bridge_running() -> CheckResult:
 
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
-    capture endpoint. The bridge depends on this — it reads channel 2.
-
-    Failure remediation has the canonical DFU command including the
-    `-a 1` alt-setting (alt 0 is read-only Factory, alt 1 is the
-    Upgrade slot). Older BRINGUP.md drafts had `-a 0` which silently
-    no-ops on writes."""
-    capture_ch = _stream0_capture_channels("Array")
+    capture endpoint. The bridge depends on this — it reads channel 2."""
+    from ..mics import xvf3800
+    capture_ch = xvf3800.capture_channels()
     if capture_ch is None:
-        return CheckResult("XVF firmware 6-ch", "warn", "Array card not present")
-    if capture_ch == 6:
-        return CheckResult("XVF firmware 6-ch", "ok", "capture is 6-channel")
+        return CheckResult("XVF firmware 6-ch", "warn",
+                           f"{xvf3800.ALSA_CARD_NAME} card not present")
+    target = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    if capture_ch == target:
+        return CheckResult("XVF firmware 6-ch", "ok",
+                           f"capture is {target}-channel")
     return CheckResult(
         "XVF firmware 6-ch", "warn",
         f"capture is {capture_ch}-channel — re-flash for software AEC. "
-        "Put chip in DFU mode (BRINGUP.md Phase 2A.5) then: "
-        "sudo dfu-util -a 1 -D respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin",
+        f"Put chip in DFU mode (BRINGUP.md Phase 2A.5) then: "
+        f"{xvf3800.dfu_flash_command()}",
     )
 
 
 def check_xvf_mixer_state() -> CheckResult:
     """The XVF chip exposes each capture channel as a kernel ALSA
-    mixer slot (`Headset Capture Switch` + `Headset Capture Volume`).
-    When the chip is flashed from 2-ch to 6-ch firmware mid-bringup,
-    ALSA assigns new mixer slots for ch2-5 with defaults of off / 0 dB —
-    and `alsactl restore` happily persists that state across reboot,
-    silencing the raw mics independently of the chip's own routing
-    config. This is a silent killer: chip is fine, USB is fine, ALSA
-    enumeration shows 6 channels, but `arecord` returns zeros on
-    ch2-5. The reconciler self-heals this on every run via
-    `ensure_capture_mixer_open`; this check catches drift if anything
-    sets them back."""
-    if not Path("/proc/asound/Array/stream0").exists():
-        return CheckResult("XVF mixer state", "warn", "Array card not present")
+    mixer slot. When the chip is flashed from 2-ch to 6-ch firmware
+    mid-bringup, ALSA assigns new slots for ch2-5 with defaults of
+    off / 0 dB, and `alsactl restore` persists that across reboot —
+    silently killing raw mics in spite of correct chip state. The
+    reconciler self-heals via xvf3800.ensure_capture_open(); this
+    check flags drift if anything sets them back."""
+    from ..mics import xvf3800
+    if not xvf3800.is_present():
+        return CheckResult("XVF mixer state", "warn",
+                           f"{xvf3800.ALSA_CARD_NAME} card not present")
     # Use cget (not get) — these controls aren't part of any aggregated
     # "simple control" group, so `amixer get` misses them.
-    sw = _run(["amixer", "-c", "Array", "cget", "name=Headset Capture Switch"])
-    vol = _run(["amixer", "-c", "Array", "cget", "name=Headset Capture Volume"])
+    sw = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+               f"name={xvf3800.MIXER_CAPTURE_SWITCH}"])
+    vol = _run(["amixer", "-c", xvf3800.ALSA_CARD_NAME, "cget",
+                f"name={xvf3800.MIXER_CAPTURE_VOLUME}"])
     if sw.returncode != 0 or vol.returncode != 0:
         return CheckResult("XVF mixer state", "warn", "amixer cget failed")
 
@@ -950,24 +926,25 @@ def check_xvf_mixer_state() -> CheckResult:
     switch = _extract_values(sw.stdout) or ""
     volume = _extract_values(vol.stdout) or ""
     switch_norm = switch.replace(" ", "")
-    expected_sw = "on,on,on,on,on,on"
+    nch = xvf3800.RECOMMENDED_FIRMWARE.capture_channels
+    expected_sw = ",".join(["on"] * nch)
     try:
         volume_vals = [int(v.strip()) for v in volume.split(",") if v.strip()]
     except ValueError:
         volume_vals = []
-    volume_ok = len(volume_vals) >= 6 and all(v >= 50 for v in volume_vals[:6])
+    volume_ok = len(volume_vals) >= nch and all(v >= 50 for v in volume_vals[:nch])
 
     if switch_norm == expected_sw and volume_ok:
         return CheckResult(
             "XVF mixer state", "ok",
-            f"all 6 capture channels open (switch={switch_norm}, vol={volume})",
+            f"all {nch} capture channels open (switch={switch_norm}, vol={volume})",
         )
 
     issues = []
     if switch_norm != expected_sw:
         issues.append(f"Capture Switch is {switch_norm or '<empty>'} (expected {expected_sw})")
     if not volume_ok:
-        issues.append(f"Capture Volume is {volume or '<empty>'} (expected ≥50 on all 6)")
+        issues.append(f"Capture Volume is {volume or '<empty>'} (expected ≥50 on all {nch})")
     return CheckResult(
         "XVF mixer state", "fail",
         " | ".join(issues)

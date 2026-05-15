@@ -187,6 +187,12 @@ aec_ready() {
 # would let the operator notice. Force the capture channels open
 # whenever we confirm the chip is on 6-ch firmware. Idempotent; safe
 # to run on every reconcile pass.
+#
+# Canonical reference for these mixer names + the rationale: the
+# `jasper.mics.xvf3800` Python profile. This reconciler is bash and
+# can't import Python; if the names or channel count change in the
+# profile, update them here too. The doctor's `check_xvf_mixer_state`
+# reads from the profile and flags drift if the two get out of sync.
 ensure_capture_mixer_open() {
     local spec="$1"
     local card
