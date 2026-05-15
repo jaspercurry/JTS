@@ -33,29 +33,31 @@
     .cert-note strong { color: #3a2e00; }
     .cert-note a { color: #1da34d; font-weight: 600; }
 
-    /* Volume slider card. The whole card surface is a drag target —
-       tap or drag anywhere on it to set volume. Bar is 36 px (good
-       visual size) but the card height pushes the touch target above
-       Apple's 44 pt minimum. touch-action:none stops the browser from
-       interpreting horizontal swipes as page scrolls. */
+    /* Volume slider card. The .vol-hit element is the actual drag
+       target — bar + 18 px above + 18 px below (50% of the 36 px bar
+       each way). Label and percent text inside the card are
+       deliberately non-interactive so a tap on the readout doesn't
+       move the slider. touch-action:none on the hit element stops
+       horizontal finger drags from being interpreted as page scrolls. */
     .volume-card {
       background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
       padding: 0.9em 1.2em 1em;
+    }
+    .vol-label {
+      font-size: 0.85em; color: #666; font-weight: 500;
+    }
+    .vol-hit {
+      padding: 18px 0;
       cursor: ew-resize;
       user-select: none; -webkit-user-select: none;
       touch-action: none;
     }
-    .volume-card:focus-visible { outline: 2px solid #1db954; outline-offset: 2px; }
-    .vol-label {
-      font-size: 0.85em; color: #666; font-weight: 500;
-      margin-bottom: 0.5em;
-    }
+    .vol-hit:focus-visible { outline: 2px solid #1db954; outline-offset: 2px; }
     .vol-bar {
       position: relative;
       height: 36px;
       background: #e6e6e6;
       border-radius: 18px;
-      margin-bottom: 0.5em;
     }
     .vol-fill {
       position: absolute; inset: 0 auto 0 0;
@@ -76,13 +78,15 @@
   <p class="sub">Manage your speaker.</p>
 
   <div class="cards">
-    <div class="volume-card" id="volume-card"
-         role="slider" tabindex="0"
-         aria-label="Volume"
-         aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+    <div class="volume-card">
       <div class="vol-label">Volume</div>
-      <div class="vol-bar">
-        <div class="vol-fill" id="vol-fill"></div>
+      <div class="vol-hit" id="vol-hit"
+           role="slider" tabindex="0"
+           aria-label="Volume"
+           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="vol-bar">
+          <div class="vol-fill" id="vol-fill"></div>
+        </div>
       </div>
       <div class="vol-percent" id="vol-percent">—</div>
     </div>
@@ -197,7 +201,7 @@
     // UI: bar follows the pointer instantly; we throttle POSTs and
     // reconcile from the server response and a 1.5 s poll.
     (function() {
-      var card = document.getElementById('volume-card');
+      var hit = document.getElementById('vol-hit');
       var fill = document.getElementById('vol-fill');
       var percentEl = document.getElementById('vol-percent');
       var dragging = false;
@@ -211,11 +215,11 @@
         pct = Math.max(0, Math.min(100, Math.round(pct)));
         fill.style.width = pct + '%';
         percentEl.textContent = pct + '%';
-        card.setAttribute('aria-valuenow', String(pct));
+        hit.setAttribute('aria-valuenow', String(pct));
       }
 
       function xToPercent(clientX) {
-        var rect = card.querySelector('.vol-bar').getBoundingClientRect();
+        var rect = hit.querySelector('.vol-bar').getBoundingClientRect();
         var x = clientX - rect.left;
         return (x / rect.width) * 100;
       }
@@ -260,15 +264,15 @@
         }
       }
 
-      card.addEventListener('pointerdown', function(e) {
+      hit.addEventListener('pointerdown', function(e) {
         dragging = true;
-        try { card.setPointerCapture(e.pointerId); } catch (_) {}
+        try { hit.setPointerCapture(e.pointerId); } catch (_) {}
         var pct = xToPercent(e.clientX);
         setUI(pct);
         sendThrottled(Math.round(pct));
         e.preventDefault();
       });
-      card.addEventListener('pointermove', function(e) {
+      hit.addEventListener('pointermove', function(e) {
         if (!dragging) return;
         var pct = xToPercent(e.clientX);
         setUI(pct);
@@ -277,16 +281,16 @@
       function endDrag(e) {
         if (!dragging) return;
         dragging = false;
-        try { card.releasePointerCapture(e.pointerId); } catch (_) {}
+        try { hit.releasePointerCapture(e.pointerId); } catch (_) {}
         var pct = xToPercent(e.clientX);
         setUI(pct);
         sendThrottled(Math.round(pct));
       }
-      card.addEventListener('pointerup', endDrag);
-      card.addEventListener('pointercancel', endDrag);
+      hit.addEventListener('pointerup', endDrag);
+      hit.addEventListener('pointercancel', endDrag);
 
-      card.addEventListener('keydown', function(e) {
-        var current = parseInt(card.getAttribute('aria-valuenow') || '0', 10);
+      hit.addEventListener('keydown', function(e) {
+        var current = parseInt(hit.getAttribute('aria-valuenow') || '0', 10);
         var next = current;
         switch (e.key) {
           case 'ArrowLeft':
