@@ -9,27 +9,33 @@ defined as I²S sources). Even with USB-IN reference + correct
 volume mirroring, the chip's adaptive filter doesn't reliably
 attenuate echo in our config.
 
-This bridge does the AEC in software, with raw mic 0 (channel 2 of
-the chip's 6-channel USB capture, exposed by the 6-ch firmware
-variant 2.0.8) as near-end and the host-side music chain as
-far-end. The engine is WebRTC AEC3 via the `jasper_aec3` pybind11
-binding around Trixie's `libwebrtc-audio-processing-dev` (v1.3-3
-— which IS AEC3; the 1.x is package-API stability versioning, not
-algorithm version). AEC3 includes a frequency-domain residual echo
+This bridge does the AEC in software, with chip-processed mic
+(channel 1 of the chip's 6-channel USB capture — the ASR beam
+with chip BF + NS + AGC + HPF applied, but with the chip's own
+AEC stage disabled via SHF_BYPASS=1 in jasper-aec-init) as
+near-end, and the host-side music chain as far-end. The engine
+is WebRTC AEC3 via the `jasper_aec3` pybind11 binding around
+Trixie's `libwebrtc-audio-processing-dev` (v1.3-3 — which IS
+AEC3; the 1.x is package-API stability versioning, not algorithm
+version). AEC3 includes a frequency-domain residual echo
 suppressor + drift-tolerant delay estimator and runs at ~3-8% of
-one Pi 5 core. See docs/HANDOFF-aec.md for the full investigation
-including why SpeexDSP was tried first then dropped, and what
-deeper tuning paths remain.
+one Pi 5 core. See docs/HANDOFF-aec.md for the full investigation.
+
+JTS previously read raw mic 0 (channel 2) but switched to channel
+1 on 2026-05-15 after confirming via XMOS primary docs that
+channels 2-5 bypass every chip DSP stage (no BF, NS, AGC, HPF,
+not even MIC_GAIN). The canonical XVF3800 voice-assistant capture
+is channel 0/1 — see HANDOFF-xvf3800.md §3.
 
 Topology:
 
     pcm.jasper_capture (48k stereo, host clock)
        │  reference signal (what the speaker is being asked to play)
        ▼
-    [downsample 48→16k, take left channel]                         16k mono ref
+    [downsample 48→16k, take left channel, HPF at 125 Hz]          16k mono ref
        │
-       │      hw:Array,0 ch 2 (16k mono, chip clock)
-       │  raw mic 0 (no AEC, no NS, no AGC, no BF)
+       │      hw:Array,0 ch 1 (16k mono, chip clock)
+       │  chip ASR beam: BF + NS + AGC + HPF, chip AEC disabled
        │       │
        ▼       ▼
     WebRTC AEC3 (jasper_aec3 binding)
@@ -107,12 +113,13 @@ REF_DEVICE = "jasper_ref"
 REF_RATE = 48000  # what we ask plug for; plug resamples slave to this
 REF_CHANNELS = 2
 
-# Capture device for the raw mic. Chip's 6-ch firmware exposes
-# channels 0=conference, 1=ASR (both post-AEC + BF + NS + AGC),
-# 2-5=raw mics 0-3. We use channel 2 (raw mic 0) — clean linear
-# input perfect for software AEC. All XVF-specific values come from
-# the mic profile (jasper.mics.xvf3800) so a future mic change has
-# one place to update.
+# Capture device for the mic. Chip's 6-ch firmware exposes
+# channels 0=Conference, 1=ASR (both go through BF + NS + AGC +
+# HPF; the chip's own AEC stage is disabled via SHF_BYPASS=1 in
+# jasper-aec-init), 2-5=raw mics 0-3 (no chip processing of any
+# kind). The mic profile pins MIC_CHANNEL_INDEX=1 (ASR beam) —
+# canonical XVF3800 voice-assistant choice per Seeed wiki and
+# every public reference design.
 # Device names are PortAudio substring matches (sounddevice's
 # backend) — NOT ALSA pcm strings. PortAudio enumerates ALSA
 # cards by their card description, not by hw:CARD= syntax.
@@ -262,21 +269,17 @@ def _ref_thread(ref_q: Queue) -> None:
     ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
     ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
 
-    # Reference HPF — matches AEC3's internal capture-side HPF
-    # (100 Hz 2nd-order Butterworth, applied by AudioProcessing
-    # upstream of EchoCanceller3 inside our jasper_aec3 binding;
-    # cfg.high_pass_filter.enabled is true in src/aec3_binding.cpp).
-    # Without symmetric reference filtering, AEC3's adaptive filter
-    # wastes coefficients trying to model an LF relationship between
-    # the HPF'd mic and the unfiltered ref — the mismatch is the
-    # structural reason bass cancellation has been weak in measured
-    # tests (only 10-15 dB reduction at 30-250 Hz vs 25-34 dB at
-    # 2-8 kHz). Matching the AEC3 design point at 100 Hz removes
-    # the asymmetry. See docs/HANDOFF-aec.md for the analysis.
-    # 100 Hz is also 40 Hz above openWakeWord's mel floor (60 Hz),
-    # so this filter is provably free with respect to wake-word
-    # accuracy — it applies to the reference, not the mic.
-    REF_HPF_HZ = float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "100"))
+    # Reference HPF — matches the effective mic-side cutoff so AEC3
+    # sees symmetric inputs. Default 125 Hz to match the chip's
+    # AEC_HPFONOFF=on125 (4th-order Butter at mic ingress, applied
+    # to channels 0/1 in the chip pipeline). Without symmetric
+    # reference filtering, AEC3's adaptive filter wastes coefficients
+    # trying to model an LF relationship the mic doesn't have.
+    # 125 Hz is above openWakeWord's 60 Hz mel floor for the
+    # reference; this filter applies to the reference, not the mic,
+    # so wake-word accuracy is unaffected regardless. See
+    # docs/HANDOFF-aec.md for the analysis.
+    REF_HPF_HZ = float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"))
     hpf_sos = butter(2, REF_HPF_HZ, btype="highpass", fs=SAMPLE_RATE,
                      output="sos")
     # Per-section state, shape (n_sections, 2) for order-2 SOS sections.
@@ -350,7 +353,9 @@ def _ref_thread(ref_q: Queue) -> None:
 
 def _mic_thread(mic_q: Queue) -> None:
     """Capture 16k 6ch from XVF chip (6-ch firmware), pluck
-    channel MIC_CHANNEL_INDEX (raw mic 0). Push mono int16 frames."""
+    channel MIC_CHANNEL_INDEX (default 1 = ASR beam, chip
+    BF+NS+AGC+HPF applied, chip AEC disabled via SHF_BYPASS).
+    Push mono int16 frames."""
     def cb(indata, frames, time_info, status):
         if status:
             logger.debug("mic status: %s", status)

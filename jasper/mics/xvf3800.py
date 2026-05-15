@@ -154,10 +154,29 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 # AEC bridge wiring
 # ---------------------------------------------------------------------
 
-# Raw mic 0 — the input the WebRTC AEC3 bridge processes for near-end.
-# Index into the 6-ch capture endpoint (ch0=conference, ch1=ASR,
-# ch2-5=raw mics 0-3). See aec_bridge.py for the pipeline.
-MIC_CHANNEL_INDEX = 2
+# Mic channel the bridge captures from for sw AEC's near-end input.
+# Index into the 6-ch capture endpoint:
+#   0 = Conference (chip BF + NS + AGC + HPF, comms-tuned)
+#   1 = ASR        (chip BF + NS + AGC + HPF, speech-recognition-tuned)
+#   2 = Raw mic 0  (pre-everything — no BF, no NS, no AGC, no HPF)
+#   3-5 = Raw mics 1-3
+#
+# We use channel 1 (ASR beam). This is the canonical XVF3800 voice-
+# assistant capture channel — used by Seeed's own examples, the
+# Reachy Mini stack, and the formatBCE/ESPHome integration. We get
+# the chip's 4-mic beamforming, noise suppression, AGC, and HPF for
+# free; we only need to keep the chip's own AEC stage out of the
+# path (jasper-aec-init writes `SHF_BYPASS=1` for that, because the
+# chip's AEC pipeline is incompatible with our external-DAC
+# topology — see docs/HANDOFF-aec.md). Software AEC3 then runs on
+# top of an already-cleaned mic input.
+#
+# Was previously channel 2 (raw mic 0). The switch was made on
+# 2026-05-15 after measuring that raw mic 0 has literally no chip
+# processing (verified by toggling chip NS/AGC and observing 0.4 dB
+# of variation on ch 2 vs 8+ dB on ch 0/1) — we were paying for the
+# chip's DSP and not using it. See HANDOFF-xvf3800.md §3.
+MIC_CHANNEL_INDEX = 1
 
 
 # ---------------------------------------------------------------------

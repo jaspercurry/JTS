@@ -1,33 +1,40 @@
 """Boot-time XVF3800 chip init — `jasper-aec-init`.
 
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.
-Three jobs:
+Four jobs:
 
   1. REBOOT 1 — clear any prior session's chip state cleanly.
-  2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
+  2. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage.
+     The chip's AEC was designed for the topology where the chip
+     drives the speaker via its own codec; in our external-DAC
+     topology, the chip's AEC reference path is sabotaged (see
+     docs/HANDOFF-aec.md). With SHF_BYPASS=1, the chip's AEC
+     adaptive filter is removed from channels 0/1's signal path,
+     but the rest of the chip pipeline — beamforming, NS, AGC,
+     HPF — still runs. Software AEC3 (jasper-aec-bridge) handles
+     echo cancellation host-side using the music chain as ref.
+  3. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
      the mic signals before any chip-side DSP. The mic feeds
      openWakeWord (fmin = 60 Hz per Google's speech_embedding
      model) and real-time speech LLMs — no human listens, so
-     cutting sub-speech LF rumble is a free win for downstream
-     accuracy and removes content AEC3 would otherwise waste
-     adaptive-filter capacity trying to cancel. XMOS's shipped
-     default for smart-speaker presets is 125 Hz (option 2);
-     we match that. Configurable via JASPER_AEC_CHIP_HPF_HZ.
-  3. Bring the chip's UAC2 PCM playback level to 0 dB unity. The
-     chip's defaults (after REBOOT) put PCM at ~-20 dB, which the
-     chip then mirrors into AEC_FAR_EXTGAIN — a non-issue for
-     us now (we don't use chip-side AEC) but still good hygiene
-     in case anyone re-enables it later.
+     cutting sub-speech LF rumble is a free win. XMOS's shipped
+     smart-speaker default is 125 Hz (option 2); we match that.
+     Configurable via JASPER_AEC_CHIP_HPF_HZ.
+  4. Bring the chip's UAC2 PCM playback level to 0 dB unity.
+     After REBOOT the chip resets its mixer to ~-20 dB. The XVF
+     firmware auto-mirrors the host's UAC volume into
+     AEC_FAR_EXTGAIN — a non-issue now (we don't use chip AEC)
+     but still good hygiene.
 
 We do NOT call SAVE_CONFIGURATION — firmware 2.0.6 had a brick
 hazard on that op (respeaker repo issue #8). 2.0.8 may have fixed
 it but we don't need persistence on the chip side, so we skip.
 
 The historical `AUDIO_MGR_SYS_DELAY` calibration job is gone —
-that was for the chip's on-chip AEC, which we abandoned in favor
-of software AEC in jasper-aec-bridge. The 6-ch firmware exposes
-raw mics on channels 2-5; the bridge takes raw mic 0 and runs
-WebRTC AEC3 cancellation host-side.
+that was for the chip's on-chip AEC, which we don't use (see
+SHF_BYPASS above). The 6-ch firmware exposes raw mics on
+channels 2-5; the bridge captures channel 1 (ASR beam, with
+chip BF/NS/AGC/HPF applied) and runs WebRTC AEC3 host-side.
 """
 from __future__ import annotations
 
@@ -105,12 +112,32 @@ def main() -> int:
             logger.error("XVF3800 did not re-enumerate after REBOOT")
             return 1
 
+        # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
+        # AEC adaptive filter from the signal path on channels 0/1
+        # (beamforming, NS, AGC, HPF all stay). We do this because
+        # the chip's AEC was designed for the topology where the
+        # chip drives the speaker via its own codec; in our
+        # external-USB-DAC topology, the chip's AEC reference path
+        # is sabotaged (the chip mirrors the host's UAC volume into
+        # AEC_FAR_EXTGAIN, which attenuates the reference by an
+        # unpredictable amount). Software AEC3 in jasper-aec-bridge
+        # handles echo cancellation host-side instead. See
+        # docs/HANDOFF-aec.md for the full investigation.
+        try:
+            dev.write("SHF_BYPASS", [1])
+            logger.info("XVF SHF_BYPASS=1 (chip AEC stage disabled)")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "SHF_BYPASS write failed: %s; chip AEC may still be "
+                "in the signal path (bridge will compensate with sw AEC)", e,
+            )
+
         # Apply chip-side HPF on the mic signal. Lives at mic ingress
-        # in the chip pipeline (before AEC, BF, NS — all of which
-        # the bridge bypasses by using raw mic 0, but still good
-        # hygiene + LF rumble doesn't waste USB bandwidth). XMOS
-        # default for smart-speaker presets is on125 (125 Hz, 4th-
-        # order Butterworth).
+        # in the chip pipeline (before AEC, BF, NS). The HPF affects
+        # the processed output channels (0/1) — which is now what
+        # the bridge captures (see jasper/mics/xvf3800.py
+        # MIC_CHANNEL_INDEX=1). XMOS default for smart-speaker
+        # presets is on125 (125 Hz, 4th-order Butterworth).
         hpf_hz = os.environ.get("JASPER_AEC_CHIP_HPF_HZ", _DEFAULT_CHIP_HPF_HZ).strip()
         hpf_value = _CHIP_HPF_MAP.get(hpf_hz.lower())
         if hpf_value is None:
