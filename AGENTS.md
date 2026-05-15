@@ -328,9 +328,15 @@ modes, diagnostic cookbook) is
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
-variant (`v2.0.8 6chl`) — the bridge reads raw mic 0 from
-channel 2 of the chip's USB capture, which only exists on the
-6-ch firmware. If unsure, check with:
+variant — the bridge reads raw mic 0 from channel 2 of the chip's
+USB capture, which only exists on that variant. The known-good
+filename + repo hash are tracked in
+[`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py); as of
+2026-05-15 that's `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin`,
+the only 6-channel variant in upstream `master`. Check the
+[upstream firmware directory](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb)
+before flashing in case a newer one has shipped. If unsure
+whether the chip is currently on 6-ch, check with:
 
 ```sh
 # Pin to the Capture: section — Playback (Channels: 2) comes first

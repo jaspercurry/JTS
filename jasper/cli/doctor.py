@@ -891,7 +891,8 @@ def check_xvf_firmware_6ch() -> CheckResult:
     return CheckResult(
         "XVF firmware 6-ch", "warn",
         f"capture is {capture_ch}-channel — re-flash for software AEC. "
-        f"Put chip in DFU mode (BRINGUP.md Phase 2A.5) then: "
+        f"In-system DFU works while the chip is plugged in normally; "
+        f"BRINGUP.md Phase 2A.5 has the full procedure. Headline: "
         f"{xvf3800.dfu_flash_command()}",
     )
 

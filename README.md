@@ -372,11 +372,18 @@ kernel state to corrupt and `sendto()` is non-blocking. See
 full architectural rationale and the multi-tier resilience design
 the speaker now uses.
 
-The bridge needs the 6-channel XVF firmware variant
-(`v2.0.8 6chl`, flashed via DFU per BRINGUP.md Phase 2A.5) since it
-taps raw mic 0 (channel 2 of 6). On the 2-channel firmware the
-bridge stays disabled and voice reads the chip's processed
-conference channel directly. `install.sh` runs
+The bridge needs the **6-channel XVF firmware variant** since it
+taps raw mic 0 (channel 2 of 6) — the 2-channel firmware Seeed
+ships by default doesn't expose those raw channels. As of
+2026-05-15 the recommended file is
+`respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` (the only
+6-channel variant in upstream `master`); browse the
+[upstream firmware directory](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb)
+before flashing in case a newer one has shipped. The full
+procedure is in BRINGUP.md Phase 2A.5; the known-good version
+constants are tracked in [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py).
+On the 2-channel firmware the bridge stays disabled and voice
+reads the chip's processed conference channel directly. `install.sh` runs
 `jasper-aec-reconcile`, which auto-detects + auto-enables when the
 hardware is ready and clears stale UDP mic config when the Array is
 missing.
