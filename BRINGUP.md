@@ -464,43 +464,187 @@ trade-off analysis.
 
 ### XVF firmware: switch to 6-channel variant via DFU
 
-The default XVF firmware exposes 2 channels (conference + ASR);
-the 6-channel variant exposes those plus 4 raw mics needed by the
-AEC bridge.
+#### Why this step exists
 
-```sh
-# On the Pi, with the XVF mic plugged in:
-sudo apt install -y dfu-util
-# Boot the chip into DFU mode (button combo varies by board rev;
-# see ReSpeaker docs for your specific revision)
-sudo dfu-util -d 20b1:0008 -a 1 \
-    -D /path/to/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin -R
-# Re-plug the mic, then verify the chip now exposes 6 capture channels:
-awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
-# Expect "Channels: 6"
+The XVF3800 ships from Seeed on a "2-channel" firmware variant.
+That firmware's USB capture endpoint exposes only two channels —
+channel 0 is the chip's beamformed + AEC + noise-suppressed
+**Conference** output, channel 1 is its speech-recognition-tuned
+**ASR** output. Both are post-processed by the chip's on-board DSP
+and intended for use as a single conversational microphone.
 
-# Trigger the reconciler to pick up the new firmware, enable the
-# AEC bridge, and reset the ALSA mixer to known-good values.
-sudo systemctl start jasper-aec-reconcile
+JTS's software AEC bridge needs the chip's raw, pre-DSP
+microphone outputs instead. Those only exist on the **"6-channel"
+firmware variant**, which adds raw mic 0–3 on capture channels
+2–5. Without that firmware, the AEC bridge can't run, and
+wake-word detection runs against the chip's conference channel
+only — works in a quiet room, false-wakes heavily when music is
+playing.
 
-# Confirm:
-sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(AEC bridge|XVF)'
-# Expect three "✓" lines: AEC bridge running, XVF firmware 6-ch,
-# XVF mixer state all 6 channels open.
+The 6-channel firmware is a strict superset of the 2-channel
+firmware: channel 0 (Conference) and channel 1 (ASR) carry the
+same content on either. Switching back is reversible and lossless;
+it just removes the raw channels.
+
+#### Which firmware to flash
+
+As of **2026-05-15**, the recommended file is:
+
+```
+respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
 ```
 
-**Alt-setting `-a 1` is intentional** — alt 0 is the read-only Factory
-slot (writes silently no-op), alt 1 is the Upgrade slot where firmware
-actually gets written. Earlier drafts of this guide had `-a 0` which
-appeared to flash successfully but left the chip on whatever firmware
-was already loaded.
+It's the only 6-channel variant currently in upstream `master`.
+Source of truth: [`xmos_firmwares/usb/`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb)
+in the Seeed-maintained
+[`respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY)
+repo.
 
-**The reconciler step matters.** Without it, the kernel ALSA mixer can
-persist a stale ch2-5 mute state from before the DFU flash — silently
-killing the raw mics in spite of the new firmware. The reconciler runs
-`ensure_capture_mixer_open` to reset switch + volume to all-on and
-`alsactl store`s the result. If you ever need the manual recovery
-(e.g. doctor is unavailable):
+**Before flashing, check the upstream directory for newer entries.**
+If a newer 6-channel variant exists (e.g. PR #13's v2.0.10 attempt
+at 48 kHz 6-channel was unmerged as of this writing), read its
+changelog/PR description against what JTS depends on:
+
+- channel 0 = Conference (post-DSP beam output)
+- channel 1 = ASR (post-DSP, speech-tuned)
+- channels 2–5 = raw mic data feeding `jasper-aec-bridge`
+
+If those channels survive the upgrade, the new version should drop
+into JTS by bumping three constants in
+[`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py):
+`FIRMWARE_BLOB_6CH`, `FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH`, and
+`FIRMWARE_KNOWN_GOOD_AS_OF`. The fuller variant table is in
+[`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) §2.
+
+#### How DFU works on this chip (no button combo needed)
+
+The XVF3800 supports **in-system DFU upgrade**. Its USB interface
+descriptor advertises a DFU function (Application Specific class
+254, alt 1 = Upgrade slot) alongside its normal audio class
+interfaces, available continuously while the chip is in runtime
+mode. `dfu-util` writes directly to that interface; the chip
+briefly enumerates as the XMOS bootloader at `20b1:0008` during
+the actual flash, then resets back to the normal audio device at
+`2886:001a`.
+
+You may have read elsewhere (the Seeed wiki, older drafts of
+this doc, ESPHome examples) about putting the chip into "DFU
+mode" via a button combo. **That procedure is for Safe Mode
+recovery only** — used when the DataPartition is corrupted, e.g.
+after an unsafe `SAVE_CONFIGURATION` call has bricked normal boot.
+For a routine 2-ch → 6-ch firmware upgrade, no button combo is
+needed.
+
+#### Step 1 — fetch the firmware
+
+```sh
+# On the Pi, with the XVF mic plugged in normally:
+sudo apt install -y dfu-util curl
+
+# As of 2026-05-15 the latest 6-ch firmware in upstream master is
+# v2.0.8. Check the directory listing before flashing in case a
+# newer version has shipped:
+#   https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/tree/master/xmos_firmwares/usb
+curl -L -o /tmp/xvf-6ch.bin \
+    https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/raw/master/xmos_firmwares/usb/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+md5sum /tmp/xvf-6ch.bin
+# Record this hash — if Seeed re-cuts the same filename with new
+# bits in the future, the md5 will change and you'll know to
+# re-read the changelog before flashing again.
+```
+
+#### Step 2 — confirm the chip exposes DFU
+
+```sh
+sudo dfu-util -l
+# Expect a line resembling:
+#   Found DFU: [2886:001a] devnum=N, cfg=1, intf=4, path="...",
+#       alt=1, name="reSpeaker DFU Upgrade", serial="..."
+# If alt=1 isn't visible, the chip isn't in normal runtime — re-plug
+# and recheck. (alt=0 "Factory" is read-only; don't try to write to it.)
+```
+
+#### Step 3 — flash
+
+```sh
+sudo dfu-util -R -e -a 1 -D /tmp/xvf-6ch.bin
+# ~30-60 seconds. You'll see:
+#   - "Invalid DFU suffix signature" — this is NORMAL. Seeed doesn't
+#     sign their binaries; dfu-util warns but proceeds.
+#   - Progress percentage climbing to 100%
+#   - "File downloaded successfully"
+#   - "Resetting USB to switch back to runtime mode" (the -R flag)
+# The chip disappears from USB momentarily then re-enumerates with
+# the new firmware. dmesg shows the re-enumeration.
+```
+
+The flag breakdown for future reference: `-a 1` writes to the
+Upgrade partition (not the read-only Factory at alt 0). `-R`
+resets the chip after flashing so it boots into the new firmware.
+`-e` detaches (exits DFU) before download — harmless and required
+on some host stacks.
+
+#### Step 4 — verify the new firmware is running
+
+```sh
+# Capture-side channel count — pin to the Capture: section because
+# /proc/asound/Array/stream0 has Playback (Channels: 2) before
+# Capture (Channels: 6), and a naive `grep Channels:` returns the
+# wrong one.
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
+# Expect: "Channels: 6"
+
+# Chip-side build identification:
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_MSG
+# Expect: ['u','a','-','i','o','1','6','-','6','c','h','-','s','q','r']
+#         (the chip-reported BLD_MSG = "ua-io16-6ch-sqr")
+
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
+# For v2.0.8 6chl as of 2026-05-15, expect hash:
+#   'a1f70651e992d6f0bcff655b26925d33999b9c2d'
+# Newer versions will report different hashes — that's fine, the
+# value is for change-detection, not validation.
+```
+
+#### Step 5 — bring AEC online
+
+The reconciler picks up the new firmware, flips voice's mic source
+to the AEC bridge's UDP output, and resets the kernel ALSA mixer
+to known-good values for the newly-exposed ch2-5 (which can
+otherwise persist a stale mute from before the firmware change —
+see "The reconciler step matters" below).
+
+```sh
+sudo systemctl start jasper-aec-reconcile
+
+# Confirm everything's healthy:
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(AEC bridge|XVF)'
+# Expect three "✓" lines:
+#   AEC bridge service       running (software AEC enabled)
+#   XVF firmware 6-ch        capture is 6-channel
+#   XVF mixer state          all 6 capture channels open
+```
+
+#### Why the reconciler step matters
+
+When the chip is flashed from 2-channel to 6-channel firmware,
+ALSA assigns new mixer slots in the kernel for the newly-exposed
+capture channels 2–5. Their defaults are off / 0 dB. `alsactl
+restore` then happily persists that silently across reboot —
+killing the raw mics in spite of the new firmware, with no
+surface that would let an operator notice (chip-side params look
+healthy, `/proc/asound/Array/stream0` shows 6 channels, but
+`arecord` returns zeros on ch2-5).
+
+The reconciler's `ensure_capture_mixer_open` resets the relevant
+controls to all-on / max-volume and runs `alsactl store` so the
+state survives reboot. `jasper-doctor`'s "XVF mixer state" check
+flags drift if anything sets them back. This is exactly the trap
+that consumed half a day on jts2's bringup in May 2026
+(`docs/HANDOFF-xvf3800.md` §7 has the full investigation).
+
+If the reconciler is unavailable for any reason and you need to
+fix the mixer state manually:
 
 ```sh
 sudo amixer -c Array cset name='Headset Capture Switch' on,on,on,on,on,on
@@ -508,12 +652,28 @@ sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
 sudo alsactl store
 ```
 
-The 6-ch firmware's channel 0 is identical to the 2-ch firmware's
-channel 0, so it's safe to leave installed even without enabling
-AEC.
+#### What if it goes wrong
+
+| Symptom | What it means | Where to go |
+|---|---|---|
+| `dfu-util -l` doesn't see alt=1 | Chip isn't in normal runtime — likely a USB enumeration issue | Re-plug, check `dmesg -T \| grep -i usb` |
+| Flash fails mid-write, chip won't boot | Brick — `SAVE_CONFIGURATION` corruption is the documented cause | Safe Mode recovery via `4mb_all_ff.bin`, [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §5.1 |
+| Doctor shows XVF firmware 6-ch ✓ but mixer state ✗ | Kernel mixer drifted; reconciler hasn't run | Re-run `sudo systemctl start jasper-aec-reconcile` |
+| Doctor shows everything ✓ but wake word still fails | Probably unrelated to firmware; check `journalctl -u jasper-voice -f` and `scripts/xvf-interrogate.sh` | [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) diagnostic cookbook |
+
+#### Sources for this section
+
+- **Firmware blobs + DFU protocol semantics**: [upstream `xmos_firmwares/dfu_guide.md`](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md) and the `xmos_firmwares/usb/` directory listing in the same repo.
+- **In-system DFU mechanism**: confirmed empirically via `lsusb -v -d 2886:001a` showing the Application Specific class 254 interface at alt 1 = "reSpeaker DFU Upgrade" while the chip is in normal audio runtime. Same descriptor visible on both jts and jts2 chips on 2026-05-15.
+- **Channel layout per firmware variant**: [Seeed wiki — Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware), cross-verified against the `BLD_MSG` strings the chip itself reports.
+- **`SAVE_CONFIGURATION` brick hazard**: [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (still open as of this writing — treat the warning as applying to every firmware version we've shipped against).
+- **ALSA mixer mute trap after firmware flash**: discovered during the 2026-05-15 jts2 raw-mic-silence investigation; full root cause and resolution log in [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §7.
 
 **Never call XVF `SAVE_CONFIGURATION`** — known brick hazard on
-certain firmware versions (respeaker repo issue #8).
+every firmware version we've tested (upstream issue above hasn't
+been confirmed fixed in any release notes). The chip's parameter
+state is fine to set at runtime via `xvf_host` writes; just don't
+persist them to flash via that command.
 
 ---
 

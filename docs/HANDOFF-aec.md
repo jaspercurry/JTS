@@ -150,16 +150,18 @@ assumption is that whatever comes out the chip's own DAC pin is
 also what's playing in the room — they are the same node in the
 data plane.
 
-The chip exposes two firmware variants over USB:
+The chip exposes two firmware variants over USB (full table of
+published versions in [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §2.1):
 
-- **2-channel firmware** (`v2.0.6` shipped on this board, also
-  `v2.0.5`/`v2.0.7`): USB capture has 2 channels — channel 0 is
-  "conference" (post-AEC + BF + NS + AGC), channel 1 is "ASR"
+- **2-channel firmware**: USB capture has 2 channels — channel 0
+  is "conference" (post-AEC + BF + NS + AGC), channel 1 is "ASR"
   (different post-processing tuned for speech recognition). No
-  raw mic access.
-- **6-channel firmware** (`v2.0.8`, `_6chl_` variant): adds raw
-  mics on USB capture channels 2–5. The processed
-  conference/ASR channels stay on 0/1.
+  raw mic access. The boards we received from Seeed shipped on
+  v2.0.6 of this variant; v2.0.5 and v2.0.7 are also 2-channel.
+- **6-channel firmware** (the `_6chl_` filename variant): adds
+  raw mics on USB capture channels 2–5. The processed
+  conference/ASR channels stay on 0/1. As of 2026-05-15 the only
+  6-channel build in upstream `master` is v2.0.8.
 
 The chip's USB UAC2 endpoint also has a **playback** direction —
 the host can write audio TO the chip — and the chip's firmware
@@ -428,19 +430,22 @@ adaptive filter struggle to model the echo path. Per Stuart
 Naylor's writeups, software AEC over chip-processed audio is
 generally a bad idea.
 
-The 6-channel firmware (`v2.0.8`, single DFU command to flash,
-fully reversible) adds raw mics on channels 2–5. Software AEC
-on raw mic 0 sees a clean linear input — much better convergence.
+The 6-channel firmware (single DFU command to flash, fully
+reversible) adds raw mics on channels 2–5. Software AEC on raw
+mic 0 sees a clean linear input — much better convergence. The
+DFU mechanism is in-system: the chip exposes its DFU interface in
+normal runtime mode, no Safe Mode entry or button combo required.
+Full operator procedure (download URL, verification, what each
+flag does) is in [BRINGUP.md](../BRINGUP.md) Phase 2A.5. Headline:
 
-DFU procedure:
 ```
-sudo dfu-util -R -e -a 1 \
-    -D respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+sudo dfu-util -R -e -a 1 -D <6-channel-firmware.bin>
 ```
 
 The chip's `SAVE_CONFIGURATION` op had a brick hazard on firmware
-2.0.6 (respeaker repo issue #8); we never call it regardless of
-firmware version.
+2.0.6 (respeaker repo issue #8) and the upstream issue is still
+open as of 2026-05-15 with no release-note confirmation that any
+version fixed it — we never call it regardless of firmware version.
 
 ---
 

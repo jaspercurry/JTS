@@ -67,17 +67,68 @@ RECOMMENDED_FIRMWARE = VARIANT_6CH
 # DFU re-flash
 # ---------------------------------------------------------------------
 
-# In DFU mode the chip enumerates with a different VID:PID than its
-# runtime mode. The XMOS bootloader is at 20b1:0008.
+# The XVF3800 supports in-system DFU upgrade — the chip in normal
+# runtime mode exposes a USB DFU interface (Application Specific
+# class 254) alongside its audio class, at interface 4 alt 1.
+# `dfu-util` can write to this interface while the chip is running
+# normally; no button combo or "Safe Mode" entry is required for
+# routine firmware upgrades. Confirmed empirically via `lsusb -v`
+# on both jts and jts2 chips (2026-05-15). The button-combo
+# procedure on the Seeed wiki is for Safe Mode recovery only —
+# used when the DataPartition is corrupted (see HANDOFF-xvf3800.md
+# §5.1 for the recovery flow).
+#
+# When the chip enters DFU during a flash it briefly enumerates as
+# the XMOS bootloader at 20b1:0008, then resets back to its normal
+# 2886:001a runtime identity after the flash completes.
 DFU_VID_PID = "20b1:0008"
 
 # Alt 0 is the read-only Factory partition; alt 1 is the Upgrade
-# partition where firmware actually gets written. Earlier BRINGUP.md
-# drafts used `-a 0` which silently no-op'd. See HANDOFF-xvf3800.md §2.4.
+# partition where firmware actually gets written. Writes to alt 0
+# silently no-op (the chip stays on whatever firmware it had).
+# See HANDOFF-xvf3800.md §2.4 for the alt-setting table.
 DFU_ALT_SETTING = 1
 
-# Filename of the 6-ch firmware blob in the upstream respeaker repo.
+# ---------------------------------------------------------------------
+# Known-good firmware (snapshot, not a hard pin)
+# ---------------------------------------------------------------------
+#
+# The 6-channel firmware variant JTS has tested with. This is a
+# point-in-time snapshot of what we know works — not a contract
+# that forbids upgrades. When a newer 6-channel variant ships
+# upstream:
+#
+#   1. Browse FIRMWARE_UPSTREAM_DIR_URL for newer entries.
+#   2. Read the changelog/PRs against what JTS depends on —
+#      channel 0 = Conference, channel 1 = ASR, channels 2-5 = raw
+#      mic data feeding the AEC bridge. If the upgrade preserves
+#      those, it should drop into JTS by bumping the three
+#      constants below (filename + repo hash + date).
+#   3. After flashing, verify with `jasper-doctor` that the
+#      "XVF firmware 6-ch" and "AEC bridge service" checks both
+#      come back green.
+#
+# Doctor reads the running chip's capture-channel count from the
+# kernel, not from these constants, so it'll continue to flag
+# 6-ch correctly even if we forget to update them after a flash.
+# Updating them keeps the doc references + remediation messages
+# accurate.
+FIRMWARE_KNOWN_GOOD_AS_OF = "2026-05-15"
 FIRMWARE_BLOB_6CH = "respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin"
+# Built from sw_xvf3800 commit `a1f70651e992d6f0bcff655b26925d33999b9c2d`.
+# The chip reports this via `xvf_host BLD_REPO_HASH` — useful to
+# verify after a flash that you actually wrote what you intended.
+FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH = "a1f70651e992d6f0bcff655b26925d33999b9c2d"
+
+# Upstream firmware directory. Single canonical source for blobs.
+FIRMWARE_UPSTREAM_DIR_URL = (
+    "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY"
+    "/tree/master/xmos_firmwares/usb"
+)
+FIRMWARE_RAW_URL_6CH = (
+    "https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY"
+    f"/raw/master/xmos_firmwares/usb/{FIRMWARE_BLOB_6CH}"
+)
 
 
 # ---------------------------------------------------------------------
@@ -177,7 +228,12 @@ def ensure_capture_open() -> bool:
 
 def dfu_flash_command(firmware_path: str = "") -> str:
     """Return the canonical DFU flash command as a string. Useful for
-    doctor remediation messages and BRINGUP cross-references. The
-    chip must be in DFU mode (different VID:PID) before this runs."""
+    doctor remediation messages and BRINGUP cross-references.
+
+    The chip exposes its DFU interface in normal runtime mode, so the
+    command runs against the chip as-plugged-in — no Safe Mode entry
+    or button combo required. `-R` resets the chip to runtime after
+    flashing; `-e` detaches from DFU before download (harmless and
+    required on some host stacks)."""
     blob = firmware_path or FIRMWARE_BLOB_6CH
-    return f"sudo dfu-util -a {DFU_ALT_SETTING} -D {blob}"
+    return f"sudo dfu-util -R -e -a {DFU_ALT_SETTING} -D {blob}"

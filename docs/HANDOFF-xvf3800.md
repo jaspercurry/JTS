@@ -144,40 +144,54 @@ procedure.
 
 ### 2.4 DFU flashing — alt-setting semantics
 
-The chip exposes three DFU alt-settings when in DFU/Safe Mode (the
-chip in normal mode also exposes a DFU interface alongside its
-audio class, allowing in-system upgrade):
+The chip exposes three DFU alt-settings:
 
 | alt= | Name | Purpose |
 |---|---|---|
 | `0` | `reSpeaker DFU Factory` | The **Safe Mode** / recovery partition. Read-only during normal operation. Don't write here. |
-| `1` | `reSpeaker DFU Upgrade` | **The firmware partition.** This is where you write the `.bin` files. |
+| `1` | `reSpeaker DFU Upgrade` | **The firmware partition.** This is where routine firmware writes go. Always available, in normal runtime as well as Safe Mode. |
 | `2` | `reSpeaker DFU DataPartition` | Persistent parameter store (what `SAVE_CONFIGURATION` writes to). Visible only in Safe Mode (entering it via the mute-button-during-power-on dance). |
 
-**The correct flash command is `dfu-util -R -e -a 1`.**
+**The chip supports in-system DFU upgrade** — the USB descriptor in
+normal runtime advertises a DFU function at interface 4 alt 1
+alongside the chip's audio class interfaces, so `dfu-util` can write
+firmware while the chip is plugged in and running normally. No button
+combo or Safe Mode entry is required for routine upgrades. Confirmed
+empirically via `lsusb -v -d 2886:001a` on both jts and jts2 chips
+on 2026-05-15; the relevant descriptor block is:
+
+```
+Interface Descriptor:
+  bAlternateSetting       1
+  bInterfaceClass       254 Application Specific Interface
+  Device Firmware Upgrade Interface Descriptor:
+    ...
+```
+
+The Seeed wiki's "button combo to enter DFU mode" procedure is for
+**Safe Mode** entry — used when the DataPartition is corrupted and
+the normal-mode DFU interface isn't reachable (because boot hangs
+before USB enumerates). For a routine 2-ch → 6-ch firmware upgrade,
+the chip flashes itself in place.
+
+**The correct flash command is `dfu-util -R -e -a 1`.** Writes to
+alt 0 silently no-op — the chip stays on whatever firmware it had.
 
 ```sh
 sudo apt install -y dfu-util
-sudo dfu-util -l                                   # confirm device shows up at alt=1
-sudo dfu-util -R -e -a 1 \
-    -D /path/to/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin
+sudo dfu-util -l                                   # confirm alt=1 is visible
+sudo dfu-util -R -e -a 1 -D <firmware-blob.bin>
 ```
 
 `-R` resets the chip back to run-time mode after flashing; `-e` is
 "detach (exit DFU) before download" (harmless and required on some
 host stacks). The `Invalid DFU suffix signature` warning at the
 start of dfu-util output is normal — Seeed doesn't sign the
-binaries.
+binaries. BRINGUP.md Phase 2A.5 has the full operator-facing
+procedure (download URL, verification steps, what each `dfu-util`
+flag does and why).
 
-> ⚠️ **The current BRINGUP.md and CLAUDE.md both contain `-a 0`,
-> which is wrong** for normal firmware flashing — `alt=0` is the
-> Factory/recovery partition. They worked historically only because
-> on some host platforms dfu-util will silently fall through to the
-> first writable alt-setting when alt=0 is read-only. The
-> upstream-correct flag is `-a 1`. HANDOFF-aec.md has this right.
-> **Flag for follow-up: align BRINGUP.md and CLAUDE.md on `-a 1`.**
-
-Sources: [upstream dfu_guide.md](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md), [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (DataPartition + recovery), [Seeed wiki Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/).
+Sources: [upstream dfu_guide.md](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/xmos_firmwares/dfu_guide.md), [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (DataPartition + recovery), [Seeed wiki Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/), and the captured `lsusb -v` from the 2026-05-15 jts2 investigation (`logs/xvf-interrogate-*-jts2-*-20260515T*.txt`).
 
 ### 2.5 Reading the running firmware version
 
@@ -200,8 +214,15 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BOOT_STATUS
 #     character meanings unverified upstream (see §6.6 below)
 ```
 
-For the 6-ch firmware that ships with v2.0.8, the expected hash is
-`a1f70651e992d6f0bcff655b26925d33999b9c2d`.
+As of 2026-05-15, the 6-ch firmware variant v2.0.8 (the one JTS
+production has been tested with) reports `BLD_REPO_HASH` =
+`a1f70651e992d6f0bcff655b26925d33999b9c2d`. Different production
+chips on the same firmware report identical hashes, so this is
+useful for verifying "did the flash actually take" after an
+upgrade. The known-good hash is also tracked as
+`FIRMWARE_KNOWN_GOOD_BLD_REPO_HASH` in
+[`jasper/mics/xvf3800.py`](../jasper/mics/xvf3800.py) — bump it
+there when you verify a newer firmware version.
 
 The 6-channel firmware can also be confirmed at the ALSA layer
 without USB control:
