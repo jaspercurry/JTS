@@ -1014,6 +1014,33 @@ install_camillagui() {
     echo "  CamillaGUI listening on :5005 (LAN-direct, no auth)"
 }
 
+run_doctor_summary() {
+    # Final pre-flight: run jasper-doctor so the operator sees status of
+    # every subsystem (env file, mic, firmware, AEC bridge, renderers,
+    # provider keys, …) at install time. Non-blocking — install is done
+    # by the time we get here; this is just a status report.
+    #
+    # Critical for catching the "silent productization gaps" — e.g. an
+    # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
+    # which used to be invisible until a wake-word test failed days
+    # later. Doctor flags it inline now.
+    if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
+        return 0
+    fi
+    echo
+    echo "=== jasper-doctor pre-flight ==="
+    if /opt/jasper/.venv/bin/jasper-doctor; then
+        echo "✓ all critical doctor checks pass."
+    else
+        echo
+        echo "─────────────────────────────────────────────────────────────"
+        echo " jasper-doctor reports failures (see above)."
+        echo " Install finished, but at least one subsystem isn't healthy."
+        echo " Re-run after fixing: sudo /opt/jasper/.venv/bin/jasper-doctor"
+        echo "─────────────────────────────────────────────────────────────"
+    fi
+}
+
 main() {
     require_root
     install_deps
@@ -1029,6 +1056,7 @@ main() {
     install_nginx_site
     install_camillagui
     regenerate_audio_cues
+    run_doctor_summary
 }
 
 main "$@"

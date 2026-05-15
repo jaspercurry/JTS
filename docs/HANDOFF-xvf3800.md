@@ -872,6 +872,28 @@ verified.
 
 ## 7. Most likely causes of ch2-5 silence (ranked)
 
+### TL;DR — resolved root cause (2026-05-15 jts2 investigation)
+
+**ALSA kernel mixer state had ch2-5 muted at the host.** Specifically:
+
+```
+Headset Capture Switch:  on,on,off,off,off,off
+Headset Capture Volume:  60,60,0,0,0,0
+```
+
+The chip was healthy, on 6-ch firmware, USB descriptors were correct, `/proc/asound/Array/stream0` showed `Capture Channels: 6` — but the kernel ALSA mixer silently muted ch2-5 before `arecord` could see them. This persists across reboot via `alsactl restore`. The mute almost certainly originated when the chip was on 2-ch firmware (which only exposes ch0/1 to the kernel mixer); after the DFU flash to 6-ch firmware, ALSA created mixer slots for ch2-5 with defaults of off/0, and `alsactl store` later persisted that state.
+
+**Fix:**
+```sh
+sudo amixer -c Array cset name='Headset Capture Switch' on,on,on,on,on,on
+sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
+sudo alsactl store
+```
+
+`jasper-aec-reconcile` runs this on every reconcile pass now (via `ensure_capture_mixer_open`), so it self-heals. `jasper-doctor` flags drift under "XVF mixer state". This hypothesis was NOT in the original ranking below because the doc was written before the actual diagnosis landed — keeping the original list as a record of the analytical process and to cover the remaining-uncovered failure modes if this ever happens again with a different root cause.
+
+### Original ranking (pre-resolution)
+
 Given the evidence in the issue prompt:
 
 - Same chip + same 6-ch firmware (`v2.0.8`, hash

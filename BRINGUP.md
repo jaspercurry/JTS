@@ -455,12 +455,32 @@ AEC bridge.
 sudo apt install -y dfu-util
 # Boot the chip into DFU mode (button combo varies by board rev;
 # see ReSpeaker docs for your specific revision)
-sudo dfu-util -d 20b1:0008 -a 0 \
+sudo dfu-util -d 20b1:0008 -a 1 \
     -D /path/to/respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin -R
 # Re-plug the mic, then verify:
-cat /proc/asound/Array/stream0 | grep Channels
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 # Expect "Channels: 6"
 ```
+
+**Alt-setting `-a 1` is intentional** — alt 0 is the read-only Factory
+slot (writes silently no-op), alt 1 is the Upgrade slot where firmware
+actually gets written. Earlier drafts of this guide had `-a 0` which
+appeared to flash successfully but left the chip on whatever firmware
+was already loaded.
+
+**After flashing, the kernel ALSA mixer can persist a stale ch2-5
+mute state from the prior 2-ch firmware.** This silently kills the
+raw mics in spite of the new firmware — `jasper-aec-reconcile` heals
+it on every run, but if you skipped reconciliation you can also reset
+manually:
+
+```sh
+sudo amixer -c Array cset name='Headset Capture Switch' on,on,on,on,on,on
+sudo amixer -c Array cset name='Headset Capture Volume' 60,60,60,60,60,60
+sudo alsactl store
+```
+
+`jasper-doctor` flags this state under "XVF mixer state".
 
 The 6-ch firmware's channel 0 is identical to the 2-ch firmware's
 channel 0, so it's safe to leave installed even without enabling

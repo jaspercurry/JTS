@@ -179,6 +179,25 @@ aec_ready() {
     [[ "$(mic_channels "$mic")" == "6" ]]
 }
 
+# When the chip is flashed from the 2-ch firmware to the 6-ch firmware
+# (the BRINGUP path), ALSA assigns mixer slots for the new ch2-5 with
+# default values of off / 0 dB. `alsactl restore` then persists that
+# state across reboot — silencing the raw mics in the kernel
+# independently of the chip's own configuration, with no surface that
+# would let the operator notice. Force the capture channels open
+# whenever we confirm the chip is on 6-ch firmware. Idempotent; safe
+# to run on every reconcile pass.
+ensure_capture_mixer_open() {
+    local spec="$1"
+    local card
+    card="$(card_id_from_spec "$spec")"
+    amixer -c "$card" cset name='Headset Capture Switch' \
+        on,on,on,on,on,on >/dev/null 2>&1 || true
+    amixer -c "$card" cset name='Headset Capture Volume' \
+        60,60,60,60,60,60 >/dev/null 2>&1 || true
+    alsactl store >/dev/null 2>&1 || true
+}
+
 split_candidates() {
     local raw="$1"
     raw="${raw//,/ }"
@@ -320,6 +339,7 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
 fi
 
 if aec_ready "$AEC_MIC_DEVICE"; then
+    ensure_capture_mixer_open "$AEC_MIC_DEVICE"
     if [[ "$CURRENT_MIC" != "$UDP_DEVICE" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
         log "6-channel ${AEC_MIC_DEVICE} present; selected AEC UDP mic ${UDP_DEVICE}"

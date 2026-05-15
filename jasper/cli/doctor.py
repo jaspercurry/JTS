@@ -792,6 +792,48 @@ def check_ram() -> CheckResult:
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
 
+def _stream0_capture_channels(card: str = "Array") -> int | None:
+    """Read /proc/asound/<card>/stream0 and return the Capture section's
+    Channels: count, or None if missing/unreadable.
+
+    The file has Playback first (Channels: 2 for the XVF chip's 2-ch
+    playback endpoint) then Capture (Channels: 6 on 6-ch firmware). A
+    naive `grep Channels:` returns the Playback value — the bug we hit
+    in jasper-aec-reconcile that silently disabled software AEC on
+    every Pi. Pin to the Capture: section."""
+    p = Path(f"/proc/asound/{card}/stream0")
+    if not p.exists():
+        return None
+    in_capture = False
+    for line in p.read_text().split("\n"):
+        if line.startswith("Capture:"):
+            in_capture = True
+            continue
+        if in_capture and "Channels:" in line:
+            try:
+                return int(line.split("Channels:", 1)[1].strip().split()[0])
+            except (ValueError, IndexError):
+                return None
+    return None
+
+
+def _aec_mode_setting() -> str:
+    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
+    'auto' (the install.sh default) when the file is missing or
+    unreadable, matching the reconciler's behaviour."""
+    p = Path("/var/lib/jasper/aec_mode.env")
+    if not p.exists():
+        return "auto"
+    try:
+        for line in p.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith("JASPER_AEC_MODE="):
+                return line.split("=", 1)[1].strip().strip("'\"") or "auto"
+    except OSError:
+        pass
+    return "auto"
+
+
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
     chip's raw mic 0 (channel 2 of 6-ch firmware), with the
@@ -799,23 +841,39 @@ def check_aec_bridge_running() -> CheckResult:
     UDP localhost, which jasper-voice consumes as its mic source.
 
     The bridge is reconciler-managed: enabled when the configured
-    AEC mic is present with 6-channel firmware, disabled otherwise.
-    So an "inactive + disabled" state is fine, and we differentiate
-    it from "enabled but crashed"."""
+    AEC mic is present with 6-channel firmware AND JASPER_AEC_MODE
+    is auto. We cross-check those conditions here so a silently-
+    disabled bridge (as happened with the May 2026 reconciler bug
+    that mis-read Playback Channels: 2 as the capture count) shows
+    up as a clear failure instead of a misleading 'ok (disabled)'."""
     is_active = _run(["systemctl", "is-active", "jasper-aec-bridge.service"]).stdout.strip()
     is_enabled = _run(["systemctl", "is-enabled", "jasper-aec-bridge.service"]).stdout.strip()
+
     if is_active == "active":
         return CheckResult("AEC bridge service", "ok", "running (software AEC enabled)")
-    if is_enabled in ("disabled", "static"):
-        return CheckResult(
-            "AEC bridge service", "ok",
-            "disabled (reconciler selected direct mic or no AEC-capable mic)",
-        )
-    # enabled but not active = crashed
+
+    # Should it be running? Cross-check the conditions the reconciler uses.
+    aec_mode = _aec_mode_setting()
+    capture_ch = _stream0_capture_channels("Array")
+    chip_present = capture_ch is not None
+    is_6ch = capture_ch == 6
+    expected_on = aec_mode == "auto" and is_6ch
+
+    if not expected_on:
+        if aec_mode != "auto":
+            reason = f"JASPER_AEC_MODE={aec_mode}"
+        elif not chip_present:
+            reason = "Array chip not present"
+        else:
+            reason = f"chip is {capture_ch}-channel firmware (need 6-ch)"
+        return CheckResult("AEC bridge service", "ok", f"disabled ({reason})")
+
     return CheckResult(
         "AEC bridge service", "fail",
-        f"is-active='{is_active}', is-enabled='{is_enabled}'. Bridge is "
-        f"enabled but not running. Check `journalctl -u jasper-aec-bridge`.",
+        f"is-active='{is_active}', is-enabled='{is_enabled}'. "
+        f"AEC should be on (mode=auto, 6-ch firmware loaded) but bridge isn't running. "
+        f"Run: sudo systemctl start jasper-aec-reconcile && "
+        f"journalctl -u jasper-aec-bridge -e",
     )
 
 
@@ -831,18 +889,78 @@ def check_aec_bridge_running() -> CheckResult:
 
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
-    capture endpoint. The bridge depends on this — it reads channel 2."""
-    p = Path("/proc/asound/Array/stream0")
-    if not p.exists():
-        return CheckResult("XVF firmware 6-ch", "fail", "Array card missing")
-    text = p.read_text()
-    if "Channels: 6" in text:
+    capture endpoint. The bridge depends on this — it reads channel 2.
+
+    Failure remediation has the canonical DFU command including the
+    `-a 1` alt-setting (alt 0 is read-only Factory, alt 1 is the
+    Upgrade slot). Older BRINGUP.md drafts had `-a 0` which silently
+    no-ops on writes."""
+    capture_ch = _stream0_capture_channels("Array")
+    if capture_ch is None:
+        return CheckResult("XVF firmware 6-ch", "warn", "Array card not present")
+    if capture_ch == 6:
         return CheckResult("XVF firmware 6-ch", "ok", "capture is 6-channel")
     return CheckResult(
         "XVF firmware 6-ch", "warn",
-        "XVF capture is not 6-channel — likely 2-ch firmware loaded. "
-        "Re-flash with respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin "
-        "via dfu-util to expose raw mics for the bridge.",
+        f"capture is {capture_ch}-channel — re-flash for software AEC. "
+        "Put chip in DFU mode (BRINGUP.md Phase 2A.5) then: "
+        "sudo dfu-util -a 1 -D respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin",
+    )
+
+
+def check_xvf_mixer_state() -> CheckResult:
+    """The XVF chip exposes each capture channel as a kernel ALSA
+    mixer slot (`Headset Capture Switch` + `Headset Capture Volume`).
+    When the chip is flashed from 2-ch to 6-ch firmware mid-bringup,
+    ALSA assigns new mixer slots for ch2-5 with defaults of off / 0 dB —
+    and `alsactl restore` happily persists that state across reboot,
+    silencing the raw mics independently of the chip's own routing
+    config. This is a silent killer: chip is fine, USB is fine, ALSA
+    enumeration shows 6 channels, but `arecord` returns zeros on
+    ch2-5. The reconciler self-heals this on every run via
+    `ensure_capture_mixer_open`; this check catches drift if anything
+    sets them back."""
+    if not Path("/proc/asound/Array/stream0").exists():
+        return CheckResult("XVF mixer state", "warn", "Array card not present")
+    # Use cget (not get) — these controls aren't part of any aggregated
+    # "simple control" group, so `amixer get` misses them.
+    sw = _run(["amixer", "-c", "Array", "cget", "name=Headset Capture Switch"])
+    vol = _run(["amixer", "-c", "Array", "cget", "name=Headset Capture Volume"])
+    if sw.returncode != 0 or vol.returncode != 0:
+        return CheckResult("XVF mixer state", "warn", "amixer cget failed")
+
+    def _extract_values(out: str) -> str | None:
+        for line in out.split("\n"):
+            if ": values=" in line:
+                return line.split("values=", 1)[1].strip()
+        return None
+
+    switch = _extract_values(sw.stdout) or ""
+    volume = _extract_values(vol.stdout) or ""
+    switch_norm = switch.replace(" ", "")
+    expected_sw = "on,on,on,on,on,on"
+    try:
+        volume_vals = [int(v.strip()) for v in volume.split(",") if v.strip()]
+    except ValueError:
+        volume_vals = []
+    volume_ok = len(volume_vals) >= 6 and all(v >= 50 for v in volume_vals[:6])
+
+    if switch_norm == expected_sw and volume_ok:
+        return CheckResult(
+            "XVF mixer state", "ok",
+            f"all 6 capture channels open (switch={switch_norm}, vol={volume})",
+        )
+
+    issues = []
+    if switch_norm != expected_sw:
+        issues.append(f"Capture Switch is {switch_norm or '<empty>'} (expected {expected_sw})")
+    if not volume_ok:
+        issues.append(f"Capture Volume is {volume or '<empty>'} (expected ≥50 on all 6)")
+    return CheckResult(
+        "XVF mixer state", "fail",
+        " | ".join(issues)
+        + ". Heal: sudo /usr/local/sbin/jasper-aec-reconcile --reason heal "
+        "(reconciler will reset switch/volume + alsactl store)",
     )
 
 
@@ -941,6 +1059,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_xvf_firmware_6ch,
+        check_xvf_mixer_state,
         # Rotary dial: avahi advertising the control service so the
         # dial finds us via mDNS-SD, plus a heartbeat from any dial
         # currently on the network.
