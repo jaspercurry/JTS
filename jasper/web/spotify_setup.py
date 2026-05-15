@@ -289,8 +289,29 @@ _SPOTIFY_PAGE_STYLE = PAGE_STYLE + """
 """
 
 
+# Disambiguation banner shown at the top of every Spotify wizard page.
+# The /spotify/ wizard was historically the only "Spotify setup" surface
+# even though it only handles the Web API account side; users would
+# land here looking to make basic Spotify Connect (phone-side
+# "pick JTS in the app") work and feel lost. This banner steers the
+# basic case to /sources/ and frames this wizard as advanced.
+_DISAMBIGUATION_BANNER = """
+<div style="background:#f0fff4; border:1px solid #1db954; border-radius:6px;
+            padding:0.7em 0.9em; margin:0.6em 0 1.2em; font-size:0.92em;
+            line-height:1.5; color:#114a2c;">
+  <strong>Heads up:</strong> basic Spotify Connect (picking JTS from
+  your Spotify app's device picker) needs no setup — it's already on.
+  Turn it on or off on the <a href="/sources/" style="color:#0a5a2d;
+  font-weight:600;">Sources page</a>. This wizard is for the
+  <em>advanced</em> case: voice cold-start (&ldquo;Hey Jarvis, play
+  Hamilton&rdquo;) and multi-account routing, which need per-account
+  OAuth.
+</div>
+"""
+
+
 def _wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
-    page = wrap_page(title, body, status_msg=status_msg).decode()
+    page = wrap_page(title, _DISAMBIGUATION_BANNER + body, status_msg=status_msg).decode()
     return page.replace(
         f"<style>{PAGE_STYLE}</style>",
         f"<style>{_SPOTIFY_PAGE_STYLE}</style>",
