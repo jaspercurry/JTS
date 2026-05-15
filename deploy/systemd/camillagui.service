@@ -1,6 +1,12 @@
 [Unit]
-Description=CamillaGUI — web UI for CamillaDSP
+Description=CamillaGUI backend — web UI for CamillaDSP
 Documentation=https://github.com/HEnquist/camillagui-backend
+# Started on demand by camillagui-proxy.service (which is socket-
+# activated by camillagui.socket). StopWhenUnneeded=yes below means
+# we shut down as soon as the proxy exits — no more 50 MB resident
+# in between admin sessions. See PR notes for the
+# systemd-socket-proxyd pattern.
+#
 # CamillaDSP must be up first; the GUI websocket-connects to its
 # control port and would error-loop on startup otherwise.
 After=network.target jasper-camilla.service
@@ -8,9 +14,27 @@ Wants=jasper-camilla.service
 
 [Service]
 Type=simple
+# camillagui_backend binds 127.0.0.1:5006 per /etc/camillagui/config.yml.
+# The external :5005 listener belongs to systemd-socket-proxyd.
 ExecStart=/opt/camillagui/camillagui_backend/camillagui_backend -c /etc/camillagui/config.yml
+# Wait until the backend actually bound to :5006 before systemd
+# marks this unit "active". Without this, the proxy (After=
+# camillagui.service) starts forwarding to a port that's still
+# coming up and the first request races into ECONNREFUSED. Pure
+# bash via /dev/tcp — no nc dependency. 50×0.1s = 5s ceiling
+# matches the PyInstaller cold-start budget.
+ExecStartPost=/bin/bash -c 'for i in $(seq 1 50); do exec 3<>/dev/tcp/127.0.0.1/5006 2>/dev/null && { exec 3<&-; exec 3>&-; exit 0; }; sleep 0.1; done; exit 1'
+
+# Restart=on-failure (not always) so clean exits via StopWhenUnneeded
+# stay exited. Restart=always would respawn us immediately and defeat
+# the idle-exit lifecycle.
 Restart=on-failure
 RestartSec=5
+
+# The point of all this. When the proxy goes idle and exits, the
+# Requires= edge drops, and StopWhenUnneeded sees that no active
+# unit needs us — we shut down. ~50 MB Pss reclaimed.
+StopWhenUnneeded=yes
 
 # Hardening — read /etc/camilladsp (DSP configs the GUI lists/edits),
 # write /var/lib/camillagui (GUI state), write /var/log (request log).
@@ -21,4 +45,5 @@ PrivateTmp=true
 ReadWritePaths=/etc/camilladsp /var/lib/camillagui /var/log
 
 [Install]
-WantedBy=multi-user.target
+# Intentionally no WantedBy — this unit is dependency-activated, not
+# boot-activated. Enable camillagui.socket instead.

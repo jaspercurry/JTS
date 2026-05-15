@@ -15,12 +15,16 @@
 camilla_host: "127.0.0.1"
 camilla_port: 1234
 
-# 0.0.0.0 = LAN-reachable. Security parity with /spotify, /voice,
-# /dial — all unauthenticated, all home-LAN-only. SPA-on-different-
-# port is simpler than nginx prefix-rewriting (CamillaGUI's frontend
-# uses absolute URLs that don't survive a path prefix).
-bind_address: "0.0.0.0"
-port: 5005
+# Bind loopback-only — the LAN-facing endpoint is :5005, served by
+# systemd-socket-proxyd (camillagui-proxy.service) which forwards
+# to us here on 5006. The proxy enables socket-activation +
+# idle-exit so this backend can shut down between admin sessions,
+# reclaiming ~50 MB Pss the Python interpreter holds onto. Direct
+# bind on 0.0.0.0:5005 (as in earlier installs) would keep us
+# resident 24/7. Security parity with /spotify, /voice, /dial is
+# unchanged — :5005 stays unauthenticated, home-LAN-only.
+bind_address: "127.0.0.1"
+port: 5006
 
 ssl_certificate: null
 ssl_private_key: null

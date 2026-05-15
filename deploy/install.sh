@@ -1019,9 +1019,31 @@ install_camillagui() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/camillagui.service" \
         "${SYSTEMD_DIR}/camillagui.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/camillagui-proxy.service" \
+        "${SYSTEMD_DIR}/camillagui-proxy.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/camillagui.socket" \
+        "${SYSTEMD_DIR}/camillagui.socket"
+
+    # Migration: earlier installs ran camillagui.service directly,
+    # always-on. We're switching to socket-activation via the
+    # .socket + systemd-socket-proxyd. Disable the boot-time pull
+    # of camillagui.service (it's dependency-activated now) so the
+    # idle-exit lifecycle works as designed. Idempotent — re-runs
+    # are a no-op once we're on the new layout.
+    if systemctl is-enabled camillagui.service >/dev/null 2>&1; then
+        systemctl disable camillagui.service
+    fi
+    # Stop the always-on instance so the next request goes through
+    # the new socket-activation path. Safe whether it's running or
+    # not — the socket activation will re-spawn on demand.
+    systemctl stop camillagui.service 2>/dev/null || true
+
     systemctl daemon-reload
-    systemctl enable --now camillagui.service
-    echo "  CamillaGUI listening on :5005 (LAN-direct, no auth)"
+    systemctl enable --now camillagui.socket
+    echo "  CamillaGUI listening on :5005 via socket-activated proxy"
+    echo "  (backend exits 10 min after last access; ~50 MB Pss reclaimed)"
 }
 
 run_doctor_summary() {

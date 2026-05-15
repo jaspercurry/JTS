@@ -1,0 +1,32 @@
+[Unit]
+Description=CamillaGUI socket-activation proxy (5005 → 127.0.0.1:5006)
+# The actual public-facing endpoint. systemd hands us the
+# already-bound :5005 fd via camillagui.socket; we forward to the
+# backend on loopback :5006. When traffic goes quiet for
+# --exit-idle-time seconds we exit; that drops the Requires= edge,
+# which (combined with StopWhenUnneeded= on camillagui.service)
+# stops the backend too and reclaims its RAM.
+Requires=camillagui.socket camillagui.service
+After=camillagui.socket camillagui.service
+
+[Service]
+Type=notify
+# systemd-socket-proxyd is shipped with systemd in /lib/systemd/.
+# --exit-idle-time=600 matches the 10-minute window the jasper-web
+# wizards use. Re-tune here if real-world admin sessions overshoot.
+ExecStart=/lib/systemd/systemd-socket-proxyd --exit-idle-time=600 127.0.0.1:5006
+# Restart=no on purpose — the proxy exits intentionally when idle.
+# The .socket is what brings us back on the next request. Re-spawning
+# on exit would defeat the whole memory-saving point.
+Restart=no
+# Hardening — proxy needs no filesystem access beyond /lib (the
+# binary itself) and /run (systemd socket fds).
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
