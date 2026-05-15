@@ -326,17 +326,25 @@ hw:Loopback,0,sub0  ← snd-aloop card 6, kernel-clocked
 hw:Loopback,1,sub0
     │
     ▼
-pcm.jasper_capture  ← type plug → type dsnoop on Loopback,1,sub0
+pcm.jasper_capture  ← type dsnoop on Loopback,1,sub0
     │  dsnoop allows multiple readers each to get an independent
-    │  copy of the audio
+    │  copy of the audio; the slave's rate is whatever the loopback
+    │  is currently locked at (snd-aloop is first-opener-wins; with
+    │  shairport native 44.1k since PR #75 (2026-05-11), that's
+    │  typically 44.1 kHz today)
     │
-    ├──► reader A: jasper-camilla
+    ├──► reader A: jasper-camilla, via plug:jasper_capture
+    │       plug layer resamples to camilla's expected rate
     │       main_volume ducking + flat passthrough
     │       writes to → pcm.jasper_out (dmix on Apple dongle)
     │       → speaker (audible path)
     │
-    └──► reader B: jasper-aec-bridge (Python, alsaaudio + jasper_aec3)
-            captures jasper_capture (48k stereo) for FAR-END REFERENCE
+    └──► reader B: jasper-aec-bridge, via pcm.jasper_ref
+            pcm.jasper_ref = plug-wrapped jasper_capture, so
+            the bridge sees REF_RATE=48000 regardless of the
+            loopback's actual locked rate (the regression-
+            survival path added 2026-05-15)
+            captures jasper_ref (48k stereo) for FAR-END REFERENCE
             captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
             takes channel 2 of the chip capture (raw mic 0)
             downsamples ref 48k → 16k mono on left
