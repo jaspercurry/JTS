@@ -163,10 +163,14 @@ mic_channels() {
         echo 0
         return
     fi
-    channels="$(grep -E "Channels:[[:space:]]*[0-9]+" "$stream" \
-        | head -1 \
+    # /proc/asound/<card>/stream0 has separate Playback and Capture
+    # blocks, each with its own "Channels:" line. We need the Capture
+    # one — the XVF chip's Playback endpoint is 2-ch even when Capture
+    # is 6-ch on the 6-ch firmware. Pinning to ^Capture: prevents a
+    # silent fallback to direct-mic when AEC should be enabled.
+    channels="$(awk '/^Capture:/{cap=1} cap && /Channels:[[:space:]]*[0-9]+/{print; exit}' "$stream" \
         | grep -oE "[0-9]+" \
-        || true)"
+        | head -1)"
     echo "${channels:-0}"
 }
 

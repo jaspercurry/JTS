@@ -77,8 +77,11 @@ echo
 # --- 0. Service state preflight ---
 echo "----- 0. Service state -----"
 BRIDGE_WAS_ACTIVE=false
+VOICE_WAS_ACTIVE=false
 if systemctl is-active --quiet jasper-aec-bridge; then BRIDGE_WAS_ACTIVE=true; fi
+if systemctl is-active --quiet jasper-voice;      then VOICE_WAS_ACTIVE=true;  fi
 echo "bridge_was_active=$BRIDGE_WAS_ACTIVE"
+echo "voice_was_active=$VOICE_WAS_ACTIVE"
 
 for unit in jasper-aec-bridge jasper-aec-init jasper-voice jasper-camilla; do
     enabled=$(systemctl is-enabled "$unit" 2>&1 || true)
@@ -86,16 +89,26 @@ for unit in jasper-aec-bridge jasper-aec-init jasper-voice jasper-camilla; do
     echo "service: $unit  enabled=$enabled  active=$active"
 done
 
+# Both daemons can hold the mic open — stop whichever is active so
+# arecord can read it for the per-channel RMS section.
 if [ "$BRIDGE_WAS_ACTIVE" = "true" ]; then
-    echo "stopping jasper-aec-bridge to free the chip for capture"
+    echo "stopping jasper-aec-bridge to free the chip"
     systemctl stop jasper-aec-bridge
-    sleep 1
 fi
+if [ "$VOICE_WAS_ACTIVE" = "true" ]; then
+    echo "stopping jasper-voice to free the chip"
+    systemctl stop jasper-voice
+fi
+sleep 1
 
 # Restore on exit
 restore_state() {
-    if [ "$BRIDGE_WAS_ACTIVE" = "true" ]; then
+    if [ "$VOICE_WAS_ACTIVE" = "true" ]; then
         echo
+        echo "----- exit: restoring jasper-voice -----"
+        systemctl start jasper-voice 2>&1 || true
+    fi
+    if [ "$BRIDGE_WAS_ACTIVE" = "true" ]; then
         echo "----- exit: restoring jasper-aec-bridge -----"
         systemctl start jasper-aec-bridge 2>&1 || true
     fi
@@ -361,8 +374,12 @@ echo "  chip iSerial: $SERIAL"
 {
     echo -n "  USB speed: "
     grep -m1 'Bus.*001a' "$OUT" >/dev/null 2>&1 && sed -n '/----- 2b/,/^----- 3/p' "$OUT" | grep -m1 -oE '[0-9]+M' || true
-    echo -n "  ALSA stream0 channels: "
-    sed -n '/----- 3c/,/----- 3d/p' "$OUT" | grep -i 'Channels:' | head -1 | tr -s ' '
+    echo -n "  ALSA stream0 capture channels: "
+    # stream0 has Playback then Capture, each with their own Channels:
+    # line; we want the Capture one. Pin to the Capture: section.
+    sed -n '/----- 3c/,/----- 3d/p' "$OUT" \
+        | awk '/^Capture:/{cap=1} cap && /Channels:/{print; exit}' \
+        | tr -s ' '
     echo "  Per-channel activity (plughw):"
     sed -n '/path: plughw/,/path: hw/p' "$OUT" | grep -E '^ch[0-5]:'
     echo "  Per-channel activity (hw):"
