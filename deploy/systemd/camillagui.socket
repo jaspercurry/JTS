@@ -1,0 +1,27 @@
+[Unit]
+Description=CamillaGUI public-facing listener (5005, idle-exit via proxy)
+# When a connection arrives, systemd activates camillagui-proxy.service.
+# The proxy forwards to camillagui_backend on 127.0.0.1:5006, then exits
+# after --exit-idle-time of no traffic. StopWhenUnneeded on the backend
+# unit makes camillagui_backend exit alongside the proxy, reclaiming
+# the ~50 MB Pss the Python interpreter holds onto. See PR notes for
+# the systemd-socket-proxyd pattern.
+
+[Socket]
+ListenStream=0.0.0.0:5005
+# Accept=no — single proxy instance per socket, not per connection.
+Accept=no
+# By default systemd activates the .service of the same basename as
+# the .socket (camillagui.service). We want the proxy instead so it
+# can forward to camillagui_backend on 127.0.0.1:5006.
+Service=camillagui-proxy.service
+# Bump the trigger limit above the systemd default (20 in
+# TriggerLimitIntervalSec=2s) since a typical CamillaGUI session
+# fires many small XHRs as the user clicks through the UI. The
+# defaults would trip the limiter and leave the socket in failure
+# state requiring `reset-failed`.
+TriggerLimitIntervalSec=10s
+TriggerLimitBurst=100
+
+[Install]
+WantedBy=sockets.target
