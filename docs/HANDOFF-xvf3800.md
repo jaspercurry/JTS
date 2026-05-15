@@ -240,20 +240,120 @@ awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 
 ## 3. Channel layout (6-channel firmware, JTS production)
 
-Authoritative source: [Seeed wiki USB firmware table](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware) under the "USB" tab.
+**Primary sources (cite these before guessing):**
+- [XMOS XVF3800 User Guide v3.2.1, XM-014888-PC §3.6.1 Table 3.2](https://www.xmos.com/documentation/XM-014888-PC/pdf/xvf3800_user_guide_v3.2.1.pdf) — audio manager mux options + Category definitions.
+- [XMOS Audio Pipeline doc, Fig. 4.1](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/datasheet/03_audio_pipeline.html) — block diagram showing where each tap lives.
+- [Seeed wiki USB firmware table](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/) — verbatim channel listing.
+- [respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY host_control README](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — Output Selection section.
 
-| Capture index (0-based) | Content | Pipeline applied |
+### What lives on each channel
+
+| Idx | Content | Mux category | DSP applied | Tap point |
+|---|---|---|---|---|
+| 0 | **Conference** | Cat 7 (auto-select beam, Conference branch) | **AEC + BF + NS + NLP + AGC + HPF**, comms-tuned (slower beam tracking, comms-AGC dynamics) | Output of full SHF post-processing chain |
+| 1 | **ASR** | Cat 7 (auto-select beam, ASR branch) | **AEC + BF + NS + NLP + AGC + HPF**, ASR-tuned (faster beam tracking, fixed gain for speech engines) | Output of full SHF post-processing chain |
+| 2 | **Raw mic 0** | Cat 1 — *"Raw microphone data — before amplification, no system delay applied"* | **NONE**. Not even `AUDIO_MGR_MIC_GAIN`. Bit-exact ADC output. | Direct from the 192-tap PDM-to-PCM decimator, BEFORE the Gain block in Fig. 4.1. |
+| 3 | Raw mic 1 | Cat 1 | NONE | Same |
+| 4 | Raw mic 2 | Cat 1 | NONE | Same |
+| 5 | Raw mic 3 | Cat 1 | NONE | Same |
+
+### What "the chip processing" means for ch 0/1 specifically
+
+Channels 0 and 1 are the output of the chip's full SHF DSP chain.
+What that chain does, in order (User Guide §4.1, Fig. 4.1):
+
+1. **MIC_GAIN** — `AUDIO_MGR_MIC_GAIN` linear pre-amp on the 4 mics.
+2. **AEC_HPFONOFF** — 4th-order Butterworth HPF, applied per-mic
+   before AEC. Disabled by default; we set `on125` (125 Hz) in
+   jasper-aec-init.
+3. **AEC** (BeClear adaptive filter, per-mic linear stage). In
+   our config we set `SHF_BYPASS=1` to skip this stage entirely
+   because the chip's AEC reference path is incompatible with our
+   external-DAC topology (see [HANDOFF-aec.md](HANDOFF-aec.md) §
+   "Why chip AEC doesn't work for us").
+4. **Beamformer** — selects from one of three beams (free-running,
+   focused beam 1, focused beam 2) based on speech energy.
+5. **Post-processing** — non-linear processor (NLP), noise
+   suppression (`PP_MIN_NS`/`PP_MIN_NN`), AGC (`PP_AGCONOFF`),
+   echo suppression, etc.
+6. **Output mux** — routes the result to USB capture channels 0/1
+   (the "Conference"/"ASR" tunings differ in step 5's parameter
+   choice and step 4's beam time constants).
+
+When `SHF_BYPASS=1`, step 3 is removed but steps 1, 2, 4, 5, and
+6 still run. So channels 0/1 with `SHF_BYPASS=1` give us
+**MIC_GAIN + chip HPF + BF + NS + AGC**, without the chip's AEC
+adaptive filter polluting things.
+
+### Which chip parameters affect which channels
+
+| Parameter family | Affects ch 0/1 | Affects ch 2-5 |
 |---|---|---|
-| 0 | **Conference** | Beam-selected audio after the full chip pipeline: AEC → beamformer → noise suppression → AGC → comms-tuned post-processing. The "talk on a video call" output. Same content as channel 0 on the 2-ch firmware. |
-| 1 | **ASR** | Beam-selected audio with post-processing tuned for speech recognition (different AGC dynamics, less aggressive NS). Same content as channel 1 on the 2-ch firmware. |
-| 2 | **Raw mic 0** | Pre-amplification, pre-system-delay PDM data from physical microphone 0. No AEC, no NS, no AGC, no beamforming. Linear input by design. |
-| 3 | Raw mic 1 | Same processing as ch2, mic index 1 |
-| 4 | Raw mic 2 | Same processing as ch2, mic index 2 |
-| 5 | Raw mic 3 | Same processing as ch2, mic index 3 |
+| `AEC_HPFONOFF` (HPF) | ✅ yes | ❌ no |
+| `PP_AGCONOFF` / `PP_AGC*` (AGC) | ✅ yes (User Guide §4.2.6: *"applied equally to all four processed outputs"*) | ❌ no |
+| `PP_MIN_NS` / `PP_MIN_NN` (NS) | ✅ yes | ❌ no |
+| `PP_ECHOONOFF` / `PP_NL*` (NLP) | ✅ yes | ❌ no |
+| `AEC_FIXEDBEAMS*` (beamformer) | ✅ yes | ❌ no |
+| `SHF_BYPASS` (AEC bypass) | ✅ yes (toggles step 3 above) | ❌ no |
+| `AUDIO_MGR_MIC_GAIN` | ✅ yes (step 1) | ❌ no — Category 1 taps *before* this stage |
 
-JTS uses **channel 2 (raw mic 0)** as the AEC bridge's near-end input
-(see `jasper/cli/aec_bridge.py` — `MIC_CHANNEL_INDEX = 2`). The other
-raw mics are visible but unused.
+**Empirically verified 2026-05-15** by toggling `PP_MIN_NS`,
+`PP_AGCONOFF` while capturing 6 channels of pink noise: ch 0/1
+showed 1.5–8 dB of variation across conditions; **ch 2 showed
+0.0–0.4 dB** across the same conditions. Ch 2-5 are inert with
+respect to every chip-side parameter — they are the bare
+ADC-decimator output.
+
+### What JTS uses, and why
+
+**JTS captures channel 1 (ASR beam)** as the AEC bridge's
+near-end input — see `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX = 1`.
+
+This is the **canonical XVF3800 voice-assistant capture choice**.
+Confirmed against:
+- **Seeed's own example code**: 2-channel `arecord`, takes the
+  default Conference/ASR output, no manual channel selection.
+- **formatBCE ESPHome integration** (HA Voice with XVF3800):
+  `i2s_mics, channels: 1` — ASR beam.
+- **Reachy Mini (Pollen Robotics)**: default device + chip AEC.
+- **Public reference**: no project in public code consumes raw
+  mic channels (2-5) for ASR.
+
+We use channel 1 over channel 0 because the ASR branch is
+specifically tuned for speech-recognition engines (faster beam
+tracking, fixed gain calibrated for ASR, less aggressive NS in
+the speech band) — which is exactly our consumer set
+(openWakeWord + real-time speech LLMs).
+
+We pair channel 1 with `SHF_BYPASS=1` to remove the chip's own
+AEC stage (which is sabotaged by our external-DAC topology),
+keeping every OTHER chip DSP feature: MIC_GAIN, chip HPF,
+beamforming, NS, AGC. Software AEC3 in jasper-aec-bridge then
+handles echo cancellation using the host-side music chain as
+reference.
+
+### Historical: why we previously used channel 2 (and why we stopped)
+
+Until 2026-05-15, the bridge captured channel 2 (raw mic 0). The
+rationale at the time was "AEC3 wants clean linear input;
+the chip's AGC introduces non-linearity that could confuse the
+adaptive filter." That argument was defensible in isolation, but:
+
+1. **No public XVF3800 deployment does this.** We were inventing
+   a topology with no field validation.
+2. **The trade-off was lopsided.** We gave up BF, NS, AGC, HPF,
+   and MIC_GAIN — every single chip DSP feature — to preserve
+   linearity that AEC3's residual echo suppressor is designed to
+   tolerate anyway.
+3. **Measured outcome**: AEC3's bass cancellation was weak
+   (10-15 dB at sub-bass vs 25-34 dB at high freqs). Users heard
+   "boomy bass" in the post-AEC output because the chip wasn't
+   doing its job and AEC3 alone couldn't compensate.
+
+The switch to channel 1 + `SHF_BYPASS=1` is the canonical
+architecture with one targeted modification (chip AEC off,
+software AEC on). The chip's mild AGC non-linearity is a
+theoretical concern that AEC3 absorbs in practice.
 
 ### How channel routing actually works inside the chip
 
