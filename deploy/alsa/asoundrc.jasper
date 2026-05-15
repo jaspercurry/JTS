@@ -35,19 +35,37 @@
 # cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
 # CamillaDSP and the AEC bridge share the loopback capture side as
 # multiple readers. dsnoop is the multi-reader-safe ALSA primitive
-# (the dual of dmix on the playback side). Both readers pull at
-# 48 kHz S16_LE stereo from hw:Loopback,1,0; CamillaDSP rate-
-# converts and runs the music chain, and the bridge takes the left
-# channel as the AEC reference signal (mirroring XMOS's "ref =
-# left channel" convention).
+# (the dual of dmix on the playback side). The dsnoop slave is
+# configured for 48 kHz S16_LE stereo — the rate the bridge and
+# CamillaDSP both target internally.
 #
-# CamillaDSP reads via this dsnoop too (`plug:jasper_capture` in
-# v1.yml), whether the bridge is on or off. With camilla as the only
-# client, dsnoop is functionally equivalent to a direct hw open; with
-# the bridge added, dsnoop multiplexes correctly and both readers see
-# the same sample stream. We never want camilla to read
-# `hw:Loopback,1,0` directly — that would deny dsnoop the slave, and
-# the bridge would fail to open with `unable to open slave`.
+# RATE LOCK FOOTGUN (snd-aloop is first-opener-wins): per the ALSA
+# wiki on Matrix:Module-aloop, the Loopback device takes its stream
+# parameters from the first process that opens it. If shairport-sync
+# opens hw:Loopback,0,0 directly at its native 44.1 kHz S32
+# (since 2026-05-11's PR #75, which removed the plughw resample
+# upstream), the loopback locks at 44.1 kHz until everyone closes
+# it. Subsequent dsnoop opens at 48 kHz then fall back to the
+# locked rate — readers that don't tolerate that get distorted or
+# silent audio.
+#
+# Two readers, two access paths:
+#   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in
+#     v1.yml. plug auto-converts rate/format, so camilla is rate-
+#     tolerant: works whether the loopback is 44.1 or 48.
+#   - AEC bridge opens `jasper_ref` (defined below) — a plug-wrapped
+#     alias of jasper_capture. Mirrors the same pattern. The bridge
+#     gets samples at whatever rate it requests via alsaaudio,
+#     regardless of the loopback's actual locked rate.
+#
+# Why two names: keeps `pcm.jasper_capture` semantically "the raw
+# dsnoop tap" so other consumers / diagnostics see exactly what
+# the kernel produced, while `pcm.jasper_ref` advertises its
+# intent ("AEC reference, rate-agnostic") at the call site.
+#
+# We never want camilla to read `hw:Loopback,1,0` directly — that
+# would deny dsnoop the slave, and the bridge would fail to open
+# with `unable to open slave`.
 
 pcm.jasper_capture {
     type dsnoop
@@ -65,6 +83,25 @@ pcm.jasper_capture {
         0 0
         1 1
     }
+}
+
+# Plug-wrapped alias for the AEC bridge's reference capture.
+#
+# `plug` transparently resamples whatever the dsnoop delivers to
+# whatever the bridge opens with. The bridge opens at 48 kHz S16_LE
+# (per REF_RATE in jasper/cli/aec_bridge.py); plug converts from
+# the dsnoop's actual delivered rate (typically 44.1 kHz today due
+# to shairport native, sometimes 48 kHz with Spotify Connect) to
+# the requested 48 kHz. CPU cost is sub-1% of a Pi 5 core at S16
+# stereo / speech rates; latency cost is a few ms of buffer.
+#
+# Without this wrapper, the bridge would receive distorted or
+# silent samples when the loopback's locked rate ≠ 48 kHz —
+# the root cause of the AEC-broken-with-AirPlay regression
+# diagnosed on 2026-05-15.
+pcm.jasper_ref {
+    type plug
+    slave.pcm "jasper_capture"
 }
 
 ctl.jasper_capture {
