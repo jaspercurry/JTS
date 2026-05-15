@@ -1,5 +1,17 @@
 # HANDOFF — Volume control redesign
 
+> **Superseded by hardware validation on 2026-05-14.** This brief
+> proposed treating AirPlay as a normal push-mode renderer via
+> shairport-sync `RemoteControl.SetAirplayVolume`. Real iOS/macOS
+> AirPlay 2 sessions did not support receiver-originated volume
+> reflection through that path: shairport reported missing
+> `DACP-ID` / `Active-Remote`, `RemoteControl.Available=false`, and
+> `SetAirplayVolume` returned successfully without changing the sender
+> slider or audible level. The production architecture is now documented
+> in [`docs/HANDOFF-volume.md`](HANDOFF-volume.md): AirPlay is
+> camilla-as-master; Spotify and Bluetooth remain push-mode. Keep this
+> file only as historical context for the disproven redesign.
+
 This is a transition brief for the next volume-control pass. It is
 intentionally split into:
 

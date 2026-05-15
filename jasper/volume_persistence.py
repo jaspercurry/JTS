@@ -9,16 +9,15 @@ Two related fields are tracked:
 - `listening_level` (0-100): the canonical user-facing volume. With
   source-aware coordination (volume_coordinator.py), this is the
   number "volume up" / "set volume to 50%" / dial-knob ticks all
-  drive. When a source (AirPlay/Spotify/BT) is active the level is
-  pushed to that source's own slider; while idle it maps to
-  CamillaDSP main_volume.
+  drive. Spotify and Bluetooth push the level to their own sliders.
+  AirPlay and idle map the level to CamillaDSP main_volume.
 
 - `main_volume_db`: the underlying CamillaDSP setting. Still tracked
   because (a) it's what TtsVolumeTracker reads as its ceiling, and
   (b) we need it captured for the boot-restore path. With the
-  coordinator running, main_volume is pinned at 0 dB during source-
-  active operation (so we don't double-attenuate) and tracks
-  listening_level during idle.
+  coordinator running, main_volume is pinned at 0 dB during Spotify/BT
+  push-mode playback (so we don't double-attenuate) and tracks
+  listening_level during idle and AirPlay.
 
 - `loudness_anchor_dbfs`: last observed playback RMS while music was
   actually playing. TTS uses this during silence so it doesn't get
