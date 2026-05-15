@@ -78,7 +78,7 @@ from typing import Optional
 
 import numpy as np
 import sounddevice as sd
-from scipy.signal import resample_poly
+from scipy.signal import butter, resample_poly, sosfilt
 
 from jasper.watchdog import Heartbeat
 from ..mics import xvf3800 as _mic_profile
@@ -262,6 +262,27 @@ def _ref_thread(ref_q: Queue) -> None:
     ref_gain_db = float(os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"))
     ref_gain_lin = 10.0 ** (ref_gain_db / 20.0)
 
+    # Reference HPF — matches AEC3's internal capture-side HPF
+    # (100 Hz 2nd-order Butterworth, applied by AudioProcessing
+    # upstream of EchoCanceller3 inside our jasper_aec3 binding;
+    # cfg.high_pass_filter.enabled is true in src/aec3_binding.cpp).
+    # Without symmetric reference filtering, AEC3's adaptive filter
+    # wastes coefficients trying to model an LF relationship between
+    # the HPF'd mic and the unfiltered ref — the mismatch is the
+    # structural reason bass cancellation has been weak in measured
+    # tests (only 10-15 dB reduction at 30-250 Hz vs 25-34 dB at
+    # 2-8 kHz). Matching the AEC3 design point at 100 Hz removes
+    # the asymmetry. See docs/HANDOFF-aec.md for the analysis.
+    # 100 Hz is also 40 Hz above openWakeWord's mel floor (60 Hz),
+    # so this filter is provably free with respect to wake-word
+    # accuracy — it applies to the reference, not the mic.
+    REF_HPF_HZ = float(os.environ.get("JASPER_AEC_REF_HPF_HZ", "100"))
+    hpf_sos = butter(2, REF_HPF_HZ, btype="highpass", fs=SAMPLE_RATE,
+                     output="sos")
+    # Per-section state, shape (n_sections, 2) for order-2 SOS sections.
+    # All zeros = starting from silence (correct for thread startup).
+    hpf_zi = np.zeros((hpf_sos.shape[0], 2), dtype=np.float64)
+
     pcm = alsaaudio.PCM(
         type=alsaaudio.PCM_CAPTURE,
         mode=alsaaudio.PCM_NORMAL,  # blocking
@@ -272,8 +293,9 @@ def _ref_thread(ref_q: Queue) -> None:
         periodsize=capture_block,
     )
     logger.info(
-        "ref capture opened: %s @ %d Hz, %d ch (pre-AEC gain=%+.1f dB)",
-        REF_DEVICE, REF_RATE, REF_CHANNELS, ref_gain_db,
+        "ref capture opened: %s @ %d Hz, %d ch "
+        "(pre-AEC gain=%+.1f dB, HPF=%.0f Hz 2nd Butter)",
+        REF_DEVICE, REF_RATE, REF_CHANNELS, ref_gain_db, REF_HPF_HZ,
     )
     accum_48 = np.empty(0, dtype=np.float32)
     # Drop-rate debouncing: during a mic stall the ref keeps producing
@@ -297,6 +319,10 @@ def _ref_thread(ref_q: Queue) -> None:
                 chunk = accum_48[:capture_block]
                 accum_48 = accum_48[capture_block:]
                 mono16 = resample_poly(chunk, up=1, down=3)
+                # HPF before gain — matches AEC3's internal HPF on the
+                # capture side. Stateful across chunks (zi carried over)
+                # so there's no per-chunk transient.
+                mono16, hpf_zi = sosfilt(hpf_sos, mono16, zi=hpf_zi)
                 if ref_gain_lin != 1.0:
                     mono16 = mono16 * ref_gain_lin
                 # Track samples that the hard-clip below will saturate.

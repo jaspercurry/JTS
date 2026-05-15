@@ -1,10 +1,19 @@
 """Boot-time XVF3800 chip init — `jasper-aec-init`.
 
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.
-Two jobs:
+Three jobs:
 
   1. REBOOT 1 — clear any prior session's chip state cleanly.
-  2. Bring the chip's UAC2 PCM playback level to 0 dB unity. The
+  2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
+     the mic signals before any chip-side DSP. The mic feeds
+     openWakeWord (fmin = 60 Hz per Google's speech_embedding
+     model) and real-time speech LLMs — no human listens, so
+     cutting sub-speech LF rumble is a free win for downstream
+     accuracy and removes content AEC3 would otherwise waste
+     adaptive-filter capacity trying to cancel. XMOS's shipped
+     default for smart-speaker presets is 125 Hz (option 2);
+     we match that. Configurable via JASPER_AEC_CHIP_HPF_HZ.
+  3. Bring the chip's UAC2 PCM playback level to 0 dB unity. The
      chip's defaults (after REBOOT) put PCM at ~-20 dB, which the
      chip then mirrors into AEC_FAR_EXTGAIN — a non-issue for
      us now (we don't use chip-side AEC) but still good hygiene
@@ -23,12 +32,30 @@ WebRTC AEC3 cancellation host-side.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 import sys
 import time
 from pathlib import Path
 
 logger = logging.getLogger("jasper.aec_init")
+
+# AEC_HPFONOFF parameter: 0=off, 1=70 Hz, 2=125 Hz, 3=150 Hz, 4=180 Hz.
+# All four are 4th-order Butterworth applied at mic ingress before AEC,
+# BF, NS in the chip pipeline. Higher cutoff = more aggressive LF
+# rejection but nulls more openWakeWord mel bins (model's fmin = 60 Hz,
+# so 125 Hz nulls ~2-3 of 32 bins, 180 Hz nulls ~4-5). 125 Hz matches
+# XMOS's shipping smart-speaker default and is the production choice
+# here; override via JASPER_AEC_CHIP_HPF_HZ in /etc/jasper/jasper.env
+# if you want to A/B different cutoffs.
+_CHIP_HPF_MAP = {
+    "0": 0, "off": 0,
+    "70": 1,
+    "125": 2,
+    "150": 3,
+    "180": 4,
+}
+_DEFAULT_CHIP_HPF_HZ = "125"
 
 
 def main() -> int:
@@ -77,6 +104,33 @@ def main() -> int:
         if dev is None:
             logger.error("XVF3800 did not re-enumerate after REBOOT")
             return 1
+
+        # Apply chip-side HPF on the mic signal. Lives at mic ingress
+        # in the chip pipeline (before AEC, BF, NS — all of which
+        # the bridge bypasses by using raw mic 0, but still good
+        # hygiene + LF rumble doesn't waste USB bandwidth). XMOS
+        # default for smart-speaker presets is on125 (125 Hz, 4th-
+        # order Butterworth).
+        hpf_hz = os.environ.get("JASPER_AEC_CHIP_HPF_HZ", _DEFAULT_CHIP_HPF_HZ).strip()
+        hpf_value = _CHIP_HPF_MAP.get(hpf_hz.lower())
+        if hpf_value is None:
+            logger.warning(
+                "JASPER_AEC_CHIP_HPF_HZ=%r is not one of %s; "
+                "falling back to default %s Hz",
+                hpf_hz, sorted(_CHIP_HPF_MAP.keys()), _DEFAULT_CHIP_HPF_HZ,
+            )
+            hpf_value = _CHIP_HPF_MAP[_DEFAULT_CHIP_HPF_HZ]
+            hpf_hz = _DEFAULT_CHIP_HPF_HZ
+        try:
+            dev.write("AEC_HPFONOFF", [hpf_value])
+            logger.info(
+                "XVF AEC_HPFONOFF set to %s (%s)",
+                hpf_value, "off" if hpf_value == 0 else f"{hpf_hz} Hz",
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "AEC_HPFONOFF write failed: %s; chip will use its default", e,
+            )
 
         # Set chip's UAC2 PCM playback to 0 dB unity. After REBOOT
         # the chip resets its mixer to ~-20 dB. The XVF firmware
