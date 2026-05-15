@@ -411,6 +411,31 @@ we see this failure mode; not before.
 
 ---
 
+## Remote software updates / CI deploy pipeline (no version, research-needed)
+
+See [`docs/HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md)
+for the full research write-up: option space (five OTA patterns
+from `git pull` to RAUC A/B partition swap), recommended staged
+build-out (CI first, auto-release second, dashboard "Check for
+updates" button third), the integration points already in place
+(`build.txt`, `system_setup.py`'s button pattern, `jasper-doctor`,
+`install.sh` idempotency), failure-and-rollback strategy, auth
+considerations, and open questions.
+
+TL;DR: today's deploy flow is laptop-driven and manual (`bash
+scripts/deploy-to-pi.sh`), with no CI gate between "works on my
+laptop" and "running on the speaker". The handoff doc recommends
+building CI first (high standalone value), then auto-release on
+merge to `main`, then the dashboard button — and flags Tailscale
+as a cheaper partial-substitute if the goal is just "deploy from
+outside the LAN".
+
+Not blocking anything. Graduates from "nice-to-have" to
+"must-have" the moment a second household or a non-Jasper
+operator is in the loop.
+
+---
+
 ## Risks worth re-flagging
 
 - **Gemini 3.1 Flash Live is still Preview, not GA.** API can change

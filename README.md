@@ -284,6 +284,13 @@ reference. Currently:
   decision to swap the bridge→voice transport from snd-aloop to
   UDP. Read before touching `jasper/watchdog.py` or the
   `Type=notify` / `WatchdogSec=` blocks in any service unit.
+- [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
+  Research only, no implementation yet. Design space for an OTA
+  "Check for updates" button on the management dashboard: option
+  survey (`git pull` → GitHub Releases + poll → RAUC A/B
+  partition swap), recommended staged build-out (CI first,
+  auto-release, then the button), and the open questions before
+  specing. Referenced from PLAN.md.
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
   — Long-running Gemini Live connection management (Gemini-specific
   details — see HANDOFF-voice-providers.md for the cross-provider
