@@ -188,6 +188,10 @@ jasper/                         Python daemon source
                                 jasper-aec-{init,tune,bridge},
                                 jasper-dial-onboard
   xvf/                          Vendored XMOS XVF3800 control library
+  mics/                         Per-mic-family profile registry — one
+                                  module per supported mic (xvf3800.py
+                                  today). Identity, firmware variants,
+                                  mixer invariants, helpers. See mics/README.md.
   web/                          stdlib http.server settings UIs at
                                   /spotify (account OAuth) and /voice
                                   (provider config + key paste)
@@ -213,7 +217,8 @@ deploy/
   nginx-jasper.conf             Standalone /spotify + /dial HTTPS site
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
-  HANDOFF-aec.md                Acoustic echo cancellation
+  HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
@@ -225,6 +230,9 @@ scripts/                        Operator helpers (run from laptop)
   fetch-pi-logs.sh              Pull journals + configs into ./logs/
   tail-pi-logs.sh               Live tail
   pi-bundle.sh                  One-shot diagnostic dump
+  xvf-interrogate.sh            Deep XVF3800 diagnostic — captures
+                                everything (USB, ALSA, params, RMS)
+                                tagged by chip iSerial. See HANDOFF-xvf3800.md.
   switch-voice-provider.sh      Flip JASPER_VOICE_PROVIDER between
                                 gemini / openai / grok
   switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
@@ -264,7 +272,13 @@ reference. Currently:
   logs), and the multi-mic arbitration design (with prior-art survey
   across HA Assist, Sonos, Apple, Amazon ESP).
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
-  investigation
+  investigation (engine: why software AEC, why not chip AEC)
+- [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — Canonical
+  reference for the Seeed ReSpeaker XVF3800 (USB UA) microphone:
+  hardware identity, firmware variants, full parameter space, DFU
+  flow, documented failure modes (notably the post-firmware-flash
+  ALSA mute trap), diagnostic cookbook. Start here for any
+  mic-side investigation.
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
   five-tier resilience ladder, the 2026-05-11 incident, the
   decision to swap the bridge→voice transport from snd-aloop to

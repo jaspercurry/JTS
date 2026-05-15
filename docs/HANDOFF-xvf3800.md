@@ -207,7 +207,11 @@ The 6-channel firmware can also be confirmed at the ALSA layer
 without USB control:
 
 ```sh
-cat /proc/asound/Array/stream0 | grep Channels
+# Pin to the Capture: section — /proc/asound/<card>/stream0 has
+# Playback first (Channels: 2 from the XVF's 2-ch playback endpoint)
+# then Capture (Channels: 6 on 6-ch firmware). A naive `grep Channels:`
+# returns the Playback value — exactly the May 2026 reconciler bug.
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
 # expect "Channels: 6" on 6-ch; "Channels: 2" on default firmware
 ```
 

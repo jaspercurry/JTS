@@ -323,14 +323,28 @@ configured AEC mic is present with 6-channel firmware. README's
 AEC3 via the `jasper_aec3` pybind11 binding, −15 to −18 dB on
 music with the production REF_GAIN/MIC_GAIN tunings) and the
 ~110 MB RAM cost. The full investigation is in
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md); the chip-side
+canonical reference (firmware variants, mixer state, failure
+modes, diagnostic cookbook) is
+[`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant (`v2.0.8 6chl`) — the bridge reads raw mic 0 from
 channel 2 of the chip's USB capture, which only exists on the
-6-ch firmware. If unsure, check with
-`cat /proc/asound/Array/stream0 | grep Channels` (expect 6).
+6-ch firmware. If unsure, check with:
+
+```sh
+# Pin to the Capture: section — Playback (Channels: 2) comes first
+# in the file, so a naive `grep Channels:` returns the wrong value.
+awk '/^Capture:/{c=1} c && /Channels:/{print; exit}' /proc/asound/Array/stream0
+# Expect "Channels: 6"
+```
+
 DFU flash procedure is in [`BRINGUP.md`](BRINGUP.md) Phase 2A.5.
+The reconciler also self-heals the post-flash ALSA mixer mute trap
+(2-ch → 6-ch firmware can leave kernel-side ch2-5 muted across
+reboot via `alsactl restore`); `jasper-doctor` flags drift under
+"XVF mixer state".
 
 To enable on the Pi (assumes 6-ch firmware already flashed):
 

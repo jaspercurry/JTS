@@ -10,6 +10,15 @@ for why it's UDP and not a second snd-aloop card), the
 supporting documentation in `BRINGUP.md` and
 `docs/audit-pending-followups.md`.
 
+**Companion doc**: [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) is the
+chip-side canonical reference — full parameter space, firmware
+variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
+for raw-mic-silence symptoms, and diagnostic cookbook. This doc
+(HANDOFF-aec.md) explains the *engine* and the *why* (why software
+AEC, why not chip AEC); HANDOFF-xvf3800.md explains the *chip*.
+The `jasper/mics/xvf3800.py` profile module is the canonical
+source for chip-specific constants consumed at runtime.
+
 The goal is to make this enough context that a future session can
 pick up the work without re-doing the investigation.
 
