@@ -911,9 +911,13 @@ def check_aec_bridge_output_health() -> CheckResult:
        wake detector consuming an un-cancelled mic with music
        blasting through it, but `systemctl is-active` says ok.
 
-    This check parses the bridge's last 5 min of `rms over` log
+    This check parses the bridge's last 90 s of `rms over` log
     lines + drift warnings and flags the two failure modes by
-    pattern."""
+    pattern. 90 s is chosen to ride past the transient that
+    install.sh produces during a deploy (~30-60 s where the bridge
+    restarts and ref capture re-converges) without missing a
+    sustained outage (the 2026-05-15 dsnoop incident lasted 4
+    days)."""
     is_active = _run(
         ["systemctl", "is-active", "jasper-aec-bridge.service"]
     ).stdout.strip()
@@ -924,9 +928,18 @@ def check_aec_bridge_output_health() -> CheckResult:
             "(bridge not running — see AEC bridge service check above)",
         )
 
+    # Use a 90-second window, not 5 minutes. Rationale: install.sh
+    # restarts the bridge during a deploy, and there's a transient
+    # (~30-90 s) where the bridge is running but its ref capture
+    # hasn't reconnected yet. Within 90 s of deploy completion, that
+    # transient looks like the broken state we're trying to catch.
+    # Looking at the most recent 90 s only avoids the false-positive
+    # while still being long enough to confirm sustained failures
+    # (the 2026-05-15 dsnoop incident produced ref=0 for 4 days, so
+    # 90 s is more than enough to see it).
     proc = _run(
         ["journalctl", "-u", "jasper-aec-bridge.service",
-         "--since", "5 min ago", "--no-pager", "--output", "cat"],
+         "--since", "90 sec ago", "--no-pager", "--output", "cat"],
         timeout=8.0,
     )
     if proc.returncode != 0:
@@ -974,13 +987,14 @@ def check_aec_bridge_output_health() -> CheckResult:
     if silent_ref_count >= 5:
         return CheckResult(
             "AEC bridge output", "fail",
-            f"{silent_ref_count} recent 5 s windows show mic>200 RMS "
-            f"with ref<50 RMS — bridge's reference path is delivering "
-            f"silence while the mic captures audio. AEC can't cancel "
-            f"without a reference. Common cause: pcm.jasper_capture "
-            f"dsnoop rate-locked to a renderer's native rate that "
-            f"doesn't match the dsnoop's declared slave rate. See "
-            f"docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+            f"{silent_ref_count} recent 5 s windows show "
+            f"mic>{_AEC_MIC_MUSIC_THRESHOLD} RMS with "
+            f"ref<{_AEC_REF_SILENT_THRESHOLD} RMS — bridge's reference "
+            f"path is delivering silence while the mic captures audio. "
+            f"AEC can't cancel without a reference. Common cause: "
+            f"pcm.jasper_capture dsnoop rate-locked to a renderer's "
+            f"native rate that doesn't match the dsnoop's declared "
+            f"slave rate. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
         )
 
     # Failure mode 2: continuous drift warnings = severe clock
@@ -989,8 +1003,8 @@ def check_aec_bridge_output_health() -> CheckResult:
     if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
         return CheckResult(
             "AEC bridge output", "warn",
-            f"{drift_count} ref-drift warnings in last 5 min "
-            f"(healthy baseline ~15 per 5 min). The ref capture is "
+            f"{drift_count} ref-drift warnings in last 90 s "
+            f"(healthy baseline ~5 per 90 s). The ref capture is "
             f"producing samples faster than the mic capture is "
             f"consuming them — usually a rate mismatch between the "
             f"music chain loopback and the bridge's expected REF_RATE. "
@@ -998,7 +1012,7 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"AEC effectiveness degrades when drift is severe.",
         )
 
-    # No log windows = bridge restarted within the last 5 min OR
+    # No log windows = bridge restarted within the last 90 s OR
     # journal isn't capturing the level (unlikely on default config).
     # Not a failure, just nothing to assess.
     if total_windows == 0:
@@ -1013,7 +1027,7 @@ def check_aec_bridge_output_health() -> CheckResult:
     if healthy_windows == 0 and silent_ref_count == 0:
         return CheckResult(
             "AEC bridge output", "ok",
-            f"no music activity in last 5 min "
+            f"no music activity in last 90 s "
             f"({total_windows} log windows; no AEC work to evaluate)",
         )
 
