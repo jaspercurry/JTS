@@ -54,6 +54,14 @@ That flow exists historically but misses:
 **Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
 (install but don't restart/reconcile), `PI_HOST=...`, `PI_USER=...`.
 
+**Adding a wizard port to `jasper-web.socket`?** `install.sh`'s
+wizard-socket loop uses `systemctl restart` (not `start`) so a new
+`ListenStream=` line actually re-binds the live socket on deploy. A
+bare `start` is a no-op when the socket is already active, which
+silently leaves the old port set live and 502s on the new wizard
+until the next reboot. Verified failure mode + fix landed in PR #118
+when /sources/ on port 8773 went out without the restart.
+
 **Verify the deploy landed:**
 - `http://jts.local/system/` → Software card shows the matching
   short-SHA and recent install timestamp
