@@ -391,8 +391,43 @@ function schedulePoll(ms) {
   stateTimer = setInterval(fetchState, ms);
 }
 
+// HID profile fragments — 0x1124 (BR/EDR HID) and 0x1812 (BLE HOGP).
+// VK-01-class knobs advertise HOGP only, not classic HID. Mirrors
+// jasper.bluetooth.models.is_hid_uuids so the warning fires in
+// the same conditions on either side.
+const HID_UUID_FRAGMENTS = ['00001124-', '00001812-'];
+
+function pairedHidNames() {
+  const names = [];
+  for (const d of devices.values()) {
+    if (!d.paired) continue;
+    const uu = (d.uuids || []).join(' ').toLowerCase();
+    if (HID_UUID_FRAGMENTS.some(f => uu.includes(f))) {
+      names.push(d.name || 'Unknown device');
+    }
+  }
+  return names;
+}
+
 async function togglePower() {
   const target = !state.powered;
+  // Warn before turning Bluetooth off while a wireless remote
+  // (volume knob, etc.) is paired — otherwise the remote silently
+  // stops working until BT is turned back on.
+  if (!target) {
+    const hidNames = pairedHidNames();
+    if (hidNames.length) {
+      const which = hidNames.length === 1
+        ? hidNames[0]
+        : hidNames.length + ' paired remotes';
+      const ok = window.confirm(
+        'Turning Bluetooth off will also disconnect ' + which +
+        '. Wireless remotes will not work again until Bluetooth ' +
+        'is turned back on.\\n\\nTurn Bluetooth off anyway?',
+      );
+      if (!ok) return;
+    }
+  }
   await fetch('power', {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({on: target}),

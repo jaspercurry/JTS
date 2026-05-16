@@ -138,6 +138,37 @@ async def stop_discovery(adapter: str = DEFAULT_ADAPTER) -> None:
         bus.disconnect()
 
 
+async def has_paired_hid(adapter: str = DEFAULT_ADAPTER) -> bool:
+    """True if any currently-known device is paired AND advertises a
+    HID profile (BR/EDR 0x1124 or BLE HOGP 0x1812). Used by the
+    Bluetooth / Sources wizards to confirm before turning the adapter
+    off while a wireless remote (e.g. the VK-01 knob) would lose its
+    host. Cheap: one ObjectManager.GetManagedObjects round-trip."""
+    from .models import is_hid_uuids
+
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        intro = await bus.introspect(BLUEZ_BUS, "/")
+        om = bus.get_proxy_object(
+            BLUEZ_BUS, "/", intro,
+        ).get_interface("org.freedesktop.DBus.ObjectManager")
+        managed = await om.call_get_managed_objects()
+        for _path, ifaces in managed.items():
+            dev = ifaces.get("org.bluez.Device1")
+            if not dev:
+                continue
+            paired = dev.get("Paired")
+            if paired is None or not getattr(paired, "value", paired):
+                continue
+            uuids_v = dev.get("UUIDs")
+            uuids = getattr(uuids_v, "value", uuids_v) or []
+            if is_hid_uuids([str(u) for u in uuids]):
+                return True
+        return False
+    finally:
+        bus.disconnect()
+
+
 async def remove_device(
     mac: str, adapter: str = DEFAULT_ADAPTER,
 ) -> tuple[bool, str]:
