@@ -36,6 +36,8 @@ PAGE_STYLE = """
   .sub { color: #666; margin-top: 0; }
   .msg { background: #e8f4ff; border: 1px solid #abd; padding: 0.6em 0.8em;
           border-radius: 6px; margin: 1em 0; }
+  .msg.ok { background: #e6f9ec; border-color: #1db954; color: #14542a; }
+  .msg.ok::before { content: "✓ "; font-weight: 700; }
   .err { background: #ffe8e8; border-color: #d99; }
   ol.steps { padding-left: 1.4em; }
   ol.steps > li { margin-bottom: 1em; }
@@ -205,10 +207,17 @@ def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     shared style and an optional status banner.
 
     `status_msg` is rendered with an `err` class when it contains
-    "error" or "fail" (case-insensitive), otherwise as info."""
-    msg_class = "msg err" if (
-        "error" in status_msg.lower() or "fail" in status_msg.lower()
-    ) else "msg"
+    "error" or "fail" (case-insensitive), and with an `ok` class
+    (green with a leading ✓) when it starts with "Saved" or "Cleared"
+    — the two success vocabularies the wizards write back from save
+    handlers. Anything else gets neutral info-blue styling."""
+    lowered = status_msg.lower()
+    if "error" in lowered or "fail" in lowered:
+        msg_class = "msg err"
+    elif lowered.startswith(("saved", "cleared")):
+        msg_class = "msg ok"
+    else:
+        msg_class = "msg"
     msg_html = (
         f'<p class="{msg_class}">{html.escape(status_msg)}</p>'
         if status_msg else ""
@@ -299,12 +308,33 @@ def delete_env_file(path: str) -> None:
 
 def restart_voice_daemon() -> None:
     """Best-effort restart of jasper-voice so it picks up new
-    credentials / new provider on its next boot. Logs but does not
-    raise — the user can always restart by hand if this fails."""
+    credentials / new provider / wake model on its next boot.
+
+    `--no-block` is important. `Type=notify` units make `systemctl
+    restart` block until the daemon emits READY=1, which for
+    jasper-voice means model load + cue regen + reconnect to the
+    LLM provider — often 8–12 s on a Pi. Without --no-block the
+    web wizard's save handler hangs that long before returning the
+    303 redirect, the browser shows a spinner, the user thinks
+    nothing happened and click Save again (then again) — observed
+    on PR #117 when switching wake models via the /wake/ UI.
+
+    With --no-block, systemctl queues the restart and returns in
+    a few ms. The browser gets the success banner immediately.
+    The actual restart still happens; if it fails, the user finds
+    out when wake doesn't fire (or via /system/) rather than via a
+    web error — same failure mode we already had, since the
+    previous `check=False, timeout=10` was swallowing errors too.
+
+    The fallback timeout of 5 s is for systemctl's own argument-
+    parsing / dbus-roundtrip overhead, NOT the restart itself —
+    --no-block means systemctl shouldn't sit there waiting on the
+    unit. If we hit 5 s here, something is wedged (dbus dead, etc.)
+    and the bigger problem will surface elsewhere."""
     try:
         subprocess.run(
-            ["systemctl", "restart", "jasper-voice"],
-            check=False, timeout=10,
+            ["systemctl", "restart", "--no-block", "jasper-voice"],
+            check=False, timeout=5,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
     except (OSError, subprocess.SubprocessError) as e:

@@ -248,12 +248,23 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
   4 seconds.
 </p>
 
-<form method="post" action="save">
+<form method="post" action="save" id="wake-form">
   {''.join(rows)}
   <p style="margin-top:1.4em">
-    <button type="submit">Save and restart voice</button>
+    <button type="submit" id="wake-save">Save and restart voice</button>
   </p>
 </form>
+<script>
+  // Disable the Save button + change its label the instant the form
+  // submits so the household sees something happen before the page
+  // reloads. Without this, the redirect (which fires before the
+  // daemon is fully back up) feels like a no-op — observed on PR #117.
+  document.getElementById('wake-form').addEventListener('submit', function() {{
+    var btn = document.getElementById('wake-save');
+    btn.disabled = true;
+    btn.textContent = 'Saving…';
+  }});
+</script>
 """
     return _wrap_wake_page(
         "Wake word", body, status_msg=status_msg,
