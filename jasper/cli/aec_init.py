@@ -1,10 +1,9 @@
 """Boot-time XVF3800 chip init — `jasper-aec-init`.
 
 Runs as a one-shot systemd unit before jasper-aec-bridge starts.
-Four jobs:
+Three jobs:
 
-  1. REBOOT 1 — clear any prior session's chip state cleanly.
-  2. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage.
+  1. Set `SHF_BYPASS=1` to disable the chip's on-board AEC stage.
      The chip's AEC was designed for the topology where the chip
      drives the speaker via its own codec; in our external-DAC
      topology, the chip's AEC reference path is sabotaged (see
@@ -13,22 +12,36 @@ Four jobs:
      but the rest of the chip pipeline — beamforming, NS, AGC,
      HPF — still runs. Software AEC3 (jasper-aec-bridge) handles
      echo cancellation host-side using the music chain as ref.
-  3. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
+  2. Set `AEC_HPFONOFF` to apply a chip-side high-pass filter on
      the mic signals before any chip-side DSP. The mic feeds
      openWakeWord (fmin = 60 Hz per Google's speech_embedding
      model) and real-time speech LLMs — no human listens, so
      cutting sub-speech LF rumble is a free win. XMOS's shipped
      smart-speaker default is 125 Hz (option 2); we match that.
      Configurable via JASPER_AEC_CHIP_HPF_HZ.
-  4. Bring the chip's UAC2 PCM playback level to 0 dB unity.
-     After REBOOT the chip resets its mixer to ~-20 dB. The XVF
-     firmware auto-mirrors the host's UAC volume into
-     AEC_FAR_EXTGAIN — a non-issue now (we don't use chip AEC)
-     but still good hygiene.
+  3. Bring the chip's UAC2 PCM playback level to 0 dB unity.
+     The chip's default for these mixer controls is ~-20 dB,
+     which would attenuate any audio the host sent to the chip's
+     USB-IN. We don't currently route audio that way (software
+     AEC ignores the chip's USB-IN entirely), but the convention
+     is still cleaner with PCM at unity in case future tuning
+     experiments use the chip's USB-IN as a reference path.
 
 We do NOT call SAVE_CONFIGURATION — firmware 2.0.6 had a brick
 hazard on that op (respeaker repo issue #8). 2.0.8 may have fixed
 it but we don't need persistence on the chip side, so we skip.
+
+We also do NOT call REBOOT, even though some XVF reference designs
+(e.g. Reachy Mini #389) recommend it on host boot. In our pipeline
+the chip's AEC adaptive filter is disabled (SHF_BYPASS=1 above), so
+"clear adaptive-filter state" — REBOOT's only documented benefit
+in that recipe — is moot. The three writes below are idempotent
+and overwrite whatever values the chip currently holds, so REBOOT
+adds nothing but a ~3 s chip-side outage. Calling REBOOT was also
+the root cause of the 2026-05-16 USB-renumerate feedback loop:
+every REBOOT triggered a USB disconnect, which fired the
+`controlC*` udev rule, which restarted aec-init, which called
+REBOOT again. See docs/HANDOFF-aec.md "Lessons learned" #9.
 
 The historical `AUDIO_MGR_SYS_DELAY` calibration job is gone —
 that was for the chip's on-chip AEC, which we don't use (see
@@ -97,20 +110,11 @@ def main() -> int:
         version = dev.read("VERSION")
         logger.info("XVF3800 firmware version: %s", ".".join(str(v) for v in version))
 
-        # REBOOT 1 — clear adaptive-filter state. Per Reachy Mini
-        # issue #389, recommended after every host reboot.
-        logger.info("REBOOT 1 (clearing AEC adaptive state)")
-        dev.write("REBOOT", [1])
-        # The chip drops off USB during reboot. Re-find.
-        time.sleep(2)
-        for attempt in range(10):
-            dev = xvf_host.find()
-            if dev is not None:
-                break
-            time.sleep(1)
-        if dev is None:
-            logger.error("XVF3800 did not re-enumerate after REBOOT")
-            return 1
+        # NB: no REBOOT here. The writes below are idempotent and
+        # overwrite the chip's current state directly; the prior
+        # REBOOT step is removed because it triggered a USB
+        # renumeration feedback loop with the controlC* udev rule.
+        # See docs/HANDOFF-aec.md "Lessons learned" #9.
 
         # Disable the chip's on-board AEC. SHF_BYPASS=1 removes the
         # AEC adaptive filter from the signal path on channels 0/1
@@ -159,12 +163,12 @@ def main() -> int:
                 "AEC_HPFONOFF write failed: %s; chip will use its default", e,
             )
 
-        # Set chip's UAC2 PCM playback to 0 dB unity. After REBOOT
-        # the chip resets its mixer to ~-20 dB. The XVF firmware
-        # auto-mirrors the host's UAC volume into AEC_FAR_EXTGAIN
-        # which used to matter when we relied on chip AEC. Now
-        # software AEC ignores the chip's USB-IN, but the convention
-        # is still cleaner with PCM at unity.
+        # Set chip's UAC2 PCM playback to 0 dB unity. The chip's
+        # default for these mixer controls is ~-20 dB. The XVF
+        # firmware auto-mirrors the host's UAC volume into
+        # AEC_FAR_EXTGAIN which used to matter when we relied on
+        # chip AEC. Now software AEC ignores the chip's USB-IN, but
+        # the convention is still cleaner with PCM at unity.
         for ctl in ("PCM,0", "PCM,1"):
             r = subprocess.run(
                 ["amixer", "-c", "Array", "sset", ctl, "60", "unmute"],

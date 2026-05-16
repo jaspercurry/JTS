@@ -899,6 +899,135 @@ _AEC_REF_SILENT_THRESHOLD = 50
 _AEC_DRIFT_WARN_THRESHOLD = 30  # in 5 min
 
 
+def _assess_aec_bridge_output(journal_text: str) -> CheckResult:
+    """Pure-function assessment of the bridge's `rms over` log
+    output. Split out from `check_aec_bridge_output_health` so the
+    parser can be unit-tested without mocking subprocess.
+
+    Counts four quantities across the journal window:
+      - drift_count: "drained N stale ref frames (drift)" warnings
+      - silent_ref_count: windows with mic-loud (>threshold) + ref-silent
+      - healthy_ref_windows: windows where ref ≥ silent-threshold (any signal)
+      - healthy_windows: windows with mic-loud + meaningful attenuation
+
+    `healthy_ref_windows` is the key signal: as long as the ref path
+    delivered signal in at least ONE recent window, the dsnoop/plug
+    chain demonstrably works. silent_ref windows in that case are
+    explained by non-loopback acoustic sources (TTS via jasper_out,
+    room voice picked up by the ASR-beam AGC) and are not a bug.
+    """
+    drift_count = 0
+    silent_ref_count = 0
+    healthy_ref_windows = 0
+    healthy_windows = 0
+    total_windows = 0
+
+    for line in journal_text.split("\n"):
+        if "stale ref frames" in line and "drift" in line:
+            drift_count += 1
+            continue
+        m = _AEC_RMS_RE.search(line)
+        if not m:
+            continue
+        ref = int(m.group(1))
+        mic = int(m.group(2))
+        attn_db = float(m.group(4))
+        total_windows += 1
+        # ref ≥ silent-threshold = the dsnoop/plug ref chain delivered
+        # real samples in this window. Any single occurrence proves the
+        # chain works end-to-end.
+        if ref >= _AEC_REF_SILENT_THRESHOLD:
+            healthy_ref_windows += 1
+        # mic > music-threshold = something acoustic was loud enough to
+        # plausibly be music (ambient is ~600 RMS, well below). ref <
+        # silent-threshold = ref path silent in this window.
+        if mic > _AEC_MIC_MUSIC_THRESHOLD and ref < _AEC_REF_SILENT_THRESHOLD:
+            silent_ref_count += 1
+        # "Healthy AEC work" = music-loud mic + meaningful attenuation.
+        # Below the music threshold AEC output is just noise floor so we
+        # can't tell whether the attenuation number means anything.
+        if mic > _AEC_MIC_MUSIC_THRESHOLD and attn_db <= -8.0:
+            healthy_windows += 1
+
+    # Failure mode 1 — ref path broken. The 2026-05-15 dsnoop rate-lock
+    # signature: AirPlay was playing, mic was 2000+, ref was 0 across
+    # every window for four days because the dsnoop's 48 kHz declared
+    # rate mismatched shairport's locked 44.1 kHz. We only fail the
+    # check when NO window has ref signal at all; otherwise the silent-
+    # ref windows are mic-only artifacts (TTS via jasper_out, room
+    # voice) which is the 2026-05-16 false-positive mode.
+    if silent_ref_count >= 5 and healthy_ref_windows == 0:
+        return CheckResult(
+            "AEC bridge output", "fail",
+            f"{silent_ref_count} recent windows show mic>{_AEC_MIC_MUSIC_THRESHOLD} "
+            f"RMS with ref<{_AEC_REF_SILENT_THRESHOLD} RMS and zero windows show "
+            f"ref signal — bridge's reference path is delivering silence "
+            f"while the mic captures audio. AEC can't cancel without a "
+            f"reference. Common cause: pcm.jasper_capture dsnoop rate-locked "
+            f"to a renderer's native rate that doesn't match the dsnoop's "
+            f"declared slave rate. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+        )
+
+    # Failure mode 2 — continuous drift warnings = severe clock skew
+    # between ref and mic capture, or rate mismatch between the loopback
+    # and the bridge's expected REF_RATE.
+    if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
+        return CheckResult(
+            "AEC bridge output", "warn",
+            f"{drift_count} ref-drift warnings in last 90 s "
+            f"(healthy baseline ~5 per 90 s). The ref capture is "
+            f"producing samples faster than the mic capture is "
+            f"consuming them — usually a rate mismatch between the "
+            f"music chain loopback and the bridge's expected REF_RATE. "
+            f"Check /proc/asound/Loopback/pcm0p/sub0/hw_params; "
+            f"AEC effectiveness degrades when drift is severe.",
+        )
+
+    # No log windows = bridge restarted within the last 90 s OR
+    # journal isn't capturing the level (unlikely on default config).
+    if total_windows == 0:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            "no recent RMS windows logged "
+            "(bridge may have just started)",
+        )
+
+    # silent_ref bursts with a healthy ref path = the false-positive
+    # mode from 2026-05-16: TTS / wake cues / loud voice raise mic above
+    # the music threshold while the loopback (correctly) carries no
+    # producer audio. Surface the diagnosis so an operator who runs
+    # `jasper-doctor` after seeing the old fail can confirm the path
+    # is fine.
+    if silent_ref_count >= 5 and healthy_ref_windows > 0:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            f"{silent_ref_count} mic-loud windows have ref<{_AEC_REF_SILENT_THRESHOLD} "
+            f"(likely TTS or ambient — TTS routes through jasper_out which "
+            f"bypasses the loopback by design); ref path proven healthy in "
+            f"{healthy_ref_windows}/{total_windows} windows; drift={drift_count}",
+        )
+
+    # All windows quiet — speaker has been idle, nothing to assess.
+    if healthy_windows == 0 and silent_ref_count == 0:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            f"no music activity in last 90 s "
+            f"({total_windows} log windows; no AEC work to evaluate)",
+        )
+
+    summary = (
+        f"{healthy_windows}/{total_windows} recent windows show real AEC "
+        f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB); "
+        f"drift={drift_count}"
+    )
+    if silent_ref_count:
+        # Non-zero silent_ref without hitting the FAIL threshold —
+        # surface as diagnostic so partial ref-path glitches are visible
+        # before they tip into a sustained outage.
+        summary += f"; silent-ref={silent_ref_count} (<5 = below alarm)"
+    return CheckResult("AEC bridge output", "ok", summary)
+
+
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
@@ -917,7 +1046,8 @@ def check_aec_bridge_output_health() -> CheckResult:
     install.sh produces during a deploy (~30-60 s where the bridge
     restarts and ref capture re-converges) without missing a
     sustained outage (the 2026-05-15 dsnoop incident lasted 4
-    days)."""
+    days). The parser logic is in `_assess_aec_bridge_output` so it
+    can be exercised in unit tests without subprocess mocks."""
     is_active = _run(
         ["systemctl", "is-active", "jasper-aec-bridge.service"]
     ).stdout.strip()
@@ -948,98 +1078,210 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
         )
 
-    drift_count = 0       # "drained N stale ref frames (drift)" warnings
-    silent_ref_count = 0  # rms windows where mic shows signal but ref=0
-    total_windows = 0
-    healthy_windows = 0   # rms windows with real AEC work happening
+    return _assess_aec_bridge_output(proc.stdout)
 
-    for line in proc.stdout.split("\n"):
-        if "stale ref frames" in line and "drift" in line:
-            drift_count += 1
-            continue
+
+# Threshold for `probe_aec_ref_path`. A 5 s, -26 dBFS sine through dsnoop +
+# plug + the bridge's 125 Hz HPF + (default) 0 dB pre-gain lands in the low
+# thousands of RMS at the bridge's `ref`. We accept anything ≥200 as proof
+# the path is live — comfortably above the silent floor (a broken path
+# stays at 0-50) but well below typical music-playback levels (1000+).
+_PROBE_REF_PASS_THRESHOLD = 200
+_PROBE_SINE_PATH = "/tmp/jasper-doctor-probe-sine.wav"
+_PROBE_SINE_DURATION_S = 5.0
+
+
+def probe_aec_ref_path() -> list[CheckResult]:
+    """Active probe: confirm the bridge's reference path is wired
+    correctly by playing a brief sine into plughw:Loopback,0,0 and
+    verifying the bridge's `ref` RMS rises in the rms log over the
+    test window.
+
+    Codifies the manual differential test from 2026-05-16 (see
+    docs/HANDOFF-aec.md "Lessons learned" #10). Useful when
+    `check_aec_bridge_output_health` returns ok because no music has
+    been playing and you want a positive confirmation that the path
+    works end-to-end — or when it fails and you want to localize the
+    break between the ref path, the speaker chain, and the mic.
+
+    Refuses to run if a renderer is actively playing (would mix with
+    music and disturb the operator) or if the bridge isn't active."""
+    import datetime
+    import math
+    import struct
+    import urllib.error
+    import urllib.request
+    import wave
+
+    results: list[CheckResult] = []
+
+    # Pre-flight 1 — bridge must be running. The probe inspects the
+    # bridge's rms log; a stopped bridge has nothing to inspect.
+    is_active = _run(
+        ["systemctl", "is-active", "jasper-aec-bridge.service"]
+    ).stdout.strip()
+    if is_active != "active":
+        results.append(CheckResult(
+            "probe — bridge running", "fail",
+            f"bridge state is '{is_active}'; can't probe a stopped bridge. "
+            f"`systemctl status jasper-aec-bridge`.",
+        ))
+        return results
+    results.append(CheckResult("probe — bridge running", "ok", "active"))
+
+    # Pre-flight 2 — refuse if a renderer is currently playing. The
+    # probe writes to plughw:Loopback,0,0 which is the same path the
+    # renderers use; competing with active music would either get a
+    # device-busy error or, worse, mix our sine into the user's music
+    # for 5 s.
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8780/state", timeout=3,
+        ) as r:
+            state = json.loads(r.read())
+        active = state.get("active_source", "idle")
+        # "voice" is fine — voice TTS goes to jasper_out, not the
+        # loopback. "spotify" / "airplay" would compete with us.
+        if active not in ("idle", "voice"):
+            results.append(CheckResult(
+                "probe — renderers idle", "fail",
+                f"active_source={active!r}; refuse to play test sine over "
+                f"existing music. Stop {active} playback and re-run.",
+            ))
+            return results
+        results.append(CheckResult(
+            "probe — renderers idle", "ok",
+            f"active_source={active!r}",
+        ))
+    except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
+        # If jasper-control is down, we can't confirm idle. Proceed
+        # anyway — aplay will refuse with EBUSY if there's a real
+        # conflict on Loopback,0,0.
+        results.append(CheckResult(
+            "probe — renderers idle", "warn",
+            f"jasper-control /state unreachable ({e}); proceeding without "
+            f"idle confirmation. If a renderer is running, aplay will "
+            f"refuse the device.",
+        ))
+
+    # Generate the test sine. Stereo S16_LE 48 kHz to match the dongle's
+    # native rate; -26 dBFS amplitude (conversational SPL through the
+    # speaker at typical main_volume).
+    fs = 48000
+    amp = 0.05  # -26 dBFS
+    freq = 1000
+    n_samples = int(_PROBE_SINE_DURATION_S * fs)
+    samples = bytearray()
+    for i in range(n_samples):
+        v = int(amp * 32767 * math.sin(2 * math.pi * freq * i / fs))
+        samples += struct.pack("<hh", v, v)
+    try:
+        with wave.open(_PROBE_SINE_PATH, "wb") as f:
+            f.setnchannels(2)
+            f.setsampwidth(2)
+            f.setframerate(fs)
+            f.writeframes(samples)
+    except OSError as e:
+        results.append(CheckResult(
+            "probe — generate sine", "fail",
+            f"could not write {_PROBE_SINE_PATH}: {e}",
+        ))
+        return results
+
+    # Note the journal cursor BEFORE we play, so we only assess rms
+    # lines that cover the probe window. journalctl `--since` accepts
+    # ISO timestamps; UTC avoids timezone surprises.
+    probe_start = datetime.datetime.now(datetime.timezone.utc)
+    since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    # Play the sine. plughw absorbs any rate-lock state of the loopback
+    # — same reason camilla and the bridge wrap their captures in plug.
+    play = _run(
+        ["aplay", "-q", "-D", "plughw:Loopback,0,0", _PROBE_SINE_PATH],
+        timeout=_PROBE_SINE_DURATION_S + 5.0,
+    )
+    try:
+        os.unlink(_PROBE_SINE_PATH)
+    except OSError:
+        pass
+    if play.returncode != 0:
+        results.append(CheckResult(
+            "probe — aplay sine", "fail",
+            f"aplay failed: {play.stderr.strip() or f'rc={play.returncode}'}. "
+            f"If 'device busy', a renderer is using Loopback,0,0; if "
+            f"'invalid argument', check /proc/asound/Loopback exists.",
+        ))
+        return results
+    results.append(CheckResult(
+        "probe — aplay sine", "ok",
+        f"{_PROBE_SINE_DURATION_S:.0f} s of {freq} Hz sine to plughw:Loopback,0,0",
+    ))
+
+    # Wait one bridge rms window (5 s cadence) so the post-play log
+    # line is captured.
+    time.sleep(6.0)
+
+    journal = _run(
+        ["journalctl", "-u", "jasper-aec-bridge.service",
+         "--since", since, "--no-pager", "--output=cat"],
+        timeout=5.0,
+    )
+    if journal.returncode != 0:
+        results.append(CheckResult(
+            "probe — bridge journal", "warn",
+            f"could not read journal: {journal.stderr.strip()}",
+        ))
+        return results
+
+    max_ref = 0
+    max_mic = 0
+    window_count = 0
+    for line in journal.stdout.split("\n"):
         m = _AEC_RMS_RE.search(line)
         if not m:
             continue
-        ref = int(m.group(1))
-        mic = int(m.group(2))
-        attn_db = float(m.group(4))
-        total_windows += 1
-        # Mic above _AEC_MIC_MUSIC_THRESHOLD = music is acoustically
-        # playing through the speakers (ambient room is ~600 RMS,
-        # well below). ref < _AEC_REF_SILENT_THRESHOLD = bridge's
-        # reference path is effectively silent. Music in mic + silent
-        # ref => reference path is broken (the 2026-05-15 dsnoop
-        # rate-lock signature). Ambient idle won't trigger this
-        # because mic is below threshold.
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and ref < _AEC_REF_SILENT_THRESHOLD:
-            silent_ref_count += 1
-        # "Healthy" = the bridge is doing real AEC work. Music in
-        # mic + meaningful attenuation. Below the music threshold
-        # we can't tell whether attenuation is meaningful (AEC
-        # output at -16 dB of a quiet input is just noise floor).
-        if mic > _AEC_MIC_MUSIC_THRESHOLD and attn_db <= -8.0:
-            healthy_windows += 1
+        window_count += 1
+        max_ref = max(max_ref, int(m.group(1)))
+        max_mic = max(max_mic, int(m.group(2)))
 
-    # Failure mode 1: ref path broken. The 2026-05-15 dsnoop rate-
-    # lock incident produced exactly this — `mic` was 2000+ from
-    # AirPlay music but `ref` was 0 because the dsnoop's 48 kHz
-    # config mismatched shairport's 44.1 kHz lock.
-    if silent_ref_count >= 5:
-        return CheckResult(
-            "AEC bridge output", "fail",
-            f"{silent_ref_count} recent 5 s windows show "
-            f"mic>{_AEC_MIC_MUSIC_THRESHOLD} RMS with "
-            f"ref<{_AEC_REF_SILENT_THRESHOLD} RMS — bridge's reference "
-            f"path is delivering silence while the mic captures audio. "
-            f"AEC can't cancel without a reference. Common cause: "
-            f"pcm.jasper_capture dsnoop rate-locked to a renderer's "
-            f"native rate that doesn't match the dsnoop's declared "
-            f"slave rate. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
-        )
+    if window_count == 0:
+        results.append(CheckResult(
+            "probe — ref signal observed", "warn",
+            "no bridge rms windows since probe start; bridge may have "
+            "stalled or the journal is not capturing INFO-level lines.",
+        ))
+        return results
 
-    # Failure mode 2: continuous drift warnings = severe clock
-    # skew between ref and mic capture, or rate mismatch between
-    # the loopback's actual rate and the bridge's expected REF_RATE.
-    if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
-        return CheckResult(
-            "AEC bridge output", "warn",
-            f"{drift_count} ref-drift warnings in last 90 s "
-            f"(healthy baseline ~5 per 90 s). The ref capture is "
-            f"producing samples faster than the mic capture is "
-            f"consuming them — usually a rate mismatch between the "
-            f"music chain loopback and the bridge's expected REF_RATE. "
-            f"Check /proc/asound/Loopback/pcm0p/sub0/hw_params; "
-            f"AEC effectiveness degrades when drift is severe.",
-        )
-
-    # No log windows = bridge restarted within the last 90 s OR
-    # journal isn't capturing the level (unlikely on default config).
-    # Not a failure, just nothing to assess.
-    if total_windows == 0:
-        return CheckResult(
-            "AEC bridge output", "ok",
-            "no recent RMS windows logged "
-            "(bridge may have just started)",
-        )
-
-    # All windows quiet (mic and ref both below threshold) — speaker
-    # has been idle, nothing to assess. Not a failure.
-    if healthy_windows == 0 and silent_ref_count == 0:
-        return CheckResult(
-            "AEC bridge output", "ok",
-            f"no music activity in last 90 s "
-            f"({total_windows} log windows; no AEC work to evaluate)",
-        )
-
-    summary = (
-        f"{healthy_windows}/{total_windows} recent windows show real AEC "
-        f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB); "
-        f"drift={drift_count}"
-    )
-    if silent_ref_count:
-        # Below the FAIL threshold but worth surfacing for diagnostics.
-        summary += f"; silent-ref={silent_ref_count} (<{5} = below alarm)"
-    return CheckResult("AEC bridge output", "ok", summary)
+    if max_ref >= _PROBE_REF_PASS_THRESHOLD:
+        results.append(CheckResult(
+            "probe — ref signal observed", "ok",
+            f"max ref={max_ref} across {window_count} windows "
+            f"(threshold ≥{_PROBE_REF_PASS_THRESHOLD}); dsnoop/plug ref "
+            f"chain healthy",
+        ))
+    elif max_mic >= _AEC_MIC_MUSIC_THRESHOLD:
+        # Mic heard the sine, ref didn't see it — speaker chain is fine,
+        # ref capture is broken. This is the PR #75 silent-ref signature
+        # made trivially reproducible.
+        results.append(CheckResult(
+            "probe — ref signal observed", "fail",
+            f"max ref={max_ref} (need ≥{_PROBE_REF_PASS_THRESHOLD}) but "
+            f"max mic={max_mic} — speaker is reproducing the test tone "
+            f"(mic hears it) yet ref path is silent. dsnoop/plug ref "
+            f"chain is broken. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+        ))
+    else:
+        # Neither path saw the sine — speaker or capture is the issue,
+        # not specifically the ref. Most common cause: main_volume is
+        # muted, the dongle is unplugged, or the chip mic is muted.
+        results.append(CheckResult(
+            "probe — ref signal observed", "warn",
+            f"max ref={max_ref} AND max mic={max_mic} — neither path saw "
+            f"the test tone. Check that the speaker is on (main_volume "
+            f"not muted), the Apple dongle is plugged in, and the chip "
+            f"mic isn't muted (`jasper-doctor` mixer check).",
+        ))
+    return results
 
 
 def check_xvf_firmware_6ch() -> CheckResult:
@@ -1422,6 +1664,13 @@ def main() -> None:
         help="Emit JSON on stdout instead of the ANSI report. Used by "
              "the /system dashboard's diagnostics disclosure.",
     )
+    parser.add_argument(
+        "--probe-aec", action="store_true",
+        help="Active probe — play a brief sine into plughw:Loopback,0,0 "
+             "and verify the AEC bridge's `ref` rises in its rms log. "
+             "Skips the standard checks and runs only this one test. "
+             "Refuses if a renderer is currently playing.",
+    )
     args = parser.parse_args()
     _load_env_files()
     try:
@@ -1435,6 +1684,11 @@ def main() -> None:
             sys.exit(1)
         print(f"{RED}config error: {e}{RESET}", file=sys.stderr)
         sys.exit(1)
+    if args.probe_aec:
+        results = probe_aec_ref_path()
+        if args.json:
+            sys.exit(render_json(results))
+        sys.exit(render(results))
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
     results = asyncio.run(run_async(cfg))

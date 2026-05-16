@@ -294,3 +294,117 @@ def test_check_mic_card_shorthand_failure_actionable(monkeypatch):
         r = doctor.check_mic_card_matches_config(cfg)
     assert r.status == "fail"
     assert "AEC bridge" in r.detail
+
+
+# --------------------------------------------- AEC bridge output assessment
+
+
+def _rms_log_line(ref: int, mic: int, aec: int, attn_db: float) -> str:
+    """Synthesize one bridge `rms over` log line in the journal `--output=cat`
+    format the parser sees. Helper for the _assess_aec_bridge_output tests
+    below."""
+    return (
+        f"2026-05-16 17:00:00,000 aec-bridge INFO "
+        f"rms over 5.0s: ref={ref} mic={mic} aec={aec} → "
+        f"attenuation={attn_db:.1f} dB (frames=1 ref_q=0 mic_q=0 "
+        f"ref_clip=0.00% out_clip=0.00%)"
+    )
+
+
+def test_assess_aec_output_empty_journal_is_ok():
+    """No rms lines = bridge probably just restarted in the assessment
+    window. Not a failure, just nothing to evaluate."""
+    r = doctor._assess_aec_bridge_output("")
+    assert r.status == "ok"
+    assert "no recent rms windows" in r.detail.lower()
+
+
+def test_assess_aec_output_idle_returns_ok():
+    """Mic and ref both quiet — speaker has been idle, no music has
+    played. Doctor must NOT flag this as a degradation."""
+    lines = [_rms_log_line(ref=0, mic=200, aec=30, attn_db=-16.5) for _ in range(10)]
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "ok"
+    assert "no music activity" in r.detail.lower()
+
+
+def test_assess_aec_output_silent_ref_with_no_healthy_window_fails():
+    """The PR #75 dsnoop rate-lock signature: mic shows music acoustically
+    throughout, ref delivers silence throughout, ZERO windows prove the
+    ref chain ever worked in this period. The check MUST fail — this is
+    the regression we exist to catch."""
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "fail"
+    assert "reference path is delivering silence" in r.detail
+    assert "Lessons learned" in r.detail  # actionable doc link
+
+
+def test_assess_aec_output_silent_ref_with_healthy_window_is_ok():
+    """The 2026-05-16 false-positive: TTS / wake cues / loud ambient
+    push silent_ref over threshold, but at least one window in the
+    assessment period has ref signal (proving the chain works). The
+    check must NOT fail — silent-ref windows have benign explanations
+    when the ref path is demonstrably alive."""
+    lines = [
+        # 5 mic-loud + ref-silent windows (TTS bypasses the loopback)
+        _rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4),
+        _rms_log_line(ref=0, mic=2400, aec=2300, attn_db=-0.4),
+        _rms_log_line(ref=0, mic=2600, aec=2500, attn_db=-0.3),
+        _rms_log_line(ref=0, mic=2100, aec=2050, attn_db=-0.2),
+        _rms_log_line(ref=0, mic=2300, aec=2250, attn_db=-0.2),
+        # 2 windows where music played and ref captured it correctly
+        _rms_log_line(ref=800, mic=2400, aec=200, attn_db=-21.6),
+        _rms_log_line(ref=1100, mic=2800, aec=180, attn_db=-23.8),
+    ]
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "ok"
+    assert "likely TTS or ambient" in r.detail
+    assert "ref path proven healthy" in r.detail
+
+
+def test_assess_aec_output_healthy_aec_work_is_ok():
+    """Music playing through the loopback, ref strong, attenuation
+    meaningful — the bridge is doing its job. ok with a summary."""
+    lines = [_rms_log_line(ref=1200, mic=2400, aec=150, attn_db=-24.1) for _ in range(8)]
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "ok"
+    assert "real AEC work" in r.detail
+
+
+def test_assess_aec_output_drift_warnings_warn():
+    """High count of `drained N stale ref frames (drift)` warnings
+    indicates ref/mic clock skew or rate mismatch. Warn, don't fail."""
+    drift_line = (
+        "2026-05-16 17:00:00,000 aec-bridge WARNING "
+        "drained 7 stale ref frames (drift)"
+    )
+    # Threshold is 30 in 5 min; 40 is comfortably over.
+    journal = "\n".join([drift_line] * 40)
+    r = doctor._assess_aec_bridge_output(journal)
+    assert r.status == "warn"
+    assert "ref-drift warnings" in r.detail
+
+
+def test_assess_aec_output_single_healthy_window_suffices():
+    """Boundary: exactly one healthy_ref window flips the silent-ref
+    pattern from fail to ok. Documents the design choice — if the ref
+    chain proved itself once in the window, we trust it."""
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(7)]
+    lines.append(_rms_log_line(ref=300, mic=400, aec=80, attn_db=-14.0))
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "ok"
+
+
+def test_assess_aec_output_silent_ref_below_alarm_surfaces_in_summary():
+    """When silent_ref_count is 1-4 (non-zero but below the fail
+    threshold of 5), the OK summary appends a `silent-ref=N` note so
+    intermittent ref glitches are visible before they tip into a real
+    outage. Per PR #124 upstream — preserved in the refactor."""
+    lines = [_rms_log_line(ref=1200, mic=2400, aec=150, attn_db=-24.1) for _ in range(6)]
+    # 3 mic-loud + ref-silent windows: above 0 but below the 5-count alarm.
+    lines += [_rms_log_line(ref=0, mic=2200, aec=2100, attn_db=-0.4) for _ in range(3)]
+    r = doctor._assess_aec_bridge_output("\n".join(lines))
+    assert r.status == "ok"
+    assert "silent-ref=3" in r.detail
+    assert "below alarm" in r.detail
