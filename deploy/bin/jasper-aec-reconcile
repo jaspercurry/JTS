@@ -272,7 +272,14 @@ stop_disable_aec() {
 enable_start_aec() {
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
     reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
-    run_systemctl start jasper-aec-init.service
+    # `restart` not `start`: jasper-aec-init is Type=oneshot with
+    # RemainAfterExit=yes, so `start` is a no-op once it's run
+    # successfully. Any chip-side param changes from a code deploy
+    # (HPF cutoff, SHF_BYPASS, future tuning) would silently NOT
+    # re-apply until the next reboot. `restart` forces re-execution.
+    # Discovered 2026-05-15 after a deploy left chip params at their
+    # previous boot-time values despite code expecting newer ones.
+    run_systemctl restart jasper-aec-init.service
     run_systemctl restart jasper-aec-bridge.service
 }
 
