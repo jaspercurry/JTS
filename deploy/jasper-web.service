@@ -34,13 +34,20 @@ EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # Optional file written by the Google wizard at /google/ — holds
 # GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET. Same override pattern.
 EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# Optional file written by the wake-word picker at /wake/ — holds
+# JASPER_WAKE_MODEL pointing at either a bundled openWakeWord name
+# or an absolute path under /var/lib/jasper/wake/. The wizard reads
+# this file to render which model is active and writes back here on
+# save. Sourced AFTER jasper.env so wizard values win.
+EnvironmentFile=-/var/lib/jasper/wake_model.env
 # Single Python process serves all wizards as separate threads:
 #   /spotify/  →  127.0.0.1:8765
 #   /voice/    →  127.0.0.1:8767
 #   /google/   →  127.0.0.1:8768
 #   /airplay/  →  127.0.0.1:8771
 #   /sources/  →  127.0.0.1:8773
-# When socket-activated, all five fds arrive via LISTEN_FDS and the
+#   /wake/     →  127.0.0.1:8774
+# When socket-activated, all six fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
 # jasper/web/__main__.py for the wiring.
 ExecStart=/opt/jasper/.venv/bin/python -m jasper.web

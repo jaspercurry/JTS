@@ -494,6 +494,77 @@ EOF
     "${INSTALL_DIR}/.venv/bin/python" -c \
         "import openwakeword.utils as u; u.download_models()"
 
+    # Curated non-bundled wake-word models. The registry lives in
+    # jasper/wake_models.py (single source of truth — same data drives
+    # the /wake/ picker UI). install.sh reads it via the venv's Python
+    # so adding a new model is one edit in wake_models.py + a deploy.
+    # Each download is idempotent (skip when the file already exists
+    # with non-zero size) and best-effort: a failed download leaves
+    # the daemon on the bundled "hey_jarvis" fallback rather than
+    # blocking install. See README.md "Acoustic echo cancellation"
+    # for the broader wake/AEC architecture.
+    install -d -m 0755 -o root -g root /var/lib/jasper/wake
+    if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import os
+import sys
+import urllib.request
+
+from jasper.wake_models import downloadable
+
+failures = 0
+for entry in downloadable():
+    dest = entry.model
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        print(f"  wake model present: {entry.key} -> {dest}")
+        continue
+    print(f"  downloading wake model: {entry.key}")
+    print(f"    from: {entry.download_url}")
+    print(f"    to:   {dest}")
+    tmp = dest + ".tmp"
+    try:
+        urllib.request.urlretrieve(entry.download_url, tmp)
+        os.replace(tmp, dest)
+        os.chmod(dest, 0o644)
+    except Exception as e:  # noqa: BLE001
+        print(f"  failed: {e}", file=sys.stderr)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        failures += 1
+
+sys.exit(1 if failures else 0)
+PY
+    then
+        echo "  warning: one or more wake-word model downloads failed"
+        echo "  the daemon will fall back to the bundled hey_jarvis model"
+        echo "  re-run install.sh once you're online to retry the downloads"
+    fi
+
+    # Seed /var/lib/jasper/wake_model.env with the recommended default
+    # on FIRST install only. Existing files are left alone — the /wake/
+    # picker owns this file once the user has touched it, and we never
+    # want to trample an explicit choice. The recommended default lives
+    # in jasper/wake_models.py (DEFAULT_KEY).
+    "${INSTALL_DIR}/.venv/bin/python" - <<'PY' || true
+import os
+import sys
+
+from jasper.wake_models import WAKE_MODEL_FILE, default
+
+if os.path.exists(WAKE_MODEL_FILE):
+    sys.exit(0)
+entry = default()
+if not os.path.exists(entry.model):
+    print(f"  skipping wake_model.env seed: default file missing ({entry.model})")
+    sys.exit(0)
+os.makedirs(os.path.dirname(WAKE_MODEL_FILE), exist_ok=True)
+tmp = WAKE_MODEL_FILE + ".tmp"
+fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+with os.fdopen(fd, "w") as f:
+    f.write(f"JASPER_WAKE_MODEL={entry.model}\n")
+os.replace(tmp, WAKE_MODEL_FILE)
+print(f"  seeded {WAKE_MODEL_FILE} -> {entry.key} ({entry.model})")
+PY
+
     if [[ ! -f "${ENV_DIR}/jasper.env" ]]; then
         # Detect ReSpeaker XVF3800 card name. Default "Array" (PiOS literal
         # name; product description matches and it's also a substring of

@@ -299,25 +299,37 @@ account routed for voice commands.
 
 ## Phase 7 — Test wake word + voice (2 min)
 
+The default wake phrase as of 2026-05-16 is **"Jarvis"** (the
+fwartner community model, trained on the phrase set `"jarvis"` /
+`"hey jarvis"` / `"jarvis!"` / `"jarvis?"` — so either form
+triggers it). Try the shorter form first:
+
 ```
-"Hey Jarvis."
+"Jarvis."
 [~1s pause for wake detection + the active voice provider to open a turn]
 "What time is it?"
 ```
 
-You should hear a synthetic voice reply. If not:
+You should hear a synthetic voice reply. "Hey Jarvis" works too.
+To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
+visit `http://jts.local/wake/` from any LAN device, or run
+`bash scripts/switch-wake-word.sh <key>` from your laptop. See
+[CLAUDE.md "Wake-word switching"](CLAUDE.md#wake-word-switching--read-first)
+for the registry and how to add a new model.
+
+If wake isn't firing:
 
 ```sh
 sudo journalctl -u jasper-voice -f
-# Watch for wake events and provider errors as you say "Hey Jarvis"
+# Watch for wake events and provider errors as you say "Jarvis"
 ```
 
 Other test prompts:
 
-- "Hey Jarvis, what's the weather?"
-- "Hey Jarvis, set volume to 30."
-- "Hey Jarvis, when's the next D train?"
-- "Hey Jarvis, play Sufjan Stevens." (Spotify; requires Phase 6)
+- "Jarvis, what's the weather?"
+- "Jarvis, set volume to 30."
+- "Jarvis, when's the next D train?"
+- "Jarvis, play Sufjan Stevens." (Spotify; requires Phase 6)
 
 ---
 
