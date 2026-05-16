@@ -11,6 +11,7 @@ unit per wizard. nginx routes:
   /google/   →  127.0.0.1:8768  (jasper.web.google_setup)
   /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
   /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
+  /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -40,6 +41,7 @@ from . import (
     sources_setup,
     spotify_setup,
     voice_setup,
+    wake_setup,
 )
 
 logger = logging.getLogger(__name__)
@@ -68,6 +70,7 @@ def main() -> int:
     google_port = int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768"))
     airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
     sources_port = int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773"))
+    wake_port = int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -130,6 +133,16 @@ def main() -> int:
     # out to systemctl for AirPlay + Spotify Connect; DBus for BT.
     sources_server = sources_setup.make_server(target_for(sources_port))
 
+    # Wake-word picker — radio over the curated registry in
+    # jasper/wake_models.py. Writes /var/lib/jasper/wake_model.env and
+    # restarts jasper-voice on save.
+    wake_state = os.environ.get(
+        "JASPER_WAKE_MODEL_FILE", wake_setup.WAKE_MODEL_FILE,
+    )
+    wake_server = wake_setup.make_server(
+        target_for(wake_port), state_path=wake_state,
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -141,6 +154,7 @@ def main() -> int:
         google_server.RequestHandlerClass,
         airplay_server.RequestHandlerClass,
         sources_server.RequestHandlerClass,
+        wake_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -151,6 +165,7 @@ def main() -> int:
         ("/google", google_port),
         ("/airplay", airplay_port),
         ("/sources", sources_port),
+        ("/wake", wake_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -166,6 +181,7 @@ def main() -> int:
         ("/google", google_server),
         ("/airplay", airplay_server),
         ("/sources", sources_server),
+        ("/wake", wake_server),
     ):
         threading.Thread(
             target=_serve_forever,

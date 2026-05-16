@@ -281,6 +281,16 @@ class Config:
             # Grok voice list is disjoint from OpenAI's: eve, ara, rex,
             # sal, leo. Default is `eve` per xAI docs.
             grok_voice=_env("JASPER_GROK_VOICE", "eve"),
+            # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
+            # (e.g. "hey_jarvis", "alexa") or an absolute path to a
+            # .onnx file under /var/lib/jasper/wake/. The /wake/ wizard
+            # writes /var/lib/jasper/wake_model.env to set it; the
+            # curated picker rows + install-time download list live in
+            # jasper/wake_models.py. The compiled-in fallback below is
+            # "hey_jarvis" because it's the openWakeWord-bundled model
+            # that is always present (downloaded at install time via
+            # `openwakeword.utils.download_models()`), so dev/test runs
+            # without a seeded env file still load something.
             wake_model=_env("JASPER_WAKE_MODEL", "hey_jarvis"),
             wake_threshold=_env_float("JASPER_WAKE_THRESHOLD", 0.5),
             # JASPER_MIC_DEVICE is a sounddevice/PortAudio identifier, not

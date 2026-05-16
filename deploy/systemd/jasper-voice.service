@@ -51,6 +51,13 @@ EnvironmentFile=-/var/lib/jasper/voice_provider.env
 # when this file's CLIENT_ID/SECRET are set AND at least one
 # household member has linked an account. Optional via leading `-`.
 EnvironmentFile=-/var/lib/jasper/google_credentials.env
+# Wake-word selection (JASPER_WAKE_MODEL) written by the picker at
+# http://jts.local/wake/, or seeded by install.sh on a fresh install
+# to point at /var/lib/jasper/wake/jarvis_v2.onnx. Sourced AFTER
+# /etc/jasper/jasper.env so wizard-written values win. Optional via
+# the leading `-` — daemon falls back to bundled "hey_jarvis" when
+# the file is missing. See jasper/wake_models.py for the registry.
+EnvironmentFile=-/var/lib/jasper/wake_model.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 # `on-watchdog` covers BOTH clean failure (non-zero exit, segfault)

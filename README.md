@@ -70,7 +70,9 @@ Phone (AirPlay / Spotify Connect / BT)
         │                                     │
         │                                     ▼
         │                            jasper-voice (wake-word, real-time LLM, tools)
-        │                            - openWakeWord ("Hey Jarvis")
+        │                            - openWakeWord ("Jarvis" — community model,
+        │                                also responds to "Hey Jarvis"; pickable
+        │                                at http://jts.local/wake/)
         │                            - Silero VAD
         │                            - real-time LLM session (provider-agnostic):
         │                                Gemini Live | OpenAI Realtime | xAI Grok
@@ -125,7 +127,12 @@ when the configured AEC mic is present with 6-channel firmware — see
   .deb) with log volume curve, and bluez-alsa
 - ✅ `jasper-mux` daemon for latest-source-wins preemption
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
-- ✅ Wake-word detection ("Hey Jarvis", openWakeWord ONNX)
+- ✅ Wake-word detection — default is "Jarvis" (the
+  [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)
+  which also accepts "Hey Jarvis"); picker UI at
+  http://jts.local/wake/ flips between Jarvis, Hey Jarvis, Alexa,
+  Hey Mycroft. See [jasper/wake_models.py](jasper/wake_models.py)
+  for the registry and the steps to add a new one.
 - ✅ Gemini Live voice loop with tool calling
 - ✅ Provider-agnostic voice abstraction — `JASPER_VOICE_PROVIDER`
   flips between Gemini Live, OpenAI Realtime (`gpt-realtime-2`), and

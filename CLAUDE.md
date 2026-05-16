@@ -227,6 +227,55 @@ the live version.
 
 ---
 
+## Wake-word switching — read first
+
+The wake phrase the speaker listens for is one of a curated set of
+openWakeWord models. As of 2026-05-16 the default is **"Jarvis"**
+(the fwartner community model in `/var/lib/jasper/wake/jarvis_v2.onnx`,
+which also still triggers on "Hey Jarvis"). The registry of available
+models is the single source of truth at
+[`jasper/wake_models.py`](jasper/wake_models.py); install.sh reads it
+to know which non-bundled `.onnx` files to fetch.
+
+**Two ways to switch.** Either works.
+
+**Web UI (preferred)** — visit `http://jts.local/wake/` from any LAN
+device. One row per registered model with pronunciation + description
++ author-reported false-fire rate. Pick one, hit Save — writes
+`/var/lib/jasper/wake_model.env` at mode 0644 and restarts
+`jasper-voice`. Source: [`jasper/web/wake_setup.py`](jasper/web/wake_setup.py).
+
+**Laptop-side script:**
+
+```sh
+bash scripts/switch-wake-word.sh             # show current + options
+bash scripts/switch-wake-word.sh jarvis_v2   # community Jarvis (default)
+bash scripts/switch-wake-word.sh hey_jarvis  # stock Hey Jarvis
+bash scripts/switch-wake-word.sh alexa       # stock Alexa
+bash scripts/switch-wake-word.sh hey_mycroft # stock Hey Mycroft
+```
+
+The script resolves the key via the Pi-side registry, refuses to
+flip to a model whose `.onnx` is missing on disk (rare — install.sh
+fetches them every deploy), and restarts `jasper-voice`.
+
+**Adding a new model**: edit `REGISTRY` in
+[`jasper/wake_models.py`](jasper/wake_models.py) with one
+`WakeModelEntry(...)`. Bundled openWakeWord names (e.g. `alexa`) need
+no `download_url` — `openwakeword.utils.download_models()` already
+pulls them on install. External `.onnx` files set `download_url` to a
+raw URL and `model` to an absolute path under
+`/var/lib/jasper/wake/`. Re-run `bash scripts/deploy-to-pi.sh` and
+the new model appears in `/wake/` and `switch-wake-word.sh`
+automatically.
+
+**Hand-rolled custom models** are still supported: set
+`JASPER_WAKE_MODEL=/abs/path/to/foo.onnx` in `/etc/jasper/jasper.env`
+directly. The wizard surfaces this as a "Custom: …" row and won't
+overwrite it unless the household picks a registered alternative.
+
+---
+
 ## Gemini model switching — read first
 
 **Preferred model: `gemini-3.1-flash-live-preview`** (latest Live
