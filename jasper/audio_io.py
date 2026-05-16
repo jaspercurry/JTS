@@ -6,7 +6,17 @@ import subprocess
 import time
 
 import numpy as np
-import sounddevice as sd
+
+# `sounddevice` is a Pi-side audio I/O dep (PortAudio bindings). It's not
+# installed in the local dev venv and isn't needed by the pure-Python
+# helpers in this module (parse_udp_device, UdpMicCapture, the dataclasses).
+# Lazy-import inside the three places that actually open PortAudio streams
+# (_log_audio_open_failure, MicCapture.__aenter__, TtsPlayout.__aenter__)
+# so the module can be imported on a dev machine, hardware-free tests can
+# parse it, and the lazy-import guards in test_lazy_imports.py can run.
+# The annotations on _stream attributes use `sd.InputStream` /
+# `sd.RawOutputStream`, but `from __future__ import annotations` above
+# makes those strings — never evaluated.
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +39,8 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     `try/except` and falls through to `logger.warning` rather than
     raising. The caller still re-raises the original exception.
     """
+    import sounddevice as sd  # Pi-side dep, lazy — see module top.
+
     logger.error(
         "audio open failed: role=%s device=%r exc=%s: %s",
         role, device, type(exc).__name__, exc,
@@ -146,6 +158,8 @@ class MicCapture:
             logger.warning("mic queue full, dropping frame")
 
     async def __aenter__(self) -> "MicCapture":
+        import sounddevice as sd  # Pi-side dep, lazy — see module top.
+
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue(maxsize=64)
         try:
@@ -456,6 +470,8 @@ class TtsPlayout:
         return self._gain_db
 
     async def __aenter__(self) -> "TtsPlayout":
+        import sounddevice as sd  # Pi-side dep, lazy — see module top.
+
         # Open as STEREO even though our input is mono. The dongle's
         # dmix (`pcm.jasper_out` in /root/.asoundrc) is configured at
         # channels=2 with no plug layer; opening at channels=1

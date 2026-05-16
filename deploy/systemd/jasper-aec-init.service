@@ -1,11 +1,14 @@
 [Unit]
-Description=Apply AEC tuning to XVF3800 (REBOOT + AUDIO_MGR_SYS_DELAY)
-# Runs once at boot, before the bridge tries to write reference
-# audio. The chip needs a clean state (REBOOT 1) and the persisted
-# AUDIO_MGR_SYS_DELAY value applied — we never call
-# SAVE_CONFIGURATION because firmware 2.0.6 has a brick hazard on
-# that op (respeaker repo issue #8). Re-applying at boot is cheap
-# and guaranteed safe.
+Description=Apply chip-side tuning to XVF3800 (SHF_BYPASS, AEC_HPFONOFF, UAC2 unity)
+# Runs once at boot, before the bridge opens the chip's capture
+# endpoint. Writes three idempotent params: SHF_BYPASS=1 (disable
+# chip AEC, since software AEC3 handles it), AEC_HPFONOFF=2 (chip-
+# side 125 Hz HPF at mic ingress), and amixer PCM,0/PCM,1 to 0 dB
+# unity. We never call SAVE_CONFIGURATION (brick hazard on firmware
+# 2.0.6 — respeaker repo issue #8) and never call REBOOT (caused a
+# udev feedback loop on 2026-05-16; see docs/HANDOFF-aec.md
+# "Lessons learned" #9). Re-applying on every restart is cheap and
+# idempotent.
 After=sound.target dev-snd-controlC4.device
 Before=jasper-aec-bridge.service jasper-camilla.service
 Requires=sound.target

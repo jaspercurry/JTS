@@ -4,7 +4,15 @@ import asyncio
 import logging
 from typing import Awaitable, Callable
 
-from camilladsp import CamillaClient
+# `camilladsp` is a Pi-side runtime dep (pycamilladsp wraps the Rust binary's
+# websocket API). Lazy-imported in `CamillaController._ensure` — the only
+# place it's used at runtime — so this module can be imported on a dev
+# machine without camilladsp in the venv. Parallel to the sounddevice /
+# openwakeword treatment in audio_io.py and wake.py. The `CamillaClient`
+# type annotations on `_client` and `_ensure`'s return are strings thanks
+# to `from __future__ import annotations`, so they need nothing at import
+# time. (Production code instantiates CamillaController in voice_daemon /
+# web setup / control server; tests use fakes.)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +43,8 @@ class CamillaController:
         self._lock = asyncio.Lock()
 
     def _ensure(self) -> CamillaClient:
+        from camilladsp import CamillaClient  # lazy, see module top.
+
         if self._client is None:
             client = CamillaClient(self._host, self._port)
             client.connect()

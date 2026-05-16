@@ -374,7 +374,9 @@ Captured here so future sessions don't repeat the mistakes.
    useful output. A check that parses the bridge's `rms over` log
    lines (verifying `ref` is non-zero during music and `attenuation`
    reaches a healthy range) would have surfaced the bug immediately.
-   **Queued as follow-up.**
+   Shipped as `check_aec_bridge_output_health` in
+   `jasper/cli/doctor.py`; its later false-positive mode and fix
+   are #10 below.
 
 8. **`jasper-aec-init` doesn't re-run after a code deploy.** It's
    `Type=oneshot` with `RemainAfterExit=yes`, so the bridge unit's
@@ -384,6 +386,47 @@ Captured here so future sessions don't repeat the mistakes.
    jasper-aec-init` to apply them. **Queued as follow-up** — fix
    would be one line in `deploy/install.sh` to
    `systemctl try-restart jasper-aec-init` after the rsync.
+
+9. **`REBOOT 1` in `jasper-aec-init` created a USB renumerate
+   feedback loop.** Diagnosed 2026-05-16. The chain:
+   `jasper-aec-init` ExecStart wrote `REBOOT 1` to the chip → chip
+   reset → USB disconnect/reconnect on the bus → kernel udev event
+   on `controlC*` → `99-jasper-aec-reconcile.rules` triggered
+   `jasper-aec-reconcile.service` → reconciler called
+   `enable_start_aec` → `systemctl restart jasper-aec-init.service`
+   → **goto top**. Sustained ~6–12 chip resets per hour after any
+   `--reason install` invocation (i.e. after every deploy). The
+   bridge correctly responded to each chip outage by stall-restarting
+   on `mic queue empty for 5s`; that's not a bug, that's the
+   `BridgeStalled` recovery path doing its job. **Removing the
+   REBOOT call** was the fix: in our pipeline the chip's AEC
+   adaptive filter is gated off by `SHF_BYPASS=1`, so REBOOT's only
+   documented benefit ("clear adaptive-filter state", per Reachy
+   Mini #389) is moot, and the three parameter writes that follow
+   it are idempotent and overwrite the chip's current state
+   directly. No conditional needed, just delete.
+   See `jasper/cli/aec_init.py` for the post-fix shape.
+
+10. **Doctor's `check_aec_bridge_output_health` had a false-positive
+    failure mode.** Same investigation date. The check flagged
+    `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
+    mic-loud signal can also come from sources that **bypass the
+    loopback by design**: TTS / wake cues write to `pcm.jasper_out`
+    (dmix on the dongle) directly, and loud ambient voice gets pumped
+    by the chip's ASR-beam AGC. In both cases `ref = 0` is correct —
+    nothing was supposed to be in the loopback. **Fix**: count
+    `healthy_ref_windows` (any window where `ref ≥ 50`) and only
+    fail when zero healthy windows exist in the assessment period
+    AND the silent-ref pattern persists. PR #75's failure was
+    sustained `ref = 0` across all windows for days; this check
+    still catches that. See `_assess_aec_bridge_output` in
+    `jasper/cli/doctor.py`.
+
+    The same investigation produced `jasper-doctor --probe-aec`,
+    which actively plays a quiet sine into `plughw:Loopback,0,0`
+    and verifies the bridge sees ref signal — useful when the
+    bridge's recent journal has no music for the passive check to
+    learn from.
 
 A smart speaker that **plays music** and **listens for a wake word**
 in the same physical box has a fundamental signal-processing
