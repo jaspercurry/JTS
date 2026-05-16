@@ -1031,11 +1031,15 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"({total_windows} log windows; no AEC work to evaluate)",
         )
 
-    return CheckResult(
-        "AEC bridge output", "ok",
+    summary = (
         f"{healthy_windows}/{total_windows} recent windows show real AEC "
-        f"work (mic>200 + attenuation≤-8 dB); drift={drift_count}",
+        f"work (mic>{_AEC_MIC_MUSIC_THRESHOLD} + attenuation≤-8 dB); "
+        f"drift={drift_count}"
     )
+    if silent_ref_count:
+        # Below the FAIL threshold but worth surfacing for diagnostics.
+        summary += f"; silent-ref={silent_ref_count} (<{5} = below alarm)"
+    return CheckResult("AEC bridge output", "ok", summary)
 
 
 def check_xvf_firmware_6ch() -> CheckResult:
