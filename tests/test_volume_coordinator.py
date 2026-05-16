@@ -12,20 +12,11 @@ Covers:
 """
 from __future__ import annotations
 
-import sys
 import time
-import types
 from datetime import datetime, timezone
 from typing import Any
 
 import pytest
-
-# camilladsp is a Pi-side runtime dep not installed locally; stub it so
-# the fake camilla's lazy `from jasper.camilla import CamillaUnavailable`
-# works in unit tests. The coordinator itself imports CamillaController
-# under TYPE_CHECKING only.
-sys.modules.setdefault("camilladsp", types.ModuleType("camilladsp"))
-sys.modules["camilladsp"].CamillaClient = object  # type: ignore[attr-defined]
 
 from jasper.volume_coordinator import (
     AIRPLAY_DB_MAX,

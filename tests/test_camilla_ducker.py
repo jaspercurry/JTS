@@ -1,18 +1,8 @@
 from __future__ import annotations
 
-import sys
-import types
-
 import pytest
 
-# camilladsp is a Pi-side runtime dep not installed locally; stub it so
-# `import jasper.camilla` works in unit tests. Ducker only touches
-# CamillaController via the public interface (set_volume_db /
-# adjust_volume_db), and we pass a fake camilla into it anyway.
-sys.modules.setdefault("camilladsp", types.ModuleType("camilladsp"))
-sys.modules["camilladsp"].CamillaClient = object  # type: ignore[attr-defined]
-
-from jasper.camilla import CamillaUnavailable, CueDuck, Ducker  # noqa: E402
+from jasper.camilla import CamillaUnavailable, CueDuck, Ducker
 
 
 class _FakeCamilla:
