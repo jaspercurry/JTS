@@ -521,7 +521,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         else:
             confirm = {
                 "track": f"Playing {name}.",
-                "artist": f"Playing {name}.",
+                "artist": f"Playing top tracks for {name}.",
                 "album": f"Playing the album {name}.",
             }.get(resolved_kind, f"Playing {name}.")
 
