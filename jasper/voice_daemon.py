@@ -1289,6 +1289,55 @@ class WakeLoop:
         except Exception as e:  # noqa: BLE001
             logger.warning("mic mute click failed: %s", e)
 
+    def _generate_listening_chirp(self, *, going_on: bool) -> bytes:
+        """Synthesize a two-tone listening cue as 24 kHz int16 mono PCM
+        — same shape `TtsPlayout.write()` accepts. 880 Hz → 1320 Hz
+        (musical fifth) ascending on wake, descending on end-of-turn,
+        phase-continuous through the note change so the pair reads as
+        one connected cue rather than two beeps.
+
+        Distinct from `_generate_mute_click`: higher pitch range and a
+        two-note interval (vs. single-tone decay) so start/stop
+        listening is clearly different from mic mute/unmute. Inline
+        for the same reason as the mute click — sub-100 ms synthesized
+        blip, not worth a TTS-cached WAV.
+        """
+        import math
+        sr = 24000
+        seg_samples = int(sr * 0.035)  # 35 ms per note → 70 ms total
+        total = seg_samples * 2
+        ramp = int(sr * 0.005)  # 5 ms cosine attack/release
+        f_low, f_high = 880.0, 1320.0
+        f1, f2 = (f_low, f_high) if going_on else (f_high, f_low)
+        peak = 0.18  # ~-15 dBFS — subtler than mute click since these fire often
+        out = bytearray(total * 2)
+        phase = 0.0
+        for i in range(total):
+            freq = f1 if i < seg_samples else f2
+            phase += 2.0 * math.pi * freq / sr
+            if i < ramp:
+                env = 0.5 * (1.0 - math.cos(math.pi * i / ramp))
+            elif i >= total - ramp:
+                env = 0.5 * (1.0 - math.cos(math.pi * (total - i) / ramp))
+            else:
+                env = 1.0
+            s = int(math.sin(phase) * env * peak * 32767.0)
+            if s > 32767:
+                s = 32767
+            elif s < -32768:
+                s = -32768
+            out[2 * i] = s & 0xFF
+            out[2 * i + 1] = (s >> 8) & 0xFF
+        return bytes(out)
+
+    async def _play_listening_chirp(self, *, going_on: bool) -> None:
+        """Best-effort. If the TTS stream isn't ready, the wake or
+        end-of-turn happens anyway — never raise."""
+        try:
+            await self._tts.write(self._generate_listening_chirp(going_on=going_on))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("listening chirp failed: %s", e)
+
     async def mute_mic(self) -> str:
         """Stop listening: drop mic frames at the wake-loop gate. If a
         voice session is currently active, end the turn first so the
@@ -1367,6 +1416,15 @@ class WakeLoop:
             )
             await self._play_cue("cant_connect")
             return
+
+        # "Now listening" chirp. Fire-and-forget so it plays in
+        # parallel with `_begin_turn` opening rather than adding
+        # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
+        # any done task in that set would end the turn early.
+        asyncio.create_task(
+            self._play_listening_chirp(going_on=True),
+            name="listening-chirp-on",
+        )
 
         # Spawn `_begin_turn` in the background so the main mic loop
         # is NOT blocked while `acquire_turn()` runs (which can take
@@ -1524,6 +1582,10 @@ class WakeLoop:
                         silence_ms,
                     )
                     self._input_ended = True
+                    asyncio.create_task(
+                        self._play_listening_chirp(going_on=False),
+                        name="listening-chirp-off",
+                    )
                     try:
                         await self._turn.end_input()
                     except Exception as e:  # noqa: BLE001
@@ -1551,6 +1613,10 @@ class WakeLoop:
             return "CAP"
         if self._connection.is_paused():
             return "PAUSED"
+        asyncio.create_task(
+            self._play_listening_chirp(going_on=True),
+            name="listening-chirp-on",
+        )
         try:
             await self._begin_turn()
             return "OK"
@@ -1570,6 +1636,10 @@ class WakeLoop:
         if self._input_ended:
             return "ALREADY_ENDED"
         self._input_ended = True
+        asyncio.create_task(
+            self._play_listening_chirp(going_on=False),
+            name="listening-chirp-off",
+        )
         try:
             await self._turn.end_input()
             return "OK"
