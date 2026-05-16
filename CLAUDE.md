@@ -276,6 +276,50 @@ overwrite it unless the household picks a registered alternative.
 
 ---
 
+## Mic mute — persists across restarts
+
+User-driven mic mute is a privacy promise. When on, the wake loop
+drains mic frames without feeding wake detection or any session.
+State persists to `/var/lib/jasper/mic_mute.env`
+(`JASPER_MIC_MUTED=0|1`, mode 0644, atomic tempfile+rename) so it
+survives every daemon restart — deploys, web-wizard saves, watchdog
+timeouts, AEC reconciler events, full Pi reboots. Before
+[PR #119](https://github.com/jaspercurry/JTS/pull/119) the flag was
+in-memory only and silently un-muted on any of those events.
+
+Two ways to toggle (no voice tool — see footnote):
+
+- **Dashboard** — `http://jts.local/system/`, mic chip on the top
+  card. Reads the persisted state via `/state`, so it reflects the
+  truth immediately after a restart.
+- **HTTP** on `jasper-control` (port 8780):
+
+  ```sh
+  curl -s http://jts.local:8780/mic                          # read
+  curl -s -X POST http://jts.local:8780/mic/mute \
+       -H 'Content-Type: application/json' \
+       -d '{"muted":true}'                                   # mute
+  curl -s -X POST http://jts.local:8780/mic/mute \
+       -H 'Content-Type: application/json' \
+       -d '{"muted":false}'                                  # unmute
+  ```
+
+**Fail-safe direction**: a missing, unreadable, or malformed
+`mic_mute.env` resolves to **unmuted** at boot. Better the speaker
+respond than be silently deaf because of one bad byte on disk.
+
+**On boot when restored as muted**, jasper-voice logs a single
+`mic mute: restored from /var/lib/jasper/mic_mute.env (mic is muted
+at startup)` line. If wake stops responding after a deploy/reboot,
+check this first.
+
+**No voice tool by design.** "Hey Jarvis, mute the mic" would
+create a one-way trap — once muted, wake detection is off, so the
+user couldn't say "Hey Jarvis, unmute" to get back. Toggle via the
+dashboard or HTTP endpoint, never via the assistant itself.
+
+---
+
 ## Gemini model switching — read first
 
 **Preferred model: `gemini-3.1-flash-live-preview`** (latest Live
