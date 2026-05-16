@@ -86,18 +86,30 @@ def _set_unit(unit: str, enabled: bool) -> None:
         _systemctl("disable", unit, "--now")
 
 
-async def _bt_state() -> tuple[bool, bool]:
-    """Return (available, powered). Available=False when bluez itself
-    isn't reachable on this host (no BT hardware, daemon not running)."""
+async def _bt_state() -> tuple[bool, bool, bool]:
+    """Return (available, powered, has_paired_hid). Available=False when
+    bluez itself isn't reachable on this host (no BT hardware, daemon
+    not running). has_paired_hid is True when a wireless remote
+    (volume knob etc.) is paired — the wizard surfaces this as a
+    confirm-before-off prompt so toggling BT doesn't silently kill
+    the remote."""
     try:
-        from ..bluetooth.adapter import state
+        from ..bluetooth.adapter import has_paired_hid, state
         s = await state()
-        return True, bool(s.get("powered", False))
+        powered = bool(s.get("powered", False))
+        hid = False
+        try:
+            hid = await has_paired_hid()
+        except Exception as e:  # noqa: BLE001
+            # Non-fatal: the powered toggle still works, we just lose
+            # the warning. Logged in case the helper itself breaks.
+            logger.debug("has_paired_hid probe failed: %s", e)
+        return True, powered, hid
     except Exception as e:  # noqa: BLE001
         # DBusError on no-hardware Pi, ImportError on stripped builds,
         # other OSErrors if bluez is wedged. Treat as "unavailable".
         logger.debug("bluetooth state probe failed: %s", e)
-        return False, False
+        return False, False, False
 
 
 async def _set_bt(enabled: bool) -> None:
@@ -109,7 +121,7 @@ def _gather_state() -> dict[str, dict[str, bool]]:
     """One-shot snapshot of all three sources. The BT branch runs an
     asyncio task because dbus-next is async-only; the rest are sync
     systemctl probes."""
-    bt_available, bt_powered = asyncio.run(_bt_state())
+    bt_available, bt_powered, bt_has_hid = asyncio.run(_bt_state())
     return {
         "airplay": {
             "enabled": _unit_active(AIRPLAY_UNIT),
@@ -118,6 +130,7 @@ def _gather_state() -> dict[str, dict[str, bool]]:
         "bluetooth": {
             "enabled": bt_powered,
             "available": bt_available,
+            "hasPairedHid": bt_has_hid,
         },
         "spotify_connect": {
             "enabled": _unit_active(SPOTIFY_CONNECT_UNIT),
@@ -235,10 +248,12 @@ Connect persist across reboots; Bluetooth comes back on after a reboot
     var inFlight = {};
     var dirty = {};
     var ignorePollUntil = 0;
+    var latestState = {};
 
     function el(id) { return document.getElementById(id); }
 
     function applyState(state) {
+      latestState = state;
       SOURCES.forEach(function(name) {
         var s = state[name] || {};
         var input = el('t-' + name);
@@ -293,6 +308,23 @@ Connect persist across reboots; Bluetooth comes back on after a reboot
     SOURCES.forEach(function(name) {
       var input = el('t-' + name);
       input.addEventListener('change', function() {
+        // Warn before turning Bluetooth off while a wireless remote
+        // (volume knob, etc.) is paired — otherwise the remote
+        // silently stops working until BT is turned back on.
+        if (name === 'bluetooth' && !input.checked &&
+            latestState.bluetooth && latestState.bluetooth.hasPairedHid) {
+          var ok = window.confirm(
+            'Turning Bluetooth off will also disconnect paired ' +
+            'wireless remotes (volume knob, etc.). They will not ' +
+            'work again until Bluetooth is turned back on.\\n\\n' +
+            'Turn Bluetooth off anyway?',
+          );
+          if (!ok) {
+            // Revert the optimistic flip and skip the POST entirely.
+            input.checked = true;
+            return;
+          }
+        }
         postToggle(name, input.checked);
       });
     });

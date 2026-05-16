@@ -13,8 +13,19 @@ UUID_A2DP_SINK = "0000110b-"     # Audio Sink (Pi-as-speaker source)
 UUID_A2DP_SOURCE = "0000110a-"   # Audio Source (rare for us)
 UUID_HFP_HF = "0000111e-"        # Hands-Free
 UUID_AVRCP = "0000110e-"         # Audio/Video Remote Control
-UUID_HID = "00001124-"           # Human Interface Device
+UUID_HID = "00001124-"           # Human Interface Device (BR/EDR HID)
+UUID_HOGP = "00001812-"          # HID over GATT (BLE HID)
 UUID_BATTERY = "0000180f-"       # BLE Battery Service
+
+
+def is_hid_uuids(uuids: list[str]) -> bool:
+    """Does this device's UUID set indicate a HID accessory (knob,
+    keyboard, mouse, remote)? Matches BR/EDR HID (0x1124) and BLE
+    HOGP (0x1812). Used by the wizards to warn before turning BT off
+    while a remote is paired — the VK-01 in particular advertises
+    HOGP only, not classic HID."""
+    haystack = " ".join(uuids).lower()
+    return UUID_HID in haystack or UUID_HOGP in haystack
 
 
 def _icon_for(class_of_device: int, uuids: list[str], icon_hint: str) -> str:

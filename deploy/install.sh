@@ -733,9 +733,15 @@ install_systemd_units() {
             echo "  migrated ${unit} to socket activation"
         fi
         systemctl enable "${unit}.socket"
-        # Start the socket so it's listening immediately; the service
-        # itself stays inactive until the first connection arrives.
-        systemctl start "${unit}.socket" 2>/dev/null || true
+        # Restart (not just start) so a deploy that adds or moves a
+        # ListenStream= port — e.g. a new wizard sharing this socket
+        # like /sources/ on 8773 — actually re-binds. A bare `start`
+        # is a no-op when the socket is already active and silently
+        # leaves the old port set live; nginx then 502s on the new
+        # route until the next reboot. Restart cascades through the
+        # Requires=.socket service too, which the later wizard-stop
+        # loop also covers, so the order is safe.
+        systemctl restart "${unit}.socket" 2>/dev/null || true
     done
 
     systemctl enable jasper-camilla.service jasper-voice.service \
