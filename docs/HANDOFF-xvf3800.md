@@ -264,53 +264,71 @@ What that chain does, in order (User Guide §4.1, Fig. 4.1):
 
 1. **MIC_GAIN** — `AUDIO_MGR_MIC_GAIN` linear pre-amp on the 4 mics.
 2. **AEC_HPFONOFF** — 4th-order Butterworth HPF, applied per-mic
-   before AEC. Disabled by default; we set `on125` (125 Hz) in
-   jasper-aec-init.
-3. **AEC** (BeClear adaptive filter, per-mic linear stage). In
-   our config we set `SHF_BYPASS=1` to skip this stage entirely
-   because the chip's AEC reference path is incompatible with our
-   external-DAC topology (see [HANDOFF-aec.md](HANDOFF-aec.md) §
-   "Why chip AEC doesn't work for us").
-4. **Beamformer** — selects from one of three beams (free-running,
-   focused beam 1, focused beam 2) based on speech energy.
-5. **Post-processing** — non-linear processor (NLP), noise
-   suppression (`PP_MIN_NS`/`PP_MIN_NN`), AGC (`PP_AGCONOFF`),
-   echo suppression, etc.
-6. **Output mux** — routes the result to USB capture channels 0/1
-   (the "Conference"/"ASR" tunings differ in step 5's parameter
-   choice and step 4's beam time constants).
+   before the SHF block. Disabled by default; we set `on125`
+   (125 Hz) in jasper-aec-init.
+3. **SHF block** (AEC + beamformer + NS + AGC + NLP, gated on
+   `SHF_BYPASS`). In our config we set `SHF_BYPASS=1` to bypass
+   the entire SHF block because the chip's AEC reference path is
+   incompatible with our external-DAC topology (see
+   [HANDOFF-aec.md](HANDOFF-aec.md) § "Why SHF_BYPASS=1 instead of
+   relying on chip AEC").
+4. **Output mux** — routes the SHF output (or, when bypassed, the
+   pre-SHF signal) to USB capture channels 0/1.
 
-When `SHF_BYPASS=1`, step 3 is removed but steps 1, 2, 4, 5, and
-6 still run. So channels 0/1 with `SHF_BYPASS=1` give us
-**MIC_GAIN + chip HPF + BF + NS + AGC**, without the chip's AEC
-adaptive filter polluting things.
+**`SHF_BYPASS=1` removes the entire step-3 SHF block — not just
+AEC, but BF/NS/AGC/NLP along with it.** Empirically verified
+2026-05-16: with `SHF_BYPASS=1`, toggling `PP_MIN_NS` and
+`PP_AGCONOFF` produces 0.2–1.0 dB of variation on channel 1 —
+indistinguishable from measurement noise. The chip post-processing
+params are inert when SHF_BYPASS=1.
+
+So **channels 0/1 with `SHF_BYPASS=1` carry raw-ish mic data**
+(only MIC_GAIN + AEC_HPFONOFF still apply), functionally similar
+to channels 2–5. The level difference between ch 1 (SHF_BYPASS=1)
+and ch 2 (raw mic, Category 1) is about 1 dB across all bands —
+likely just MIC_GAIN being applied on ch 1 via the output mux but
+not on ch 2's Category 1 tap.
+
+If you want chip BF/NS/AGC to actually run, you need `SHF_BYPASS=0`.
+But that re-enables the chip's AEC, which is broken in our
+external-DAC topology. There is no chip parameter that lets you
+keep BF/NS/AGC while disabling only the AEC adaptive filter — they
+are gated on the same flag.
 
 ### Which chip parameters affect which channels
 
-| Parameter family | Affects ch 0/1 | Affects ch 2-5 |
-|---|---|---|
-| `AEC_HPFONOFF` (HPF) | ✅ yes | ❌ no |
-| `PP_AGCONOFF` / `PP_AGC*` (AGC) | ✅ yes (User Guide §4.2.6: *"applied equally to all four processed outputs"*) | ❌ no |
-| `PP_MIN_NS` / `PP_MIN_NN` (NS) | ✅ yes | ❌ no |
-| `PP_ECHOONOFF` / `PP_NL*` (NLP) | ✅ yes | ❌ no |
-| `AEC_FIXEDBEAMS*` (beamformer) | ✅ yes | ❌ no |
-| `SHF_BYPASS` (AEC bypass) | ✅ yes (toggles step 3 above) | ❌ no |
-| `AUDIO_MGR_MIC_GAIN` | ✅ yes (step 1) | ❌ no — Category 1 taps *before* this stage |
+| Parameter family | Affects ch 0/1 (SHF_BYPASS=0) | Affects ch 0/1 (SHF_BYPASS=1) | Affects ch 2-5 |
+|---|---|---|---|
+| `AEC_HPFONOFF` (HPF, pre-SHF) | ✅ yes | ✅ yes | ❌ no |
+| `PP_AGCONOFF` / `PP_AGC*` (AGC) | ✅ yes (User Guide §4.2.6: *"applied equally to all four processed outputs"*) | ❌ no (SHF bypassed) | ❌ no |
+| `PP_MIN_NS` / `PP_MIN_NN` (NS) | ✅ yes | ❌ no (SHF bypassed) | ❌ no |
+| `PP_ECHOONOFF` / `PP_NL*` (NLP) | ✅ yes | ❌ no (SHF bypassed) | ❌ no |
+| `AEC_FIXEDBEAMS*` (beamformer) | ✅ yes | ❌ no (SHF bypassed) | ❌ no |
+| `SHF_BYPASS` (toggles entire SHF block) | ✅ yes | ✅ yes | ❌ no |
+| `AUDIO_MGR_MIC_GAIN` | ✅ yes (pre-SHF) | ✅ yes (pre-SHF) | ❌ no — Category 1 taps before this stage |
 
-**Empirically verified 2026-05-15** by toggling `PP_MIN_NS`,
-`PP_AGCONOFF` while capturing 6 channels of pink noise: ch 0/1
-showed 1.5–8 dB of variation across conditions; **ch 2 showed
-0.0–0.4 dB** across the same conditions. Ch 2-5 are inert with
-respect to every chip-side parameter — they are the bare
-ADC-decimator output.
+**Empirically verified 2026-05-15/16**:
+
+- With `SHF_BYPASS=0` (default), toggling `PP_MIN_NS` /
+  `PP_AGCONOFF` while capturing 6 channels of pink noise showed
+  1.5–8 dB of variation on ch 0/1; ch 2 showed 0.0–0.4 dB.
+- With `SHF_BYPASS=1` (current JTS production), the same toggles
+  produced 0.2–1.0 dB of variation on ch 1 — same as the
+  measurement noise on ch 2 (0.1–0.7 dB).
+
+The empirical SHF_BYPASS=1 test confirms: with SHF bypassed, the
+chip post-processing parameters are inert across ch 0/1, ch 2-5
+alike. Channels 0/1 become raw-ish mic feeds.
 
 ### What JTS uses, and why
 
-**JTS captures channel 1 (ASR beam)** as the AEC bridge's
-near-end input — see `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX = 1`.
+**JTS captures channel 1 (ASR beam tap, post-SHF mux)** as the
+AEC bridge's near-end input — see `jasper/mics/xvf3800.py`
+`MIC_CHANNEL_INDEX = 1`. Combined with `SHF_BYPASS=1` in
+`jasper-aec-init`, this means JTS captures a raw-ish mic feed
+with chip MIC_GAIN + AEC_HPFONOFF applied (per the table above).
 
-This is the **canonical XVF3800 voice-assistant capture choice**.
-Confirmed against:
+Ch 0 vs ch 1 is canonical XVF3800 territory:
 - **Seeed's own example code**: 2-channel `arecord`, takes the
   default Conference/ASR output, no manual channel selection.
 - **formatBCE ESPHome integration** (HA Voice with XVF3800):
@@ -319,18 +337,28 @@ Confirmed against:
 - **Public reference**: no project in public code consumes raw
   mic channels (2-5) for ASR.
 
-We use channel 1 over channel 0 because the ASR branch is
-specifically tuned for speech-recognition engines (faster beam
-tracking, fixed gain calibrated for ASR, less aggressive NS in
-the speech band) — which is exactly our consumer set
-(openWakeWord + real-time speech LLMs).
+We pick ch 1 over ch 0 partly out of community convention (the
+"ASR" tap is the speech-recognition-oriented one when chip SHF
+is running) and partly because ch 1 receives MIC_GAIN via the
+output mux (ch 2 doesn't). With our SHF_BYPASS=1 the ASR-tuning
+distinction is moot — both ch 0 and ch 1 carry raw-ish data
+when SHF is bypassed — but ch 1 is still the right choice
+because: (a) it's the project-standard tap; (b) it includes
+MIC_GAIN; (c) if anyone ever flips SHF_BYPASS=0, ch 1 will
+automatically give us the ASR-tuned signal.
 
-We pair channel 1 with `SHF_BYPASS=1` to remove the chip's own
-AEC stage (which is sabotaged by our external-DAC topology),
-keeping every OTHER chip DSP feature: MIC_GAIN, chip HPF,
-beamforming, NS, AGC. Software AEC3 in jasper-aec-bridge then
-handles echo cancellation using the host-side music chain as
-reference.
+The pairing with `SHF_BYPASS=1` exists because the chip's own AEC
+stage is sabotaged by our external-DAC topology (the chip mirrors
+the host's UAC playback volume into AEC_FAR_EXTGAIN, which in our
+setup attenuates the reference by an unpredictable amount).
+`SHF_BYPASS=1` removes the chip AEC from the path — and, as a
+side effect, also disables chip BF + NS + AGC. Software AEC3 in
+jasper-aec-bridge handles echo cancellation + residual NS
+host-side using the music chain as a clean digital reference.
+
+See [HANDOFF-aec.md](HANDOFF-aec.md) § "Production tuning
+(2026-05-16)" for the full rationale and the bridge-side knobs
+(REF_GAIN, MIC_GAIN, HPF, etc.) that complete the picture.
 
 ### Historical: why we previously used channel 2 (and why we stopped)
 

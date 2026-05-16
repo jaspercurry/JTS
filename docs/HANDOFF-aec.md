@@ -71,31 +71,25 @@ The HPF stack, layered defense:
 |---|---|---|---|---|
 | Chip mic ingress | 4th-order Butterworth | 125 Hz | XVF3800 `AEC_HPFONOFF`, set in `jasper-aec-init` | `JASPER_AEC_CHIP_HPF_HZ` env, values 0/70/125/150/180 |
 | AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, enabled in `jasper_aec3/src/aec3_binding.cpp` | always on (compile-time) |
-| Bridge ref pipeline | 2nd-order Butterworth | 100 Hz | `_ref_thread` in `jasper/cli/aec_bridge.py`, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 100 Hz |
+| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ref_thread` in `jasper/cli/aec_bridge.py`, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
 
-**Why two HPFs at 100 Hz are not redundant**: AEC3 applies its
+**Why HPFs on both legs are not redundant**: AEC3 applies its
 internal HPF to the **capture** (mic) signal only. The reference
 signal arrives untouched at AEC3's adaptive filter. Without the
-bridge-side ref HPF, AEC3 sees asymmetric inputs (HPF'd mic, full-
-band ref) and its matched filter wastes coefficients on an LF
-relationship that doesn't exist in the capture. Symmetric HPF at
-both legs is the documented design intent (see WebRTC commit
-"AEC3: High-pass filter delay estimator signals").
+bridge-side ref HPF, AEC3 sees asymmetric inputs and its matched
+filter wastes coefficients on an LF relationship that doesn't
+exist in the capture. Symmetric HPF at both legs is the documented
+design intent (see WebRTC commit "AEC3: High-pass filter delay
+estimator signals").
 
-**Why 125 Hz on the chip vs 70 Hz**: openWakeWord's preprocessor
-(Google `speech_embedding`) has a 60 Hz mel floor. 70 Hz is
-provably free (nulls only ~10 Hz of the lowest bin); 125 Hz nulls
-2-3 of 32 mel bins (small unverified risk to wake accuracy). We
-chose 125 Hz because XMOS ships it as their smart-speaker default
-and it provides more LF rejection at the source. If wake-word
-reliability regresses, drop to 70 Hz via the env var without a
-code change.
-
-**Why 100 Hz on the ref vs 125 Hz**: 100 Hz matches AEC3's
-internal capture HPF exactly. The reference doesn't pass through
-openWakeWord (it's subtracted away before the mic feeds the wake
-model), so there's no ML reason to push the cutoff higher; matching
-AEC3's 100 Hz keeps the matched filter aligned.
+**Why 125 Hz on both**: openWakeWord's preprocessor
+(Google `speech_embedding`) has a 60 Hz mel floor. 125 Hz nulls
+2-3 of 32 mel bins (small unverified risk to wake accuracy) but
+provides more LF rejection at the source and matches XMOS's
+shipped smart-speaker default. The ref HPF cutoff matches the
+chip-side mic HPF cutoff so AEC3 sees symmetric bands. If wake
+accuracy regresses, drop to 70 Hz via the env var without a code
+change (both `JASPER_AEC_CHIP_HPF_HZ` and `JASPER_AEC_REF_HPF_HZ`).
 
 The bridge→voice transport is **UDP localhost** (default
 `127.0.0.1:9876`), not snd-aloop. The original `LoopbackAEC`
@@ -105,7 +99,291 @@ kernel-state-corruption incident — see
 
 ---
 
-## The problem
+## Production tuning (2026-05-16) — the current state
+
+This is the authoritative section for "what's tuned, where, and
+why" in the AEC subsystem. It supersedes the "Tuning findings"
+section below (which captures the previous architecture and is
+retained for historical context).
+
+### Architecture in one diagram
+
+```
+4 mics → preamp → MIC_GAIN → AEC_HPFONOFF=125 Hz → [SHF_BYPASS=1: entire SHF block off]
+                                                          │
+                                                          ▼
+                                                   chip channel 1 carries
+                                                   raw-ish mic data
+                                                   (NO BF, NO NS, NO AGC,
+                                                    NO chip AEC; possibly
+                                                    post-MIC_GAIN per
+                                                    output mux routing)
+                                                       │
+                                                       ▼
+              jasper-aec-bridge:
+                ref = pcm.jasper_ref (plug-wrapped dsnoop on music chain)
+                     → resample 48k → 16k → HPF 125 Hz → REF_GAIN +0 dB
+                mic = chip ch 1 (16k mono, raw-ish)
+                     → AudioProcessing internal HPF 100 Hz
+                     → WebRTC AEC3 (does ALL the work: linear cancellation,
+                       residual suppression, internal NS at kModerate)
+                     → MIC_GAIN +6 dB
+                     → UDP 127.0.0.1:9876
+                                                                │
+                                                                ▼
+                                                       jasper-voice:
+                                                         UdpMicCapture
+                                                         → openWakeWord
+                                                         → real-time LLM
+```
+
+### Caveat: what `SHF_BYPASS=1` actually does
+
+When the chip's `SHF_BYPASS=1`, **the entire SHF block on the
+chip is removed from channels 0 and 1**, not just the AEC
+adaptive filter. SHF includes AEC + beamformer + post-SHF DSP
+(NS, NLP, AGC). So with SHF_BYPASS=1, channels 0/1 carry
+**raw-ish mic data**, similar to channels 2-5.
+
+Empirically verified 2026-05-16: with `SHF_BYPASS=1`, toggling
+`PP_MIN_NS` from 0.150 to 1.0 (NS off) and `PP_AGCONOFF` from
+1 to 0 changes channel 1's sub-bass band by **0.6 dB** — same
+order as the measurement noise on channel 2 (0.7 dB). The chip
+post-processing parameters do nothing when SHF_BYPASS=1.
+
+The HPF set via `AEC_HPFONOFF=2` may still apply (it lives at
+mic ingress before the SHF block), but BF / NS / AGC do not.
+
+The level difference between ch 1 (SHF_BYPASS=1) and ch 2 (raw
+mic 0) is about 1 dB across all bands — likely just MIC_GAIN
+being applied on ch 1 via the output mux but not on ch 2's
+Category 1 tap. The two channels are functionally similar.
+
+**Implication**: the "chip processing" we previously thought we
+were getting from channel 1 + SHF_BYPASS=1 was illusory. The
+performance win measured on 2026-05-16 came from `REF_GAIN=0`
+correcting the ref-mic level match for AEC3, NOT from chip BF /
+NS / AGC. If we ever want the chip's actual post-processing, we
+need `SHF_BYPASS=0` — which puts the chip's own AEC back in the
+signal path, and that AEC is incompatible with our external-DAC
+topology. Trade-off documented in "Lessons learned" below.
+
+### Tuning values, with rationale per knob
+
+| Knob | Production value | Where | Why this value |
+|---|---|---|---|
+| **Mic channel** | **1 (ASR beam, post-SHF tap)** | `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel choice. With our `SHF_BYPASS=1`, ch 1 effectively carries raw-ish mic data; the chip-processing benefit usually associated with ch 0/1 is gated on SHF_BYPASS=0. Channel 2 (explicit raw mic 0, Category 1) would be functionally similar in our config — see "Caveat" above. |
+| **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | Chip's own AEC requires the chip to drive the speaker via its own codec; we use an external USB DAC. Chip AEC mirrors host UAC volume into AEC_FAR_EXTGAIN and sabotages the reference signal in our topology. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. |
+| **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
+| **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ref_thread` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`. |
+| **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. Our raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ≈ mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
+| **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. |
+| **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | WebRTC's post-AEC AGC2 reshapes the speech envelope in a way openWakeWord's training distribution doesn't expect. Keep static gain instead. |
+| **AEC3 internal capture HPF** | 100 Hz 2nd-order Butter | `jasper_aec3/src/aec3_binding.cpp` | Enabled via `cfg.high_pass_filter.enabled = true`. Defense in depth with chip + ref HPFs. |
+| **AEC3 internal NS** | `kModerate` | binding | Provides the noise/music suppression that the chip's SHF NS would have given us, but with SHF_BYPASS=1 doesn't. |
+
+### Measured outcome at this tuning
+
+Bridge log during AirPlay music playback:
+
+```
+ref=1675 mic=2549 aec=383 → attenuation=-16.5 dB (ref_clip=0.00%)
+ref=2482 mic=3246 aec=599 → attenuation=-14.7 dB (ref_clip=0.00%)
+ref=2581 mic=3693 aec=460 → attenuation=-18.1 dB (ref_clip=0.00%)
+ref=2614 mic=3822 aec=403 → attenuation=-19.5 dB (ref_clip=0.00%)
+```
+
+Steady-state attenuation -14 to -20 dB. Zero ref clipping. Stable
+across consecutive 5-second windows (previous architecture
+oscillated between -0.3 dB and -20.8 dB chaotically).
+
+### The REF_GAIN trap (don't repeat this)
+
+`REF_GAIN_DB=25` was the production value for a year, dating back
+to when the bridge consumed raw mic 0 (channel 2). At that point
+there was no chip AGC on the mic path, so the mic side arrived at
+~-50 dBFS while the digital ref was at full scale — and AEC3's
+adaptive filter needed roughly comparable levels for good
+convergence. +25 dB on the ref closed that gap.
+
+After the bridge moved to chip channel 1 (chip AGC normalizes mic
+to ~-24 dBFS), keeping `REF_GAIN_DB=25` drove the digital ref
+into 11–44% hard-clipping during music peaks. AEC3 was operating
+on a saturated reference and produced wildly variable attenuation
+(observed -0.3 to -20.8 dB across consecutive 5 s windows).
+
+**Rule of thumb**: if you change `MIC_CHANNEL_INDEX` (in
+`jasper/mics/xvf3800.py`), `REF_GAIN_DB` almost certainly needs to
+change too. The two are coupled. Production today: ch 1 + REF_GAIN=0.
+If anyone reverts to channel 2 (raw mic) for any reason,
+`REF_GAIN_DB` must be raised back to ~25 to compensate for the
+missing chip AGC.
+
+---
+
+## Channel choice — how we got here
+
+This section documents an architectural decision that previously
+took multiple sessions to investigate. Future debugging: consult
+[HANDOFF-xvf3800.md §3](HANDOFF-xvf3800.md) for the per-channel
+DSP reference table BEFORE making channel-choice changes.
+
+### Why we used to use channel 2 (raw mic 0)
+
+The original design for the WebRTC AEC3 bridge captured chip
+channel 2 = raw mic 0. The stated rationale was "AEC3 wants clean
+linear input; the chip's AGC introduces non-linearity that could
+confuse the adaptive filter." Defensible in isolation, but:
+
+1. **No public XVF3800 deployment does this.** Every reference
+   design we could find (Seeed's own examples, formatBCE ESPHome
+   integration, Pollen Robotics Reachy Mini) uses chip channel 0
+   or 1 — the chip-processed beam output.
+2. **Channels 2–5 bypass every chip DSP stage, not just AEC.**
+   Per XMOS User Guide §3.6.1 Table 3.2, "Category 1: Raw
+   microphone data — before amplification, no system delay
+   applied." That includes MIC_GAIN, HPF, beamforming, NS, AGC.
+   We were giving up the entire chip pipeline to preserve
+   linearity that AEC3's residual echo suppressor is designed to
+   tolerate.
+3. **Empirically verified 2026-05-15**: toggling chip NS/AGC
+   parameters caused 1.5–8 dB of variation on channels 0/1 and
+   0.0–0.4 dB on channels 2–5. Channels 2–5 are inert to every
+   chip-side parameter.
+
+### Why we switched to channel 1 (ASR beam) on 2026-05-15
+
+The decision was made on the assumption — based on the XMOS audio
+pipeline diagram and our reading of the SHF_BYPASS docs — that
+channel 1 with `SHF_BYPASS=1` would give us **chip BF + NS + AGC +
+HPF** without the chip's AEC. That assumption turned out to be
+wrong (see Caveat above): SHF_BYPASS bypasses the entire SHF block,
+not just the AEC adaptive filter. So channel 1 with SHF_BYPASS=1
+is effectively raw-ish mic data — similar to channel 2.
+
+That said, the architecture as deployed is still a win over the
+previous state because:
+
+- **`REF_GAIN=0` is correctly tuned for this raw-ish input.** The
+  previous architecture's `REF_GAIN=25` was wrong for raw mics too
+  (mismatched against AEC3's design point given our specific
+  acoustic path levels). Both architectures used a raw-ish mic;
+  the new one just has the gain knob in the right place.
+- **Channel 1 has chip MIC_GAIN applied** (the output mux preserves
+  MIC_GAIN even with SHF_BYPASS=1; channel 2 does not). The level
+  difference is small (~1 dB) but channel 1 is slightly more
+  predictable.
+- **`AEC_HPFONOFF=2` (125 Hz HPF) still applies** to ch 0/1 with
+  SHF_BYPASS=1 because the HPF lives at mic ingress, before the
+  SHF block. Channel 2 has no HPF.
+
+If we ever want the chip's actual BF / NS / AGC, the path is
+`SHF_BYPASS=0` — but that puts the chip's AEC back in the signal
+path, and that AEC is incompatible with our external-DAC topology.
+Worth investigating in a future session: is there a way to keep
+SHF_BYPASS=0 (chip processing active) while neutralizing chip-AEC's
+self-sabotage? Possible candidate: write a known-good reference
+into the chip's USB-IN (mirror of the host's music chain) — but
+this re-introduces all the volume-mirroring complications that
+chip AEC has in our topology.
+
+### Why SHF_BYPASS=1 instead of relying on chip AEC
+
+In normal XVF3800 deployments, the chip drives the speaker via
+its own AIC3104 codec, and the chip's AEC handles echo
+cancellation. In JTS, the speaker is driven by an external Apple
+USB-C dongle. The chip's AEC reference signal arrives via the
+chip's USB-IN endpoint, and the chip's firmware auto-mirrors the
+host's UAC playback volume control into `AEC_FAR_EXTGAIN`. In our
+topology, the host writes essentially zero to the chip's USB-IN
+(we play to the dongle, not the chip), so the chip thinks the
+reference is silent and the AEC adaptive filter freezes with
+useless coefficients.
+
+`SHF_BYPASS=1` removes the entire SHF stage from the signal path
+on channels 0/1 — AEC, BF, NS, AGC all become passthrough.
+Software AEC3 in jasper-aec-bridge handles all post-mic
+processing (echo cancellation + residual noise suppression via
+AEC3's internal NS at kModerate).
+
+---
+
+## Lessons learned (2026-05-15/16)
+
+Captured here so future sessions don't repeat the mistakes.
+
+1. **Read primary docs before experimenting.** Channel layout,
+   per-parameter scope, and chip pipeline ordering are all
+   documented in the XMOS User Guide v3.2.1 (XM-014888-PC).
+   Multiple sessions were spent rediscovering things that are in
+   §3.6.1 Table 3.2 and §4.1 Fig. 4.1. The user pushed back
+   correctly: *"there's an entire GitHub repo, document, and
+   website, and there are so many people that have worked with
+   this microphone before. Why are we guessing?"* — and the answer
+   was that nobody on the implementation side had consulted the
+   primary sources. Future debug sessions: **start with primary
+   sources, use empirical testing to verify** rather than as the
+   first line of investigation.
+
+2. **The mic is consumed by software, not humans.** Tune for
+   wake-word + ASR accuracy, not naturalness. See memory note
+   `project_mic_consumed_by_robots_only`. Aggressive band-limiting
+   is on-brand. Phase distortion at sub-200 Hz is invisible to
+   mel-spectrogram features. AGC compression is OK for ASR models
+   trained on similar distributions.
+
+3. **MIC_CHANNEL_INDEX and REF_GAIN_DB are coupled.** Any change
+   to which channel the bridge consumes requires a corresponding
+   change to REF_GAIN_DB. Channel-2 (raw mic, no AGC) needs
+   REF_GAIN ≈ +25 dB to align levels with the digital ref.
+   Channel-1 (chip AGC'd) needs REF_GAIN ≈ 0 dB. Mismatched gain
+   causes ref clipping → chaotic AEC behavior.
+
+4. **`SHF_BYPASS=1` bypasses the entire SHF block, not just AEC.**
+   We discovered this empirically on 2026-05-16 after initially
+   claiming (incorrectly, in this very document on 2026-05-15) that
+   SHF_BYPASS only removed the AEC adaptive filter. The correct
+   reading: SHF includes AEC + beamformer + NS + AGC, all gated on
+   the same bypass flag. With SHF_BYPASS=1, channels 0/1 carry
+   raw-ish mic data; the only chip processing that survives is the
+   AEC_HPFONOFF stage (which sits at mic ingress, before SHF). If
+   you want chip BF / NS / AGC, you need SHF_BYPASS=0 — and in our
+   external-DAC topology that puts chip AEC back in the path.
+
+5. **AEC3 wants symmetric mic/ref filtering.** WebRTC's commit
+   "AEC3: High-pass filter delay estimator signals" documents that
+   matched HPFs on both legs improve the matched-filter delay
+   estimator's adaptation in noisy environments. Our bridge applies
+   AEC3's internal capture HPF automatically; the ref-side HPF in
+   `_ref_thread` brings the ref to the same band.
+
+6. **`pcm.jasper_capture` (dsnoop) must be wrapped in `plug:`**
+   when consumed by clients that lock a different rate than the
+   loopback's currently-locked rate. snd-aloop is first-opener-
+   wins; when shairport opens it at 44.1 kHz (post PR #75), the
+   bridge requesting 48 kHz from a raw dsnoop returns silence
+   instead of resampled audio. `plug:jasper_capture` (exposed as
+   `pcm.jasper_ref` in our asoundrc) auto-converts. This bug
+   destroyed AEC silently in production for ~4 days before
+   diagnosis on 2026-05-15.
+
+7. **Doctor checks should verify bridge OUTPUT quality, not just
+   service health.** The 4-day silent-AEC outage went undetected
+   because doctor only checked `systemctl is-active jasper-aec-
+   bridge` — the bridge WAS running, it just wasn't producing
+   useful output. A check that parses the bridge's `rms over` log
+   lines (verifying `ref` is non-zero during music and `attenuation`
+   reaches a healthy range) would have surfaced the bug immediately.
+   **Queued as follow-up.**
+
+8. **`jasper-aec-init` doesn't re-run after a code deploy.** It's
+   `Type=oneshot` with `RemainAfterExit=yes`, so the bridge unit's
+   `Wants=jasper-aec-init` only triggers it on fresh boot. After
+   deploying changes to chip-side params (HPF cutoff, SHF_BYPASS,
+   etc.), the operator must manually `systemctl restart
+   jasper-aec-init` to apply them. **Queued as follow-up** — fix
+   would be one line in `deploy/install.sh` to
+   `systemctl try-restart jasper-aec-init` after the rsync.
 
 A smart speaker that **plays music** and **listens for a wake word**
 in the same physical box has a fundamental signal-processing
@@ -388,8 +666,10 @@ pcm.jasper_capture  ← type dsnoop on Loopback,1,sub0
             survival path added 2026-05-15)
             captures jasper_ref (48k stereo) for FAR-END REFERENCE
             captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
-            takes channel 2 of the chip capture (raw mic 0)
-            downsamples ref 48k → 16k mono on left
+            takes channel 1 (ASR beam, chip BF+NS+AGC+HPF applied,
+              chip AEC disabled via SHF_BYPASS=1). Was channel 2
+              (raw mic 0) until 2026-05-15 — see HANDOFF-xvf3800.md §3.
+            downsamples ref 48k → 16k mono on left, HPF at 125 Hz
             runs WebRTC AEC3 (10ms windows) frame by frame
             sends AEC'd mono 16k via UDP → 127.0.0.1:9876
                                               │
@@ -660,7 +940,16 @@ Files involved in the AEC subsystem:
 
 ---
 
-## Tuning findings (2026-05-08)
+## Tuning findings (2026-05-08) — HISTORICAL
+
+> **⚠️ HISTORICAL.** This section documents tuning for the
+> previous architecture (raw mic 0 / channel 2, no chip processing
+> on the mic path). The "production config" recommended below
+> (`REF_GAIN_DB=25, AGC2=0`) is **no longer current** — see
+> [Production tuning (2026-05-16)](#production-tuning-2026-05-16--the-current-state)
+> for the new authoritative values. Retained for context: the
+> sweep matrix below shows AEC3 behavior on a raw-mic input, which
+> may be useful if someone ever needs to revisit that architecture.
 
 After landing the WebRTC AEC3 engine option, we ran a structured
 tuning pass to characterize attenuation against the actual hardware.
