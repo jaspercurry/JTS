@@ -138,7 +138,7 @@ when the configured AEC mic is present with 6-channel firmware — see
   flips between Gemini Live, OpenAI Realtime (`gpt-realtime-2`), and
   xAI Grok Voice Agent. See
   [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)
-- ✅ Web setup wizard at `https://jts.local/voice/` — paste API keys,
+- ✅ Web setup wizard at `http://jts.local/voice/` — paste API keys,
   pick the active provider, save. Writes
   `/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
   `jasper-voice`
