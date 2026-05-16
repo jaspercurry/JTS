@@ -995,6 +995,13 @@ class WakeLoop:
                 cfg.mic_mute_state_path,
             )
 
+        # Pre-render the two-tone listening chirps once. Synthesis is
+        # pure (no instance state used), so caching the PCM bytes
+        # keeps the wake-to-audio hot path off any per-call cost.
+        # Same shape `TtsPlayout.write()` accepts (24 kHz int16 mono).
+        self._chirp_on_pcm: bytes = self._generate_listening_chirp(going_on=True)
+        self._chirp_off_pcm: bytes = self._generate_listening_chirp(going_on=False)
+
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
         # moment the user stops speaking — not at turn cleanup. Without
@@ -1346,9 +1353,11 @@ class WakeLoop:
 
     async def _play_listening_chirp(self, *, going_on: bool) -> None:
         """Best-effort. If the TTS stream isn't ready, the wake or
-        end-of-turn happens anyway — never raise."""
+        end-of-turn happens anyway — never raise. PCM is pre-rendered
+        in __init__ to keep this off the wake hot path."""
         try:
-            await self._tts.write(self._generate_listening_chirp(going_on=going_on))
+            pcm = self._chirp_on_pcm if going_on else self._chirp_off_pcm
+            await self._tts.write(pcm)
         except Exception as e:  # noqa: BLE001
             logger.warning("listening chirp failed: %s", e)
 
@@ -1598,10 +1607,6 @@ class WakeLoop:
                         silence_ms,
                     )
                     self._input_ended = True
-                    asyncio.create_task(
-                        self._play_listening_chirp(going_on=False),
-                        name="listening-chirp-off",
-                    )
                     try:
                         await self._turn.end_input()
                     except Exception as e:  # noqa: BLE001
@@ -1652,10 +1657,6 @@ class WakeLoop:
         if self._input_ended:
             return "ALREADY_ENDED"
         self._input_ended = True
-        asyncio.create_task(
-            self._play_listening_chirp(going_on=False),
-            name="listening-chirp-off",
-        )
         try:
             await self._turn.end_input()
             return "OK"
@@ -1841,6 +1842,14 @@ class WakeLoop:
                 tokens, cost, bytes_sent, chunks_received,
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
+
+        # "Done listening" chirp — bookends the wake chirp. Awaited so
+        # it lands in the TTS queue before the unduck below; queueing
+        # after any LLM-response tail still in the buffer means the
+        # cue order is: response → chirp → music returns. Covers all
+        # paths into _end_turn: VAD silence, hard cap (wake without
+        # speech), dial release, idle-watchdog turn-complete.
+        await self._play_listening_chirp(going_on=False)
 
         await self._ducker.restore()
         self._volume_coordinator.note_voice_session(False)
