@@ -471,6 +471,16 @@ class TtsPlayout:
 
     async def __aenter__(self) -> "TtsPlayout":
         import sounddevice as sd  # Pi-side dep, lazy — see module top.
+        # Eagerly warm scipy.signal so the first runtime write() doesn't
+        # pay ~1 s of module-import cost on the event loop. Before this,
+        # the first wake of a fresh daemon paid for the import inside
+        # write()'s polyphase resample step — blocking the loop for
+        # ~941 ms and delaying _acquire_and_drain so a fast-talker's
+        # whole question ended up in the acquire-buffer (sent to the
+        # LLM but never seen by Silero, which then aborted the turn).
+        # See voice_daemon._handle_wake_frame + the sched_lag breakdown
+        # in _begin_turn for the diagnostic that surfaced this.
+        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
 
         # Open as STEREO even though our input is mono. The dongle's
         # dmix (`pcm.jasper_out` in /root/.asoundrc) is configured at
@@ -534,7 +544,10 @@ class TtsPlayout:
             # Polyphase resample with built-in anti-alias filter. Same
             # reasoning as MicCapture's downsampler — naive zero-stuff
             # would create high-frequency images.
-            from scipy.signal import resample_poly  # local: keep startup fast
+            # scipy.signal is pre-warmed in __aenter__ — this `from`
+            # statement is a sys.modules cache lookup, not a real
+            # import. Keep as-is to bind the symbol into local scope.
+            from scipy.signal import resample_poly
             arr = resample_poly(arr, up=self._upsample, down=1)
         # Mono → stereo: each mono sample becomes a (L, R) pair with
         # L=R. np.repeat(arr, 2) interleaves correctly: [s0, s0, s1,
