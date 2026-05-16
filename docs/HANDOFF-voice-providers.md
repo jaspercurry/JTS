@@ -13,7 +13,7 @@ Three ways to switch backends, any of them work:
 # 1. Web UI — open the speaker's web settings, paste keys, pick a
 #    provider in the radio group, hit save. The page is nginx-routed
 #    on the same host that serves /spotify/.
-https://jts.local/voice/
+http://jts.local/voice/
 
 # 2. Helper script (laptop → Pi over SSH):
 bash scripts/switch-voice-provider.sh openai
