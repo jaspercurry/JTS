@@ -811,7 +811,8 @@ def _aec_mode_setting() -> str:
 
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
-    chip's raw mic 0 (channel 2 of 6-ch firmware), with the
+    chip's ASR-tap channel (1 of the 6-ch firmware, see
+    jasper/mics/xvf3800.py MIC_CHANNEL_INDEX), with the
     renderer→camilla loopback as far-end reference. Output goes over
     UDP localhost, which jasper-voice consumes as its mic source.
 
@@ -874,6 +875,153 @@ def check_aec_bridge_running() -> CheckResult:
 # The bridge now sends over UDP localhost — no kernel-side state.
 # `check_mic_capture` already verifies the new transport end-to-end
 # by exercising whatever JASPER_MIC_DEVICE points at.
+
+
+# Compiled once: matches the bridge's periodic RMS log lines, e.g.
+# "rms over 5.0s: ref=15694 mic=2077 aec=311 → attenuation=-16.5 dB (...)".
+_AEC_RMS_RE = re.compile(
+    r"rms over [\d.]+s: ref=(\d+) mic=(\d+) aec=(\d+) → "
+    r"attenuation=(-?\d+\.\d+) dB"
+)
+
+# Thresholds for `check_aec_bridge_output_health`.
+# Ambient room (no music) puts mic at ~600 RMS at our chip-side AGC
+# config; music playback puts it in the 1500-3000+ range. Threshold
+# 1500 distinguishes "music playing" from "idle".
+_AEC_MIC_MUSIC_THRESHOLD = 1500  # RMS
+# Reference is essentially silent below this. Healthy ref during
+# music is 1000+ RMS.
+_AEC_REF_SILENT_THRESHOLD = 50
+# Drift warning rate that flags as abnormal. The 2026-05-15 dsnoop
+# rate-lock state produced ~190 drift warnings/min (~955 in 5 min);
+# healthy ops have ~3 per 5 min from clock skew tolerated by the
+# bridge.
+_AEC_DRIFT_WARN_THRESHOLD = 30  # in 5 min
+
+
+def check_aec_bridge_output_health() -> CheckResult:
+    """Verify the bridge isn't silently producing garbage. The bare
+    `is-active` check passes whenever the process is running — but
+    the bridge can be running and STILL be in a degraded state:
+    1) the AEC reference path is delivering silence (the May 2026
+       dsnoop rate-lock incident, which went undetected for 4 days
+       because doctor only checked service liveness), or 2) the
+       ref/mic clocks have drifted apart so far that the bridge
+       drains stale ref frames continuously. Both modes leave the
+       wake detector consuming an un-cancelled mic with music
+       blasting through it, but `systemctl is-active` says ok.
+
+    This check parses the bridge's last 5 min of `rms over` log
+    lines + drift warnings and flags the two failure modes by
+    pattern."""
+    is_active = _run(
+        ["systemctl", "is-active", "jasper-aec-bridge.service"]
+    ).stdout.strip()
+    if is_active != "active":
+        # Already covered by check_aec_bridge_running.
+        return CheckResult(
+            "AEC bridge output", "ok",
+            "(bridge not running — see AEC bridge service check above)",
+        )
+
+    proc = _run(
+        ["journalctl", "-u", "jasper-aec-bridge.service",
+         "--since", "5 min ago", "--no-pager", "--output", "cat"],
+        timeout=8.0,
+    )
+    if proc.returncode != 0:
+        return CheckResult(
+            "AEC bridge output", "warn",
+            f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
+        )
+
+    drift_count = 0       # "drained N stale ref frames (drift)" warnings
+    silent_ref_count = 0  # rms windows where mic shows signal but ref=0
+    total_windows = 0
+    healthy_windows = 0   # rms windows with real AEC work happening
+
+    for line in proc.stdout.split("\n"):
+        if "stale ref frames" in line and "drift" in line:
+            drift_count += 1
+            continue
+        m = _AEC_RMS_RE.search(line)
+        if not m:
+            continue
+        ref = int(m.group(1))
+        mic = int(m.group(2))
+        attn_db = float(m.group(4))
+        total_windows += 1
+        # Mic above _AEC_MIC_MUSIC_THRESHOLD = music is acoustically
+        # playing through the speakers (ambient room is ~600 RMS,
+        # well below). ref < _AEC_REF_SILENT_THRESHOLD = bridge's
+        # reference path is effectively silent. Music in mic + silent
+        # ref => reference path is broken (the 2026-05-15 dsnoop
+        # rate-lock signature). Ambient idle won't trigger this
+        # because mic is below threshold.
+        if mic > _AEC_MIC_MUSIC_THRESHOLD and ref < _AEC_REF_SILENT_THRESHOLD:
+            silent_ref_count += 1
+        # "Healthy" = the bridge is doing real AEC work. Music in
+        # mic + meaningful attenuation. Below the music threshold
+        # we can't tell whether attenuation is meaningful (AEC
+        # output at -16 dB of a quiet input is just noise floor).
+        if mic > _AEC_MIC_MUSIC_THRESHOLD and attn_db <= -8.0:
+            healthy_windows += 1
+
+    # Failure mode 1: ref path broken. The 2026-05-15 dsnoop rate-
+    # lock incident produced exactly this — `mic` was 2000+ from
+    # AirPlay music but `ref` was 0 because the dsnoop's 48 kHz
+    # config mismatched shairport's 44.1 kHz lock.
+    if silent_ref_count >= 5:
+        return CheckResult(
+            "AEC bridge output", "fail",
+            f"{silent_ref_count} recent 5 s windows show mic>200 RMS "
+            f"with ref<50 RMS — bridge's reference path is delivering "
+            f"silence while the mic captures audio. AEC can't cancel "
+            f"without a reference. Common cause: pcm.jasper_capture "
+            f"dsnoop rate-locked to a renderer's native rate that "
+            f"doesn't match the dsnoop's declared slave rate. See "
+            f"docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+        )
+
+    # Failure mode 2: continuous drift warnings = severe clock
+    # skew between ref and mic capture, or rate mismatch between
+    # the loopback's actual rate and the bridge's expected REF_RATE.
+    if drift_count > _AEC_DRIFT_WARN_THRESHOLD:
+        return CheckResult(
+            "AEC bridge output", "warn",
+            f"{drift_count} ref-drift warnings in last 5 min "
+            f"(healthy baseline ~15 per 5 min). The ref capture is "
+            f"producing samples faster than the mic capture is "
+            f"consuming them — usually a rate mismatch between the "
+            f"music chain loopback and the bridge's expected REF_RATE. "
+            f"Check /proc/asound/Loopback/pcm0p/sub0/hw_params; "
+            f"AEC effectiveness degrades when drift is severe.",
+        )
+
+    # No log windows = bridge restarted within the last 5 min OR
+    # journal isn't capturing the level (unlikely on default config).
+    # Not a failure, just nothing to assess.
+    if total_windows == 0:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            "no recent RMS windows logged "
+            "(bridge may have just started)",
+        )
+
+    # All windows quiet (mic and ref both below threshold) — speaker
+    # has been idle, nothing to assess. Not a failure.
+    if healthy_windows == 0 and silent_ref_count == 0:
+        return CheckResult(
+            "AEC bridge output", "ok",
+            f"no music activity in last 5 min "
+            f"({total_windows} log windows; no AEC work to evaluate)",
+        )
+
+    return CheckResult(
+        "AEC bridge output", "ok",
+        f"{healthy_windows}/{total_windows} recent windows show real AEC "
+        f"work (mic>200 + attenuation≤-8 dB); drift={drift_count}",
+    )
 
 
 def check_xvf_firmware_6ch() -> CheckResult:
@@ -1048,6 +1196,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         lambda: check_spend_cap(cfg),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
+        check_aec_bridge_output_health,
         check_xvf_firmware_6ch,
         check_xvf_mixer_state,
         # Rotary dial: avahi advertising the control service so the
