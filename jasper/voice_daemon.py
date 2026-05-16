@@ -37,6 +37,7 @@ from .usage import SpendCap, UsageStore, pricing_for_provider
 from .voice.session import LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
+from .mic_mute_persistence import read_mic_muted, write_mic_muted
 from .volume_persistence import (
     DEFAULT_ANCHOR_DBFS,
     VolumePersistence,
@@ -975,11 +976,19 @@ class WakeLoop:
         # loop drains frames from the mic queue but skips both wake
         # detection and session forwarding — frames never reach
         # openWakeWord, and any active session is ended at the moment
-        # of mute so the user gets "stop NOW" semantics. Runtime-only
-        # by design: a daemon restart un-mutes. Persisting it would
-        # risk the user muting once, forgetting, and the speaker
-        # silently never responding to "Hey Jarvis" after a reboot.
-        self._mic_muted: bool = False
+        # of mute so the user gets "stop NOW" semantics. The state is
+        # persisted to mic_mute_state_path so it survives daemon
+        # restarts (deploy, watchdog, AEC reconciler, web-wizard saves);
+        # mute is a privacy promise and a silent un-mute on every
+        # restart broke that promise. The dashboard's mic chip surfaces
+        # the persisted state so users aren't left wondering why wake
+        # isn't responding.
+        self._mic_muted: bool = read_mic_muted(cfg.mic_mute_state_path)
+        if self._mic_muted:
+            logger.info(
+                "mic mute: restored from %s (mic is muted at startup)",
+                cfg.mic_mute_state_path,
+            )
 
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
@@ -1305,6 +1314,7 @@ class WakeLoop:
             except Exception as e:  # noqa: BLE001
                 logger.warning("ending turn on mic mute: %s", e)
         self._mic_muted = True
+        write_mic_muted(self._cfg.mic_mute_state_path, True)
         logger.info("event=mic.mute")
         await self._play_mute_click(going_on=False)
         return "ok"
@@ -1314,6 +1324,7 @@ class WakeLoop:
         if not self._mic_muted:
             return "ok"
         self._mic_muted = False
+        write_mic_muted(self._cfg.mic_mute_state_path, False)
         logger.info("event=mic.unmute")
         await self._play_mute_click(going_on=True)
         return "ok"

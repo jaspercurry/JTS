@@ -207,6 +207,8 @@ class Config:
     volume_regress_safe_high_pct: int
     volume_first_boot_default_pct: int
 
+    mic_mute_state_path: str
+
     voice_control_socket: str
 
     # Timer persistence — SQLite DB tracking active kitchen timers
@@ -568,6 +570,13 @@ class Config:
             # state file got deleted / corrupted).
             volume_first_boot_default_pct=_env_int(
                 "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", 50,
+            ),
+            # Persistent mic-mute file. Restored at WakeLoop init so a
+            # daemon restart (deploy, web-wizard save, watchdog) doesn't
+            # silently un-mute. Default lives under StateDirectory=jasper.
+            mic_mute_state_path=_env(
+                "JASPER_MIC_MUTE_STATE_PATH",
+                "/var/lib/jasper/mic_mute.env",
             ),
             # Unix-domain socket where voice_daemon listens for external
             # session triggers (dial hold-to-talk via jasper-control).
