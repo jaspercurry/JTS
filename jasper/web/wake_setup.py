@@ -316,8 +316,18 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _redirect(self, location: str) -> None:
+            # Content-Length: 0 is load-bearing despite the empty body.
+            # BaseHTTPRequestHandler defaults to HTTP/1.0 and doesn't
+            # signal end-of-response on a body-less reply, so nginx
+            # (which proxies us over HTTP/1.0 too) keeps the upstream
+            # connection open waiting for either a body or a close —
+            # adding ~5 s of latency to every redirect. Observed on
+            # PR #117 when the Save button felt unresponsive. With
+            # Content-Length: 0, nginx releases the connection
+            # immediately and the browser sees the redirect in ms.
             self.send_response(HTTPStatus.SEE_OTHER)
             self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
             self.end_headers()
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
