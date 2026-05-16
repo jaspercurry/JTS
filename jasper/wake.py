@@ -26,8 +26,16 @@ _cvm_stub = _types.ModuleType("openwakeword.custom_verifier_model")
 _cvm_stub.train_custom_verifier = None  # name preserved for openwakeword's __all__
 sys.modules.setdefault("openwakeword.custom_verifier_model", _cvm_stub)
 
+# `openwakeword.model` is lazy-imported inside WakeWordDetector.__init__ so this
+# module can be imported on a dev machine that doesn't have openwakeword in its
+# venv (parallel to the lazy-import of `sounddevice` in jasper.audio_io). Tests
+# that only exercise pure-Python helpers in this file — or that import
+# voice_daemon transitively — work without the Pi-side dep. The sys.modules
+# stub above MUST still happen at module-top: it has to be in place before
+# openwakeword's __init__.py runs (which happens on the first `Model` import),
+# otherwise sklearn gets pulled in (~67 MB resident on a Pi 5).
+
 import numpy as np
-from openwakeword.model import Model
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +48,8 @@ class WakeWordDetector:
     """
 
     def __init__(self, model_name: str, threshold: float = 0.5) -> None:
+        from openwakeword.model import Model  # lazy, see module top.
+
         # model_name can be a stock name like "hey_jarvis" (resolved by
         # openWakeWord's bundled models) or a path to a custom .onnx file.
         # inference_framework="onnx" is required: openwakeword 0.6.0 defaults
