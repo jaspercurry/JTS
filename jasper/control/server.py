@@ -686,6 +686,36 @@ def _make_handler(
             camilla_host=camilla_host, camilla_port=camilla_port,
         )
 
+    async def _observe_op(source_name: str, percent: int) -> int:
+        """Route a source-observed volume change (e.g. host slider on
+        the USB gadget) through the coordinator's echo-prevented
+        observe path. Unknown source names fall back to the
+        authoritative set path so a future client that posts a fresh
+        source name doesn't silently no-op.
+
+        Returns the level the coordinator ended up at — equal to
+        `percent` on normal observe (no echo) or the prior value if
+        the observation was treated as an echo of our own write."""
+        # Lazy import to avoid pulling the full volume_coordinator
+        # graph into the import path of server.py's module load.
+        from ..volume_coordinator import Source
+        try:
+            source_enum = Source(source_name)
+        except ValueError:
+            # Unknown source — treat as authoritative.
+            return await _set_op(percent)
+
+        async def _op(coord):
+            await coord.observe_source_volume(source_enum, percent)
+            # The coordinator's level either took our value or stayed
+            # put (echo-suppressed). Return whatever's now canonical
+            # for the client to render.
+            return coord.get_listening_level()
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
+
     async def _adjust_op(delta_percent: int):
         async def _op(coord):
             return await coord.adjust_listening_level(delta_percent)
@@ -968,15 +998,29 @@ def _make_handler(
                         {"error": "missing db or percent"}, status=400,
                     )
                     return
+                # Optional `source` field marks the caller as an
+                # observed source-side change (e.g. host moved its
+                # volume slider on the USB gadget). Route through
+                # observe_source_volume so the coordinator's echo
+                # window and source-active gate apply. Without
+                # `source`, the caller is treated as authoritative
+                # (dial twist, voice "louder", etc.).
+                source_name = body.get("source")
                 try:
-                    new_pct = asyncio.run(_set_op(target_pct))
+                    if source_name:
+                        new_pct = asyncio.run(
+                            _observe_op(str(source_name), target_pct),
+                        )
+                    else:
+                        new_pct = asyncio.run(_set_op(target_pct))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("set volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
                 logger.info(
-                    "event=volume.set new_pct=%d client=%s",
-                    new_pct, self.address_string(),
+                    "event=volume.set new_pct=%d source=%s client=%s",
+                    new_pct, source_name or "authoritative",
+                    self.address_string(),
                 )
                 self._send_json(self._volume_payload(new_pct))
                 return

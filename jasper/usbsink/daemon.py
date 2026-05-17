@@ -39,6 +39,10 @@ from .state_publisher import (
     DEFAULT_STATE_PATH as STATE_DEFAULT_PATH,
     StatePublisher,
 )
+from .volume_bridge import (
+    DEFAULT_CONTROL_URL as VOLUME_DEFAULT_CONTROL_URL,
+    VolumeBridge,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +78,7 @@ class DaemonConfig:
     state_path: str = STATE_DEFAULT_PATH
     preempt_port: int = PREEMPT_DEFAULT_PORT
     preempt_state_path: str = PREEMPT_DEFAULT_STATE_PATH
+    control_url: str = VOLUME_DEFAULT_CONTROL_URL
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -102,6 +107,9 @@ class DaemonConfig:
             preempt_state_path=os.environ.get(
                 "JASPER_USBSINK_PREEMPT_STATE_PATH",
                 PREEMPT_DEFAULT_STATE_PATH,
+            ),
+            control_url=os.environ.get(
+                "JASPER_USBSINK_CONTROL_URL", VOLUME_DEFAULT_CONTROL_URL,
             ),
         )
 
@@ -137,6 +145,10 @@ class UsbSinkDaemon:
         self._state_publisher = StatePublisher(
             self._bridge,
             state_path=config.state_path,
+        )
+        self._volume_bridge = VolumeBridge(
+            card_name=config.capture_device,
+            control_url=config.control_url,
         )
         self._stop = asyncio.Event()
         self._last_captured_seen = 0
@@ -196,13 +208,18 @@ class UsbSinkDaemon:
 
         publish_task = asyncio.create_task(self._state_publisher.run())
         diag_task = asyncio.create_task(self._diagnostic_loop(heartbeat))
+        # Volume bridge runs in its own task — disabled-friendly: if
+        # the mixer controls aren't present, the bridge logs and
+        # returns, the rest of the daemon keeps going. So a botched
+        # gadget descriptor doesn't take down the audio bridge.
+        volume_task = asyncio.create_task(self._volume_bridge.run())
         try:
             await self._stop.wait()
         finally:
             logger.info("event=usbsink.daemon_stopping")
-            for task in (diag_task, publish_task):
+            for task in (diag_task, publish_task, volume_task):
                 task.cancel()
-            for task in (diag_task, publish_task):
+            for task in (diag_task, publish_task, volume_task):
                 try:
                     await task
                 except asyncio.CancelledError:
