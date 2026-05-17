@@ -67,6 +67,15 @@ class Source(str, Enum):
     AIRPLAY = "airplay"
     SPOTIFY = "spotify"
     BLUETOOTH = "bluetooth"
+    # USB sink (jasper-usbsink): a connected host computer playing
+    # audio through the UAC2 gadget. Volume-wise USBSINK behaves like
+    # AIRPLAY — camilla-as-master. The host's slider is observed via
+    # ALSA mixer events on the gadget's "PCM Capture Volume" and
+    # routed through observe_source_volume; outbound dial/voice
+    # changes go through _set_camilla without touching the gadget
+    # mixer (no bidirectional sync). See docs/HANDOFF-usbsink.md
+    # §3.2 for why one-way is the chosen UX.
+    USBSINK = "usbsink"
     IDLE = "idle"  # nothing active → camilla main_volume drives output
 
 
@@ -393,6 +402,14 @@ class VolumeCoordinator:
             level = spotify_percent_to_listening_level(int(native_value))
         elif source == Source.BLUETOOTH:
             level = bt_volume_to_listening_level(int(native_value))
+        elif source == Source.USBSINK:
+            # USB gadget volume_bridge POSTs percent directly (already
+            # normalized 0-100 from the gadget mixer's raw range).
+            # Map identity to listening_level. The translation work
+            # happens client-side in jasper.usbsink.volume_bridge so
+            # the coordinator doesn't need to know about ALSA mixer
+            # units or the gadget's range.
+            level = max(0, min(100, int(native_value)))
         else:
             logger.debug("observe_source_volume: unknown source %s", source)
             return
@@ -461,7 +478,11 @@ class VolumeCoordinator:
             elif source == Source.BLUETOOTH:
                 await self._set_bluetooth(level)
             else:
-                # Idle: camilla IS the volume control.
+                # IDLE and USBSINK both land here. USBSINK is
+                # camilla-master like AirPlay; we don't write back
+                # to the gadget's mixer (the host's slider is
+                # observed-only — see observe_source_volume above
+                # and HANDOFF-usbsink.md §3.2).
                 await self._set_camilla(level)
         finally:
             if persist:
@@ -595,7 +616,14 @@ class VolumeCoordinator:
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
         (mux preempts in <1 s) but possible during transitions; pick
-        a stable priority: airplay > spotify > bluetooth > idle.
+        a stable priority: airplay > spotify > bluetooth > usbsink
+        > idle.
+
+        USB sink comes last among the active priorities — between two
+        camilla-master sources (AirPlay vs USBSINK), AirPlay was the
+        first to ship and any in-flight session there is more likely
+        to be intentional than a USB session that happens to be
+        bouncing back from the host's idle state.
         """
         try:
             active = await self._backend.active_renderers()
@@ -608,6 +636,8 @@ class VolumeCoordinator:
             return Source.SPOTIFY
         if active.get("btactive"):
             return Source.BLUETOOTH
+        if active.get("usbsinkactive"):
+            return Source.USBSINK
         return Source.IDLE
 
     async def _camilla_carries_level(self, source: Source) -> bool:
@@ -615,13 +645,17 @@ class VolumeCoordinator:
         for `source`, vs. delegating to a downstream slider.
 
         True (camilla-as-master): camilla tracks listening_level. Used
-        for IDLE and AIRPLAY.
+        for IDLE, AIRPLAY, and USBSINK — all three sources either
+        can't reliably mirror receiver-side volume back to the
+        controlling client (AirPlay 2 modern senders) or have no
+        downstream slider to push to (the gadget's host-side slider
+        is one-way input we observe, not a target we write).
 
         False (push-mode): camilla pinned at 0 dB and the source's own
         slider carries listening_level. Used for SPOTIFY (Web API) and
         BLUETOOTH (AVRCP).
         """
-        return source in (Source.IDLE, Source.AIRPLAY)
+        return source in (Source.IDLE, Source.AIRPLAY, Source.USBSINK)
 
     def _stamp_outbound(self, source: Source, level: int) -> None:
         self._last_outbound[source] = _OutboundStamp(

@@ -83,6 +83,18 @@ class FakeCoordinator:
         self.calls.append(("unmute", target))
         return target
 
+    async def observe_source_volume(self, source, percent: int) -> None:
+        self._maybe_fail()
+        # The real coordinator gates this on whether `source` is the
+        # currently active one and on echo windows; the fake just
+        # records the call so /volume/set route tests can assert the
+        # right path was taken. The fake's `_level` mutation mirrors
+        # what would happen in the active-source case so the response
+        # body has a sensible value.
+        target = max(0, min(100, int(percent)))
+        self._level = target
+        self.calls.append(("observe", target))
+
     async def aclose(self) -> None:
         return None
 
@@ -294,6 +306,47 @@ def test_set_missing_field_400(server_with_coordinator):
     base, _ = server_with_coordinator
     status, body = _post(f"{base}/volume/set", {})
     assert status == 400
+
+
+def test_volume_set_with_usbsink_source_routes_to_observe(server_with_coordinator):
+    """/volume/set with `source: usbsink` should go through
+    observe_source_volume so the coordinator's echo-prevention applies.
+    Without `source`, the request is authoritative (set path)."""
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {"percent": 42, "source": "usbsink"},
+    )
+    assert status == 200
+    assert body["percent"] == 42
+    # observe call recorded, not set.
+    assert ("observe", 42) in fake.calls
+    assert all(c[0] != "set" for c in fake.calls), \
+        f"unexpected set call in {fake.calls}"
+
+
+def test_volume_set_with_unknown_source_falls_back_to_set(server_with_coordinator):
+    """Unknown source names go through the authoritative set path so a
+    future client that posts a fresh source name doesn't silently
+    no-op. (Defensive: avoid 400ing on a typo.)"""
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {"percent": 55, "source": "rotary-future-source"},
+    )
+    assert status == 200
+    assert body["percent"] == 55
+    assert ("set", 55) in fake.calls
+
+
+def test_volume_set_without_source_is_authoritative(server_with_coordinator):
+    """Existing dial / voice clients post without `source`; they
+    continue to hit the authoritative set path."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": 80})
+    assert status == 200
+    assert ("set", 80) in fake.calls
+    assert all(c[0] != "observe" for c in fake.calls)
 
 
 def test_volume_mute_toggles_off_then_on(server_with_coordinator):
