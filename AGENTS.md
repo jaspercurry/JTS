@@ -338,18 +338,39 @@ management — hidden SSID support". `nmcli dev wifi list` doesn't
 return them; would need a manual "Connect to a hidden network" form
 that posts SSID + PSK with `hidden yes`.
 
+**Scanning returns only the connected SSID? Check the regulatory
+domain.** Pi 5's brcmfmac WiFi firmware silently suppresses
+off-channel scans when its per-phy regdom is unset
+(`country 99: DFS-UNSET`). Kernel logs `brcmf_cfg80211_scan:
+Scanning suppressed: status (4)` continuously. install.sh's
+`set_wifi_country_code()` writes `country=XX` to
+`/boot/firmware/config.txt`, which the firmware reads at boot.
+**A reboot is required** to apply; runtime `iw reg set XX` does
+NOT work (brcmfmac enforces regdom from NVRAM, not from cfg80211
+hints).
+
+The country value is **auto-detected** from the connected AP via
+`iw reg get` (the kernel learned it from the router's 802.11d
+beacon). For modern home routers this picks the right value
+automatically. Override path: `sudo JASPER_WIFI_COUNTRY=GB bash
+deploy/install.sh`. Fallback when auto-detect fails: `US`, with a
+warning printed to stderr telling the operator how to override.
+
+`jasper-doctor`'s `check_wifi_regdom` flags drift back to country
+99 / 00. Direct diagnostic:
+
+```sh
+sudo iw reg get | grep -A1 'phy#0'
+# Good: country US: DFS-FCC   (or DE / GB / etc.)
+# Broken: country 99: DFS-UNSET
+```
+
+Upstream tracking: https://github.com/raspberrypi/linux/issues/5685.
+
 **WPA-Enterprise (802.1X) not supported.** Home networks only. The
 scan-list filter shows "WPA-Enterprise" as the security label so the
 user knows why connecting won't work, but the Connect panel doesn't
 expose cert/identity fields.
-
-**Scanning returns only the connected SSID? Check `sudo iw reg get
-| grep -A1 'phy#0'`** — if it shows `country 99: DFS-UNSET`, the Pi's
-WiFi regulatory domain isn't set and brcmfmac suppresses off-channel
-scans (logs `brcmf_cfg80211_scan: Scanning suppressed: status (4)`).
-install.sh's `set_wifi_country_code()` sets `country=US` in
-`/boot/firmware/config.txt` (override via `JASPER_WIFI_COUNTRY`).
-Reboot required to apply — runtime `iw reg set` doesn't work.
 
 ---
 

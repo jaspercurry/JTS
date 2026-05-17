@@ -342,17 +342,27 @@ that posts SSID + PSK with `hidden yes`.
 **Scanning returns only the connected SSID? Check the regulatory
 domain.** Pi 5's brcmfmac WiFi firmware silently suppresses
 off-channel scans when its per-phy regdom is unset
-(`country 99: DFS-UNSET`). The kernel logs `brcmf_cfg80211_scan:
+(`country 99: DFS-UNSET`). Kernel logs `brcmf_cfg80211_scan:
 Scanning suppressed: status (4)` continuously. install.sh's
-`set_wifi_country_code()` sets `country=US` (overridable via
-`JASPER_WIFI_COUNTRY`) in `/boot/firmware/config.txt`, which the
-firmware reads at boot. **A reboot is required** to apply the
-change; `iw reg set US` does NOT work (brcmfmac enforces regdom
-from NVRAM, not from cfg80211 hints). Diagnostic check:
+`set_wifi_country_code()` writes `country=XX` to
+`/boot/firmware/config.txt`, which the firmware reads at boot.
+**A reboot is required** to apply; runtime `iw reg set XX` does
+NOT work (brcmfmac enforces regdom from NVRAM, not from cfg80211
+hints).
+
+The country value is **auto-detected** from the connected AP via
+`iw reg get` (the kernel learned it from the router's 802.11d
+beacon). For modern home routers this picks the right value
+automatically. Override path: `sudo JASPER_WIFI_COUNTRY=GB bash
+deploy/install.sh`. Fallback when auto-detect fails: `US`, with a
+warning printed to stderr telling the operator how to override.
+
+`jasper-doctor`'s `check_wifi_regdom` flags drift back to country
+99 / 00. Direct diagnostic:
 
 ```sh
 sudo iw reg get | grep -A1 'phy#0'
-# Good: country US: DFS-FCC
+# Good: country US: DFS-FCC   (or DE / GB / etc.)
 # Broken: country 99: DFS-UNSET
 ```
 

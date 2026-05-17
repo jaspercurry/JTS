@@ -350,6 +350,59 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
+detect_wifi_country() {
+    # Pick the best country-code value we can find, in priority order:
+    #   1. JASPER_WIFI_COUNTRY env var (operator override; always wins).
+    #   2. `iw reg get` global value (the kernel learned this from the
+    #      AP's 802.11d beacon when the Pi connected — for any modern
+    #      home router this is the right answer for the user's locale).
+    #   3. An existing `country=XX` line in /boot/firmware/config.txt
+    #      (preserve a prior install's value across re-runs).
+    #   4. Fall back to US with a loud warning + override instructions.
+    #
+    # Returns a 2-letter code on stdout; writes diagnostic notes to stderr.
+    if [[ -n "${JASPER_WIFI_COUNTRY:-}" ]]; then
+        echo "$JASPER_WIFI_COUNTRY"
+        echo "  WiFi country: $JASPER_WIFI_COUNTRY (from JASPER_WIFI_COUNTRY env var)." >&2
+        return 0
+    fi
+    if command -v iw >/dev/null 2>&1; then
+        local detected
+        # `iw reg get` prints multiple "country XX: ..." lines — one
+        # global, one per phy. We want the FIRST one (global), and
+        # only if it's a real 2-letter code (not 00 / world or 99 / unset).
+        detected=$(iw reg get 2>/dev/null | awk '
+            /^country [A-Z0-9][A-Z0-9]:/ {
+                code = substr($2, 1, 2)
+                if (code != "00" && code != "99") { print code; exit }
+            }
+        ')
+        if [[ -n "$detected" ]]; then
+            echo "$detected"
+            echo "  WiFi country: $detected (auto-detected from connected AP via \`iw reg get\`)." >&2
+            return 0
+        fi
+    fi
+    local cfg="/boot/firmware/config.txt"
+    if [[ -f "$cfg" ]] && grep -qE '^[[:space:]]*country=' "$cfg"; then
+        local existing
+        existing=$(grep -E '^[[:space:]]*country=' "$cfg" | head -1 | cut -d= -f2)
+        if [[ -n "$existing" && "$existing" != "99" && "$existing" != "00" ]]; then
+            echo "$existing"
+            echo "  WiFi country: $existing (preserved from existing $cfg)." >&2
+            return 0
+        fi
+    fi
+    echo "US"
+    cat >&2 <<'WARNEOF'
+  WARNING: could not auto-detect WiFi country code from `iw reg get`
+  or from /boot/firmware/config.txt. Falling back to 'US'. If you're
+  outside the US, re-run install.sh with the right country code, e.g.:
+      sudo JASPER_WIFI_COUNTRY=GB bash deploy/install.sh
+  (Valid codes: 2-letter ISO 3166-1; GB, DE, FR, JP, AU, CA, etc.)
+WARNEOF
+}
+
 set_wifi_country_code() {
     # Pi 5's brcmfmac WiFi firmware silently suppresses off-channel
     # scanning when the chip's regulatory domain is unset (per-phy
@@ -367,25 +420,27 @@ set_wifi_country_code() {
     # NOT take, because brcmfmac enforces regdom from NVRAM, not
     # from cfg80211 hints. So this needs a reboot to take effect.
     #
-    # Override via JASPER_WIFI_COUNTRY=GB / DE / etc. in the
-    # operator shell before running install.sh (or via the
-    # `country=XX` line if it's already there from a prior install).
+    # Country value is auto-detected from the connected AP via
+    # `iw reg get` (any modern router advertises its country in
+    # 802.11d beacons). Override with JASPER_WIFI_COUNTRY=XX.
+    # `jasper-doctor` flags drift back to country 99 / 00.
     local cfg="/boot/firmware/config.txt"
     if [[ ! -f "$cfg" ]]; then
         echo "  $cfg not present; skipping WiFi country-code setup."
         return 0
     fi
-    local target_country="${JASPER_WIFI_COUNTRY:-US}"
+    local target_country
+    target_country=$(detect_wifi_country)
     # Idempotent: replace any existing country= line, otherwise append.
     if grep -qE '^[[:space:]]*country=' "$cfg"; then
         local current
         current=$(grep -E '^[[:space:]]*country=' "$cfg" | head -1 | cut -d= -f2)
         if [[ "$current" == "$target_country" ]]; then
-            echo "  WiFi country code already set to $target_country."
+            echo "  WiFi country code in $cfg already $target_country."
             return 0
         fi
         sed -i "s/^[[:space:]]*country=.*/country=${target_country}/" "$cfg"
-        echo "  WiFi country code updated $current → $target_country (reboot required to apply)."
+        echo "  WiFi country code in $cfg updated $current → $target_country (reboot required)."
     else
         # Append in a tagged block so future humans know who put it
         # there and why.
@@ -395,9 +450,11 @@ set_wifi_country_code() {
 # Without this the brcmfmac firmware silently suppresses off-channel
 # scans, breaking the /wifi/ wizard's network discovery. Reboot
 # required to take effect (firmware reads this at boot only).
+# Value auto-detected from connected AP; override via
+# JASPER_WIFI_COUNTRY=XX env var when running install.sh.
 country=${target_country}
 EOF
-        echo "  WiFi country code set to $target_country in $cfg (reboot required to apply)."
+        echo "  WiFi country code $target_country written to $cfg (reboot required to apply)."
     fi
 }
 
