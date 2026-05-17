@@ -287,6 +287,64 @@ overwrite it unless the household picks a registered alternative.
 
 ---
 
+## Wi-Fi switching — read first
+
+The household-facing way to change the speaker's Wi-Fi network is
+the wizard at `http://jts.local/wifi/`. Current network at the top,
+Scan button + tap-to-connect for nearby networks in the middle,
+Saved networks (Forget anything) in a collapse section at the
+bottom. All backed by `nmcli` subprocess calls; no new dependency.
+
+**Lockout safety is the part to read before editing this page.**
+Three layers, all in [`jasper/web/wifi_setup.py`](jasper/web/wifi_setup.py):
+
+1. **Connect rollback.** `nmcli --wait 30 dev wifi connect …` — on
+   non-zero exit we explicitly `nmcli --wait 20 connection up
+   <previous-profile>` to put the user back on the network they were
+   on. If that connect created a brand-new (broken) profile, we
+   delete it so the saved list doesn't accumulate dead entries.
+   Don't rely on NM's auto-rollback alone — it's not reliable across
+   all failure modes.
+
+2. **Forget guard.** If the user tries to forget the currently-active
+   network, an extra warning fires in the inline confirm panel —
+   stronger when no Ethernet is plugged in.
+
+3. **Radio kill warning.** Toggling the Wi-Fi radio off when the Pi
+   has no Ethernet path fires a confirm() dialog with stark caps-lock
+   copy: "TURNING WI-FI OFF WILL DISCONNECT THIS PI". The page can't
+   reach the Pi after the radio goes down, so this dialog is the
+   user's only chance to bail out.
+
+Lockout classification is driven by `_has_ethernet()` (the `lockoutRisk`
+field on `/state`). If the Pi has both Wi-Fi and Ethernet, the
+warnings soften — Ethernet is the fallback path.
+
+**Operational reach:** there's no laptop-side script wrapper for this
+(unlike `switch-voice-provider.sh` / `switch-wake-word.sh`). Manual
+nmcli still works for SSH-driven changes:
+
+```sh
+nmcli dev wifi list
+nmcli dev wifi connect "<SSID>" password "<PSK>"
+nmcli connection delete "<NAME>"
+```
+
+The wizard polls `/state` every 7 s so SSH-driven changes show up in
+the UI without a manual reload.
+
+**Hidden SSIDs not supported in v1** — deferred per PLAN.md "WiFi
+management — hidden SSID support". `nmcli dev wifi list` doesn't
+return them; would need a manual "Connect to a hidden network" form
+that posts SSID + PSK with `hidden yes`.
+
+**WPA-Enterprise (802.1X) not supported.** Home networks only. The
+scan-list filter shows "WPA-Enterprise" as the security label so the
+user knows why connecting won't work, but the Connect panel doesn't
+expose cert/identity fields.
+
+---
+
 ## Mic mute — persists across restarts
 
 User-driven mic mute is a privacy promise. When on, the wake loop

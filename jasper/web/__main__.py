@@ -12,10 +12,11 @@ unit per wizard. nginx routes:
   /airplay/  →  127.0.0.1:8771  (jasper.web.airplay_setup)
   /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
   /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
+  /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
-  for all five ports are handed to us via LISTEN_FDS at process start.
+  for all ports are handed to us via LISTEN_FDS at process start.
   We adopt them by matching `getsockname()` port → wizard. After 10 min
   of no incoming requests on any wizard, the process exits cleanly and
   systemd's .socket goes back to listening — saving ~60-90 MB Pss when
@@ -42,6 +43,7 @@ from . import (
     spotify_setup,
     voice_setup,
     wake_setup,
+    wifi_setup,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +73,7 @@ def main() -> int:
     airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
     sources_port = int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773"))
     wake_port = int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774"))
+    wifi_port = int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -143,6 +146,10 @@ def main() -> int:
         target_for(wake_port), state_path=wake_state,
     )
 
+    # Wi-Fi network management — scan / connect / forget. Stateless on
+    # our side (NetworkManager owns the connection profile store).
+    wifi_server = wifi_setup.make_server(target_for(wifi_port))
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -155,6 +162,7 @@ def main() -> int:
         airplay_server.RequestHandlerClass,
         sources_server.RequestHandlerClass,
         wake_server.RequestHandlerClass,
+        wifi_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -166,13 +174,14 @@ def main() -> int:
         ("/airplay", airplay_port),
         ("/sources", sources_port),
         ("/wake", wake_port),
+        ("/wifi", wifi_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
         else:
             logger.info("jasper-web %s listening on http://%s:%d", label, host_default, port)
 
-    # Three wizards on worker threads + Spotify on the main thread.
+    # Worker-thread wizards + Spotify on the main thread.
     # Spotify is the older / busier surface so we leave its
     # serve_forever on the main thread — keeps SIGTERM delivery
     # behavior the same as before (KeyboardInterrupt path returns 0).
@@ -182,6 +191,7 @@ def main() -> int:
         ("/airplay", airplay_server),
         ("/sources", sources_server),
         ("/wake", wake_server),
+        ("/wifi", wifi_server),
     ):
         threading.Thread(
             target=_serve_forever,
