@@ -45,12 +45,43 @@ logger = logging.getLogger(__name__)
 
 
 # (source-key, systemd-unit) pairs. The wizard refers to sources by key
-# (airplay / bluetooth / spotify_connect) in its JSON; the systemd
-# units are an implementation detail kept here.
+# (airplay / bluetooth / spotify_connect / usbsink) in its JSON; the
+# systemd units are an implementation detail kept here.
 AIRPLAY_UNIT = "shairport-sync.service"
 SPOTIFY_CONNECT_UNIT = "librespot.service"
+# Toggling jasper-usbsink.service via systemctl --now also propagates
+# to jasper-usbsink-init.service via the Requires/PartOf chain in the
+# main unit. No need to touch the init unit directly.
+USBSINK_UNIT = "jasper-usbsink.service"
 
-VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect")
+VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
+
+# /boot/firmware/config.txt line that install.sh's set_usb_gadget_mode
+# writes. Without this, the BCM2712 OTG controller stays in host mode
+# (the Pi 5 default) and the USB-C port is power-only — flipping the
+# wizard toggle on would just fail at the init.service ConfigFS
+# write. The wizard surfaces this as `available: false` so the row
+# shows disabled instead of presenting a broken on/off.
+BOOT_CONFIG_PATH = "/boot/firmware/config.txt"
+USBSINK_DTOVERLAY_LINE = "dtoverlay=dwc2,dr_mode=peripheral"
+
+
+def _usbsink_available() -> bool:
+    """True iff the dtoverlay that puts the USB-C port in peripheral
+    mode is present in /boot/firmware/config.txt. Fail-soft on read
+    errors (treat as unavailable so the toggle is disabled) — the
+    operator can re-run install.sh to recover."""
+    try:
+        with open(BOOT_CONFIG_PATH) as f:
+            content = f.read()
+    except OSError as e:
+        logger.debug("usbsink dtoverlay probe failed: %s", e)
+        return False
+    # Tolerate leading whitespace and trailing comments.
+    for line in content.splitlines():
+        if line.strip().startswith(USBSINK_DTOVERLAY_LINE):
+            return True
+    return False
 
 
 def _systemctl(*args: str, timeout: int = 10) -> tuple[int, str]:
@@ -118,7 +149,7 @@ async def _set_bt(enabled: bool) -> None:
 
 
 def _gather_state() -> dict[str, dict[str, bool]]:
-    """One-shot snapshot of all three sources. The BT branch runs an
+    """One-shot snapshot of all four sources. The BT branch runs an
     asyncio task because dbus-next is async-only; the rest are sync
     systemctl probes."""
     bt_available, bt_powered, bt_has_hid = asyncio.run(_bt_state())
@@ -136,6 +167,14 @@ def _gather_state() -> dict[str, dict[str, bool]]:
             "enabled": _unit_active(SPOTIFY_CONNECT_UNIT),
             "available": True,
         },
+        "usbsink": {
+            "enabled": _unit_active(USBSINK_UNIT),
+            # available=False shows the toggle as disabled with a
+            # note pointing at the dtoverlay + reboot path. Once
+            # install.sh has added the dtoverlay and the user has
+            # rebooted, the row becomes interactive.
+            "available": _usbsink_available(),
+        },
     }
 
 
@@ -148,6 +187,12 @@ def _apply(source: str, enabled: bool) -> None:
         _set_unit(SPOTIFY_CONNECT_UNIT, enabled)
     elif source == "bluetooth":
         asyncio.run(_set_bt(enabled))
+    elif source == "usbsink":
+        # jasper-usbsink.service Requires=+PartOf= the init.service, so
+        # systemctl enable/disable --now propagates to both — the init
+        # creates the ConfigFS gadget and loads libcomposite when on,
+        # tears down + rmmods when off, returning RAM to baseline.
+        _set_unit(USBSINK_UNIT, enabled)
 
 
 # Page-specific CSS layered on top of PAGE_STYLE from _common.py. The
@@ -202,7 +247,9 @@ def _index_html() -> bytes:
     body = _PAGE_CSS + """
 <p class="sub">Turn each playback source on or off. AirPlay and Spotify
 Connect persist across reboots; Bluetooth comes back on after a reboot
-(use this for runtime mute, not permanent disable).</p>
+(use this for runtime mute, not permanent disable). USB Audio Input
+is off by default — flip it on to use JTS as a USB audio output for a
+computer plugged into the Pi's USB-C port.</p>
 
 <div id="sources">
   <div class="source-row">
@@ -235,16 +282,33 @@ Connect persist across reboots; Bluetooth comes back on after a reboot
       <span class="track"></span>
     </label>
   </div>
+  <div class="source-row">
+    <div>
+      <div class="source-name">USB Audio Input</div>
+      <div class="source-note" id="usbsink-note">
+        Plug a computer into the Pi's USB-C port (via the 8086 splitter).
+        Your computer sees JTS as a USB audio output device.
+      </div>
+      <div class="source-note" id="usbsink-unavailable-note" style="display:none">
+        USB gadget mode not enabled in /boot/firmware/config.txt —
+        re-run install.sh and reboot.
+      </div>
+    </div>
+    <label class="toggle">
+      <input type="checkbox" id="t-usbsink" disabled>
+      <span class="track"></span>
+    </label>
+  </div>
 </div>
 
 <script>
-  // Three toggles, all wired to the same backend. Optimistic UI: we
+  // Four toggles, all wired to the same backend. Optimistic UI: we
   // flip the checkbox immediately, then POST and reconcile from the
   // response (rolls back on failure). Poll /state every 4 s when the
   // tab is visible — picks up external systemctl changes from SSH.
   (function() {
     var POLL_MS = 4000;
-    var SOURCES = ['airplay', 'bluetooth', 'spotify_connect'];
+    var SOURCES = ['airplay', 'bluetooth', 'spotify_connect', 'usbsink'];
     var inFlight = {};
     var dirty = {};
     var ignorePollUntil = 0;
@@ -263,6 +327,12 @@ Connect persist across reboots; Bluetooth comes back on after a reboot
       });
       var btUnavailable = state.bluetooth && state.bluetooth.available === false;
       el('bt-note').style.display = btUnavailable ? '' : 'none';
+      // USB sink shows a "needs reboot" note when the dtoverlay
+      // is missing (install.sh hasn't been run with the gadget
+      // section, or it's been manually removed).
+      var usbUnavailable = state.usbsink && state.usbsink.available === false;
+      el('usbsink-note').style.display = usbUnavailable ? 'none' : '';
+      el('usbsink-unavailable-note').style.display = usbUnavailable ? '' : 'none';
     }
 
     async function fetchState() {
