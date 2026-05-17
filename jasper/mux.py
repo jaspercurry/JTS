@@ -37,6 +37,16 @@ Renderer support:
             Spotify/AirPlay while a phone has BT open will mix
             audio for a moment until the user pauses on their
             phone. Better-than-nothing.
+  USB sink (jasper-usbsink):
+    detect: read /run/jasper-usbsink/state.json (RMS-based
+            playing flag, hysteresis-debounced, written by the
+            daemon's state publisher)
+    pause:  POST {"silenced": true} to
+            http://127.0.0.1:JASPER_USBSINK_PREEMPT_PORT/preempt.
+            The daemon silences its output (writes zeros to
+            hw:Loopback,0,0). When all other sources go idle, we
+            release the preempt so user-host transitions (pause
+            then play on Mac) can re-take the speaker.
 
 """
 from __future__ import annotations
@@ -49,8 +59,15 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+import httpx
+
 from . import librespot_state
-from .source_state import airplay_playing, bluetooth_playing, spotify_playing
+from .source_state import (
+    airplay_playing,
+    bluetooth_playing,
+    spotify_playing,
+    usbsink_playing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +76,29 @@ class Source(str, Enum):
     SPOTIFY = "spotify"
     AIRPLAY = "airplay"
     BLUETOOTH = "bluetooth"
+    # USBSINK comes last in the enum so its iteration order matches
+    # the rest of the file. The enum order is also the tie-break for
+    # multi-source-active-on-boot — last-defined wins. For USB
+    # specifically this is reasonable: USB requires deliberate
+    # hardware action (plug a cable in), so if both AirPlay and USB
+    # somehow appear simultaneously on boot, USB taking the speaker
+    # matches "the thing that was just plugged in".
+    USBSINK = "usbsink"
+
+
+# Host:port the usbsink daemon's preempt endpoint listens on. Keep
+# in sync with jasper.usbsink.preempt_listener.DEFAULT_PORT — both
+# are defaults the operator can override via env var. We duplicate
+# the literal here (instead of importing) so jasper-mux doesn't pull
+# the usbsink package into its dep graph (mux loads even on Pis
+# where the gadget feature is off — RAM-bounded service).
+USBSINK_PREEMPT_HOST = os.environ.get(
+    "JASPER_USBSINK_PREEMPT_HOST", "127.0.0.1",
+)
+USBSINK_PREEMPT_PORT = int(os.environ.get(
+    "JASPER_USBSINK_PREEMPT_PORT", "8781",
+))
+USBSINK_PREEMPT_URL = f"http://{USBSINK_PREEMPT_HOST}:{USBSINK_PREEMPT_PORT}/preempt"
 
 
 def _spotify_preempt_restart_disabled() -> bool:
@@ -107,6 +147,15 @@ class Mux:
         # weren't set → pause-via-Web-API not available, log no-op.
         self._spotify_router: Any | None = None
         self._spotify_router_built = False
+        # USB sink preempt state: True while we've told the
+        # jasper-usbsink daemon to silence its output. Cleared when
+        # all other sources go idle (so a host pause-then-resume can
+        # re-take the speaker via a fresh inactive→active transition).
+        self._usbsink_preempted = False
+        # Short-lived httpx client for the localhost preempt POSTs.
+        # The url is fixed; reusing the client across POSTs avoids
+        # one socket-setup per tick when preempt is changing rapidly.
+        self._http = httpx.AsyncClient(timeout=2.0)
 
     async def run(self) -> None:
         logger.info(
@@ -123,15 +172,17 @@ class Mux:
             await asyncio.sleep(self.POLL_INTERVAL_SEC)
 
     async def _tick(self) -> None:
-        spotify, airplay, bluetooth = await asyncio.gather(
+        spotify, airplay, bluetooth, usbsink = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
+            usbsink_playing(),
         )
         current = {
             Source.SPOTIFY: spotify,
             Source.AIRPLAY: airplay,
             Source.BLUETOOTH: bluetooth,
+            Source.USBSINK: usbsink,
         }
 
         # Detect transitions inactive→active. Multiple in one tick
@@ -146,28 +197,52 @@ class Mux:
         self._state.playing = current
         self._winner_age_ticks += 1
 
-        if not newly_started:
-            return
+        if newly_started:
+            new_winner = newly_started[-1]
+            prev_winner = self._winner
+            logger.info(
+                "source transition: %s started (was %s, age=%d ticks)",
+                new_winner.value,
+                prev_winner.value if prev_winner else "none",
+                self._winner_age_ticks,
+            )
 
-        new_winner = newly_started[-1]
-        prev_winner = self._winner
-        logger.info(
-            "source transition: %s started (was %s, age=%d ticks)",
-            new_winner.value,
-            prev_winner.value if prev_winner else "none",
-            self._winner_age_ticks,
-        )
+            # If the new winner is USBSINK and it's currently in our
+            # preempted set, the daemon's bridge is silent. The fresh
+            # inactive→active edge means the user did "pause then
+            # play" on the host — release the preempt so we forward
+            # audio again.
+            if new_winner == Source.USBSINK and self._usbsink_preempted:
+                await self._usbsink_set_preempt(False, reason="new_transition")
 
-        # Pause every OTHER source that's currently active. Note we
-        # iterate over `current` not `newly_started` — if Spotify
-        # started while AirPlay was already playing for 30s, we want
-        # to pause AirPlay even though it didn't transition this tick.
-        for source, is_playing in current.items():
-            if source != new_winner and is_playing:
-                await self._pause(source)
+            # Pause every OTHER source that's currently active. Note
+            # we iterate over `current` not `newly_started` — if
+            # Spotify started while AirPlay was already playing for
+            # 30 s, we want to pause AirPlay even though it didn't
+            # transition this tick.
+            for source, is_playing in current.items():
+                if source != new_winner and is_playing:
+                    await self._pause(source)
 
-        self._winner = new_winner
-        self._winner_age_ticks = 0
+            self._winner = new_winner
+            self._winner_age_ticks = 0
+
+        # Release USB preempt when all other sources have gone idle.
+        # Without this, the daemon would stay silent indefinitely
+        # after AirPlay/Spotify stop, even though the user might
+        # still be playing on the host. The check excludes USBSINK
+        # itself — its `playing` flag stays True (RMS-active) even
+        # while preempted, so we look at the OTHER sources to decide.
+        if self._usbsink_preempted:
+            others_playing = any(
+                playing
+                for src, playing in current.items()
+                if src != Source.USBSINK
+            )
+            if not others_playing:
+                await self._usbsink_set_preempt(
+                    False, reason="all_others_idle",
+                )
 
     # ------------------------------------------------------------------
     # Pause actions — Spotify and AirPlay have clean APIs; Bluetooth
@@ -217,6 +292,55 @@ class Mux:
             logger.info(
                 "bluetooth: no graceful pause API. "
                 "Audio may briefly mix until phone-side stops.",
+            )
+        elif source == Source.USBSINK:
+            await self._usbsink_set_preempt(True, reason="preempted_by_winner")
+
+
+    # ------------------------------------------------------------------
+    # USB sink preempt protocol — POSTs to the daemon's local HTTP
+    # endpoint. The daemon flips its internal `preempted` flag,
+    # making its audio callback emit silence into hw:Loopback,0,0.
+    # ------------------------------------------------------------------
+
+    async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
+        """Tell the daemon to silence/un-silence its output. No-ops
+        if the requested state matches our tracked state, so a tick
+        that re-emits the same decision doesn't generate stale POSTs.
+
+        Failure is logged but not fatal — the worst case is brief
+        mixing on preempt (matches the existing BT fallback). The
+        daemon's `preempt_listener` itself persists the most-recent
+        state to /run/jasper-usbsink/preempt.state, so a future
+        daemon restart picks up where it left off."""
+        if self._usbsink_preempted == silenced:
+            return
+        try:
+            resp = await self._http.post(
+                USBSINK_PREEMPT_URL,
+                json={"silenced": silenced},
+            )
+            if resp.status_code == 200:
+                self._usbsink_preempted = silenced
+                logger.info(
+                    "event=usbsink.preempt_set silenced=%s reason=%s",
+                    silenced, reason,
+                )
+                return
+            logger.warning(
+                "usbsink preempt POST returned %d (silenced=%s); "
+                "audio may briefly mix",
+                resp.status_code, silenced,
+            )
+        except httpx.HTTPError as e:
+            # Daemon not running? Likely cause: /sources/ wizard
+            # turned USB sink off but didn't tell mux. The state file
+            # probe will return playing=false on the next tick once
+            # the daemon's RuntimeDirectory= cleans up, so we'll
+            # converge.
+            logger.warning(
+                "usbsink preempt POST failed (silenced=%s reason=%s): %s",
+                silenced, reason, e,
             )
 
 

@@ -1,4 +1,4 @@
-"""Source-state probes for the three music renderers.
+"""Source-state probes for the four music renderers.
 
 Each `<source>_playing()` returns True iff that renderer is
 currently producing audio. Probes are fail-soft: any transport
@@ -15,6 +15,7 @@ when daemons change.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -31,6 +32,13 @@ logger = logging.getLogger(__name__)
 # Empty metadata renders as `v a{sv} 0\n` with no title key at all,
 # so a search-fail is the phantom signal.
 _AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
+
+# Default path the jasper-usbsink daemon publishes its state to.
+# Kept in sync with jasper.usbsink.state_publisher.DEFAULT_STATE_PATH.
+# Both definitions exist so neither module pulls the other into its
+# import graph (jasper-mux doesn't need to import the usbsink daemon
+# just to know where its state file is).
+USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
 
 
 async def spotify_playing(
@@ -141,6 +149,22 @@ async def airplay_playing() -> bool:
     if _airplay_metadata_gate_disabled():
         return True
     return await _airplay_has_metadata_title()
+
+
+async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
+    """jasper-usbsink publishes RMS-based playing state to
+    /run/jasper-usbsink/state.json (atomic writes, hysteresis-debounced).
+    Reading is cheap — the file is well under 1 KB. Missing file (the
+    feature is disabled or the daemon hasn't started yet) and
+    malformed JSON both resolve to False, matching the fail-soft
+    convention of the other probes."""
+    try:
+        with open(state_path) as f:
+            data = json.load(f)
+    except (FileNotFoundError, OSError, json.JSONDecodeError) as e:
+        logger.debug("usbsink_playing probe failed: %s", e)
+        return False
+    return bool(data.get("playing", False))
 
 
 async def bluetooth_playing() -> bool:
