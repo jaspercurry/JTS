@@ -1419,6 +1419,65 @@ def check_xvf_mixer_state() -> CheckResult:
     )
 
 
+def check_wifi_regdom() -> CheckResult:
+    """The Pi 5's brcmfmac firmware silently suppresses off-channel
+    WiFi scans when the chip's per-phy regulatory domain is unset
+    (`country 99: DFS-UNSET`). The user-visible symptom is that the
+    /wifi/ wizard's scan returns only the connected SSID even when
+    neighbors are clearly nearby — and kernel logs fill with
+    `brcmf_cfg80211_scan: Scanning suppressed: status (4)`.
+
+    install.sh's `set_wifi_country_code()` writes `country=XX` to
+    /boot/firmware/config.txt; the firmware reads that at boot and
+    populates the chip's regdom NVRAM. This check flags drift back
+    to the broken state — e.g. if someone re-imaged the SD card
+    without re-running install.sh, or if a system update reset
+    config.txt."""
+    proc = _run(["iw", "reg", "get"], timeout=5)
+    if proc.returncode != 0:
+        return CheckResult(
+            "WiFi reg domain", "warn",
+            "iw reg get failed; can't verify WiFi scanning is unblocked",
+        )
+    # `iw reg get` prints a global section followed by a per-phy section
+    # for each radio. We want the phy#0 country line; that's what
+    # brcmfmac actually uses to gate scans.
+    phy_country: str | None = None
+    in_phy = False
+    for raw in proc.stdout.splitlines():
+        line = raw.strip()
+        if line.startswith("phy#"):
+            in_phy = True
+            continue
+        if in_phy and line.startswith("country "):
+            # "country US: DFS-FCC" → grab the US
+            parts = line.split(None, 2)
+            if len(parts) >= 2:
+                phy_country = parts[1].rstrip(":")
+            break
+    if phy_country is None:
+        # No phy section parseable — maybe no WiFi adapter. Soft warn,
+        # not fail (Pi could legitimately be Ethernet-only).
+        return CheckResult(
+            "WiFi reg domain", "warn",
+            "could not parse phy regdom from `iw reg get` "
+            "(no WiFi adapter? — Ethernet-only Pi is fine)",
+        )
+    if phy_country in ("99", "00"):
+        return CheckResult(
+            "WiFi reg domain", "fail",
+            f"phy0 regdom is '{phy_country}' (unset) — WiFi scanning "
+            "is suppressed by brcmfmac and the /wifi/ wizard will only "
+            "see the connected network. Fix: re-run `bash "
+            "scripts/deploy-to-pi.sh` (install.sh writes country=XX to "
+            "/boot/firmware/config.txt) then reboot the Pi.",
+        )
+    return CheckResult(
+        "WiFi reg domain", "ok",
+        f"phy0 country={phy_country} (scans permitted)",
+    )
+
+
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ..usage import SpendCap, UsageStore
@@ -1516,6 +1575,10 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_output_health,
         check_xvf_firmware_6ch,
         check_xvf_mixer_state,
+        # WiFi: brcmfmac scan suppression is the most common
+        # post-bringup foot-gun — silent except in dmesg, and
+        # breaks the /wifi/ wizard's primary function.
+        check_wifi_regdom,
         # Rotary dial: avahi advertising the control service so the
         # dial finds us via mDNS-SD, plus a heartbeat from any dial
         # currently on the network.

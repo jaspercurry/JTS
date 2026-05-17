@@ -190,6 +190,26 @@ What's needed:
 This is the obvious next step after both onboard CLIs are stable.
 Single session of work.
 
+### WiFi management — hidden SSID support (deferred)
+
+The `/wifi/` wizard ([`jasper/web/wifi_setup.py`](jasper/web/wifi_setup.py))
+ships with scan + connect + forget for **broadcasting** SSIDs only.
+Hidden networks (the router's "Hide SSID" toggle) don't appear in
+`nmcli dev wifi list`, so they need a separate "Connect to a hidden
+network" form that posts an SSID typed by the user plus the password.
+
+What's needed:
+- Form in the available-networks section: small "+ Connect to hidden
+  network" affordance below the scan list.
+- `nmcli dev wifi connect <ssid> password <psk> hidden yes` — the
+  `hidden yes` flag is what tells NM to create the profile with
+  `802-11-wireless.hidden=yes`, which causes it to actively probe
+  for the SSID instead of waiting for a beacon.
+- Same lockout/rollback logic as the visible-network connect flow.
+
+Trivial change (~30 LoC) but defer until someone with a hidden home
+network actually wants it. Most home networks broadcast.
+
 ---
 
 ## Wake-word reliability — AEC tuning roadmap (no version, ongoing)

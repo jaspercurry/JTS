@@ -152,6 +152,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   (e.g. the VK-01 volume knob) is present, since powering the
   adapter off would silently disconnect it. Same prompt fires on
   the Power switch at `http://jts.local/bluetooth/`.
+- ✅ Wi-Fi network wizard at `http://jts.local/wifi/` — current
+  network at top, scan + tap-to-connect for nearby networks,
+  saved networks in a collapse section with Forget. Backed by
+  `nmcli`. Connect rolls back to the previous network on failure
+  (`nmcli --wait 30 dev wifi connect` + explicit `connection up
+  <previous>` on non-zero exit). Hidden SSIDs + WPA-Enterprise
+  deferred — home-network case only.
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation completed and documented
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
@@ -423,7 +430,7 @@ and openwakeword stub diet landed.
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake wizards) | **Socket-activated** | ~0 idle, ~20 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
@@ -432,12 +439,12 @@ and openwakeword stub diet landed.
 
 The four web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts six URL surfaces (Spotify, voice,
-Google, AirPlay, Sources, Wake) on six loopback ports; the other three
-daemons each host one. All four exit after 10 min of no requests, so
-the resident cost is zero between admin sessions. First request after
-idle takes ~500-800 ms (Python startup); invisible during the OAuth
-round-trip or BT pair flow.
+its pages. `jasper-web` alone hosts seven URL surfaces (Spotify, voice,
+Google, AirPlay, Sources, Wake, Wi-Fi) on seven loopback ports; the
+other three daemons each host one. All four exit after 10 min of no
+requests, so the resident cost is zero between admin sessions. First
+request after idle takes ~500-800 ms (Python startup); invisible
+during the OAuth round-trip or BT pair flow.
 
 **Total Pss baseline with AEC on**: ~330 MB jasper-* daemons +
 ~80 MB system/OS plumbing + page cache → typically ~770 MB used
