@@ -899,7 +899,36 @@ _AEC_REF_SILENT_THRESHOLD = 50
 _AEC_DRIFT_WARN_THRESHOLD = 30  # in 5 min
 
 
-def _assess_aec_bridge_output(journal_text: str) -> CheckResult:
+def _loopback_playback_active() -> bool:
+    """True if any renderer is currently writing the music-chain loopback.
+
+    Checked by reading `/proc/asound/Loopback/pcm0p/sub*/status`: an open
+    subdevice prints `state: …\\nowner_pid: …`, a closed one prints the
+    single word `closed`. The presence of any non-closed sub means a
+    renderer (shairport / librespot / bluealsa) is producing right now.
+
+    Used to gate the AEC bridge FAIL: ref-silent windows are only
+    diagnostic of a broken dsnoop when music IS being routed through the
+    loopback. When no renderer is writing, ref-silent is the expected
+    state and mic-loud bursts come from non-loopback sources (TTS via
+    jasper_out, voice in the room).
+    """
+    import glob
+    for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):
+        try:
+            with open(status_path, encoding="utf-8") as f:
+                first_line = f.readline().strip()
+        except OSError:
+            continue
+        if first_line and first_line != "closed":
+            return True
+    return False
+
+
+def _assess_aec_bridge_output(
+    journal_text: str,
+    music_chain_active: bool | None = None,
+) -> CheckResult:
     """Pure-function assessment of the bridge's `rms over` log
     output. Split out from `check_aec_bridge_output_health` so the
     parser can be unit-tested without mocking subprocess.
@@ -915,6 +944,16 @@ def _assess_aec_bridge_output(journal_text: str) -> CheckResult:
     chain demonstrably works. silent_ref windows in that case are
     explained by non-loopback acoustic sources (TTS via jasper_out,
     room voice picked up by the ASR-beam AGC) and are not a bug.
+
+    `music_chain_active` short-circuits the FAIL for pure-voice
+    sessions: when no renderer is writing the loopback, every ref
+    sample is correctly silent (snd-aloop produces zeros with no
+    upstream producer) so the ref-silent + mic-loud pattern proves
+    nothing about the dsnoop. Pass False when a check upstream has
+    verified the loopback playback side is closed; the FAIL branch
+    will then return OK with an explanatory message instead. Default
+    None preserves the old behavior (used by tests that want to
+    exercise the journal parser in isolation).
     """
     drift_count = 0
     silent_ref_count = 0
@@ -957,6 +996,21 @@ def _assess_aec_bridge_output(journal_text: str) -> CheckResult:
     # ref windows are mic-only artifacts (TTS via jasper_out, room
     # voice) which is the 2026-05-16 false-positive mode.
     if silent_ref_count >= 5 and healthy_ref_windows == 0:
+        # Second false-positive guard: if the music chain isn't
+        # currently active (no renderer writing the loopback), every
+        # ref sample is correctly silent. The mic-loud bursts must be
+        # from a non-loopback source (TTS via jasper_out, voice in the
+        # room), so ref-silent proves nothing about the dsnoop.
+        if music_chain_active is False:
+            return CheckResult(
+                "AEC bridge output", "ok",
+                f"{silent_ref_count} mic-loud windows have "
+                f"ref<{_AEC_REF_SILENT_THRESHOLD} but loopback playback is "
+                f"closed (no renderer writing music) — mic-loud bursts are "
+                f"TTS (jasper_out bypasses the loopback) or ambient. "
+                f"Re-run doctor while music is playing to exercise the ref "
+                f"path; drift={drift_count}",
+            )
         return CheckResult(
             "AEC bridge output", "fail",
             f"{silent_ref_count} recent windows show mic>{_AEC_MIC_MUSIC_THRESHOLD} "
@@ -1078,7 +1132,10 @@ def check_aec_bridge_output_health() -> CheckResult:
             f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
         )
 
-    return _assess_aec_bridge_output(proc.stdout)
+    return _assess_aec_bridge_output(
+        proc.stdout,
+        music_chain_active=_loopback_playback_active(),
+    )
 
 
 # Threshold for `probe_aec_ref_path`. A 5 s, -26 dBFS sine through dsnoop +
