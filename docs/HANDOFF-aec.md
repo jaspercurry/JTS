@@ -428,6 +428,18 @@ Captured here so future sessions don't repeat the mistakes.
     bridge's recent journal has no music for the passive check to
     learn from.
 
+    Refined further on 2026-05-17 (PR #134) for the corner case
+    where the entire assessment window has no music at all (a
+    pure-voice session). Even with `healthy_ref_windows = 0`, the
+    silent-ref + mic-loud pattern proves nothing when no renderer
+    is writing the loopback — every ref sample is correctly silent
+    and the mic-loud bursts come from TTS via `jasper_out`. Added a
+    `music_chain_active` gate that reads
+    `/proc/asound/Loopback/pcm0p/sub*/status`; when every sub is
+    `closed`, the FAIL demotes to OK with a "re-run doctor while
+    music is playing" hint. The rate-lock catch from PR #75 still
+    fires when a renderer is actively writing the loopback.
+
 A smart speaker that **plays music** and **listens for a wake word**
 in the same physical box has a fundamental signal-processing
 problem. The microphone hears:
