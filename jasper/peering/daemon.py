@@ -258,6 +258,7 @@ class PeeringDaemon:
                 "address": addr,
                 "last_seen": time.monotonic(),
             }
+            self._prune_stale_peers()
             return
 
         if isinstance(msg, IncomingWake):
@@ -289,6 +290,26 @@ class PeeringDaemon:
             ))
 
     # ---------- inbound: mDNS discovery ----------
+
+    def _prune_stale_peers(self) -> None:
+        """Drop peers whose HELLO hasn't been seen in 3 intervals.
+
+        Bounds `_known_peers` so a long-running daemon doesn't
+        accumulate state from peers that came + went. Called
+        opportunistically on each HELLO receipt; cheap (a single
+        list comprehension over a small dict).
+        """
+        cutoff = time.monotonic() - STALE_PEER_THRESHOLD_SEC
+        stale = [
+            pid for pid, info in self._known_peers.items()
+            if info.get("last_seen", 0) < cutoff
+        ]
+        for pid in stale:
+            logger.info(
+                "event=peering.peer.evicted peer=%s reason=hello_timeout",
+                pid,
+            )
+            del self._known_peers[pid]
 
     async def _on_discovery_event(self, ev) -> None:
         # The state machine doesn't currently consume PeerSeen/PeerGone
@@ -507,3 +528,13 @@ def _maybe_float(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+# Stale-peer cleanup tunables. A peer that hasn't sent a HELLO in
+# `STALE_PEER_THRESHOLD_SEC` is assumed gone (crashed Pi, power-cycled,
+# left the network). The threshold is 3× the HELLO interval so a single
+# dropped multicast packet doesn't evict a working peer. Cleanup is
+# triggered on each HELLO receipt rather than on a timer — cheap, and
+# the steady-state HELLO cadence ensures we evict within ~90s of a
+# peer's silence.
+STALE_PEER_THRESHOLD_SEC = HELLO_INTERVAL_SEC * 3

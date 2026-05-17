@@ -323,13 +323,22 @@ def _save(handler: BaseHTTPRequestHandler, state_path: str) -> None:
         # fall back to the auto-derived default.
         cleaned_room = _room({})
 
-    values: dict[str, str] = {
-        "JASPER_PEERING": "on" if enabled else "off",
-    }
+    # Preserve operator-set tuning knobs that the wizard doesn't
+    # surface (JASPER_PEER_ARB_WINDOW_MS, JASPER_PEER_BREAK_THRESHOLD).
+    # write_env_file does a full-file replacement, so without this read-
+    # then-merge step a save would wipe out hand-tuned values.
+    values: dict[str, str] = dict(_load_state(state_path))
+    values["JASPER_PEERING"] = "on" if enabled else "off"
     if cleaned_room:
         values["JASPER_PEER_ROOM"] = cleaned_room
+    elif "JASPER_PEER_ROOM" in values:
+        # Room cleared in form → drop from file so the default-room
+        # derivation kicks in next load.
+        del values["JASPER_PEER_ROOM"]
     if primary:
         values["JASPER_PEER_PRIMARY"] = "1"
+    elif "JASPER_PEER_PRIMARY" in values:
+        del values["JASPER_PEER_PRIMARY"]
 
     try:
         # mode=0o644 — no secrets here, just config. Matches the

@@ -251,3 +251,55 @@ async def test_notify_session_ended_swallows_errors():
         new=AsyncMock(side_effect=OSError("broken pipe")),
     ):
         await wl._notify_peering_session_ended("error")  # no raise
+
+
+# ---------- _arbitrate_acquire_drain late-cancel gates ----------
+
+
+async def test_arbitrate_acquire_drain_aborts_when_mic_muted():
+    """If the user mutes the mic between wake-frame dispatch and this
+    task starting (e.g. tapped the dial), don't open a session — the
+    user just deliberately stopped listening."""
+    from jasper.voice_daemon import State
+    wl = _make_wake_loop(peering_enabled=False)
+    wl._mic_muted = True
+    wl._measurement_active = asyncio.Event()
+    wl._acquiring = True  # set by caller (_handle_wake_frame)
+    wl._acquire_buffer = MagicMock()
+    wl._refractory_until = 0.0
+    wl._state = State.WAKE
+
+    # Patch out anything the WIN path would touch — they shouldn't be reached.
+    wl._begin_turn = AsyncMock(side_effect=AssertionError("should not begin turn"))
+    wl._play_listening_chirp = AsyncMock(side_effect=AssertionError("should not chirp"))
+
+    await wl._arbitrate_acquire_drain(
+        score=0.8, rms_dbfs=-20.0,
+        spend_allowed=True, conn_paused=False, can_serve=True,
+    )
+
+    # finally clause ran cleanly
+    assert wl._acquiring is False
+
+
+async def test_arbitrate_acquire_drain_aborts_when_measurement_active():
+    """Same shape as mute — measurement_pause is a deliberate
+    'stop listening' signal from the room-correction coordinator."""
+    from jasper.voice_daemon import State
+    wl = _make_wake_loop(peering_enabled=False)
+    wl._mic_muted = False
+    wl._measurement_active = asyncio.Event()
+    wl._measurement_active.set()
+    wl._acquiring = True
+    wl._acquire_buffer = MagicMock()
+    wl._refractory_until = 0.0
+    wl._state = State.WAKE
+
+    wl._begin_turn = AsyncMock(side_effect=AssertionError("should not begin turn"))
+    wl._play_listening_chirp = AsyncMock(side_effect=AssertionError("should not chirp"))
+
+    await wl._arbitrate_acquire_drain(
+        score=0.8, rms_dbfs=-20.0,
+        spend_allowed=True, conn_paused=False, can_serve=True,
+    )
+    assert wl._acquiring is False

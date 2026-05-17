@@ -182,6 +182,65 @@ def test_save_sanitizes_room_name(server_with_state):
     assert "JASPER_PEER_ROOM=Living-Room" in content
 
 
+def test_save_preserves_operator_tuning_knobs(server_with_state):
+    """Operators can manually set JASPER_PEER_ARB_WINDOW_MS /
+    JASPER_PEER_BREAK_THRESHOLD in peering.env to tune the protocol.
+    A wizard save (toggle, room, primary) must NOT wipe those values
+    — that'd silently reset careful tuning."""
+    # Pre-populate with operator tuning + an enabled state.
+    with open(server_with_state["state_path"], "w") as f:
+        f.write(
+            "JASPER_PEERING=on\n"
+            "JASPER_PEER_ROOM=kitchen\n"
+            "JASPER_PEER_ARB_WINDOW_MS=200\n"
+            "JASPER_PEER_BREAK_THRESHOLD=0.92\n"
+        )
+    data = urllib.parse.urlencode({
+        "enabled": "1",
+        "room": "kitchen",
+        "primary": "1",
+    }).encode()
+    req = urllib.request.Request(
+        server_with_state["url"] + "/save",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener = urllib.request.build_opener(_NoRedirect())
+        opener.open(req)
+    assert exc_info.value.code == 303
+    content = open(server_with_state["state_path"]).read()
+    # New values written
+    assert "JASPER_PEERING=on" in content
+    assert "JASPER_PEER_ROOM=kitchen" in content
+    assert "JASPER_PEER_PRIMARY=1" in content
+    # Operator-set tuning preserved
+    assert "JASPER_PEER_ARB_WINDOW_MS=200" in content
+    assert "JASPER_PEER_BREAK_THRESHOLD=0.92" in content
+
+
+def test_save_unchecking_primary_removes_it_from_file(server_with_state):
+    """Unchecking the primary checkbox should drop the key from the
+    env file — defaults take over (primary=False)."""
+    with open(server_with_state["state_path"], "w") as f:
+        f.write("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\nJASPER_PEER_PRIMARY=1\n")
+    data = urllib.parse.urlencode({"enabled": "1", "room": "kitchen"}).encode()
+    # NOTE: no `primary` key in form → unchecked
+    req = urllib.request.Request(
+        server_with_state["url"] + "/save",
+        data=data,
+        method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        opener = urllib.request.build_opener(_NoRedirect())
+        opener.open(req)
+    assert exc_info.value.code == 303
+    content = open(server_with_state["state_path"]).read()
+    assert "JASPER_PEER_PRIMARY" not in content
+
+
 def test_save_primary_flag(server_with_state):
     data = urllib.parse.urlencode({
         "enabled": "1",

@@ -1534,6 +1534,12 @@ class WakeLoop:
     ) -> None:
         """Background coroutine spawned on wake. Steps, in order:
 
+        0. **Late-cancel gates**: if the user muted the mic or a
+           room-correction measurement started between the wake-frame
+           dispatch and this task starting, abort cleanly. Both gates
+           are checked in the main mic loop before frames flow, so
+           we'd be entering a session with no audio — and the user
+           just did something that explicitly said "stop listening".
         1. **Peer arbitration** (no-op when peering is off): ask
            jasper-control via UDS whether this Pi should take the turn.
            If we LOSE, log + return — another peer handles it.
@@ -1548,6 +1554,18 @@ class WakeLoop:
         the finally so the loop returns to wake detection.
         """
         try:
+            # Step 0: late-cancel gates. mute_mic / measurement_pause
+            # can fire AFTER _handle_wake_frame spawned this task but
+            # BEFORE we get scheduled. Both are user-deliberate "stop
+            # listening" signals; firing a chirp + opening an LLM
+            # session after them is bad UX.
+            if self._mic_muted:
+                logger.info("event=wake.late_cancel reason=mic_muted")
+                return  # finally clears _acquiring + buffer
+            if self._measurement_active.is_set():
+                logger.info("event=wake.late_cancel reason=measurement_active")
+                return
+
             # Step 1: peer arbitration.
             decision = await self._peer_arbitrate(
                 score=score, snr_db=None, rms_dbfs=rms_dbfs,
@@ -1558,6 +1576,16 @@ class WakeLoop:
                 # don't play chirps or cues; they just back off.
                 logger.info("event=peering.wake.lost score=%.2f", score)
                 return  # finally clears _acquiring + buffer
+
+            # Re-check the late-cancel gates: arbitration could have
+            # taken up to 500 ms, during which the user could have
+            # muted (e.g. via dial). Same reasoning as Step 0.
+            if self._mic_muted:
+                logger.info("event=wake.late_cancel reason=mic_muted_post_arb")
+                return
+            if self._measurement_active.is_set():
+                logger.info("event=wake.late_cancel reason=measurement_active_post_arb")
+                return
 
             # Step 2: gate cues — only the winner pays this cost.
             if not spend_allowed:
