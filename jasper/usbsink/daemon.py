@@ -30,6 +30,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 from .audio_bridge import AudioBridge, BridgeStats
+from .preempt_listener import (
+    DEFAULT_PORT as PREEMPT_DEFAULT_PORT,
+    DEFAULT_STATE_PATH as PREEMPT_DEFAULT_STATE_PATH,
+    PreemptListener,
+)
+from .state_publisher import (
+    DEFAULT_STATE_PATH as STATE_DEFAULT_PATH,
+    StatePublisher,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +71,9 @@ class DaemonConfig:
     sample_rate: int = 48000
     channels: int = 2
     log_level: str = "INFO"
+    state_path: str = STATE_DEFAULT_PATH
+    preempt_port: int = PREEMPT_DEFAULT_PORT
+    preempt_state_path: str = PREEMPT_DEFAULT_STATE_PATH
 
     @classmethod
     def from_env(cls) -> "DaemonConfig":
@@ -80,6 +92,16 @@ class DaemonConfig:
             )),
             log_level=os.environ.get(
                 "JASPER_USBSINK_LOG_LEVEL", "INFO",
+            ),
+            state_path=os.environ.get(
+                "JASPER_USBSINK_STATE_PATH", STATE_DEFAULT_PATH,
+            ),
+            preempt_port=int(os.environ.get(
+                "JASPER_USBSINK_PREEMPT_PORT", str(PREEMPT_DEFAULT_PORT),
+            )),
+            preempt_state_path=os.environ.get(
+                "JASPER_USBSINK_PREEMPT_STATE_PATH",
+                PREEMPT_DEFAULT_STATE_PATH,
             ),
         )
 
@@ -102,6 +124,19 @@ class UsbSinkDaemon:
             playback_device=config.playback_device,
             sample_rate=config.sample_rate,
             channels=config.channels,
+        )
+        # Preempt listener restores prior preempt state in start() —
+        # before the bridge has actually opened streams, so an
+        # interrupted preempt-then-restart sequence comes back silent
+        # rather than briefly leaking audio.
+        self._preempt_listener = PreemptListener(
+            self._bridge,
+            port=config.preempt_port,
+            state_path=config.preempt_state_path,
+        )
+        self._state_publisher = StatePublisher(
+            self._bridge,
+            state_path=config.state_path,
         )
         self._stop = asyncio.Event()
         self._last_captured_seen = 0
@@ -143,27 +178,37 @@ class UsbSinkDaemon:
             interval_sec=2.0,
         )
 
+        # Bring the preempt listener up before the bridge so any
+        # persisted "silenced" state is applied to the bridge before
+        # its first audio block is produced.
+        self._preempt_listener.start()
+
         try:
             self._bridge.start()
         except Exception as e:  # noqa: BLE001
             logger.exception(
                 "event=usbsink.bridge_start_failed error=%s", e,
             )
+            self._preempt_listener.stop()
             return 1
 
         heartbeat.start()
 
+        publish_task = asyncio.create_task(self._state_publisher.run())
         diag_task = asyncio.create_task(self._diagnostic_loop(heartbeat))
         try:
             await self._stop.wait()
         finally:
             logger.info("event=usbsink.daemon_stopping")
-            diag_task.cancel()
-            try:
-                await diag_task
-            except asyncio.CancelledError:
-                pass
+            for task in (diag_task, publish_task):
+                task.cancel()
+            for task in (diag_task, publish_task):
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
             self._bridge.stop()
+            self._preempt_listener.stop()
             heartbeat.stop()
             logger.info("event=usbsink.daemon_stopped")
         return 0

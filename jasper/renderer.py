@@ -21,7 +21,12 @@ import re
 from typing import Any
 
 from . import librespot_state
-from .source_state import airplay_playing, bluetooth_playing, spotify_playing
+from .source_state import (
+    airplay_playing,
+    bluetooth_playing,
+    spotify_playing,
+    usbsink_playing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +50,23 @@ class RendererClient:
     # ------------------------------------------------------------------
 
     async def active_renderers(self) -> dict[str, bool]:
-        """Returns a dict keyed by renderer name."""
-        spot, ap, bt = await asyncio.gather(
+        """Returns a dict keyed by renderer name. `usbsinkactive`
+        is the playing state from /run/jasper-usbsink/state.json —
+        False whenever the feature is disabled or the daemon hasn't
+        produced a state file yet (e.g. during the brief boot window
+        before jasper-usbsink starts publishing)."""
+        spot, ap, bt, usb = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
+            usbsink_playing(),
             return_exceptions=False,
         )
         return {
             "aplactive": ap,
             "btactive": bt,
             "spotactive": spot,
+            "usbsinkactive": usb,
         }
 
     # ------------------------------------------------------------------
