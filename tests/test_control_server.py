@@ -425,6 +425,83 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["satellites"]["dial"]["online"] is False
 
 
+def test_state_usbsink_section_null_when_disabled(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """When jasper-usbsink isn't running, no /run/jasper-usbsink/
+    state.json exists — the section comes back as null so consumers
+    can distinguish "feature off" from "feature on but idle"."""
+    base, _ = server_with_coordinator
+    monkeypatch.setenv(
+        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["renderers"]["usbsink"] is None
+
+
+def test_state_usbsink_section_populated_when_enabled(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """When the daemon is publishing, /state surfaces playing,
+    preempted, host_connected, rms_dbfs."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "playing": True, "preempted": False, "host_connected": True,
+        "rms_dbfs": -12.3,
+        "updated_at": "2026-05-16T00:00:00+00:00",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    section = body["renderers"]["usbsink"]
+    assert section["playing"] is True
+    assert section["preempted"] is False
+    assert section["host_connected"] is True
+    assert section["rms_dbfs"] == -12.3
+
+
+def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """active_source ranks usbsink above idle but below the named
+    renderers — when nothing else is playing and USB is, the field
+    surfaces as 'usbsink' so the dashboard renders correctly."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "playing": True, "preempted": False, "host_connected": True,
+        "rms_dbfs": -10.0,
+        "updated_at": "2026-05-16T00:00:00+00:00",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["active_source"] == "usbsink"
+
+
 def test_state_502_when_aggregator_raises(
     server_with_coordinator, monkeypatch,
 ):
