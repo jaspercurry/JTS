@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Poll for /proc/asound/UAC2Gadget to appear after the UDC bind.
+#
+# Writing to ConfigFS/UDC returns before the kernel finishes
+# registering the ALSA card — typically <500 ms on a Pi 5, but with
+# enough jitter that jasper-usbsink can race the card's existence and
+# fail to open the capture device. The unit's ExecStartPost runs this
+# script so the init service blocks the main daemon's start until ALSA
+# is genuinely ready.
+#
+# Argument: timeout in seconds (default 30). Returns 0 if the card
+# appears, non-zero on timeout.
+#
+# PiCorrect uses the same pattern in setup.sh — 30 s is more than
+# enough; failure here usually indicates libcomposite didn't load or
+# the UDC bind failed silently, and we want a clear timeout rather
+# than the daemon racing into "no such card" errors.
+set -euo pipefail
+
+TIMEOUT="${1:-30}"
+CARD_PROC=/proc/asound/UAC2Gadget
+
+elapsed=0
+while [[ "${elapsed}" -lt "${TIMEOUT}" ]]; do
+    if [[ -d "${CARD_PROC}" ]]; then
+        echo "jasper-usbsink-wait-card: ${CARD_PROC} present after ${elapsed}s"
+        exit 0
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+done
+
+echo "jasper-usbsink-wait-card: ${CARD_PROC} did not appear within ${TIMEOUT}s" >&2
+echo "  Check: lsmod | grep libcomposite (should be loaded)" >&2
+echo "         ls /sys/class/udc (should list one entry)" >&2
+echo "         cat /sys/kernel/config/usb_gadget/jts-usb-audio/UDC " \
+     "(should match the udc entry, not be empty)" >&2
+exit 1
