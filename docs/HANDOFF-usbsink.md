@@ -1,0 +1,1581 @@
+# USB Gadget Audio Source (`jasper-usbsink`) — Design & Plan
+
+**Status**: design-complete, pre-implementation (2026-05-16)
+**Branch**: `feat/usb-gadget-source`
+**Owner**: Jasper
+**Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
+UAC2 gadget + CamillaDSP stack on Pi 5 hardware
+
+## Status & scope
+
+USB gadget audio becomes a fourth music source alongside AirPlay, Spotify
+Connect, and Bluetooth A2DP. The user plugs a computer into the Pi via
+USB-C, the computer sees JTS as a USB audio output device, audio flows
+through the existing CamillaDSP chain to the speakers.
+
+PLAN.md previously marked this as v8 "Blocked on Pi linux #6289 / #6569
+being fixed". That deferral is obsolete: PiCorrect resolves #6289 by
+introducing the **8086 Consultancy USB-C/PWR Splitter** between the Pi
+and the host computer (the host sees USB-A on its end, sidestepping the
+USB-C-to-USB-C enumeration quirk on kernels >6.6.42). Issue #6569 needs
+a quick verification on Trixie's current kernel before we commit — see
+§11 Risk register.
+
+**In scope**
+- Host computer → JTS as a USB audio output (unidirectional, host-side
+  is playback-only)
+- Host volume slider drives JTS canonical `listening_level` (Mac volume
+  feels like spinning the dial)
+- Latest-source-wins arbitration via `jasper-mux`
+- On/off toggle in `/sources/` wizard
+- Disabled by default
+- Zero RAM cost when disabled (no kernel modules loaded, no daemon
+  running, no ALSA card present)
+- AEC works transparently (USB audio sums into the existing music chain;
+  `pcm.jasper_capture` taps the post-CamillaDSP reference)
+
+**Out of scope (explicit non-goals)**
+- USB-side capture (host recording from JTS mic over USB) — would
+  require a UAC2 input endpoint, no use case for it now
+- Multi-host (two computers plugged in at once) — UAC2 gadget is
+  single-host by spec
+- Bit-perfect / high-resolution audio (96k/192k, DSD, etc.) — the
+  gadget is fixed at 48 kHz S32_LE stereo, which downmixes inside the
+  host's audio stack with no loss for any practical music source
+- Routing JTS speaker output back over USB (loopback-to-host) — host
+  sees JTS as a one-way sink
+- Configurable gadget VID/PID/manufacturer strings via wizard — single
+  set baked into the boot script, settable via env if a user needs it
+- Hot-changing the dtoverlay state at runtime — requires a reboot, and
+  install.sh writes it once
+
+## Executive summary
+
+The USB gadget feature reuses the existing renderer-into-Loopback
+pattern. A new oneshot service `jasper-usbsink-init.service` performs the
+ConfigFS gadget setup at start; a small Python daemon
+`jasper-usbsink.service` does three things:
+
+1. Loops audio from the gadget capture endpoint into `hw:Loopback,0,0`
+   so it joins the existing CamillaDSP chain
+2. Subscribes to ALSA mixer events on the gadget's `PCM Capture Volume`
+   and forwards them to `VolumeCoordinator.observe_source_volume()`
+3. Computes RMS-based playing state and publishes it to a state file
+   that `jasper.source_state` reads
+
+Total new RAM when enabled: **~18-22 MB Pss** (one Python daemon).
+Total new RAM when disabled: **0 MB** (no service runs, no kernel
+modules loaded, no gadget descriptor present). The dtoverlay
+`dwc2,dr_mode=peripheral` is permanently set after install but costs
+only the ~50 KB dwc2 kernel module loaded at boot.
+
+The user-facing model is exactly AirPlay's: camilla-as-master for
+volume, mux-arbitrated for source. Implementation mirrors the
+`Source.AIRPLAY` case in `volume_coordinator.py` and the AirPlay branch
+in `mux.py`, with USB-specific transports (ALSA mixer instead of
+DACP/MPRIS, RMS instead of MPRIS PlaybackStatus).
+
+## 1. Hardware setup
+
+### Required hardware (one-time purchase)
+
+| Item | Cost | Purpose |
+|---|---|---|
+| 8086 Consultancy USB-C/PWR Splitter | ~$30 | Splits Pi USB-C into data leg (to host) + power leg (to wall PSU). Bypasses Pi 5 USB-C-to-USB-C kernel issue #6289. User has confirmed they already have one. |
+| USB-A-to-USB-C cable | ~$10 | Pi-side leg of the splitter to host computer. USB-A end at the host side is what sidesteps the kernel quirk. |
+| Existing 27W USB-C PSU | $0 | Stays connected to the splitter's power leg, replaces the direct-to-Pi connection. |
+
+### Physical topology
+
+```
+Wall outlet
+   │
+   ▼
+27W USB-C PSU ───► 8086 Splitter ◄─── USB-A cable ◄─── Host computer
+                       │
+                       ▼ (combined power + data over USB-C)
+                  Pi 5 USB-C port
+```
+
+The splitter stays permanently installed. The user's day-to-day:
+unplug/plug the USB-A leg into whatever computer they want to use JTS
+with. When no host is connected, JTS still powers up normally from the
+wall PSU through the splitter; nothing about its standalone behavior
+changes.
+
+### Boot config change (one-time, requires reboot)
+
+`/boot/firmware/config.txt` gains one line under `[pi5]`:
+
+```
+dtoverlay=dwc2,dr_mode=peripheral
+```
+
+This puts the BCM2712 SoC's DWC2 USB OTG controller into peripheral
+mode permanently. It does NOT load `libcomposite` at boot — that's
+gated behind `jasper-usbsink-init.service`. The DWC2 controller in
+peripheral mode with no gadget descriptor is a no-op from the host's
+perspective.
+
+**Side effect to document in BRINGUP.md**: the Pi 5 USB-C port is no
+longer available for plugging USB host devices (e.g. flash drives). The
+four USB-A ports remain in host mode unchanged.
+
+## 2. RAM budget
+
+This is the hard constraint. Numbers are Pss (proportional set size,
+shared libs deduplicated) on a Pi 5 running Raspberry Pi OS Lite Trixie.
+
+### When disabled (default state)
+
+| Component | RAM | Notes |
+|---|---|---|
+| dwc2 kernel module | ~50 KB | Loaded at boot via dtoverlay, always resident — too small to matter |
+| `jasper-usbsink.service` | 0 | Inactive |
+| `jasper-usbsink-init.service` | 0 | Inactive |
+| libcomposite, u_audio, configfs descriptor | 0 | Not loaded |
+| ALSA UAC2Gadget card | 0 | Not registered |
+| **Total new RAM (disabled)** | **~50 KB** | Below measurement noise |
+
+### When enabled
+
+| Component | RAM (Pss) | Notes |
+|---|---|---|
+| libcomposite + u_audio kernel modules | ~60 KB | Loaded by `jasper-usbsink-init` |
+| ConfigFS gadget descriptor | <1 KB | Just in-kernel state |
+| `jasper-usbsink.service` (Python daemon) | **18-22 MB** | sounddevice (PortAudio) + alsa-mixer subscriber + RMS + state publisher |
+| **Total new RAM (enabled)** | **~22 MB** | Comparable to `jasper-mux` (~13 MB) and `jasper-input` (~28 MB) |
+
+The daemon budget breakdown:
+- Python 3.11 interpreter: ~10 MB
+- sounddevice + PortAudio: ~6 MB
+- numpy (only for RMS computation, can be omitted if needed): ~3 MB
+- pyalsa (or fallback `alsactl monitor` subprocess): ~1-2 MB
+- Daemon code: <1 MB
+
+If we end up needing to trim further, the RMS computation can be done
+with `struct.unpack` and pure-Python sum-of-squares math (no numpy);
+that saves ~3 MB. For the first cut, numpy is fine — `jasper-voice`
+already loads it.
+
+### How "zero RAM when disabled" is enforced
+
+- Boot path: `modules-load.d/` does **not** auto-load `libcomposite`.
+  `jasper-usbsink-init.service` carries `ExecStartPre=modprobe libcomposite`.
+- Service path: both `jasper-usbsink.service` and
+  `jasper-usbsink-init.service` ship as `enabled=false` by default. The
+  `/sources/` wizard's USB toggle flips them on; install.sh leaves them
+  off.
+- Teardown path: `ExecStopPost` in `jasper-usbsink-init.service`
+  unbinds the gadget from the UDC, removes the ConfigFS descriptor,
+  and rmmods `libcomposite` (best-effort — if rmmod fails because a
+  capture is still open, the descriptor at least is gone, and the next
+  enable cleans it up).
+- Doctor verification: `jasper-doctor` reports RAM-on-disable as a
+  warn if it sees `libcomposite` loaded but no usbsink service active
+  (catches state drift from a botched stop).
+
+## 3. Architecture
+
+### 3.1 Audio path
+
+```
+Host computer (USB-C via 8086 splitter)
+   │ UAC2 OUT endpoint, 48 kHz S32_LE stereo
+   ▼
+hw:CARD=UAC2Gadget,DEV=0  (gadget capture endpoint, Pi-side)
+   │
+   │ jasper-usbsink reads frames here
+   │   (sounddevice InputStream, callback-driven)
+   │
+   ▼ writes here when not preempted; writes silence when preempted
+hw:Loopback,0,0   ── (joins the existing music chain) ──►
+                                          ▼
+                              plughw:Loopback,1,0
+                                          │
+                                          ▼
+                                  jasper-camilla
+                                  (main_volume — the dial knob)
+                                          │
+                                          ▼
+                                   pcm.jasper_out
+                                  (dmix on Apple dongle)
+                                          │
+                                          ▼
+                                    speakers
+```
+
+The gadget capture endpoint is the *Pi-side* read of audio the host is
+sending. UAC2 terminology is host-relative: "playback" on the host
+side = "capture" on the device side. That's why the ALSA control is
+`PCM Capture Volume` even though logically it's the host's playback
+volume.
+
+Why the bridge instead of having CamillaDSP capture directly from the
+gadget (as PiCorrect does):
+
+PiCorrect's topology is single-source — the host is the *only* audio
+input. JTS is multi-source — AirPlay, Spotify Connect, Bluetooth, and
+now USB must all sum at the dongle. The existing snd-aloop setup is
+the mixing point, and the easiest way to add a fourth source is to
+make it a fourth writer into `hw:Loopback,0,0`. Bridging UAC2Gadget →
+Loopback is a tiny daemon (~80 lines of sounddevice code) and keeps
+CamillaDSP's capture configuration unchanged.
+
+Latency budget (rough, measured during implementation):
+- Host → gadget USB endpoint: ~3-5 ms
+- sounddevice ring buffer: ~10 ms (configurable; default ~chunksize)
+- snd-aloop loopback: ~10 ms (Loopback,0 → Loopback,1)
+- CamillaDSP chunksize=4096 @ 48k: ~85 ms
+- dmix → dongle: ~10 ms
+- **Total**: ~120-150 ms end-to-end
+
+That's well within "music streaming" expectations. Not suitable for
+real-time monitoring (singing into a mic plugged into the host while
+listening on JTS speakers), but JTS isn't a DAW.
+
+### 3.2 Volume model — USB gadget is camilla-as-master
+
+The clearest mental model: **USB gadget behaves like AirPlay**.
+CamillaDSP's `main_volume` is the user-perceived speaker volume.
+The host's slider is treated as an upstream observation, not as the
+master.
+
+Concretely, in `jasper.volume_coordinator.VolumeCoordinator`:
+- `Source.USBSINK` is added to the enum
+- `_camilla_carries_level(Source.USBSINK)` returns `True` — joins
+  `AIRPLAY` and `IDLE` as a camilla-as-master source
+- Inbound observer: pyalsa subscribes to gadget mixer events on
+  `PCM Capture Volume` and `PCM Capture Switch`. When the user moves
+  the Mac slider, observer calls
+  `coordinator.observe_source_volume(Source.USBSINK, value_pct)`,
+  which translates and updates `listening_level` + `camilla.main_volume`
+- Outbound: dial twist / voice "louder" goes through the normal
+  `_set_camilla` path. **No write back to the gadget mixer**.
+
+#### Why no outbound write back to the host
+
+PiCorrect uses `link_volume_control: "PCM Capture Volume"` in its
+CamillaDSP config, which makes the host's slider drive CamillaDSP
+volume directly. We don't do that for JTS because:
+
+1. `main_volume` is also the ducking knob (`jasper.camilla.Ducker`).
+   Voice sessions duck music, then restore. If the host's slider were
+   wired directly to `main_volume`, ducking would push the host's
+   slider visually down on the Mac, which is wrong.
+2. The dial / voice / "louder" path must remain authoritative.
+   Bidirectional sync would require either echo prevention on both
+   ends (complex) or always-wins logic on one end (confusing).
+
+The accepted UX consequence: if the user dials JTS up to 80% via the
+rotary knob, and then later moves the Mac slider, the Mac slider jumps
+to wherever the user set it on Mac (say 50%), and JTS instantly
+follows to 50%. The Mac slider is a remote control; touching it
+overrides JTS's current state. This is the same UX as AirPlay sender
+sliders.
+
+#### Translation: gadget mixer value → listening_level
+
+UAC2 Volume Control is signed 16.16 dB (or signed 8.8 on some hosts).
+The Linux `u_audio` driver normalizes this to ALSA `Volume` integer
+units. The mapping pyalsa exposes is straightforward:
+
+```python
+# pyalsa: mixer element's volume range is queryable via .getrange()
+# Returns (min, max) integer units that map 1:1 to dB at 0.01-dB
+# resolution on UAC2.
+min_v, max_v = elem.getrange()  # e.g. (-12800, 0) for -128.00 to 0.00 dB
+def gadget_to_pct(raw: int) -> int:
+    # Linear-in-dB mapping from gadget range to 0..100%
+    # 0.00 dB at host slider 100%, min_v at host slider 0%.
+    span = max_v - min_v
+    return max(0, min(100, round((raw - min_v) / span * 100)))
+```
+
+The translation lives in `jasper/usbsink/volume_bridge.py` (new file).
+A `gadget_pct_to_listening_level()` helper is the analogue of
+`spotify_percent_to_listening_level()` in `volume_coordinator.py:99`.
+
+#### Mute handling
+
+Host's mute toggle hits `PCM Capture Switch`. Observer treats
+mute-on as `level=0` (no separate mute concept exposed to
+VolumeCoordinator; coordinator's own `mute()/unmute()` flow is for
+the dial's mute button and voice). When the host unmutes, observer
+reads the current volume value and sets that as `listening_level`.
+
+### 3.3 Source arbitration
+
+Mux integration follows the AirPlay pattern with one wrinkle: we
+can't tell the host to pause. So when USB is preempted, the daemon
+silences its own output (writes zeros to `hw:Loopback,0,0`) until
+the host transitions in a way that mux recognizes.
+
+#### Playing-state detection: RMS-based
+
+Rather than relying on ALSA PCM state (`/proc/asound/UAC2Gadget/pcm0c0/sub0/status`),
+which can return `RUNNING` while the host streams silence after pause,
+we use RMS on the input audio:
+
+```python
+# In jasper-usbsink's audio callback (per-block):
+rms_db = 20 * math.log10(max(rms_linear, 1e-6))
+# A block is RMS-active if rms_db > -50 dB.
+# State "playing" = sustained active for ≥1.0 s.
+# State "idle" = sustained inactive for ≥2.0 s.
+# Hysteresis keeps transient silence (track changes, brief pauses) from
+# flapping the state.
+```
+
+The daemon publishes state to `/run/jasper-usbsink/state.json`:
+
+```json
+{
+  "playing": true,
+  "preempted": false,
+  "host_connected": true,
+  "rms_db": -18.3,
+  "updated_at": "2026-05-16T18:30:42.123Z"
+}
+```
+
+`jasper.source_state.usbsink_playing()` reads this file (same shape
+as `librespot_state.is_playing()` at `jasper/source_state.py:32`).
+
+#### Preempt protocol
+
+When mux detects a transition newly-started → other-source-now-winning,
+it tells the USB daemon to silence:
+
+```python
+# In Mux._pause(Source.USBSINK):
+# POST http://127.0.0.1:8780/usbsink/preempt {"silenced": true}
+# (jasper-control hosts the endpoint; daemon polls or has its own
+# HTTP listener.)
+```
+
+Two design choices for the daemon's preempt receiver:
+- **A**: daemon listens on its own HTTP port (e.g. 8781 localhost).
+  Mux posts directly.
+- **B**: daemon polls `jasper-control` for its preempt state, or
+  reads a state file `/run/jasper-usbsink/preempt.state` that mux
+  writes.
+
+**Recommended: option A** — the daemon already runs an async event
+loop (sounddevice callback + mixer thread + state publisher), adding
+a tiny `aiohttp` or stdlib `http.server` listener on localhost is
+clean. Mux's `_pause()` method gains a USBSINK branch that POSTs to
+`http://127.0.0.1:8781/preempt`.
+
+A dropped POST (daemon restarting) is recoverable: on (re)start, the
+daemon reads `/run/jasper-usbsink/preempt.state` written by mux as
+a backup, so the silenced state survives daemon restarts.
+
+#### Resumption protocol
+
+When USB is preempted but the host is still streaming audio, RMS
+stays high. The daemon publishes `playing=true` regardless of
+preempted state — `playing` reflects what the user wants, `preempted`
+reflects mux's mute. Mux uses this to decide:
+
+1. **All other sources go idle** → mux clears all preempt flags
+   (POSTs `preempt=false` to USB daemon). USB resumes forwarding.
+2. **User pauses on host, then plays again** → RMS drops, then rises.
+   Daemon sees this as a fresh inactive→active transition and
+   publishes a `playing` edge to its state file. Mux's next tick sees
+   USB as newly-started, preempts the current winner, and clears USB's
+   preempt flag.
+
+This requires a small Mux behavior change beyond just adding USBSINK
+to the enum:
+
+```python
+# After detecting newly_started, if all sources are inactive, clear
+# any per-source preempt overrides that might be lingering.
+if not any(current.values()):
+    # No source is playing right now. Release any USB preempt.
+    if self._usbsink_preempted:
+        await self._usbsink_release_preempt()
+        self._usbsink_preempted = False
+```
+
+#### Bluetooth analogy
+
+For AirPlay and Spotify, mux's `_pause()` calls a clean API. For
+Bluetooth, mux logs "no graceful pause API" and lives with brief
+mixing. For USB, the silencing-the-daemon approach gives us a clean
+pause that works as well as Spotify's. **USB does NOT degrade to the
+Bluetooth-fallback behavior** — the daemon silences its own output
+deterministically.
+
+## 4. Component design (file map)
+
+### 4.1 Boot-time gadget setup
+
+**New files**:
+
+```
+deploy/usbsink/uac2-gadget-up.sh       # ConfigFS gadget creation
+deploy/usbsink/uac2-gadget-down.sh     # ConfigFS gadget teardown
+deploy/systemd/jasper-usbsink-init.service
+```
+
+`uac2-gadget-up.sh` is lifted from
+[PiCorrect's setup.sh:68-123](https://github.com/jaspercurry/PiCorrect/blob/main/setup.sh#L68)
+with two modifications:
+- Manufacturer/product strings: "Jasper Tech Speaker" / "JTS USB Audio"
+- Serial number derived from the same `/proc/cpuinfo` line PiCorrect
+  uses
+- Idempotency check: skip if `${CONFIGFS}/${NAME}` already exists
+
+`uac2-gadget-down.sh` is the inverse: unbind UDC, remove configs and
+strings, rmdir the gadget directory. Best-effort — if the descriptor
+is partially broken (rmdir fails because something is still bound), we
+log and continue. The next `up.sh` will handle it.
+
+`jasper-usbsink-init.service`:
+
+```ini
+[Unit]
+Description=Jasper USB sink — ConfigFS UAC2 gadget setup
+After=systemd-modules-load.service sys-kernel-config.mount
+Before=jasper-usbsink.service
+DefaultDependencies=no
+ConditionPathExists=/sys/kernel/config
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStartPre=/sbin/modprobe libcomposite
+ExecStart=/opt/jasper/deploy/usbsink/uac2-gadget-up.sh
+ExecStartPost=/opt/jasper/deploy/usbsink/wait-for-uac2-card.sh 30
+ExecStop=/opt/jasper/deploy/usbsink/uac2-gadget-down.sh
+ExecStopPost=-/sbin/rmmod libcomposite u_audio
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`wait-for-uac2-card.sh 30` polls `/proc/asound/UAC2Gadget` for up to
+30 seconds (PiCorrect's pattern). The enumeration race is real:
+ConfigFS write returns before ALSA registers the card.
+
+### 4.2 jasper-usbsink daemon
+
+**New package**:
+
+```
+jasper/usbsink/
+  __init__.py
+  daemon.py            # Main async loop, wires the pieces together
+  audio_bridge.py      # sounddevice InputStream → ALSA OutputStream
+  volume_bridge.py     # pyalsa mixer event subscription
+  state_publisher.py   # /run/jasper-usbsink/state.json writer
+  preempt_listener.py  # localhost HTTP receiver for mux preempt
+```
+
+`jasper-usbsink.service`:
+
+```ini
+[Unit]
+Description=Jasper USB sink — audio bridge + volume observer
+After=jasper-usbsink-init.service jasper-camilla.service
+Requires=jasper-usbsink-init.service
+PartOf=jasper-usbsink-init.service
+
+[Service]
+Type=notify
+EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/usbsink.env
+ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
+Restart=on-failure
+RestartSec=2s
+WatchdogSec=15s
+Nice=-10
+RuntimeDirectory=jasper-usbsink
+RuntimeDirectoryMode=0755
+
+# RAM caps — generous but bounded. If we ever go over, that's a bug
+# in the daemon (memory leak) and we want OOM-killer to catch it.
+MemoryMax=64M
+MemoryHigh=48M
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Daemon entry point** (`jasper/cli/usbsink_main.py`, mirrors
+`jasper/cli/aec_bridge.py`):
+
+```python
+import asyncio
+import logging
+import signal
+import sys
+from jasper.usbsink.daemon import UsbSinkDaemon
+
+def main(argv: list[str] | None = None) -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+    daemon = UsbSinkDaemon.from_env()
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, daemon.request_stop)
+    return loop.run_until_complete(daemon.run())
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+```
+
+Registered in `pyproject.toml` `[project.scripts]` alongside
+`jasper-aec-bridge`, `jasper-doctor`, etc.
+
+#### `audio_bridge.py` — sounddevice loop
+
+```python
+import sounddevice as sd
+import numpy as np
+
+class AudioBridge:
+    """sounddevice InputStream from gadget → OutputStream to Loopback.
+
+    Single shared callback to avoid two-thread latency stacking.
+    Silenced output when `preempted` is True, computed RMS published
+    via `last_rms_db` for the state publisher to read."""
+
+    def __init__(self, capture_device: str, playback_device: str,
+                 samplerate: int = 48000, blocksize: int = 480):
+        self.capture_device = capture_device
+        self.playback_device = playback_device
+        self.samplerate = samplerate
+        self.blocksize = blocksize  # 10 ms @ 48k
+        self.preempted = False
+        self.last_rms_db: float = -120.0
+        self._stream: sd.Stream | None = None
+
+    def _callback(self, indata, outdata, frames, time_info, status):
+        if status:
+            logger.warning("sounddevice status: %s", status)
+        # Compute RMS for state publisher.
+        rms = float(np.sqrt(np.mean(indata.astype(np.float32) ** 2)))
+        self.last_rms_db = 20 * math.log10(max(rms, 1e-6))
+        if self.preempted:
+            outdata.fill(0)
+        else:
+            outdata[:] = indata
+```
+
+`sd.Stream` is duplex — one device for capture, another for playback,
+single callback fires per block. PortAudio handles the rate matching;
+both ends are 48 kHz so it's a straight copy.
+
+#### `volume_bridge.py` — pyalsa mixer observer
+
+```python
+import asyncio
+from pyalsa import alsamixer
+from jasper.volume_coordinator import Source
+
+class VolumeBridge:
+    """Subscribes to PCM Capture Volume + Switch events on the gadget
+    card. On each event, computes the listening-level equivalent and
+    POSTs to jasper-control's /volume/set endpoint."""
+
+    POLL_INTERVAL_SEC = 0.2  # event-driven, this is just fallback
+
+    def __init__(self, card_name: str, control_url: str):
+        self.card_name = card_name  # "UAC2Gadget"
+        self.control_url = control_url  # "http://127.0.0.1:8780"
+        self._mixer = alsamixer.Mixer()
+        self._mixer.attach(f"hw:{card_name}")
+        self._mixer.load()
+        self._vol_elem = alsamixer.Element(self._mixer, "PCM Capture Volume")
+        self._mute_elem = alsamixer.Element(self._mixer, "PCM Capture Switch")
+        self._last_published: int | None = None
+
+    async def run(self):
+        # pyalsa's poll-based event API: register fds, asyncio.add_reader
+        # on each one, on event call handle_events() and process.
+        fds = self._mixer.poll_fds()  # returns list of (fd, events)
+        loop = asyncio.get_event_loop()
+        ready_event = asyncio.Event()
+        for fd, _events in fds:
+            loop.add_reader(fd, ready_event.set)
+        try:
+            while True:
+                await ready_event.wait()
+                ready_event.clear()
+                self._mixer.handle_events()
+                await self._publish_if_changed()
+        finally:
+            for fd, _events in fds:
+                loop.remove_reader(fd)
+
+    async def _publish_if_changed(self):
+        raw = self._vol_elem.getvolume()[0]  # left channel; right tracks
+        muted = self._mute_elem.getmute()[0]
+        pct = 0 if muted else _raw_to_pct(raw, *self._vol_elem.getrange())
+        if pct == self._last_published:
+            return
+        self._last_published = pct
+        await self._post_volume(pct)
+
+    async def _post_volume(self, pct: int):
+        async with httpx.AsyncClient(timeout=2.0) as c:
+            try:
+                r = await c.post(
+                    f"{self.control_url}/volume/set",
+                    json={"percent": pct, "source": "usbsink"},
+                )
+                if r.status_code != 200:
+                    logger.warning("volume POST failed: %s", r.status_code)
+            except httpx.HTTPError as e:
+                logger.warning("volume POST exception: %s", e)
+```
+
+The `source: "usbsink"` field is new — jasper-control's `/volume/set`
+gains a `source` field so the coordinator can call
+`observe_source_volume(Source.USBSINK, ...)` (which goes through echo
+prevention) instead of `set_listening_level(...)` (which is for
+"authoritative" writes like the dial).
+
+This is a small surgical addition to
+[jasper/control/server.py:496-624](jasper/control/server.py:496) — see
+§4.7 below.
+
+#### `state_publisher.py`
+
+Writes `/run/jasper-usbsink/state.json` at 1 Hz, plus on every state
+transition. Same atomic tempfile+rename pattern as
+`jasper/mic_mute_persistence.py`. Schema:
+
+```python
+@dataclass
+class UsbSinkState:
+    playing: bool         # RMS-based, with hysteresis
+    preempted: bool       # mux-induced silence
+    host_connected: bool  # /proc/asound/UAC2Gadget present
+    rms_db: float
+    updated_at: str       # ISO 8601 UTC
+```
+
+#### `preempt_listener.py`
+
+stdlib `http.server` running in a worker thread on
+`127.0.0.1:8781`. One route: `POST /preempt {"silenced": bool}`.
+Writes to `/run/jasper-usbsink/preempt.state` (so survives daemon
+restart) and toggles `audio_bridge.preempted`.
+
+### 4.3 Volume observer integration
+
+**Modified file**: `jasper/volume_observers.py` (already exists, hosts
+the Spotify and Bluetooth inbound observers started by voice_daemon).
+
+Add `UsbSinkObserver`:
+
+```python
+class UsbSinkObserver:
+    """Polls jasper-usbsink's published state at 1 Hz and feeds
+    volume changes into the coordinator. This is a thin polling
+    observer because jasper-usbsink itself does the event-driven
+    mixer subscription and POSTs to jasper-control; the observer
+    only kicks in for cases where the coordinator instance isn't
+    the one inside jasper-control (e.g. voice_daemon's own
+    coordinator, which receives volume changes through this path)."""
+
+    async def run(self, coordinator: VolumeCoordinator):
+        while True:
+            state_path = "/run/jasper-usbsink/state.json"
+            try:
+                with open(state_path) as f:
+                    state = json.load(f)
+                if state.get("playing") and not state.get("preempted"):
+                    # No-op for already-published values; coordinator
+                    # has echo prevention.
+                    ...
+            except (FileNotFoundError, json.JSONDecodeError):
+                pass
+            await asyncio.sleep(1.0)
+```
+
+Actually, on reflection, this observer may not be needed at all. The
+authoritative volume routing is `volume_bridge.py` POSTing to
+jasper-control's `/volume/set`. jasper-control's coordinator updates
+the persistence file. voice_daemon's coordinator refreshes from disk
+on every operation (see `_refresh_from_disk()` at
+[jasper/volume_coordinator.py:348](jasper/volume_coordinator.py:348)).
+So volume changes propagate to voice_daemon without a dedicated
+observer. **Decision: no new UsbSinkObserver.** Saves complexity.
+
+### 4.4 Source-state probe
+
+**Modified file**: `jasper/source_state.py`. Add:
+
+```python
+USBSINK_STATE_PATH = "/run/jasper-usbsink/state.json"
+
+async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
+    """jasper-usbsink publishes RMS-based playing state every ~1 s.
+    Reading is cheap (file is <1 KB)."""
+    try:
+        with open(state_path) as f:
+            state = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+        logger.debug("usbsink state probe failed: %s", e)
+        return False
+    return bool(state.get("playing", False))
+```
+
+Mirrors `spotify_playing()` at
+[jasper/source_state.py:25](jasper/source_state.py:25).
+
+**Modified file**: `jasper/renderer.py`. Add `usbsinkactive` to the
+dict returned by `active_renderers()`:
+
+```python
+async def active_renderers(self) -> dict[str, bool]:
+    spot, ap, bt, usb = await asyncio.gather(
+        spotify_playing(self._librespot_state_path),
+        airplay_playing(),
+        bluetooth_playing(),
+        usbsink_playing(),
+        return_exceptions=False,
+    )
+    return {
+        "aplactive": ap,
+        "btactive": bt,
+        "spotactive": spot,
+        "usbsinkactive": usb,
+    }
+```
+
+### 4.5 Mux integration
+
+**Modified file**: `jasper/mux.py`.
+
+Add `USBSINK` to `Source` enum (line 49). Add to `_State.playing`
+default dict (already auto-populated). Extend `_tick()`:
+
+```python
+async def _tick(self) -> None:
+    spotify, airplay, bluetooth, usbsink = await asyncio.gather(
+        spotify_playing(...),
+        airplay_playing(),
+        bluetooth_playing(),
+        usbsink_playing(),
+    )
+    current = {
+        Source.SPOTIFY: spotify,
+        Source.AIRPLAY: airplay,
+        Source.BLUETOOTH: bluetooth,
+        Source.USBSINK: usbsink,
+    }
+    # ... rest of existing logic
+```
+
+Extend `_pause()`:
+
+```python
+elif source == Source.USBSINK:
+    ok = await self._usbsink_set_preempt(True)
+    if not ok:
+        logger.warning("usbsink preempt POST failed; "
+                       "USB audio may continue mixing briefly")
+```
+
+Add a release-preempt path. When mux observes all sources idle, clear
+USB preempt:
+
+```python
+# At the end of _tick, after handling transitions:
+if not any(current.values()) and self._usbsink_preempted:
+    ok = await self._usbsink_set_preempt(False)
+    if ok:
+        self._usbsink_preempted = False
+        logger.info("usbsink preempt released (all sources idle)")
+```
+
+The `_usbsink_set_preempt` method POSTs to `127.0.0.1:8781/preempt`
+via httpx. Add httpx as a dep if not already (it's already used in
+`volume_coordinator.py:175`).
+
+### 4.6 Wizard integration
+
+**Modified file**: `jasper/web/sources_setup.py`.
+
+Two systemd units to toggle (init + main), but they're chained via
+`Requires=` + `PartOf=` so `systemctl enable/disable --now jasper-usbsink`
+also brings init up/down.
+
+Add to constants:
+
+```python
+USBSINK_UNIT = "jasper-usbsink.service"
+VALID_SOURCES = ("airplay", "bluetooth", "spotify_connect", "usbsink")
+```
+
+Add to `_gather_state()`:
+
+```python
+"usbsink": {
+    "enabled": _unit_active(USBSINK_UNIT),
+    "available": _usbsink_available(),  # See below
+},
+```
+
+`_usbsink_available()` returns False if the dtoverlay isn't set in
+config.txt (user hasn't run the install.sh that adds it, or has
+manually removed it). Surfaced in the UI as a disabled toggle with
+the note "USB gadget mode not enabled — re-run install.sh and reboot".
+
+Add to `_apply()`:
+
+```python
+elif source == "usbsink":
+    _set_unit(USBSINK_UNIT, enabled)
+```
+
+Add a row to the HTML rendering. New row with the source name "USB
+Audio Input" and a note "Plug a computer into the Pi's USB-C port via
+the 8086 splitter. Mac/Windows/Linux will see JTS as a USB audio
+output.".
+
+The wizard's optimistic-UI JavaScript already loops over `SOURCES`;
+just add `usbsink` to that array (line 247). No further JS changes
+required.
+
+### 4.7 jasper-control `/volume/set` source field
+
+**Modified file**: `jasper/control/server.py`.
+
+The existing `/volume/set` endpoint takes `{percent}`. Extend the
+schema to accept an optional `source` field:
+
+```json
+{"percent": 50}                       // existing: authoritative set
+{"percent": 50, "source": "usbsink"}  // new: observed from host
+```
+
+When `source` is provided and equals a known source, the handler
+routes through `coordinator.observe_source_volume(source, percent)`
+rather than `coordinator.set_listening_level(percent)`. This goes
+through echo-prevention and only updates if the change isn't our own
+write echoing back.
+
+```python
+# In the POST handler for /volume/set:
+percent = int(body["percent"])
+source = body.get("source")
+if source == "usbsink":
+    await coordinator.observe_source_volume(Source.USBSINK, percent)
+else:
+    await coordinator.set_listening_level(percent)
+```
+
+This is ~10 lines of change in
+[jasper/control/server.py](jasper/control/server.py).
+
+### 4.8 jasper-doctor checks
+
+**Modified file**: `jasper/cli/doctor.py`. Add three checks, all
+under the `usbsink` namespace (analogue of the AEC checks):
+
+```python
+def check_usbsink_dtoverlay() -> CheckResult:
+    """Verify dtoverlay=dwc2,dr_mode=peripheral is present in
+    config.txt. Without it, USB-C is power-only and the gadget cannot
+    enumerate."""
+    cfg = Path("/boot/firmware/config.txt")
+    if not cfg.exists():
+        return CheckResult("usbsink dtoverlay", "warn",
+                           "config.txt missing — not a Pi?")
+    content = cfg.read_text()
+    if "dtoverlay=dwc2,dr_mode=peripheral" in content:
+        return CheckResult("usbsink dtoverlay", "ok",
+                           "dwc2 peripheral mode enabled")
+    return CheckResult("usbsink dtoverlay", "warn",
+                       "not set; USB gadget source unavailable "
+                       "(set via install.sh, requires reboot)")
+
+
+def check_usbsink_state() -> CheckResult:
+    """When jasper-usbsink is enabled, verify it's healthy. When
+    disabled, verify libcomposite is NOT loaded (drift detection)."""
+    active = _systemd_is_active("jasper-usbsink.service")
+    libcomp_loaded = _is_module_loaded("libcomposite")
+    if active:
+        # Check that the daemon is publishing state recently.
+        state_path = Path("/run/jasper-usbsink/state.json")
+        if not state_path.exists():
+            return CheckResult("usbsink state", "fail",
+                               "service active but no state file")
+        state = json.loads(state_path.read_text())
+        updated = datetime.fromisoformat(state["updated_at"])
+        if (datetime.now(timezone.utc) - updated).total_seconds() > 10:
+            return CheckResult("usbsink state", "warn",
+                               f"state file is "
+                               f"{(datetime.now(...) - updated).total_seconds():.0f}s "
+                               "stale — daemon may be wedged")
+        return CheckResult("usbsink state", "ok",
+                           f"playing={state['playing']} "
+                           f"host_connected={state['host_connected']}")
+    else:
+        if libcomp_loaded:
+            return CheckResult("usbsink state", "warn",
+                               "service disabled but libcomposite still loaded — "
+                               "RAM drift; reboot or manually rmmod")
+        return CheckResult("usbsink state", "ok", "disabled (no RAM)")
+
+
+def check_usbsink_card() -> CheckResult:
+    """When usbsink is enabled, verify the UAC2Gadget ALSA card exists."""
+    if not _systemd_is_active("jasper-usbsink.service"):
+        return CheckResult("usbsink card", "ok", "service disabled (skip)")
+    if not Path("/proc/asound/UAC2Gadget").exists():
+        return CheckResult("usbsink card", "fail",
+                           "service active but no UAC2Gadget card — "
+                           "init service may have failed")
+    return CheckResult("usbsink card", "ok", "UAC2Gadget present")
+```
+
+Hooked into the main check list in `doctor.py`'s `_all_checks()`.
+
+### 4.9 jasper-control `/state` aggregator
+
+**Modified file**: `jasper/control/system_metrics.py` (or wherever the
+`/state` builder lives — quick grep needed).
+
+Add a `usbsink` section:
+
+```json
+{
+  "usbsink": {
+    "enabled": true,
+    "host_connected": true,
+    "playing": false,
+    "preempted": false,
+    "rms_db": -85.4
+  }
+}
+```
+
+This is read by the dashboard and the dial firmware (if either chooses
+to display USB state in the future). Fail-soft per the existing
+pattern.
+
+### 4.10 install.sh additions
+
+**Modified file**: `deploy/install.sh`.
+
+One section adding the dtoverlay (idempotent, sandboxed under a
+function like `set_usb_gadget_mode()`):
+
+```bash
+set_usb_gadget_mode() {
+  local cfg="/boot/firmware/config.txt"
+  local line='dtoverlay=dwc2,dr_mode=peripheral'
+  if grep -qE '^dtoverlay=dwc2,dr_mode=peripheral' "$cfg"; then
+    return 0
+  fi
+  log "Adding dtoverlay=dwc2,dr_mode=peripheral to $cfg (requires reboot)"
+  # Append under the [pi5] section to keep things tidy. If [pi5] isn't
+  # present yet, append to end of file with a fresh [pi5] header.
+  if grep -q '^\[pi5\]' "$cfg"; then
+    sed -i '/^\[pi5\]/a '"$line" "$cfg"
+  else
+    printf '\n[pi5]\n%s\n' "$line" >> "$cfg"
+  fi
+  REBOOT_REQUIRED=1
+}
+```
+
+One section installing the gadget scripts:
+
+```bash
+install -d -m 0755 /opt/jasper/deploy/usbsink
+install -m 0755 \
+  "${REPO_DIR}/deploy/usbsink/uac2-gadget-up.sh" \
+  "${REPO_DIR}/deploy/usbsink/uac2-gadget-down.sh" \
+  "${REPO_DIR}/deploy/usbsink/wait-for-uac2-card.sh" \
+  /opt/jasper/deploy/usbsink/
+```
+
+One section installing the systemd units (alongside existing
+`jasper-aec-bridge.service` etc.):
+
+```bash
+install -m 0644 \
+  "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
+  "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
+  /etc/systemd/system/
+
+# Do NOT auto-enable. The /sources/ wizard owns the toggle. The user
+# has to opt in.
+systemctl daemon-reload
+```
+
+A `REBOOT_REQUIRED` flag at the end of install.sh: if the dtoverlay
+was newly added, print a clear warning that a reboot is needed before
+the toggle in `/sources/` will work.
+
+### 4.11 Web wizard JS — disabled-toggle reason text
+
+The `available: false` branch already exists for Bluetooth ("not
+available on this device"). For USB, the reason is "needs dtoverlay +
+reboot". UI surfaces the specific reason in the row's note text.
+
+## 5. File map summary
+
+### New files
+
+| Path | Purpose | LoC est. |
+|---|---|---|
+| `deploy/usbsink/uac2-gadget-up.sh` | ConfigFS gadget creation | ~80 |
+| `deploy/usbsink/uac2-gadget-down.sh` | Teardown | ~30 |
+| `deploy/usbsink/wait-for-uac2-card.sh` | Enumeration race wait | ~20 |
+| `deploy/systemd/jasper-usbsink.service` | Main daemon unit | ~30 |
+| `deploy/systemd/jasper-usbsink-init.service` | Init unit | ~25 |
+| `jasper/usbsink/__init__.py` | Package marker | ~5 |
+| `jasper/usbsink/daemon.py` | Orchestration | ~120 |
+| `jasper/usbsink/audio_bridge.py` | sounddevice loop | ~80 |
+| `jasper/usbsink/volume_bridge.py` | pyalsa mixer observer | ~100 |
+| `jasper/usbsink/state_publisher.py` | /run/jasper-usbsink/state.json | ~60 |
+| `jasper/usbsink/preempt_listener.py` | localhost HTTP receiver | ~50 |
+| `jasper/cli/usbsink_main.py` | Entry point | ~30 |
+| `tests/test_usbsink_volume.py` | Vol math, state parsing | ~80 |
+| `tests/test_usbsink_state.py` | State publisher | ~60 |
+| `docs/HANDOFF-usbsink.md` | This document | (this file) |
+
+### Modified files
+
+| Path | Change |
+|---|---|
+| `deploy/install.sh` | Add dtoverlay, install scripts + units (no auto-enable) |
+| `jasper/web/sources_setup.py` | Add USB toggle |
+| `jasper/source_state.py` | Add `usbsink_playing()` |
+| `jasper/renderer.py` | Add `usbsinkactive` to `active_renderers()` |
+| `jasper/mux.py` | Add `USBSINK` enum + preempt POST + release-on-idle |
+| `jasper/volume_coordinator.py` | Add `Source.USBSINK`, `_camilla_carries_level` returns True for it |
+| `jasper/control/server.py` | `/volume/set` accepts optional `source` field |
+| `jasper/control/system_metrics.py` | `/state` exposes `usbsink` section |
+| `jasper/cli/doctor.py` | Three new checks |
+| `pyproject.toml` | Register `jasper-usbsink` script, add `pyalsa` dep |
+| `BRINGUP.md` | New phase: 8086 splitter setup + reboot for dtoverlay |
+| `README.md` | Sources list gains USB; RAM table gains usbsink row |
+| `CLAUDE.md` / `AGENTS.md` | Operational section: how to debug, on/off, doctor checks |
+| `PLAN.md` | v8 USB gadget moves from "Blocked" to "Shipped" once landed |
+
+### Total new code
+
+~640 LoC of Python, ~130 LoC of shell, ~55 LoC of systemd units. About
+the same size as the AEC bridge subsystem.
+
+## 6. Resilience design
+
+### Failure modes and recovery
+
+| Failure | Detection | Recovery |
+|---|---|---|
+| Host unplugs USB cable | `/proc/asound/UAC2Gadget` capture endpoint signals EPIPE on next read | sounddevice raises `PortAudioError`; daemon catches, sets `host_connected=false`, waits 500 ms, reopens the stream. Loops until host reconnects or service stops. |
+| Host enters suspend (Mac sleeps) | Capture endpoint goes silent (no errors, just zeros); RMS drops below threshold | Daemon publishes `playing=false`. Mux releases USB winner. No special handling needed. |
+| Host suspends and re-enumerates on wake | sounddevice stream may error or silently stop delivering callbacks. Detection: 5 s without a callback fires. | Daemon timer-based watchdog reopens the stream. |
+| Pi reboots mid-session | systemd starts jasper-usbsink-init then jasper-usbsink; ConfigFS gadget comes back up. Host re-detects JTS. | Standard boot path. Init unit handles idempotency (existing gadget descriptor → skip create). |
+| libcomposite fails to load (kernel module corrupted) | `modprobe libcomposite` returns non-zero in `jasper-usbsink-init`'s ExecStartPre | Init unit fails; jasper-usbsink doesn't start. Doctor catches it on the next run. Sources wizard shows toggle as "available: false" because card isn't present. |
+| ConfigFS write fails (e.g. UDC already bound to a different gadget) | uac2-gadget-up.sh returns non-zero | Init unit fails; same as above. Operator runs `uac2-gadget-down.sh` manually or reboots. |
+| Audio bridge daemon crashes | systemd `Restart=on-failure` | Restarts within 2 s. Audio gap is ~2 s; state file might have stale `playing=true` for a tick. Mux re-evaluates next tick. |
+| Audio bridge wedges (callback stops firing) | `WatchdogSec=15s` + `Type=notify` heartbeat from the daemon's main loop every 5 s | systemd kills + restarts the daemon. Same as crash. |
+| Mixer observer thread dies | Daemon's main loop checks observer task with `task.done()` every 5 s | Logs warning, restarts the observer task. Volume bridge degraded but audio continues. |
+| Mux POST to preempt endpoint fails | httpx exception in `Mux._pause(USBSINK)` | Logs warning; USB audio continues mixing briefly. Documented limitation (matches Bluetooth's behavior, but rarer because the local HTTP path is more reliable than DBus). |
+| Two USB hosts plugged in simultaneously (impossible by UAC2 spec) | Splitter physically prevents this | Hardware-enforced; nothing to do |
+| Sample rate negotiation failure (host requests 44.1k, gadget descriptor only offers 48k) | sounddevice opens at the descriptor's rate; host resamples its own output | No issue — host always resamples to the device's reported rate. Documented in BRINGUP.md so users know JTS doesn't do 192k. |
+
+### Watchdog pattern
+
+The daemon uses `Type=notify` with `WatchdogSec=15s`. The main async
+loop calls `sdnotify.notifier.notify("WATCHDOG=1")` every 5 seconds.
+If the loop wedges (e.g. sounddevice callback thread deadlocks), the
+watchdog fires and systemd restarts.
+
+Mirrors the pattern in
+[jasper/watchdog.py](jasper/watchdog.py) — same helper, no new
+code needed.
+
+### Log conventions
+
+All log lines use the JTS `event=` shorthand for machine-readable
+events:
+
+```
+event=usbsink.started host_connected=true
+event=usbsink.host_connected serial=ABC123 vid=1d6b pid=0104
+event=usbsink.host_disconnected duration_sec=312
+event=usbsink.playing_started rms_db=-15.2
+event=usbsink.playing_stopped rms_db=-88.1 inactive_sec=2.0
+event=usbsink.preempted by=airplay
+event=usbsink.preempt_released reason=all_idle
+event=usbsink.volume_change pct=42 raw=-3200 source=host_slider
+```
+
+These appear in `scripts/jasper-trace.sh` output alongside the
+existing cross-daemon events. No changes to the trace script needed —
+it's a substring filter on `event=`.
+
+## 7. Phased delivery
+
+Eight phases, each independently mergeable (each ends with the repo
+in a working state). Estimated 16-22 hours of focused work.
+
+### Phase 1 — Boot config + gadget script (~2 h)
+
+**Goal**: dtoverlay in place, libcomposite loads cleanly, gadget
+descriptor creates and registers an ALSA card.
+
+**Deliverables**:
+- `deploy/usbsink/uac2-gadget-up.sh` + `down.sh` + `wait-for-uac2-card.sh`
+- `deploy/install.sh` gains `set_usb_gadget_mode()` (additive only)
+- `deploy/systemd/jasper-usbsink-init.service`
+- Manual test on the Pi: deploy, reboot, `systemctl start
+  jasper-usbsink-init`, verify `/proc/asound/UAC2Gadget` exists
+- Plug Mac in: Mac should see "JTS USB Audio" in Audio Devices
+
+**Acceptance**: Mac System Settings → Sound shows JTS as an output
+device. Setting JTS as output and playing audio: Mac says it's
+streaming, JTS speakers play nothing (no daemon yet). RAM cost
+verified: `systemctl stop jasper-usbsink-init` brings it back to
+baseline minus the ~50 KB dwc2 module.
+
+### Phase 2 — Audio bridge daemon (~3 h)
+
+**Goal**: Audio flows from gadget → Loopback → speakers.
+
+**Deliverables**:
+- `jasper/usbsink/audio_bridge.py`
+- `jasper/usbsink/daemon.py` (skeleton — audio only)
+- `jasper/cli/usbsink_main.py`
+- `deploy/systemd/jasper-usbsink.service`
+- `pyproject.toml` script registration
+
+**Acceptance**: From Mac, set JTS as output, play music. JTS speakers
+play it. CamillaDSP `main_volume` attenuates it (verify via
+`watch -n 0.5 'cdspctl get volume'` while spinning the dial).
+
+### Phase 3 — Source-state probe + mux wiring (~3 h)
+
+**Goal**: USB shows up in mux's arbitration. Latest-source-wins
+between USB and existing sources.
+
+**Deliverables**:
+- `jasper/usbsink/state_publisher.py`
+- `jasper/source_state.py` gains `usbsink_playing()`
+- `jasper/renderer.py` gains `usbsinkactive`
+- `jasper/mux.py` gains `Source.USBSINK` + preempt POST (still no
+  preempt listener on the daemon side — POST fails harmlessly)
+- `jasper/usbsink/preempt_listener.py` (receives the POST, sets
+  internal flag)
+- Mux's "release on all-idle" logic
+
+**Acceptance**:
+- Mac plays → USB wins (other sources paused)
+- Start AirPlay → mux POSTs preempt → USB daemon silences output
+- Stop AirPlay → mux releases preempt → USB audio resumes (if Mac
+  still playing)
+- All three transitions logged in `jasper-trace.sh`
+
+### Phase 4 — Volume bridge (~2 h)
+
+**Goal**: Mac slider drives JTS volume (feels like dial twist).
+
+**Deliverables**:
+- `jasper/usbsink/volume_bridge.py`
+- `jasper/control/server.py` `/volume/set` accepts `source` field
+- `jasper/volume_coordinator.py` gains `Source.USBSINK`,
+  `_camilla_carries_level(USBSINK) → True`
+
+**Acceptance**:
+- Move Mac slider → JTS volume changes within ~100 ms
+- Spin dial up → JTS volume changes; Mac slider stays put (one-way
+  is acceptable)
+- Mac mute toggle → JTS goes silent; unmute restores
+
+### Phase 5 — Wizard toggle (~1.5 h)
+
+**Goal**: `/sources/` has a fourth toggle. On/off cycles cleanly.
+
+**Deliverables**:
+- `jasper/web/sources_setup.py` modifications
+- Wizard JS unchanged structurally (just `SOURCES.push('usbsink')`)
+- New row in the HTML with a note
+
+**Acceptance**:
+- Toggle off → daemon stops, init stops, ALSA card disappears,
+  libcomposite unloads (verify with `lsmod | grep libcomposite`)
+- Toggle on → init runs, descriptor created, daemon starts, ALSA card
+  appears, host re-detects JTS as audio device
+- Off→on cycle <3 s end-to-end
+
+### Phase 6 — Doctor checks (~1 h)
+
+**Goal**: `jasper-doctor` reports usbsink state accurately on/off.
+
+**Deliverables**:
+- `jasper/cli/doctor.py` three new checks
+- All three return ok/warn/fail with useful detail strings
+
+**Acceptance**:
+- With dtoverlay set + usbsink disabled: all three checks ok
+- With dtoverlay missing: usbsink_dtoverlay warns clearly
+- With usbsink enabled + state file stale: usbsink_state warns
+- With usbsink disabled but libcomposite loaded: usbsink_state warns
+  about RAM drift
+
+### Phase 7 — Resilience + observability (~3 h)
+
+**Goal**: Daemon survives host unplug/replug, suspend/resume; logging
+sufficient for incident debugging.
+
+**Deliverables**:
+- sounddevice exception handling + stream reopen loop
+- Watchdog notify integration via the existing helper
+- `event=usbsink.*` log lines at all key transitions
+- `/state` endpoint exposure
+
+**Acceptance** (manual stress test):
+- Unplug Mac while music playing → daemon logs disconnect, stays
+  running, state.json updates
+- Replug → daemon reopens, music resumes within ~2 s
+- Mac goes to sleep → daemon publishes idle → mux releases USB
+- Mac wakes → daemon resumes
+- Pi reboots → all comes back automatically
+
+### Phase 8 — Docs + final polish (~2 h)
+
+**Deliverables**:
+- `BRINGUP.md` Phase: 8086 splitter setup + reboot
+- `README.md` updates (sources list, RAM table)
+- `CLAUDE.md` / `AGENTS.md` operational section
+- `PLAN.md` v8 status flip
+- This HANDOFF doc — final review pass after implementation surfaces
+  any design changes
+- Hardware-free test suite
+
+## 8. Testing strategy
+
+### Hardware-free tests (`.venv/bin/pytest`)
+
+`tests/test_usbsink_volume.py`:
+- `gadget_raw_to_pct()` math: 0 dB → 100%, min → 0%, mid → 50%
+- listening-level conversion symmetry
+- pyalsa stub: feed synthetic mixer event, verify POST payload
+
+`tests/test_usbsink_state.py`:
+- State file write atomicity (tempfile+rename)
+- RMS hysteresis: feed synthetic frames, verify playing-state
+  transitions debounce correctly
+- State file parse on read (corrupted JSON → False, missing file →
+  False)
+
+`tests/test_source_state.py` (modify existing):
+- `usbsink_playing()` returns False when state file missing
+- Returns True when file says `playing: true`
+- Returns False when file says `playing: false` or `preempted: true`
+
+`tests/test_mux.py` (modify if exists, or new):
+- USB transitions inactive→active triggers preempt of currently-playing
+  AirPlay
+- All-idle tick clears USB preempt flag
+
+### Pi-side smoke tests
+
+Codified in `jasper-doctor` (§4.8). Plus a one-shot manual checklist
+in `BRINGUP.md`:
+
+1. After install + reboot, `lsmod | grep libcomposite` shows nothing
+2. `systemctl status jasper-usbsink-init` is `inactive (dead)`
+3. Toggle USB on in `/sources/` → both units active within ~3 s
+4. Plug Mac in → Mac sees JTS as audio output
+5. Play music from Mac → audible from JTS speakers
+6. Adjust Mac volume → JTS volume follows (verify via dashboard or
+   `curl :8780/state | jq .voice.listening_level`)
+7. Spin dial up → JTS volume changes
+8. Start AirPlay from phone → JTS stops playing Mac audio, starts
+   playing phone audio
+9. Stop AirPlay → JTS resumes Mac audio (if Mac still playing)
+10. Wake voice ("Jarvis, what's the weather?") with Mac playing → music
+    ducks, voice plays, music returns
+
+### AEC test
+
+USB audio sums into `hw:Loopback,0,0`, which feeds CamillaDSP, whose
+output is tapped by `pcm.jasper_capture` for the AEC reference. So
+AEC sees USB audio in the reference signal automatically. Verify:
+
+1. Mac plays music loud (75 dB at speaker)
+2. Wake word triggered → AEC kicks in
+3. Voice session completes → cancellation effective (no obvious
+   feedback or self-trigger)
+
+If AEC degrades because USB-source music has different spectral
+characteristics than AirPlay/Spotify music… that's an AEC tuning
+issue independent of usbsink, and out of scope here.
+
+## 9. Open questions
+
+These need explicit calls before or during implementation. None are
+blockers; defaults are documented for each.
+
+1. **Sample rate**: Lock the gadget to 48 kHz S32_LE stereo
+   (PiCorrect's choice, matches our snd-aloop and DAC). Multi-rate
+   gadget descriptors are possible but add complexity. **Default:
+   single rate 48k.**
+2. **macOS "Playback Inactive" cosmetic bug**: PiCorrect's
+   DEBUGGING.md documents that macOS labels the device as "Playback
+   Inactive" due to hardcoded strings in
+   `drivers/usb/gadget/function/f_uac2.c`. It's cosmetic — music
+   still plays. **Default: live with it. Note in BRINGUP.md.**
+3. **Volume curve**: gadget mixer range is symmetric in dB; CamillaDSP
+   `main_volume` is also dB-linear. A direct linear-in-dB mapping
+   feels natural. **Default: linear in dB, 100% gadget = 0 dB camilla,
+   0% gadget = camilla min (~−96 dB).**
+4. **Preempt-release window**: how long after all other sources go
+   idle before USB un-mutes? Instant feels right (matches mux's tick
+   cadence). **Default: instant on next mux tick (1 s max delay).**
+5. **State file ownership**: `/run/jasper-usbsink/` created via
+   `RuntimeDirectory=jasper-usbsink` in the systemd unit. Owned by
+   the service user. Other daemons (jasper-voice, jasper-control,
+   jasper-mux) read it. **Default: world-readable (0644 file mode).**
+6. **VID/PID/serial**: PiCorrect uses VID 0x1d6b PID 0x0104 (Linux
+   Foundation Multifunction Composite Gadget). We could use the
+   same, or claim a JTS-specific PID. **Default: same as PiCorrect.
+   Two devices on one Mac with same VID/PID but different serial is
+   fine — host disambiguates by serial.**
+7. **Should the daemon ever exit when host disconnects?** No — the
+   service stays running so it's ready to bridge the moment the host
+   plugs back in. The state file just reflects `host_connected:
+   false`. **Default: stay running, idle.**
+
+## 10. Risk register
+
+| Risk | Likelihood | Impact | Mitigation |
+|---|---|---|---|
+| Pi linux issue #6569 (related kernel quirk) still alive on Trixie | Medium | Medium — could prevent gadget from enumerating | Verify on the dev Pi in Phase 1 before committing to the full build. If it's still broken, the 8086 splitter may sidestep it the same way it sidesteps #6289. |
+| pyalsa not available on Pi OS Trixie / requires source build | Low | Low | Fallback: `alsactl monitor` subprocess parsing. Adds ~2 MB RAM. |
+| sounddevice/PortAudio doesn't handle gadget endpoint cleanly (e.g. XRUNs on host hot-plug) | Medium | Medium | Stream reopen-on-error pattern documented in §6. If chronic, fall back to `alsaloop` subprocess and lose the per-frame RMS (would need separate RMS via `arecord | tee`). |
+| Host changes sample rate mid-session and gadget descriptor doesn't permit | High on Mac (auto-rate-switching) | Low — host resamples its own output to match the gadget's advertised rate | Document in BRINGUP.md. JTS doesn't aspire to bit-perfect. |
+| RAM drift on disable (libcomposite stays loaded after stop) | Medium | Low — 60 KB | Doctor warns. Manual `rmmod` or reboot recovers. |
+| Volume bridge race: Mac slider moves rapidly, POSTs pile up | Low | Low | Debounce inside `volume_bridge.py` — coalesce events within 50 ms windows. |
+| Mac mute path doesn't propagate as expected (some hosts mute via gain=−inf rather than Switch) | Medium | Low — JTS still respects gain | Volume bridge reads both `Volume` and `Switch`; mute is `max(volume_mute, switch_mute)`. |
+| dtoverlay conflicts with future audio-related dtoverlays | Low | Low | Tested as additive; the Pi 5 specifically supports concurrent dtoverlays. |
+| Splitter cable fails / wears out | Long-term | Medium — USB stops working | Documented as a hardware item the user owns; spare cables are cheap. |
+
+## 11. References
+
+### Internal (JTS)
+
+- [README.md](../README.md) — architecture overview, music chain
+- [CLAUDE.md](../CLAUDE.md) — file ownership, deploy pattern
+- [PLAN.md](../PLAN.md) — v8 USB gadget previously deferred (line 71)
+- [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) —
+  Source-aware volume model; USBSINK joins as camilla-as-master
+- [jasper/mux.py](../jasper/mux.py) — Source arbitration; USBSINK
+  added with HTTP-POST preempt
+- [jasper/source_state.py](../jasper/source_state.py) — Playing-state
+  probes; `usbsink_playing()` added here
+- [jasper/web/sources_setup.py](../jasper/web/sources_setup.py) —
+  Toggle wizard; pattern mirrored for USB
+- [jasper/cli/doctor.py](../jasper/cli/doctor.py) — Check pattern;
+  three new checks added
+- [deploy/install.sh](../deploy/install.sh) — dtoverlay handler
+  pattern (cf. `country_code` at line 359)
+- [docs/HANDOFF-aec.md](HANDOFF-aec.md) — AEC bridge as a similar
+  RAM-budgeted optional subsystem
+- [docs/HANDOFF-volume.md](HANDOFF-volume.md) — Volume coordinator
+  deep-dive; USBSINK behaves like AIRPLAY for volume
+- [docs/HANDOFF-resilience.md](HANDOFF-resilience.md) —
+  Watchdog/notify patterns; usbsink uses Tier-1 + Tier-2
+
+### External
+
+- [PiCorrect repo](https://github.com/jaspercurry/PiCorrect) — proves
+  the stack on Pi 5; reuse:
+  - `setup.sh:68-123` — uac2-gadget ConfigFS script template
+  - `setup.sh:180-219` — CamillaDSP wiring reference (we deviate
+    from this since we route via snd-aloop)
+  - `DEBUGGING.md` — "Playback Inactive" cosmetic note, kernel
+    issue history
+- [raspberrypi/linux#6289](https://github.com/raspberrypi/linux/issues/6289) —
+  Pi 5 USB-C-to-USB-C enumeration quirk; sidestepped by the 8086
+  splitter (host sees USB-A end of the cable)
+- [raspberrypi/linux#6569](https://github.com/raspberrypi/linux/issues/6569) —
+  Open question §11; verify still relevant on Trixie before Phase 1
+- [Linux UAC2 gadget docs](https://www.kernel.org/doc/Documentation/usb/gadget-testing.txt) —
+  ConfigFS attributes for `uac2.usb0`
+- [8086 Consultancy USB-C/PWR Splitter](https://www.8086.net/products/usb-c-pwr-splitter) —
+  Hardware datasheet
+- [pyalsa](https://github.com/alsa-project/alsa-python) — Mixer event
+  API used by volume_bridge.py
+- [sounddevice](https://python-sounddevice.readthedocs.io/) — PortAudio
+  binding; same lib used by jasper-aec-bridge
+
+## Appendix A — Worked example: end-to-end signal trace
+
+User plugs Mac into the 8086 splitter, opens Music.app, plays a song.
+What happens:
+
+1. **Mac side**: macOS Audio MIDI Setup negotiates with JTS. UAC2
+   handshake: descriptor advertises 48k S32_LE stereo. Mac sets JTS
+   as its output device (manually, first time only; auto thereafter).
+
+2. **Pi USB stack**: dwc2 → libcomposite → u_audio. The gadget's
+   `OUT` endpoint receives the host's PCM.
+
+3. **ALSA**: `hw:CARD=UAC2Gadget,DEV=0` capture endpoint exposes the
+   audio to userspace.
+
+4. **jasper-usbsink daemon**: sounddevice Stream callback fires every
+   10 ms. Per callback:
+   - Reads ~480 frames (10 ms @ 48k stereo) from the gadget
+   - Computes RMS, updates `last_rms_db`
+   - If `preempted` is False: writes the same frames into
+     `hw:Loopback,0,0`
+   - If `preempted` is True: writes zeros
+
+5. **State publisher** (1 Hz tick or on RMS-state transition):
+   - Reads `last_rms_db` from audio_bridge
+   - Applies hysteresis: if RMS > -50 dB for ≥1 s, set playing=true;
+     if < -50 dB for ≥2 s, set playing=false
+   - Atomic-writes `/run/jasper-usbsink/state.json`
+
+6. **jasper-mux**:
+   - 1-Hz tick: probes all source-state files. Sees
+     `usbsinkactive=true`.
+   - Detects transition from previous tick (usbsinkactive was false).
+   - `newly_started = [USBSINK]`. `new_winner = USBSINK`.
+   - For each other source currently active: `_pause(source)`. If
+     AirPlay was playing, MPRIS Pause. If Spotify, Web API. If BT,
+     log no-op.
+   - Now USB is the lone winner.
+
+7. **Volume bridge** (concurrent, event-driven):
+   - User opens Mac volume slider. Mac writes UAC2 Volume Control
+     Unit value.
+   - Linux's `u_audio` driver reflects this as ALSA mixer event on
+     `PCM Capture Volume`.
+   - pyalsa observer wakes, reads new value, converts to
+     listening-level percent.
+   - POSTs `{"percent": 65, "source": "usbsink"}` to
+     `http://127.0.0.1:8780/volume/set`.
+   - jasper-control routes through
+     `coordinator.observe_source_volume(Source.USBSINK, 65)`.
+   - Coordinator's echo-prevention check: not our own write. Echo
+     check via persistence: not a recent cross-process write.
+   - Updates `_level=65`, persists, calls `_set_camilla(65)` which
+     writes `main_volume = -10.5 dB` via the pycamilladsp websocket.
+
+8. **CamillaDSP**:
+   - Reads frames from `plug:jasper_capture` (which dsnoops
+     `hw:Loopback,1,0`). These are the same frames usbsink wrote
+     into `hw:Loopback,0,0`.
+   - Applies main_volume attenuation. Passes through the (currently
+     identity) master_gain mixer.
+   - Writes to `pcm.jasper_out` (dmix on the Apple dongle).
+
+9. **Dongle**: USB Audio → analog out → speaker amp → speakers.
+
+10. **User hears the music at 65% volume**.
+
+11. **AEC bridge** (concurrent, running in parallel):
+    - Reads from `pcm.jasper_capture` (the same dsnoop as
+      CamillaDSP). Sees the same audio CamillaDSP is processing
+      *before* it hits the speaker.
+    - Reads from the XVF3800 raw mic 0 (the chip side).
+    - Computes echo cancellation. The music in the reference IS the
+      music CamillaDSP is about to play, so the reference perfectly
+      tracks what comes back through the air to the mic. AEC works
+      identically whether the source was USB, AirPlay, or Spotify.
+
+12. **User says "Hey Jarvis"**:
+    - Wake word detected on the AEC'd mic signal.
+    - voice_daemon's Ducker calls `set_volume_db(current - 12)` —
+      music ducks.
+    - VolumeCoordinator's `note_voice_session(True)` is called;
+      coordinator suppresses its own camilla writes until session
+      ends.
+    - LLM responds via TTS. Music remains ducked.
+    - Session ends. Ducker calls `coordinator.get_camilla_target_db()`
+      to get the correct restore value (which respects any volume
+      changes during the session — including ones that came in via
+      Mac slider).
+    - Ducker writes the absolute restore value. Music returns to
+      pre-duck level.
+
+Total moving parts touched by a single USB-sink user action: 7
+daemons, 4 file system locations, 1 ConfigFS tree, 1 dmix mixer,
+and CamillaDSP's websocket. All of which already exist; this feature
+adds one daemon (jasper-usbsink) and a few hundred lines of
+integration glue.
+
+## Appendix B — Why this design over alternatives
+
+### Alternative A: Replace snd-aloop with the gadget as the primary capture (PiCorrect-style)
+
+Pros: simpler — no bridge daemon, CamillaDSP captures directly from
+UAC2Gadget.
+
+Cons: breaks AirPlay, Spotify, and Bluetooth. They all need to write
+into the music chain, and the simplest place to do that is
+`hw:Loopback,0,0`. Routing them through the gadget capture endpoint
+is not possible (UAC2 endpoint is host-driven).
+
+Rejected: makes JTS single-source.
+
+### Alternative B: Use `alsaloop` (alsa-utils C binary) instead of a Python daemon
+
+Pros: ~3 MB RAM vs. ~18 MB.
+
+Cons: alsaloop is rigid — no mixer subscription, no state publishing,
+no preempt control. Need a second daemon for those, splitting the
+USB-sink concerns across two units. Cohesion loss > 15 MB savings
+given total Pss budget headroom (~280 MB on 1 GB Pi).
+
+Rejected: complexity beats RAM at this margin.
+
+### Alternative C: Rust binary instead of Python
+
+Pros: ~3 MB RAM, fast.
+
+Cons: Adds a second language to the codebase (no Rust elsewhere). The
+firmware/ subdirectory is C++ via PlatformIO, but that's a separate
+target. Build pipeline complexity, less DRY. The RAM win
+(~15 MB) is marginal in the overall JTS RAM picture.
+
+Rejected: Python keeps the stack uniform.
+
+### Alternative D: Bidirectional volume (Mac slider ↔ dial in sync)
+
+Pros: Mac UI always shows JTS's true volume.
+
+Cons: Bidirectional sync requires echo prevention on both ends. The
+dial writes camilla; observer reads camilla; observer would have to
+ignore its own observer-induced writes. Double-bookkeeping for
+minimal UX gain. Today's Mac shows the slider where the user last
+left it, which is the OS-native behavior.
+
+Rejected: complexity > UX value.
+
+### Alternative E: Use CamillaDSP's `link_volume_control` (PiCorrect's trick)
+
+Pros: simpler — no Python observer for volume.
+
+Cons: `main_volume` is also the ducking knob. Voice session would
+duck the music AND move the Mac slider visually downward, which is
+wrong. Also can't be combined with dial-driven volume (the link is
+one-to-one).
+
+Rejected: violates ducker semantics.
+
+---
+
+**End of plan. Ready to implement against this when the user gives
+the go-ahead.**
