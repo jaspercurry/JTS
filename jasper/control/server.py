@@ -560,13 +560,43 @@ async def _get_state(
         "session_active": bool(spotify_blob.get("session_active", False)),
     }
 
+    # USB sink — fourth renderer. Reads the state file the daemon
+    # publishes. Section reports None when the feature is disabled
+    # (no state file) so consumers can distinguish "off" from
+    # "on but idle".
+    usbsink_state: dict | None = None
+    try:
+        with open(
+            os.environ.get(
+                "JASPER_USBSINK_STATE_PATH",
+                "/run/jasper-usbsink/state.json",
+            ),
+        ) as f:
+            usbsink_blob = json.load(f)
+        usbsink_state = {
+            "playing": bool(usbsink_blob.get("playing", False)),
+            "preempted": bool(usbsink_blob.get("preempted", False)),
+            "host_connected": bool(
+                usbsink_blob.get("host_connected", False),
+            ),
+            "rms_dbfs": usbsink_blob.get("rms_dbfs"),
+            "updated_at": usbsink_blob.get("updated_at"),
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
     voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
+    # Active-source picks. USB sink takes precedence over idle but
+    # below the other named renderers — same priority chain as the
+    # volume coordinator's _active_source.
     if voice_session:
         active_source: str = "voice"
     elif spotify["playing"]:
         active_source = "spotify"
     elif airplay:
         active_source = "airplay"
+    elif usbsink_state is not None and usbsink_state.get("playing"):
+        active_source = "usbsink"
     else:
         active_source = "idle"
 
@@ -604,6 +634,10 @@ async def _get_state(
             "airplay": (
                 None if airplay is None else {"playing": airplay}
             ),
+            # null when the feature is disabled (no state file). The
+            # /system dashboard and any other consumer can show
+            # "off" vs "idle" based on this.
+            "usbsink": usbsink_state,
         },
         "active_source": active_source,
         "satellites": {

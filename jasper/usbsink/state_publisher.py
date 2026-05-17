@@ -113,19 +113,34 @@ class StatePublisher:
 
     async def run(self) -> None:
         """Tick-driven loop. Cancellable from the daemon's shutdown
-        path."""
+        path. A failing _tick logs and continues — one bad write (e.g.
+        ENOSPC, transient FS issue) shouldn't take the whole daemon
+        down. Persistent failures get caught by the daemon's diag
+        log + jasper-doctor's staleness warning."""
         # Ensure parent dir exists. RuntimeDirectory= should have
         # already done this, but be defensive for non-systemd dev runs.
         self._state_path.parent.mkdir(parents=True, exist_ok=True)
         try:
             while True:
                 await asyncio.sleep(TICK_SEC)
-                self._tick()
+                try:
+                    self._tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "event=usbsink.state_tick_error error=%s", e,
+                    )
         except asyncio.CancelledError:
             # On shutdown, write a final state with playing=False so
             # downstream consumers don't see stale "still playing".
             self._debounce.published_playing = False
-            self._write_state(force_log=False)
+            try:
+                self._write_state(force_log=False)
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "event=usbsink.final_state_write_failed error=%s", e,
+                )
             raise
 
     # ------------------------------------------------------------------
