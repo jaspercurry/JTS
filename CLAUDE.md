@@ -590,6 +590,88 @@ versions (respeaker repo issue #8).
 
 ---
 
+## USB Audio Input (`jasper-usbsink`) — read first
+
+Fourth music source. The user plugs a computer into the Pi's USB-C
+port (via the 8086 Consultancy USB-C/PWR Splitter; the splitter
+provides external power so the Pi stays alive even with a host
+attached). JTS exposes itself to the host as a UAC2 audio output
+device; the daemon bridges captured audio into `hw:Loopback,0,0` so
+it joins the existing CamillaDSP chain.
+
+Off by default. Toggle at `http://jts.local/sources/`. **Requires a
+one-time install + reboot** for the `dtoverlay=dwc2,dr_mode=peripheral`
+in `/boot/firmware/config.txt` (added by install.sh's
+`set_usb_gadget_mode`). Without the dtoverlay, the wizard toggle
+greys out and surfaces a "re-run install.sh and reboot" note.
+
+Full design at [`docs/HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md).
+Operational summary:
+
+**RAM contract**:
+- Off: ~50 KB (the dwc2 kernel module only — below noise)
+- On: ~22 MB Pss (one Python daemon)
+
+The on/off enforcement is in three places:
+1. install.sh adds the dtoverlay but does NOT enable the service or
+   load libcomposite at boot
+2. `jasper-usbsink-init.service` modprobes libcomposite in
+   `ExecStartPre` and rmmods it in `ExecStopPost`
+3. `jasper-doctor` warns if libcomposite is loaded but the service
+   is inactive (RAM drift catch)
+
+**Volume model**: Mac slider drives JTS canonical `listening_level`
+just like the dial. The host's slider is observed via ALSA mixer
+events on `PCM Capture Volume` (polled at 4 Hz by `volume_bridge.py`)
+and routed through `VolumeCoordinator.observe_source_volume()`.
+Dial / voice "louder" / etc. do NOT write back to the gadget mixer
+— the host slider is one-way input, mirroring AirPlay sender
+behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
+
+**Source arbitration**: Latest-source-wins via `jasper-mux`. When
+another source starts while USB is playing, mux POSTs `silenced=true`
+to `http://127.0.0.1:8781/preempt` and the daemon silences its
+output. When all other sources go idle, mux releases the preempt so
+a fresh host transition (pause-then-play on Mac) can re-take the
+speaker.
+
+**Debugging quick reference**:
+
+```sh
+# Wizard toggle off? Check dtoverlay first.
+grep dwc2,dr_mode=peripheral /boot/firmware/config.txt
+# (Re-run scripts/deploy-to-pi.sh + reboot if missing.)
+
+# Service active but no audio?
+curl -s http://jts.local:8780/state | jq '.renderers.usbsink'
+# Expect: {playing, preempted, host_connected, rms_dbfs, updated_at}
+
+# Direct daemon state file:
+cat /run/jasper-usbsink/state.json | jq
+
+# Test from the host side:
+# 1. Plug computer into 8086 splitter's data leg
+# 2. macOS: System Settings → Sound → output → JTS USB Audio
+# 3. Play music → expect speaker output
+# 4. Move Mac slider → expect JTS volume to follow within ~250 ms
+```
+
+**Common failure modes**:
+- *Mac sees "Playback Inactive"*: cosmetic kernel bug in
+  `f_uac2.c`; music still plays. Don't chase.
+- *No volume response*: check `amixer -c UAC2Gadget controls` —
+  the gadget descriptor must expose `PCM Capture Volume` (it does;
+  driven by `c_volume_present=1` in `jasper-usbsink-gadget-up`).
+- *RAM not returning to baseline after disable*: jasper-doctor's
+  `usbsink state` check will flag this. `sudo rmmod u_audio
+  libcomposite` or reboot to recover.
+
+**No `/etc/jasper/usbsink.env` is required** — defaults work. To
+override capture/playback device or HTTP ports, set
+`JASPER_USBSINK_*` in `/etc/jasper/jasper.env`.
+
+---
+
 ## Satellite devices — opt-in hardware
 
 The cross-cutting design home for ESP32 satellites (existing rotary

@@ -68,7 +68,7 @@ Starting points:
 | **v5** | **Wireless stereo pair** via Snapcast (Pi Zero 2W slave) | Architecturally clean addition once v1–v3 stable |
 | **v6** | **Wireless subwoofer** node + crossover in master CamillaDSP | Strict superset of v5; biggest video story |
 | **v7** | Direct device-to-device **mesh** (master AP+STA, slave priority fallback) | Networking polish; only matters at v5+ scale |
-| **v8** | **USB gadget** (UAC2) inline DSP mode | Blocked on Pi linux #6289 / #6569 being fixed; lowest priority |
+| **v8** | **USB gadget** (UAC2) source — host plugs into Pi USB-C, JTS exposes itself as a USB audio output. ✅ Shipped 2026-05-16. See [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md). | Adapts the PiCorrect inline-DSP stack into a fourth music source for JTS. Disabled by default; ~22 MB RAM when on, 0 when off. The original "inline DSP mode" interpretation (Pi entirely replacing PiCorrect's role) is a deeper follow-up — same gadget setup, but would require CamillaDSP topology changes. |
 | **v9** | Home Assistant bridge tool (single proxy function) | Optional; opens HA's 3000+ integrations to anyone who already runs HA |
 
 The v1 architecture decisions that protect this sequence:
