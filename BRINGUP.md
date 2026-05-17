@@ -126,25 +126,6 @@ re-applies configs. Watch the output for warnings about missing
 ALSA cards (the dongle and mic should be detected; if either is
 missing, fix and re-run).
 
-**WiFi country code:** install.sh sets `country=XX` in
-`/boot/firmware/config.txt`. The value is **auto-detected** from
-the AP the Pi just connected to (via `iw reg get`, which reads the
-country from your router's 802.11d beacon). For modern home
-routers, this is the right value for your locale. If auto-detect
-can't find a value, it falls back to `US` with a warning. To
-override explicitly:
-
-```sh
-sudo JASPER_WIFI_COUNTRY=GB bash deploy/install.sh   # for the UK
-```
-
-A **reboot is required** after the first install.sh run to apply
-the country code (the WiFi firmware reads it only at boot).
-Without this, the Pi 5's WiFi chip silently suppresses
-off-channel scans, which breaks the `/wifi/` wizard's scan and
-any other network-discovery feature. `jasper-doctor` flags the
-problem if it ever reappears.
-
 After it finishes:
 
 ```sh
