@@ -1,12 +1,12 @@
 [Unit]
-Description=Jasper web setup wizards (Spotify, voice, Google, AirPlay, Sources, Wake, Wi-Fi) — socket
+Description=Jasper web setup wizards (Spotify, voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers) — socket
 # When any of these ports gets a connection, systemd will activate
 # jasper-web.service to handle it. The service exits after 10 min
 # of no activity; this .socket stays listening throughout, so
 # nginx-fronted requests transparently re-spawn the daemon.
 
 [Socket]
-# 7 ListenStream= → 7 fds passed to the daemon at LISTEN_FDS_START.
+# 8 ListenStream= → 8 fds passed to the daemon at LISTEN_FDS_START.
 # Order is undefined per systemd issue #16647, so the Python side
 # matches by getsockname()[1] (port) rather than by fd index.
 ListenStream=127.0.0.1:8765
@@ -16,6 +16,7 @@ ListenStream=127.0.0.1:8771
 ListenStream=127.0.0.1:8773
 ListenStream=127.0.0.1:8774
 ListenStream=127.0.0.1:8775
+ListenStream=127.0.0.1:8776
 # Accept=no — single daemon for all fds; Python startup cost forbids
 # per-connection accept.
 Accept=no
