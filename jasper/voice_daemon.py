@@ -1002,6 +1002,13 @@ class WakeLoop:
         self._chirp_on_pcm: bytes = self._generate_listening_chirp(going_on=True)
         self._chirp_off_pcm: bytes = self._generate_listening_chirp(going_on=False)
 
+        # Monotonic wallclock at the moment wake fires. Used by
+        # _begin_turn to break the wake→activity_start latency into
+        # named segments (state reset, tts-tracker apply, duck,
+        # acquire_turn) so a slow turn-acquire can be localized.
+        # 0.0 means "no wake yet this session"; replaced on every fire.
+        self._wake_event_at_monotonic: float = 0.0
+
         # End-of-utterance detection state (per-turn). With server-side
         # auto VAD enabled, we MUST send `audio_stream_end=True` the
         # moment the user stops speaking — not at turn cleanup. Without
@@ -1425,6 +1432,8 @@ class WakeLoop:
         # bias so the next WAKE pass is judged fresh.
         self._detector.reset()
 
+        import time as _time
+        self._wake_event_at_monotonic = _time.monotonic()
         logger.info("wake detected (score=%.2f, threshold=%.2f)", score, self._detector.threshold)
         if not self._spend_cap.allowed():
             logger.warning("daily spend cap reached; voice disabled until rollover")
@@ -1678,7 +1687,13 @@ class WakeLoop:
 
     async def _begin_turn(self) -> None:
         import time as _time
-        t_wake = _time.monotonic()
+        # Anchor on the actual wake-fire moment (set in
+        # _handle_wake_frame) so sched_lag captures the gap between
+        # wake firing and this coroutine getting picked up by the
+        # event loop. Fall back to _time.monotonic() for dial paths
+        # that bypass _handle_wake_frame.
+        t_wake = self._wake_event_at_monotonic or _time.monotonic()
+        t_begin = _time.monotonic()
         # Reset Silero VAD's internal LSTM state at turn start so
         # state from a previous turn doesn't leak into this one.
         self._vad.reset()
@@ -1695,6 +1710,7 @@ class WakeLoop:
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0
+        t_after_state = _time.monotonic()
         # Pin TTS gain to the user's pre-duck master volume + offset
         # BEFORE ducking. The duck about to fire will drop main_volume
         # by JASPER_DUCK_DB; if we let the tracker observe that drop,
@@ -1708,15 +1724,30 @@ class WakeLoop:
         # source-transition handler doesn't fight the ducker's
         # additive math on camilla.
         self._volume_coordinator.note_voice_session(True)
+        t_after_tts_apply = _time.monotonic()
         await self._ducker.duck()
+        t_after_duck = _time.monotonic()
         self._session_id = self._usage_store.open_session(
             provider=self._cfg.voice_provider,
         )
         self._turn = await self._connection.acquire_turn()
-        acquire_ms = (_time.monotonic() - t_wake) * 1000
+        t_after_acquire = _time.monotonic()
+        # Breakdown so a slow wake→activity_start can be localized to
+        # the actual offender. `sched_lag` is the event-loop scheduling
+        # delay between wake firing and this coroutine starting;
+        # everything else is one named await. Pair with the
+        # `acquire-buffer drained: N frames` log to gauge how much
+        # audio Silero misses while this runs.
         logger.info(
-            "turn acquire done in %.0fms (wake→activity_start)",
-            acquire_ms,
+            "turn acquire done in %.0fms "
+            "(sched_lag=%.0f state=%.0f tts_apply=%.0f duck=%.0f acquire=%.0f) "
+            "(wake→activity_start)",
+            (t_after_acquire - t_wake) * 1000,
+            (t_begin - t_wake) * 1000,
+            (t_after_state - t_begin) * 1000,
+            (t_after_tts_apply - t_after_state) * 1000,
+            (t_after_duck - t_after_tts_apply) * 1000,
+            (t_after_acquire - t_after_duck) * 1000,
         )
         # Pre-roll: drain the recent-mic ring buffer into the turn so
         # the user's first phoneme (which preceded the wake firing)
