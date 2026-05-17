@@ -339,6 +339,25 @@ management — hidden SSID support". `nmcli dev wifi list` doesn't
 return them; would need a manual "Connect to a hidden network" form
 that posts SSID + PSK with `hidden yes`.
 
+**Scanning returns only the connected SSID? Check the regulatory
+domain.** Pi 5's brcmfmac WiFi firmware silently suppresses
+off-channel scans when its per-phy regdom is unset
+(`country 99: DFS-UNSET`). The kernel logs `brcmf_cfg80211_scan:
+Scanning suppressed: status (4)` continuously. install.sh's
+`set_wifi_country_code()` sets `country=US` (overridable via
+`JASPER_WIFI_COUNTRY`) in `/boot/firmware/config.txt`, which the
+firmware reads at boot. **A reboot is required** to apply the
+change; `iw reg set US` does NOT work (brcmfmac enforces regdom
+from NVRAM, not from cfg80211 hints). Diagnostic check:
+
+```sh
+sudo iw reg get | grep -A1 'phy#0'
+# Good: country US: DFS-FCC
+# Broken: country 99: DFS-UNSET
+```
+
+Upstream tracking: https://github.com/raspberrypi/linux/issues/5685.
+
 **WPA-Enterprise (802.1X) not supported.** Home networks only. The
 scan-list filter shows "WPA-Enterprise" as the security label so the
 user knows why connecting won't work, but the Connect panel doesn't

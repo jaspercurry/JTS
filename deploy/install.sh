@@ -350,6 +350,57 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
+set_wifi_country_code() {
+    # Pi 5's brcmfmac WiFi firmware silently suppresses off-channel
+    # scanning when the chip's regulatory domain is unset (per-phy
+    # `country 99: DFS-UNSET`). The user-visible symptom is that
+    # `nmcli dev wifi list` returns only the connected SSID even
+    # when neighbors are clearly nearby — and the /wifi/ wizard's
+    # scan looks broken. The kernel logs `brcmf_cfg80211_scan:
+    # Scanning suppressed: status (4)` continuously when this is
+    # the case. See https://github.com/raspberrypi/linux/issues/5685
+    # for the upstream tracking issue.
+    #
+    # The fix is `country=XX` in /boot/firmware/config.txt — the
+    # firmware blob loader passes it to the chip on boot and writes
+    # the regdom NVRAM. Setting it at runtime via `iw reg set` does
+    # NOT take, because brcmfmac enforces regdom from NVRAM, not
+    # from cfg80211 hints. So this needs a reboot to take effect.
+    #
+    # Override via JASPER_WIFI_COUNTRY=GB / DE / etc. in the
+    # operator shell before running install.sh (or via the
+    # `country=XX` line if it's already there from a prior install).
+    local cfg="/boot/firmware/config.txt"
+    if [[ ! -f "$cfg" ]]; then
+        echo "  $cfg not present; skipping WiFi country-code setup."
+        return 0
+    fi
+    local target_country="${JASPER_WIFI_COUNTRY:-US}"
+    # Idempotent: replace any existing country= line, otherwise append.
+    if grep -qE '^[[:space:]]*country=' "$cfg"; then
+        local current
+        current=$(grep -E '^[[:space:]]*country=' "$cfg" | head -1 | cut -d= -f2)
+        if [[ "$current" == "$target_country" ]]; then
+            echo "  WiFi country code already set to $target_country."
+            return 0
+        fi
+        sed -i "s/^[[:space:]]*country=.*/country=${target_country}/" "$cfg"
+        echo "  WiFi country code updated $current → $target_country (reboot required to apply)."
+    else
+        # Append in a tagged block so future humans know who put it
+        # there and why.
+        cat >> "$cfg" <<EOF
+
+# JTS install — required for WiFi scanning on Raspberry Pi 5.
+# Without this the brcmfmac firmware silently suppresses off-channel
+# scans, breaking the /wifi/ wizard's network discovery. Reboot
+# required to take effect (firmware reads this at boot only).
+country=${target_country}
+EOF
+        echo "  WiFi country code set to $target_country in $cfg (reboot required to apply)."
+    fi
+}
+
 tune_wifi_for_airplay() {
     # Disable WiFi power-save on the active wlan0 connection.
     # Pi's brcmfmac driver defaults to power-save ON, which causes
@@ -1156,6 +1207,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
+    set_wifi_country_code
     tune_wifi_for_airplay
     install_jasper
     install_systemd_units

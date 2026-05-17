@@ -343,6 +343,14 @@ scan-list filter shows "WPA-Enterprise" as the security label so the
 user knows why connecting won't work, but the Connect panel doesn't
 expose cert/identity fields.
 
+**Scanning returns only the connected SSID? Check `sudo iw reg get
+| grep -A1 'phy#0'`** — if it shows `country 99: DFS-UNSET`, the Pi's
+WiFi regulatory domain isn't set and brcmfmac suppresses off-channel
+scans (logs `brcmf_cfg80211_scan: Scanning suppressed: status (4)`).
+install.sh's `set_wifi_country_code()` sets `country=US` in
+`/boot/firmware/config.txt` (override via `JASPER_WIFI_COUNTRY`).
+Reboot required to apply — runtime `iw reg set` doesn't work.
+
 ---
 
 ## Mic mute — persists across restarts
