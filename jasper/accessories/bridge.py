@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
+from http import client as httpclient
+from urllib.parse import urlsplit
 
-import httpx
 import pyudev
 
 from .registry import KNOWN_DEVICES, Device, KeyAction, lookup, lookup_by_name
@@ -39,6 +41,29 @@ DEFAULT_CONTROL_URL = "http://127.0.0.1:8780"
 COALESCE_WINDOW_SEC = 0.08
 
 
+def _sync_request(method: str, url: str, body: dict | None, timeout: float) -> int:
+    """Single localhost HTTP round-trip via stdlib http.client.
+    Called inside asyncio.to_thread so the bridge event loop stays
+    responsive. Cheaper than httpx for our use case: localhost, no
+    TLS, one call per fast-spin window. TCP open on localhost is
+    microseconds so no pool needed."""
+    u = urlsplit(url)
+    conn = httpclient.HTTPConnection(u.hostname, u.port or 80, timeout=timeout)
+    try:
+        payload = json.dumps(body).encode() if body is not None else None
+        headers = {"Content-Type": "application/json"} if payload else {}
+        conn.request(method, u.path or "/", body=payload, headers=headers)
+        return conn.getresponse().status
+    finally:
+        conn.close()
+
+
+# Network/protocol errors that the to_thread wrapper can raise. OSError
+# covers connection refused / no route; TimeoutError fires when the
+# socket-level timeout expires; HTTPException covers protocol oddities.
+_HTTP_ERRORS = (OSError, TimeoutError, httpclient.HTTPException)
+
+
 class _Coalescer:
     """Per-keycode accumulator: sums `delta_percent` over a short
     window, fires one HTTP POST when the window quiets.
@@ -49,12 +74,10 @@ class _Coalescer:
 
     def __init__(
         self,
-        client: httpx.AsyncClient,
         control_url: str,
         action: KeyAction,
         device_name: str,
     ) -> None:
-        self._client = client
         self._url = control_url + action.path
         self._per_hit_delta = int(action.body.get("delta_percent", 0))
         self._device_name = device_name
@@ -75,14 +98,15 @@ class _Coalescer:
         delta = self._pending
         self._pending = 0
         try:
-            r = await self._client.post(
-                self._url, json={"delta_percent": delta}, timeout=2.0,
+            status = await asyncio.to_thread(
+                _sync_request, "POST", self._url,
+                {"delta_percent": delta}, 2.0,
             )
             logger.info(
                 "event=knob.adjust device=%s delta=%+d status=%d",
-                self._device_name, delta, r.status_code,
+                self._device_name, delta, status,
             )
-        except httpx.HTTPError as e:
+        except _HTTP_ERRORS as e:
             logger.warning(
                 "event=knob.adjust.failed device=%s delta=%+d err=%s",
                 self._device_name, delta, e,
@@ -90,7 +114,6 @@ class _Coalescer:
 
 
 async def _post_once(
-    client: httpx.AsyncClient,
     control_url: str,
     action: KeyAction,
     device_name: str,
@@ -98,17 +121,16 @@ async def _post_once(
 ) -> None:
     """Fire-once HTTP call for a non-coalescing key (mute, etc.)."""
     try:
-        r = await client.request(
-            action.method,
+        status = await asyncio.to_thread(
+            _sync_request, action.method,
             control_url + action.path,
-            json=action.body or None,
-            timeout=2.0,
+            action.body or None, 2.0,
         )
         logger.info(
             "event=knob.action device=%s key=%s path=%s status=%d",
-            device_name, key_name, action.path, r.status_code,
+            device_name, key_name, action.path, status,
         )
-    except httpx.HTTPError as e:
+    except _HTTP_ERRORS as e:
         logger.warning(
             "event=knob.action.failed device=%s key=%s err=%s",
             device_name, key_name, e,
@@ -128,7 +150,6 @@ def _key_name(code: int) -> str:
 async def _read_device(
     device_path: str,
     device: Device,
-    client: httpx.AsyncClient,
     control_url: str,
 ) -> None:
     """Translate key events from one matched device into HTTP calls.
@@ -171,14 +192,12 @@ async def _read_device(
             if action.coalesce:
                 cz = coalescers.get(ev.code)
                 if cz is None:
-                    cz = _Coalescer(
-                        client, control_url, action, device.name,
-                    )
+                    cz = _Coalescer(control_url, action, device.name)
                     coalescers[ev.code] = cz
                 cz.hit()
             else:
                 t = asyncio.create_task(_post_once(
-                    client, control_url, action, device.name,
+                    control_url, action, device.name,
                     _key_name(ev.code),
                 ))
                 tasks.add(t)
@@ -208,7 +227,7 @@ async def _supervise(control_url: str) -> None:
 
     active: dict[str, asyncio.Task] = {}
 
-    def _maybe_start(client: httpx.AsyncClient, path: str) -> None:
+    def _maybe_start(path: str) -> None:
         try:
             dev = InputDevice(path)
         except OSError:
@@ -230,49 +249,48 @@ async def _supervise(control_url: str) -> None:
         if existing is not None and not existing.done():
             return
         task = asyncio.create_task(
-            _read_device(path, entry, client, control_url),
+            _read_device(path, entry, control_url),
         )
         active[path] = task
 
-    async with httpx.AsyncClient() as client:
-        for path in list_devices():
-            _maybe_start(client, path)
+    for path in list_devices():
+        _maybe_start(path)
 
-        if not active:
-            logger.info(
-                "event=knob.bridge.idle (no known accessories attached; "
-                "waiting for hot-plug; known=%s)",
-                ", ".join(d.name for d in KNOWN_DEVICES),
-            )
+    if not active:
+        logger.info(
+            "event=knob.bridge.idle (no known accessories attached; "
+            "waiting for hot-plug; known=%s)",
+            ", ".join(d.name for d in KNOWN_DEVICES),
+        )
 
-        loop = asyncio.get_running_loop()
-        events: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+    events: asyncio.Queue = asyncio.Queue()
 
-        def _udev_cb(action: str, dev: pyudev.Device) -> None:
-            node = dev.device_node
-            if node and node.startswith("/dev/input/event"):
-                loop.call_soon_threadsafe(events.put_nowait, (action, node))
+    def _udev_cb(action: str, dev: pyudev.Device) -> None:
+        node = dev.device_node
+        if node and node.startswith("/dev/input/event"):
+            loop.call_soon_threadsafe(events.put_nowait, (action, node))
 
-        observer = pyudev.MonitorObserver(monitor, _udev_cb)
-        observer.start()
+    observer = pyudev.MonitorObserver(monitor, _udev_cb)
+    observer.start()
 
-        try:
-            while True:
-                # Reap completed reader tasks.
-                for p in list(active.keys()):
-                    if active[p].done():
-                        del active[p]
-                action, node = await events.get()
-                if action == "add":
-                    # udev fires before the kernel finishes wiring up
-                    # /dev/input/event* sometimes — a short sleep
-                    # avoids racing the device-open.
-                    await asyncio.sleep(0.1)
-                    _maybe_start(client, node)
-        finally:
-            observer.stop()
-            for task in active.values():
-                task.cancel()
+    try:
+        while True:
+            # Reap completed reader tasks.
+            for p in list(active.keys()):
+                if active[p].done():
+                    del active[p]
+            action, node = await events.get()
+            if action == "add":
+                # udev fires before the kernel finishes wiring up
+                # /dev/input/event* sometimes — a short sleep
+                # avoids racing the device-open.
+                await asyncio.sleep(0.1)
+                _maybe_start(node)
+    finally:
+        observer.stop()
+        for task in active.values():
+            task.cancel()
 
 
 def main() -> int:

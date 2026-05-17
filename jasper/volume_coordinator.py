@@ -42,9 +42,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
-
-import httpx
+from typing import TYPE_CHECKING, Any
 
 from .volume_persistence import (
     VolumePersistence,
@@ -158,7 +156,6 @@ class VolumeCoordinator:
         backend: "RendererClient",
         spotify_router: Any | None = None,
         spotify_device_name: str = "JTS",
-        http_client: Optional[httpx.AsyncClient] = None,
     ) -> None:
         self._camilla = camilla
         self._persistence = persistence
@@ -170,10 +167,6 @@ class VolumeCoordinator:
         # _set_spotify is a no-op (logged as warning).
         self._spotify_router = spotify_router
         self._spotify_device_name = spotify_device_name
-        # HTTP client kept for future source-side dispatchers that
-        # might need it; current paths (DBus + spotipy) don't.
-        self._http = http_client or httpx.AsyncClient(timeout=2.0)
-        self._owns_http = http_client is None
 
         # Canonical level. Loaded from persistence by initialize();
         # before that, defaults to 50 (mid-scale, hearing-safe).
@@ -814,8 +807,6 @@ class VolumeCoordinator:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
         self._observer_tasks = []
-        if self._owns_http:
-            await self._http.aclose()
 
 
 # ----------------------------------------------------------------------
