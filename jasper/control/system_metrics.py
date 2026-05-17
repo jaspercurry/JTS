@@ -44,6 +44,16 @@ HISTORY_POINTS = 720  # 60 min @ 5 s
 # (rare but seen on overheating), we don't want to block the sampler.
 VCGENCMD_TIMEOUT_SEC = 2.0
 
+# Where to look for the PWM fan. The `pwmfan` hwmon name is exposed by
+# the Pi 5's pwm-fan kernel driver when the official Active Cooler (or
+# any 4-pin PWM+tach fan wired to the fan header) is attached. Index
+# (hwmon0/1/2/…) isn't stable across boots; we scan by name.
+HWMON_DIR = "/sys/class/hwmon"
+PWMFAN_HWMON_NAME = "pwmfan"
+# The pwm-fan driver expresses duty as 0-255. There is no `pwm1_max`
+# attribute to read, so hardcode the well-known max.
+PWMFAN_DUTY_MAX = 255
+
 
 class SystemSampler:
     """Background thread that snapshots /proc + vcgencmd into ring
@@ -66,6 +76,8 @@ class SystemSampler:
         self._mem_used_mb = array("d")
         self._swap_used_mb = array("d")
         self._load_1m = array("d")
+        self._fan_rpm = array("d")  # 0 when fan absent
+        self._fan_pwm = array("d")  # 0 when fan absent
         # Current-only (no history): cheap to keep up to date but not
         # worth a sparkline.
         self._mem_total_mb = 0
@@ -77,6 +89,7 @@ class SystemSampler:
         self._net_rx_bytes = 0
         self._net_tx_bytes = 0
         self._uptime_sec = 0.0
+        self._fan_present = False
         self._last_sample_at: float | None = None
         self._stopped = False
         self._thread = threading.Thread(
@@ -105,6 +118,8 @@ class SystemSampler:
                     "mem_used_mb": list(self._mem_used_mb),
                     "swap_used_mb": list(self._swap_used_mb),
                     "load_1m": list(self._load_1m),
+                    "fan_rpm": list(self._fan_rpm),
+                    "fan_pwm": list(self._fan_pwm),
                 },
                 "current": {
                     "mem_total_mb": self._mem_total_mb,
@@ -116,6 +131,20 @@ class SystemSampler:
                     "net_rx_bytes": self._net_rx_bytes,
                     "net_tx_bytes": self._net_tx_bytes,
                     "uptime_sec": round(self._uptime_sec, 1),
+                    "fan_present": self._fan_present,
+                    # None (not 0) when absent — lets the dashboard hide
+                    # the tile cleanly instead of showing "0 RPM".
+                    "fan_rpm": (
+                        int(self._fan_rpm[-1])
+                        if self._fan_present and self._fan_rpm
+                        else None
+                    ),
+                    "fan_pwm": (
+                        int(self._fan_pwm[-1])
+                        if self._fan_present and self._fan_pwm
+                        else None
+                    ),
+                    "fan_pwm_max": PWMFAN_DUTY_MAX,
                 },
             }
 
@@ -141,18 +170,32 @@ class SystemSampler:
             time.sleep(sleep_for)
 
     def _tick(self) -> None:
-        """Cheap-metric sample — /proc reads + statvfs only."""
+        """Cheap-metric sample — /proc reads + statvfs + sysfs only."""
         mem = self._read_meminfo()
         load = self._read_loadavg_1m()
         net = self._read_net_dev()
         disk_used_pct, disk_total_gb = self._read_disk()
         uptime = self._read_uptime()
+        # _read_fan returns None when no pwm-fan hwmon device exists
+        # (dev machines, Pi without an Active Cooler attached).
+        fan = self._read_fan()
         with self._lock:
             self._append(self._t, time.time())
             self._append(self._mem_available_mb, mem["available_mb"])
             self._append(self._mem_used_mb, mem["used_mb"])
             self._append(self._swap_used_mb, mem["swap_used_mb"])
             self._append(self._load_1m, load)
+            if fan is not None:
+                self._fan_present = True
+                self._append(self._fan_rpm, fan["rpm"])
+                self._append(self._fan_pwm, fan["pwm"])
+            else:
+                self._fan_present = False
+                # Still append (zeros) so history arrays stay aligned
+                # with `t` — the dashboard hides the tile via
+                # fan_present anyway.
+                self._append(self._fan_rpm, 0.0)
+                self._append(self._fan_pwm, 0.0)
             self._mem_total_mb = mem["total_mb"]
             self._net_rx_bytes = net["rx_bytes"]
             self._net_tx_bytes = net["tx_bytes"]
@@ -244,6 +287,34 @@ class SystemSampler:
     def _read_uptime() -> float:
         with open("/proc/uptime") as f:
             return float(f.read().split()[0])
+
+    @staticmethod
+    def _read_fan(hwmon_dir: str = HWMON_DIR) -> dict[str, int] | None:
+        """Returns {'rpm': N, 'pwm': N} for the Pi's PWM fan, or None
+        if no `pwmfan` hwmon device is present (dev box, no Active
+        Cooler attached, etc.).
+
+        hwmon indices aren't stable across boots, so scan by name. Cost
+        is one listdir + one open of each hwmon's name file (typically
+        4-6 entries on a Pi 5) per 5-second tick — negligible."""
+        try:
+            entries = os.listdir(hwmon_dir)
+        except OSError:
+            return None
+        for entry in entries:
+            base = os.path.join(hwmon_dir, entry)
+            try:
+                with open(os.path.join(base, "name")) as f:
+                    if f.read().strip() != PWMFAN_HWMON_NAME:
+                        continue
+                with open(os.path.join(base, "fan1_input")) as f:
+                    rpm = int(f.read().strip())
+                with open(os.path.join(base, "pwm1")) as f:
+                    pwm = int(f.read().strip())
+            except (OSError, ValueError):
+                continue
+            return {"rpm": rpm, "pwm": pwm}
+        return None
 
     @staticmethod
     def _read_temp_c() -> float:

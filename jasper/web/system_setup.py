@@ -51,8 +51,9 @@ IDLE_SHUTDOWN_SEC = 1800.0
 # ---------- HTML / JS / CSS -----------------------------------------------
 
 _EXTRA_STYLE = """
-.tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75em; margin: 1em 0; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 0.75em; margin: 1em 0; }
 .tile { background: #fafafa; border: 1px solid #e6e6e6; border-radius: 6px; padding: 0.7em; }
+.tile.hidden { display: none; }
 .tile .label { font-size: 0.78em; color: #666; text-transform: uppercase; letter-spacing: 0.04em; }
 .tile .value { font-size: 1.4em; font-weight: 600; color: #222; margin: 0.15em 0 0.2em; }
 .tile .sub { font-size: 0.78em; color: #888; }
@@ -65,9 +66,6 @@ _EXTRA_STYLE = """
 .tile.warn svg .line { stroke: #f0c060; }
 .tile.fail svg .area { fill: #e0808033; }
 .tile.fail svg .line { stroke: #e08080; }
-@media (max-width: 540px) {
-  .tiles { grid-template-columns: repeat(2, 1fr); }
-}
 
 .card { background: #fafafa; border: 1px solid #e6e6e6; border-radius: 6px; padding: 0.7em 1em; margin: 1em 0; }
 .card h2 { font-size: 0.92em; margin: 0 0 0.5em; text-transform: uppercase; letter-spacing: 0.04em; color: #666; }
@@ -123,6 +121,12 @@ _PAGE_BODY = """
     <div class="value"><span id="temp-value">—</span></div>
     <div class="sub"><span id="temp-sub">—</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-temp"></svg>
+  </div>
+  <div class="tile hidden" id="tile-fan" title="PWM fan RPM (tachometer) and duty cycle. The pwm-fan kernel driver steps duty 0–255 in response to SoC temp trip points (50 / 60 / 67°C).">
+    <div class="label">Fan</div>
+    <div class="value"><span id="fan-value">—</span></div>
+    <div class="sub"><span id="fan-sub">—</span></div>
+    <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-fan"></svg>
   </div>
   <div class="tile" id="tile-disk">
     <div class="label">Disk</div>
@@ -323,6 +327,34 @@ _SCRIPT = r"""
     setTile('tile-temp', tempStatus);
     // For temp the sparkline is constant (same value at every tick
     // since temp samples at 30s not 5s) so just suppress it.
+
+    // Fan tile — hidden entirely on hardware without a pwm-fan device
+    // (dev machines, Pi without an Active Cooler attached).
+    const fanTile = document.getElementById('tile-fan');
+    if (cur.fan_present && cur.fan_rpm != null) {
+      fanTile.classList.remove('hidden');
+      const rpm = cur.fan_rpm;
+      const pwm = cur.fan_pwm || 0;
+      const pwmMax = cur.fan_pwm_max || 255;
+      const pct = Math.round((pwm / pwmMax) * 100);
+      document.getElementById('fan-value').textContent = rpm + ' RPM';
+      document.getElementById('fan-sub').textContent =
+        'PWM ' + pct + '% · ' + pwm + '/' + pwmMax;
+      // Fail if the fan reports no RPM while the kernel is commanding
+      // it on (4-pin disconnected, stalled blades, dead tachometer).
+      // Warn at >=90% duty — usually means the SoC is approaching the
+      // top thermal trip and the kernel is asking for max airflow.
+      let fanStatus = 'ok';
+      if (pwm > 0 && rpm === 0) fanStatus = 'fail';
+      else if (pct >= 90) fanStatus = 'warn';
+      setTile('tile-fan', fanStatus);
+      sparkline('spark-fan', hist.fan_rpm, {
+        min: 0,
+        max: Math.max(1000, ...hist.fan_rpm),
+      });
+    } else {
+      fanTile.classList.add('hidden');
+    }
 
     // Disk tile
     const diskPct = cur.disk_used_pct || 0;
