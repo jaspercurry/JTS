@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Tear down the JTS USB Audio gadget descriptor.
+#
+# Best-effort: each step's failure is logged but doesn't abort the
+# rest. A partially-broken descriptor (e.g. previous gadget-up died
+# mid-way) should still get cleaned up enough that the next gadget-up
+# can rebuild from scratch.
+#
+# Sequence:
+#   1. Unbind from UDC (write empty string to UDC file) — releases
+#      the gadget from the host's view.
+#   2. Remove the function symlink from the configuration.
+#   3. rmdir the per-language strings, function, and configuration.
+#   4. rmdir the gadget directory itself.
+#
+# The systemd unit's ExecStopPost handles `rmmod libcomposite u_audio`
+# separately — this script touches only ConfigFS state.
+set -uo pipefail
+
+CONFIGFS=/sys/kernel/config
+NAME=jts-usb-audio
+GADGET_DIR="${CONFIGFS}/usb_gadget/${NAME}"
+
+if [[ ! -d "${GADGET_DIR}" ]]; then
+    echo "jasper-usbsink-gadget-down: ${NAME} not present, nothing to do"
+    exit 0
+fi
+
+cd "${GADGET_DIR}"
+
+# Unbind from UDC — writing an empty string releases the gadget.
+# Must happen before we can remove the function symlink.
+if [[ -s UDC ]]; then
+    bound_udc=$(cat UDC 2>/dev/null || true)
+    if echo "" > UDC 2>/dev/null; then
+        echo "jasper-usbsink-gadget-down: unbound from UDC ${bound_udc}"
+    else
+        echo "jasper-usbsink-gadget-down: WARN failed to unbind from UDC ${bound_udc}" >&2
+    fi
+fi
+
+# Remove function symlink from the configuration.
+rm -f configs/c.1/uac2.usb0 || true
+
+# Strings.
+rmdir configs/c.1/strings/0x409 2>/dev/null || true
+rmdir strings/0x409 2>/dev/null || true
+
+# Configuration and function objects.
+rmdir configs/c.1 2>/dev/null || true
+rmdir functions/uac2.usb0 2>/dev/null || true
+
+# Finally the gadget directory itself. rmdir refuses if anything is
+# still bound — that's the safety net we rely on.
+cd /
+if rmdir "${GADGET_DIR}" 2>/dev/null; then
+    echo "jasper-usbsink-gadget-down: ${NAME} torn down"
+else
+    echo "jasper-usbsink-gadget-down: WARN ${GADGET_DIR} did not rmdir cleanly " \
+         "(something still bound?); next gadget-up will retry" >&2
+fi
