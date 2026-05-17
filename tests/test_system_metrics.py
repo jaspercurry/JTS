@@ -36,13 +36,22 @@ def test_snapshot_shape_with_no_samples_yet() -> None:
     assert "history_points" in snap
     assert snap["last_sample_at"] is None
     # History present but empty.
-    for key in ("t", "mem_available_mb", "mem_used_mb", "swap_used_mb", "load_1m"):
+    for key in (
+        "t", "mem_available_mb", "mem_used_mb", "swap_used_mb", "load_1m",
+        "fan_rpm", "fan_pwm",
+    ):
         assert snap["history"][key] == []
     # Current present with sensible defaults.
     cur = snap["current"]
     for key in ("mem_total_mb", "disk_used_pct", "temp_c", "throttled_now",
-                "throttled_history", "net_rx_bytes", "net_tx_bytes"):
+                "throttled_history", "net_rx_bytes", "net_tx_bytes",
+                "fan_present", "fan_rpm", "fan_pwm", "fan_pwm_max"):
         assert key in cur
+    # Fan defaults: absent until proven present by a tick.
+    assert cur["fan_present"] is False
+    assert cur["fan_rpm"] is None
+    assert cur["fan_pwm"] is None
+    assert cur["fan_pwm_max"] == 255
 
 
 def test_append_rotates_after_history_points() -> None:
@@ -164,6 +173,123 @@ def test_read_throttled_handles_missing_vcgencmd() -> None:
         system_metrics.subprocess, "run", side_effect=FileNotFoundError(),
     ):
         assert SystemSampler._read_throttled() == (0, 0)
+
+
+# ---------- fan reader (fake sysfs trees) -------------------------------
+
+
+def _make_fake_hwmon(root, entries: list[tuple[str, dict]]) -> str:
+    """Build a fake /sys/class/hwmon tree under `root`. Each entry is
+    (subdir_name, {filename: contents}) — mirrors how Linux exposes
+    hwmon devices. Returns the path to use as hwmon_dir."""
+    hwmon_dir = os.path.join(root, "hwmon")
+    os.makedirs(hwmon_dir)
+    for name, files in entries:
+        sub = os.path.join(hwmon_dir, name)
+        os.makedirs(sub)
+        for fname, contents in files.items():
+            with open(os.path.join(sub, fname), "w") as f:
+                f.write(contents)
+    return hwmon_dir
+
+
+def test_read_fan_finds_pwmfan_by_name(tmp_path) -> None:
+    # Realistic layout from a Pi 5: hwmon2 is pwmfan, others aren't.
+    hwmon = _make_fake_hwmon(str(tmp_path), [
+        ("hwmon0", {"name": "cpu_thermal\n", "temp1_input": "47400\n"}),
+        ("hwmon1", {"name": "rp1_adc\n"}),
+        ("hwmon2", {
+            "name": "pwmfan\n",
+            "fan1_input": "2404\n",
+            "pwm1": "75\n",
+        }),
+    ])
+    assert SystemSampler._read_fan(hwmon) == {"rpm": 2404, "pwm": 75}
+
+
+def test_read_fan_returns_none_when_directory_missing(tmp_path) -> None:
+    # No hwmon tree at all — e.g. macOS dev box.
+    assert SystemSampler._read_fan(str(tmp_path / "no-such-dir")) is None
+
+
+def test_read_fan_returns_none_when_no_pwmfan(tmp_path) -> None:
+    # A Pi without an Active Cooler attached: hwmon exists, but no
+    # pwmfan entry. We should NOT misclassify another device as the fan.
+    hwmon = _make_fake_hwmon(str(tmp_path), [
+        ("hwmon0", {"name": "cpu_thermal\n", "temp1_input": "47400\n"}),
+        ("hwmon1", {"name": "rpi_volt\n"}),
+    ])
+    assert SystemSampler._read_fan(hwmon) is None
+
+
+def test_read_fan_skips_malformed_entry(tmp_path) -> None:
+    # A pwmfan whose fan1_input is garbage — keep searching, don't crash.
+    hwmon = _make_fake_hwmon(str(tmp_path), [
+        ("hwmon0", {
+            "name": "pwmfan\n",
+            "fan1_input": "not-a-number\n",
+            "pwm1": "75\n",
+        }),
+    ])
+    assert SystemSampler._read_fan(hwmon) is None
+
+
+def test_tick_with_fan_present_populates_history_and_current(tmp_path) -> None:
+    """End-to-end: when _read_fan returns data, _tick appends to the
+    history ring and snapshot() exposes current values + fan_present."""
+    s = SystemSampler(history_points=5)
+    with patch.object(
+        SystemSampler, "_read_fan",
+        return_value={"rpm": 2404, "pwm": 75},
+    ):
+        # Force the rest of _tick's readers to work even on macOS.
+        with patch.object(
+            SystemSampler, "_read_meminfo",
+            return_value={"total_mb": 2048, "available_mb": 1024,
+                          "used_mb": 1024, "swap_used_mb": 0},
+        ), patch.object(
+            SystemSampler, "_read_loadavg_1m", return_value=0.5,
+        ), patch.object(
+            SystemSampler, "_read_net_dev",
+            return_value={"rx_bytes": 0, "tx_bytes": 0},
+        ), patch.object(
+            SystemSampler, "_read_disk", return_value=(50.0, 30.0),
+        ), patch.object(
+            SystemSampler, "_read_uptime", return_value=3600.0,
+        ):
+            s._tick()
+    snap = s.snapshot()
+    assert snap["current"]["fan_present"] is True
+    assert snap["current"]["fan_rpm"] == 2404
+    assert snap["current"]["fan_pwm"] == 75
+    assert snap["history"]["fan_rpm"] == [2404.0]
+    assert snap["history"]["fan_pwm"] == [75.0]
+    # History stays aligned with t.
+    assert len(snap["history"]["fan_rpm"]) == len(snap["history"]["t"])
+
+
+def test_tick_without_fan_keeps_history_aligned() -> None:
+    """When the fan isn't present, history arrays must stay the same
+    length as `t` so the dashboard's sparkline doesn't desync."""
+    s = SystemSampler(history_points=5)
+    with patch.object(SystemSampler, "_read_fan", return_value=None), \
+         patch.object(SystemSampler, "_read_meminfo",
+                      return_value={"total_mb": 2048, "available_mb": 1024,
+                                    "used_mb": 1024, "swap_used_mb": 0}), \
+         patch.object(SystemSampler, "_read_loadavg_1m", return_value=0.5), \
+         patch.object(SystemSampler, "_read_net_dev",
+                      return_value={"rx_bytes": 0, "tx_bytes": 0}), \
+         patch.object(SystemSampler, "_read_disk", return_value=(50.0, 30.0)), \
+         patch.object(SystemSampler, "_read_uptime", return_value=3600.0):
+        s._tick()
+        s._tick()
+    snap = s.snapshot()
+    assert snap["current"]["fan_present"] is False
+    assert snap["current"]["fan_rpm"] is None
+    assert snap["current"]["fan_pwm"] is None
+    assert len(snap["history"]["t"]) == 2
+    assert len(snap["history"]["fan_rpm"]) == 2
+    assert len(snap["history"]["fan_pwm"]) == 2
 
 
 # ---------- build manifest ----------------------------------------------
