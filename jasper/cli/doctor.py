@@ -1427,12 +1427,14 @@ def check_wifi_regdom() -> CheckResult:
     neighbors are clearly nearby — and kernel logs fill with
     `brcmf_cfg80211_scan: Scanning suppressed: status (4)`.
 
-    install.sh's `set_wifi_country_code()` writes `country=XX` to
-    /boot/firmware/config.txt; the firmware reads that at boot and
-    populates the chip's regdom NVRAM. This check flags drift back
-    to the broken state — e.g. if someone re-imaged the SD card
-    without re-running install.sh, or if a system update reset
-    config.txt."""
+    The standard documented fix is `cfg80211.ieee80211_regdom=US`
+    in /boot/firmware/cmdline.txt (written by Pi Imager and by
+    `raspi-config nonint do_wifi_country`). That sets cfg80211's
+    *global* regdom correctly, but on the Pi 5 brcmfmac firmware
+    the per-phy regdom doesn't always follow that hint. There is
+    no clean fix — the chip firmware is closed-source. See the
+    matching CLAUDE.md `Wi-Fi switching` section for trade-offs
+    of the known workarounds."""
     proc = _run(["iw", "reg", "get"], timeout=5)
     if proc.returncode != 0:
         return CheckResult(
@@ -1465,12 +1467,14 @@ def check_wifi_regdom() -> CheckResult:
         )
     if phy_country in ("99", "00"):
         return CheckResult(
-            "WiFi reg domain", "fail",
+            "WiFi reg domain", "warn",
             f"phy0 regdom is '{phy_country}' (unset) — WiFi scanning "
-            "is suppressed by brcmfmac and the /wifi/ wizard will only "
-            "see the connected network. Fix: re-run `bash "
-            "scripts/deploy-to-pi.sh` (install.sh writes country=XX to "
-            "/boot/firmware/config.txt) then reboot the Pi.",
+            "is suppressed by brcmfmac; /wifi/ scan will only see "
+            "the connected network. Known Pi 5 firmware bug with no "
+            "clean software fix; cmdline.txt already has the standard "
+            "`cfg80211.ieee80211_regdom=` hint but it doesn't always "
+            "propagate to the chip's per-phy regdom. See CLAUDE.md "
+            "\"Wi-Fi switching\" for workarounds (rpi-update, USB WiFi).",
         )
     return CheckResult(
         "WiFi reg domain", "ok",

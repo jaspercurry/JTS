@@ -338,34 +338,40 @@ management — hidden SSID support". `nmcli dev wifi list` doesn't
 return them; would need a manual "Connect to a hidden network" form
 that posts SSID + PSK with `hidden yes`.
 
-**Scanning returns only the connected SSID? Check the regulatory
-domain.** Pi 5's brcmfmac WiFi firmware silently suppresses
-off-channel scans when its per-phy regdom is unset
-(`country 99: DFS-UNSET`). Kernel logs `brcmf_cfg80211_scan:
-Scanning suppressed: status (4)` continuously. install.sh's
-`set_wifi_country_code()` writes `country=XX` to
-`/boot/firmware/config.txt`, which the firmware reads at boot.
-**A reboot is required** to apply; runtime `iw reg set XX` does
-NOT work (brcmfmac enforces regdom from NVRAM, not from cfg80211
-hints).
+**Scanning returns only the connected SSID? Known Pi 5 brcmfmac
+firmware bug.** When the kernel logs `brcmf_cfg80211_scan:
+Scanning suppressed: status (4)` continuously and the per-phy
+regdom is stuck at `country 99: DFS-UNSET`, that's the
+`BRCMF_SCAN_STATUS_SUPPRESS` bit getting stuck on after a DHCP
+exchange or Bluetooth-coexistence event. The driver returns
+`-EAGAIN` to every scan request until the bit clears, but the
+closed-source chip firmware on the Pi 5 doesn't always clear it.
 
-The country value is **auto-detected** from the connected AP via
-`iw reg get` (the kernel learned it from the router's 802.11d
-beacon). For modern home routers this picks the right value
-automatically. Override path: `sudo JASPER_WIFI_COUNTRY=GB bash
-deploy/install.sh`. Fallback when auto-detect fails: `US`, with a
-warning printed to stderr telling the operator how to override.
+The standard documented fix (`cfg80211.ieee80211_regdom=US` in
+`/boot/firmware/cmdline.txt`, written by Pi Imager + `raspi-config
+nonint do_wifi_country`) sets cfg80211's global regdom but
+doesn't always propagate to the chip's per-phy regdom. We
+verified this on a Pi 5 — cmdline has the right value, global
+regdom = US, but phy0 stays at country 99. Nobody has a clean
+fix per the [Raspberry Pi forum thread on this exact
+issue](https://forums.raspberrypi.com/viewtopic.php?p=2371774):
+*"there is no definitive upstream patch since the firmware is
+closed-source."*
 
-`jasper-doctor`'s `check_wifi_regdom` flags drift back to country
-99 / 00. Direct diagnostic:
+`jasper-doctor`'s `check_wifi_regdom` reports the stuck state.
+Diagnostic:
 
 ```sh
 sudo iw reg get | grep -A1 'phy#0'
-# Good: country US: DFS-FCC   (or DE / GB / etc.)
-# Broken: country 99: DFS-UNSET
+# Healthy: country US: DFS-FCC   (or DE / GB / etc.)
+# Stuck:   country 99: DFS-UNSET
 ```
 
-Upstream tracking: https://github.com/raspberrypi/linux/issues/5685.
+Workarounds with real trade-offs: reload brcmfmac (drops WiFi;
+[OpenWrt #23069](https://github.com/openwrt/openwrt/issues/23069)
+documents the chip wedging after repeated reloads on Pi 5),
+`sudo rpi-update` (newer firmware may help, may regress other
+things), external USB WiFi dongle (100% works, hardware change).
 
 **WPA-Enterprise (802.1X) not supported.** Home networks only. The
 scan-list filter shows "WPA-Enterprise" as the security label so the
