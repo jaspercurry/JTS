@@ -340,6 +340,29 @@ def test_assess_aec_output_silent_ref_with_no_healthy_window_fails():
     assert "Lessons learned" in r.detail  # actionable doc link
 
 
+def test_assess_aec_output_silent_ref_downgrades_when_loopback_closed():
+    """Same mic-loud + ref-silent shape as the rate-lock fail, but the
+    music chain isn't active (no renderer writing the loopback). In
+    that case ref MUST be silent — snd-aloop produces zeros without a
+    producer — and the mic-loud bursts are TTS or voice (both bypass
+    the loopback). Downgrade to OK with the diagnosis so a pure-voice
+    session doesn't show as a degraded AEC bridge."""
+    lines = [_rms_log_line(ref=0, mic=2500, aec=2400, attn_db=-0.4) for _ in range(8)]
+    r = doctor._assess_aec_bridge_output(
+        "\n".join(lines), music_chain_active=False,
+    )
+    assert r.status == "ok"
+    assert "loopback playback is closed" in r.detail
+    assert "jasper_out bypasses the loopback" in r.detail
+    # Counterpart: when music chain IS active, same input still fails —
+    # the guard only relaxes the FAIL when we have positive evidence
+    # the loopback is idle, not on uncertainty.
+    r_active = doctor._assess_aec_bridge_output(
+        "\n".join(lines), music_chain_active=True,
+    )
+    assert r_active.status == "fail"
+
+
 def test_assess_aec_output_silent_ref_with_healthy_window_is_ok():
     """The 2026-05-16 false-positive: TTS / wake cues / loud ambient
     push silent_ref over threshold, but at least one window in the
@@ -408,3 +431,33 @@ def test_assess_aec_output_silent_ref_below_alarm_surfaces_in_summary():
     assert r.status == "ok"
     assert "silent-ref=3" in r.detail
     assert "below alarm" in r.detail
+
+
+def test_loopback_playback_active_reads_proc_status(tmp_path):
+    """Helper must report True for any non-closed subdev and False when
+    every subdev is closed. Verifies the first-line strip-and-compare
+    against the actual /proc/asound status file format (single word
+    `closed` vs `state: RUNNING\\n…`)."""
+    fake_root = tmp_path / "asound" / "Loopback" / "pcm0p"
+    fake_root.mkdir(parents=True)
+    sub_paths = []
+    for sub in range(4):
+        d = fake_root / f"sub{sub}"
+        d.mkdir()
+        status = d / "status"
+        status.write_text("closed\n")
+        sub_paths.append(str(status))
+
+    with patch("glob.glob", return_value=sub_paths):
+        # All closed → inactive.
+        assert doctor._loopback_playback_active() is False
+        # Flip sub2 to RUNNING → active.
+        (fake_root / "sub2" / "status").write_text(
+            "state: RUNNING\nowner_pid   : 12345\n"
+        )
+        assert doctor._loopback_playback_active() is True
+
+    # No status files at all (e.g., snd-aloop not loaded) → inactive,
+    # never raises.
+    with patch("glob.glob", return_value=[]):
+        assert doctor._loopback_playback_active() is False
