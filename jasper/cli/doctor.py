@@ -1341,6 +1341,160 @@ def probe_aec_ref_path() -> list[CheckResult]:
     return results
 
 
+def _systemd_is_active(unit: str) -> bool:
+    """Wrapper around `systemctl is-active`. Cheap; ~5 ms per call."""
+    return _run(["systemctl", "is-active", unit]).stdout.strip() == "active"
+
+
+def _module_loaded(name: str) -> bool:
+    """True if `lsmod` shows the named kernel module."""
+    proc = _run(["lsmod"])
+    if proc.returncode != 0:
+        return False
+    # lsmod output: first column is the module name. Match-at-line-
+    # start to avoid substring matches against unrelated modules.
+    return any(
+        line.split() and line.split()[0] == name
+        for line in proc.stdout.splitlines()
+    )
+
+
+def check_usbsink_dtoverlay() -> CheckResult:
+    """Verify dtoverlay=dwc2,dr_mode=peripheral is in
+    /boot/firmware/config.txt. Without it, the BCM2712 OTG controller
+    stays in host mode and the USB-C port is power-only; the
+    jasper-usbsink wizard toggle would be greyed out and turning it
+    on (manually via systemctl) would just fail at the ConfigFS UDC
+    bind."""
+    cfg_path = Path("/boot/firmware/config.txt")
+    if not cfg_path.exists():
+        return CheckResult(
+            "usbsink dtoverlay", "warn",
+            f"{cfg_path} missing — not running on a Pi?",
+        )
+    try:
+        content = cfg_path.read_text()
+    except OSError as e:
+        return CheckResult(
+            "usbsink dtoverlay", "warn",
+            f"can't read {cfg_path}: {e}",
+        )
+    needle = "dtoverlay=dwc2,dr_mode=peripheral"
+    for line in content.splitlines():
+        if line.strip().startswith(needle):
+            return CheckResult(
+                "usbsink dtoverlay", "ok",
+                "dwc2 peripheral mode enabled (USB-C is gadget-capable)",
+            )
+    # Not present → not a fail, the feature is opt-in. Surface as a
+    # warn-with-fix so a user wondering "why is the toggle greyed
+    # out?" finds the answer here. install.sh's set_usb_gadget_mode
+    # is idempotent so re-running install.sh + reboot recovers.
+    return CheckResult(
+        "usbsink dtoverlay", "warn",
+        "not set; USB sink wizard toggle will show as unavailable. "
+        "Re-run scripts/deploy-to-pi.sh (or sudo install.sh) and "
+        "reboot to enable.",
+    )
+
+
+def check_usbsink_state() -> CheckResult:
+    """Status check for jasper-usbsink.service.
+
+    When the service is active, verify the state file is being
+    written recently (catches a wedged daemon that's somehow still
+    showing active to systemd).
+
+    When the service is inactive, verify libcomposite is NOT loaded —
+    if it is, the previous stop didn't tear cleanly and the gadget
+    descriptor is leaking RAM (~60 KB). Not catastrophic but worth
+    surfacing so the operator can `sudo rmmod libcomposite` or reboot.
+    """
+    active = _systemd_is_active("jasper-usbsink.service")
+    libcomp = _module_loaded("libcomposite")
+
+    if not active:
+        if libcomp:
+            return CheckResult(
+                "usbsink state", "warn",
+                "service inactive but libcomposite still loaded — "
+                "RAM drift from a failed stop. Reboot or "
+                "`sudo rmmod u_audio libcomposite` to recover.",
+            )
+        return CheckResult(
+            "usbsink state", "ok",
+            "disabled (no RAM cost beyond ~50 KB dwc2 module)",
+        )
+
+    # Service is active. Verify the daemon is publishing state.
+    state_path = Path("/run/jasper-usbsink/state.json")
+    if not state_path.exists():
+        return CheckResult(
+            "usbsink state", "fail",
+            f"service active but {state_path} missing — daemon may "
+            "have crashed before publishing. Check "
+            "`systemctl status jasper-usbsink` and journalctl.",
+        )
+    try:
+        data = json.loads(state_path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return CheckResult(
+            "usbsink state", "fail",
+            f"can't parse {state_path}: {e}",
+        )
+    updated_str = data.get("updated_at")
+    if not updated_str:
+        return CheckResult(
+            "usbsink state", "warn",
+            "state file has no updated_at field — schema drift?",
+        )
+    try:
+        from datetime import datetime, timezone
+        updated = datetime.fromisoformat(updated_str)
+        age = (datetime.now(timezone.utc) - updated).total_seconds()
+    except (ValueError, TypeError):
+        return CheckResult(
+            "usbsink state", "warn",
+            f"updated_at not ISO 8601: {updated_str!r}",
+        )
+    # State publisher writes at 1 Hz. >10 s of staleness = wedge.
+    if age > 10:
+        return CheckResult(
+            "usbsink state", "warn",
+            f"state file {age:.0f} s stale; daemon may be wedged "
+            "(systemd watchdog should catch it within 15 s — check "
+            "again in a moment)",
+        )
+    return CheckResult(
+        "usbsink state", "ok",
+        f"active, playing={data.get('playing')} "
+        f"host_connected={data.get('host_connected')} "
+        f"rms_dbfs={data.get('rms_dbfs'):.1f}",
+    )
+
+
+def check_usbsink_card() -> CheckResult:
+    """When jasper-usbsink is enabled, the UAC2Gadget ALSA card MUST
+    be present — otherwise the init.service either didn't run or
+    failed to bind to UDC."""
+    if not _systemd_is_active("jasper-usbsink.service"):
+        return CheckResult(
+            "usbsink card", "ok",
+            "service disabled — card check skipped",
+        )
+    if Path("/proc/asound/UAC2Gadget").is_dir():
+        return CheckResult(
+            "usbsink card", "ok",
+            "UAC2Gadget card present (host will see JTS as USB audio)",
+        )
+    return CheckResult(
+        "usbsink card", "fail",
+        "service active but /proc/asound/UAC2Gadget missing — "
+        "init.service didn't bind the UDC. Check "
+        "`systemctl status jasper-usbsink-init` for the failure mode.",
+    )
+
+
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
     capture endpoint. The bridge depends on this — it reads channel 2."""
@@ -1579,6 +1733,13 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_output_health,
         check_xvf_firmware_6ch,
         check_xvf_mixer_state,
+        # USB sink (jasper-usbsink) — optional fourth source. The
+        # checks are RAM-aware: when the service is off they verify
+        # nothing leaked, when on they verify the daemon is healthy
+        # and the gadget card is registered.
+        check_usbsink_dtoverlay,
+        check_usbsink_state,
+        check_usbsink_card,
         # WiFi: brcmfmac scan suppression is the most common
         # post-bringup foot-gun — silent except in dmesg, and
         # breaks the /wifi/ wizard's primary function.
