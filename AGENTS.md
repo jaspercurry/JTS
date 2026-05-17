@@ -53,6 +53,14 @@ That flow exists historically but misses:
 **Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
 (install but don't restart/reconcile), `PI_HOST=...`, `PI_USER=...`.
 
+**Adding a wizard port to `jasper-web.socket`?** `install.sh`'s
+wizard-socket loop uses `systemctl restart` (not `start`) so a new
+`ListenStream=` line actually re-binds the live socket on deploy. A
+bare `start` is a no-op when the socket is already active, which
+silently leaves the old port set live and 502s on the new wizard
+until the next reboot. Verified failure mode + fix landed in PR #118
+when /sources/ on port 8773 went out without the restart.
+
 **Verify the deploy landed:**
 - `http://jts.local/system/` → Software card shows the matching
   short-SHA and recent install timestamp
@@ -491,14 +499,11 @@ versions (respeaker repo issue #8).
 ## Satellite devices — opt-in hardware
 
 The cross-cutting design home for ESP32 satellites (existing rotary
-dial, planned AMOLED touchscreen mic satellite, future devices) lives
-in [`docs/satellites.md`](docs/satellites.md). It owns shared protocols
-(Improv-over-Serial provisioning, mDNS-SD discovery via
-`_jasper-control._tcp`, control HTTP at `:8780`, UDP-log diagnostics
-at `:5514`), the multi-mic arbitration design (wake-confidence
-broadcast with a debounce window — *not* "loudest wins"), and the
-per-device roadmap. Read that first when working on satellite
-firmware or related Pi-side daemons.
+dial, AMOLED touchscreen mic satellite in progress, future devices)
+lives in [`docs/satellites.md`](docs/satellites.md). It owns shared
+protocols, multi-mic arbitration design, and per-device roadmap. Read
+that first when working on satellite firmware or related Pi-side
+daemons.
 
 ### Rotary dial
 
@@ -511,13 +516,16 @@ hold-to-talk Gemini session on long-press. The other LVGL scenes
 album art) have firmware scaffold but aren't yet validated on-device.
 
 Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
-`POST /volume/adjust`, `/volume/set`, `/transport/toggle`,
-`/session/start`, `/session/end`, `/cue/play`, `/healthz`. Volume
+`POST /volume/adjust` (and `/volume/set`, `/healthz`). Volume
 requests route through `VolumeCoordinator` (see
 [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md)), which dispatches
 to the active source's own slider (AirPlay DBus, Spotify HTTP, BT
-DBus) — not just CamillaDSP. Service file at
-`deploy/systemd/jasper-control.service`. No auth — home LAN only.
+DBus) — not just CamillaDSP. Persistence is incidental — voice_daemon's debounced poller
+catches external main_volume changes and writes them to the same
+state file used by voice tools, so dial-driven volume survives
+restarts without the control daemon knowing about the persistence
+layer. Service file at `deploy/systemd/jasper-control.service`.
+No auth — home LAN only.
 
 Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native
 USB-CDC, Improv-over-Serial provisioning. WS2812 LED 0 = status
@@ -536,49 +544,83 @@ sudo /opt/jasper/.venv/bin/jasper-dial-onboard
 # → flashes via esptool, reads Pi's current WiFi creds from
 #   NetworkManager (or wpa_supplicant), pushes via Improv,
 #   waits for dial to appear at jasper-dial.local. ~30 s.
+
+# Unplug from Pi and connect to USB power. Dial reconnects to
+# WiFi from NVS flash on every subsequent boot.
 ```
 
 To re-provision after a WiFi password change: same command, same
 USB plug. The dial accepts `SUBMIT_SETTINGS` over Improv whenever
 it's connected to USB.
 
+If the dial is already flashed and you just need to update creds,
+pass `--no-flash`. If auto-detection of WiFi creds fails (locked-down
+NM secret store, etc.), pass `--ssid` and `--password` explicitly.
+
+The control daemon is always installed and enabled by `install.sh`,
+even if there's no dial — it costs <10 MB RAM idle and the volume
+endpoints are useful for any LAN client (Home Assistant, shortcuts,
+etc.).
+
 ### AMOLED satellite (Phases 0, 1.1, 1.2 done; 1.3+ in progress)
 
 Waveshare ESP32-S3-Touch-AMOLED-1.8 — touchscreen + mic satellite.
 Project at `firmware/satellite-amoled/`. Both ESP32 firmware projects
-(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino**.
+(dial + satellite) on **Arduino-ESP32 v3.x via pioarduino** — see
+`docs/satellites.md` "Toolchain — Arduino-ESP32 v3.x via pioarduino"
+for the rationale and v2.x→v3.x deltas.
 
 Shipped:
 - Phase 0 (2026-05-08) — ES8311 mic capture, 16 kHz mono PCM over
-  USB-CDC. See `docs/satellites.md` "Audio init footguns" for the
-  ES8311 init quirks.
-- Phase 1.1 (2026-05-08) — WiFi from NVS, Improv-over-Serial,
-  mDNS-SD discovery of `_jasper-control._tcp`, dlog over USB-CDC
-  + UDP `:5514`.
+  USB-CDC. Validated against music playback. See
+  `docs/satellites.md` "Audio init footguns" for the non-obvious
+  ES8311 init quirks (I²S stereo + demux for slot alignment;
+  REG02 pre_multi=3 for SCLK-derived MCLK).
+- Phase 1.1 (2026-05-08) — WiFi join from NVS-stored creds,
+  Improv-over-Serial provisioning, mDNS-SD discovery of
+  `_jasper-control._tcp`, dlog over USB-CDC + UDP `:5514`.
 - Phase 1.2 (2026-05-09) — on-screen connection-status indicator
-  on the SH8601 AMOLED via Arduino_GFX. Direct draws (no LVGL);
-  colored circle + label keyed off the `Status` enum;
-  `setStatus()` redraws inline so PROVISION→ONLINE transitions
-  show up immediately. See "Display init footguns" in
-  `docs/satellites.md` for the SH8601 + TCA9554 reset sequence.
+  on the 368×448 SH8601 AMOLED via Arduino_GFX. Direct draws (no
+  LVGL yet); colored circle + label keyed off the `Status` enum;
+  `setStatus()` helper redraws inline so PROVISION→ONLINE
+  transitions show up immediately. See "Display init footguns"
+  in `docs/satellites.md` for the SH8601 + TCA9554 reset
+  sequence and Arduino_GFX subclass gotchas.
 
-Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL
-"Tap to Talk", UDP audio stream to Pi-side receiver.
+Next milestone: Phase 1.3+ — capacitive touch (FT3168), LVGL "Tap
+to Talk" surface, control-plane HTTP, I²S mic capture gated on
+press, UDP audio stream to a new Pi-side `MicSource` endpoint.
 
-Onboarding: `sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`
-mirrors `jasper-dial-onboard` — flash + Improv-driven WiFi creds
-push in one go, mDNS-confirmed at `jasper-satellite-amoled.local`.
+**Onboarding flow:** plug the satellite into a Pi USB-C port, then
+`sudo /opt/jasper/.venv/bin/jasper-satellite-onboard`. Mirrors
+`jasper-dial-onboard`: USB CDC discovery → optional flash from
+`/opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin`
+(populated by `bash firmware/satellite-amoled/build.sh`) → push
+WiFi creds via Improv → wait for `jasper-satellite-amoled.local`.
+The flash itself wipes NVS (factory.bin pads 0x0–0x10000 with
+0xFF, including the 0x9000–0xe000 NVS region) but the cred-push
+that follows refills it — no manual provisioning step.
 
-To capture audio for testing/debugging:
+**Local PIO setup** for the v3.x toolchain (laptop-side):
+pioarduino requires Python ≥ 3.10 — the JTS project venv is
+3.9 — so build inside a separate Python 3.11 venv with
+`brew install python@3.11 && python3.11 -m venv /tmp/jts-pio-venv
+&& /tmp/jts-pio-venv/bin/pip install platformio`. Prefix `pio`
+invocations with `PATH="/opt/homebrew/bin:$PATH"` so PIO's
+subprocess can find git for the Improv-WiFi library install.
+The Pi already has Python 3.13 + PIO and builds cleanly without
+the dance.
+
+To capture audio for testing or SNR comparisons:
 
 ```sh
 bash scripts/capture-satellite-amoled.sh 10        # 10 s → captures/<ts>.wav
-bash scripts/capture-chip-mic.sh 10                # same, from XVF3800
+bash scripts/capture-chip-mic.sh 10                # same shape, from XVF3800
 ```
 
-The control daemon is always installed and enabled by `install.sh`,
-even if there's no satellite — it costs <10 MB RAM idle and the
-endpoints are useful for any LAN client.
+Capture scripts assume the satellite is plugged into the Pi via
+USB-C and the Pi is at `jts.local`. WAVs land in `captures/` (which
+is gitignored — large binaries, regenerate as needed).
 
 ---
 
@@ -670,7 +712,8 @@ them into the calling shell.
 
 ## Behavioral rules for working in this codebase
 
-Per the user's CLAUDE.md / broader rules and reinforced for this
+Per the user's CLAUDE.md
+(`github.com/jaspercurry/claude-rules`) and reinforced for this
 specific project:
 
 - **Diagnose before solving.** If something's broken, fetch the
