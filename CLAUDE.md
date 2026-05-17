@@ -251,7 +251,11 @@ to know which non-bundled `.onnx` files to fetch.
 device. One row per registered model with pronunciation + description
 + author-reported false-fire rate. Pick one, hit Save — writes
 `/var/lib/jasper/wake_model.env` at mode 0644 and restarts
-`jasper-voice`. Source: [`jasper/web/wake_setup.py`](jasper/web/wake_setup.py).
+`jasper-voice`. A sensitivity slider underneath the picker tunes
+`JASPER_WAKE_THRESHOLD` (0.05–0.95, default 0.50 — lower wakes more
+easily, higher requires a more confident match) and persists into
+the same env file on the same Save. Source:
+[`jasper/web/wake_setup.py`](jasper/web/wake_setup.py).
 
 **Laptop-side script:**
 

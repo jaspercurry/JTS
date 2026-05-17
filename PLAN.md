@@ -226,6 +226,9 @@ the full sweep matrix and reasoning.
   but on music it's untested.
 - **Lower `JASPER_WAKE_THRESHOLD` from 0.5 → 0.4 or 0.3.** Pure UX
   tradeoff knob — more wakes, some false positives. Easy to revert.
+  Now also tunable per-installation via the slider at
+  `http://jts.local/wake/` (PR #133); this item is about whether to
+  ship a lower *default*, separate from exposing the knob.
 
 ### Tier 2 — engineering with real upside
 
