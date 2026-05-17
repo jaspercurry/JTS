@@ -1,0 +1,58 @@
+[Unit]
+Description=Jasper USB sink — audio bridge from UAC2 gadget into the music chain
+# Bridges the host's USB audio output (captured via the ConfigFS UAC2
+# gadget set up by jasper-usbsink-init) into hw:Loopback,0,0 where
+# AirPlay/Spotify/BT also write. The bridge sums into the same dmix at
+# the dongle, so it's just another renderer from the music chain's
+# perspective.
+#
+# Ships DISABLED. The /sources/ wizard toggle enables/disables this
+# service together with jasper-usbsink-init. When both are off,
+# libcomposite isn't loaded and the daemon doesn't run — total
+# resident cost is the ~50 KB dwc2 kernel module from the dtoverlay,
+# nothing in user space.
+#
+# See docs/HANDOFF-usbsink.md for the full design.
+After=jasper-usbsink-init.service jasper-camilla.service sound.target
+Requires=jasper-usbsink-init.service
+# PartOf= propagates a stop/restart of the init service to the daemon.
+# If init is stopped (toggle off in /sources/), this stops too. If init
+# crashes and systemd restarts it, the daemon restarts in sync.
+PartOf=jasper-usbsink-init.service
+
+[Service]
+# Tier 1 + 2 of the resilience ladder (see docs/HANDOFF-resilience.md).
+# Type=notify with WatchdogSec=15s: the daemon's diagnostic loop pats
+# the watchdog only when the capture callback has shown forward
+# progress recently (sentinel pattern via jasper.watchdog.Heartbeat).
+# If the PortAudio thread wedges — the 2026-05-11 jasper-aec-bridge
+# failure mode — pats stop, systemd kills + restarts within
+# WatchdogSec.
+#
+# TimeoutStopSec=5s matches the AEC bridge's shorter SIGTERM grace
+# period. We'd rather hit SIGKILL+restart fast than accumulate wedge
+# time.
+Type=notify
+WatchdogSec=15s
+TimeoutStopSec=5s
+# Pull operator-supplied tunables (capture/playback device overrides,
+# log level) from the same env file the rest of the stack reads.
+# Leading `-` makes systemd skip silently if the file isn't there.
+EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/usbsink.env
+ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
+Restart=on-failure
+RestartSec=2s
+Nice=-10
+# Memory caps. ~22 MB Pss is the expected resident size when running;
+# 64 MiB hard cap catches any future memory leak before OOM-killer at
+# the cgroup boundary. MemoryHigh is the throttle threshold.
+MemoryHigh=48M
+MemoryMax=64M
+# Runtime dir for the state file (Phase 3+ will write
+# /run/jasper-usbsink/state.json here). Owned by the service.
+RuntimeDirectory=jasper-usbsink
+RuntimeDirectoryMode=0755
+
+[Install]
+WantedBy=multi-user.target
