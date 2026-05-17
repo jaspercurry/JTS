@@ -150,6 +150,16 @@ def main() -> int:
     # our side (NetworkManager owns the connection profile store).
     wifi_server = wifi_setup.make_server(target_for(wifi_port))
 
+    # Multi-device peering wizard — toggle, room label, primary flag.
+    # Writes /var/lib/jasper/peering.env and restarts jasper-voice +
+    # jasper-control on save.
+    peers_state = os.environ.get(
+        "JASPER_PEERING_FILE", peering_setup.PEERING_ENV_FILE,
+    )
+    peers_server = peering_setup.make_server(
+        target_for(peers_port), state_path=peers_state,
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -163,6 +173,7 @@ def main() -> int:
         sources_server.RequestHandlerClass,
         wake_server.RequestHandlerClass,
         wifi_server.RequestHandlerClass,
+        peers_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -175,6 +186,7 @@ def main() -> int:
         ("/sources", sources_port),
         ("/wake", wake_port),
         ("/wifi", wifi_port),
+        ("/peers", peers_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -192,6 +204,7 @@ def main() -> int:
         ("/sources", sources_server),
         ("/wake", wake_server),
         ("/wifi", wifi_server),
+        ("/peers", peers_server),
     ):
         threading.Thread(
             target=_serve_forever,
