@@ -1125,6 +1125,36 @@ install_avahi_jasper_control() {
     echo "  Advertised _jasper-control._tcp via avahi (port 8780)"
 }
 
+install_peering_template() {
+    # Multi-device peering. The TEMPLATE goes under /etc/jasper/ so
+    # Avahi doesn't try to parse it as a service file (the
+    # placeholders __PEER_ID__ / __ROOM__ / __PRIMARY__ aren't valid
+    # XML attribute values).
+    #
+    # jasper-control's peering daemon renders this template into
+    # /etc/avahi/services/jasper-peer.service when JASPER_PEERING=on
+    # is set in /var/lib/jasper/peering.env (via the /peers/ web
+    # wizard, in PR 2). When peering is off (the default), no
+    # rendered file exists and this Pi is invisible to siblings —
+    # the goal property of "zero cost when alone".
+    #
+    # Also generates the per-install stable peer_id (a UUID) if one
+    # doesn't already exist. This ID persists across reboots and
+    # package upgrades — peers don't see a "new" device on every
+    # restart.
+    install -d -m 0755 /etc/jasper/avahi-templates
+    install -m 0644 \
+        "${REPO_DIR}/deploy/avahi/jasper-peer.service.template" \
+        /etc/jasper/avahi-templates/jasper-peer.service
+    install -d -m 0755 /var/lib/jasper
+    if [[ ! -f /var/lib/jasper/peer_id ]]; then
+        python3 -c "import uuid; print(uuid.uuid4())" > /var/lib/jasper/peer_id
+        chmod 0644 /var/lib/jasper/peer_id
+        echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
+    fi
+    echo "  Peering template installed; peering is OFF by default — enable at http://${JASPER_HOSTNAME:-jts.local}/peers/"
+}
+
 regenerate_audio_cues() {
     # Bake the speaker's audible-failure cues so they're ready before
     # the daemon ever needs them. The daemon retries on every startup
@@ -1269,6 +1299,7 @@ main() {
     install_jasper
     install_systemd_units
     install_avahi_jasper_control
+    install_peering_template
     remove_legacy_https_artifacts
     provision_correction_tls   # cert files must exist before nginx -t
     install_nginx_site

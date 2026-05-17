@@ -86,6 +86,69 @@ def _delta_db_to_delta_percent(delta_db: float) -> int:
     return round(float(delta_db) / span * 100.0)
 
 
+# ---------- peering daemon supervisor ----------
+
+# The peering daemon runs an asyncio event loop; jasper-control is
+# stdlib threaded HTTP. Bridge by spawning a single background daemon
+# thread that owns the asyncio loop for peering. When peering is OFF
+# (the default), the thread is not even created — zero cost on a
+# single-Pi household.
+_peering_thread: threading.Thread | None = None
+
+
+def _run_peering_loop() -> None:
+    """Background thread target: own an asyncio loop, run the
+    PeeringDaemon until the process exits."""
+    # Lazy imports — keep jasper-control's import cost light when
+    # peering is OFF and these modules never load.
+    from ..peering import load_config
+    from ..peering.daemon import PeeringDaemon
+
+    cfg = load_config()
+    if not cfg.enabled:
+        logger.info(
+            "event=peering.thread.exit mode=%s — daemon will not start",
+            cfg.mode.value,
+        )
+        return
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    daemon = PeeringDaemon(cfg)
+    try:
+        loop.run_until_complete(daemon.start())
+        loop.run_forever()
+    except Exception:  # noqa: BLE001
+        logger.exception("peering daemon thread crashed")
+    finally:
+        try:
+            loop.run_until_complete(daemon.stop())
+        except Exception:  # noqa: BLE001
+            logger.exception("peering daemon stop failed")
+        try:
+            loop.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def start_peering_daemon_if_enabled() -> None:
+    """Start the peering daemon in a background thread iff peering
+    is enabled in /var/lib/jasper/peering.env. Idempotent — repeated
+    calls are no-ops once the thread exists.
+
+    The check is done in the worker thread (not here) so that even
+    when peering is OFF, we don't pay the cost of importing zeroconf.
+    """
+    global _peering_thread
+    if _peering_thread is not None:
+        return
+    _peering_thread = threading.Thread(
+        target=_run_peering_loop,
+        name="peering-daemon",
+        daemon=True,
+    )
+    _peering_thread.start()
+
+
 def _read_cloud_activity() -> dict[str, Any]:
     """Roll up cloud LLM activity for the /system dashboard.
 
@@ -1039,6 +1102,12 @@ def main(argv: list[str] | None = None) -> int:
         sampler=sampler,
     )
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
+    # Multi-device peering daemon. No-op (no thread, no asyncio loop,
+    # no zeroconf import) when /var/lib/jasper/peering.env has
+    # JASPER_PEERING=off — the default. The user enables it via the
+    # /peers/ web wizard (added in a follow-up PR), which writes the
+    # env file and restarts jasper-control to pick up the new mode.
+    start_peering_daemon_if_enabled()
     logger.info(
         "jasper-control listening on http://%s:%d "
         "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",
