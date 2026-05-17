@@ -1506,17 +1506,33 @@ class WakeLoop:
         try:
             await self._begin_turn()  # ends with state = SESSION
             try:
-                drained = await drain_acquire_buffer(
+                drained, speech_in_acquire = await drain_acquire_buffer(
                     self._acquire_buffer, self._turn,  # type: ignore[arg-type]
+                    vad_predict=self._vad.predict,
+                    speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
                 )
             except Exception as e:  # noqa: BLE001
                 drained = 0
+                speech_in_acquire = False
                 logger.warning("acquire-buffer drain failed: %s", e)
             if drained:
                 logger.info(
-                    "acquire-buffer drained: %d frames (~%.0fms)",
+                    "acquire-buffer drained: %d frames (~%.0fms%s)",
                     drained, drained * 80.0,
+                    "; contained speech — silence detector pre-armed"
+                    if speech_in_acquire else "",
                 )
+            # Fast-talker compensation: if the user's whole question
+            # landed in the acquire window (e.g. fast pace + slow
+            # turn-acquire), live frames see only post-speech silence
+            # and the existing end-of-utterance arming in
+            # _handle_session_frame never trips → turn aborts at
+            # NO_SPEECH_ABORT_SEC while the LLM has already answered.
+            # Pre-arming here means the silence detector watches live
+            # frames for END-of-speech instead of waiting for new
+            # speech to start.
+            if speech_in_acquire and not self._user_speech_seen:
+                self._user_speech_seen = True
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
             await self._play_cue("cant_connect")
