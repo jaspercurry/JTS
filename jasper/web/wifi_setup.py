@@ -302,7 +302,19 @@ def _current_wifi() -> dict[str, Any] | None:
 
 
 def _list_saved() -> list[dict[str, Any]]:
-    """Return the list of saved WiFi connection profiles (sorted by name)."""
+    """Return the list of saved WiFi connection profiles (sorted by
+    SSID).
+
+    NM connection profiles have a NAME (what we use for activate /
+    delete operations) and a separate 802-11-wireless.ssid field
+    (what the user actually recognizes as their network). For
+    profiles created by `nmcli dev wifi connect <ssid>`, the two
+    are the same. But profiles seeded by netplan (which is what
+    Pi Imager's WiFi setup writes) get a generated NAME like
+    `netplan-wlan0-<ssid>` — without this lookup, "Saved networks"
+    on the wizard shows the operator-hostile generated string
+    rather than the SSID the user picked. We surface both so the
+    UI shows SSID while the API still operates on NAME."""
     proc = _run_nmcli(
         ["nmcli", "-t", "-f", "NAME,UUID,TYPE,AUTOCONNECT",
          "connection", "show"],
@@ -316,12 +328,30 @@ def _list_saved() -> list[dict[str, Any]]:
         if len(fields) < 4 or fields[2] not in ("802-11-wireless", "wifi"):
             continue
         name, uuid, _ctype, autoconnect = fields[0], fields[1], fields[2], fields[3]
+        # Look up the actual SSID for display. Falls back to the
+        # profile name if the lookup fails (hidden network, future
+        # NM versions changing field names, etc.).
+        ssid = name
+        ssid_proc = _run_nmcli(
+            ["nmcli", "-t", "-f", "802-11-wireless.ssid",
+             "connection", "show", name],
+            timeout=5, log_argv=False,
+        )
+        if ssid_proc.returncode == 0:
+            for sline in ssid_proc.stdout.splitlines():
+                sfields = _parse_terse(sline)
+                if (len(sfields) >= 2
+                        and sfields[0] == "802-11-wireless.ssid"
+                        and sfields[1]):
+                    ssid = sfields[1]
+                    break
         saved.append({
             "name": name,
+            "ssid": ssid,
             "uuid": uuid,
             "autoconnect": autoconnect.lower() == "yes",
         })
-    saved.sort(key=lambda p: p["name"].lower())
+    saved.sort(key=lambda p: p["ssid"].lower())
     return saved
 
 
@@ -878,19 +908,14 @@ function renderCurrent() {
     inner += '<div class="meta">No active Wi-Fi connection.</div>';
   }
 
-  // Radio toggle row. The on→off path is gated by a confirm() with a
-  // stark lockout warning if there's no ethernet fallback.
+  // Radio toggle row. No always-visible warning copy — the lockout
+  // warning ONLY appears in the confirm() dialog that fires when the
+  // user actually tries to turn the radio off (see toggleRadio()).
+  // Persistent red copy here just spooks people who weren't going to
+  // touch it.
   const switchClass = 'switch' + (state.radioOn ? ' on' : '');
   inner += '<div class="radio-row">' +
-           '  <div><div class="label">Wi-Fi radio</div>' +
-           '    <div class="meta" style="font-size:0.85em">' +
-                  (state.hasEthernet
-                    ? 'Ethernet is connected — switching Wi-Fi is safe.'
-                    : '<span style="color:#c44;font-weight:600">' +
-                      'No Ethernet fallback. Be careful — turning ' +
-                      'Wi-Fi off will disconnect the Pi.</span>') +
-           '    </div>' +
-           '  </div>' +
+           '  <div class="label">Wi-Fi radio</div>' +
            '  <div class="' + switchClass +
                 '" onclick="toggleRadio()"><div class="nub"></div></div>' +
            '</div>';
@@ -914,10 +939,12 @@ function renderSaved() {
     const idsafe = cssIdSafe(p.name);
     const badge = isCurrent
       ? '<span class="badge">In use</span>' : '';
+    // Display the SSID (what the user knows the network as); the
+    // profile NAME goes through the API as the operate-on key.
     return '<div class="net-row" id="sv-' + idsafe + '">' +
       '<div class="head">' +
       '  <div class="info">' +
-      '    <div class="ssid">' + escapeHtml(p.name) + badge + '</div>' +
+      '    <div class="ssid">' + escapeHtml(p.ssid || p.name) + badge + '</div>' +
       '  </div>' +
       '  <div class="actions">' +
       '    <button class="danger" onclick="' +
@@ -1153,6 +1180,10 @@ function openForget(name, keepOpen) {
   if (slot.dataset.locked === '1') return;
 
   const isCurrent = state.current && state.current.profileName === name;
+  // Look up the SSID for the panel copy — name is the NM profile name
+  // which can be a hostile string for netplan-seeded profiles.
+  const profile = (state.saved || []).find(p => p.name === name);
+  const displayName = (profile && profile.ssid) || name;
   const extra = isCurrent
     ? '<div class="warn kill">⚠ This is the network the Pi is ' +
       'currently using. Forgetting it will disconnect Wi-Fi.' +
@@ -1164,7 +1195,7 @@ function openForget(name, keepOpen) {
 
   slot.innerHTML =
     '<div class="panel">' + extra +
-    '<div>Forget <strong>' + escapeHtml(name) + '</strong>? ' +
+    '<div>Forget <strong>' + escapeHtml(displayName) + '</strong>? ' +
     'You\\'ll need the password again to reconnect.</div>' +
     '<div class="btns">' +
     '  <button class="danger" onclick="submitForget(\\'' + jsArg(name) + '\\')">Forget</button>' +
