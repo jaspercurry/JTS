@@ -1319,24 +1319,32 @@ class WakeLoop:
 
     def _generate_listening_chirp(self, *, going_on: bool) -> bytes:
         """Synthesize a two-tone listening cue as 24 kHz int16 mono PCM
-        — same shape `TtsPlayout.write()` accepts. 880 Hz → 1320 Hz
-        (musical fifth) ascending on wake, descending on end-of-turn,
-        phase-continuous through the note change so the pair reads as
-        one connected cue rather than two beeps.
+        — same shape `TtsPlayout.write()` accepts. Wake = ascending
+        musical fifth in the upper register (A5 880 Hz → E6 1320 Hz);
+        end-of-turn = descending fifth one octave lower (E5 660 Hz →
+        A4 440 Hz). Same interval shape so the pair reads as a matched
+        family; distinct registers so "starting" vs "ending" lands
+        without the listener having to think about it. End-chirp's
+        highest note (660 Hz) sits below the wake-chirp's lowest note
+        (880 Hz) so the contrast is unmistakable. Phase-continuous
+        through the note change so each pair reads as one connected
+        cue rather than two beeps.
 
-        Distinct from `_generate_mute_click`: higher pitch range and a
-        two-note interval (vs. single-tone decay) so start/stop
-        listening is clearly different from mic mute/unmute. Inline
-        for the same reason as the mute click — sub-100 ms synthesized
-        blip, not worth a TTS-cached WAV.
+        Distinct from `_generate_mute_click`: two-note interval (vs.
+        single-tone decay) so start/stop listening is clearly
+        different from mic mute/unmute. Inline for the same reason
+        as the mute click — sub-100 ms synthesized blip, not worth
+        a TTS-cached WAV.
         """
         import math
         sr = 24000
         seg_samples = int(sr * 0.035)  # 35 ms per note → 70 ms total
         total = seg_samples * 2
         ramp = int(sr * 0.005)  # 5 ms cosine attack/release
-        f_low, f_high = 880.0, 1320.0
-        f1, f2 = (f_low, f_high) if going_on else (f_high, f_low)
+        if going_on:
+            f1, f2 = 880.0, 1320.0  # wake: upper register, ascending
+        else:
+            f1, f2 = 660.0, 440.0   # end: lower register, descending
         peak = 0.18  # ~-15 dBFS — subtler than mute click since these fire often
         out = bytearray(total * 2)
         phase = 0.0
