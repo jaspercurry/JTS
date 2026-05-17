@@ -66,9 +66,10 @@ async def test_drain_sends_all_frames_in_fifo_order():
         buf.append(_FakeFrame(i))
     turn = _FakeTurn()
 
-    count = await drain_acquire_buffer(buf, turn)
+    count, speech_seen = await drain_acquire_buffer(buf, turn)
 
     assert count == 10
+    assert speech_seen is False  # no vad_predict provided
     assert len(buf) == 0
     assert turn.sends == [f"frame-{i}".encode() for i in range(10)]
 
@@ -96,7 +97,7 @@ async def test_drain_picks_up_concurrent_appends():
         await asyncio.sleep(0)
         buf.append(_FakeFrame(j))
 
-    count = await drain_task
+    count, _speech = await drain_task
     assert count == 10
     # FIFO is preserved across concurrent appends — the mic loop
     # appends in real-time order, drain pops from the left.
@@ -135,8 +136,9 @@ async def test_drain_on_empty_buffer_is_noop():
     buf: deque = deque()
     turn = _FakeTurn()
 
-    count = await drain_acquire_buffer(buf, turn)
+    count, speech_seen = await drain_acquire_buffer(buf, turn)
     assert count == 0
+    assert speech_seen is False
     assert turn.sends == []
 
 
@@ -153,7 +155,78 @@ async def test_drain_handles_bounded_deque():
         buf.append(_FakeFrame(i))
     turn = _FakeTurn()
 
-    count = await drain_acquire_buffer(buf, turn)
+    count, _speech = await drain_acquire_buffer(buf, turn)
     assert count == 3
     # Last 3 frames retained (deque semantics): tags 4, 5, 6.
     assert turn.sends == [b"frame-4", b"frame-5", b"frame-6"]
+
+
+@pytest.mark.asyncio
+async def test_drain_with_vad_flags_sustained_speech():
+    """Fast-talker compensation: 2 consecutive frames above the speech
+    threshold should set sustained_speech_detected=True. Caller uses
+    this to pre-arm its end-of-utterance silence detector so live
+    frames see "watch for silence" rather than "wait for speech to
+    arm" (which never happens if the user's whole question is in
+    the acquire window)."""
+
+    buf: deque = deque()
+    for i in range(4):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # First frame is silence (wake-word tail) then 3 frames of
+    # speech — typical pattern when fast talker starts the question
+    # immediately after the wake word.
+    scores = {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.95}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn, vad_predict=predict, speech_threshold=0.15,
+    )
+
+    assert count == 4
+    assert speech_seen is True
+
+
+@pytest.mark.asyncio
+async def test_drain_with_vad_below_threshold_stays_unarmed():
+    """Acquire window with no speech (user wake-fired but walked
+    away, or wake fired on background TV). Caller should NOT pre-arm
+    so the existing 5 s no-speech-abort still applies."""
+
+    buf: deque = deque()
+    for i in range(5):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    predict = lambda f: 0.05  # all sub-threshold
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn, vad_predict=predict, speech_threshold=0.15,
+    )
+
+    assert count == 5
+    assert speech_seen is False
+
+
+@pytest.mark.asyncio
+async def test_drain_with_vad_requires_consecutive_frames():
+    """A single high-score frame (e.g. a transient click registered
+    as speech by Silero) must NOT pre-arm. Only sustained
+    speech-above-threshold across `min_consecutive_speech` frames
+    counts. Defaults to 2 frames = 160 ms which mirrors the
+    SUSTAINED_SPEECH_TO_ARM_SEC threshold used on live frames."""
+
+    buf: deque = deque()
+    for i in range(4):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # Alternating: speech, silence, speech, silence — never 2 in a row.
+    scores = {0: 0.91, 1: 0.02, 2: 0.88, 3: 0.04}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn, vad_predict=predict, speech_threshold=0.15,
+    )
+
+    assert count == 4
+    assert speech_seen is False
