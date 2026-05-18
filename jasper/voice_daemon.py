@@ -1558,13 +1558,11 @@ class WakeLoop:
             # can fire AFTER _handle_wake_frame spawned this task but
             # BEFORE we get scheduled. Both are user-deliberate "stop
             # listening" signals; firing a chirp + opening an LLM
-            # session after them is bad UX.
-            if self._mic_muted:
-                logger.info("event=wake.late_cancel reason=mic_muted")
+            # session after them is bad UX. We check twice: now, and
+            # again after the arbitration await (which can take up
+            # to 500 ms — plenty of time for the user to mute).
+            if self._wake_late_cancelled("pre_arb"):
                 return  # finally clears _acquiring + buffer
-            if self._measurement_active.is_set():
-                logger.info("event=wake.late_cancel reason=measurement_active")
-                return
 
             # Step 1: peer arbitration.
             decision = await self._peer_arbitrate(
@@ -1577,14 +1575,7 @@ class WakeLoop:
                 logger.info("event=peering.wake.lost score=%.2f", score)
                 return  # finally clears _acquiring + buffer
 
-            # Re-check the late-cancel gates: arbitration could have
-            # taken up to 500 ms, during which the user could have
-            # muted (e.g. via dial). Same reasoning as Step 0.
-            if self._mic_muted:
-                logger.info("event=wake.late_cancel reason=mic_muted_post_arb")
-                return
-            if self._measurement_active.is_set():
-                logger.info("event=wake.late_cancel reason=measurement_active_post_arb")
+            if self._wake_late_cancelled("post_arb"):
                 return
 
             # Step 2: gate cues — only the winner pays this cost.
@@ -1658,6 +1649,67 @@ class WakeLoop:
                 asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
             )
 
+    def _wake_late_cancelled(self, phase: str) -> bool:
+        """Check whether a user-deliberate "stop listening" gate fired
+        between wake detection and now. Returns True (and logs an
+        `event=wake.late_cancel`) if either the mic is muted or a
+        room-correction measurement window is open.
+
+        `phase` is "pre_arb" or "post_arb" — included in the log so we
+        can tell which side of the peering arbitration await caught
+        the late-cancel."""
+        if self._mic_muted:
+            logger.info("event=wake.late_cancel reason=mic_muted phase=%s", phase)
+            return True
+        if self._measurement_active.is_set():
+            logger.info(
+                "event=wake.late_cancel reason=measurement_active phase=%s",
+                phase,
+            )
+            return True
+        return False
+
+    async def _peering_send(
+        self, cmd: str, *, timeout: float = 0.5,
+    ) -> dict | None:
+        """Send one command to jasper-control's peering UDS.
+
+        Returns the parsed JSON response, or None if peering is
+        disabled / the daemon is unreachable / any error occurs.
+
+        This is the only place that touches the peering UDS — every
+        caller is fail-open by construction (no exception escapes,
+        no peering issue can silence the speaker). Callers
+        differentiate "WIN-by-default" semantics by treating None
+        as the no-op response."""
+        if not self._cfg.peering_enabled:
+            return None
+        try:
+            from .peering.uds import send_request
+        except ImportError:
+            # peering package not installed (shouldn't happen in
+            # production, but defensive — keep wake working).
+            return None
+        try:
+            return await send_request(
+                self._cfg.peering_uds_socket, cmd, timeout=timeout,
+            )
+        except FileNotFoundError:
+            # Peering daemon isn't running (mode=on in voice config
+            # but mode=off / failed in jasper-control). Fall back to
+            # solo behavior silently — this isn't an error condition.
+            return None
+        except (OSError, asyncio.TimeoutError) as e:
+            logger.warning("peering %s failed: %s; treating as solo",
+                           cmd.split(maxsplit=1)[0], e)
+            return None
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "peering %s raised; treating as solo",
+                cmd.split(maxsplit=1)[0],
+            )
+            return None
+
     async def _peer_arbitrate(
         self,
         *,
@@ -1675,18 +1727,10 @@ class WakeLoop:
 
         Fast-path: when peering is disabled OR no peering daemon is
         running OR the UDS errors, returns "WIN" immediately. Single-Pi
-        installs pay zero observable cost — the disabled check
-        short-circuits before any I/O.
+        installs pay zero observable cost — `_peering_send` short-
+        circuits before any I/O when peering_enabled is False.
         """
         self._peering_current_epoch = ""
-        if not self._cfg.peering_enabled:
-            return "WIN"
-        try:
-            from .peering.uds import send_request
-        except ImportError:
-            # peering package not installed (shouldn't happen in
-            # production, but defensive — keep wake working).
-            return "WIN"
         import json as _json  # noqa: PLC0415
         payload = _json.dumps({
             "score": float(score),
@@ -1694,24 +1738,9 @@ class WakeLoop:
             "rms_dbfs": rms_dbfs,
             "can_serve": bool(can_serve),
         })
-        try:
-            resp = await send_request(
-                self._cfg.peering_uds_socket,
-                f"ARBITRATE {payload}",
-                timeout=0.5,
-            )
-        except FileNotFoundError:
-            # Peering daemon isn't running (mode=on in voice config but
-            # mode=off / failed in jasper-control). Fall back to solo.
-            return "WIN"
-        except (OSError, asyncio.TimeoutError) as e:
-            logger.warning(
-                "peer arbitrate failed (%s); falling back to WIN", e,
-            )
-            return "WIN"
-        except Exception as e:  # noqa: BLE001
-            logger.exception("peer arbitrate raised: %s", e)
-            return "WIN"
+        resp = await self._peering_send(f"ARBITRATE {payload}")
+        if resp is None:
+            return "WIN"  # peering disabled or daemon unreachable
         self._peering_current_epoch = str(resp.get("epoch") or "")
         result = (resp.get("result") or "").upper()
         if result not in ("WIN", "LOSE"):
@@ -1730,46 +1759,17 @@ class WakeLoop:
         No-op when peering is disabled. Errors swallowed — peering
         is best-effort; voice keeps going.
         """
-        if not self._cfg.peering_enabled or self._turn is None:
-            return
-        try:
-            from .peering.uds import send_request
-        except ImportError:
-            return
-        epoch = getattr(self, "_peering_current_epoch", "")
-        # Best-effort: even if we don't know the epoch, the peering
-        # state machine will infer from its own current epoch state.
-        try:
-            await send_request(
-                self._cfg.peering_uds_socket,
-                f"SESSION_STARTED {epoch}",
-                timeout=0.5,
-            )
-        except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-            logger.debug("peering session_started notify failed: %s", e)
-        except Exception:  # noqa: BLE001
-            logger.exception("peering session_started raised")
+        if self._turn is None:
+            return  # no active turn to announce
+        await self._peering_send(
+            f"SESSION_STARTED {self._peering_current_epoch}",
+        )
 
     async def _notify_peering_session_ended(self, reason: str) -> None:
-        """Fire-and-forget notice to the peering daemon. Same shape as
-        _notify_peering_session_started — see that docstring."""
-        if not self._cfg.peering_enabled:
-            return
-        try:
-            from .peering.uds import send_request
-        except ImportError:
-            return
-        epoch = getattr(self, "_peering_current_epoch", "")
-        try:
-            await send_request(
-                self._cfg.peering_uds_socket,
-                f"SESSION_ENDED {epoch} {reason}",
-                timeout=0.5,
-            )
-        except (FileNotFoundError, OSError, asyncio.TimeoutError) as e:
-            logger.debug("peering session_ended notify failed: %s", e)
-        except Exception:  # noqa: BLE001
-            logger.exception("peering session_ended raised")
+        """Fire-and-forget notice. Mirrors _notify_peering_session_started."""
+        await self._peering_send(
+            f"SESSION_ENDED {self._peering_current_epoch} {reason}",
+        )
 
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then

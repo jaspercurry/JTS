@@ -78,7 +78,7 @@ SNR_TIE_EPS_DB = 3.0
 PRIMARY_BIAS = 0.05
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WakeReport:
     """One peer's claim on a wake event.
 

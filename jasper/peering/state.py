@@ -61,33 +61,33 @@ class PeerState(str, Enum):
 
 # ---------- Actions returned to caller ----------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BroadcastWake:
     """Caller should multicast a WAKE message with these fields."""
     epoch: str
     report: WakeReport
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BroadcastClaim:
     """Caller should multicast a CLAIM message (winner announcement)."""
     epoch: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BroadcastHeartbeat:
     """Caller should multicast a HEART (winner is alive)."""
     epoch: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BroadcastEnd:
     """Caller should multicast an END (session over)."""
     epoch: str
     reason: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StartSession:
     """Caller should ask jasper-voice to begin a turn.
 
@@ -99,20 +99,20 @@ class StartSession:
     epoch: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StandDown:
     """Caller should ask jasper-voice to abort the pending wake."""
     epoch: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ScheduleTimer:
     """Caller should fire `on_timer(timer_id)` at `at_monotonic`."""
     timer_id: str
     at_monotonic: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class CancelTimer:
     """Caller should cancel a previously-scheduled timer."""
     timer_id: str
@@ -127,7 +127,7 @@ Action = (
 
 # ---------- Events accepted ----------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LocalWake:
     """jasper-voice fired wake locally; asking us to arbitrate."""
     score: float
@@ -137,7 +137,7 @@ class LocalWake:
     now: float          # monotonic seconds
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PeerWake:
     """Received a WAKE message from a sibling peer."""
     epoch: str
@@ -145,7 +145,7 @@ class PeerWake:
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PeerClaim:
     """Received a CLAIM message — sibling claims it won."""
     epoch: str
@@ -153,7 +153,7 @@ class PeerClaim:
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PeerHeartbeat:
     """Received a HEART message — sibling is still active."""
     epoch: str
@@ -161,7 +161,7 @@ class PeerHeartbeat:
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class PeerEnd:
     """Received an END message — sibling session is over."""
     epoch: str
@@ -170,21 +170,21 @@ class PeerEnd:
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TimerFired:
     """Previously-scheduled timer fired."""
     timer_id: str
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class VoiceSessionStarted:
     """jasper-voice notified us its turn opened."""
     epoch: str
     now: float
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class VoiceSessionEnded:
     """jasper-voice notified us its turn closed."""
     epoch: str
@@ -200,7 +200,7 @@ Event = (
 
 # ---------- Configuration the state machine reads ----------
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class StateMachineParams:
     peer_id: str
     primary: bool
@@ -263,23 +263,16 @@ class PeeringStateMachine:
     # ---- main dispatcher ----
 
     def handle(self, event: Event) -> list[Action]:
-        if isinstance(event, LocalWake):
-            return self._on_local_wake(event)
-        if isinstance(event, PeerWake):
-            return self._on_peer_wake(event)
-        if isinstance(event, PeerClaim):
-            return self._on_peer_claim(event)
-        if isinstance(event, PeerHeartbeat):
-            return self._on_peer_heartbeat(event)
-        if isinstance(event, PeerEnd):
-            return self._on_peer_end(event)
-        if isinstance(event, TimerFired):
-            return self._on_timer(event)
-        if isinstance(event, VoiceSessionStarted):
-            return self._on_voice_started(event)
-        if isinstance(event, VoiceSessionEnded):
-            return self._on_voice_ended(event)
-        return []
+        match event:
+            case LocalWake():           return self._on_local_wake(event)
+            case PeerWake():            return self._on_peer_wake(event)
+            case PeerClaim():           return self._on_peer_claim(event)
+            case PeerHeartbeat():       return self._on_peer_heartbeat(event)
+            case PeerEnd():             return self._on_peer_end(event)
+            case TimerFired():          return self._on_timer(event)
+            case VoiceSessionStarted(): return self._on_voice_started(event)
+            case VoiceSessionEnded():   return self._on_voice_ended(event)
+            case _:                     return []
 
     # ---- event handlers ----
 
