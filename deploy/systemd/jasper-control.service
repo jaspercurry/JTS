@@ -28,6 +28,11 @@ EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # whatever jasper.env defaulted to, which goes stale the moment the user
 # flips providers in the wizard.
 EnvironmentFile=-/var/lib/jasper/voice_provider.env
+# Peering (multi-device wake arbitration). Off by default; the user
+# enables it in the /peers/ web wizard. When on, jasper-control hosts
+# the peering daemon: mDNS browse, multicast UDP, UDS to voice. When
+# off, no peering code runs and the Pi is invisible to siblings.
+EnvironmentFile=-/var/lib/jasper/peering.env
 ExecStart=/opt/jasper/.venv/bin/jasper-control
 Restart=on-failure
 RestartSec=2

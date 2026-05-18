@@ -1,0 +1,33 @@
+<?xml version="1.0" standalone='no'?>
+<!--
+  Multi-device peering advertisement. Sibling JTS speakers browse
+  for _jasper-peer._udp and use the TXT records below to know
+  which UUID belongs to whom (peer_id), which room (room), and
+  whether the operator marked this Pi as the household primary
+  (primary; small ranking bias for tied wake events).
+
+  This file is a TEMPLATE — `deploy/install.sh` copies it to
+  /etc/jasper/avahi-templates/jasper-peer.service. At runtime,
+  jasper-control's peering daemon renders the __PEER_ID__,
+  __ROOM__, and __PRIMARY__ tokens (from /var/lib/jasper/peer_id
+  and /var/lib/jasper/peering.env) and writes the rendered XML
+  to /etc/avahi/services/jasper-peer.service — but ONLY when
+  JASPER_PEERING=on. When peering is OFF (the default), no file
+  is dropped into /etc/avahi/services/, so this Pi is invisible
+  to siblings.
+
+  See jasper/peering/avahi.py for the rendering logic and
+  jasper/peering/__init__.py for the design overview.
+-->
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<service-group>
+  <name replace-wildcards="yes">JTS peer on %h</name>
+  <service>
+    <type>_jasper-peer._udp</type>
+    <port>5354</port>
+    <txt-record>peer_id=__PEER_ID__</txt-record>
+    <txt-record>room=__ROOM__</txt-record>
+    <txt-record>primary=__PRIMARY__</txt-record>
+    <txt-record>proto=1</txt-record>
+  </service>
+</service-group>

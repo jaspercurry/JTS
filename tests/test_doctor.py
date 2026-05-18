@@ -461,3 +461,94 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
     # never raises.
     with patch("glob.glob", return_value=[]):
         assert doctor._loopback_playback_active() is False
+
+
+# ---------------------------------------------------- peering doctor checks
+
+
+def test_check_peering_mode_no_file_returns_ok_default(monkeypatch, tmp_path):
+    """When /var/lib/jasper/peering.env doesn't exist, peering is off
+    by design — the default. Doctor should return ok with a hint."""
+    fake = tmp_path / "peering.env"  # does not exist
+    with patch("jasper.cli.doctor.Path", side_effect=lambda p: fake if "peering.env" in p else Path(p)):
+        r = doctor.check_peering_mode()
+    assert r.status == "ok"
+    assert "off" in r.detail.lower()
+
+
+def test_check_peering_mode_off_explicit(tmp_path, monkeypatch):
+    """Explicit JASPER_PEERING=off — same ok status, slightly different
+    message (operator made the choice deliberately)."""
+    env = tmp_path / "peering.env"
+    env.write_text("JASPER_PEERING=off\n")
+    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    r = doctor.check_peering_mode()
+    assert r.status == "ok"
+    assert "off" in r.detail.lower()
+
+
+def test_check_peering_mode_on(tmp_path, monkeypatch):
+    env = tmp_path / "peering.env"
+    env.write_text("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\n")
+    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    r = doctor.check_peering_mode()
+    assert r.status == "ok"
+    assert "on" in r.detail.lower()
+
+
+def test_check_peering_mode_garbage_warns(tmp_path, monkeypatch):
+    """A malformed value warns the user — silent failure here would let
+    a typo (JASPER_PEERING=onn) leave the user thinking peering is on
+    when it actually resolved to off."""
+    env = tmp_path / "peering.env"
+    env.write_text("JASPER_PEERING=banana\n")
+    monkeypatch.setattr("jasper.cli.doctor.Path", lambda p: env if "peering.env" in p else Path(p))
+    r = doctor.check_peering_mode()
+    assert r.status == "warn"
+    assert "banana" in r.detail
+
+
+def test_check_peering_discovery_no_peers(monkeypatch):
+    """avahi-browse returns no peers — single-device mode (ok)."""
+    fake_output = "+ eth0 IPv4 SomeOtherService _foo._tcp local\n"
+    monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse")
+    monkeypatch.setattr(
+        "jasper.cli.doctor._run",
+        lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": fake_output})(),
+    )
+    r = doctor.check_peering_discovery()
+    assert r.status == "ok"
+    assert "0 sibling" in r.detail
+
+
+def test_check_peering_discovery_sees_siblings(monkeypatch, tmp_path):
+    """avahi-browse returns two siblings — count them, exclude self."""
+    fake_output = (
+        '+ eth0 IPv4 JTSpeer_alice _jasper-peer._udp local\n'
+        '= eth0 IPv4 JTSpeer_alice _jasper-peer._udp local\n'
+        '  hostname = [alice.local]\n'
+        '  txt = ["peer_id=alice-uuid" "room=kitchen" "primary=1" "proto=1"]\n'
+        '+ eth0 IPv4 JTSpeer_bob _jasper-peer._udp local\n'
+        '= eth0 IPv4 JTSpeer_bob _jasper-peer._udp local\n'
+        '  hostname = [bob.local]\n'
+        '  txt = ["peer_id=bob-uuid" "room=bedroom" "primary=0" "proto=1"]\n'
+    )
+    monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: "/usr/bin/avahi-browse")
+    monkeypatch.setattr(
+        "jasper.cli.doctor._run",
+        lambda *a, **kw: type("P", (), {"returncode": 0, "stdout": fake_output})(),
+    )
+    # Pretend we're alice — filter ourselves out.
+    monkeypatch.setattr("jasper.cli.doctor._local_peer_id", lambda: "alice-uuid")
+    r = doctor.check_peering_discovery()
+    assert r.status == "ok"
+    assert "1 sibling" in r.detail
+    assert "bob-uuid" in r.detail
+
+
+def test_check_peering_discovery_no_avahi_browse_warns(monkeypatch):
+    """Without avahi-browse we can't verify discovery — warn but
+    don't fail (it's an optional dep)."""
+    monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: None)
+    r = doctor.check_peering_discovery()
+    assert r.status == "warn"

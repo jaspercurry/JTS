@@ -85,6 +85,15 @@ dependencies = [
     # WatchdogSec= timer expires and `Restart=on-watchdog` revives
     # the daemon with a fresh process. Pure-Python, ~5 kB.
     "sdnotify>=0.3.2",
+    # jasper.peering: mDNS-SD discovery of sibling JTS speakers for
+    # multi-device wake arbitration. Used in browse-only mode — the
+    # host's Avahi daemon remains the only mDNS responder (peering
+    # advertises via /etc/avahi/services/jasper-peer.service, a
+    # static XML installed by deploy/install.sh). Browse-only avoids
+    # the dual-stack conflict (pyvisa-py#378). Imported lazily inside
+    # jasper.peering.discovery so the package is import-cheap when
+    # peering is OFF (the default). ~5-8 MB Pss when active.
+    "zeroconf>=0.149,<1.0",
 ]
 
 [project.optional-dependencies]
