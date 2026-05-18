@@ -1040,7 +1040,17 @@ install_peering_template() {
         /etc/jasper/avahi-templates/jasper-peer.service
     install -d -m 0755 /var/lib/jasper
     if [[ ! -f /var/lib/jasper/peer_id ]]; then
-        python3 -c "import uuid; print(uuid.uuid4())" > /var/lib/jasper/peer_id
+        # Guard the redirect: a `python3` failure (missing binary,
+        # broken `uuid` import) without this would leave an empty
+        # peer_id file. The daemon's load_config falls back to an
+        # *ephemeral* per-process UUID in that case — peers would see
+        # a new "device" on every restart, which silently breaks
+        # session-stickiness across reboots.
+        if ! pid="$(python3 -c 'import uuid; print(uuid.uuid4())' 2>/dev/null)"; then
+            echo "  ERROR: could not generate peer_id (python3 missing or uuid failed)" >&2
+            exit 1
+        fi
+        printf '%s\n' "${pid}" > /var/lib/jasper/peer_id
         chmod 0644 /var/lib/jasper/peer_id
         echo "  Generated stable peer_id at /var/lib/jasper/peer_id"
     fi

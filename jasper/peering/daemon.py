@@ -246,49 +246,58 @@ class PeeringDaemon:
     # ---------- inbound: multicast ----------
 
     async def _on_multicast_message(self, msg: IncomingMessage, addr: str) -> None:
-        # Ignore our own loopback (LOOP=1 returns it to us).
-        own_id = self._cfg.peer_id
+        # Filter our own loopback first (IP_MULTICAST_LOOP=1 makes
+        # the kernel echo every send back to us). Every message type
+        # carries a sender peer id, just at different attribute paths.
+        if _sender_peer_id(msg) == self._cfg.peer_id:
+            return
+        now = self._loop.time()  # type: ignore[union-attr]
 
         if isinstance(msg, IncomingHello):
-            if msg.peer_id == own_id:
-                return
             self._known_peers[msg.peer_id] = {
                 "room": msg.room,
                 "primary": msg.primary,
                 "address": addr,
                 "last_seen": time.monotonic(),
             }
-            return
-
-        if isinstance(msg, IncomingWake):
-            if msg.report.peer_id == own_id:
-                return
-            self._dispatch(PeerWake(
-                epoch=msg.epoch, report=msg.report, now=self._loop.time(),  # type: ignore[union-attr]
-            ))
+            self._prune_stale_peers()
+        elif isinstance(msg, IncomingWake):
+            self._dispatch(PeerWake(epoch=msg.epoch, report=msg.report, now=now))
         elif isinstance(msg, IncomingClaim):
-            if msg.peer_id == own_id:
-                return
             self._dispatch(PeerClaim(
-                epoch=msg.epoch, peer_id=msg.peer_id,
-                now=self._loop.time(),  # type: ignore[union-attr]
+                epoch=msg.epoch, peer_id=msg.peer_id, now=now,
             ))
         elif isinstance(msg, IncomingHeartbeat):
-            if msg.peer_id == own_id:
-                return
             self._dispatch(PeerHeartbeat(
-                epoch=msg.epoch, peer_id=msg.peer_id,
-                now=self._loop.time(),  # type: ignore[union-attr]
+                epoch=msg.epoch, peer_id=msg.peer_id, now=now,
             ))
         elif isinstance(msg, IncomingEnd):
-            if msg.peer_id == own_id:
-                return
             self._dispatch(PeerEnd(
-                epoch=msg.epoch, peer_id=msg.peer_id, reason=msg.reason,
-                now=self._loop.time(),  # type: ignore[union-attr]
+                epoch=msg.epoch, peer_id=msg.peer_id,
+                reason=msg.reason, now=now,
             ))
 
     # ---------- inbound: mDNS discovery ----------
+
+    def _prune_stale_peers(self) -> None:
+        """Drop peers whose HELLO hasn't been seen in 3 intervals.
+
+        Bounds `_known_peers` so a long-running daemon doesn't
+        accumulate state from peers that came + went. Called
+        opportunistically on each HELLO receipt; cheap (a single
+        list comprehension over a small dict).
+        """
+        cutoff = time.monotonic() - STALE_PEER_THRESHOLD_SEC
+        stale = [
+            pid for pid, info in self._known_peers.items()
+            if info.get("last_seen", 0) < cutoff
+        ]
+        for pid in stale:
+            logger.info(
+                "event=peering.peer.evicted peer=%s reason=hello_timeout",
+                pid,
+            )
+            del self._known_peers[pid]
 
     async def _on_discovery_event(self, ev) -> None:
         # The state machine doesn't currently consume PeerSeen/PeerGone
@@ -408,41 +417,37 @@ class PeeringDaemon:
             self._execute(a)
 
     def _execute(self, action: Action) -> None:
-        if isinstance(action, BroadcastWake):
-            self._spawn_send(encode_wake(
-                epoch=action.epoch, report=action.report, ts_ns=time.monotonic_ns(),
-            ))
-        elif isinstance(action, BroadcastClaim):
-            self._spawn_send(encode_claim(
-                epoch=action.epoch, peer_id=self._cfg.peer_id,
-                ts_ns=time.monotonic_ns(),
-            ))
-        elif isinstance(action, BroadcastHeartbeat):
-            self._spawn_send(encode_heartbeat(
-                epoch=action.epoch, peer_id=self._cfg.peer_id,
-                ts_ns=time.monotonic_ns(),
-            ))
-        elif isinstance(action, BroadcastEnd):
-            self._spawn_send(encode_end(
-                epoch=action.epoch, peer_id=self._cfg.peer_id,
-                reason=action.reason, ts_ns=time.monotonic_ns(),
-            ))
-        elif isinstance(action, StartSession):
-            if (
-                self._pending_decision is not None
-                and not self._pending_decision.done()
-            ):
-                self._pending_decision.set_result("WIN")
-        elif isinstance(action, StandDown):
-            if (
-                self._pending_decision is not None
-                and not self._pending_decision.done()
-            ):
-                self._pending_decision.set_result("LOSE")
-        elif isinstance(action, ScheduleTimer):
-            self._schedule_timer(action.timer_id, action.at_monotonic)
-        elif isinstance(action, CancelTimer):
-            self._cancel_timer(action.timer_id)
+        ts = time.monotonic_ns()
+        peer = self._cfg.peer_id
+        match action:
+            case BroadcastWake(epoch=epoch, report=report):
+                self._spawn_send(encode_wake(epoch=epoch, report=report, ts_ns=ts))
+            case BroadcastClaim(epoch=epoch):
+                self._spawn_send(encode_claim(epoch=epoch, peer_id=peer, ts_ns=ts))
+            case BroadcastHeartbeat(epoch=epoch):
+                self._spawn_send(encode_heartbeat(epoch=epoch, peer_id=peer, ts_ns=ts))
+            case BroadcastEnd(epoch=epoch, reason=reason):
+                self._spawn_send(encode_end(
+                    epoch=epoch, peer_id=peer, reason=reason, ts_ns=ts,
+                ))
+            case StartSession():
+                self._resolve_pending("WIN")
+            case StandDown():
+                self._resolve_pending("LOSE")
+            case ScheduleTimer(timer_id=tid, at_monotonic=at):
+                self._schedule_timer(tid, at)
+            case CancelTimer(timer_id=tid):
+                self._cancel_timer(tid)
+
+    def _resolve_pending(self, decision: str) -> None:
+        """Resolve the in-flight ARBITRATE RPC future. No-op if nothing
+        is pending (e.g. _execute fired StartSession after the RPC
+        already timed out and another arbitration is in flight)."""
+        if (
+            self._pending_decision is not None
+            and not self._pending_decision.done()
+        ):
+            self._pending_decision.set_result(decision)
 
     def _spawn_send(self, payload: bytes) -> None:
         if self._transport is None or self._loop is None:
@@ -507,3 +512,25 @@ def _maybe_float(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
+
+
+def _sender_peer_id(msg: IncomingMessage) -> str:
+    """Extract the sender's peer_id from any IncomingMessage variant.
+
+    HELLO/CLAIM/HEART/END carry it on `.peer_id`; WAKE nests it inside
+    `.report.peer_id` because the WakeReport already has the field.
+    Centralizing the lookup keeps the multicast dispatcher's
+    self-loopback filter to one line."""
+    if isinstance(msg, IncomingWake):
+        return msg.report.peer_id
+    return getattr(msg, "peer_id", "")
+
+
+# Stale-peer cleanup tunables. A peer that hasn't sent a HELLO in
+# `STALE_PEER_THRESHOLD_SEC` is assumed gone (crashed Pi, power-cycled,
+# left the network). The threshold is 3× the HELLO interval so a single
+# dropped multicast packet doesn't evict a working peer. Cleanup is
+# triggered on each HELLO receipt rather than on a timer — cheap, and
+# the steady-state HELLO cadence ensures we evict within ~90s of a
+# peer's silence.
+STALE_PEER_THRESHOLD_SEC = HELLO_INTERVAL_SEC * 3

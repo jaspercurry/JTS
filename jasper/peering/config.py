@@ -181,21 +181,30 @@ def _ensure_peer_id(path: str = PEER_ID_FILE) -> str:
 _ROOM_FALLBACK_RE = re.compile(r"[^a-z0-9_-]+")
 
 
-def _default_room() -> str:
+def default_room(hostname: str | None = None) -> str:
     """Pick a sensible default room label from the system hostname.
 
     The hostname is usually something like "jts" or "jts-bedroom"; we
     strip the leading "jts-" if present so "jts-bedroom" → "bedroom".
     A bare "jts" or a non-conforming hostname falls back to "default".
-    The user can override anytime via the /peers/ wizard.
+    Non-mDNS-safe chars (spaces, punctuation, etc.) collapse into a
+    single dash, so "Living Room" → "living-room".
+
+    Exposed publicly so the /peers/ web wizard can produce the same
+    fallback as `load_config()` without dragging the full peering
+    package into the wizard's import path.
     """
-    raw = socket.gethostname().lower()
+    raw = (hostname if hostname is not None else socket.gethostname()).lower()
     if raw.startswith("jts-"):
         raw = raw[4:]
     cleaned = _ROOM_FALLBACK_RE.sub("-", raw).strip("-")
     if not cleaned or cleaned == "jts":
         return "default"
     return cleaned[:32]
+
+
+# Backwards-compat alias for the historical underscore-prefixed name.
+_default_room = default_room
 
 
 def _parse_mode(raw: str) -> PeeringMode:

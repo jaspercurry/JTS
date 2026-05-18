@@ -68,14 +68,17 @@ CONFIDENCE_TIE_EPS = 0.05
 # noise dominates.
 SNR_TIE_EPS_DB = 3.0
 
-# Effective-score bonus for a primary peer. Currently unused for
-# ranking math (primary is a Tier-3 boolean filter), but exposed
-# here as documentation of the historical design and to support
-# tooling that wants to display an "effective score" in the wizard.
+# Historical name kept for tests / tooling that displays an
+# "effective score". The current ranking uses primary as a Tier-3
+# boolean filter (within the confidence band, an explicitly primary
+# peer wins over non-primaries) rather than an additive score bonus.
+# A boolean filter cleanly handles the "primary should win close
+# calls but not override clearly better positioning" intent without
+# the eps-boundary fiddliness of an additive bias.
 PRIMARY_BIAS = 0.05
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class WakeReport:
     """One peer's claim on a wake event.
 

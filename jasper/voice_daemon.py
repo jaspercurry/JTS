@@ -608,6 +608,30 @@ def _build_system_instruction(
     return SYSTEM_INSTRUCTION + addendum
 
 
+def _frame_rms_dbfs(frame) -> float | None:
+    """Compute waveform RMS in dBFS for a single int16 mic frame.
+
+    Sent to the peering ranking function as a tertiary tiebreaker.
+    Cheap (≤80 µs per 1280-sample frame on Pi 5). Returns None on
+    any error so the ranker falls through to the next tier rather
+    than crashing on a malformed frame.
+
+    Reference: full-scale int16 is ±32768; RMS of full-scale sine
+    ≈ 23170, so a -3 dBFS signal reads ~16384 RMS.
+    """
+    try:
+        import numpy as _np  # local — keep module import cheap
+        arr = _np.asarray(frame, dtype=_np.float32)
+        if arr.size == 0:
+            return None
+        rms = float(_np.sqrt(_np.mean(arr * arr)))
+        if rms <= 0.0:
+            return -120.0  # digital silence floor
+        return 20.0 * _np.log10(rms / 32768.0)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _active_model(cfg: Config) -> str:
     """Return the model name for the currently selected provider — used
     by startup-readiness logging and the silent-failure heuristic in
@@ -1049,6 +1073,14 @@ class WakeLoop:
         self._acquiring: bool = False
         self._acquire_buffer: deque = deque(maxlen=ACQUIRE_BUFFER_MAX_FRAMES)
 
+        # Multi-device peering: epoch UUID assigned by the peering
+        # daemon when this Pi wins arbitration. Used to correlate the
+        # SESSION_STARTED / SESSION_ENDED notifications back to the
+        # specific wake event. Empty string means "no peer-tracked
+        # session" — either peering is disabled, or this is a
+        # dial-driven session that didn't go through arbitration.
+        self._peering_current_epoch: str = ""
+
     async def play_cue(self, slug: str) -> str:
         """Public wrapper for `_play_cue`, callable via the control
         socket so external clients (jasper-control HTTP, the
@@ -1442,69 +1474,140 @@ class WakeLoop:
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
-        logger.info("wake detected (score=%.2f, threshold=%.2f)", score, self._detector.threshold)
-        if not self._spend_cap.allowed():
-            logger.warning("daily spend cap reached; voice disabled until rollover")
-            await self._play_cue("spend_cap_reached")
-            return
-
-        # If the connection is in a backoff/failed window, don't bother
-        # opening a turn — play a "can't connect" cue so the user
-        # knows why and isn't left guessing, then skip.
-        if self._connection.is_paused():
-            logger.warning(
-                "wake detected but live connection is paused (reconnect/backoff); "
-                "ignoring this wake event"
-            )
-            await self._play_cue("cant_connect")
-            return
-
-        # "Now listening" chirp. Fire-and-forget so it plays in
-        # parallel with `_begin_turn` opening rather than adding
-        # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
-        # any done task in that set would end the turn early.
-        asyncio.create_task(
-            self._play_listening_chirp(going_on=True),
-            name="listening-chirp-on",
+        logger.info(
+            "event=wake.detected score=%.2f threshold=%.2f",
+            score, self._detector.threshold,
         )
 
-        # Spawn `_begin_turn` in the background so the main mic loop
-        # is NOT blocked while `acquire_turn()` runs (which can take
-        # several seconds during a context reset). The flag flips
-        # the loop into "buffer frames into self._acquire_buffer"
-        # mode for the duration of the acquire window. Without this,
-        # frames either pile up in sounddevice's OS-level queue and
-        # arrive in a burst (which broke our wall-clock-based
-        # sustained-speech detector — see test on 2026-05-09 logs:
-        # `silero max=0.53` but `no user speech detected within 5s`)
-        # or get dropped entirely.
+        # Pre-compute the "can we actually serve this turn?" gates.
+        # In peering mode this flag is broadcast in the WAKE message
+        # so the fleet's ranking function can prefer a peer that *can*
+        # serve over us (we still bid so exactly one peer plays the
+        # failure cue when ALL peers are blocked). The actual cue plays
+        # below only if we win arbitration AND can't serve.
+        spend_allowed = self._spend_cap.allowed()
+        conn_paused = self._connection.is_paused()
+        can_serve = spend_allowed and not conn_paused
+
+        # Enter acquiring state immediately so the main mic loop buffers
+        # frames into `_acquire_buffer` for the entire arbitration +
+        # turn-acquire window. Without this, frames would dispatch back
+        # through `_handle_wake_frame` while we're waiting for peering
+        # to resolve, and either pile up in the asyncio mic queue or
+        # re-trigger detection.
         self._acquiring = True
         self._acquire_buffer.clear()
+
+        # Cheap RMS estimate from the wake-firing frame. Sent to the
+        # peering ranking function as a tertiary tiebreaker. SNR would
+        # be more useful but needs rolling-noise-floor state we don't
+        # currently track — None is acceptable (the ranker falls
+        # through to RMS when SNR is missing). Frame is int16 PCM;
+        # divide by full-scale to get linear amplitude.
+        rms_dbfs = _frame_rms_dbfs(frame)
+
+        # Spawn the arbitrate+acquire+drain pipeline as a background
+        # task so the main mic loop stays responsive (frames continue
+        # piling into _acquire_buffer for up to 20 s — see
+        # ACQUIRE_BUFFER_MAX_FRAMES). When peering is disabled this
+        # task immediately proceeds to the existing acquire-and-drain
+        # flow; when enabled, it first awaits the peering UDS verdict.
         asyncio.create_task(
-            self._acquire_and_drain(), name="wake-acquire-and-drain",
+            self._arbitrate_acquire_drain(
+                score=score,
+                rms_dbfs=rms_dbfs,
+                spend_allowed=spend_allowed,
+                conn_paused=conn_paused,
+                can_serve=can_serve,
+            ),
+            name="wake-arbitrate-acquire-drain",
         )
 
-    async def _acquire_and_drain(self) -> None:
-        """Background coroutine spawned on wake. Acquires the turn,
-        then replays any frames captured during the acquire window
-        into it before live frames take over.
+    async def _arbitrate_acquire_drain(
+        self,
+        *,
+        score: float,
+        rms_dbfs: float | None,
+        spend_allowed: bool,
+        conn_paused: bool,
+        can_serve: bool,
+    ) -> None:
+        """Background coroutine spawned on wake. Steps, in order:
 
-        Order of audio sent to the model on a SESSION:
-          1. Pre-roll (last 7 frames before wake — `_begin_turn`
-             handles this for us, includes the wake-firing frame).
-          2. Acquire-buffer drain (everything captured between wake
-             and turn-ready, in order — this method).
-          3. Live frames (from the main mic loop's
-             `_handle_session_frame` — automatic once we clear
-             `_acquiring`).
+        0. **Late-cancel gates**: if the user muted the mic or a
+           room-correction measurement started between the wake-frame
+           dispatch and this task starting, abort cleanly. Both gates
+           are checked in the main mic loop before frames flow, so
+           we'd be entering a session with no audio — and the user
+           just did something that explicitly said "stop listening".
+        1. **Peer arbitration** (no-op when peering is off): ask
+           jasper-control via UDS whether this Pi should take the turn.
+           If we LOSE, log + return — another peer handles it.
+        2. **Gate cues** (winner only): if we WIN arbitration but can't
+           serve (spend cap / connection paused), play the appropriate
+           cue locally. Done after arbitration so we don't fire N
+           cues across N peers.
+        3. **Chirp + begin turn + drain**: existing wake flow.
 
-        On error: play `cant_connect`, run the same cleanup the
-        synchronous path used to do, clear the buffer, restore
-        WAKE state. The `_acquiring` flag flips back to False in
+        On error in step 3: play `cant_connect`, cleanup, clear buffer,
+        return to WAKE. The `_acquiring` flag flips back to False in
         the finally so the loop returns to wake detection.
         """
         try:
+            # Step 0: late-cancel gates. mute_mic / measurement_pause
+            # can fire AFTER _handle_wake_frame spawned this task but
+            # BEFORE we get scheduled. Both are user-deliberate "stop
+            # listening" signals; firing a chirp + opening an LLM
+            # session after them is bad UX. We check twice: now, and
+            # again after the arbitration await (which can take up
+            # to 500 ms — plenty of time for the user to mute).
+            if self._wake_late_cancelled("pre_arb"):
+                return  # finally clears _acquiring + buffer
+
+            # Step 1: peer arbitration.
+            decision = await self._peer_arbitrate(
+                score=score, snr_db=None, rms_dbfs=rms_dbfs,
+                can_serve=can_serve,
+            )
+            if decision == "LOSE":
+                # Another peer is handling it. Stay silent — losers
+                # don't play chirps or cues; they just back off.
+                logger.info("event=peering.wake.lost score=%.2f", score)
+                return  # finally clears _acquiring + buffer
+
+            if self._wake_late_cancelled("post_arb"):
+                return
+
+            # Step 2: gate cues — only the winner pays this cost.
+            if not spend_allowed:
+                logger.warning("daily spend cap reached; voice disabled until rollover")
+                await self._play_cue("spend_cap_reached")
+                return
+            if conn_paused:
+                logger.warning(
+                    "wake detected but live connection is paused (reconnect/backoff); "
+                    "ignoring this wake event",
+                )
+                await self._play_cue("cant_connect")
+                return
+
+            # Step 3: existing chirp + acquire + drain flow.
+            #
+            # "Now listening" chirp. Fire-and-forget so it plays in
+            # parallel with `_begin_turn` opening rather than adding
+            # ~70 ms to time-to-listen. NOT added to self._bg_tasks —
+            # any done task in that set would end the turn early.
+            asyncio.create_task(
+                self._play_listening_chirp(going_on=True),
+                name="listening-chirp-on",
+            )
+
             await self._begin_turn()  # ends with state = SESSION
+            # Notify peering that we've opened a session (winner-only
+            # heartbeat starts firing). Fire-and-forget — voice's own
+            # session lifecycle is the source of truth.
+            await self._notify_peering_session_started()
+
             try:
                 drained, speech_in_acquire = await drain_acquire_buffer(
                     self._acquire_buffer, self._turn,  # type: ignore[arg-type]
@@ -1522,15 +1625,7 @@ class WakeLoop:
                     "; contained speech — silence detector pre-armed"
                     if speech_in_acquire else "",
                 )
-            # Fast-talker compensation: if the user's whole question
-            # landed in the acquire window (e.g. fast pace + slow
-            # turn-acquire), live frames see only post-speech silence
-            # and the existing end-of-utterance arming in
-            # _handle_session_frame never trips → turn aborts at
-            # NO_SPEECH_ABORT_SEC while the LLM has already answered.
-            # Pre-arming here means the silence detector watches live
-            # frames for END-of-speech instead of waiting for new
-            # speech to start.
+            # Fast-talker compensation: see _begin_turn comment block.
             if speech_in_acquire and not self._user_speech_seen:
                 self._user_speech_seen = True
         except Exception as e:  # noqa: BLE001
@@ -1543,8 +1638,138 @@ class WakeLoop:
             # mic frame to decide whether to buffer or dispatch. With
             # state already SESSION (set by `_begin_turn`) and the
             # buffer drained, clearing the flag hands the live mic
-            # stream to `_handle_session_frame` cleanly.
+            # stream to `_handle_session_frame` cleanly. On LOSE / cue
+            # / error paths, state is still WAKE — clearing _acquiring
+            # returns the loop to wake detection.
             self._acquiring = False
+            # Refractory: protects against detector re-firing on TTS
+            # tail (won path) or on a quick repeat-wake (lost path).
+            self._refractory_until = max(
+                self._refractory_until,
+                asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC,
+            )
+
+    def _wake_late_cancelled(self, phase: str) -> bool:
+        """Check whether a user-deliberate "stop listening" gate fired
+        between wake detection and now. Returns True (and logs an
+        `event=wake.late_cancel`) if either the mic is muted or a
+        room-correction measurement window is open.
+
+        `phase` is "pre_arb" or "post_arb" — included in the log so we
+        can tell which side of the peering arbitration await caught
+        the late-cancel."""
+        if self._mic_muted:
+            logger.info("event=wake.late_cancel reason=mic_muted phase=%s", phase)
+            return True
+        if self._measurement_active.is_set():
+            logger.info(
+                "event=wake.late_cancel reason=measurement_active phase=%s",
+                phase,
+            )
+            return True
+        return False
+
+    async def _peering_send(
+        self, cmd: str, *, timeout: float = 0.5,
+    ) -> dict | None:
+        """Send one command to jasper-control's peering UDS.
+
+        Returns the parsed JSON response, or None if peering is
+        disabled / the daemon is unreachable / any error occurs.
+
+        This is the only place that touches the peering UDS — every
+        caller is fail-open by construction (no exception escapes,
+        no peering issue can silence the speaker). Callers
+        differentiate "WIN-by-default" semantics by treating None
+        as the no-op response."""
+        if not self._cfg.peering_enabled:
+            return None
+        try:
+            from .peering.uds import send_request
+        except ImportError:
+            # peering package not installed (shouldn't happen in
+            # production, but defensive — keep wake working).
+            return None
+        try:
+            return await send_request(
+                self._cfg.peering_uds_socket, cmd, timeout=timeout,
+            )
+        except FileNotFoundError:
+            # Peering daemon isn't running (mode=on in voice config
+            # but mode=off / failed in jasper-control). Fall back to
+            # solo behavior silently — this isn't an error condition.
+            return None
+        except (OSError, asyncio.TimeoutError) as e:
+            logger.warning("peering %s failed: %s; treating as solo",
+                           cmd.split(maxsplit=1)[0], e)
+            return None
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "peering %s raised; treating as solo",
+                cmd.split(maxsplit=1)[0],
+            )
+            return None
+
+    async def _peer_arbitrate(
+        self,
+        *,
+        score: float,
+        snr_db: float | None,
+        rms_dbfs: float | None,
+        can_serve: bool,
+    ) -> str:
+        """Ask jasper-control's peering daemon whether this Pi should
+        take the turn. Returns "WIN" or "LOSE".
+
+        Side effect: sets `self._peering_current_epoch` from the
+        daemon's response so `_notify_peering_session_*` can reference
+        the same arbitration round.
+
+        Fast-path: when peering is disabled OR no peering daemon is
+        running OR the UDS errors, returns "WIN" immediately. Single-Pi
+        installs pay zero observable cost — `_peering_send` short-
+        circuits before any I/O when peering_enabled is False.
+        """
+        self._peering_current_epoch = ""
+        import json as _json  # noqa: PLC0415
+        payload = _json.dumps({
+            "score": float(score),
+            "snr_db": snr_db,
+            "rms_dbfs": rms_dbfs,
+            "can_serve": bool(can_serve),
+        })
+        resp = await self._peering_send(f"ARBITRATE {payload}")
+        if resp is None:
+            return "WIN"  # peering disabled or daemon unreachable
+        self._peering_current_epoch = str(resp.get("epoch") or "")
+        result = (resp.get("result") or "").upper()
+        if result not in ("WIN", "LOSE"):
+            logger.warning(
+                "peer arbitrate returned %r; defaulting to WIN", result,
+            )
+            return "WIN"
+        return result
+
+    async def _notify_peering_session_started(self) -> None:
+        """Fire-and-forget notice to the peering daemon that this
+        speaker just opened a session. The daemon transitions from
+        WINNER → ACTIVE and starts broadcasting heartbeats so peers
+        stay suppressed for the session's duration.
+
+        No-op when peering is disabled. Errors swallowed — peering
+        is best-effort; voice keeps going.
+        """
+        if self._turn is None:
+            return  # no active turn to announce
+        await self._peering_send(
+            f"SESSION_STARTED {self._peering_current_epoch}",
+        )
+
+    async def _notify_peering_session_ended(self, reason: str) -> None:
+        """Fire-and-forget notice. Mirrors _notify_peering_session_started."""
+        await self._peering_send(
+            f"SESSION_ENDED {self._peering_current_epoch} {reason}",
+        )
 
     async def _handle_session_frame(self, frame) -> None:
         # If any background task ended, the turn is over. Cleanup, then
@@ -1815,7 +2040,15 @@ class WakeLoop:
         self._state = State.WAKE
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
-    async def _end_turn(self) -> None:
+    async def _end_turn(self, reason: str = "ended") -> None:
+        # Notify peering daemon EARLY (before slow cleanup) so peers
+        # un-suppress promptly. Other devices' next wake events should
+        # start a fresh arbitration; waiting for our chirp + duck
+        # restore would add ~300 ms of unnecessary suppression. No-op
+        # when peering is off or this wasn't a peer-tracked session.
+        await self._notify_peering_session_ended(reason)
+        self._peering_current_epoch = ""
+
         for t in self._bg_tasks:
             t.cancel()
         for t in self._bg_tasks:

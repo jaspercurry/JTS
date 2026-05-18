@@ -211,6 +211,18 @@ class Config:
 
     voice_control_socket: str
 
+    # Multi-device peering (multi-Pi wake arbitration). Read once at
+    # startup from the JASPER_PEERING env var which systemd merges in
+    # from /var/lib/jasper/peering.env (written by the /peers/ web
+    # wizard). When False (the default), every peer-arbitrate code
+    # path is a no-op — single-Pi installs pay zero cost. When True,
+    # WakeLoop calls jasper-control's peering UDS on every wake event
+    # to ask "should I take this turn?" — see jasper.peering for the
+    # full design. Live-toggling requires a jasper-voice restart
+    # (which the wizard performs).
+    peering_enabled: bool
+    peering_uds_socket: str
+
     # Timer persistence — SQLite DB tracking active kitchen timers
     # so a daemon restart doesn't lose the user's pending fire times.
     # Sits in the same /var/lib/jasper StateDirectory as everything
@@ -584,6 +596,21 @@ class Config:
             # at service start with mode 0750.
             voice_control_socket=_env(
                 "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+            ),
+            # Multi-device peering — read JASPER_PEERING the same way
+            # the peering daemon does. Anything other than "on" / "true"
+            # / "1" / "yes" / "enabled" resolves to off (fail-safe;
+            # peering is off by default, and a typo in the env file
+            # should never accidentally enable it).
+            peering_enabled=_env(
+                "JASPER_PEERING", "off",
+            ).strip().lower() in ("on", "true", "1", "yes", "enabled"),
+            # The UDS where jasper-control's peering daemon listens.
+            # Matches PEERING_UDS_PATH in jasper.peering.config —
+            # duplicated here so voice_daemon doesn't have to import
+            # the peering package just to know where to connect.
+            peering_uds_socket=_env(
+                "JASPER_PEERING_UDS", "/run/jasper/peering.sock",
             ),
         ))
 
