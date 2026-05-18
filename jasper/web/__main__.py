@@ -39,6 +39,7 @@ from . import (
     _systemd,
     airplay_setup,
     google_setup,
+    peering_setup,
     sources_setup,
     spotify_setup,
     voice_setup,
@@ -74,6 +75,7 @@ def main() -> int:
     sources_port = int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773"))
     wake_port = int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774"))
     wifi_port = int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775"))
+    peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
