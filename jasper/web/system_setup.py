@@ -160,6 +160,24 @@ _PAGE_BODY = """
   </table>
 </div>
 
+<div class="card" id="aec-card">
+  <h2>AEC3 echo cancellation</h2>
+  <p class="muted" style="margin: 0 0 0.6em; font-size: 0.85em;">
+    Software AEC sits between the music chain and the chip's
+    voice-assistant mic. Flip it off to A/B-test wake detection with
+    chip-direct mic instead. The reconciler restarts the bridge and
+    jasper-voice on each toggle — expect ~10-15 s before wake-word
+    works again.
+  </p>
+  <div class="kv">
+    <div class="k">Mode</div><div class="v" id="aec-mode">—</div>
+    <div class="k">Bridge</div><div class="v" id="aec-active">—</div>
+  </div>
+  <div class="actions" style="margin-top: 0.7em;">
+    <button class="secondary" id="btn-aec-toggle">Toggle AEC3</button>
+  </div>
+</div>
+
 <div class="card">
   <h2>Network</h2>
   <div class="kv">
@@ -507,6 +525,68 @@ _SCRIPT = r"""
     btn.disabled = false;
   });
 
+  // AEC3 toggle — polls /aec.json every 3 s, flips via POST /aec/toggle.
+  // Mode (auto/disabled) reflects what the operator asked for;
+  // bridge_active is the observed truth. They diverge briefly during
+  // the reconciler-driven transition.
+  async function pollAec() {
+    const modeEl = document.getElementById('aec-mode');
+    const activeEl = document.getElementById('aec-active');
+    const btn = document.getElementById('btn-aec-toggle');
+    try {
+      const r = await fetch('aec.json', { cache: 'no-store' });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const s = await r.json();
+      const mode = s.mode;
+      const active = !!s.bridge_active;
+      modeEl.textContent =
+        mode === 'auto' ? 'Enabled (auto)' :
+        mode === 'disabled' ? 'Disabled (chip direct mic)' :
+        String(mode);
+      let activeText;
+      if (active) {
+        activeText = 'Running';
+      } else if (mode === 'auto') {
+        activeText = 'Off — starting up, or chip not on 6-ch firmware';
+      } else {
+        activeText = 'Stopped (intentional)';
+      }
+      activeEl.textContent = activeText;
+      // Only relabel the button when not mid-toggle (caller sets
+      // "Applying…" and we shouldn't stomp it until reconciler lands).
+      if (btn && !btn.disabled) {
+        btn.textContent = (mode === 'auto') ? 'Disable AEC3' : 'Enable AEC3';
+      }
+    } catch (e) {
+      modeEl.textContent = 'Disconnected';
+      activeEl.textContent = '—';
+    }
+  }
+  document.getElementById('btn-aec-toggle').addEventListener('click', async e => {
+    const btn = e.target;
+    const current = document.getElementById('aec-mode').textContent;
+    const verb = current.indexOf('Enabled') === 0 ? 'Disable' : 'Enable';
+    if (!confirm(verb + ' AEC3? jasper-voice will restart (wake-word unavailable for ~15 s).')) return;
+    btn.disabled = true;
+    btn.textContent = 'Applying…';
+    try {
+      const r = await fetch('aec/toggle', { method: 'POST' });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+    } catch (err) {
+      alert('Toggle failed: ' + err.message);
+    }
+    btn.disabled = false;
+    // Next pollAec tick (≤3 s) will overwrite the button label with
+    // the new state. Belt-and-suspenders in case polling is broken:
+    setTimeout(() => {
+      if (btn.textContent === 'Applying…') btn.textContent = 'Toggle AEC3';
+    }, 4000);
+    pollAec();
+  });
+  pollAec();
+  setInterval(pollAec, 3000);
+
   function escapeHtml(s) {
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -603,6 +683,12 @@ def _make_handler(
                 )
                 self._send_raw_json(body, status=status)
                 return
+            if path == "/aec.json":
+                status, body = _proxy_get(
+                    "/aec", control_base, timeout=5.0,
+                )
+                self._send_raw_json(body, status=status)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
@@ -611,6 +697,12 @@ def _make_handler(
             if path in ("/restart/voice", "/restart/audio", "/reboot"):
                 status, body = _proxy_post(
                     "/system" + path, control_base,
+                )
+                self._send_raw_json(body, status=status)
+                return
+            if path == "/aec/toggle":
+                status, body = _proxy_post(
+                    "/aec/toggle", control_base, timeout=5.0,
                 )
                 self._send_raw_json(body, status=status)
                 return

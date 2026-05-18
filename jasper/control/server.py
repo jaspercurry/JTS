@@ -149,6 +149,49 @@ def start_peering_daemon_if_enabled() -> None:
     _peering_thread.start()
 
 
+_AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
+
+
+def _read_aec_mode() -> str:
+    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
+    'auto' (the install.sh default) when the file is missing or
+    unparseable — matches the reconciler's own behaviour."""
+    try:
+        with open(_AEC_MODE_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith("JASPER_AEC_MODE="):
+                    return line.split("=", 1)[1].strip().strip("'\"") or "auto"
+    except OSError:
+        pass
+    return "auto"
+
+
+def _write_aec_mode(mode: str) -> None:
+    """Atomic write of the env file. mode must be 'auto' or 'disabled'."""
+    if mode not in ("auto", "disabled"):
+        raise ValueError(f"invalid mode: {mode!r}")
+    tmp = _AEC_MODE_FILE + ".tmp"
+    with open(tmp, "w") as f:
+        f.write(f"JASPER_AEC_MODE={mode}\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, _AEC_MODE_FILE)
+
+
+def _aec_bridge_active() -> bool:
+    """True if jasper-aec-bridge.service is currently active."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "jasper-aec-bridge.service"],
+            capture_output=True, text=True, timeout=2.0,
+        )
+        return result.stdout.strip() == "active"
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def _read_cloud_activity() -> dict[str, Any]:
     """Roll up cloud LLM activity for the /system dashboard.
 
@@ -599,6 +642,17 @@ def _make_handler(
                     return
                 self._send_json({"muted": bool(st.get("mic_muted", False))})
                 return
+            if self.path == "/aec":
+                # Software AEC bridge state. Mode is the persisted
+                # request (what the operator asked for, via /system
+                # dashboard or aec_mode.env); bridge_active is the
+                # observed truth from systemd. They diverge briefly
+                # during a reconciler-driven transition (~10-15 s).
+                self._send_json({
+                    "mode": _read_aec_mode(),
+                    "bridge_active": _aec_bridge_active(),
+                })
+                return
             if self.path == "/state":
                 # Cross-daemon snapshot — voice / audio / renderers /
                 # satellites. Polled by the /voice web UI for live
@@ -934,6 +988,47 @@ def _make_handler(
                     # If readback fails, trust the set and move on.
                     muted_now = bool(body["muted"])
                 self._send_json({"muted": muted_now, "result": result.get("result")})
+                return
+
+            if self.path == "/aec/toggle":
+                # Flip JASPER_AEC_MODE between auto and disabled, then
+                # kick the reconciler. The reconciler stops/starts
+                # jasper-aec-bridge.service and restarts jasper-voice
+                # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
+                # direct). Used by the /system dashboard's A/B-test
+                # card. Non-blocking — the dashboard polls /aec to
+                # see when the transition lands (~10-15 s).
+                #
+                # Risk model: LAN-trust, same as /system/restart/*.
+                current = _read_aec_mode()
+                new_mode = "disabled" if current == "auto" else "auto"
+                try:
+                    _write_aec_mode(new_mode)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        {"error": f"write aec_mode.env failed: {e}"},
+                        status=502,
+                    )
+                    return
+                try:
+                    subprocess.Popen(
+                        ["systemctl", "start",
+                         "jasper-aec-reconcile.service"],
+                    )
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"reconciler start failed: {e}"},
+                        status=502,
+                    )
+                    return
+                logger.info(
+                    "event=aec.toggle from=%s to=%s client=%s",
+                    current, new_mode, self.address_string(),
+                )
+                self._send_json({
+                    "mode": new_mode,
+                    "bridge_active": _aec_bridge_active(),
+                })
                 return
 
             if self.path in ("/system/restart/voice",
