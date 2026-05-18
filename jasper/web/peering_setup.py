@@ -39,6 +39,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from ..peering.config import default_room as _default_room_from_hostname
 from ._common import (
     PAGE_STYLE,
     delete_env_file,
@@ -81,16 +82,7 @@ def _room(state: dict[str, str]) -> str:
     ).strip()
     if raw:
         return raw
-    # Mirror jasper.peering.config._default_room — pulled inline
-    # rather than imported to keep this module's import cost light
-    # (jasper.peering imports several modules transitively).
-    hostname = socket.gethostname().lower()
-    if hostname.startswith("jts-"):
-        hostname = hostname[4:]
-    cleaned = "".join(c if c.isalnum() or c in "-_" else "-" for c in hostname).strip("-")
-    if not cleaned or cleaned == "jts":
-        return "default"
-    return cleaned[:32]
+    return _default_room_from_hostname()
 
 
 def _primary(state: dict[str, str]) -> bool:
@@ -152,7 +144,11 @@ def _fetch_peer_status(uds_path: str = PEERING_UDS_PATH, timeout: float = 1.0) -
 # ----------------------------------------------------------------------
 
 
-_PEERS_PAGE_STYLE = PAGE_STYLE + """
+# Page-specific CSS appended into the body via an inline <style>.
+# Avoids monkey-patching `_common.PAGE_STYLE` (which the wake wizard
+# historically did) — the shared sheet stays untouched and these
+# rules just cascade on top.
+_PEERS_EXTRA_CSS = """
   .peer-status {
     background: #f4f4f4; border: 1px solid #e6e6e6;
     border-radius: 8px; padding: 0.9em 1em; margin-bottom: 1.2em;
@@ -235,6 +231,7 @@ def _render_page(*, state_path: str, status_msg: str = "") -> bytes:
     primary_attr = "checked" if primary else ""
 
     body = f"""
+    <style>{_PEERS_EXTRA_CSS}</style>
     <p class="sub">
       When multiple JTS speakers are on the same network, peering lets
       them coordinate so that only one device responds to each wake
@@ -402,18 +399,10 @@ def _make_handler(state_path: str):
 
         def do_GET(self):  # noqa: N802
             if self.path == "/" or self.path.startswith("/?"):
-                # Apply a tighter style with our extra CSS.
-                from . import _common
-                _common.PAGE_STYLE_ORIGINAL = getattr(
-                    _common, "PAGE_STYLE_ORIGINAL", _common.PAGE_STYLE,
-                )
-                # Temporarily swap PAGE_STYLE so wrap_page picks up
-                # our extra rules. This is the same shim wake_setup
-                # uses (look at WAKE_PAGE_STYLE wiring there).
                 status_msg = ""
                 if "saved=1" in self.path:
                     status_msg = "Saved. Speakers restarting; refresh in a few seconds."
-                body = _render_page_with_extra_css(
+                body = _render_page(
                     state_path=state_path, status_msg=status_msg,
                 )
                 self.send_response(HTTPStatus.OK)
@@ -433,19 +422,6 @@ def _make_handler(state_path: str):
             self.end_headers()
 
     return _Handler
-
-
-def _render_page_with_extra_css(*, state_path: str, status_msg: str = "") -> bytes:
-    """Render the page with the extended CSS. Implemented as a separate
-    function so tests can call _render_page() directly without the
-    monkey-patching dance."""
-    from . import _common
-    saved_style = _common.PAGE_STYLE
-    try:
-        _common.PAGE_STYLE = _PEERS_PAGE_STYLE
-        return _render_page(state_path=state_path, status_msg=status_msg)
-    finally:
-        _common.PAGE_STYLE = saved_style
 
 
 def make_server(target, *, state_path: str = PEERING_ENV_FILE) -> ThreadingHTTPServer:

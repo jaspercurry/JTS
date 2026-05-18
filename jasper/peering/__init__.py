@@ -24,12 +24,20 @@ section for the design rationale that pre-dates this module):
   P2P: every peer applies the same pure ranking function to the
   same set of WAKE messages and reaches the same conclusion.
 
-Public API:
-  - PeeringConfig / load_config  — configuration in /var/lib/jasper/peering.env
-  - WakeReport, rank            — pure ranking function
-  - PeeringStateMachine          — pure event-driven state machine
-  - PeeringDaemon                — asyncio orchestrator (transport + discovery + state)
-  - start_uds_server / send_arbitrate_request  — UDS RPC voice↔control
+Public surface — re-exported from this package:
+
+  - PeeringConfig / PeeringMode / load_config  — configuration loader
+    (reads /var/lib/jasper/peering.env)
+  - WakeReport / rank          — pure deterministic winner pick
+  - PeeringStateMachine / PeerState / Action  — pure event-driven
+    state machine (used by the daemon; pure so it's unit-testable)
+
+Lazy imports — reach into submodules directly when you need them so
+the package's import cost stays light when peering is OFF:
+
+  - jasper.peering.daemon:PeeringDaemon   — asyncio orchestrator
+  - jasper.peering.uds:serve / send_request — Unix-socket RPC
+  - jasper.peering.avahi:render_and_install / uninstall
 
 Module layout — separated by I/O profile so each piece is
 independently testable:
