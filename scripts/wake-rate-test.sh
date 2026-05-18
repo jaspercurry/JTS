@@ -48,11 +48,29 @@ ssh "${PI_USER}@${PI_HOST}" \
 # Ctrl-C, error), restore the voice daemon to normal so the speaker
 # isn't left mute. The daemon also has an internal 2-min safety timer.
 cleanup_measure() {
+    if [[ -n "${REFRESHER_PID:-}" ]]; then
+        kill "$REFRESHER_PID" 2>/dev/null || true
+        wait "$REFRESHER_PID" 2>/dev/null || true
+    fi
     ssh "${PI_USER}@${PI_HOST}" \
         "sudo python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/jasper/voice.sock\"); s.sendall(b\"MEASURE_RESUME\\n\"); print(s.recv(4096).decode())'" \
         >/dev/null 2>&1 || true
 }
 trap cleanup_measure EXIT
+
+# Re-arm measurement mode every 60 s so the daemon's 2-min safety
+# timer never expires while the operator is still running the test.
+# Sending MEASURE_PAUSE while already active cancels the old timer
+# and starts a fresh one (idempotent re-pause path in voice_daemon).
+(
+    while true; do
+        sleep 60
+        ssh "${PI_USER}@${PI_HOST}" \
+            "sudo python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/jasper/voice.sock\"); s.sendall(b\"MEASURE_PAUSE\\n\"); s.recv(4096)'" \
+            >/dev/null 2>&1 || break
+    done
+) &
+REFRESHER_PID=$!
 
 # Anchor on the Pi's own clock to avoid laptop↔Pi drift in journalctl
 # --since parsing.
