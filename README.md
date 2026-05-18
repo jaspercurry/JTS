@@ -240,6 +240,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
+  HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
   HANDOFF-volume.md             Source-aware volume coordinator
@@ -289,8 +290,15 @@ reference. Currently:
 - [`satellites.md`](docs/satellites.md) — The home base for the
   satellite-device family. Existing dial + planned AMOLED mic
   satellite, shared protocols (Improv / mDNS-SD / control HTTP / UDP
-  logs), and the multi-mic arbitration design (with prior-art survey
-  across HA Assist, Sonos, Apple, Amazon ESP).
+  logs), and the multi-mic-around-one-Pi arbitration design (with
+  prior-art survey across HA Assist, Sonos, Apple, Amazon ESP).
+- [`HANDOFF-peering.md`](docs/HANDOFF-peering.md) — Multi-Pi wake
+  arbitration. When a household runs multiple JTS speakers on the
+  same LAN, peering picks exactly one winner per wake event so they
+  don't all answer at once. Off by default; user flips it on at
+  `http://jts.local/peers/`. P2P via mDNS-SD + multicast UDP, no
+  hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
+  restructure, or anything related to the `/peers/` wizard.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
 - [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — Canonical
