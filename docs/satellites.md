@@ -176,6 +176,15 @@ our code).
 
 ## The microphone arbitration problem
 
+> **Two related problems, two docs.** This section covers
+> *multi-mic-around-one-Pi* arbitration — one Pi running the LLM
+> session, satellite mics contributing audio. The
+> *multi-Pi-on-a-LAN* case — N autonomous JTS speakers, each with
+> its own mic and LLM session — is implemented and lives in
+> [HANDOFF-peering.md](HANDOFF-peering.md). The two share
+> signal-priority intuition (confidence > raw energy) but diverge
+> in nearly every implementation dimension.
+
 When two or more mics around the home hear "Hey Jarvis" at the same
 time, **which one owns the resulting voice session?** This is the
 hardest design question for a multi-satellite setup, and it deserves
