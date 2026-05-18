@@ -1,82 +1,51 @@
 #!/usr/bin/env bash
-# Wake-rate test harness: anchors a journal start time, waits for the
-# operator to play the wake-test track on the phone, then counts
-# `event=wake.detected` lines emitted by jasper-voice during that window.
+# Wake-rate test harness: captures the bridge's AEC output while the
+# operator plays a wake-rate test track on their phone, then runs
+# openWakeWord OFFLINE on the captured audio to count detections.
 #
-# Workflow (do once per condition):
-#   1. Set up the condition (chip SHF_BYPASS state, AEC on/off via /system/)
-#   2. Start background music at the consistent volume you're testing at
-#   3. Run this script with a descriptive label
-#   4. When prompted, start the wake-test track on your phone
-#   5. When the track finishes, press Enter
-#   6. Script reports wake count + late-cancels
-#
-# The track has 20 'Jarvis' utterances; each successful detection
-# logs one `event=wake.detected`. Compare counts across conditions.
+# Why offline?
+#  - MEASURE_PAUSE on the voice daemon drops mic frames before wake
+#    detection, so wake events never fire — defeats the test.
+#  - Running jasper-voice live opens a Gemini session per wake
+#    (~$0.05) and plays a TTS response that contaminates the next
+#    wake's audio via the speaker→mic path.
+# Stopping jasper-voice + capturing the bridge output + counting
+# wakes offline gives a clean number using the SAME model + threshold
+# as production.
 #
 # Usage:
 #   bash scripts/wake-rate-test.sh "AEC_ON_SHF_1"
 #   bash scripts/wake-rate-test.sh "AEC_ON_SHF_0"
 #   bash scripts/wake-rate-test.sh "AEC_OFF"
 #
-# Tip: label includes the condition; the script appends timestamps so
-# you can rerun the same condition without overwriting.
+# Environment:
+#   DURATION       seconds to capture (default 120 — covers 108s track + reaction)
+#   THRESHOLD      override wake threshold (default reads from /etc/jasper/jasper.env)
 
 set -euo pipefail
 
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 LABEL="${1:-test}"
+DURATION="${DURATION:-120}"
+THRESHOLD="${THRESHOLD:-}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 LOG_DIR="$REPO_ROOT/logs/wake-rate"
 mkdir -p "$LOG_DIR"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-RESULT_FILE="$LOG_DIR/${LABEL}-${TS}.txt"
+OUT_LOCAL="$LOG_DIR/${LABEL}-${TS}"
+OUT_REMOTE="/tmp/wake-rate-${TS}"
+mkdir -p "$OUT_LOCAL"
 
-# Engage measurement mode so wake events FIRE and LOG but never open
-# an LLM session — kills the "speaker talks back during wake test +
-# its TTS contaminates subsequent wakes via echo path" problem at the
-# source. wake.detected lines still appear in the journal (that's what
-# we count); they each get followed by wake.late_cancel reason=
-# measurement_active.
-ssh "${PI_USER}@${PI_HOST}" \
-    "sudo python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/jasper/voice.sock\"); s.sendall(b\"MEASURE_PAUSE\\n\"); print(s.recv(4096).decode())'" \
-    >/dev/null
+LOCAL_PY="$REPO_ROOT/scripts/_offline_wake_count.py"
+if [[ ! -f "$LOCAL_PY" ]]; then
+    echo "ERROR: $LOCAL_PY missing" >&2
+    exit 1
+fi
+scp -q "$LOCAL_PY" "${PI_USER}@${PI_HOST}:/tmp/_offline_wake_count.py"
 
-# Belt-and-suspenders: regardless of how this script exits (success,
-# Ctrl-C, error), restore the voice daemon to normal so the speaker
-# isn't left mute. The daemon also has an internal 2-min safety timer.
-cleanup_measure() {
-    if [[ -n "${REFRESHER_PID:-}" ]]; then
-        kill "$REFRESHER_PID" 2>/dev/null || true
-        wait "$REFRESHER_PID" 2>/dev/null || true
-    fi
-    ssh "${PI_USER}@${PI_HOST}" \
-        "sudo python3 -c 'import socket,sys; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/jasper/voice.sock\"); s.sendall(b\"MEASURE_RESUME\\n\"); print(s.recv(4096).decode())'" \
-        >/dev/null 2>&1 || true
-}
-trap cleanup_measure EXIT
-
-# Re-arm measurement mode every 60 s so the daemon's 2-min safety
-# timer never expires while the operator is still running the test.
-# Sending MEASURE_PAUSE while already active cancels the old timer
-# and starts a fresh one (idempotent re-pause path in voice_daemon).
-(
-    while true; do
-        sleep 60
-        ssh "${PI_USER}@${PI_HOST}" \
-            "sudo python3 -c 'import socket; s=socket.socket(socket.AF_UNIX); s.connect(\"/run/jasper/voice.sock\"); s.sendall(b\"MEASURE_PAUSE\\n\"); s.recv(4096)'" \
-            >/dev/null 2>&1 || break
-    done
-) &
-REFRESHER_PID=$!
-
-# Anchor on the Pi's own clock to avoid laptop↔Pi drift in journalctl
-# --since parsing.
-START_ON_PI="$(ssh "${PI_USER}@${PI_HOST}" 'date "+%Y-%m-%d %H:%M:%S"')"
-
-# Also capture pre-test chip state + AEC state for the log.
+# Capture pre-test state for the log
 PRE_STATE=$(ssh "${PI_USER}@${PI_HOST}" "
 echo 'chip SHF_BYPASS:'
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 2>&1 | grep SHF_BYPASS
@@ -84,7 +53,6 @@ echo 'bridge:'
 systemctl is-active jasper-aec-bridge.service
 echo 'aec_mode.env:'
 cat /var/lib/jasper/aec_mode.env 2>/dev/null || echo '(default auto)'
-echo 'voice measurement mode: ACTIVE (sessions suppressed; wakes log only)'
 ")
 
 cat <<HEADER
@@ -93,58 +61,92 @@ cat <<HEADER
   Wake-rate test: $LABEL
 ═══════════════════════════════════════════════════════
 
-  Pi journal anchor: $START_ON_PI
+  Output:    $OUT_LOCAL/
+  Capture:   ${DURATION}s
 
 $PRE_STATE
 
-  ▶ START THE PHONE TRACK NOW.
-  ▶ The track has 20 'Jarvis' utterances over ~100 s.
-  ▶ Press Enter as soon as the track has FINISHED.
-
 HEADER
 
-read -p "  → Track done? Press Enter: " _DUMMY
+# Run capture: stop jasper-voice (no sessions, no TTS), bridge in
+# debug-record mode, wait DURATION, restore everything.
+ssh "${PI_USER}@${PI_HOST}" "sudo bash -s '$DURATION' '$OUT_REMOTE'" <<'REMOTE_SCRIPT' 2>&1 | tee "$OUT_LOCAL/capture.log"
+set -euo pipefail
+DURATION="$1"
+OUT="$2"
 
-END_ON_PI="$(ssh "${PI_USER}@${PI_HOST}" 'date "+%Y-%m-%d %H:%M:%S"')"
+mkdir -p "$OUT"
+chmod 0777 "$OUT"
 
-# Pull wake events from the journal during the test window.
-# `--since` and `--until` both interpret in the system's local tz.
-WAKE_LINES=$(ssh "${PI_USER}@${PI_HOST}" \
-    "sudo journalctl -u jasper-voice --since '$START_ON_PI' --until '$END_ON_PI' \
-     | grep -E 'event=wake\.detected|event=wake\.late_cancel' || true")
+OVERRIDE_DIR=/run/systemd/system/jasper-aec-bridge.service.d
+mkdir -p "$OVERRIDE_DIR"
+cat > "$OVERRIDE_DIR/debug-record.conf" <<EOF
+[Service]
+Environment=JASPER_AEC_DEBUG_RECORD_DIR=$OUT
+EOF
 
-WAKE_COUNT=$(echo "$WAKE_LINES" | grep -c 'event=wake.detected' || true)
-LATE_COUNT=$(echo "$WAKE_LINES" | grep -c 'event=wake.late_cancel' || true)
+cleanup() {
+    echo "Cleanup: restoring jasper-voice + bridge to production state ..."
+    rm -f "$OVERRIDE_DIR/debug-record.conf"
+    rmdir "$OVERRIDE_DIR" 2>/dev/null || true
+    systemctl daemon-reload
+    systemctl restart jasper-aec-bridge.service
+    systemctl start jasper-voice.service
+}
+trap cleanup EXIT
 
-# Empty grep returns "0" but with set -e the || true above guards.
-WAKE_COUNT=${WAKE_COUNT:-0}
-LATE_COUNT=${LATE_COUNT:-0}
+systemctl stop jasper-voice.service
+systemctl daemon-reload
+systemctl restart jasper-aec-bridge.service
 
-# Compute a rate if 20-utterance track was used (typical).
-RATE_PCT="$(awk -v c="$WAKE_COUNT" 'BEGIN { printf "%.0f", c * 100 / 20 }')"
+echo "Bridge in debug-record; jasper-voice stopped. Warmup 10s ..."
+sleep 10
 
+echo ""
+echo "  ▶ START THE PHONE TRACK NOW. Capturing for ${DURATION}s."
+echo ""
+sleep "$DURATION"
+
+sleep 1
+echo "Capture done."
+REMOTE_SCRIPT
+
+# Pull artifacts back
+rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"
+
+# Run offline wake detection on the Pi (where openwakeword is installed).
+# Pass threshold override if requested.
+THRESH_ARG=""
+[[ -n "$THRESHOLD" ]] && THRESH_ARG="--threshold $THRESHOLD"
+
+echo ""
+echo "Running offline wake-word detection on aec_output.wav ..."
+WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
+    "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
+        $THRESH_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
+
+# Save + display
 {
   echo "Wake-rate test result"
   echo "Label:        $LABEL"
-  echo "Start:        $START_ON_PI"
-  echo "End:          $END_ON_PI"
+  echo "Capture:      ${DURATION}s"
   echo ""
   echo "$PRE_STATE"
   echo ""
-  echo "─── Counts ───"
-  echo "  Wake detected (success):       $WAKE_COUNT / 20  ($RATE_PCT%)"
-  echo "  Late cancels (expected match): $LATE_COUNT"
-  echo "    (in measurement mode every wake should appear in both — if"
-  echo "     LATE_COUNT differs much from WAKE_COUNT, something else is"
-  echo "     gating sessions e.g. mic mute, peering loss.)"
-  echo ""
-  echo "─── Raw matching lines ───"
-  if [[ -n "$WAKE_LINES" ]]; then
-      echo "$WAKE_LINES"
-  else
-      echo "(no wake events in window — speaker likely deaf during test)"
-  fi
-} | tee "$RESULT_FILE"
+  echo "─── Offline wake detection on aec_output.wav ───"
+  echo "$WAKE_RESULT"
+} | tee "$OUT_LOCAL/result.txt"
+
+# Also detect on the raw mic (pre-AEC) for comparison — answers
+# "would chip-direct mic have worked?" without needing a separate
+# capture.
+echo ""
+echo "─── Offline wake detection on mic_ch1.wav (chip raw, pre-AEC) ───"
+RAW_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
+    "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
+        $THRESH_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
+echo "$RAW_RESULT" | tee -a "$OUT_LOCAL/result.txt"
 
 echo ""
-echo "  Saved: $RESULT_FILE"
+echo "Files: $OUT_LOCAL/"
+ls "$OUT_LOCAL/"
