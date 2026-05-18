@@ -1,4 +1,4 @@
-"""Regression test: jasper.web.__main__ must wire every wizard fully.
+"""Regression tests for the 'lost edit' bug class.
 
 PR #146 (multi-device peering) added a new wizard but lost two lines
 during an edit-merge race: `peering_setup` never made it into the
@@ -6,33 +6,45 @@ during an edit-merge race: `peering_setup` never made it into the
 `main()` without ever being defined. The module compiles fine —
 Python only resolves the names at call time — so the bug only
 surfaced when systemd started the daemon, at which point ALL eight
-wizards went down (jasper-web crash-looped, /spotify, /voice,
-/wake, /wifi etc. all became unreachable).
+wizards went down.
 
-These are static checks against the exact pattern that bit us: for
-each `<name>_setup.X` and `<name>_port` reference in `__main__.py`,
-the corresponding import / variable must be present.
+Two layers of defense here:
 
-A heavier dynamic check (mocking out socket-binding and running
-main() under pytest) would catch more, but adds enough fragility
-that it'd flake. The regex pattern-match below catches the bug
-class that has actually happened.
+1. **Pattern-specific checks against `__main__.py`** — catches the
+   exact `__main__.py` bug that bit us (every `<name>_setup.X` has
+   a matching import; every `<name>_port` has an assignment).
+
+2. **ruff F821 across every peering-touched file** — catches the
+   same lost-edit pattern (undefined name) anywhere else in the
+   package. ruff is already in our dev dependencies and is the
+   battle-tested implementation of pyflakes-style undefined-name
+   detection (handles match/case patterns, comprehensions, walrus,
+   nested scopes, etc.). If ruff isn't available locally the test
+   skips rather than flakes.
 """
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
+import pytest
 
-_MAIN_PATH = Path(__file__).resolve().parent.parent / "jasper" / "web" / "__main__.py"
+
+_REPO = Path(__file__).resolve().parent.parent
+_MAIN_PATH = _REPO / "jasper" / "web" / "__main__.py"
+
+
+# ----------------------------------------------------------------------
+# Layer 1 — pattern checks on __main__.py
+# ----------------------------------------------------------------------
 
 
 def test_every_referenced_setup_module_is_imported():
     """Every `xxx_setup.YYY` lookup must have `xxx_setup` in the
     package's `from . import (...)` tuple."""
     text = _MAIN_PATH.read_text()
-    # Find every `<word>_setup.` reference (the `.` rules out the
-    # bare `_setup` from things like `_systemd.setup`).
     referenced = set(re.findall(r"\b([a-z][a-z0-9_]*_setup)\.", text))
     for mod in sorted(referenced):
         in_bulk_import = re.search(
@@ -60,3 +72,46 @@ def test_every_referenced_port_var_is_defined():
             f"`{var} = int(os.environ.get(\"JASPER_*_WEB_PORT\", \"NNNN\"))` "
             f"alongside the other port-var declarations."
         )
+
+
+# ----------------------------------------------------------------------
+# Layer 2 — ruff F821 across the peering surface
+# ----------------------------------------------------------------------
+
+
+# Files where a lost edit during a peering refactor could re-introduce
+# the bug class. Adding a new file? Add it here.
+_PEERING_FILES = [
+    "jasper/peering/",  # whole subtree
+    "jasper/web/peering_setup.py",
+    "jasper/web/__main__.py",
+    "jasper/voice_daemon.py",
+    "jasper/control/server.py",
+    "jasper/cli/doctor.py",
+]
+
+
+def test_peering_surface_has_no_undefined_names():
+    """Run ruff F821 (undefined-name) over every peering-touched file.
+
+    The bug that motivated this would have shown up as
+    `peering_setup` reported as undefined in jasper/web/__main__.py.
+    """
+    ruff = shutil.which("ruff")
+    if ruff is None:
+        pytest.skip("ruff not installed; install via `pip install ruff`")
+    paths = [str(_REPO / p) for p in _PEERING_FILES]
+    result = subprocess.run(
+        [ruff, "check", "--select=F821", "--no-cache", "--output-format=concise",
+         *paths],
+        capture_output=True, text=True, cwd=str(_REPO),
+    )
+    # Exit 0 = no findings, exit 1 = findings. Other codes = ruff error.
+    if result.returncode == 0:
+        return
+    if result.returncode == 1:
+        pytest.fail(
+            "ruff F821 found undefined names in the peering surface:\n"
+            + result.stdout,
+        )
+    pytest.skip(f"ruff failed to run (exit {result.returncode}): {result.stderr}")
