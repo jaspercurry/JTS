@@ -57,10 +57,16 @@ install_deps() {
     apt-get install -y --no-install-recommends \
         python3 python3-venv python3-dev \
         build-essential libasound2-dev libasound2 portaudio19-dev \
+        libasound2-plugins \
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
         libwebrtc-audio-processing-dev pkg-config \
         nginx-light openssl
+    # libasound2-plugins is REQUIRED for the rate_converter line in
+    # deploy/alsa/asoundrc.jasper. Without it ALSA silently falls back
+    # to the linear resampler which loses ~12 dB of 4-8 kHz content
+    # during 44.1→48 conversion, which sabotages AEC speech-band
+    # performance. See docs/HANDOFF-aec.md "Resampler quality".
 
     # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
     # the bluez-alsa userspace and the bt-agent helper. All of these

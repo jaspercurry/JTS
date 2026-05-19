@@ -526,6 +526,19 @@ canonical reference (firmware variants, mixer state, failure
 modes, diagnostic cookbook) is
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
+**Resampler quality matters as much as the engine.** AEC's
+reference signal reaches the engine via ALSA `plug:` rate
+conversion (44.1 kHz from AirPlay/Spotify/BT → 48 kHz loopback).
+Without `libasound2-plugins` installed + `defaults.pcm.rate_converter
+"samplerate_best"` set in `/root/.asoundrc`, ALSA falls back to a
+linear interpolator that loses ~12 dB of 4-8 kHz content,
+crippling AEC speech-band performance. Both are wired into
+`deploy/install.sh` and `deploy/alsa/asoundrc.jasper`. See
+[docs/HANDOFF-aec.md "Resampler quality — the 2026-05-19 finding"](docs/HANDOFF-aec.md)
+for the full diagnosis, the wake-rate data that exposed it, and
+why we did NOT use CamillaDSP's `capture_samplerate` route instead
+(shairport-sync#1980 territory).
+
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant — the bridge reads raw mic 0 from channel 2 of the chip's
 USB capture, which only exists on that variant. The known-good

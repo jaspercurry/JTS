@@ -1,3 +1,17 @@
+# Default ALSA rate converter for every `plug:` / `plughw:` rate
+# conversion on the box. Uses libsamplerate sinc-best from
+# libasound2-plugins. Falls back to the built-in "linear" resampler
+# if libasound2-plugins isn't installed — which is the failure mode
+# that produced ~12 dB of 4-8 kHz loss in shairport's 44.1→48 plug,
+# crippling AEC speech-band performance (May 2026 investigation in
+# docs/HANDOFF-aec.md). Affects:
+#   - shairport-sync writing plughw:Loopback,0,0 (44.1k → 48k)
+#   - bluealsa-aplay's plug operations
+#   - jasper-aec-bridge reading pcm.jasper_ref (a `plug:` wrapper)
+# Pi 5 cost: ~3-5% of one A76 core on the resampler thread. Plenty
+# of headroom. Switch to `samplerate_medium` if CPU ever matters.
+defaults.pcm.rate_converter "samplerate_best"
+
 # /root/.asoundrc — installed by deploy/install.sh with
 # __DONGLE_CARD__ substituted by the detected USB-C dongle name.
 #
