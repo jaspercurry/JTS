@@ -175,8 +175,8 @@ Design constraints the supervisor satisfies:
   Exact match (case-insensitive); other values, including `off` /
   `0` / `no`, log a warning and proceed as `auto`.
 - **Observable.** Structured `event=shairport.*` log lines for every
-  state transition; supervisor state surfaces under
-  `/state.resilience.shairport` for the `/system` dashboard.
+  state transition; supervisor state surfaces in the `/state` JSON
+  under `resilience.shairport`.
 
 What this Tier 3 instance is NOT designed to handle:
 

@@ -277,7 +277,8 @@ def snapshot() -> dict[str, Any]:
 def start_supervisor() -> threading.Thread | None:
     """Start the supervisor in a background thread. No-op when
     `JASPER_SHAIRPORT_SUPERVISOR=disabled` (exact match, case-
-    insensitive). Idempotent."""
+    insensitive). Idempotent under sequential calls — the sole
+    caller is `jasper-control`'s single-threaded `main()`."""
     global _supervisor, _supervisor_thread
     if _supervisor_thread is not None:
         return _supervisor_thread
