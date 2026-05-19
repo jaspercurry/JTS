@@ -40,6 +40,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
+from . import shairport_supervisor
+
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
 
@@ -479,6 +481,9 @@ async def _get_state(
         "active_source": active_source,
         "satellites": {
             "dial": dial,
+        },
+        "resilience": {
+            "shairport": shairport_supervisor.snapshot(),
         },
     }
 
@@ -1203,6 +1208,11 @@ def main(argv: list[str] | None = None) -> int:
     # /peers/ web wizard (added in a follow-up PR), which writes the
     # env file and restarts jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()
+    # Tier 3 resilience: protocol-level liveness probe for shairport-sync
+    # so a wedged AP2 control plane recovers without manual intervention.
+    # docs/HANDOFF-resilience.md (Tier 3). Off via
+    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
+    shairport_supervisor.start_supervisor()
     logger.info(
         "jasper-control listening on http://%s:%d "
         "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",

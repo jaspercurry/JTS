@@ -110,11 +110,89 @@ that generically.
 |---|---|---|---|
 | 1 | `sdnotify` heartbeat thread with progress sentinel | Logic deadlock; blocked event loop; slow loop. `bump()` is called from each successful frame; the heartbeat thread only pats systemd if `now - last_progress < 5 s`, so a wedged loop stops patting even though the heartbeat thread itself keeps running. | ✅ — `jasper/watchdog.py`, wired into bridge `_aec_loop` and voice `WakeLoop.run` |
 | 2 | systemd `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` + `TimeoutStopSec=5s` + `StartLimitBurst=20` | Process exit, hang, fatal ALSA error. If the Tier 1 heartbeat stops patting, this fires at 30 s and brings the daemon back with a fresh process in ~2 s. | ✅ — `deploy/systemd/jasper-aec-bridge.service`, `deploy/systemd/jasper-voice.service` |
-| 3 | `OnFailure=jasper-recover@%n.service` chained to a templated recovery unit that escalates after `StartLimitBurst` is exhausted | Dependent-daemon failures, repeated restart loops. Useful when restarts don't succeed because a sibling is broken (e.g. camilla wedged, bridge keeps failing). | ❌ — not currently wired. May become unnecessary now that UDP eliminates the main "siblings break each other" case. Deferred pending evidence of need. |
+| 3 | Sidecar protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session and rate-limited | Third-party daemons that wedge at the protocol layer while still passing systemd's liveness check. shairport-sync AP2 today; pattern generalizes to other long-lived third-party renderers if they demonstrate the same failure class. | ✅ — `jasper/control/shairport_supervisor.py`, started from `server.py:main` via `start_supervisor()` |
 | 4 | Kernel-state recovery script (`rmmod && modprobe snd_aloop`, after stopping all consumers; rate-limited via state file) | snd-aloop kernel-side wedges, dsnoop wedges. | ❌ — not currently wired. The original motivation (bridge↔voice snd-aloop) is gone; the music-chain Loopback hasn't shown this failure mode in production. Deferred. |
-| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=15s` in `/etc/systemd/system.conf.d/` | Kernel panic, PID 1 hang, total system wedge. | ❌ — not currently wired. The Pi 5's `bcm2712_wdt` driver is available in the 64-bit kernel; enabling is a one-line config + reboot. Worth doing once Tiers 1+2 have soaked. |
+| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=15s` in `/etc/systemd/system.conf.d/` | Kernel panic, PID 1 hang, total system wedge. | ❌ — not currently wired. The Pi 5's `bcm2712_wdt` driver is available in the 64-bit kernel; enabling is a one-line config + reboot. Worth doing once Tier 3 has soaked. |
 
-The honest framing: today's shipped resilience is **Tier 1, Tier 2, and the architectural choice that obviated Tiers 3–4 for the AEC path.** Tier 5 is cheap and worth doing; Tiers 3–4 are kept on the deferred list with a clear trigger ("do this if we hit a wedge that the systemd watchdog can't fix").
+The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shairport-sync only), and the architectural choice that obviated kernel-state recovery for the AEC path.** Tier 4 stays on the deferred list with a clear trigger ("rmmod + modprobe if snd-aloop ever wedges again"); Tier 5 (hardware watchdog) is cheap and worth doing once Tier 3 has soaked.
+
+### 3. Wire third-party daemons into the ladder — protocol-level supervisor
+
+Tiers 1+2 catch one failure class exceptionally well: **liveness of
+daemons we own**. We control the source, we add the sd_notify
+heartbeat, the work loop bumps it, systemd kills and restarts when it
+stops.
+
+What that ladder doesn't catch: a third-party daemon that wedges at
+the protocol layer while still passing every systemd liveness check.
+The motivating example, observed in production 2026-05-19:
+shairport-sync v4.3.7's AP2 control plane occasionally hangs after
+`accept()` on a per-connection RTSP handshake. The process stays
+alive, mDNS still advertises the AirPlay service, MPRIS still answers
+`PlaybackStatus`, and systemd sees nothing to restart. From the
+user's vantage point, "JTS" appears in the AirPlay picker but every
+new SETUP times out. The only manual fix has been
+[`scripts/airplay-reset.sh`](../scripts/airplay-reset.sh).
+
+The closest upstream report is
+[shairport-sync#2024](https://github.com/mikebrady/shairport-sync/issues/2024),
+where `strace` showed the listener thread stuck in `pselect6`. Issue
+closed without a code fix. Restarting the unit resolves it.
+
+The supervisor at
+[`jasper/control/shairport_supervisor.py`](../jasper/control/shairport_supervisor.py)
+adds Tier 3: a single async coroutine running on its own thread +
+asyncio loop inside `jasper-control` (same shape as
+`start_peering_daemon_if_enabled`). Every 30 s ± 3 s jitter it opens
+a TCP connection to `127.0.0.1:7000`, sends a minimal RFC 2326
+`OPTIONS *` request, and expects `RTSP/1.0 200` within 3 s. After
+3 consecutive failures, gated on MPRIS `PlaybackStatus != "Playing"`,
+it issues `systemctl reset-failed + --no-block restart` on
+`shairport-sync.service` and `nqptp.service` — the same units the
+manual fix already touches.
+
+Design constraints the supervisor satisfies:
+
+- **No new long-running process.** The supervisor is one async task
+  on infrastructure jasper-control already owns. Pss cost ≈ 0;
+  restart latency unchanged.
+- **The probe doesn't disturb a live session.** shairport's
+  `handle_options_2` returns 200 OK pre-pair, in a fresh
+  per-connection thread, independent of any in-flight `principal_conn`.
+- **The gate is the load-bearing safety net.** Probe failure during
+  a real listening session is more likely a hiccup than a wedge;
+  the gate keeps us from kicking the user.
+- **Rate limit prevents storms.** One supervisor-driven restart per
+  10 minutes. If the wedge persists past that, the underlying issue
+  is upstream and our restart isn't the right hammer.
+- **Failure modes degrade safely.** A probe exception is counted as
+  a probe failure (the wedge signature is "no response"; a Python
+  exception in our probe code is no better). A gate exception fails
+  safe to "active" (better to leave a possibly-live session alone
+  than risk killing one on a transient DBus stall).
+- **Off switch.** `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
+  `/etc/jasper/jasper.env` parks the thread before it starts.
+  Exact match (case-insensitive); other values, including `off` /
+  `0` / `no`, log a warning and proceed as `auto`.
+- **Observable.** Structured `event=shairport.*` log lines for every
+  state transition; supervisor state surfaces in the `/state` JSON
+  under `resilience.shairport`.
+
+What this Tier 3 instance is NOT designed to handle:
+
+- An MPRIS-says-Playing-but-RTSP-wedged inconsistency. The gate is
+  conservative; in that very rare state the user gets silence and
+  the fix is the `/system/restart/audio` button. A secondary
+  detector based on `nqptp` shm `local_time` stagnation could close
+  this gap; deferred until observed.
+- A wedge in nqptp independently of shairport. The restart action
+  bundles both units because the manual fix has always done so, but
+  the detector only probes shairport's RTSP.
+
+The same probe → gate → rate-limited restart shape generalizes to
+other third-party daemons we depend on (`librespot`, `bluez-alsa`).
+None have demonstrated this failure class. The pattern is here if
+they do — don't preemptively spread.
 
 ### Hardware-event recovery — sidebar to the ladder
 
@@ -237,12 +315,23 @@ For anyone touching the resilience code:
   then runs the reconciler so mic/AEC/voice state matches present
   hardware. Triggered by the udev rule above; idempotent so re-fires
   on rapid replug are harmless.
+- `jasper/control/shairport_supervisor.py` — Tier 3 supervisor for
+  shairport-sync's AP2 control plane. `ShairportSupervisor.run()` is
+  the supervisor loop; `_tick()` is the pure policy under test.
+  Overridable `probe`, `is_session_active`, `restart_shairport` IO
+  methods are the seams for unit testing. Module-level `snapshot()`
+  feeds `/state.resilience.shairport`. Started from `server.py:main`
+  via `start_supervisor()`; no-op when
+  `JASPER_SHAIRPORT_SUPERVISOR=disabled`.
 - `tests/test_watchdog.py` — sentinel-contract tests
   (fresh/stale/recovery/disabled-fallback).
 - `tests/test_udp_mic_capture.py` — UDP receiver contract
   (parse-forms, factory dispatch, end-to-end frame yield).
 - `tests/test_aec_reconcile.py` — stale-UDP and hardware-mode tests
   for the reconciler.
+- `tests/test_shairport_supervisor.py` — policy contract
+  (threshold / gate / rate-limit / failure-mode degradation) + default
+  RTSP probe IO contract against a real asyncio TCP server.
 
 ---
 
@@ -268,6 +357,11 @@ manual verification.
   should show stale UDP being cleared to `Array`; `jasper-aec-bridge`
   should be disabled/inactive and `jasper-voice` should be stopped
   rather than watchdog-looping.
+- `journalctl -u jasper-control | grep 'event=shairport.start'` shows
+  one supervisor-start line per jasper-control boot. Once the cold
+  start has elapsed (60 s default), `curl -s localhost:8780/state |
+  jq .resilience.shairport` returns `enabled=true` with a recent
+  `last_probe_at` and `last_probe_ok=true`.
 
 Smoke test that the watchdog actually catches a wedge:
 
@@ -303,9 +397,16 @@ sudo journalctl -fu jasper-dongle-recover
 - **A separate watchdog daemon** (monit, supervisord, custom).
   systemd's built-in `sd_notify` + `Restart=on-watchdog` does
   everything those would, with no new process.
-- **Tier 3–5 today.** Each has a clear trigger condition for
-  when to wire it. Shipping Tiers 1+2 first lets us see what
-  actually fails next before adding more machinery.
+- **Tier 4–5 today.** Each has a clear trigger condition for
+  when to wire it. Tiers 1+2 ship in the AEC + voice paths; Tier 3
+  shipped after we observed the failure class it covers (shairport
+  AP2 wedge, 2026-05-19). Tier 4 (kernel-state recovery) and Tier 5
+  (hardware watchdog) wait on evidence of need.
+- **A generic "third-party daemon supervisor" framework.** Tier 3's
+  shape (probe → gate → rate-limited restart) is reusable, but
+  shairport is the only third-party daemon that has demonstrated the
+  failure class. Lifting it into a generic supervisor before there's
+  a second instance buys complexity, not value.
 
 ---
 
