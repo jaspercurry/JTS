@@ -385,19 +385,116 @@ and [`scripts/_offline_wake_count.py`](../scripts/_offline_wake_count.py).
 ### What's still unknown
 
 - **Does fixing the resampler make AEC a net positive again?** Open.
-- **The chip HPF appears to be much weaker than documented.** The
-  XVF datasheet describes `AEC_HPFONOFF=2` as a 4th-order Butter
-  at 125 Hz (should give −24 dB/octave). Measured `mic_ch1` shows
-  only −7 dB attenuation 125→62.5 Hz, consistent with a 1st-order
-  filter — or possibly no filter at all if SHF_BYPASS=1 disables
-  the HPF too. Not investigated yet. If the chip HPF turns out to
-  be ineffective, we may want to push the bridge's reference HPF
-  cutoff up (currently 125 Hz) to attenuate bass harmonics that
-  confuse AEC.
+- **The chip HPF is bypassed in our production config — by design.**
+  We initially flagged the measured ~6 dB/oct rolloff in `mic_ch1`
+  (vs the −24 dB/octave a documented 4th-order Butter at 125 Hz
+  should give) as a mystery. Verified 2026-05-19 against two
+  independent literature reviews of the v3.2.1 User Guide +
+  Programming Guide: the chip HPF lives *inside* the SHF block.
+  `SHF_BYPASS=1` (our production setting) bypasses the entire SHF
+  block, which means the HPF is *not* applied even though
+  `AEC_HPFONOFF=2` is set. The 6 dB/oct slope we measured is the
+  **MEMS capsule's natural mechanical low-frequency rolloff** (per
+  TDK InvenSense AN-1112: "the low frequency roll-off below the
+  lower −3 dB point is first order"). No firmware anomaly; no bug
+  to file. If we ever want real HPF action on the chip side we'd
+  need to either (a) set SHF_BYPASS=0 — which re-engages the chip
+  AEC, broken in our external-DAC topology, separate problem; or
+  (b) add a host-side HPF to the bridge's mic stream. Option (b)
+  is the lower-risk path if speech-band bass cleanup is needed.
 - **Phase 2 testing methodology improvements.** Phone playback volume
   drifted between v2 and v3-v5 (the operator accidentally adjusted
   it), which produced a lot of the run-to-run variance. Future
   Phase 2 runs should pin phone volume via a setup checklist.
+
+### Subtleties worth knowing (literature review 2026-05-19)
+
+These come from a thorough review of the XVF3800 v3.2.1 docs +
+Seeed README + community signals against our actual chip state.
+None of them change our architecture — but all of them have
+mis-led prior thinking at some point.
+
+- **The chip HPF is inside the SHF block.** Both reviewers
+  independently confirmed this. The Programming Guide §4.2.1
+  states `SHF_BYPASS=1` produces "the raw (but amplified)
+  microphone signals" on output channels — i.e. HPF, AEC, BF, NS,
+  AGC all skipped. The `AEC_*` parameter prefix and the
+  auto-generated `shf_aec_cmds.yaml` file corroborate that the
+  HPF is part of the licensed Philips BeClear SHF library.
+- **`AUDIO_MGR_OP_R` category 7 is dual-purpose.** Source N can
+  mean either "AEC residual for mic N" (when `AEC_ASROUTGAIN=0`)
+  OR "ASR output for beam N" (when `AEC_ASROUTGAIN > 0`). Our
+  current `AEC_ASROUTGAIN=1.0` (Seeed default) means cat-7 routes
+  output the ASR variant — but our `SHF_BYPASS=1` makes both
+  interpretations moot. If we ever need to verify the HPF curve
+  in isolation, we'd set `AEC_ASROUTGAIN=0` first.
+- **There is no mux tap between HPF and AEC.** The chip exposes
+  the input to SHF (cat 3 = amplified-with-system-delay) and the
+  output of AEC (cat 7 = AEC residual or ASR), but nothing in
+  between. Verifying HPF behavior in isolation requires the
+  **difference of two captures** at different `AEC_HPFONOFF`
+  settings, not a single direct tap.
+- **Seeed channel layouts under `SHF_BYPASS=0` (not our config).**
+  Reference for future debugging: stock 2-ch USB firmware emits
+  ch 0 = conference-tuned beam, ch 1 = ASR-tuned beam (both
+  fully processed). Seeed's 6-ch USB firmware (which we use)
+  adds ch 2-5 = raw mics 0-3 (mux category 1, pre-amplification).
+  None of this matters in our `SHF_BYPASS=1` config — the bypass
+  means all of ch 0/1 carry raw-amplified mic data regardless of
+  mux routing — but it'll matter if anyone ever tries
+  `SHF_BYPASS=0` while debugging.
+- **The "8-hour audio watchdog" only applies to the XK-VOICE-SQ66
+  dev kit**, not the Seeed ReSpeaker (which is a licensed
+  production XVF3800 device). Per User Guide §2.1: "Licensed
+  production XVF3800 devices do not have this restriction."
+  External "Google research" sources have been seen claiming this
+  is a runtime concern on Seeed boards and recommending
+  `SHF_BYPASS=1` as a workaround. That recommendation is correct
+  for our config but for the *wrong* reason — we use SHF_BYPASS=1
+  to skip the broken-in-our-topology chip AEC, not to avoid a
+  non-existent watchdog.
+- **`PP_AGCTIME` (slow constant) is the right name; `PP_AGCALPHASLOW`
+  is fabricated.** Some external analyses cite the latter; it
+  doesn't exist in the User Guide. Confirmed on our device:
+  `PP_AGCTIME=0.9` (matches doc), `PP_AGCFASTTIME=0.1` (doc claims
+  0.6 — may be a firmware difference or a Seeed override).
+- **DO NOT use `SAVE_CONFIGURATION`.** Some external sources
+  recommend it for persisting tuning changes. Per memory note
+  `project_xvf_alsa_mixer_mute_trap.md` + this doc, it's a brick
+  hazard on certain firmware versions (respeaker repo issue #8).
+  Our pattern: chip params reset on boot, `jasper-aec-init`
+  reapplies them — that's the safe path.
+
+### Chip-pipeline-only alternative considered + rejected
+
+External literature occasionally recommends "trust the chip's
+internal pipeline, drop the host-side WebRTC AEC." That would
+mean `SHF_BYPASS=0` + taking ch 0 (full conference output) as
+the wake-word input.
+
+We rejected this on two grounds:
+
+1. **Topology mismatch:** the chip's AEC pipeline assumes the
+   chip drives the speaker via its own codec, which we do NOT
+   do — speakers are driven by a separate USB DAC (Apple dongle).
+   Per User Guide §4.2.1, `AEC_FAR_EXTGAIN` auto-mirrors the
+   host's USB-OUT volume; in our topology it parks at −40 dB
+   internally, sabotaging the chip's own AEC reference. We
+   measured ≤2 dB attenuation across every configuration tested.
+   Documented at length in "What we found about chip-side AEC in
+   our topology" below.
+
+2. **Direct empirical evidence:** Phase 2 wake-rate test 2026-05-19
+   included a run with `SHF_BYPASS=0` (chip pipeline fully
+   engaged). Result: 15% wake-rate on both AEC ON and AEC OFF —
+   *worse* than `SHF_BYPASS=1` runs (35% and 60% respectively).
+   So even before the resampler fix, the chip pipeline was worse
+   than our hybrid.
+
+The recommendation is sound for the chip's intended geometry
+(chip-driven speaker). It's wrong for ours. Future sessions
+should not re-litigate this without first measuring under the
+new resampler-fix conditions.
 
 ---
 
