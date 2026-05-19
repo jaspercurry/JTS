@@ -39,11 +39,23 @@ OUT_REMOTE="/tmp/wake-rate-${TS}"
 mkdir -p "$OUT_LOCAL"
 
 LOCAL_PY="$REPO_ROOT/scripts/_offline_wake_count.py"
+LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/jarvis.wav"
 if [[ ! -f "$LOCAL_PY" ]]; then
     echo "ERROR: $LOCAL_PY missing" >&2
     exit 1
 fi
 scp -q "$LOCAL_PY" "${PI_USER}@${PI_HOST}:/tmp/_offline_wake_count.py"
+
+# Copy the wake-test template too if we have one — enables the
+# template-based per-utterance metadata mode (sees silent misses).
+TEMPLATE_ARG=""
+if [[ -f "$LOCAL_TEMPLATE" ]]; then
+    scp -q "$LOCAL_TEMPLATE" "${PI_USER}@${PI_HOST}:/tmp/_wake_test_template.wav"
+    TEMPLATE_ARG="--template /tmp/_wake_test_template.wav"
+else
+    echo "WARN: $LOCAL_TEMPLATE not present — will fall back to peak-only "
+    echo "      detection (no silent-miss tracking). Run make-wake-test-track.sh first."
+fi
 
 # Capture pre-test state for the log
 PRE_STATE=$(ssh "${PI_USER}@${PI_HOST}" "
@@ -123,7 +135,7 @@ echo ""
 echo "Running offline wake-word detection on aec_output.wav ..."
 WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
-        $THRESH_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
+        $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
 
 # Save + display
 {
@@ -144,7 +156,7 @@ echo ""
 echo "─── Offline wake detection on mic_ch1.wav (chip raw, pre-AEC) ───"
 RAW_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
-        $THRESH_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
+        $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
 echo "$RAW_RESULT" | tee -a "$OUT_LOCAL/result.txt"
 
 echo ""
