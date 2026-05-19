@@ -310,8 +310,10 @@ reference. Currently:
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
   five-tier resilience ladder, the 2026-05-11 incident, the
   decision to swap the bridge→voice transport from snd-aloop to
-  UDP. Read before touching `jasper/watchdog.py` or the
-  `Type=notify` / `WatchdogSec=` blocks in any service unit.
+  UDP, and the Tier 3 protocol-level supervisor for shairport-sync.
+  Read before touching `jasper/watchdog.py`,
+  `jasper/control/shairport_supervisor.py`, or the `Type=notify` /
+  `WatchdogSec=` blocks in any service unit.
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option

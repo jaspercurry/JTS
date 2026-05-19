@@ -358,6 +358,7 @@ async def _get_state(
 
     from .. import librespot_state
     from ..camilla import CamillaController
+    from . import shairport_supervisor
 
     # Cheap synchronous reads first.
     voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
@@ -479,6 +480,9 @@ async def _get_state(
         "active_source": active_source,
         "satellites": {
             "dial": dial,
+        },
+        "resilience": {
+            "shairport": shairport_supervisor.snapshot(),
         },
     }
 
@@ -1203,6 +1207,12 @@ def main(argv: list[str] | None = None) -> int:
     # /peers/ web wizard (added in a follow-up PR), which writes the
     # env file and restarts jasper-control to pick up the new mode.
     start_peering_daemon_if_enabled()
+    # Tier 3 resilience: protocol-level liveness probe for shairport-sync
+    # so a wedged AP2 control plane recovers without manual intervention.
+    # docs/HANDOFF-resilience.md (Tier 3). Off via
+    # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
+    from . import shairport_supervisor
+    shairport_supervisor.start_supervisor()
     logger.info(
         "jasper-control listening on http://%s:%d "
         "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",

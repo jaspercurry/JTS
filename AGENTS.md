@@ -602,6 +602,43 @@ versions (respeaker repo issue #8).
 
 ---
 
+## shairport-sync AP2 wedge — auto-recovers
+
+shairport-sync's AirPlay 2 control plane occasionally wedges with the
+process alive but unable to accept new SETUPs (Pi shows in the picker
+but "cannot connect"). Closest upstream report:
+[shairport-sync#2024](https://github.com/mikebrady/shairport-sync/issues/2024).
+No upstream code fix.
+
+The Tier 3 supervisor at
+[`jasper/control/shairport_supervisor.py`](jasper/control/shairport_supervisor.py)
+probes RTSP `OPTIONS *` on `127.0.0.1:7000` every 30 s; after 3
+consecutive failures, gated on no active session, it restarts
+shairport-sync + nqptp. Detection latency ~90 s. The gate ensures
+live sessions aren't disrupted; a 10-minute rate limit prevents
+restart storms.
+
+Manual fix (still works, faster than the 90 s window):
+
+```sh
+bash scripts/airplay-reset.sh
+```
+
+Observability:
+
+```sh
+curl -s http://jts.local:8780/state | jq .resilience.shairport
+ssh pi@jts.local 'journalctl -u jasper-control | grep event=shairport'
+```
+
+Off switch: set `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
+`/etc/jasper/jasper.env`, then restart `jasper-control`.
+
+Design rationale: [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
+(Tier 3).
+
+---
+
 ## Satellite devices — opt-in hardware
 
 The cross-cutting design home for ESP32 satellites (existing rotary

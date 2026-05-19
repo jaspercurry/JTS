@@ -610,21 +610,34 @@ Each has its own remediation:
 - shairport-sync.service is active but no session is established
 
 ### Cause
-This is the canonical shairport AP2 wedge — typically happens after an
-abrupt client disconnect (force-quit AirPlay sender, sleep mid-session).
-The PTP state in nqptp gets stuck.
+The canonical shairport AP2 wedge — the per-connection RTSP handshake
+hangs after `accept()`. Closest upstream report,
+[shairport-sync#2024](https://github.com/mikebrady/shairport-sync/issues/2024),
+showed the listener thread stuck in `pselect6`. No upstream fix exists.
 
-### Fix
+### Recovery (automatic)
+The Tier 3 supervisor at
+[`jasper/control/shairport_supervisor.py`](../jasper/control/shairport_supervisor.py)
+catches this without manual intervention. Detection latency is ~90 s
+(3 consecutive RTSP-`OPTIONS` failures at 30 s cadence) plus a ~2 s
+restart. Gated on `PlaybackStatus != "Playing"` so a live session is
+never disrupted; rate-limited to one restart per 10 minutes.
+
+Design rationale: [docs/HANDOFF-resilience.md (Tier 3)](HANDOFF-resilience.md).
+Disable knob: `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
+`/etc/jasper/jasper.env`.
+
+### Recovery (manual, faster)
+When you don't want to wait the 90 s detection window:
+
 ```sh
 sudo systemctl restart nqptp shairport-sync
-# or, if you have it:
+# or, equivalently:
 bash scripts/airplay-reset.sh
 ```
 
-After ~2 s, the device should be selectable again and audio should flow.
-
-See the memory entry "shairport-sync AP2 wedge" + [`scripts/airplay-reset.sh`](../scripts/airplay-reset.sh)
-if it exists in the repo.
+After ~2 s the device should be selectable again. The supervisor
+notices the recovery on its next probe.
 
 ---
 
