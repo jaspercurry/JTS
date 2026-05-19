@@ -532,42 +532,47 @@ def _aec_loop(  # noqa: PLR0915
                     )
                 continue
 
-            # Drain ref queue to its newest frame (best-effort sync),
-            # then CARRY FORWARD the most recent ref across iterations.
+            # Consume ONE ref frame per main-loop iteration, in order.
+            # If the queue is empty, carry forward the previous ref.
             #
-            # Why we carry forward instead of falling back to `silence`:
-            # ALSA's pcm.read() on jasper_ref returns 1024-frame periods
-            # (negotiated up from the bridge's request of 960 to match
-            # dsnoop's underlying period). With buffer_size=4×period_size,
-            # ALSA delivers two periods back-to-back every ~40 ms — the
-            # bursting is at the ALSA layer, not the bridge. Meanwhile
-            # the mic delivers smoothly at the bridge's 20 ms cadence,
-            # so on alternating main-loop iterations the ref burst hasn't
-            # arrived yet and ref_q is empty. The previous behaviour was
-            # to substitute `silence` on those iterations; the result was
-            # *every other AEC frame received silence as its reference*
-            # (50 % of frames; observable as a 25 Hz envelope artefact in
-            # ref.wav and direct evidence in the journal's ref_q=0 lines).
-            # That destroyed AEC3's adaptive-filter convergence — the
-            # canceller was being told "speaker is off" half the time.
+            # Background: ALSA's pcm.read() on jasper_ref returns
+            # 1024-frame periods (negotiated up from the bridge's
+            # request of 960 to match dsnoop's underlying period).
+            # With buffer_size = 4 × period_size, ALSA delivers two
+            # periods back-to-back every ~40 ms — the bursting is at
+            # the ALSA layer, not the bridge. Meanwhile the mic
+            # delivers smoothly at the bridge's 20 ms cadence.
             #
-            # The fix: on an empty queue, reuse last_ref_bytes. It's at
-            # most ~20 ms stale, which is well within AEC3's delay-
-            # estimator tolerance, and infinitely better than silence.
+            # The original code's "drain to newest" pattern reacted to
+            # the burst by discarding the older of the two frames and
+            # using only the newest, then on the next iteration finding
+            # an empty queue. Two failure modes followed:
+            #   1. Fall back to `silence` → every other AEC frame got
+            #      zeroed ref → 25 Hz envelope artefact, AEC's
+            #      adaptive filter could not converge.
+            #   2. Carry forward newest → every other AEC frame was a
+            #      LITERAL byte-duplicate of its predecessor → 50 Hz
+            #      envelope artefact (audible as buzzing) AND half the
+            #      real ref data was being thrown away by the drain.
+            #
+            # Both prior approaches lost half the real reference. The
+            # correct shape is to take one frame per iteration, in
+            # arrival order. Burst → consume A this iteration, B next
+            # iteration, then 1 replay-from-carry while waiting for
+            # the next burst, repeat. Worst case: 1 in 3 frames is a
+            # 20 ms-stale carry-forward; that staleness is well within
+            # AEC3's delay-estimator tolerance and immediate replays
+            # of the same bytes are eliminated entirely.
+            #
             # See `docs/HANDOFF-aec.md` "Ref starvation bug (2026-05-19)"
-            # for the full diagnosis and measurement.
-            drained = 0
-            while True:
-                try:
-                    last_ref_bytes = ref_q.get_nowait()
-                    drained += 1
-                except Empty:
-                    break
-            ref_bytes = last_ref_bytes
-            if drained == 0:
+            # for the full diagnosis trail.
+            try:
+                last_ref_bytes = ref_q.get_nowait()
+                drained = 1
+            except Empty:
+                drained = 0
                 _ref_starved_frames += 1
-            elif drained > 5:
-                logger.warning("drained %d stale ref frames (drift)", drained)
+            ref_bytes = last_ref_bytes
 
             clean = engine.process(mic_bytes, ref_bytes)
             # Save pre-gain output for the RMS metric — we want
