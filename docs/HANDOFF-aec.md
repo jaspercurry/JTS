@@ -55,17 +55,35 @@ absent after a previous AEC-enabled boot, it clears the stale
 `JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice
 instead of leaving wake-word on an unfed UDP socket.
 
-> ### Important: ALSA rate_converter must be sinc-quality
+> ### Important: three bridge bugs fixed on 2026-05-19
 >
-> The bridge's reference signal is reached via ALSA `plug:` rate
-> conversion (44.1 → 48 kHz from any 44.1k renderer). Without
-> `libasound2-plugins` installed and
-> `defaults.pcm.rate_converter "samplerate_best"` set in
-> `/root/.asoundrc`, ALSA falls back to a built-in linear resampler
-> that loses ~12 dB of 4-8 kHz content — directly sabotaging AEC
-> speech-band performance. Both are installed by deploy/install.sh.
-> See **"Resampler quality — the 2026-05-19 finding"** below for the
-> full diagnosis and the wake-rate data that motivated this fix.
+> A multi-day investigation surfaced three independent bugs that
+> had been silently corrupting AEC's reference signal since the
+> bridge shipped. All are fixed in current production. Briefly:
+>
+> 1. **ALSA linear resampler** (PR #150) — `libasound2-plugins` +
+>    `defaults.pcm.rate_converter "samplerate_best"` on `/root/.asoundrc`.
+>    Without these, the plug-layer 44.1→48 conversion lost ~12 dB
+>    of 4-8 kHz content.
+> 2. **Silence fallback on empty ref_q** (PR #154) — replaced
+>    "ref_bytes = silence" with "carry forward last_ref_bytes."
+>    Without this, AEC received zeroed reference 50 % of the time.
+> 3. **Drain-newest discarded burst frames** (PR #157) — replaced
+>    drain-to-newest with consume-one-per-iteration. Without this,
+>    50 % of frames in ref.wav were byte-identical duplicates of
+>    their predecessor.
+>
+> All three were documented separately in **"Resampler quality —
+> the 2026-05-19 finding"** and **"Bridge ref starvation bug —
+> fixed (2026-05-19)"** below. The deployment now feeds AEC3 a
+> continuous, full-bandwidth reference for the first time.
+>
+> ⚠ **All wake-rate baseline data from before 2026-05-19 is
+> invalid for evaluating AEC's contribution.** The "AEC ON" leg of
+> every previous test ran with broken reference. The "AEC OFF" /
+> chip-direct legs remain valid (the bugs were bridge-only). Any
+> future "does AEC help?" question requires fresh measurement
+> after these fixes.
 
 ### High-pass filter architecture
 
@@ -495,6 +513,87 @@ The recommendation is sound for the chip's intended geometry
 (chip-driven speaker). It's wrong for ours. Future sessions
 should not re-litigate this without first measuring under the
 new resampler-fix conditions.
+
+---
+
+## Bridge ref starvation bug — fixed (2026-05-19)
+
+After the resampler fix above shipped, listening tests on the
+bridge's debug-record `ref.wav` revealed two more reference-signal
+bugs in series. Both are now fixed but worth documenting because
+they invalidate every AEC-side measurement made before this date.
+
+### The mechanism
+
+The bridge's `_aec_loop` consumed reference frames from `ref_q`,
+which is filled by `_ref_thread` reading from ALSA at 48 kHz
+stereo. The two threads were ostensibly running at 50 Hz each (one
+20 ms frame per iteration). They are not.
+
+ALSA negotiates the bridge's requested `periodsize=960` up to
+`1024` (to match dsnoop's underlying period). With buffer_size =
+4× period, `pcm.read()` delivers **two 1024-frame periods
+back-to-back every ~40 ms** — a 25 Hz "burst" cadence at the ALSA
+layer, despite the bridge requesting smooth 50 Hz. Mic delivery
+remains a smooth 50 Hz via the sounddevice callback.
+
+Result: on alternating main-loop iterations, `ref_q` is empty
+because the next burst hasn't arrived yet. The original code
+substituted `silence` (a zero-frame) on those iterations. A first
+fix attempt drained the newest frame and reused it on the empty
+iteration; this produced byte-identical duplicate frames. Each
+failure mode is independently audible and measurable.
+
+### The three layered fixes
+
+| Layer | Symptom | Fix | PR |
+|---|---|---|---|
+| ALSA plug 44.1→48 | ~12 dB HF loss in ref | `libasound2-plugins` + `samplerate_best` rate_converter | [#150](https://github.com/jaspercurry/JTS/pull/150) |
+| `_aec_loop` empty-queue fallback to `silence` | 50 % of AEC frames received zero ref | Carry-forward `last_ref_bytes` | [#154](https://github.com/jaspercurry/JTS/pull/154) |
+| `_aec_loop` drain-newest discarded burst frames | 50 % of frames byte-identical duplicates | Consume one frame per iteration in order | [#157](https://github.com/jaspercurry/JTS/pull/157) |
+
+### Diagnostic methodology
+
+The bug was hidden because none of these failure modes raised log
+warnings. The `drained > 5` warning guards the *over*-full case;
+there was no instrumentation on the *under*-full path. Discovery
+required listening to `ref.wav` (the user's audio-trained ears
+caught a "25 Hz fan-like pulsing" with the original code and "50 Hz
+buzzing" with the PR #154 fix) and validating with frame-by-frame
+WAV analysis:
+
+- Original: 49.6 % silent frames in `ref.wav`, 98 % at one parity
+- PR #154: 0 % silent but 50.1 % byte-identical consecutive pairs
+- PR #157: 0 % silent, 0 % duplicates — verified working
+
+The verification script `scripts/verify-ref-no-silence-bug.sh`
+captures 30 s of `ref.wav` via the bridge's debug-record mode and
+returns a pass/fail verdict. It also catches the duplicate-pair
+regression implicitly (no carry-forward can ever produce
+byte-identical duplicates with the new consumer).
+
+### Visibility going forward
+
+The bridge's periodic RMS log line now includes
+`ref_starve=N` — the count of iterations in the 5 s window that
+hit the empty-queue path and carried forward. Under normal
+operation this should remain non-zero (the underlying ALSA
+bursting is still there, only the consequence is now harmless)
+but stable. A sudden rise indicates ref delivery has degraded.
+
+### Why this destroys all pre-fix AEC measurements
+
+Every "AEC ON" wake-rate measurement up to 2026-05-19 ran with
+the bridge feeding AEC3 a reference that was 50 % silent (and
+half-bandwidth in the speech band on top of that). The adaptive
+filter could not converge. The "AEC OFF" / chip-direct
+measurements remain valid because the bridge is bypassed in
+those.
+
+The wake-rate test protocol in `scripts/wake-rate-test.sh` is
+unchanged. Re-running it is the next step. Pre-fix data is in
+`logs/wake-rate/SHF_1_v*` for reference but should be cited only
+for the "AEC OFF" leg.
 
 ---
 
