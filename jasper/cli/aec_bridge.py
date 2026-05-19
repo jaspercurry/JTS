@@ -190,6 +190,15 @@ _ref_total_samples = 0
 _out_clipped_samples = 0
 _out_total_samples = 0
 
+# Counter for `ref_q empty when main loop polled` events. See
+# `_aec_loop` for why this happens (ALSA delivers ref in 2-period
+# bursts every 40 ms, mic at smooth 20 ms cadence — half of main-loop
+# polls land between bursts). Logged in the periodic RMS line so the
+# rate is observable; an unusually high rate (say > 10 per 5 s window
+# = > 2 Hz) indicates the timing balance has drifted and Fix A's
+# stale-ref-reuse is doing heavier lifting than expected.
+_ref_starved_frames = 0
+
 
 class _Aec3Engine:
     """WebRTC AEC3 via the jasper_aec3 pybind11 binding.
@@ -398,6 +407,7 @@ def _aec_loop(  # noqa: PLR0915
     # docs/HANDOFF-aec.md tuning findings for tested values.
     global _ref_clipped_samples, _ref_total_samples
     global _out_clipped_samples, _out_total_samples
+    global _ref_starved_frames
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
     # Stall-recovery threshold: consecutive seconds of empty mic_q
@@ -450,6 +460,11 @@ def _aec_loop(  # noqa: PLR0915
     # avoid per-frame allocation churn.
     out_batch = bytearray()
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
+    # Cold-start value for ref carry-forward. Used only until the first
+    # real ref frame arrives — after that, last_ref_bytes always holds
+    # a previously-real ref. See the drain block in the main loop for
+    # why we carry forward instead of falling back to silence.
+    last_ref_bytes = silence
     frames_processed = 0
 
     # Optional debug WAV writers — see `_aec_loop` docstring.
@@ -517,16 +532,41 @@ def _aec_loop(  # noqa: PLR0915
                     )
                 continue
 
-            # Drain ref queue to its newest frame (best-effort sync).
-            ref_bytes = silence
+            # Drain ref queue to its newest frame (best-effort sync),
+            # then CARRY FORWARD the most recent ref across iterations.
+            #
+            # Why we carry forward instead of falling back to `silence`:
+            # ALSA's pcm.read() on jasper_ref returns 1024-frame periods
+            # (negotiated up from the bridge's request of 960 to match
+            # dsnoop's underlying period). With buffer_size=4×period_size,
+            # ALSA delivers two periods back-to-back every ~40 ms — the
+            # bursting is at the ALSA layer, not the bridge. Meanwhile
+            # the mic delivers smoothly at the bridge's 20 ms cadence,
+            # so on alternating main-loop iterations the ref burst hasn't
+            # arrived yet and ref_q is empty. The previous behaviour was
+            # to substitute `silence` on those iterations; the result was
+            # *every other AEC frame received silence as its reference*
+            # (50 % of frames; observable as a 25 Hz envelope artefact in
+            # ref.wav and direct evidence in the journal's ref_q=0 lines).
+            # That destroyed AEC3's adaptive-filter convergence — the
+            # canceller was being told "speaker is off" half the time.
+            #
+            # The fix: on an empty queue, reuse last_ref_bytes. It's at
+            # most ~20 ms stale, which is well within AEC3's delay-
+            # estimator tolerance, and infinitely better than silence.
+            # See `docs/HANDOFF-aec.md` "Ref starvation bug (2026-05-19)"
+            # for the full diagnosis and measurement.
             drained = 0
             while True:
                 try:
-                    ref_bytes = ref_q.get_nowait()
+                    last_ref_bytes = ref_q.get_nowait()
                     drained += 1
                 except Empty:
                     break
-            if drained > 5:
+            ref_bytes = last_ref_bytes
+            if drained == 0:
+                _ref_starved_frames += 1
+            elif drained > 5:
                 logger.warning("drained %d stale ref frames (drift)", drained)
 
             clean = engine.process(mic_bytes, ref_bytes)
@@ -601,10 +641,11 @@ def _aec_loop(  # noqa: PLR0915
                     logger.info(
                         "rms over %.1fs: ref=%.0f mic=%.0f aec=%.0f → "
                         "attenuation=%.1f dB (frames=%d ref_q=%d mic_q=%d "
-                        "ref_clip=%.2f%% out_clip=%.2f%%)",
+                        "ref_starve=%d ref_clip=%.2f%% out_clip=%.2f%%)",
                         rms_window_frames * FRAME_SAMPLES / SAMPLE_RATE,
                         ref_rms, mic_rms, aec_rms, attn_db,
                         frames_processed, ref_q.qsize(), mic_q.qsize(),
+                        _ref_starved_frames,
                         ref_clip_pct, out_clip_pct,
                     )
                 last_log = now
@@ -612,6 +653,7 @@ def _aec_loop(  # noqa: PLR0915
                 sum_mic_sq = sum_ref_sq = sum_aec_sq = 0.0
                 _ref_clipped_samples = _ref_total_samples = 0
                 _out_clipped_samples = _out_total_samples = 0
+                _ref_starved_frames = 0
     finally:
         out_sock.close()
         for w in (mic_wav, aec_wav, ref_wav):
