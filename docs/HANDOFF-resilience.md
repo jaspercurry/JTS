@@ -172,6 +172,8 @@ Design constraints the supervisor satisfies:
   than risk killing one on a transient DBus stall).
 - **Off switch.** `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
   `/etc/jasper/jasper.env` parks the thread before it starts.
+  Exact match (case-insensitive); other values, including `off` /
+  `0` / `no`, log a warning and proceed as `auto`.
 - **Observable.** Structured `event=shairport.*` log lines for every
   state transition; supervisor state surfaces under
   `/state.resilience.shairport` for the `/system` dashboard.

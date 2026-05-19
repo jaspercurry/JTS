@@ -75,13 +75,20 @@ class ShairportSupervisor:
         self._threshold = failure_threshold
         self._rate_limit = rate_limit_sec
         self._cold_start = cold_start_sec
-        # Observable state — read by snapshot() for /state.
+        # Observable state — read by snapshot() for /state. Both
+        # *_at fields are wall-clock (time.time()) so the dashboard
+        # can render them as timestamps.
         self.consecutive_failures: int = 0
         self.last_probe_at: float | None = None
         self.last_probe_ok: bool | None = None
         self.last_restart_at: float | None = None
         self.restart_count: int = 0
         self.suppressed_count: int = 0
+        # Monotonic clock for rate-limit math — separated from
+        # last_restart_at so display and arithmetic don't share
+        # a time base. time.monotonic() can't go backwards on NTP
+        # jumps; time.time() can.
+        self._last_restart_monotonic: float | None = None
 
     # ---- main loop ----
 
@@ -132,18 +139,19 @@ class ShairportSupervisor:
             logger.warning("event=shairport.probe_suppressed reason=active")
             return
         # Rate-limit: at most one supervisor-driven restart per window.
-        now = self._now()
+        mono = self._now()
         if (
-            self.last_restart_at is not None
-            and now - self.last_restart_at < self._rate_limit
+            self._last_restart_monotonic is not None
+            and mono - self._last_restart_monotonic < self._rate_limit
         ):
             logger.warning(
                 "event=shairport.probe_rate_limited "
                 "since_last_restart=%.0fs limit=%.0fs",
-                now - self.last_restart_at, self._rate_limit,
+                mono - self._last_restart_monotonic, self._rate_limit,
             )
             return
-        self.last_restart_at = now
+        self._last_restart_monotonic = mono
+        self.last_restart_at = time.time()
         self.restart_count += 1
         self.consecutive_failures = 0
         logger.error(
@@ -182,11 +190,17 @@ class ShairportSupervisor:
                 await asyncio.wait_for(writer.wait_closed(), timeout=1.0)
             except (OSError, asyncio.TimeoutError):
                 pass
-        return data.startswith(b"RTSP/1.0 200")
+        # Trailing space pins to a real 3-digit 200 (RFC 2326 §6.1
+        # mandates the SP after the status code) — keeps a future
+        # 2001/2002 status from spuriously matching.
+        return data.startswith(b"RTSP/1.0 200 ")
 
     async def is_session_active(self) -> bool:
-        """True when MPRIS PlaybackStatus == "Playing". Reused gate —
-        same DBus path jasper-control already polls for /state."""
+        """True when MPRIS reports Playing, OR when the probe itself
+        errors (busctl missing, DBus stall, non-zero exit). Fail-safe
+        to "active" so we never risk disrupting a live session on an
+        unknown state — even if it means a wedge persists slightly
+        longer when DBus is also broken."""
         try:
             proc = await asyncio.create_subprocess_exec(
                 "busctl", "--system", "call",
@@ -201,9 +215,9 @@ class ShairportSupervisor:
                 proc.communicate(), timeout=2.0,
             )
         except (FileNotFoundError, asyncio.TimeoutError):
-            return False
+            return True
         if proc.returncode != 0:
-            return False
+            return True
         return b'"Playing"' in stdout
 
     async def restart_shairport(self) -> None:
@@ -262,14 +276,21 @@ def snapshot() -> dict[str, Any]:
 
 def start_supervisor() -> threading.Thread | None:
     """Start the supervisor in a background thread. No-op when
-    `JASPER_SHAIRPORT_SUPERVISOR=disabled`. Idempotent."""
+    `JASPER_SHAIRPORT_SUPERVISOR=disabled` (exact match, case-
+    insensitive). Idempotent."""
     global _supervisor, _supervisor_thread
     if _supervisor_thread is not None:
         return _supervisor_thread
     mode = os.environ.get("JASPER_SHAIRPORT_SUPERVISOR", "auto").lower()
     if mode == "disabled":
-        logger.info("event=shairport.disabled mode=%s", mode)
+        logger.info("event=shairport.disabled")
         return None
+    if mode != "auto":
+        logger.warning(
+            "JASPER_SHAIRPORT_SUPERVISOR=%r unrecognized; "
+            "treating as 'auto'. Use 'disabled' to turn the supervisor off.",
+            mode,
+        )
     _supervisor = ShairportSupervisor()
 
     def _run() -> None:

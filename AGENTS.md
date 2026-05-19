@@ -632,7 +632,9 @@ ssh pi@jts.local 'journalctl -u jasper-control | grep event=shairport'
 ```
 
 Off switch: set `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
-`/etc/jasper/jasper.env`, then restart `jasper-control`.
+`/etc/jasper/jasper.env` (exact match, case-insensitive), then
+restart `jasper-control`. Other values like `off` or `0` log a
+warning and stay enabled.
 
 Design rationale: [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
 (Tier 3).

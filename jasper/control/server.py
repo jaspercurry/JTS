@@ -40,6 +40,8 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
+from . import shairport_supervisor
+
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
 
@@ -358,7 +360,6 @@ async def _get_state(
 
     from .. import librespot_state
     from ..camilla import CamillaController
-    from . import shairport_supervisor
 
     # Cheap synchronous reads first.
     voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
@@ -1211,7 +1212,6 @@ def main(argv: list[str] | None = None) -> int:
     # so a wedged AP2 control plane recovers without manual intervention.
     # docs/HANDOFF-resilience.md (Tier 3). Off via
     # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
-    from . import shairport_supervisor
     shairport_supervisor.start_supervisor()
     logger.info(
         "jasper-control listening on http://%s:%d "

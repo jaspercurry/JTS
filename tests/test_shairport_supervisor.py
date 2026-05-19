@@ -52,7 +52,11 @@ class _FakeSupervisor(ShairportSupervisor):
 
     async def is_session_active(self) -> bool:
         if not self.gate_results:
-            return False
+            raise AssertionError(
+                "_FakeSupervisor.gate_results exhausted — test "
+                "under-scripted the gate. Each tick that reaches "
+                "the threshold pops one entry."
+            )
         result = self.gate_results.pop(0)
         if isinstance(result, BaseException):
             raise result
@@ -258,6 +262,71 @@ async def test_default_probe_returns_false_when_server_never_responds():
         result = await sup.probe()
     assert accepted.is_set()  # confirms we measured a hang, not a refusal
     assert result is False
+
+
+async def test_default_is_session_active_fails_safe_when_busctl_missing(
+    monkeypatch,
+):
+    """Contract: gate returns True (fail-safe to active) when the
+    probe itself errors, so we never restart shairport on an unknown
+    DBus state. Pins the documented behaviour in HANDOFF-resilience
+    Tier 3 against a future refactor."""
+    async def boom(*args, **kwargs):
+        raise FileNotFoundError("no such file: busctl")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", boom)
+    sup = ShairportSupervisor()
+    assert await sup.is_session_active() is True
+
+
+async def test_default_is_session_active_fails_safe_on_non_zero_exit(
+    monkeypatch,
+):
+    """Same fail-safe contract for the busctl-returned-non-zero case
+    (DBus service missing, property absent, etc.)."""
+    class _FakeProc:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_exec(*args, **kwargs):
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    sup = ShairportSupervisor()
+    assert await sup.is_session_active() is True
+
+
+async def test_default_restart_invokes_systemctl_with_both_units(monkeypatch):
+    """Pin the exact systemctl argv lists so a typo in unit names or
+    a missing --no-block flag surfaces in CI rather than the first
+    time the wedge happens in the wild."""
+    invocations: list[tuple] = []
+
+    class _FakeProc:
+        returncode = 0
+
+        async def wait(self):
+            return 0
+
+    async def fake_exec(*args, **kwargs):
+        invocations.append(args)
+        return _FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    sup = ShairportSupervisor()
+    await sup.restart_shairport()
+    assert invocations == [
+        (
+            "systemctl", "reset-failed",
+            "shairport-sync.service", "nqptp.service",
+        ),
+        (
+            "systemctl", "--no-block", "restart",
+            "shairport-sync.service", "nqptp.service",
+        ),
+    ]
 
 
 async def test_default_probe_sends_rfc_2326_options():
