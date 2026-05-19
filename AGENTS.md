@@ -525,18 +525,20 @@ canonical reference (firmware variants, mixer state, failure
 modes, diagnostic cookbook) is
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
-**Resampler quality matters as much as the engine.** AEC's
-reference signal reaches the engine via ALSA `plug:` rate
-conversion (44.1 kHz from AirPlay/Spotify/BT → 48 kHz loopback).
-Without `libasound2-plugins` installed + `defaults.pcm.rate_converter
-"samplerate_best"` set in `/root/.asoundrc`, ALSA falls back to a
-linear interpolator that loses ~12 dB of 4-8 kHz content,
-crippling AEC speech-band performance. Both are wired into
-`deploy/install.sh` and `deploy/alsa/asoundrc.jasper`. See
-[docs/HANDOFF-aec.md "Resampler quality — the 2026-05-19 finding"](docs/HANDOFF-aec.md)
-for the full diagnosis, the wake-rate data that exposed it, and
-why we did NOT use CamillaDSP's `capture_samplerate` route instead
-(shairport-sync#1980 territory).
+**Three layered bridge bugs were fixed on 2026-05-19.** Together
+they had been silently corrupting AEC's reference signal since
+the bridge shipped: (1) ALSA's linear resampler dropping HF
+content in the 44.1→48 plug; (2) `_aec_loop` falling back to
+`silence` when `ref_q` was empty (50 % of frames); (3) drain-
+newest discarding the older frame in each ALSA burst, producing
+byte-identical duplicate frames. All fixed in PRs #150, #154,
+#157. Wake-rate baseline data from before 2026-05-19 is invalid
+for evaluating AEC's contribution (the AEC-OFF / chip-direct
+legs remain valid). See [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md)
+"Bridge ref starvation bug — fixed (2026-05-19)" for the full
+diagnosis. The verification script
+`scripts/verify-ref-no-silence-bug.sh` confirms the fixes are
+active on any deployed build.
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant — the bridge reads raw mic 0 from channel 2 of the chip's
