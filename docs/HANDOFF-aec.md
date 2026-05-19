@@ -55,6 +55,18 @@ absent after a previous AEC-enabled boot, it clears the stale
 `JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice
 instead of leaving wake-word on an unfed UDP socket.
 
+> ### Important: ALSA rate_converter must be sinc-quality
+>
+> The bridge's reference signal is reached via ALSA `plug:` rate
+> conversion (44.1 → 48 kHz from any 44.1k renderer). Without
+> `libasound2-plugins` installed and
+> `defaults.pcm.rate_converter "samplerate_best"` set in
+> `/root/.asoundrc`, ALSA falls back to a built-in linear resampler
+> that loses ~12 dB of 4-8 kHz content — directly sabotaging AEC
+> speech-band performance. Both are installed by deploy/install.sh.
+> See **"Resampler quality — the 2026-05-19 finding"** below for the
+> full diagnosis and the wake-rate data that motivated this fix.
+
 ### High-pass filter architecture
 
 The mic in this project is consumed only by software (openWakeWord
@@ -218,6 +230,174 @@ change too. The two are coupled. Production today: ch 1 + REF_GAIN=0.
 If anyone reverts to channel 2 (raw mic) for any reason,
 `REF_GAIN_DB` must be raised back to ~25 to compensate for the
 missing chip AGC.
+
+---
+
+## Resampler quality — the 2026-05-19 finding
+
+This section documents a major discovery from the wake-rate
+investigation on 2026-05-19. **Until this date the bridge's
+reference signal was being silently degraded by ALSA's built-in
+linear resampler**, which lost ~12 dB of 4-8 kHz content during
+the unavoidable 44.1→48 kHz conversion. The mic captures speakers'
+full-bandwidth output; AEC was given a hollow reference; AEC could
+not cancel content its reference didn't contain; music residuals in
+the speech band masked wake-word phonemes; wake detection was
+intermittent.
+
+### The chain (mandatory rates, with no escape)
+
+The Apple USB-C dongle hardware-locks at 48 kHz (`/proc/asound/A/stream0`
+shows `Rates: 48000 - 48000 (continuous)`). CamillaDSP runs at 48 kHz
+to match. The snd-aloop "Loopback" card is locked at 48 kHz when
+CamillaDSP opens it.
+
+So *every renderer* that's not natively 48 kHz must resample
+somewhere in the chain:
+
+| Source | Native rate | Resampling site |
+|---|---|---|
+| AirPlay (shairport-sync) | 44.1 kHz | shairport writes `plughw:Loopback,0,0` → ALSA plug |
+| Spotify Connect (librespot) | 44.1 / 48 kHz | librespot → snd-aloop, plug if mismatch |
+| Bluetooth A2DP (bluealsa-aplay) | 44.1 / 48 kHz | bluealsa-aplay → snd-aloop, plug if mismatch |
+| AEC bridge ref read | 16 kHz (internal) | `pcm.jasper_ref` plug → bridge requests 48k from 48k loopback (no-op normally); but the upstream 44.1→48 conversion happens via the same plug |
+
+The bridge's *own* 48→16 resample is scipy `resample_poly`, which
+is high-quality polyphase. That step has never been the issue.
+
+### What "linear resampler" actually meant in practice
+
+Without `libasound2-plugins` installed, ALSA's `plug:` plugin
+falls back to a built-in linear interpolator. It is famously poor
+for audio — the linux-audio mailing list has been complaining
+about it for ~15 years.
+
+Measured impact on our system (10 s window during AirPlay of
+Pink Floyd "Money", same physical mic, same speakers):
+
+| Band | mic_ch1 (chip raw, captures speakers) | ref.wav (post linear-resample plug) | gap |
+|---|---|---|---|
+| 0-200 Hz | 47.8 dB | 31.0 dB | — (chip HPF doing work; speakers + mic LF) |
+| 200-1000 Hz | 37.9 dB | 26.1 dB | — |
+| 1000-4000 Hz | 24.3 dB | 18.2 dB | — |
+| **4000-7000 Hz** | **15.8 dB** | **4.1 dB** | **−12 dB** |
+| **7000-8000 Hz** | **12.1 dB** | **1.8 dB** | **−10 dB** |
+
+The mic captures what the speakers emit. The ref tells AEC what we
+*sent to* the speakers. The 10-12 dB hole at 4-8 kHz in the ref is
+spectrally what the linear resampler dropped during 44.1→48. AEC
+cannot subtract content that isn't in its reference, so music
+energy at 4-8 kHz passes through aec_output uncancelled. Wake-word
+phonemes live in roughly this band. Music masks them.
+
+The user with audio-trained ears caught this listening to ref.wav
+before any measurement was done — "this sounds pixel-crushed."
+
+### The fix (current production)
+
+Installed `libasound2-plugins`, added one line at the top of
+`/root/.asoundrc`:
+
+```
+defaults.pcm.rate_converter "samplerate_best"
+```
+
+This replaces ALSA's linear interpolator with libsamplerate's
+`SRC_SINC_BEST_QUALITY` (sinc-best) for every `plug:` and
+`plughw:` rate conversion on the system. Effects:
+- shairport-sync's 44.1→48 write to plughw:Loopback is now sinc-best
+- bluealsa-aplay's rate conversion (if any) is sinc-best
+- `pcm.jasper_ref`'s plug wrapper (in case it ever does rate
+  conversion) is sinc-best
+- Same fix benefits the speaker playback chain too — music quality
+  is incidentally improved
+
+Cost on Pi 5: ~3-5% of one A76 core on the resampler thread,
+~15 MB resident memory.
+
+Both the `libasound2-plugins` install and the rate_converter line
+are now baked into `deploy/install.sh` + `deploy/alsa/asoundrc.jasper`
+so fresh deploys keep the fix.
+
+### Why not CamillaDSP for the resampling
+
+Considered. The "elegant" alternative would be to have CamillaDSP
+handle 44.1→48 internally via `capture_samplerate: 44100`,
+`samplerate: 48000`, `resampler: AsyncSinc Balanced`. Same
+quality (Rubato AsyncSinc Balanced has a ~-170 dB noise floor,
+comparable to libsamplerate sinc-best).
+
+**We already tried this.** The previous CamillaDSP config had
+AsyncSinc Balanced doing 1:1 resampling on top of
+`enable_rate_adjust=true`, which CamillaDSP itself flagged as
+"Needless 1:1 sample rate conversion active" and which produced
+the alternating +50/-485 ms sync errors documented in
+[HEnquist/camilladsp#207](https://github.com/HEnquist/camilladsp/issues/207)
+and [mikebrady/shairport-sync#1980](https://github.com/mikebrady/shairport-sync/issues/1980).
+
+To use CamillaDSP for input resampling we'd have to disable
+`enable_rate_adjust` (lose the snd-aloop virtual-clock drift
+correction we depend on for stable AirPlay sync) and rely on
+AsyncSinc Balanced's own ratio adjustment for drift. That's the
+"Option B" path in the canonical CamillaDSP setups — viable in
+principle but would re-enter shairport-sync#1980 territory and
+require re-validating all the AirPlay sync work documented in
+[HANDOFF-airplay.md](HANDOFF-airplay.md).
+
+The libasound2-plugins route gets the same audio quality with
+none of that risk. CamillaDSP option remains documented here for
+future reference if there's ever a reason to revisit.
+
+### Wake-rate measurements that led to this discovery
+
+Phase 2 wake-rate test on 2026-05-19, 4 runs all at SHF_BYPASS=1
+production state, music at "indicative" home listening level
+playing Pink Floyd "Money" via AirPlay, 20 × 'Jarvis' utterances
+from a phone speaker placed in the room:
+
+| Run | AEC ON (aec_output) | AEC OFF (mic_ch1) |
+|---|---|---|
+| v2 (clean Jarvis vol) | 7/20 (35%) | 12/20 (60%) |
+| v3 | 6/20 (30%) | 4/20 (20%) |
+| v4 | 0/20 (0%) | 1/20 (5%) |
+| v5 | 2/20 (10%) | 4/20 (20%) |
+| **Total** | **15/80 (19%)** | **21/80 (26%)** |
+
+Within-capture A/B is clean (both files derived from identical
+mic input, only the bridge processing differs). AEC OFF won 3 of
+4 runs and tied the 4th. AEC ON was never significantly better.
+This *contradicted* the Phase 1 ERLE measurements (which showed
+the bridge attenuating −15 dB speech-band), motivating the deeper
+investigation into *what* the bridge was actually attenuating. The
+answer: it was over-suppressing both echo AND wake utterances
+because its reference signal was missing the upper-frequency
+content needed to cancel echo cleanly.
+
+Whether the libasound2-plugins fix moves the wake-rate numbers
+back into "AEC helps" territory is an **open empirical question**
+as of 2026-05-19. Re-running Phase 2 with the fix in place is the
+next-step validation. Tools to do that re-test are in
+[`scripts/aec-erle-record.sh`](../scripts/aec-erle-record.sh),
+[`scripts/wake-rate-test.sh`](../scripts/wake-rate-test.sh),
+[`scripts/aec_erle_analyze.py`](../scripts/aec_erle_analyze.py),
+and [`scripts/_offline_wake_count.py`](../scripts/_offline_wake_count.py).
+
+### What's still unknown
+
+- **Does fixing the resampler make AEC a net positive again?** Open.
+- **The chip HPF appears to be much weaker than documented.** The
+  XVF datasheet describes `AEC_HPFONOFF=2` as a 4th-order Butter
+  at 125 Hz (should give −24 dB/octave). Measured `mic_ch1` shows
+  only −7 dB attenuation 125→62.5 Hz, consistent with a 1st-order
+  filter — or possibly no filter at all if SHF_BYPASS=1 disables
+  the HPF too. Not investigated yet. If the chip HPF turns out to
+  be ineffective, we may want to push the bridge's reference HPF
+  cutoff up (currently 125 Hz) to attenuate bass harmonics that
+  confuse AEC.
+- **Phase 2 testing methodology improvements.** Phone playback volume
+  drifted between v2 and v3-v5 (the operator accidentally adjusted
+  it), which produced a lot of the run-to-run variance. Future
+  Phase 2 runs should pin phone volume via a setup checklist.
 
 ---
 

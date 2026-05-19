@@ -32,7 +32,7 @@ Topology:
     pcm.jasper_capture (48k stereo, host clock)
        │  reference signal (what the speaker is being asked to play)
        ▼
-    [downsample 48→16k, take left channel, HPF at 125 Hz]          16k mono ref
+    [downsample 48→16k, L+R summed to mono, HPF at 125 Hz]         16k mono ref
        │
        │      hw:Array,0 ch 1 (16k mono, chip clock)
        │  chip ASR beam: BF + NS + AGC + HPF, chip AEC disabled
@@ -244,10 +244,18 @@ def _validate_mic_device() -> None:
 def _ref_thread(ref_q: Queue) -> None:
     global _ref_clipped_samples, _ref_total_samples
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
-    custom asoundrc PCMs like `jasper_capture`), downsample to 16k
-    mono on the left channel (XMOS chip's convention: ref = left).
-    Push frames of exactly FRAME_SAMPLES samples (= 2*FRAME_SAMPLES
-    bytes mono int16) onto the queue.
+    custom asoundrc PCMs like `jasper_capture`), sum L+R to mono,
+    downsample to 16k. Push frames of exactly FRAME_SAMPLES samples
+    (= 2*FRAME_SAMPLES bytes mono int16) onto the queue.
+
+    Why L+R sum (not left-only): the speakers radiate the sum of
+    L and R into a single mic. AEC3 is mono-reference, so we get
+    one shot at modeling the echo path. Feeding it L-only would
+    blind it to whatever is panned to R — bass, vocals, lead
+    instruments — which for typical stereo music is a substantial
+    portion of the energy. Summing matches what the room actually
+    contains. (The XMOS chip's USB-IN AEC requires left-only per
+    datasheet §3.3, but we are not using that path.)
 
     alsaaudio.PCM.read() can return partial reads (especially the
     first one as the stream warms up), so we accumulate at the 48k
@@ -313,9 +321,12 @@ def _ref_thread(ref_q: Queue) -> None:
             if length <= 0:
                 continue
             arr = np.frombuffer(data, dtype=np.int16)
-            # interleaved stereo → take left channel
-            left48 = arr[::REF_CHANNELS].astype(np.float32)
-            accum_48 = np.concatenate([accum_48, left48])
+            # interleaved stereo → sum L+R to mono (×0.5 to keep
+            # peak-level the same, so REF_GAIN_DB tuning remains valid)
+            left48 = arr[0::REF_CHANNELS].astype(np.float32)
+            right48 = arr[1::REF_CHANNELS].astype(np.float32)
+            mono48 = (left48 + right48) * 0.5
+            accum_48 = np.concatenate([accum_48, mono48])
             # Emit exact-sized chunks at the 48k rate so each
             # downsample yields exactly FRAME_SAMPLES at 16k.
             while accum_48.size >= capture_block:
@@ -406,10 +417,19 @@ def _aec_loop(  # noqa: PLR0915
     Periodically logs the per-frame RMS of mic, ref, and AEC out
     so we can observe whether the engine is actually attenuating
     the echo. Comparing mic_rms vs aec_rms gives the running
-    attenuation in dB."""
+    attenuation in dB.
+
+    Debug-record mode: if `JASPER_AEC_DEBUG_RECORD_DIR` is set, the
+    bridge writes the AEC engine's input mic stream and pre-gain
+    output to two WAV files in that directory. Used by
+    `scripts/aec-erle-record.sh` to capture both sides of the
+    engine for offline ERLE analysis — couldn't otherwise be done
+    with a second `arecord` because the bridge already holds the
+    Array card exclusively via PortAudio."""
     import math
     import socket
     import time
+    import wave
     # UDP output: localhost, non-blocking sendto. Replaces the old
     # PortAudio RawOutputStream writing to hw:LoopbackAEC,0. `sendto`
     # never blocks on `lo` at our rate (~256 kbps), so the main
@@ -431,6 +451,38 @@ def _aec_loop(  # noqa: PLR0915
     out_batch = bytearray()
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     frames_processed = 0
+
+    # Optional debug WAV writers — see `_aec_loop` docstring.
+    debug_dir = os.environ.get("JASPER_AEC_DEBUG_RECORD_DIR", "").strip()
+    mic_wav: Optional[wave.Wave_write] = None
+    aec_wav: Optional[wave.Wave_write] = None
+    ref_wav: Optional[wave.Wave_write] = None
+    if debug_dir:
+        try:
+            os.makedirs(debug_dir, exist_ok=True)
+            mic_wav = wave.open(f"{debug_dir}/mic_ch1.wav", "wb")
+            mic_wav.setnchannels(1)
+            mic_wav.setsampwidth(2)
+            mic_wav.setframerate(SAMPLE_RATE)
+            aec_wav = wave.open(f"{debug_dir}/aec_output.wav", "wb")
+            aec_wav.setnchannels(1)
+            aec_wav.setsampwidth(2)
+            aec_wav.setframerate(SAMPLE_RATE)
+            ref_wav = wave.open(f"{debug_dir}/ref.wav", "wb")
+            ref_wav.setnchannels(1)
+            ref_wav.setsampwidth(2)
+            ref_wav.setframerate(SAMPLE_RATE)
+            logger.warning(
+                "DEBUG RECORD MODE: writing mic/aec/ref WAVs to %s "
+                "until shutdown",
+                debug_dir,
+            )
+        except OSError as e:
+            logger.error(
+                "failed to open debug record dir %s: %s; skipping",
+                debug_dir, e,
+            )
+            mic_wav = aec_wav = ref_wav = None
     last_log = 0.0
     # Running sums for RMS computation across the log window.
     rms_window_frames = 0
@@ -482,6 +534,19 @@ def _aec_loop(  # noqa: PLR0915
             # "attenuation" to reflect what AEC actually accomplished,
             # not how much the post-gain stage amplified the residual.
             clean_aec_only = clean
+
+            # Debug WAV record: writes happen here so the captured
+            # frames are exactly what the bridge measured for its
+            # internal "attenuation" log + what the AEC emitted before
+            # the post-gain stage. Time-aligned to the sample.
+            if mic_wav is not None:
+                try:
+                    mic_wav.writeframes(mic_bytes)
+                    aec_wav.writeframes(clean_aec_only)
+                    ref_wav.writeframes(ref_bytes)
+                except OSError as e:
+                    logger.error("debug wav write failed: %s", e)
+                    mic_wav = aec_wav = ref_wav = None
             if mic_gain_lin != 1.0:
                 arr = np.frombuffer(clean, dtype=np.int16).astype(np.float32) * mic_gain_lin
                 _out_clipped_samples += int(np.sum(np.abs(arr) > 32767))
@@ -549,6 +614,12 @@ def _aec_loop(  # noqa: PLR0915
                 _out_clipped_samples = _out_total_samples = 0
     finally:
         out_sock.close()
+        for w in (mic_wav, aec_wav, ref_wav):
+            if w is not None:
+                try:
+                    w.close()
+                except OSError:
+                    pass
 
 
 def main() -> int:
