@@ -856,6 +856,51 @@ user to run when something's broken. The doctor reads
 `/var/lib/jasper/voice_provider.env` itself — no need to source
 them into the calling shell.
 
+### "The speaker restarted on its own" — hardware watchdog + cross-boot journal
+
+The Pi has the kernel hardware watchdog enabled by Raspberry Pi
+OS Trixie's `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`
+(`RuntimeWatchdogSec=1m`). When userspace wedges hard enough that
+PID 1 can't ping `/dev/watchdog0` for ~60 s, `bcm2835-wdt`
+hard-resets the board. This is **Tier 5** of the resilience
+ladder (see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)),
+intentional for unattended recovery, and the user will perceive
+it as "the speaker restarted for no reason."
+
+The boot fingerprint of a watchdog (or any unclean) reset, on
+the *recovery* boot:
+
+```sh
+sudo dmesg -T | grep "orphan cleanup"
+# EXT4-fs (mmcblk0p2): orphan cleanup on readonly fs
+```
+
+To find the cause, read the **previous** boot's journal —
+persistent journal was enabled in PR #160 specifically so this
+works:
+
+```sh
+ssh pi@jts.local 'sudo journalctl --list-boots'
+# index 0 = current boot, -1 = previous, etc. If only one boot is
+# listed and PR #160 has been deployed (check
+# `/etc/systemd/journald.conf.d/50-jts-persistent-storage.conf`),
+# the Pi only has the post-reset boot history — wait for the next
+# event, or read /run/log/journal directly if still up.
+
+ssh pi@jts.local 'sudo journalctl -b -1 -p warning --since "-2min"'
+# The 2 minutes before the wedge. Common signatures: OOM-kill log
+# lines, hung-task warnings (kernel.hung_task_timeout_secs default
+# 120 s), runaway jasper-* daemon, zram thrash.
+```
+
+**Self-inflicted wedges from heavy offline analysis.** Running
+something like `for i in range(100): Model()` (e.g.
+`openwakeword.Model()`) on the Pi can OOM the 2 GB RAM, fill
+`zram0`, peg every core on compression, starve PID 1, and trip
+the watchdog. Pi 5 is sized for production daemons, not analysis
+bursts. For wake-rate sweeps and similar, do it on the laptop
+(`pip install openwakeword onnxruntime`) and rsync the captures.
+
 ---
 
 ## Behavioral rules for working in this codebase
