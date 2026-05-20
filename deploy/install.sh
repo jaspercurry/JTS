@@ -863,6 +863,24 @@ Will retry on next boot."
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
 
+install_journald_persistent_storage() {
+    # Raspberry Pi OS ships /usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf
+    # which forces Storage=volatile. With the kernel watchdog reaping wedged
+    # userspace ~60s later, a volatile journal means the reset wipes all
+    # evidence of what hung the box. Override with a 50- drop-in that flips
+    # back to persistent, capped to bound SD-card writes.
+    install -d -m 0755 /etc/systemd/journald.conf.d
+    install -m 0644 \
+        "${REPO_DIR}/deploy/journald/50-jts-persistent-storage.conf" \
+        /etc/systemd/journald.conf.d/50-jts-persistent-storage.conf
+    systemctl restart systemd-journald
+    # systemd-journal-flush.service only runs at boot; do the runtime →
+    # persistent transfer here so the live system starts writing to
+    # /var/log/journal/ without needing a reboot to apply.
+    journalctl --rotate >/dev/null 2>&1 || true
+    journalctl --flush >/dev/null 2>&1 || true
+}
+
 reconcile_aec_state() {
     install -d -m 0755 "${STATE_DIR}"
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
@@ -1205,6 +1223,7 @@ main() {
     tune_wifi_for_airplay
     install_jasper
     install_systemd_units
+    install_journald_persistent_storage
     install_avahi_jasper_control
     install_peering_template
     remove_legacy_https_artifacts

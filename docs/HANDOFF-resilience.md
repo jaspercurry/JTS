@@ -112,9 +112,9 @@ that generically.
 | 2 | systemd `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` + `TimeoutStopSec=5s` + `StartLimitBurst=20` | Process exit, hang, fatal ALSA error. If the Tier 1 heartbeat stops patting, this fires at 30 s and brings the daemon back with a fresh process in ~2 s. | ✅ — `deploy/systemd/jasper-aec-bridge.service`, `deploy/systemd/jasper-voice.service` |
 | 3 | Sidecar protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session and rate-limited | Third-party daemons that wedge at the protocol layer while still passing systemd's liveness check. shairport-sync AP2 today; pattern generalizes to other long-lived third-party renderers if they demonstrate the same failure class. | ✅ — `jasper/control/shairport_supervisor.py`, started from `server.py:main` via `start_supervisor()` |
 | 4 | Kernel-state recovery script (`rmmod && modprobe snd_aloop`, after stopping all consumers; rate-limited via state file) | snd-aloop kernel-side wedges, dsnoop wedges. | ❌ — not currently wired. The original motivation (bridge↔voice snd-aloop) is gone; the music-chain Loopback hasn't shown this failure mode in production. Deferred. |
-| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=15s` in `/etc/systemd/system.conf.d/` | Kernel panic, PID 1 hang, total system wedge. | ❌ — not currently wired. The Pi 5's `bcm2712_wdt` driver is available in the 64-bit kernel; enabling is a one-line config + reboot. Worth doing once Tier 3 has soaked. |
+| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=1m` (with persistent journald for post-mortem forensics) | Kernel panic, PID 1 hang, total userspace wedge (CPU peg, swap thrash, I/O hung). | ✅ — wired by Raspberry Pi OS Trixie's `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf` (`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). JTS contributes the other half: PR #160 (2026-05-20) overrode the paired RPi OS default of `Storage=volatile` so logs survive the reset and the cause is debuggable. |
 
-The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shairport-sync only), and the architectural choice that obviated kernel-state recovery for the AEC path.** Tier 4 stays on the deferred list with a clear trigger ("rmmod + modprobe if snd-aloop ever wedges again"); Tier 5 (hardware watchdog) is cheap and worth doing once Tier 3 has soaked.
+The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shairport-sync only), Tier 5 (hardware watchdog with persistent journal forensics), and the architectural choice that obviated kernel-state recovery for the AEC path.** Tier 4 stays on the deferred list with a clear trigger ("rmmod + modprobe if snd-aloop ever wedges again").
 
 ### 3. Wire third-party daemons into the ladder — protocol-level supervisor
 
@@ -193,6 +193,87 @@ The same probe → gate → rate-limited restart shape generalizes to
 other third-party daemons we depend on (`librespot`, `bluez-alsa`).
 None have demonstrated this failure class. The pattern is here if
 they do — don't preemptively spread.
+
+### 4. Tier 5: hardware watchdog with persistent journal forensics
+
+The kernel hardware watchdog (`bcm2835-wdt` on the Pi 5's
+BCM2712 SoC) was already enabled before JTS existed: Raspberry Pi
+OS Trixie ships
+[`/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`](https://github.com/RPi-Distro/repo/blob/master/debian/changelog)
+with `RuntimeWatchdogSec=1m` and `RebootWatchdogSec=2m`. systemd
+PID 1 opens `/dev/watchdog0`, sets the kernel timer to 60 s, and
+pings every 30 s. If PID 1 itself can't get scheduled to ping
+within the window — which happens when userspace wedges hard
+enough to starve the scheduler (heavy zram thrash during OOM,
+massive I/O queue, an in-process deadlock that radiates outward) —
+the hardware watchdog hard-resets the board.
+
+For a smart speaker that runs unattended for years, this is the
+right behaviour: a wedged box recovers in ~60 s without a human
+plugging it. The user perceives "the speaker restarted on its
+own" — accurate, and far better than a permanently silent speaker.
+
+The cost we discovered on 2026-05-20: RPi OS also ships
+[`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`](https://github.com/RPi-Distro/repo)
+with `Storage=volatile`, which throws the journal away on every
+reboot to protect the SD card from log-write wear. The two
+defaults compose into a debuggability hole: the wedge → watchdog
+reset → fresh boot → no record of what wedged the system. From
+the operator's vantage, the speaker spontaneously reboots with
+no explanation.
+
+[PR #160](https://github.com/jaspercurry/JTS/pull/160) added
+`deploy/journald/50-jts-persistent-storage.conf` (installed at
+`/etc/systemd/journald.conf.d/`) flipping back to
+`Storage=persistent` with a 200 MB `SystemMaxUse=` cap. Now the
+previous boot's logs survive the reset and the cause is
+recoverable via `journalctl -b -1`. SD wear cost: ~30 MB/hour
+to disk with ZSTD compression, ~270 GB/year, well inside the
+endurance budget of any reasonable SD card (~100 TBW). Swap is
+on `zram0` (compressed RAM via Trixie's `zram-tools` default),
+not the SD card, so OOM events don't actually thrash the card —
+the wear protection RPi OS's volatile default was hedging
+against turned out to be the wrong threat for our topology.
+
+What this Tier covers that Tiers 1–4 don't:
+- Kernel panic (Tiers 1–2 require PID 1 to still be scheduling
+  the heartbeat thread).
+- PID 1 itself wedging (no userspace watchdog can save you when
+  PID 1 is the one stuck).
+- OOM-induced full-system stalls where every process — including
+  systemd — is blocked waiting on zram compression or swap I/O.
+- Any future failure class we haven't anticipated. Tier 5 is the
+  catch-all.
+
+What it explicitly does NOT replace: Tiers 1–4 still catch
+in-process hangs and protocol wedges much faster (~30 s vs ~60 s)
+and with a smaller blast radius (one daemon restart vs full
+reboot). Tier 5 is the floor, not the first line.
+
+To investigate a watchdog-triggered reset after the fact:
+
+```sh
+# How many boots are in the persistent journal?
+sudo journalctl --list-boots
+
+# Last warning+ from the previous boot, the 2 minutes before the
+# reset (usually where the wedge signature appears: OOM-kill,
+# softlockup, runaway daemon, etc.)
+sudo journalctl -b -1 -p warning --since "-2min"
+
+# EXT4 boot fingerprint: an unclean shutdown shows up in dmesg as
+# "EXT4-fs (mmcblk0p2): orphan cleanup on readonly fs" on the
+# *recovery* boot. Diagnostic shorthand for "the previous shutdown
+# wasn't clean" → power loss, hardware reset, OR watchdog bite.
+sudo dmesg -T | grep "orphan cleanup"
+```
+
+Heavy *offline* analysis on the Pi (e.g. instantiating
+`openwakeword.Model()` 100 times in a sweep script) is a known
+way to trip Tier 5 self-inflicted — each model load holds
+~100–200 MB and they don't free until the script does. Prefer
+the laptop for that kind of work; the Pi venv is sized for
+production daemons, not analysis bursts.
 
 ### Hardware-event recovery — sidebar to the ladder
 
@@ -315,6 +396,12 @@ For anyone touching the resilience code:
   then runs the reconciler so mic/AEC/voice state matches present
   hardware. Triggered by the udev rule above; idempotent so re-fires
   on rapid replug are harmless.
+- `deploy/journald/50-jts-persistent-storage.conf` — Tier 5
+  forensics pairing. Installed by `install.sh`'s
+  `install_journald_persistent_storage()` to
+  `/etc/systemd/journald.conf.d/`. Overrides RPi OS's
+  `40-rpi-volatile-storage.conf` so journal entries from the boot
+  preceding a watchdog reset survive to `/var/log/journal/`.
 - `jasper/control/shairport_supervisor.py` — Tier 3 supervisor for
   shairport-sync's AP2 control plane. `ShairportSupervisor.run()` is
   the supervisor loop; `_tick()` is the pure policy under test.
@@ -362,6 +449,14 @@ manual verification.
   start has elapsed (60 s default), `curl -s localhost:8780/state |
   jq .resilience.shairport` returns `enabled=true` with a recent
   `last_probe_at` and `last_probe_ok=true`.
+- Tier 5 hardware watchdog active: `systemctl show -p
+  RuntimeWatchdogUSec` returns `1min` (RPi OS default) and
+  `WatchdogDevice=/dev/watchdog0`.
+- Persistent journal active: `sudo journalctl --header | grep
+  "File path"` shows `/var/log/journal/...` (not
+  `/run/log/journal/...`), and `sudo journalctl --list-boots`
+  enumerates more than one boot once the Pi has rebooted at least
+  once since PR #160 landed.
 
 Smoke test that the watchdog actually catches a wedge:
 
@@ -397,11 +492,13 @@ sudo journalctl -fu jasper-dongle-recover
 - **A separate watchdog daemon** (monit, supervisord, custom).
   systemd's built-in `sd_notify` + `Restart=on-watchdog` does
   everything those would, with no new process.
-- **Tier 4–5 today.** Each has a clear trigger condition for
-  when to wire it. Tiers 1+2 ship in the AEC + voice paths; Tier 3
-  shipped after we observed the failure class it covers (shairport
-  AP2 wedge, 2026-05-19). Tier 4 (kernel-state recovery) and Tier 5
-  (hardware watchdog) wait on evidence of need.
+- **Tier 4 today.** Kernel-state recovery (`rmmod + modprobe
+  snd_aloop`) waits on evidence of need. Tiers 1+2 ship in the
+  AEC + voice paths; Tier 3 shipped after we observed the failure
+  class it covers (shairport AP2 wedge, 2026-05-19); Tier 5 was
+  always on (RPi OS default) and only needed the persistent
+  journal pairing to become useful, which shipped in PR #160
+  after the 2026-05-20 wedge investigation.
 - **A generic "third-party daemon supervisor" framework.** Tier 3's
   shape (probe → gate → rate-limited restart) is reusable, but
   shairport is the only third-party daemon that has demonstrated the

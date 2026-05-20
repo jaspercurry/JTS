@@ -395,25 +395,36 @@ they don't get lost in the working tree.
 
 `docs/HANDOFF-resilience.md` documents the full five-tier ladder.
 Tiers 1+2 (sd_notify watchdog + `Type=notify` + `Restart=on-watchdog`)
-shipped in PRs #77 + #93 alongside the UDP transport that
-eliminated the snd-aloop kernel-state failure class. Tier 5 is the
-cheap remaining one we should not forget. Tiers 3–4 are noted for
-completeness but have weak triggers.
+shipped in PRs [#77](https://github.com/jaspercurry/JTS/pull/77) +
+[#93](https://github.com/jaspercurry/JTS/pull/93) alongside the UDP
+transport that eliminated the snd-aloop kernel-state failure class.
+Tier 5 (hardware watchdog) was already wired by Raspberry Pi OS
+Trixie's defaults; PR [#160](https://github.com/jaspercurry/JTS/pull/160)
+added the persistent journal pairing so watchdog-triggered reboots
+leave forensics. Tiers 3–4 in the PLAN's sense (`OnFailure=` chaining,
+`rmmod snd_aloop` recovery) are noted for completeness but have weak
+triggers.
 
-### Tier 5 — BCM2712 hardware watchdog (do this next)
+### Tier 5 — BCM2712 hardware watchdog (shipped 2026-05-20)
 
-Set `RuntimeWatchdogSec=15s` in a `/etc/systemd/system.conf.d/`
-drop-in. systemd PID 1 pats `/dev/watchdog0` (the BCM2712 driver,
-exposed on Pi OS Lite Trixie 64-bit by default); if PID 1 itself
-hangs, the kernel watchdog reboots the Pi. Covers kernel panics
-and total userspace wedges that no userspace mechanism can recover
-from. ~5 lines of config, no code, no runtime cost.
+Done in PR #160, two halves:
 
-Sequencing note: stage this AFTER Tiers 1+2 have soaked on the
-speaker for a stretch, so we're not chasing boot-loops caused by
-our own daemons. Confirm `cat /sys/class/watchdog/watchdog0/identity`
-returns `Broadcom BCM2835 Watchdog` (Pi family identifier) before
-enabling. The 15 s ceiling is hardware-imposed.
+- **Watchdog itself**: already enabled by RPi OS Trixie's
+  `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`
+  (`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). systemd PID 1
+  pats `/dev/watchdog0` (`bcm2835-wdt`); if PID 1 can't get
+  scheduled to ping for ~60 s, the hardware watchdog hard-resets
+  the board. No JTS-side config needed; we discovered this on
+  2026-05-20 when a heavy offline analysis script OOM'd the Pi
+  and the watchdog kicked in.
+- **Forensics pairing**: `deploy/journald/50-jts-persistent-storage.conf`
+  overrides RPi OS's `40-rpi-volatile-storage.conf` so journals
+  survive across the watchdog reset. Capped at 200 MB. Without
+  this, the user only sees the reboot — never the cause.
+
+Verify on the Pi via `systemctl show -p RuntimeWatchdogUSec` (expect
+`1min`) and `journalctl --header | grep "File path"` (expect
+`/var/log/journal/...`, not `/run/log/journal/...`).
 
 ### Tier 3 — `OnFailure=` cross-service chaining (deferred)
 
