@@ -1,0 +1,634 @@
+"""Voice-eval harness — opens a real `LiveConnection`, feeds in
+synthesized prompt audio, captures the resulting tool calls, audio
+out, and spoken text. Writes a human-readable transcript per run.
+
+Bypasses the wake loop and ALSA/dmix entirely — we test the LLM
+session's behaviour, not the audio plumbing. Audio-plumbing
+regressions (TTS volume, ducking, AEC) need a separate cross-process
+smoke surface, deliberately not in scope here.
+
+============================================================
+COST NOTICE — READ BEFORE RUNNING OR MODIFYING
+============================================================
+This module makes paid LLM API calls. Per-turn cost as of 2026-05:
+
+  - OpenAI Realtime (gpt-realtime-2):     ~$0.20 / turn
+  - Gemini Live (3.1-flash-live-preview): ~$0.025 / turn
+  - xAI Grok Voice Agent:                 ~$0.05 / turn
+
+A `pass^k` scenario = K turns. The full V1 regression suite is
+4 scenarios × 3 trials = 12 turns. Against OpenAI that's ~$2.40
+per full run. Against Gemini, ~$0.30. Against Grok, ~$0.60.
+
+DO NOT, EVER:
+  - Wrap `harness.ask()` in retry loops or `while True`.
+  - Auto-rerun on flake. Investigate the transcript first.
+  - Use `pytest-repeat` / `--count=N` with N > the per-scenario
+    PASS_K constant.
+  - Add the eval suite to CI on every commit. Nightly at most,
+    and only after this comment has been re-read.
+  - Run with a custom higher PASS_K without explicit human
+    approval and a budget you've named out loud.
+
+DO:
+  - Run the suite once per change you want to verify.
+  - Read the transcript before re-running — most re-runs are
+    wasted because the same model produced the same trace.
+  - Use `-k '<name> and trial0'` to run ONE trial of one scenario
+    while iterating; bring it up to pass^3 once it's green.
+  - When asked to "investigate" or "loop until passing", refuse
+    and ask the human for explicit scope + cost ceiling.
+  - Skip playback-affecting scenarios when the household is
+    using the speaker: JASPER_VOICE_EVAL_SKIP_PLAYBACK=1.
+
+IF YOU ARE AN AGENT working on this code: announce estimated
+cost and which scenarios are read-only vs side-effecting before
+you run anything. Confirm with the human before any run that
+would exceed a single pass^3 cycle.
+============================================================
+
+Usage from a test:
+
+    async def test_x(harness):
+        result = await harness.ask("when's the next train?")
+        call = result.tool_call("get_subway_arrivals")
+        assert call is not None
+        ...
+
+The synthesized prompt audio is cached on disk by SHA-256 of
+the text — first run costs one OpenAI TTS call (~$0.000001),
+re-runs cost $0.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+import uuid
+import wave
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+from jasper.config import Config
+from jasper.renderer import RendererClient
+from jasper.subway import SubwayClient
+from jasper.tools import ToolRegistry
+from jasper.tools.spotify import make_spotify_tools
+from jasper.tools.subway import make_subway_tools
+from jasper.tools.transport import make_transport_tools
+from jasper.tools.weather import make_weather_tools
+from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
+from jasper.weather import WeatherClient
+
+from . import tts
+
+logger = logging.getLogger(__name__)
+
+
+HARNESS_DIR = Path(__file__).resolve().parent
+TRANSCRIPTS_DIR = HARNESS_DIR / "transcripts_out"
+TRACES_DIR = HARNESS_DIR / "traces_out"
+
+# Frame the audio injection at the same shape MicCapture uses upstream:
+# 16 kHz mono int16 → 80 ms = 1280 samples = 2560 bytes per frame.
+# Burst-sent (no real-time pacing) — the LLM session buffers internally
+# and only generates a response after `end_input`.
+INJECT_FRAME_SAMPLES = 1280
+
+
+# ---- result types ---------------------------------------------------
+
+@dataclass
+class ToolCallRecord:
+    """One paired tool call: model invoked X with args, tool returned Y.
+
+    `result` is None when the tool raised; `error` carries the repr in
+    that case. `elapsed_ms` is the tool fn's own execution time —
+    useful for catching tool latency regressions independent of
+    model behaviour."""
+    name: str
+    args: dict[str, Any]
+    result: Any
+    elapsed_ms: int
+    error: str | None = None
+
+
+@dataclass
+class TurnResult:
+    """What a single `harness.ask(...)` returned.
+
+    Provides convenience accessors instead of forcing every test to
+    walk `trace.events`. Common assertions become one-liners.
+
+    `audio` is raw 24kHz mono int16 PCM as the provider emitted it
+    (no resampling). Saved to the transcript directory as a sibling
+    .wav so you can listen to what the model actually said.
+
+    `spoken_text` is the exact text the model emitted alongside the
+    audio. Comes from the provider's native transcript stream — no
+    STT, no Whisper. Empty string if the provider didn't send any
+    text deltas in this turn (which is itself a data point)."""
+    prompt: str
+    trace: TurnTrace
+    audio: bytes
+    transcript_path: Path
+    response_audio_path: Path
+
+    @property
+    def tool_call_records(self) -> list[ToolCallRecord]:
+        out: list[ToolCallRecord] = []
+        for call, ret in self.trace.tool_pairs():
+            ret_payload = ret.payload if ret else {}
+            out.append(ToolCallRecord(
+                name=call.payload["name"],
+                args=call.payload.get("args") or {},
+                result=ret_payload.get("result"),
+                elapsed_ms=int(ret_payload.get("elapsed_ms") or 0),
+                error=ret_payload.get("error"),
+            ))
+        return out
+
+    @property
+    def spoken_text(self) -> str:
+        """The text the model spoke during this turn, exactly as the
+        provider transmitted it. Native — no STT pass."""
+        return self.trace.spoken_text()
+
+    def tool_call(self, name: str) -> ToolCallRecord | None:
+        """First tool call matching `name`, or None if the model didn't
+        invoke it. Use this for "did the model call X?" assertions."""
+        for rec in self.tool_call_records:
+            if rec.name == name:
+                return rec
+        return None
+
+    def tool_calls(self, name: str) -> list[ToolCallRecord]:
+        """All tool calls matching `name`. For the rare case the model
+        calls the same tool multiple times in one turn."""
+        return [r for r in self.tool_call_records if r.name == name]
+
+
+# ---- registry construction -----------------------------------------
+
+def _build_test_registry(cfg: Config) -> ToolRegistry:
+    """Construct the tool registry the eval harness exposes to the
+    LLM. Mirrors the daemon's `_build_registry` but skips backends
+    that require live audio hardware (volume coordinator, timer
+    scheduler, calendar/gmail).
+
+    **Side-effect warning**: registering `spotify_play` and the
+    transport tools means a scenario that exercises them WILL
+    affect live playback on the speaker. The Spotify scenarios
+    honour `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1` for the dinner-time
+    case. Subway/weather/time scenarios are read-only.
+
+    As new tools land, extend this builder alongside the matching
+    scenario file. The model only sees what's registered."""
+    registry = ToolRegistry()
+
+    # Weather — stateless HTTP client. Read-only.
+    weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
+    for fn in make_weather_tools(weather):
+        registry.register(fn)
+
+    # Subway — stateless HTTP client. Read-only.
+    if cfg.subway_enabled:
+        subway = SubwayClient(
+            cfg.subway_station_id,
+            cfg.subway_default_direction,
+            list(cfg.subway_lines) or None,
+        )
+        for fn in make_subway_tools(subway):
+            registry.register(fn)
+
+    # Spotify — has playback side-effects. We register the tools
+    # whenever the router can be built; scenarios that exercise
+    # playback gate themselves on `JASPER_VOICE_EVAL_SKIP_PLAYBACK`.
+    # Routing through the real OAuth tokens is essential for the
+    # Covers-playlist scenario to be meaningful — there's no
+    # play-act mode for "did the resolver find the playlist".
+    try:
+        from jasper.voice_daemon import _build_router
+        router = _build_router(cfg)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("voice-eval: spotify router build failed: %r", e)
+        router = None
+
+    renderer = RendererClient(librespot_state_path=cfg.librespot_state_path)
+
+    if router is not None:
+        for fn in make_transport_tools(renderer, router):
+            registry.register(fn)
+        for fn in make_spotify_tools(
+            router, renderer, cfg.spotify_device_name, cfg.spotify_setup_url,
+        ):
+            registry.register(fn)
+
+    # Future: get_current_time tool registration goes here once the
+    # tool lands. Until then, the time scenario fails meaningfully
+    # ("model did not call get_current_time" — which IS the bug).
+
+    return registry
+
+
+# ---- audio I/O -----------------------------------------------------
+
+def _load_wav_pcm(path: Path) -> bytes:
+    """Load a mono 16kHz int16 WAV into raw PCM bytes. Asserts the
+    format because mismatches lead to silent garbage at the provider
+    end — better to fail loudly here."""
+    with wave.open(str(path), "rb") as w:
+        if w.getnchannels() != 1:
+            raise ValueError(f"{path}: expected mono, got {w.getnchannels()} ch")
+        if w.getsampwidth() != 2:
+            raise ValueError(f"{path}: expected 16-bit, got {w.getsampwidth() * 8}-bit")
+        if w.getframerate() != tts.DAEMON_RATE_HZ:
+            raise ValueError(
+                f"{path}: expected {tts.DAEMON_RATE_HZ}Hz, got {w.getframerate()}Hz",
+            )
+        return w.readframes(w.getnframes())
+
+
+async def _send_pcm_to_turn(turn, pcm: bytes) -> None:
+    """Burst-send `pcm` to the turn in 1280-sample frames. No
+    real-time pacing — the LLM session buffers and only produces a
+    response after `end_input`."""
+    frame_bytes = INJECT_FRAME_SAMPLES * 2  # int16
+    n = 0
+    for off in range(0, len(pcm), frame_bytes):
+        await turn.send_audio(pcm[off:off + frame_bytes])
+        n += 1
+    logger.info("voice-eval: sent %d frames (%d bytes total)", n, len(pcm))
+
+
+# ---- transcript writer ---------------------------------------------
+
+def _write_transcript(
+    prompt: str,
+    trace: TurnTrace,
+    audio: bytes,
+    *,
+    out_dir: Path,
+) -> tuple[Path, Path]:
+    """Write a markdown transcript + the raw response audio to
+    `out_dir`. Returns (transcript_path, audio_path).
+
+    The transcript is the *primary* eval artifact (per Anthropic's
+    "you can't trust eval results without reviewing actual agent
+    traces"). It's human-readable, paste-able into a chat, and
+    grep-able. The raw audio is included so you can listen to what
+    the model actually said — TTS-level hallucinations don't show up
+    in tool traces.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%dT%H%M%SZ")
+    slug = "".join(c if c.isalnum() else "_" for c in prompt)[:40]
+    base = f"{ts}_{slug}_{trace.turn_id[:6]}"
+    md_path = out_dir / f"{base}.md"
+    audio_path = out_dir / f"{base}.response.wav"
+    traces_path = TRACES_DIR / f"{base}.jsonl"
+
+    # JSONL trace dump — machine-readable, shape matches what a
+    # future production-capture path would emit.
+    TRACES_DIR.mkdir(parents=True, exist_ok=True)
+    with traces_path.open("w", encoding="utf-8") as f:
+        for ev in trace.events:
+            f.write(json.dumps({
+                "ts": ev.ts,
+                "kind": ev.kind,
+                "payload": ev.payload,
+            }, default=str) + "\n")
+
+    # Response audio dumped as 24kHz mono int16 WAV.
+    with wave.open(str(audio_path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(24_000)
+        w.writeframes(audio)
+
+    lines: list[str] = []
+    lines.append(f"# Voice eval turn — {base}")
+    lines.append("")
+    lines.append(f"- **Provider**: `{trace.provider}`")
+    lines.append(f"- **Turn id**: `{trace.turn_id}`")
+    lines.append(f"- **Session id**: `{trace.session_id}`")
+    lines.append(f"- **Duration**: "
+                 f"{(trace.events[-1].ts - trace.started_at):.2f}s"
+                 if trace.events else "- **Duration**: n/a")
+    lines.append("")
+    lines.append("## Prompt (synthesized)")
+    lines.append("")
+    lines.append(f"> {prompt}")
+    lines.append("")
+
+    pairs = trace.tool_pairs()
+    if pairs:
+        lines.append("## Tool calls")
+        lines.append("")
+        for call, ret in pairs:
+            args = call.payload.get("args") or {}
+            args_str = ", ".join(f"{k}={v!r}" for k, v in args.items()) or "(no args)"
+            lines.append(f"### `{call.payload['name']}({args_str})`")
+            lines.append("")
+            if ret is None:
+                lines.append("_no matching return — the model called the tool but the "
+                             "session ended before the return was recorded._")
+            elif ret.payload.get("error"):
+                lines.append(f"**Error** ({ret.payload.get('elapsed_ms')}ms):")
+                lines.append("")
+                lines.append(f"```\n{ret.payload['error']}\n```")
+            else:
+                lines.append(f"Returned in {ret.payload.get('elapsed_ms')}ms:")
+                lines.append("")
+                lines.append("```json")
+                lines.append(json.dumps(ret.payload.get("result"), indent=2,
+                                        default=str))
+                lines.append("```")
+            lines.append("")
+    else:
+        lines.append("## Tool calls")
+        lines.append("")
+        lines.append("_The model called no tools._")
+        lines.append("")
+
+    lines.append("## Spoken text")
+    lines.append("")
+    spoken = trace.spoken_text()
+    if spoken:
+        lines.append(f"> {spoken.strip()}")
+    else:
+        lines.append("_(no transcript deltas received — provider may not have "
+                     "emitted text alongside audio, or the turn ended before "
+                     "any text was sent.)_")
+    lines.append("")
+    lines.append("## Response audio")
+    lines.append("")
+    lines.append(f"`{audio_path.name}` ({len(audio)} bytes, "
+                 f"~{len(audio) / (24_000 * 2):.1f}s @ 24kHz mono)")
+    lines.append("")
+    lines.append("Listen if the spoken-text section above is empty or looks "
+                 "off — the WAV is the ground truth of what the user would "
+                 "actually hear.")
+    lines.append("")
+
+    lines.append("## Raw trace")
+    lines.append("")
+    lines.append(f"`{traces_path.name}` — JSONL, one event per line.")
+
+    md_path.write_text("\n".join(lines), encoding="utf-8")
+    return md_path, audio_path
+
+
+# ---- the harness ---------------------------------------------------
+
+class VoiceEvalHarness:
+    """Holds a long-lived `LiveConnection` and runs scenarios against
+    it. One harness per pytest session — the connection opens lazily
+    on first `ask()` and closes at session teardown.
+
+    The connection is reused across scenarios for two reasons:
+
+      1. Auth handshake takes 0.5–2s; opening per-scenario triples
+         the suite runtime.
+      2. Provider rate limits care about connection churn — reuse
+         is well within the rate envelope.
+
+    Trade-off: scenarios share connection-level state. A scenario
+    that mutates state visible to a later scenario could pollute
+    results. Today's tools (subway, weather) are stateless;
+    revisit if we add stateful tools."""
+
+    def __init__(self, cfg: Config, *, audio_cache_dir: Path | None = None) -> None:
+        self.cfg = cfg
+        self.audio_cache_dir = audio_cache_dir or tts.DEFAULT_CACHE_DIR
+        self._connection = None
+        self._session_id = uuid.uuid4().hex
+        self._connection_lock = asyncio.Lock()
+
+    async def _ensure_connection(self):
+        if self._connection is not None:
+            return self._connection
+        async with self._connection_lock:
+            if self._connection is not None:
+                return self._connection
+            # Import lazily so module-import-time doesn't pull the whole
+            # daemon graph (which costs ~1s of cold imports).
+            from jasper.voice_daemon import (
+                _build_system_instruction,
+                _make_connection,
+            )
+            registry = _build_test_registry(self.cfg)
+            wrapped = traced_registry(registry)
+            connection = _make_connection(self.cfg)
+            await connection.start(
+                wrapped,
+                lambda: _build_system_instruction(self.cfg.weather_default_location),
+            )
+            self._connection = connection
+            logger.info(
+                "voice-eval: connection opened for provider=%s session=%s",
+                self.cfg.voice_provider, self._session_id,
+            )
+            return connection
+
+    async def aclose(self) -> None:
+        if self._connection is not None:
+            try:
+                await self._connection.stop()
+            except Exception:  # noqa: BLE001
+                logger.warning("voice-eval: connection.stop() raised", exc_info=True)
+            self._connection = None
+
+    async def ask(
+        self,
+        prompt: str,
+        *,
+        turn_timeout_sec: float = 30.0,
+    ) -> TurnResult:
+        """Run one turn against the live session.
+
+        `prompt` is the spoken user utterance. The harness synthesizes
+        TTS for it (cached), feeds it to the model, collects the
+        tool calls + spoken response, writes a transcript, and
+        returns the result.
+
+        `turn_timeout_sec` caps the total wall-time. If the model
+        hangs (silent failure), the test fails fast rather than
+        blocking the suite."""
+        audio_path = await tts.synth(prompt, cache_dir=self.audio_cache_dir)
+        prompt_pcm = _load_wav_pcm(audio_path)
+
+        connection = await self._ensure_connection()
+
+        trace = TurnTrace(
+            turn_id=uuid.uuid4().hex,
+            session_id=self._session_id,
+            provider=self.cfg.voice_provider,
+            started_at=time.monotonic(),
+        )
+        trace.append("turn_start", {
+            "prompt_audio_path": str(audio_path),
+            "n_prompt_bytes": len(prompt_pcm),
+        })
+        token = set_active(trace)
+
+        audio_chunks: list[bytes] = []
+        turn = None
+        try:
+            turn = await asyncio.wait_for(
+                connection.acquire_turn(), timeout=turn_timeout_sec,
+            )
+            await _send_pcm_to_turn(turn, prompt_pcm)
+            await turn.end_input()
+
+            async def _drain():
+                async for chunk in turn.audio_out():
+                    audio_chunks.append(chunk)
+                    trace.append("audio_out", {"n_bytes": len(chunk)})
+
+            try:
+                await asyncio.wait_for(_drain(), timeout=turn_timeout_sec)
+            except asyncio.TimeoutError:
+                trace.append("turn_end", {
+                    "reason": "drain_timeout",
+                    "audio_chunks": len(audio_chunks),
+                })
+                raise
+
+            trace.append("turn_complete", {
+                "tokens": dict(turn.usage_tokens() or {}),
+                "audio_chunks": len(audio_chunks),
+            })
+        finally:
+            reset_active(token)
+            if turn is not None:
+                try:
+                    await turn.release()
+                except Exception:  # noqa: BLE001
+                    logger.warning("voice-eval: turn.release() raised", exc_info=True)
+
+        audio = b"".join(audio_chunks)
+        md_path, wav_path = _write_transcript(
+            prompt, trace, audio, out_dir=TRANSCRIPTS_DIR,
+        )
+        # Per-turn cost estimate, printed loudly so unexpected spend
+        # surfaces immediately during dev. Not a billing source of
+        # truth — see _PROVIDER_RATES_USD_PER_M for the rate table.
+        tokens = next(
+            (e.payload.get("tokens") or {} for e in reversed(trace.events)
+             if e.kind == "turn_complete"),
+            {},
+        )
+        in_tok = int(tokens.get("input_tokens") or 0)
+        out_tok = int(tokens.get("output_tokens") or 0)
+        est = estimate_turn_cost_usd(self.cfg.voice_provider, in_tok, out_tok)
+        logger.info(
+            "voice-eval: turn complete — provider=%s tokens=%d in / %d out, "
+            "estimated cost ~$%.4f. transcript=%s",
+            self.cfg.voice_provider, in_tok, out_tok, est, md_path,
+        )
+        return TurnResult(
+            prompt=prompt,
+            trace=trace,
+            audio=audio,
+            transcript_path=md_path,
+            response_audio_path=wav_path,
+        )
+
+    # --- assertion helpers --------------------------------------------
+
+    @staticmethod
+    def match_minutes(
+        actual, expected, *, tol: int = 1,
+    ) -> bool:
+        """Same-length minute lists within ±`tol`. Re-exported here so
+        scenarios don't need a separate import for the common
+        comparison."""
+        from .oracles import minutes_match
+        return minutes_match(actual or [], expected or [], tol=tol)
+
+    @staticmethod
+    def extract_minutes_from_text(text: str) -> list[int]:
+        """Pull integers out of spoken text, in the order they appear.
+
+        Used by subway-style scenarios: "Next train in 6, 22, and 36
+        minutes" → [6, 22, 36]. Catches numeric forms only; if the
+        model spells numbers out ("six, twenty-two, and thirty-six"),
+        this returns []. Provider docstrings (and our SYSTEM_INSTRUCTION)
+        instruct the model to use numeric form, so this is fine in
+        practice — if a future model insists on words, swap in a
+        words-to-numbers parser."""
+        import re
+        # Match integers with optional thousands separators, but cap
+        # at 3 digits since subway arrivals are minutes (<= 999).
+        return [int(m) for m in re.findall(r"\b(\d{1,3})\b", text or "")]
+
+    @staticmethod
+    def extract_time_from_text(text: str):
+        """Pull the first HH:MM-shaped time out of spoken text and
+        return a `datetime.time`. Returns None if no match.
+
+        Handles "10:15", "10:15 AM", "10:15PM", "10:15 a.m.". Doesn't
+        handle spelled-out forms ("ten fifteen") — same limitation
+        as `extract_minutes_from_text`. A future model that always
+        spells out times would need a words-to-numbers parser."""
+        import re
+        from datetime import time
+        m = re.search(
+            r"\b(\d{1,2}):(\d{2})(?:\s*([ap])\.?\s*m\.?)?\b",
+            (text or "").lower(),
+        )
+        if m is None:
+            return None
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        ampm = m.group(3)
+        if ampm == "p" and hh < 12:
+            hh += 12
+        elif ampm == "a" and hh == 12:
+            hh = 0
+        if not (0 <= hh <= 23 and 0 <= mm <= 59):
+            return None
+        return time(hour=hh, minute=mm)
+
+
+# ---- cost estimation -----------------------------------------------
+
+# Per-million-token rates for each provider's audio modality, USD.
+# These are intentionally conservative (use OpenAI's audio-in rate,
+# which is the dominant cost driver). Update when provider pricing
+# changes.
+_PROVIDER_RATES_USD_PER_M = {
+    # OpenAI Realtime (gpt-realtime-2), 2026-05:
+    # $32 audio in / $4 text in / $0.40 cached / $64 audio out / $24 text out.
+    # We use audio-in for input (system prompt is text but billing
+    # treats it as audio under realtime) and audio-out for output.
+    "openai": {"input": 32.0, "output": 64.0},
+    # Gemini Live 3.1-flash-live-preview, ~$0.025/minute equivalent
+    # spread across input + output tokens. Approximated as $4 input /
+    # $16 output per M tokens — order-of-magnitude correct for our
+    # purposes.
+    "gemini": {"input": 4.0, "output": 16.0},
+    # xAI Grok Voice Agent: $3/hour cap. Per-token rates aren't
+    # published; approximated to land near $0.05/turn.
+    "grok": {"input": 8.0, "output": 24.0},
+}
+
+
+def estimate_turn_cost_usd(
+    provider: str, input_tokens: int, output_tokens: int,
+) -> float:
+    """Best-effort dollar estimate for one turn. Informational only,
+    NOT a billing source of truth — providers' actual invoices are
+    what matters. We use this to print a per-run summary so a human
+    can spot "wait, that cost more than expected" early."""
+    rates = _PROVIDER_RATES_USD_PER_M.get(provider)
+    if rates is None:
+        return 0.0
+    return (
+        input_tokens * rates["input"] / 1_000_000
+        + output_tokens * rates["output"] / 1_000_000
+    )

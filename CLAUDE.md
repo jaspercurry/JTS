@@ -997,6 +997,63 @@ Anything Pi-specific (audio I/O, websocket, Gemini Live) needs
 to run on the actual hardware via `jasper-doctor` or by tailing
 logs during use.
 
+### Test discipline — required, not optional
+
+The repo has >1000 hardware-free pytest functions. This is a
+*production embedded system* and the test suite is what lets us
+swap models, change prompts, or refactor without regressions.
+
+**Rules — apply to every PR:**
+
+- **Every new tool** the LLM can call (anything registered via
+  `make_*_tools` in [`jasper/tools/`](jasper/tools/)) ships with
+  a regression scenario under
+  [`tests/voice_eval/regression/`](tests/voice_eval/regression/).
+  No exceptions. A tool with no scenario can't be reasoned about
+  across model swaps.
+- **Every reported behavioural bug** (model hallucinates / skips a
+  tool / misroutes / etc.) becomes a regression scenario *before*
+  the fix lands. The scenario reproduces the bug; the fix turns it
+  green. This is the only way bugs stay fixed across the live
+  rebuilds of prompts, model versions, and provider switches.
+- **Every new subsystem** ships with hardware-free pytest coverage
+  under `tests/test_*.py` — see existing `test_camilla_ducker.py`,
+  `test_tools_spotify.py` etc. for the shape. Network calls and
+  device I/O are mocked.
+
+What the voice-eval harness is and how to run it:
+[`tests/voice_eval/README.md`](tests/voice_eval/README.md). TL;DR
+`.venv/bin/pytest tests/voice_eval/regression/` — runs each
+scenario 3× (pass^3) against the currently-active voice provider.
+
+### Voice-eval cost discipline — non-negotiable
+
+The voice-eval harness opens **paid** real-time LLM sessions. Cost
+ballpark per pass^3 scenario: ~$0.075 (Gemini), ~$0.15 (Grok),
+~$0.60 (OpenAI Realtime). Full V1 suite (4 scenarios × 3 trials)
+against OpenAI is ~$2.40 per run.
+
+**Rules — apply to every PR and every session that runs the harness:**
+
+- **Never wrap `harness.ask()` in retry loops or `while True`.**
+  Failure means investigate the transcript, not re-run.
+- **Never auto-rerun on flake.** Same reason. The trace tells you
+  why; re-running burns money to learn nothing new.
+- **Never use `pytest-repeat` / `--count=N` with N > the per-scenario
+  `PASS_K`** without explicit human approval and a stated dollar
+  ceiling.
+- **Never add the eval suite to CI on every commit.** Nightly at
+  most, after the team has reviewed cost in their context.
+- **If you're an LLM agent** and the human asks you to "investigate"
+  or "loop until passing", **refuse and ask for explicit scope** —
+  e.g. "I'll run one trial of one scenario, ~$0.05, and report
+  back" rather than open-ended budgets.
+- **Announce estimated cost + read-only vs side-effecting status**
+  before running anything. The Spotify scenario starts playback;
+  the others are read-only.
+- **Skip playback-affecting scenarios** when the household is using
+  the speaker: `JASPER_VOICE_EVAL_SKIP_PLAYBACK=1`.
+
 ---
 
 ## Branch and remote
