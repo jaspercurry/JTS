@@ -193,10 +193,18 @@ PYBIND11_MODULE(_aec3, m) {
              "very_high — Trixie v1.3-3 lacks kVeryLow). Empirically "
              "ns_level='low' is the sweet spot for wake-word detection "
              "in our pipeline. agc1_enabled turns on WebRTC AGC1 in "
-             "kAdaptiveDigital mode — dynamic gain that targets "
-             "agc1_target_dbfs with up to agc1_max_gain_db of headroom "
-             "(typical: target=9, max=18). Use this instead of "
-             "enable_agc2 (which has no useful effect in our build).")
+             "kAdaptiveDigital mode for post-AEC level normalization. "
+             "agc1_target_dbfs maps to target_level_dbfs (positive "
+             "value = dBFS-below-zero; range 0-31; 9 → -9 dBFS "
+             "target). agc1_max_gain_db maps to compression_gain_db "
+             "(soft-knee compressor parameter, range 0-90; NOT a "
+             "'max gain ceiling' despite the param name). Empirically "
+             "these knobs have minimal effect on Trixie's libwebrtc "
+             "v1.3-3 (limiter dominates); the shipped benefit is "
+             "consistent ~RMS 1213 across utterances regardless of "
+             "music level. WebRTC AGC1 has no public attack/release "
+             "parameter. Use this instead of enable_agc2 (which has "
+             "no useful effect in our build).")
         .def("process", &Aec3::process,
              py::arg("mic"), py::arg("ref"),
              "Process one buffer of mic and ref bytes (equal-length "
