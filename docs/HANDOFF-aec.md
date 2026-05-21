@@ -933,10 +933,17 @@ whether livekit training is pursued):
   now accept `PHRASE` and `MODEL` env vars (PR #167). Any future
   cross-model or cross-phrase A/B uses the existing harness with
   one extra env var.
-- LAION BUD-E `hey_buddy_en_medium.onnx` is installed at
-  `/var/lib/jasper/wake/` on the Pi as a confirmed-compatible
-  conv-attention test model. Available for future architectural
-  experiments without re-downloading.
+
+**To repeat the smoke test in the future**:
+```sh
+curl -L -o /tmp/hey_buddy_en_medium.onnx \
+  "https://huggingface.co/laion/bud-e_wakeword-models_livekit-wakeword/resolve/main/en_medium/hey_buddy_en_medium.onnx"
+scp /tmp/hey_buddy_en_medium.onnx pi@jts.local:/tmp/
+ssh pi@jts.local "sudo install -m 0644 /tmp/hey_buddy_en_medium.onnx /var/lib/jasper/wake/"
+```
+(The model was installed on 2026-05-21 for the smoke test, then
+removed to keep `/var/lib/jasper/wake/` clean. Re-installing takes
+seconds when a future session wants to retest.)
 
 **Prerequisites:** None. Can start anytime; not currently planned.
 

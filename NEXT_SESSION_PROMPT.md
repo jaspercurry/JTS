@@ -93,6 +93,5 @@ End of prompt.
 
 ## Notes for me (Jasper) before starting the new session
 
-- This worktree should be on `main` with all the AEC PRs merged (#150, #154, #157, #158, #160, #161, #163, #167). If not, `git pull` first.
-- The hey_buddy_en_medium.onnx model is installed at `/var/lib/jasper/wake/` on the Pi — leave it; it's harmless and useful as a reference conv-attention model if any future architectural experiments come up.
+- This worktree should be on `main` with all the AEC PRs merged (#150, #154, #157, #158, #160, #161, #163, #167, #169). If not, `git pull` first.
 - After the dual-stream work lands, this NEXT_SESSION_PROMPT.md should be deleted in the same PR (per the pattern of the previous one).
