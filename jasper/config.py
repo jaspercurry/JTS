@@ -416,7 +416,18 @@ class Config:
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),
             duck_db=_env_float("JASPER_DUCK_DB", -25.0),
-            idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 60),
+            # Pre-response idle watchdog: closes the turn after this
+            # many seconds of pure model silence (no audio chunk
+            # received, server hasn't sent turn_complete, no
+            # intermediate events like tool dispatches — those reset
+            # the anchor via ``_note_activity()``). The chosen 20 s
+            # sits comfortably above the worst observed OpenAI
+            # Realtime first-chunk latency (~7.7 s in 2026-05-21
+            # production logs) while keeping recovery from a genuine
+            # API hang under half a minute. See
+            # docs/HANDOFF-voice-providers.md "Idle anchor + tool
+            # rounds" for the full rationale.
+            idle_timeout_sec=_env_int("JASPER_IDLE_TIMEOUT_SEC", 20),
             # Idle context reset is OFF by default. Each turn pays full
             # uncached price for the system prompt + tool defs on the
             # first turn after a reset (OpenAI: ~$0.008 vs $0.001

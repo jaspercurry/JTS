@@ -389,6 +389,21 @@ they don't get lost in the working tree.
   context. Single-session fix; needs a bench test against AirPlay
   + Spotify Connect to confirm none of the other paths regress.
 
+- **Idle watchdog: any-event-as-activity redesign.** The
+  pre-response idle watchdog
+  ([`jasper/voice_daemon.py:_idle_watchdog`](jasper/voice_daemon.py))
+  treats audio chunks and tool-round milestones as activity but
+  ignores intermediate server events (`response.created`,
+  content-part adds, transcript deltas). On a slow generation
+  day with a 20 s timeout, that gap could still false-fire even
+  though the server is responsive. Reworking the dispatcher to
+  treat any inbound event as activity would let us safely shrink
+  the timeout to 5–10 s — actual silence becomes the only failure
+  mode. Cross-provider refactor with real test surface; not worth
+  doing speculatively. Revisit if production sees idle-timeout
+  false-fires on the current 20 s default. Full sketch in
+  [docs/audit-pending-followups.md](docs/audit-pending-followups.md).
+
 ---
 
 ## Resilience ladder — deferred tiers (no version)

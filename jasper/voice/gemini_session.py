@@ -293,11 +293,13 @@ class GeminiLiveTurn(LiveTurn):
                 )
             await self._audio_q.put(data)
 
-        # Tool calls.
+        # Tool calls. The connection's dispatcher resets the idle anchor
+        # inside its loop too — covers slow / chained dispatches the
+        # initial reset here can't see.
         tool_call = getattr(response, "tool_call", None)
         if tool_call is not None:
-            self._last_activity_at = asyncio.get_event_loop().time()
-            await self._conn._handle_tool_call(tool_call)
+            self._note_activity()
+            await self._conn._handle_tool_call(tool_call, self)
 
         # Server content: turn_complete + interrupted.
         turn_just_completed = False
@@ -305,7 +307,7 @@ class GeminiLiveTurn(LiveTurn):
         if sc is not None:
             if getattr(sc, "turn_complete", False):
                 self._turn_count += 1
-                self._last_activity_at = asyncio.get_event_loop().time()
+                self._note_activity()
                 self._server_turn_complete = True
                 turn_just_completed = True
             if getattr(sc, "interrupted", False):
@@ -343,6 +345,21 @@ class GeminiLiveTurn(LiveTurn):
                 int(self._usage.get("output_tokens") or 0),
                 self._chunks_received,
             )
+
+    def _note_activity(self) -> None:
+        """Reset the pre-response idle anchor.
+
+        Called by the connection's receive loop and tool dispatcher
+        whenever something happens that means "model is still working"
+        — tool_call arrival, an individual tool completing inside a
+        multi-call round, the post-dispatch send_tool_response.
+
+        Mirrors ``OpenAIRealtimeTurn._note_activity()`` so the daemon's
+        protocol-agnostic ``_idle_watchdog`` behaves uniformly across
+        adapters. ``_on_response``'s audio-delta path does NOT call
+        this (chunks arrive on a hot path and read the loop clock
+        once inline for the ``_last_chunk_at`` companion update)."""
+        self._last_activity_at = asyncio.get_event_loop().time()
 
     def _on_connection_lost(self) -> None:
         """Called by the connection when the underlying WS dropped while
@@ -1419,7 +1436,9 @@ class GeminiLiveConnection(LiveConnection):
         # Reset the idle marker so we don't immediately re-trigger.
         self._last_turn_end_at = asyncio.get_event_loop().time()
 
-    async def _handle_tool_call(self, tool_call) -> None:
+    async def _handle_tool_call(
+        self, tool_call, turn: "GeminiLiveTurn | None" = None,
+    ) -> None:
         """Dispatch tool calls from the model with structured timing logs.
 
         Log format per call:
@@ -1427,6 +1446,11 @@ class GeminiLiveConnection(LiveConnection):
           tool {name} fn done in 412ms ok payload={...}     [HTTP + parsing]
           tool {name} response sent to Gemini in 614ms      [total round-trip]
         Failure paths log `timed out` or `raised:` with the same elapsed.
+
+        ``turn`` is the active turn whose idle anchor we reset between
+        tool dispatches (see docs/HANDOFF-voice-providers.md
+        "Idle anchor + tool rounds"). Optional for back-compat — the
+        caller in ``GeminiLiveTurn._on_response`` always passes it.
         """
         assert self._registry is not None
         responses = []
@@ -1482,6 +1506,10 @@ class GeminiLiveConnection(LiveConnection):
                     id=fc.id, name=fc.name, response=payload
                 )
             )
+            # Per-tool reset so a slow first tool doesn't burn the
+            # idle budget of the next one in the same round.
+            if turn is not None:
+                turn._note_activity()
         if self._session is not None:
             t_send = _time.monotonic()
             await self._session.send_tool_response(function_responses=responses)
@@ -1492,6 +1520,10 @@ class GeminiLiveConnection(LiveConnection):
                 send_ms, total_ms, len(responses),
                 "" if len(responses) == 1 else "s",
             )
+            # Final reset after the response item lands — wait for
+            # the next audio chunk starts now.
+            if turn is not None:
+                turn._note_activity()
 
 
 class GeminiLiveSession(VoiceSession):

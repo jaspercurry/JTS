@@ -400,3 +400,41 @@ Option 2 is the cleaner architectural fix and pairs well with
 the un-duck-on-`turn_complete` UX item above. ~30–40 lines of
 code total: the synth, the trigger, the timeout adjustment, and
 the system-instruction tweak.
+
+### Idle watchdog: any-event-as-activity (vs only audio + tool round)
+
+The pre-response idle watchdog
+([`jasper/voice_daemon.py:_idle_watchdog`](../jasper/voice_daemon.py))
+fires when the model has been silent for `JASPER_IDLE_TIMEOUT_SEC`
+with no audio chunks received. As of 2026-05-21 we advance
+`_last_activity_at` on audio deltas, tool-round milestones, and
+`response.done` / `turn_complete`. That covers the common cases but
+leaves a gap: the WebSocket is open, the server has acknowledged the
+turn (`response.created` on OpenAI, content-part events), but the
+model is taking longer than usual to emit the first audio chunk. The
+watchdog treats this as "API silent" and may fire prematurely on a
+slow generation day.
+
+A more precise design: treat **any** server-originated event during
+the turn as activity. Then "no activity" really means "the WebSocket
+is open but the server hasn't said anything at all" — actual silence,
+not "model is thinking." This would let us safely shrink the timeout
+(e.g. to 5–10 s) because false-positives go away.
+
+Sketch:
+- OpenAI: thread `_note_activity()` into every event the dispatcher
+  routes — `response.created`, `response.output_item.added`,
+  `response.content_part.added`, transcript deltas, audio_transcript
+  events, etc. The dispatch in `_dispatch_event` is the single
+  funnel.
+- Gemini: same idea against `BidiGenerateContentServerMessage`'s
+  intermediate event shapes (less granular than OpenAI's — Gemini
+  doesn't expose a `response.created` equivalent, so the gain is
+  smaller).
+- Test: pin the contract — feeding a turn an intermediate non-audio
+  event resets the anchor.
+
+Cost/benefit: tightens UX recovery from ~20 s to ~5 s on a genuine
+hang, at the price of a wider-surface refactor and more event-shape
+exposure to the daemon. Not worth doing speculatively; revisit if
+the 20 s default ever causes real trouble in production.
