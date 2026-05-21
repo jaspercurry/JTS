@@ -50,7 +50,12 @@ dst.close()
 ssh "${PI_USER}@${PI_HOST}" "
 sudo rm -rf /tmp/wake-events-fetch
 sudo mkdir -p /tmp/wake-events-fetch
-sudo cp -a ${REMOTE_SRC}/*.wav /tmp/wake-events-fetch/ 2>/dev/null || true
+# Glob expansion must run as root because /var/lib/jasper/ is mode
+# 0750 root:root — the unprivileged shell that builds the cp command
+# silently fails to expand ${REMOTE_SRC}/*.wav, leaving us with an
+# empty staging dir. Wrap in 'sudo bash -c' so the shell that does
+# the expansion is the root shell.
+sudo bash -c 'cp -a ${REMOTE_SRC}/*.wav /tmp/wake-events-fetch/ 2>/dev/null || true'
 sudo chown -R ${PI_USER}:${PI_USER} /tmp/wake-events-fetch
 "
 
