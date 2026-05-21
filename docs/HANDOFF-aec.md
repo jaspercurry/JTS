@@ -976,18 +976,118 @@ service unit. Reversible but with friction.
 below before scoping. Don't start the work without the delay
 budget.
 
-#### Chip-AEC delay tolerance — open question for future scoping
+#### Chip-AEC delay tolerance — what the chip can and can't do
 
-*This subsection will be filled in by a 2026-05-21 sub-agent
-research pass that's currently running. It will cover: range and
-granularity of `AUDIO_MGR_SYS_DELAY`, the chip's AEC adaptive-
-filter delay-tracking window, cross-clock drift handling, failure
-modes when delay is outside the chip's tracking range, and Pi-side
-strategies to align music timing to the chip's expected reference
-(CamillaDSP delay buffer, ALSA period sizing, virtual-clock
-adjustment). Source: prior session research recall that "the chip
-can only deal with a certain amount of out-of-sync-ness"; we want
-to flesh that out before committing time to option D.*
+Researched 2026-05-21 to scope option D before any future commits.
+Sources at end of subsection. The "out-of-sync" worry from prior
+sessions turns out to conflate **bulk delay** (real concern, easy
+fix) with **clock drift** (non-issue in the proposed topology).
+
+**`AUDIO_MGR_SYS_DELAY` — the explicit bulk-delay knob:**
+
+| Property | Value | Source |
+|---|---|---|
+| Type / unit | `int32`, samples at 16 kHz (62.5 µs/sample) | `jasper/xvf/xvf_host.py:90`; XMOS Tuning Guide §4 |
+| Empirical accepted range | **−64 to +256** (values >256 silently clamp) | HANDOFF-aec.md line 1461, our 2025 sweep |
+| Sign convention | positive delays the reference; negative delays the mic (used to fix acausal systems) | XMOS Tuning Guide §4 |
+| Seeed default | `AUDIO_MGR_SYS_DELAY = 12` (≈0.75 ms) | respeaker/host_control README |
+| XMOS-documented target | impulse-response peak within first 40 samples (≈2.5 ms) of the tail after compensation | XMOS Tuning Guide §4 |
+
+**Adaptive-filter tail = 192 ms.** lib_aec runs a main filter plus
+shadow filter; total tail length is 192 ms. Within that window the
+LMS adapts taps freely without retuning `SYS_DELAY`. *Quality*
+convergence (vs just "not divergent") needs the peak within the
+first 40 samples of the tail; beyond that, ERLE degrades and
+convergence slows. Beyond the 192 ms tail, the AEC has no
+tracking — those echoes are unmodelled.
+
+**Cross-clock drift is NOT a problem in the proposed topology**
+(this is the key insight). The XVF3800 USB UA runs in **USB
+Adaptive Mode**: a software PLL (`lib_sw_pll`) generates the
+chip's internal MCLK *from* the USB host's SOF clock, and the mic
+clock is locked to that same MCLK. In option D's topology (Pi USB
+host driving both music-out *and* mic-in via the same XVF3800
+device), mic and reference clocks derive from the same physical
+timebase. No SRC needed for clock matching, no host-feedback-
+endpoint negotiation, no long-term drift. This is the exact
+topology XMOS designed the chip for.
+
+(48 kHz music to USB-in is fine — chip transparently SRCs to its
+16 kHz internal pipeline, adding ≈1–2 ms of fixed group delay
+absorbed into `SYS_DELAY`. To bypass the chip's SRC entirely, lock
+CamillaDSP's output to 16 kHz on that route.)
+
+**Failure modes:**
+- **Acausal** (ref arrives *after* mic, negative effective delay):
+  filter peak at tap 0, no useful tail → ≤2 dB attenuation. **This
+  matches what we observed in the dongle topology** — the chip
+  couldn't see the Apple dongle's playout at all, so effective
+  delay was nonsense. Fix: more-negative `SYS_DELAY` to shift mic
+  later. (The proposed option-D topology removes this failure mode
+  entirely by routing music through the chip itself.)
+- **Excessive positive delay** (peak >> 40 samples): filter still
+  adapts but spends tail budget on bulk delay → less budget for
+  room IR → poorer cancellation, slow convergence.
+- **Beyond 192 ms tail**: silent partial cancellation. Early energy
+  attenuated, late reflections pass through unmodelled.
+- **`AEC_AECCONVERGED` flag is the canary.** In all failure modes
+  above, the convergence flag stays at 0. If it won't flip to 1
+  after 30 s of music playing, something's wrong with
+  `SYS_DELAY`, `REF_GAIN`, or the routing. **Add this to
+  `jasper-doctor` checks before any production deploy of option D.**
+
+**Pi-side alignment plan (concrete, draft):**
+
+Current measured 40 ms ref→mic in the bridge topology = 640
+samples @ 16 kHz, well outside both the 40-sample sweet spot AND
+the `SYS_DELAY` clamp of 256. Conclusion: the chip can't eat
+40 ms of host-side delay on its own. The fix is to *minimize*
+host-side delay before it hits the chip, not to add a CamillaDSP
+delay buffer.
+
+Realistic bring-up sequence:
+
+1. Add a CamillaDSP output route that delivers mono music to
+   XVF3800 USB-in left channel (CamillaDSP natively supports
+   multi-output). Drive USB-in at 48 kHz initially; the chip
+   handles the SRC.
+2. Use the smallest stable ALSA period (~5–10 ms) on the USB-in
+   stream — caps host-side latency tightly. Target end-to-end
+   host→chip-USB→mic < 16 ms (256 samples).
+3. Re-measure ref→mic with chirp cross-correlation
+   (`scripts/aec-probe-latency.sh`). If total is 10–15 ms, set
+   `AUDIO_MGR_SYS_DELAY` to compensate (positive value, 62.5 µs
+   per sample) until the impulse-response peak lands at taps 5–30.
+4. Verify with `SPECIAL_CMD_AEC_FILTER_COEFFS` dump (we already
+   have the tooling at HANDOFF-aec.md lines 1439–1441 from prior
+   white-noise xcorr work).
+5. Confirm `AEC_AECCONVERGED = 1` after 30 s of music.
+
+**Effort estimate:**
+
+| Phase | Duration |
+|---|---|
+| Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
+| Productionize: ALSA + CamillaDSP edits, reconciler logic (chip-AEC mode vs current bridge mode), boot-time `AUDIO_MGR_SYS_DELAY` apply, jasper-doctor `AEC_AECCONVERGED` check | 1–2 weeks |
+| Risk: chip USB-in SRC jitter is undocumented. If empirically the chip's PLL loop bandwidth causes timing jitter that pushes peak past tap 40 intermittently, we'd need to lock CamillaDSP output to 16 kHz to bypass the SRC entirely. Worst-case adds days, not weeks. | — |
+
+**Verdict for future scoping:** weekend feasibility check is
+plausible. The XMOS architecture is designed for exactly this
+single-USB-host topology. The prior "delay couldn't compensate"
+intuition was correct in the dongle topology (acausal, ref invisible
+to chip) but doesn't apply when music routes through the chip's
+own USB-in. Worst-case fallback is keeping the WebRTC AEC3 bridge
+running in parallel and never deploying option D.
+
+**Sources** (verified URLs as of 2026-05-21):
+- [XMOS XVF3800 User Guide v3.2.1 — Tuning the Application](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html) — `AUDIO_MGR_SYS_DELAY` definition, 40-sample target, causality / coefficient-inspection workflow
+- [XMOS XVF3800 Datasheet — Voice Processing Pipeline](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/datasheet/03_audio_pipeline.html) — pipeline at 16 kHz, AEC tail = 192 ms, integrated SRC, ref signal on USB-in left channel
+- [XMOS XVF3800 Programming Guide — Theory of Operation](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/programming_guide/02_theory_of_operation.html) — SW PLL, USB Adaptive Mode, MCLK derivation
+- [XMOS lib_aec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_aec/doc/src/overview.html) — main/shadow adaptive filter design, 15 ms frame, phases + tail math
+- [XMOS lib_adec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_adec/doc/src/overview.html) — Automatic Delay Estimation; estimation auto-triggers at power-up
+- [XMOS lib_sw_pll on GitHub](https://github.com/xmos/lib_sw_pll) — the software PLL implementation used for USB→mic clock sync
+- [reSpeaker XVF3800 host_control README](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — Seeed default `AUDIO_MGR_SYS_DELAY = 12`
+- In-repo: `jasper/xvf/xvf_host.py:90` (parameter definition), HANDOFF-aec.md lines 1437–1469 (prior sweep history, range −64 to +256, convergence-flag-never-flipped observation, REF_GAIN trap that bricked the previous attempt)
 
 ### E — Vendor newer libwebrtc as a Meson subproject
 
