@@ -71,17 +71,26 @@ async def synth(
         )
 
     client = AsyncOpenAI(api_key=key)
-    # 24kHz mono PCM, raw bytes. We resample to 16kHz and write a WAV.
-    async with client.audio.speech.with_streaming_response.create(
+    # NON-streaming on purpose. The streaming variant
+    # (`client.audio.speech.with_streaming_response.create(...)` +
+    # `async for chunk in resp.iter_bytes()`) is the documented API
+    # path, but it ships with a real bug against PCM: chunks come back
+    # incomplete and the assembled audio is mostly silence with just
+    # the first word or two audible. Confirmed via the OpenAI
+    # Community ("TTS streaming does not work", "Gpt-4o-mini-tts
+    # Issues: Volume Fluctuations, Silence, Repetition, Distortion",
+    # openai-python issue #864) and reproduced here 2026-05-21 against
+    # gpt-4o-mini-tts. The non-streaming variant returns the complete
+    # response in one shot — no chunk-boundary issues — at the cost of
+    # waiting for the full audio before saving (fine for our use case:
+    # prompts are short and cached on disk).
+    response = await client.audio.speech.create(
         model=TTS_MODEL,
         voice=TTS_VOICE,
         input=text,
         response_format="pcm",
-    ) as resp:
-        chunks: list[bytes] = []
-        async for chunk in resp.iter_bytes():
-            chunks.append(chunk)
-        pcm_24k = b"".join(chunks)
+    )
+    pcm_24k = await response.aread()
 
     pcm_16k = _resample_24k_to_16k(pcm_24k)
     _write_wav(path, pcm_16k, sample_rate=DAEMON_RATE_HZ)
