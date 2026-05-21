@@ -732,6 +732,358 @@ research directions:
 
 ---
 
+## Wake-rate forensic test methodology — 2026-05-20
+
+This section captures the test methodology that surfaced the
+NS-level and AGC1 findings above. It's documented here (in the
+repo) so future sessions can reproduce the analysis without
+re-deriving it. Cross-referenced as user memory note
+`project_aec_wake_rate_forensic_methodology.md`.
+
+### Why a forensic methodology was needed
+
+`scripts/wake-rate-test.sh` gives a summary number (e.g. "AEC ON
+20% wake rate"). It doesn't tell you *which* Jarvises succeeded or
+failed, *why* the failures happened, or whether the
+cross-correlation utterance finder was even pointing at real
+Jarvises. The 2026-05-20 investigation found multiple non-obvious
+gotchas the summary numbers don't surface.
+
+### The pipeline (one capture, many analyses)
+
+1. **Capture once.** Run `scripts/wake-rate-test.sh test-1` with
+   music + the wake-test-track playing. Produces
+   `logs/wake-rate/<session>/test-1/{aec-on,aec-off,reference}.wav`
+   + a `result.txt` summary. AEC ON and AEC OFF are produced from
+   the *same* physical mic capture (the bridge debug-records both
+   pre- and post-AEC streams), so they're time-aligned.
+
+2. **Locate utterances by energy envelope, not by xcorr.**
+   `_offline_wake_count.py`'s cross-correlation utterance finder
+   picks the top-N normalized peaks globally; when fewer than N
+   actual Jarvises are in the capture window (pre-tap noise,
+   early/late timing), it picks random music transients as
+   "utterances" and the per-utterance scoring becomes unreliable.
+   Instead, compute the energy envelope of the AEC ON output
+   (200 ms windows; ≥3 s spacing; restrict to t=10–118 s to
+   exclude pre/post-track noise). With music suppressed by AEC,
+   the loudest 200 ms windows ARE the Jarvises. The xcorr finder
+   gave misaligned-by-up-to-5-seconds results on test-1, which
+   alone moved one Jarvis from "silent" to "fires" once corrected.
+
+3. **Extract wide windows.** ≥2 s pre / 4 s post around each
+   envelope peak (6 s total file). The wake model needs ~1–2 s of
+   trailing context after the word to commit a wake score; tighter
+   windows produce false negatives at the analysis layer that
+   weren't real misses in production.
+
+4. **Run the model in isolation.** For each utterance window,
+   pad with 4 s of silence at the start (2× 2-s `SIL_2S`) and 2 s
+   at the end, then run `openwakeword.Model.predict()` chunk-by-
+   chunk. The silence prefix flushes any state from the previous
+   utterance's call.
+
+5. **Always save WAVs for ear sanity-check.** The operator's ear
+   catches misalignment, truncation, and audio degradation that
+   the analyzer doesn't. Several methodology fixes in the
+   2026-05-20 session came from "this file sounds silent" /
+   "this file sounds clipped" observations on extracted WAVs.
+
+### The aligned A/B technique
+
+Use the AEC ON envelope to find Jarvis wall-clock times, then
+extract from BOTH `aec-on.wav` AND `aec-off.wav` at those *same*
+wall-clock times. The xcorr utterance-finder is independent across
+the two files and will produce different finds; the energy
+envelope on AEC OFF will find music peaks (since music isn't
+suppressed there), not Jarvises. Always use the AEC ON envelope
+for both legs.
+
+### The offline AEC replay technique
+
+The AEC3 binding's expanded constructor (NS level, AGC1 params,
+etc.) supports offline replay: load `(mic_ch1.wav, ref.wav)` from
+a debug-record capture, instantiate `jasper_aec3.Aec3(...)` with
+arbitrary config, call `.process(mic_bytes, ref_bytes)`, and you
+have an AEC output that would have been produced live under that
+config. Saved one or more `aec-output-<config>.wav` files per
+sweep iteration. **One physical capture → unlimited AEC
+configurations tested in minutes** — eliminates phone-playback /
+room / music variance across configs entirely. The 2026-05-20
+sweep tested 23 NS×gain×AGC2 configs in ~10 minutes from a single
+test-1 capture.
+
+### What we extracted into reusable infrastructure
+
+The 2026-05-20 sweep scripts (`jts_aec_sweep.py`,
+`jts_agc1_sweep.py`, `jts_extract_v2.py`,
+`jts_aligned_ab_v2.py`) lived in `/tmp` during the session. They
+weren't promoted to `scripts/` because each is a single-purpose
+forensic tool. If a future session needs the same analysis,
+reconstruct them from the memory note's documented pipeline.
+
+### What's verified vs unverified by this methodology
+
+- ✅ Verified: which AEC config produces best per-utterance scores
+- ✅ Verified: which Jarvis utterances are intrinsically silent
+  vs config-recoverable
+- ❌ Unverified: false-positive rate per AEC config (we measure
+  wake scores at the 20 Jarvis locations, not at music-only
+  stretches). Counting peaks ≥0.30 in inter-utterance windows
+  would give the per-config FP rate — quick add-on for any future
+  sweep.
+
+---
+
+## Open work streams — 2026-05-21 roadmap
+
+Forward-looking inventory of paths we've investigated but haven't
+shipped, ordered roughly by value-per-effort. Each entry includes
+what it is, why it's on the list, cost, risk, and prerequisites.
+Updated as paths get picked up or new ones surface.
+
+### A — livekit-wakeword test (small, high info value)
+
+**What:** Train a "Jarvis" wake-word model with LiveKit's training
+pipeline. Architecturally the head is conv + multi-head attention
+instead of openWakeWord's flatten + Dense MLP; the audio front-end
+(mel-spec → Google `speech_embedding` CNN → 16×96 feature matrix)
+is identical, and **the output ONNX is openWakeWord-runtime-
+compatible** — drop into our existing wake-word loader with no
+infrastructure change.
+
+**Why on the list:** The 0.997/0.001 bimodal behavior we observe
+(every Jarvis either fires confidently or silently misses, nothing
+in between) is the textbook failure mode of an uncalibrated
+flatten + BCE sigmoid head. Conv + attention gives the network
+temporal inductive bias the flatten step destroys, and is more
+robust to spectral distortion in the academic small-footprint KWS
+literature. The 14/20 silent-in-every-config Jarvises from the
+2026-05-20 sweep are the right validation set: if LiveKit's
+architecture recovers some, that's the win.
+
+**Cost:** ~1 weekend. Training on free Colab T4 (~1 hour active);
+data pipeline reuses Piper TTS positives + ACAV negatives + RIRs;
+the model exports as `.onnx`, scp into the JTS, point
+`JASPER_WAKE_MODEL` at it, restart `jasper-voice`.
+
+**Risk:** Low. Reversible in seconds (point `JASPER_WAKE_MODEL`
+back to `jarvis_v2.onnx`). The 100× FPPH / 17% recall numbers on
+LiveKit's PyPI page are vendor self-reported on their test set;
+absolute multipliers will differ on ours. Architectural improvement
+is the durable claim.
+
+**Prerequisites:** None. Can start immediately.
+
+**Refs:** [livekit-wakeword PyPI](https://pypi.org/project/livekit-wakeword/),
+[piper-sample-generator](https://github.com/rhasspy/piper-sample-generator)
+(LibriTTS-R, 904 voices — not 2,456 as some external sources cite).
+
+### B — Per-AEC-config false-positive rate measurement (tiny)
+
+**What:** Add a step to the forensic methodology: count wake-score
+peaks ≥0.30 in the inter-utterance windows (music-only stretches)
+of each `aec-<config>.wav`. Gives a per-config FP rate alongside
+the existing per-config wake rate.
+
+**Why on the list:** The 2026-05-20 sweep didn't measure FP rate
+per config. Dual-stream wake (C below) crucially depends on this:
+if AEC OFF has high FPs from music, OR-gating with it gives best-
+of-both-worlds wake rate but worst-of-both-worlds FP rate. We need
+the FP number before committing to C.
+
+**Cost:** ~1 hour. Extension to existing sweep scripts.
+
+**Risk:** None — measurement only.
+
+**Prerequisites:** None. Can run on existing test-1 data without
+recapturing.
+
+### C — Dual-stream wake-word with reference-coherence gating
+
+**What:** Run the wake-word detector on BOTH the AEC ON stream
+(post-bridge UDP output) AND the AEC OFF stream (chip-direct mic,
+no AEC processing). OR the detections. Gate the OR with a
+coherence check: if mic-vs-reference correlation at the detection
+moment is high (AEC's adaptive filter coefficients indicate strong
+self-talk), suppress.
+
+**Why on the list:** Test-1 aligned A/B data (in this doc above)
+shows AEC ON and AEC OFF catch *mostly disjoint* sets of Jarvises:
+
+| | AEC ON unique fires | Both fire | AEC OFF unique fires | Union |
+|---|---|---|---|---|
+| Test 1 | 3 (j-03, j-08, j-12) | 1 (j-10) | 4 (j-05, j-15, j-18, j-20) | **8/20 (40%)** |
+
+The union is **+15 percentage points over the better single leg
+(25%)**. That's the highest single-experiment wake-rate gain on
+the table, IF the FP cost is acceptable (option B above bounds
+it).
+
+The coherence-gating idea has named patent prior art —
+[Sonos US 11,769,505](https://patents.google.com/patent/US11769505)
+explicitly describes selective AEC activation based on wake-word
+detection; [Amazon US 12,361,942](https://patents.google.com/patent/US12361942)
+uses variable-step-size (Vss) trends in the AEC adaptive filter
+to distinguish user wake-word from wake-word-in-playback. The
+patterns exist in commercial smart speakers but have no canonical
+open-source implementation; we'd build it.
+
+**Cost:** ~3 days. The wake-word loop needs a second stream
+ingestion path; the AEC adaptive-filter state needs to be exposed
+from the binding (it's there internally); the gate logic is a
+few hundred lines of Python.
+
+**Risk:** Medium. Failure mode: more FPs from music. Mitigated by
+option B and by the coherence gate.
+
+**Prerequisites:** Option B (FP-rate measurement) to bound the
+worst-case FP cost.
+
+### D — Chip-AEC with USB-in reference topology
+
+**What:** Re-architect to feed mono music to the XVF3800's USB-in
+left channel as the AEC reference signal, then read the chip's
+hardware-AEC'd mic stream from its USB-out (instead of running
+the software AEC bridge). Requires flashing the chip to 2-ch
+firmware, setting `SHF_BYPASS=0`, and routing music through
+CamillaDSP differently.
+
+**Why on the list:** The original chip-AEC rejection (documented
+in "What we found about chip-side AEC in our topology" and
+"Chip-pipeline-only alternative considered + rejected" below) was
+based on a *different* topology — the chip driving its own
+codec/speaker, where `AEC_FAR_EXTGAIN` auto-mirroring host UAC
+volume sabotaged the reference. With music routed via USB-in as
+a known-amplitude reference (the proposed new topology), that
+specific failure mode goes away. The May 2026 chip-AEC empirical
+test (15% wake rate with `SHF_BYPASS=0`) ran without a USB-in
+reference at all and is not directly applicable. **This is the
+"canned worms" path — re-opening a previously-closed investigation
+with a new variable.**
+
+**Cost:** Unclear without a delay-tolerance scoping pass — see
+"Chip-AEC delay tolerance" subsection below. Could be a weekend
+of bring-up + a week of tuning, or could be a multi-month
+"won't quite ever work" if the chip's delay-tracking can't handle
+the JTS's clock-domain split.
+
+**Risk:** High. Topology change touches CamillaDSP routing,
+shairport-sync output target, firmware variant, and the bridge
+service unit. Reversible but with friction.
+
+**Prerequisites:** Read the chip-AEC delay-tolerance subsection
+below before scoping. Don't start the work without the delay
+budget.
+
+#### Chip-AEC delay tolerance — open question for future scoping
+
+*This subsection will be filled in by a 2026-05-21 sub-agent
+research pass that's currently running. It will cover: range and
+granularity of `AUDIO_MGR_SYS_DELAY`, the chip's AEC adaptive-
+filter delay-tracking window, cross-clock drift handling, failure
+modes when delay is outside the chip's tracking range, and Pi-side
+strategies to align music timing to the chip's expected reference
+(CamillaDSP delay buffer, ALSA period sizing, virtual-clock
+adjustment). Source: prior session research recall that "the chip
+can only deal with a certain amount of out-of-sync-ness"; we want
+to flesh that out before committing time to option D.*
+
+### E — Vendor newer libwebrtc as a Meson subproject
+
+**What:** Build `libwebrtc-audio-processing` v2.x (or upstream
+WebRTC `main`) from source as a Meson subproject of our pybind11
+binding, exposing the deeper `EchoCanceller3Config` knobs that
+Debian Trixie's v1.3-3 public headers omit
+(`suppressor.dominant_nearend_detection`,
+`suppressor.nearend_threshold`, per-band gain masks, etc.).
+
+**Why on the list:** Our 2026-05-20 NS×AGC1 sweep showed we've
+saturated the tunable surface of Trixie's libwebrtc — every AGC1
+parameter combination converged to the same RMS=1213 output;
+`compression_gain_db` is essentially inert; the limiter dominates.
+Newer libwebrtc exposes residual-suppressor knobs that would let
+us reduce HF over-suppression (the documented mechanism for our
+silent misses).
+
+**Cost:** Multi-day initial build work (Meson + cross-compile for
+Pi 5 ARM); ongoing maintenance burden (each Debian upgrade
+potentially conflicts with the vendored lib). See "Deep tuning
+landscape — research notes" below for the full prior investigation.
+
+**Risk:** High maintenance cost. Long-term technical debt.
+
+**Prerequisites:** Measurement showing the existing AEC3 surface
+is genuinely the limit. As of 2026-05-21 we don't have that
+measurement — options A, B, C may reach the goal without needing
+E.
+
+### F — DTLN-aec post-AEC residual suppressor
+
+**What:** Insert [DTLN-aec](https://github.com/breizhn/DTLN-aec)
+between AEC3's linear stage and the wake-word detector. DTLN-aec
+takes `(mic, far-end reference)` — same inputs as AEC3 — and
+applies a learned residual suppressor designed to preserve speech
+features the rule-based residual stage destroys.
+
+**Why on the list:** MIT licensed, ~1.8M parameters, runs
+real-time on Pi 4 per community reports; Pi 5 has ~2.4× the
+multi-core perf. The fix is targeted at the exact failure mode we
+documented (HF speech-consonant stripping).
+
+**Cost:** ~half-day prototype on Pi via
+[PiDTLN](https://github.com/SaneBow/PiDTLN); validation against
+test-1 captures via the offline replay technique above.
+
+**Risk:** Medium. **DTLN-aec was trained on speech far-end (the
+ICASSP 2021 AEC Challenge dataset) — music-as-far-end performance
+is community-reported but not published.** Could be marginal or
+significantly helpful; only measurement will tell.
+
+**Prerequisites:** None for the prototype. None for measurement.
+
+### G — Custom wake-word retraining on AEC-passed positives
+
+**What:** Generate ~10k Piper TTS Jarvis utterances, pipe each
+through our actual JTS audio chain (play → capture → AEC), collect
+post-AEC positives, train a new openWakeWord Dense head against
+those positives + standard negatives.
+
+**Why on the list:** The path most likely to recover the 14/20
+silent-in-every-config Jarvises, because the training distribution
+would match the deployment distribution exactly.
+
+**Cost:** ~2 weekends. Compute on free Colab T4.
+
+**Risk:** **The resulting model is JTS-specific** — captures
+our DAC, speaker, room, mic placement. Doesn't transfer to other
+users / other JTS-style builds. Per project preference (this is a
+hobby project that might be useful to others), this is a
+last-resort option, not a first move.
+
+**Prerequisites:** Options A and (especially) C have been
+measured and found insufficient. Without that measurement, we'd
+be over-fitting to a problem partially addressable by cheaper
+interventions.
+
+### What's intentionally NOT on the list
+
+- **Hardware migration to a different mic.** We have the XVF3800
+  already. Option D is the only hardware-path remaining; everything
+  else is software.
+- **Switching to Picovoice Porcupine.** January 2025 license update
+  restricts the Free Plan to "personal non-commercial projects"
+  only — fine for the JTS-as-hobby case but creates risk if the
+  project's distribution model ever changes. openWakeWord (Apache)
+  + livekit-wakeword (Apache) are the only safe-by-default
+  choices.
+- **PipeWire / topology re-architecture.** Per the user-memory
+  feedback note, we don't redo the audio topology unless
+  measurement localizes the root cause there. None of the open
+  work streams above are in that category.
+
+---
+
 ## Channel choice — how we got here
 
 This section documents an architectural decision that previously
