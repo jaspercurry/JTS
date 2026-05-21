@@ -25,6 +25,12 @@ from .audio_buffer import (
     drain_acquire_buffer,
 )
 from .audio_io import MicCapture, TtsPlayout, UdpMicCapture, make_mic_capture
+from .wake_events import (
+    WakeEventStore,
+    make_event_id,
+    CAPTURE_PRE_SEC,
+    CAPTURE_POST_SEC,
+)
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, CueDuck, Ducker
@@ -1037,6 +1043,7 @@ class WakeLoop:
         heartbeat: "Heartbeat | None" = None,
         mic_off: "UdpMicCapture | None" = None,
         detector_off: WakeWordDetector | None = None,
+        wake_event_store: WakeEventStore | None = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
@@ -1169,6 +1176,37 @@ class WakeLoop:
         # the new turn at _begin_turn so the first phoneme of the
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
+
+        # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
+        # Separate from `_pre_roll` because the capture-ring sizing is
+        # tuned for offline review (~6 s windows around each wake
+        # event) and the pre-roll is tuned for first-phoneme
+        # preservation in turn-open (~560 ms). Conflating them would
+        # force one to compromise on the other's dimension.
+        #
+        # The store handles the SQLite writes + audio capture +
+        # retention; this set of attributes is just the WakeLoop's
+        # contribution: the ring + the in-flight event id.
+        #
+        # CAPTURE_RING_FRAMES sized to (pre + post) seconds with safety
+        # margin: 4 + 2 = 6 s window, +2 s slack for the 2 s post-fire
+        # collection window so we don't run off the end of the ring.
+        self._wake_event_store: WakeEventStore | None = wake_event_store
+        _capture_ring_frames = int(
+            ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
+             / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
+        )
+        self._capture_ring_on: deque = deque(maxlen=_capture_ring_frames)
+        # PR 2 (dual-stream) wakes will populate this; PR 3 only
+        # references it via getattr-tolerant code so this PR is
+        # independent of the merge order.
+        self._capture_ring_off: deque = deque(maxlen=_capture_ring_frames)
+        # The wake event currently in flight, or None when in WAKE
+        # state with no pending event. Set in `_handle_wake_frame` on
+        # fire; cleared in `_end_turn` after the final outcome write.
+        # Funnel-stage hooks scattered through the wake / session /
+        # arbitrate flow consult this to know which row to UPDATE.
+        self._current_event_id: str | None = None
         # Buffer for frames captured during the wake → turn-acquired
         # window. When wake fires, `_handle_wake_frame` kicks off
         # `_acquire_and_drain` as a background task and sets
@@ -1373,6 +1411,11 @@ class WakeLoop:
                 # last N frames already in this deque are what we replay
                 # into the turn so the user's first phoneme isn't lost.
                 self._pre_roll.append(frame)
+                # Independent capture ring for wake-event telemetry — sized
+                # for the 6 s offline-review window, not the 560 ms turn-
+                # open window. Always-on regardless of state so the moment
+                # a wake fires, the pre-fire context is already on hand.
+                self._capture_ring_on.append(frame)
 
                 # Acquire window: between wake firing and the new turn
                 # being ready to accept audio. `_acquire_and_drain`
@@ -1748,6 +1791,54 @@ class WakeLoop:
         # divide by full-scale to get linear amplitude.
         rms_dbfs = _frame_rms_dbfs(frame)
 
+        # Wake-event telemetry — open a row for the funnel hooks to
+        # UPDATE as the event progresses. Cheap (single SQLite INSERT
+        # in WAL mode); failure is logged but does not block wake
+        # response (telemetry is not a wake-blocking dependency).
+        # `getattr` so this stays safe for tests that build WakeLoop
+        # via `__new__` + manual attribute init (peering tests,
+        # dual-stream wake-handler tests).
+        store = getattr(self, "_wake_event_store", None)
+        if store is not None:
+            event_id = make_event_id()
+            self._current_event_id = event_id
+            # Pull whichever leg's recent peak is current (PR 2 dual-
+            # stream populates both; PR 3 alone only the firing leg).
+            peak_on = getattr(self, "_recent_score_on", None)
+            peak_off = getattr(self, "_recent_score_off", None)
+            if leg == "on":
+                trigger_kind = "fire_aec_on"
+                peak_on = score
+            else:  # leg == "off"
+                trigger_kind = "fire_aec_off"
+                peak_off = score
+            try:
+                await store.begin_event(
+                    event_id=event_id,
+                    trigger_kind=trigger_kind,
+                    peak_score_aec_on=peak_on,
+                    peak_score_aec_off=peak_off,
+                    threshold=self._detector.threshold,
+                    wake_model=self._cfg.wake_model,
+                    voice_provider=getattr(self._cfg, "voice_provider", None),
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "wake_events: begin_event failed (will skip telemetry "
+                    "for this event): %s", e,
+                )
+                self._current_event_id = None
+            # Schedule the audio capture finalize as a fire-and-forget
+            # task. Sleeps for the post-fire window, then snapshots the
+            # capture rings and writes WAVs. Not added to `_bg_tasks`
+            # per the "fire-once-and-exit tasks not in bg_tasks" rule
+            # in this file.
+            if self._current_event_id is not None:
+                asyncio.create_task(
+                    self._finalize_event_audio(self._current_event_id),
+                    name="wake-event-audio-finalize",
+                )
+
         # Spawn the arbitrate+acquire+drain pipeline as a background
         # task so the main mic loop stays responsive (frames continue
         # piling into _acquire_buffer for up to 20 s — see
@@ -1764,6 +1855,101 @@ class WakeLoop:
             ),
             name="wake-arbitrate-acquire-drain",
         )
+
+    async def _finalize_event_audio(self, event_id: str) -> None:
+        """Wait the post-fire collection window, then snapshot both
+        capture rings and persist as WAV files via the store.
+
+        Fire-and-forget — failure logs WARN but doesn't propagate.
+        Capture truncation is acceptable on daemon shutdown (the row
+        keeps its NULL audio_*_path, queries can filter them out)."""
+        if self._wake_event_store is None:
+            return
+        try:
+            await asyncio.sleep(CAPTURE_POST_SEC)
+            # Snapshot count = pre + post window in frames. Take the
+            # most recent N frames from each ring; rings may hold
+            # slightly more than this thanks to the slack in the
+            # maxlen sizing. concatenating bytes is cheap.
+            from .audio_io import MicCapture as _MC
+            n_frames = int(
+                (CAPTURE_PRE_SEC + CAPTURE_POST_SEC)
+                * _MC.OUTPUT_RATE / _MC.OUTPUT_FRAME_SAMPLES
+            )
+            audio_on = self._snapshot_ring(self._capture_ring_on, n_frames)
+            audio_off = self._snapshot_ring(self._capture_ring_off, n_frames)
+            await self._wake_event_store.attach_audio(
+                event_id=event_id,
+                audio_on=audio_on,
+                audio_off=audio_off,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: attach_audio failed for %s: %s", event_id, e,
+            )
+
+    @staticmethod
+    def _snapshot_ring(ring: deque, n_frames: int) -> bytes | None:
+        """Take the LAST `n_frames` from the ring and concatenate
+        their bytes. Returns None if the ring is empty (e.g. AEC OFF
+        leg not present in single-stream mode)."""
+        if not ring:
+            return None
+        # Take the trailing n_frames; if fewer are available, take
+        # everything (early-startup case: rings haven't filled yet).
+        take = min(len(ring), n_frames)
+        frames = list(ring)[-take:]
+        # Each frame is a numpy int16 array; tobytes() is cheap.
+        return b"".join(f.tobytes() for f in frames)
+
+    async def _telemetry_stage(self, stage: str) -> None:
+        """Best-effort funnel-stage UPDATE for the in-flight wake
+        event. No-op when telemetry is disabled, when no event is
+        currently in flight, or when the store write fails — the
+        wake / session path is never blocked or interrupted by
+        telemetry trouble (logged at WARN; row stays with the
+        missing column NULL).
+
+        Uses `getattr` so it stays safe for callers that construct
+        WakeLoop via `__new__` + manual attribute init (the peering
+        tests do this) and don't populate the telemetry attrs."""
+        store = getattr(self, "_wake_event_store", None)
+        event_id = getattr(self, "_current_event_id", None)
+        if store is None or event_id is None:
+            return
+        try:
+            await store.update_stage(event_id, stage)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: update_stage(%s) failed: %s", stage, e,
+            )
+
+    async def _telemetry_outcome(
+        self, outcome: str, detail: str | None = None,
+    ) -> None:
+        """Best-effort terminal-outcome UPDATE for the in-flight wake
+        event. Same fail-soft + `getattr`-tolerant pattern as
+        `_telemetry_stage`. Clears `_current_event_id` after the
+        write so subsequent funnel hooks for the next wake start
+        clean."""
+        store = getattr(self, "_wake_event_store", None)
+        event_id = getattr(self, "_current_event_id", None)
+        if store is None or event_id is None:
+            # Still clear the id (if it exists) so the next wake
+            # starts from a clean state.
+            if hasattr(self, "_current_event_id"):
+                self._current_event_id = None
+            return
+        # Clear early so subsequent stray funnel-hook calls don't keep
+        # writing against a finalised row.
+        self._current_event_id = None
+        try:
+            await store.set_outcome(event_id, outcome, detail)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: set_outcome(%s) failed for %s: %s",
+                outcome, event_id, e,
+            )
 
     async def _arbitrate_acquire_drain(
         self,
@@ -1804,6 +1990,8 @@ class WakeLoop:
             # again after the arbitration await (which can take up
             # to 500 ms — plenty of time for the user to mute).
             if self._wake_late_cancelled("pre_arb"):
+                await self._telemetry_stage("late_cancel")
+                await self._telemetry_outcome("late_cancel", "pre_arb")
                 return  # finally clears _acquiring + buffer
 
             # Step 1: peer arbitration.
@@ -1815,14 +2003,20 @@ class WakeLoop:
                 # Another peer is handling it. Stay silent — losers
                 # don't play chirps or cues; they just back off.
                 logger.info("event=peering.wake.lost score=%.2f", score)
+                await self._telemetry_stage("peer_lost")
+                await self._telemetry_outcome("peer_lost")
                 return  # finally clears _acquiring + buffer
 
             if self._wake_late_cancelled("post_arb"):
+                await self._telemetry_stage("late_cancel")
+                await self._telemetry_outcome("late_cancel", "post_arb")
                 return
 
             # Step 2: gate cues — only the winner pays this cost.
             if not spend_allowed:
                 logger.warning("daily spend cap reached; voice disabled until rollover")
+                await self._telemetry_stage("gate_blocked")
+                await self._telemetry_outcome("gate_blocked", "spend_cap_reached")
                 await self._play_cue("spend_cap_reached")
                 return
             if conn_paused:
@@ -1830,6 +2024,8 @@ class WakeLoop:
                     "wake detected but live connection is paused (reconnect/backoff); "
                     "ignoring this wake event",
                 )
+                await self._telemetry_stage("gate_blocked")
+                await self._telemetry_outcome("gate_blocked", "connection_paused")
                 await self._play_cue("cant_connect")
                 return
 
@@ -1845,6 +2041,7 @@ class WakeLoop:
             )
 
             await self._begin_turn()  # ends with state = SESSION
+            await self._telemetry_stage("turn_opened")
             # Notify peering that we've opened a session (winner-only
             # heartbeat starts firing). Fire-and-forget — voice's own
             # session lifecycle is the source of truth.
@@ -1870,8 +2067,10 @@ class WakeLoop:
             # Fast-talker compensation: see _begin_turn comment block.
             if speech_in_acquire and not self._user_speech_seen:
                 self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
+            await self._telemetry_outcome("session_failed", str(e)[:200])
             await self._play_cue("cant_connect")
             await self._cleanup_after_failed_begin()
             self._acquire_buffer.clear()
@@ -2091,6 +2290,7 @@ class WakeLoop:
                     sustained * 1000, speech_prob,
                 )
                 self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
             self._silence_started_at = 0.0
         else:
             # Sub-threshold frame breaks the run. Wake-tail residual
@@ -2283,6 +2483,18 @@ class WakeLoop:
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
     async def _end_turn(self, reason: str = "ended") -> None:
+        # Wake-event telemetry: record the terminal state of the
+        # in-flight event. `_user_speech_seen` tells us whether the
+        # session got real user input — if not, the wake was likely
+        # a false positive (music transient, TTS bleed) or the user
+        # changed their mind. Either way the outcome is 'no_speech',
+        # which dual-stream FP analysis keys off.
+        await self._telemetry_stage("turn_complete")
+        terminal_outcome = (
+            "completed" if self._user_speech_seen else "no_speech"
+        )
+        await self._telemetry_outcome(terminal_outcome, reason)
+
         # Notify peering daemon EARLY (before slow cleanup) so peers
         # un-suppress promptly. Other devices' next wake events should
         # start a fresh arbitration; waiting for our chirp + duck
@@ -2795,6 +3007,27 @@ async def run() -> None:
                 WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
                 if mic_off is not None else None
             )
+            # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
+            # Opens the SQLite DB synchronously at startup so the daemon
+            # is "ready" only after the schema migration is applied —
+            # avoids racy "begin_event before CREATE TABLE" failures on
+            # first-ever boot. Failure to open is logged + the daemon
+            # continues with telemetry disabled (the wake / session
+            # path is unaffected).
+            wake_event_store: WakeEventStore | None = None
+            try:
+                wake_event_store = WakeEventStore(
+                    cfg.wake_events_dir,
+                    max_audio_bytes=cfg.wake_events_max_audio_bytes,
+                )
+                wake_event_store.open()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "wake_events: failed to open store at %s: %s "
+                    "(continuing with telemetry disabled)",
+                    cfg.wake_events_dir, e,
+                )
+                wake_event_store = None
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
@@ -2804,6 +3037,7 @@ async def run() -> None:
                 heartbeat=heartbeat,
                 mic_off=mic_off,
                 detector_off=detector_off,
+                wake_event_store=wake_event_store,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
@@ -2835,6 +3069,11 @@ async def run() -> None:
                     await control_socket.wait_closed()
                 except Exception:  # noqa: BLE001
                     pass
+                if wake_event_store is not None:
+                    try:
+                        wake_event_store.close()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("wake_events store close: %s", e)
     finally:
         # Stop the scheduler FIRST so any in-flight `_run` tasks that
         # were about to fire get cancelled before we tear down the

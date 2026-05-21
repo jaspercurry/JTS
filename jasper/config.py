@@ -103,6 +103,8 @@ class Config:
     mic_device_raw: str
     mic_capture_rate: int
     mic_capture_channels: int
+    wake_events_dir: str
+    wake_events_max_audio_bytes: int
     tts_device: str
     tts_output_rate: int
     tts_gain_db: float
@@ -359,6 +361,19 @@ class Config:
             # MicCapture polyphase-downsamples to 16 kHz mono internally.
             mic_capture_rate=_env_int("JASPER_MIC_CAPTURE_RATE", 16000),
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
+            # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
+            # Directory holds wake-events.sqlite3 + per-event WAV
+            # files (one per leg, 6 s window). 500 MB cap on audio;
+            # DB rows kept forever. install.sh creates this dir at
+            # mode 0755 owned by pi:pi.
+            wake_events_dir=_env(
+                "JASPER_WAKE_EVENTS_DIR",
+                "/var/lib/jasper/wake-events",
+            ),
+            wake_events_max_audio_bytes=_env_int(
+                "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
+                500 * 1024 * 1024,
+            ),
             # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
             # name from /root/.asoundrc — `plug:` aliases aren't
             # enumerated by PortAudio). `jasper_out` is the fan-out PCM
