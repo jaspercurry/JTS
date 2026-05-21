@@ -37,14 +37,21 @@ Topology:
        │      hw:Array,0 ch 1 (16k mono, chip clock)
        │  chip ASR beam: BF + NS + AGC + HPF, chip AEC disabled
        │       │
-       ▼       ▼
-    WebRTC AEC3 (jasper_aec3 binding)
-       │  AEC'd mono mic
-       ▼
-    UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)
-       │  one packet per 1280 samples (80 ms, matches MicCapture frame size)
-       ▼
-    jasper-voice's UdpMicCapture (binds the same port)
+       ▼       ├──────────────────────────────────────────────────┐
+    WebRTC AEC3 (jasper_aec3 binding)                             │
+       │  AEC'd mono mic                                          │  chip-direct mic (pre-AEC3)
+       ▼                                                          ▼
+    UDP 127.0.0.1:JASPER_AEC_UDP_PORT (default 9876)      UDP 127.0.0.1:JASPER_AEC_UDP_PORT_RAW
+       │  one packet per 1280 samples (80 ms, matches             │  (default 9877)
+       │  MicCapture frame size)                                  │  same packet shape
+       ▼                                                          ▼
+    jasper-voice's UdpMicCapture (binds 9876)             jasper-voice's second
+                                                          UdpMicCapture (binds 9877)
+                                                          for dual-stream wake-word
+                                                          detection (PR 2 of the
+                                                          wake-telemetry series —
+                                                          see docs/HANDOFF-wake-
+                                                          telemetry.md).
 
 Why UDP instead of the previous snd-aloop `LoopbackAEC` card: see
 the `UdpMicCapture` docstring in jasper/audio_io.py. Short version:
@@ -143,6 +150,29 @@ MIC_CHANNEL_INDEX = _mic_profile.MIC_CHANNEL_INDEX
 OUT_HOST = os.environ.get("JASPER_AEC_UDP_HOST", "127.0.0.1")
 OUT_PORT = int(os.environ.get("JASPER_AEC_UDP_PORT", "9876"))
 OUT_RATE = 16000
+
+# Secondary UDP output: chip-direct mic stream, pre-AEC3 — exactly
+# the same near-end input AEC3 consumes (chip ch 1 = ASR beam with
+# chip BF + NS + AGC + HPF applied, chip AEC disabled via
+# SHF_BYPASS=1). Emitted on a separate port so jasper-voice's wake
+# loop (PR 2 of the wake-telemetry series) can score wake-word
+# detection on BOTH the post-AEC stream (OUT_PORT) and the chip-
+# direct stream (OUT_PORT_RAW). Same 1280-sample / 16 kHz mono
+# int16 packet shape as the primary stream so the consumer sees
+# identical chunk sizes.
+#
+# Why expose this: the 2026-05-20 wake-rate sweep showed the AEC ON
+# and AEC OFF legs catch mostly-disjoint sets of utterances —
+# test-1 yielded a 40 % union vs 25 % best single leg (see
+# HANDOFF-aec.md "Open work streams — option C"). Emitting both
+# lets the wake loop OR the detections without changing the AEC
+# pipeline. See docs/HANDOFF-wake-telemetry.md for the end-to-end
+# design.
+#
+# Nothing consumes 9877 today (PR 1 of the series is pure
+# plumbing). Safe to deploy alone; jasper-voice ignores it until
+# PR 2 ships.
+OUT_PORT_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW", "9877"))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
 # 320-sample AEC frames into one UDP packet keeps the
 # bridge↔voice contract symmetric with the existing MicCapture
@@ -476,16 +506,27 @@ def _aec_loop(  # noqa: PLR0915
     out_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out_sock.setblocking(False)
     out_dest = (OUT_HOST, OUT_PORT)
+    # Secondary socket carries the chip-direct mic (pre-AEC3),
+    # batched and packetized identically to the primary AEC ON
+    # stream. See OUT_PORT_RAW comment above for the rationale.
+    # Independent socket so a sendto failure on one stream doesn't
+    # affect the other.
+    out_sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out_sock_raw.setblocking(False)
+    out_dest_raw = (OUT_HOST, OUT_PORT_RAW)
     logger.info(
-        "udp output: dest=%s:%d frame=%d samples (%d bytes)",
-        OUT_HOST, OUT_PORT, OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
+        "udp outputs: aec=%s:%d raw=%s:%d frame=%d samples (%d bytes)",
+        OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW,
+        OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
     # Aggregate four AEC frames (320 samples each) into one UDP
     # packet (1280 samples = MicCapture.OUTPUT_FRAME_SAMPLES) so
     # voice's UdpMicCapture sees the same chunk size it gets from
     # the PortAudio path. Bytearray rather than list-of-bytes to
-    # avoid per-frame allocation churn.
+    # avoid per-frame allocation churn. The _raw batch tracks the
+    # chip-direct mic stream on the same cadence.
     out_batch = bytearray()
+    out_batch_raw = bytearray()
     silence = np.zeros(FRAME_SAMPLES, dtype=np.int16).tobytes()
     # Cold-start value for ref carry-forward. Used only until the first
     # real ref frame arrives — after that, last_ref_bytes always holds
@@ -601,6 +642,27 @@ def _aec_loop(  # noqa: PLR0915
                 _ref_starved_frames += 1
             ref_bytes = last_ref_bytes
 
+            # Emit chip-direct mic on OUT_PORT_RAW BEFORE running
+            # the AEC engine. This is the "AEC OFF" leg the
+            # wake-telemetry dual-stream consumer wants — same
+            # bytes AEC3 is about to receive as near-end input.
+            # Batched and packetized identically to the primary
+            # stream. sendto failures here never block the AEC
+            # pipeline (independent socket, non-blocking, swallowed
+            # on EWOULDBLOCK).
+            out_batch_raw.extend(mic_bytes)
+            if len(out_batch_raw) >= OUT_FRAME_BYTES:
+                try:
+                    out_sock_raw.sendto(
+                        bytes(out_batch_raw[:OUT_FRAME_BYTES]),
+                        out_dest_raw,
+                    )
+                except BlockingIOError:
+                    logger.warning(
+                        "udp raw sendto would block, dropping frame"
+                    )
+                del out_batch_raw[:OUT_FRAME_BYTES]
+
             clean = engine.process(mic_bytes, ref_bytes)
             # Save pre-gain output for the RMS metric — we want
             # "attenuation" to reflect what AEC actually accomplished,
@@ -688,6 +750,7 @@ def _aec_loop(  # noqa: PLR0915
                 _ref_starved_frames = 0
     finally:
         out_sock.close()
+        out_sock_raw.close()
         for w in (mic_wav, aec_wav, ref_wav):
             if w is not None:
                 try:
@@ -702,9 +765,11 @@ def main() -> int:
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
     logger.info(
-        "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d out=udp://%s:%d@%d",
+        "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
+        "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
-        MIC_CHANNELS, MIC_CHANNEL_INDEX, OUT_HOST, OUT_PORT, OUT_RATE,
+        MIC_CHANNELS, MIC_CHANNEL_INDEX,
+        OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
     )
 
     try:
