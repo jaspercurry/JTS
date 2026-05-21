@@ -430,6 +430,23 @@ class OpenAIRealtimeTurn(LiveTurn):
             )
         await self._audio_q.put(data)
 
+    def _note_activity(self) -> None:
+        """Reset the pre-response idle anchor.
+
+        Called by the connection's receive loop on intermediate server
+        events (e.g. a tool-call response.done) where the model is
+        producing output but no audio chunk has arrived yet. The
+        watchdog in ``jasper/voice_daemon.py:_idle_watchdog`` reads
+        ``last_activity_at()`` to decide when to abandon a turn that
+        looks stuck; without this reset it measures from turn-start
+        across the entire tool dispatch and fires mid-flight at small
+        ``JASPER_IDLE_TIMEOUT_SEC`` values (production: 10 s).
+
+        ``_on_audio_delta`` does NOT call this — chunks arrive on a
+        hot path and the loop clock is already read inline for the
+        ``_last_chunk_at`` companion update."""
+        self._last_activity_at = asyncio.get_event_loop().time()
+
     def _record_usage(self, usage: dict | None) -> None:
         """Accumulate tokens from one response.done. A tool-using turn
         spans multiple OpenAI responses, each carrying its own usage —
@@ -467,7 +484,7 @@ class OpenAIRealtimeTurn(LiveTurn):
                 self._usage_breakdown["output_token_details"][k] += v
 
     async def _on_response_done(self, usage: dict | None) -> None:
-        self._last_activity_at = asyncio.get_event_loop().time()
+        self._note_activity()
         self._server_turn_complete = True
         self._record_usage(usage)
         # Sentinel lets consumer drain queued chunks then exit; barge-in (if added later) must use a distinct signal.
@@ -1464,12 +1481,11 @@ class OpenAIRealtimeConnection(LiveConnection):
             # answer is still in flight. The no-function_calls branch
             # below is the only place that closes the turn.
             #
-            # Reset the pre-response idle anchor: at small
-            # JASPER_IDLE_TIMEOUT_SEC values, the watchdog otherwise
-            # measures from turn-start through tool dispatch and
-            # fires before response 2's audio arrives (production
-            # 2026-05-21, JASPER_IDLE_TIMEOUT_SEC=10, weather query).
-            turn._last_activity_at = asyncio.get_event_loop().time()
+            # Reset the pre-response idle anchor — without this, the
+            # watchdog fires mid-dispatch at small
+            # JASPER_IDLE_TIMEOUT_SEC values (production 2026-05-21,
+            # IDLE_TIMEOUT_SEC=10, weather query).
+            turn._note_activity()
             for fc in function_calls:
                 await self._dispatch_function_call(fc)
             # Single response.create at the end of the round, regardless

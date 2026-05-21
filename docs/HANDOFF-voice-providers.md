@@ -154,7 +154,8 @@ should be:
 4. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
 5. New contract test in `tests/test_<provider>_session.py` modeled on
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
-   reconnect → manual-VAD payload shape.
+   reconnect → manual-VAD payload shape → tool round advances the
+   turn's idle anchor (see "Idle anchor + tool rounds" below).
 6. New row in this doc's tradeoff table.
 
 If the wire format is OpenAI-Realtime-compatible (Grok pattern), most
@@ -163,6 +164,39 @@ of step 1 is "subclass `OpenAIRealtimeConnection` and override
 Gemini adapter is the better template — it shows the full state
 machine, supervisor loop, idle context-reset, and tool dispatch in one
 place.
+
+### Idle anchor + tool rounds
+
+The daemon's pre-response idle watchdog
+(`jasper/voice_daemon.py:_idle_watchdog`) reads `turn.last_activity_at()`
+and abandons the turn if `idle_for > JASPER_IDLE_TIMEOUT_SEC` *and* no
+audio has been received yet. The watchdog is protocol-agnostic — all
+adapters share this one timer.
+
+That makes the turn class's idle anchor a cross-provider contract:
+**any event from the server that means "model is still working" must
+advance the anchor**, not just audio deltas and the final
+`response.done`. In particular, a tool-call response.done (or
+equivalent) starts a multi-second round trip (client → tool → response
+2) during which no audio arrives. Forget to reset and the watchdog
+fires mid-dispatch at small `JASPER_IDLE_TIMEOUT_SEC` (production runs
+10 s). Production hit this on 2026-05-21: a weather-tool turn ended
+~0.6 s after the tool result was sent, with the orphan-response
+warning logging 48 dropped audio tokens.
+
+Adapter wiring today:
+- **OpenAI** (`openai_session.py`): `OpenAIRealtimeTurn._note_activity()`
+  is called from the function_calls branch of `_handle_response_done`
+  and from `_on_response_done`. Grok inherits this path verbatim.
+- **Gemini** (`gemini_session.py`): partial — advances the anchor
+  once when `tool_call` is first seen, but not again across a slow or
+  chained dispatch. Has not been observed in production but is the
+  same shape of bug.
+
+New providers should either expose a `_note_activity()` (or
+equivalent) and call it on every tool-round server event, or document
+why they don't need one (e.g. the wire format streams a heartbeat
+that satisfies the anchor naturally).
 
 ## Anti-patterns
 
