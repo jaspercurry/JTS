@@ -1402,14 +1402,11 @@ class OpenAIRealtimeConnection(LiveConnection):
             # answer is still in flight. The no-function_calls branch
             # below is the only place that closes the turn.
             #
-            # Advance the turn's idle anchor: the model emitted a
-            # tool-call response and a tool round is now in flight.
-            # Without this, the idle watchdog (pre-response phase)
-            # measures from turn-start through tool dispatch and the
-            # second response, and at small JASPER_IDLE_TIMEOUT_SEC
-            # the watchdog fires mid-dispatch — the daemon ends the
-            # turn just before response 2's audio arrives and the
-            # user hears nothing back.
+            # Reset the pre-response idle anchor: at small
+            # JASPER_IDLE_TIMEOUT_SEC values, the watchdog otherwise
+            # measures from turn-start through tool dispatch and
+            # fires before response 2's audio arrives (production
+            # 2026-05-21, JASPER_IDLE_TIMEOUT_SEC=10, weather query).
             turn._last_activity_at = asyncio.get_event_loop().time()
             for fc in function_calls:
                 await self._dispatch_function_call(fc)

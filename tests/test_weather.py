@@ -378,7 +378,8 @@ def test_next_rain_window_starts_at_current_hour_if_already_raining():
 
 def test_next_rain_window_clips_at_forecast_edge():
     # Rain starts at hour 22 of day 1 and continues to the end of the
-    # 48-hour forecast — no dry hour to mark the end.
+    # 48-hour forecast — no dry hour to mark the end. The contract is
+    # `end=None` + `ends_after_forecast=True` (both halves pinned).
     hourly = _hourly_probs(
         [10] * 22 + [70] * 26,
         start_hour=0,
@@ -386,6 +387,7 @@ def test_next_rain_window_clips_at_forecast_edge():
     w = _next_rain_window(hourly, "2024-05-15T20:00")
     assert w is not None
     assert w["start"] == "2024-05-15T22:00"
+    assert w["end"] is None
     assert w["ends_after_forecast"] is True
 
 
