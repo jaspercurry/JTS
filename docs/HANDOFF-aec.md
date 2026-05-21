@@ -1094,10 +1094,17 @@ timebase. No SRC needed for clock matching, no host-feedback-
 endpoint negotiation, no long-term drift. This is the exact
 topology XMOS designed the chip for.
 
-(48 kHz music to USB-in is fine — chip transparently SRCs to its
-16 kHz internal pipeline, adding ≈1–2 ms of fixed group delay
-absorbed into `SYS_DELAY`. To bypass the chip's SRC entirely, lock
-CamillaDSP's output to 16 kHz on that route.)
+(USB-IN endpoint advertises 16 kHz S16_LE 2-channel only — verified
+empirically on 2026-05-21 against firmware `ua-io16-6ch-sqr` v2.0.8,
+and cross-referenced against the XMOS Datasheet (USB Audio Interface
+section: "the XVF3800 audio sample rate can be either 16 kHz or
+48 kHz **fixed at build time**" — UAC2 Adaptive Mode, one rate per
+build). The runtime SRC documented in the datasheet is for the I²S
+path only, not USB. Seeed ships only `ua-io16-*` configs across all
+firmware variants. **Drive CamillaDSP's route to USB-IN at 16 kHz.**
+The earlier draft of this section said "48 kHz to USB-in is fine —
+chip transparently SRCs" — that was wrong, corrected
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md).)
 
 **Failure modes:**
 - **Acausal** (ref arrives *after* mic, negative effective delay):
@@ -1145,9 +1152,11 @@ delay buffer.
 Realistic bring-up sequence:
 
 1. Add a CamillaDSP output route that delivers mono music to
-   XVF3800 USB-in left channel (CamillaDSP natively supports
-   multi-output). Drive USB-in at 48 kHz initially; the chip
-   handles the SRC.
+   XVF3800 USB-in left channel at **16 kHz S16_LE stereo** (the only
+   rate/format the endpoint accepts — see correction above). CamillaDSP
+   does the 48 k → 16 k SRC internally with its AsyncSinc resampler.
+   Right channel can be a copy of left or zero — the chip's AEC uses
+   left only.
 2. Use the smallest stable ALSA period (~5–10 ms) on the USB-in
    stream — caps host-side latency tightly. Target end-to-end
    host→chip-USB→mic < 16 ms (256 samples).
@@ -1166,7 +1175,7 @@ Realistic bring-up sequence:
 |---|---|
 | Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
 | Productionize: ALSA + CamillaDSP edits, reconciler logic (chip-AEC mode vs current bridge mode), boot-time `AUDIO_MGR_SYS_DELAY` apply, jasper-doctor `AEC_AECCONVERGED` check | 1–2 weeks |
-| Risk: chip USB-in SRC jitter is undocumented. If empirically the chip's PLL loop bandwidth causes timing jitter that pushes peak past tap 40 intermittently, we'd need to lock CamillaDSP output to 16 kHz to bypass the SRC entirely. Worst-case adds days, not weeks. | — |
+| Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
 **Verdict for future scoping:** weekend feasibility check is
 plausible. The XMOS architecture is designed for exactly this
