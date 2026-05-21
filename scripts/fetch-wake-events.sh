@@ -5,15 +5,21 @@
 # Usage:
 #   bash scripts/fetch-wake-events.sh
 #   PI_HOST=192.168.1.42 bash scripts/fetch-wake-events.sh
+#   NO_OPEN=1 bash scripts/fetch-wake-events.sh    # skip the Finder pop-up
 #
 # Pulls into ./wake-events/<UTC-timestamp>/:
 #   wake-events.sqlite3                  Full DB snapshot (per-event funnel + scores + labels)
 #   <event_id>.aec-on.wav                Audio per leg, 6 s window (4 s pre + 2 s post fire)
 #   <event_id>.aec-off.wav
-#   index.tsv                            Tab-separated summary for quick browsing in any editor
+#   index.csv                            CSV of full per-event metadata, sorted newest-first
+#                                        (opens cleanly in Numbers / Excel / Sheets)
+#   index.tsv                            Same info as TSV (grep-friendly)
 #
 # Also overwrites ./wake-events/latest → most recent fetch dir, for
-# convenience. The SQLite file is read-only on the Pi (active jasper-voice
+# convenience. On macOS, pops open the folder in Finder at the end so
+# you can listen to clips immediately (set NO_OPEN=1 to skip).
+#
+# The SQLite file is read-only on the Pi (active jasper-voice
 # is writing it); we use sqlite3's ".backup" to get a consistent snapshot
 # without grabbing a write lock.
 
@@ -66,40 +72,55 @@ rsync -avz "${PI_USER}@${PI_HOST}:/tmp/wake-events.fetch.sqlite3" \
 rsync -avz "${PI_USER}@${PI_HOST}:/tmp/wake-events-fetch/" "$OUT/" \
     --exclude wake-events.fetch.sqlite3 >/dev/null
 
-# Step 4: drop a TSV index for at-a-glance browsing. Uses Python
-# stdlib so no extra deps. Includes the wall-clock, peak scores,
-# funnel outcome, label, and the audio paths.
+# Step 4: drop CSV + TSV indexes for at-a-glance browsing. CSV is
+# the primary format (opens cleanly in Numbers / Excel / Sheets),
+# TSV stays for grep-friendly power users. Both sorted newest-first
+# so the most recent events are at the top of the file. Uses Python
+# stdlib so no extra deps.
 python3 - <<PY
-import sqlite3, os
+import csv, sqlite3
 db = "${OUT}/wake-events.sqlite3"
 conn = sqlite3.connect(db)
 conn.row_factory = sqlite3.Row
-rows = list(conn.execute("""
-  SELECT event_id, ts_utc, trigger_kind,
-         peak_score_aec_on, peak_score_aec_off,
-         outcome, outcome_detail,
-         audio_on_path, audio_off_path,
-         label, label_notes
-  FROM wake_events
-  ORDER BY ts_utc DESC
-"""))
-with open("${OUT}/index.tsv", "w") as f:
-    f.write("ts_utc\tevent_id\ttrigger\tscore_on\tscore_off\toutcome\tlabel\taudio_on\taudio_off\tdetail\n")
+# All columns the row review benefits from. Order chosen for
+# spreadsheet readability: identifiers first, then scoring data,
+# then context, then label fields at the end (where the user types).
+cols = [
+    "ts_utc", "event_id", "trigger_kind",
+    "peak_score_aec_on", "peak_score_aec_off",
+    "peak_offset_ms_on", "peak_offset_ms_off",
+    "outcome", "outcome_detail",
+    "mic_muted",
+    "mic_rms_dbfs_on", "mic_rms_dbfs_off",
+    "music_active", "music_volume_db",
+    "voice_provider", "wake_model", "threshold",
+    "audio_on_path", "audio_off_path",
+    "label", "label_notes",
+]
+rows = list(conn.execute(
+    f"SELECT {', '.join(cols)} FROM wake_events ORDER BY ts_utc DESC"
+))
+# CSV — primary review format
+with open("${OUT}/index.csv", "w", newline="") as f:
+    w = csv.writer(f)
+    w.writerow(cols)
     for r in rows:
-        f.write("\t".join([
-            r["ts_utc"] or "",
-            r["event_id"],
-            r["trigger_kind"] or "",
-            f"{r['peak_score_aec_on']:.3f}" if r["peak_score_aec_on"] is not None else "",
-            f"{r['peak_score_aec_off']:.3f}" if r["peak_score_aec_off"] is not None else "",
-            r["outcome"] or "",
-            r["label"] or "",
-            r["audio_on_path"] or "",
-            r["audio_off_path"] or "",
-            (r["outcome_detail"] or "").replace("\t", " ").replace("\n", " "),
-        ]) + "\n")
+        w.writerow([r[c] if r[c] is not None else "" for c in cols])
+# TSV — kept for backward compat + grep/awk
+with open("${OUT}/index.tsv", "w") as f:
+    f.write("\t".join(cols) + "\n")
+    for r in rows:
+        vals = []
+        for c in cols:
+            v = r[c] if r[c] is not None else ""
+            # Tabs/newlines in free-form fields (outcome_detail,
+            # label_notes) would corrupt TSV — flatten to spaces.
+            if isinstance(v, str):
+                v = v.replace("\t", " ").replace("\n", " ")
+            vals.append(str(v))
+        f.write("\t".join(vals) + "\n")
 conn.close()
-print(f"  index.tsv: {len(rows)} events")
+print(f"  index.csv + index.tsv: {len(rows)} events (newest first)")
 PY
 
 # Step 5: update the "latest" pointer for convenience
@@ -112,14 +133,23 @@ sudo rm -rf /tmp/wake-events-fetch
 "
 
 echo "" >&2
-echo "Done. Files in $OUT/:" >&2
-ls -lh "$OUT/" | awk 'NR>1 {print "  " $NF " (" $5 ")"}' >&2
+echo "Done. ${OUT}/ contains:" >&2
+echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (one .aec-on + one .aec-off per dual-stream event)" >&2
+echo "  - index.csv (spreadsheet) + index.tsv (grep)" >&2
+echo "  - wake-events.sqlite3 (full DB snapshot)" >&2
 echo "" >&2
-echo "Symlink: $REPO_ROOT/wake-events/latest -> ${TS}" >&2
+echo "Symlink: wake-events/latest -> ${TS}" >&2
 echo "" >&2
-echo "Browse: open '$OUT/index.tsv' in any editor (TSV; tabs separate columns)" >&2
-echo "Query:  sqlite3 '$OUT/wake-events.sqlite3' (or use any SQLite GUI)" >&2
-echo "" >&2
-echo "To label an event later:" >&2
+echo "To label an event after listening:" >&2
 echo "  sqlite3 '$OUT/wake-events.sqlite3' \\" >&2
 echo "    \"UPDATE wake_events SET label='real_attempt', label_notes='clear hey jarvis' WHERE event_id='...'\"" >&2
+echo "" >&2
+echo "To sanity-check the corpus integrity (xcorr alignment + DB completeness):" >&2
+echo "  bash scripts/audit-wake-events.sh" >&2
+
+# Step 7: pop the folder open in Finder so you can listen to the
+# clips immediately. macOS-only; skipped on Linux / when NO_OPEN
+# is set. Doesn't error out if `open` isn't available.
+if [[ -z "${NO_OPEN:-}" ]] && command -v open >/dev/null 2>&1; then
+    open "$OUT" 2>/dev/null && echo "Finder: opened ${OUT}" >&2 || true
+fi

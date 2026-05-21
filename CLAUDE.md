@@ -687,8 +687,7 @@ legs' scores: `event=wake.detected leg=off score_on=0.00 score_off=0.82`.
 ### Pull the corpus to laptop for review
 
 ```sh
-bash scripts/fetch-wake-events.sh
-open wake-events/latest/index.tsv
+bash scripts/fetch-wake-events.sh        # pops Finder open on macOS
 ```
 
 Lands as `./wake-events/<UTC-timestamp>/`:
@@ -696,8 +695,31 @@ Lands as `./wake-events/<UTC-timestamp>/`:
   (jasper-voice keeps writing; the snapshot is safe to read)
 - `<event_id>.aec-on.wav` + `<event_id>.aec-off.wav` — 6 s windows
   (4 s pre + 2 s post wake fire)
-- `index.tsv` — sortable TSV with timestamp, scores, outcome, label
+- `index.csv` — newest-first metadata table (open in Numbers /
+  Excel / Sheets); includes per-leg peak scores, peak offsets,
+  RMS levels, music context, bridge config, funnel outcome
+- `index.tsv` — same content as TSV (grep-friendly)
 - `wake-events/latest` symlink updated each run
+
+Skip the Finder pop-up with `NO_OPEN=1 bash scripts/fetch-wake-events.sh`.
+
+### Sanity-check the corpus
+
+```sh
+bash scripts/audit-wake-events.sh
+```
+
+Runs three checks on `wake-events/latest`:
+
+1. WAV integrity — format, duration, near-silent detection
+2. Per-event AEC ON vs AEC OFF parity — duration match, RMS
+   comparison, cross-leg time-alignment via speech-band xcorr
+   (typical ≈+14 ms reflects AEC3 processing latency)
+3. DB column-by-column populated count — catches "field never
+   written" bugs like the AEC OFF capture-ring fill bug shipped
+   in the initial dual-stream integration
+
+Re-run after every fetch; takes ~2 s.
 
 ### Label an event
 
