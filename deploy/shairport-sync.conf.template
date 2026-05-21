@@ -117,6 +117,14 @@ metadata = {
 };
 
 diagnostics = {
-    log_verbosity = 1;
+    // Raised from default 1 → 2 on 2026-05-21 to log the post-SETUP
+    // RECORD / cipher / PTP-sync state for an open AP2 failure mode:
+    // shairport accepts the SETUP, logs "Connection N. AP2 Realtime
+    // Audio Stream." at rtsp.c:3304, then silently fails to start
+    // audio. Level 1 stops logging at that line — level 2 emits
+    // enough downstream detail to name the failing component on the
+    // next recurrence. See docs/HANDOFF-airplay.md "Pattern E —
+    // SETUP-progresses variant" for context and what's on the table.
+    log_verbosity = 2;
     log_show_file_and_line_numbers = "no";
 };

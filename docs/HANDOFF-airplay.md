@@ -639,6 +639,77 @@ bash scripts/airplay-reset.sh
 After ~2 s the device should be selectable again. The supervisor
 notices the recovery on its next probe.
 
+### Variant — SETUP progresses, audio never starts (open, 2026-05-21)
+
+Distinct from the listener-wedge case above. Observed against the
+Mac Studio: shairport accepts the AP2 PTP connection, accepts the
+SETUP, logs `Connection N. AP2 Realtime Audio Stream.` at
+`rtsp.c:3304`, then nothing further in the journal. The sender
+retries — captured run from 2026-05-21 shows the same Connection 5
+SETUP'd 18 times over 31 minutes (`12:49:35` → `13:20:55`), every
+attempt reaching the same line then silence. `bash
+scripts/airplay-reset.sh` clears it.
+
+**Why the Tier 3 supervisor doesn't catch this**: the supervisor
+probes RTSP `OPTIONS *`, which shairport handles in a fresh
+per-connection thread independent of `principal_conn` state. The
+probe correctly reports shairport as responsive (because it is) —
+the failure is in the post-SETUP handshake, invisible to the
+probe's contract. This is the case the resilience design doc names
+explicitly as out of scope ([HANDOFF-resilience.md:181-187](HANDOFF-resilience.md)).
+
+**Diagnostic gap before Layer 1.** At `log_verbosity = 1` the
+journal stops mid-handshake:
+
+```
+rtsp.c:2913 Connection N: AP2 PTP connection from <client>
+rtsp.c:3270 Connection N: SETUP AP2 ...
+rtsp.c:3289 Connection N: SETUP AP2 doesn't include DACP-ID ...
+rtsp.c:3304 Connection N. AP2 Realtime Audio Stream.
+                                                   ← log_verbosity=1 stops here
+```
+
+We have no record of what shairport tries (or fails to do) next:
+RECORD command, cipher negotiation, audio UDP port binding, PTP
+clock-sync state.
+
+**Layer 1 — done (2026-05-21)**: bumped `log_verbosity 1 → 2` in
+[`deploy/shairport-sync.conf.template`](../deploy/shairport-sync.conf.template).
+Level 2 emits enough post-SETUP detail to name the failing
+component. Cost is roughly 2× shairport's baseline log volume —
+well within the 200 MB persistent-journal cap from PR #160. Next
+recurrence should be diagnosable from the journal alone.
+
+**On the table if Layer 1 isn't enough**:
+
+- **Layer 2 — nqptp verbose output.** AP2 cannot start audio
+  without a healthy PTP sync. `nqptp.service` currently runs
+  `ExecStart=/usr/local/bin/nqptp` with no flags. Confirm
+  upstream's verbose flag and add it. Cheap, adds modest journal
+  volume.
+- **Layer 3 — structured anomaly watcher in
+  [`jasper/control/shairport_supervisor.py`](../jasper/control/shairport_supervisor.py).**
+  Tail shairport's journal; when a SETUP reaches `AP2 Realtime
+  Audio Stream` but no audio-start marker appears within N
+  seconds, emit `event=airplay.setup_no_audio` with a snapshot of
+  nqptp shm (`/dev/shm/nqptp`) and the last 20 shairport lines.
+  Surfaces the next occurrence proactively into `/state` and
+  journald structured logs, instead of requiring a human to
+  re-read hundreds of log lines after the fact. ~30 lines of code
+  + tests; biggest engineering lift of the three.
+
+**Mac-side companion capture** for next recurrence — run on the
+Mac while reproducing:
+
+```sh
+log stream --style compact --info --debug \
+  --predicate 'subsystem == "com.apple.AirPlay" OR subsystem == "com.apple.coreaudio.AirPlay"'
+```
+
+JTS-side logs show only the receiver's view; pairing with the
+Mac's CoreAudio AirPlay subsystem log gives the sender's view of
+where the handshake breaks.
+
 ---
 
 ## Pattern F — Speaker not discoverable
