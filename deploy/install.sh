@@ -510,6 +510,12 @@ EOF
     # blocking install. See README.md "Acoustic echo cancellation"
     # for the broader wake/AEC architecture.
     install -d -m 0755 -o root -g root /var/lib/jasper/wake
+    # Wake-event telemetry directory (HANDOFF-wake-telemetry.md PR 3).
+    # Holds wake-events.sqlite3 + per-event WAVs. jasper-voice (running
+    # as root via the service unit) creates files mode 0644; future
+    # /wake-review/ web UI reads via the standard nginx proxy. Owner
+    # root:root mirrors the wake-models dir above.
+    install -d -m 0755 -o root -g root /var/lib/jasper/wake-events
     if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
 import os
 import sys
