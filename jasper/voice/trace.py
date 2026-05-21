@@ -19,7 +19,6 @@ is listening, and the `traced_registry` wrapper is opt-in.
 from __future__ import annotations
 
 import time
-from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -114,28 +113,58 @@ class TurnTrace:
         return pairs
 
 
-_active: ContextVar[TurnTrace | None] = ContextVar("jts_voice_trace", default=None)
+# Module-level "active trace" — deliberately NOT a ContextVar.
+#
+# Originally this was `ContextVar`, intended to keep trace state
+# task-local. That choice silently broke in practice: when the
+# OpenAI adapter's `_receive_loop` task is spawned by
+# `connection.start()`, it captures a snapshot of the current
+# context at spawn time. The harness opens the connection BEFORE
+# setting an active trace per turn, so the receive-loop task sees
+# `None` forever — even when the harness later calls
+# `set_active(trace)` from its own task. The wrapper functions in
+# `traced_registry` run inside the receive-loop's task (the adapter
+# dispatches tool calls there), so their `emit` calls would no-op,
+# and tool calls never reached the trace.
+#
+# Confirmed 2026-05-21 by logging server events: OpenAI emitted
+# `response.output_item.added` with `type: function_call,
+# name: get_subway_arrivals` — i.e. the model called the tool —
+# yet `_active.get()` returned `None` inside the wrapper, so the
+# trace had `tool_call_records == []`.
+#
+# Switching to a module-level global trades ContextVar's task-isolation
+# guarantee for cross-task visibility. The harness is single-process,
+# single-event-loop, single-turn-at-a-time, so the isolation was
+# never needed; the visibility absolutely was.
+_active_trace: "TurnTrace | None" = None
 
 
-def active() -> TurnTrace | None:
+def active() -> "TurnTrace | None":
     """Return the currently-active trace, or None if no tracing is on."""
-    return _active.get()
+    return _active_trace
 
 
-def set_active(trace: TurnTrace | None):
-    """Set the active trace. Returns the token from `ContextVar.set` so
-    the caller can `reset` it cleanly via `reset_active(token)`."""
-    return _active.set(trace)
+def set_active(trace: "TurnTrace | None"):
+    """Set the active trace. Returns the previous value so the caller
+    can `reset_active(token)` to restore — same set/reset shape as the
+    old ContextVar API."""
+    global _active_trace
+    prev = _active_trace
+    _active_trace = trace
+    return prev
 
 
 def reset_active(token) -> None:
-    _active.reset(token)
+    """Restore the trace to a previous value returned by `set_active`."""
+    global _active_trace
+    _active_trace = token
 
 
 def emit(kind: str, payload: dict[str, Any] | None = None) -> None:
     """Append an event to the active trace. No-op when nothing is
     listening (the common production case)."""
-    trace = _active.get()
+    trace = _active_trace
     if trace is None:
         return
     trace.append(kind, payload or {})

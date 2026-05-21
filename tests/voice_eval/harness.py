@@ -252,16 +252,87 @@ def _load_wav_pcm(path: Path) -> bytes:
         return w.readframes(w.getnframes())
 
 
-async def _send_pcm_to_turn(turn, pcm: bytes) -> None:
-    """Burst-send `pcm` to the turn in 1280-sample frames. No
-    real-time pacing — the LLM session buffers and only produces a
-    response after `end_input`."""
-    frame_bytes = INJECT_FRAME_SAMPLES * 2  # int16
+async def _send_pcm_to_turn(turn, pcm: bytes, *, provider: str) -> bool:
+    """Submit `pcm` (16 kHz mono int16) to the active turn.
+
+    Returns True if `turn.end_input()` should still be called by the
+    caller (streaming path), False if we already fired response.create
+    inline (conversation.item.create path — no commit needed because
+    there's no buffer to commit, and calling end_input() would then
+    error with "the buffer is empty").
+
+    Per OpenAI's Realtime docs, `input_audio_buffer.append` is for
+    *streaming* audio chunks over time; `conversation.item.create`
+    with `input_audio` content is the documented method for
+    pre-recorded audio. Empirically (2026-05-21 on gpt-realtime-2):
+    streaming pre-recorded audio with `append` produced ZERO tool
+    calls across every scenario — the model heard the audio
+    (responded with audio) but treated it as noise rather than a
+    user request. Switching to `conversation.item.create` is the
+    fix.
+
+    For other providers (Gemini, Grok), the streaming path is still
+    used because their adapters don't have the same one-shot
+    pre-recorded audio API documented."""
+    if provider == "openai":
+        await _send_recorded_audio_openai(turn, pcm)
+        logger.info("voice-eval: sent %d bytes via conversation.item.create",
+                    len(pcm))
+        return False
+
+    # Streaming path, with real-time pacing (80 ms per 1280-sample frame).
+    frame_bytes = INJECT_FRAME_SAMPLES * 2
+    frame_sec = INJECT_FRAME_SAMPLES / 16_000
     n = 0
     for off in range(0, len(pcm), frame_bytes):
         await turn.send_audio(pcm[off:off + frame_bytes])
+        await asyncio.sleep(frame_sec)
         n += 1
-    logger.info("voice-eval: sent %d frames (%d bytes total)", n, len(pcm))
+    logger.info("voice-eval: sent %d frames (%d bytes total) via append",
+                n, len(pcm))
+    return True
+
+
+async def _send_recorded_audio_openai(turn, pcm_16khz: bytes) -> None:
+    """OpenAI Realtime — submit pre-recorded audio via
+    `conversation.item.create` (the documented path for recorded
+    audio) instead of `input_audio_buffer.append` (which is for
+    streaming live audio).
+
+    Accesses the OpenAI adapter's private upsample helper + raw
+    connection send. This is harness-internal and deliberately
+    couples to the openai adapter; if a future refactor changes the
+    adapter's private surface, this code needs to update too."""
+    import base64
+
+    from jasper.voice.openai_session import _upsample_16k_to_24k
+
+    # Upsample 16 kHz → 24 kHz. OpenAI Realtime audio input is
+    # 24 kHz mono int16. We pass `None` state because there's only
+    # one chunk (the whole recording) — no need to preserve state
+    # across calls.
+    pcm_24khz, _ = _upsample_16k_to_24k(pcm_16khz, None)
+    b64 = base64.b64encode(pcm_24khz).decode("ascii")
+
+    conn = turn._conn
+    # 1. Create the conversation item (full audio as a user message).
+    await conn._send_event({
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "input_audio", "audio": b64}],
+        },
+    })
+    # 2. Trigger the model to respond. No commit needed because the
+    #    item went straight into the conversation; there is no audio
+    #    buffer to flush.
+    await conn._send_event({"type": "response.create"})
+
+    # Mark the turn as committed so the adapter's `end_input()` is
+    # a no-op if the harness still calls it — and so cleanup paths
+    # behave correctly.
+    turn._committed = True
 
 
 # ---- transcript writer ---------------------------------------------
@@ -481,8 +552,11 @@ class VoiceEvalHarness:
             turn = await asyncio.wait_for(
                 connection.acquire_turn(), timeout=turn_timeout_sec,
             )
-            await _send_pcm_to_turn(turn, prompt_pcm)
-            await turn.end_input()
+            needs_end_input = await _send_pcm_to_turn(
+                turn, prompt_pcm, provider=self.cfg.voice_provider,
+            )
+            if needs_end_input:
+                await turn.end_input()
 
             async def _drain():
                 async for chunk in turn.audio_out():
