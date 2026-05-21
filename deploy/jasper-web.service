@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Wake + Wi-Fi)
+Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Wake + Wi-Fi + Peers + Transit)
 # Socket-activated by jasper-web.socket — daemon exits after 10 min idle.
 Requires=jasper-web.socket
 After=jasper-web.socket network-online.target time-sync.target
@@ -40,6 +40,11 @@ EnvironmentFile=-/var/lib/jasper/google_credentials.env
 # this file to render which model is active and writes back here on
 # save. Sourced AFTER jasper.env so wizard values win.
 EnvironmentFile=-/var/lib/jasper/wake_model.env
+# Optional file written by the transit wizard at /transit/ — holds
+# geocoded coordinates + subway/bus stop selections + the BusTime API
+# key. Same override pattern: sourced AFTER jasper.env so the wizard's
+# picks win over operator-managed defaults.
+EnvironmentFile=-/var/lib/jasper/transit.env
 # Single Python process serves all wizards as separate threads:
 #   /spotify/  →  127.0.0.1:8765
 #   /voice/    →  127.0.0.1:8767
@@ -48,6 +53,8 @@ EnvironmentFile=-/var/lib/jasper/wake_model.env
 #   /sources/  →  127.0.0.1:8773
 #   /wake/     →  127.0.0.1:8774
 #   /wifi/     →  127.0.0.1:8775
+#   /peers/    →  127.0.0.1:8776
+#   /transit/  →  127.0.0.1:8777
 # When socket-activated, all fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
 # jasper/web/__main__.py for the wiring.

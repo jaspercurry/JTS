@@ -579,6 +579,7 @@ def _build_system_instruction(
     *,
     google_accounts: list[str] | None = None,
     default_google_account: str = "",
+    transit_configured: bool = True,
 ) -> str:
     """Return the system instruction with current local time, the
     user's home location, and the linked Google account names
@@ -635,6 +636,19 @@ def _build_system_instruction(
             f"is named, omit the `account` arg — the default ({default}) "
             f"is used. If the user names someone who isn't in this list, "
             f"ask which linked account to use."
+        )
+    if not transit_configured:
+        # Conditional rule (not absolute) per the provider-prompt
+        # guidance in CLAUDE.md. Models obey "in this specific case,
+        # say X" better than "never do Y". Provider-agnostic phrasing
+        # — no mention of Gemini/OpenAI/Grok.
+        addendum += (
+            " Transit tools (subway, bus arrivals) aren't set up on this "
+            "speaker yet — no get_subway_arrivals or get_bus_arrivals tool "
+            "is available. If the user asks about the next train or next "
+            "bus, briefly say: 'Transit isn't set up yet — visit "
+            "jts.local/transit to configure it.' Don't promise to check "
+            "or look it up; the data source is genuinely absent."
         )
     return SYSTEM_INSTRUCTION + addendum
 
@@ -2527,12 +2541,19 @@ async def run() -> None:
         google_default_account = (
             google_clients.default_account_name() or ""
         ) if google_clients else ""
+        # transit_configured is true when either subway or bus
+        # client is live — the system prompt nudges the model toward
+        # /transit only when BOTH are absent. Partial configurations
+        # (e.g. subway set, bus not) don't need the nudge because
+        # the available tool surface still answers train queries.
+        transit_configured = bool(subway) or bool(bus and bus.enabled)
         await connection.start(
             registry,
             lambda: _build_system_instruction(
                 cfg.weather_default_location,
                 google_accounts=google_account_names,
                 default_google_account=google_default_account,
+                transit_configured=transit_configured,
             ),
         )
         # `make_mic_capture` routes to UdpMicCapture for

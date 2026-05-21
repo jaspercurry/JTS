@@ -164,11 +164,15 @@ Optional but recommended:
 
 - `JASPER_DEFAULT_LOCATION=Brooklyn,NY` — the default city for
   "Hey Jasper, what's the weather?"
-- `JASPER_SUBWAY_STATION_ID=B12` — your home subway stop (NYC
-  MTA GTFS stop ID; see the comment in the file for how to find
-  yours)
-- `JASPER_SUBWAY_DEFAULT_DIRECTION=uptown`
-- `JASPER_SUBWAY_LINES=D` — which lines stop at your station
+
+NYC subway and bus arrivals are wizard-managed at
+`http://jts.local/transit/` — **do not set the `JASPER_SUBWAY_*` /
+`JASPER_BUS_*` / `JASPER_MTA_BUSTIME_KEY` variables in
+`jasper.env`**. Type your home address; the wizard geocodes via OSM
+Nominatim and shows nearby stops. If those vars are already in
+`jasper.env` from an older install, `install.sh` migrates them
+into `/var/lib/jasper/transit.env` automatically on the next
+deploy.
 
 Spotify (if you want voice search & queue):
 

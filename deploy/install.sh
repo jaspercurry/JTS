@@ -612,6 +612,65 @@ PY
         echo
     fi
     migrate_voice_provider
+    migrate_transit_config
+}
+
+# Migrate stale transit env vars from /etc/jasper/jasper.env into the
+# wizard-owned /var/lib/jasper/transit.env. The wizard at /transit owns
+# every JASPER_SUBWAY_*, JASPER_BUS_*, and JASPER_MTA_BUSTIME_KEY variable;
+# operators who pasted those into jasper.env on an older install (pre-
+# wizard) get them moved automatically. Mirrors migrate_voice_provider
+# exactly — same idempotency, same safety on fresh installs.
+migrate_transit_config() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/transit.env"
+    local keys=(
+        JASPER_SUBWAY_STATION_ID
+        JASPER_SUBWAY_DEFAULT_DIRECTION
+        JASPER_SUBWAY_LINES
+        JASPER_MTA_BUSTIME_KEY
+        JASPER_BUS_STOP_ID
+        JASPER_BUS_ROUTES
+    )
+
+    [[ -f "${jasper_env}" ]] || return 0
+
+    # Bail early if jasper.env has none of these — common case for
+    # fresh installs and for already-migrated long-lived installs.
+    local any=0
+    local k
+    for k in "${keys[@]}"; do
+        if grep -qE "^${k}=" "${jasper_env}"; then any=1; break; fi
+    done
+    [[ "${any}" -eq 0 ]] && return 0
+
+    install -d -m 0750 "${STATE_DIR}"
+
+    for k in "${keys[@]}"; do
+        local line stale_value
+        line=$(grep -E "^${k}=" "${jasper_env}" || true)
+        [[ -z "${line}" ]] && continue
+        stale_value="${line#${k}=}"
+        stale_value="${stale_value%[$'\r\n ']*}"
+
+        if [[ -f "${wizard_env}" ]] && grep -qE "^${k}=" "${wizard_env}"; then
+            # Wizard file already canonical; just clean up jasper.env.
+            sed -i.bak "/^${k}=/d" "${jasper_env}"
+            rm -f "${jasper_env}.bak"
+            echo "  migrate_transit_config: removed stale ${k} line from ${jasper_env}"
+            continue
+        fi
+
+        if [[ -n "${stale_value}" ]]; then
+            touch "${wizard_env}"
+            chmod 0640 "${wizard_env}"
+            echo "${k}=${stale_value}" >> "${wizard_env}"
+            echo "  migrate_transit_config: moved ${k}=${stale_value}"
+            echo "    from ${jasper_env} to ${wizard_env}"
+        fi
+        sed -i.bak "/^${k}=/d" "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+    done
 }
 
 # Migrate stale JASPER_VOICE_PROVIDER from /etc/jasper/jasper.env to
