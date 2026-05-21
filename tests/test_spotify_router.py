@@ -506,6 +506,36 @@ def test_router_empty_reason_needs_oauth_for_all_unauthed_accounts():
     assert r.empty_reason() == "needs_oauth"
 
 
+def test_router_revoked_account_names_filters_to_revoked_only():
+    """The voice tool reads this to name the affected accounts in the
+    spoken error. Must include only ACCOUNT_REVOKED entries — not
+    ACCOUNT_OK or ACCOUNT_NEEDS_OAUTH (those don't need re-linking)."""
+    from jasper.spotify_router import (
+        ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
+    )
+    r = Router(
+        clients={},
+        default_name="jasper",
+        statuses=[
+            AccountStatus(name="jasper", state=ACCOUNT_OK),
+            AccountStatus(name="brittany", state=ACCOUNT_REVOKED),
+            AccountStatus(name="guest", state=ACCOUNT_NEEDS_OAUTH),
+            AccountStatus(name="alice", state=ACCOUNT_REVOKED),
+        ],
+    )
+    assert r.revoked_account_names() == ["brittany", "alice"]
+
+
+def test_router_revoked_account_names_empty_when_no_revoked():
+    from jasper.spotify_router import ACCOUNT_OK, AccountStatus
+    r = Router(
+        clients={"jasper": _ac("jasper")},
+        default_name="jasper",
+        statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+    )
+    assert r.revoked_account_names() == []
+
+
 # --- Real-spotipy integration: the exact bug PR #162 fixed ---
 
 

@@ -293,9 +293,17 @@ def test_health_badge_renders_per_state():
     needs_html = _health_badge_html(
         AccountStatus(name="x", state=ACCOUNT_NEEDS_OAUTH),
     )
-    assert "linked" in ok_html and "health-ok" in ok_html
-    assert "session expired" in rev_html and "health-revoked" in rev_html
-    assert "not linked" in needs_html and "health-warn" in needs_html
+    # Structural anchors (CSS class) — what the page styling hangs off.
+    # Tested separately from the human-readable label so a copy edit
+    # doesn't co-break the structural assertion and vice versa.
+    assert "health-ok" in ok_html
+    assert "health-revoked" in rev_html
+    assert "health-warn" in needs_html
+    # Human-readable labels — substring-loose so minor wording polish
+    # doesn't require touching this test.
+    assert "linked" in ok_html
+    assert "signed out" in rev_html
+    assert "not linked" in needs_html
     # None status (probe disabled / failed to run) renders nothing so the
     # rest of the card stays usable.
     assert _health_badge_html(None) == ""
@@ -311,8 +319,15 @@ def test_relink_notice_only_shown_for_revoked():
     revoked = _relink_notice_html(
         AccountStatus(name="jasper", state=ACCOUNT_REVOKED), "jasper",
     )
-    assert "Re-link jasper" in revoked
+    # Structural anchors — what makes this HTML the right kind of form.
+    # Decoupled from button-text copy so future polish doesn't touch
+    # this assertion.
     assert 'action="start"' in revoked
+    assert 'name="name"' in revoked
+    assert 'value="jasper"' in revoked
+    # The account name appears in user-facing text (the body sentence
+    # AND the button label) — substring-loose so wording can evolve.
+    assert "jasper" in revoked
     assert _relink_notice_html(
         AccountStatus(name="x", state=ACCOUNT_OK), "x",
     ) == ""

@@ -275,8 +275,14 @@ def make_transport_dispatcher(renderer, router):
                 active = await router.active(airplay_active=False)
                 if active is None:
                     if router.empty_reason() == "revoked":
+                        from .spotify import _format_name_list
+                        names = router.revoked_account_names()
+                        who = (
+                            _format_name_list(names) if names
+                            else "your spotify account"
+                        )
                         return {
-                            "error": "your spotify session has expired. "
+                            "error": f"spotify signed {who} out. "
                             f"tell the user to re-link at {hostname}/spotify.",
                         }
                     return {"error": "no spotify account configured"}

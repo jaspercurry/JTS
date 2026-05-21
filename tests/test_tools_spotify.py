@@ -124,6 +124,7 @@ class FakeRouter:
         self, transport_match=None, active_account=None,
         empty_reason: str = "no_accounts",
         rebuild_clients=None,
+        revoked_names=None,
     ) -> None:
         self._transport_match = transport_match
         self._active_account = active_account
@@ -134,6 +135,7 @@ class FakeRouter:
         # When set, refresh_if_empty() drops these into self.clients
         # so the test can simulate "wizard re-link landed mid-call".
         self._rebuild_clients = rebuild_clients
+        self._revoked_names = list(revoked_names or [])
         self.refresh_calls = 0
 
     async def resolve_for_transport(self, client_name: str, title: str):
@@ -157,6 +159,9 @@ class FakeRouter:
 
     def empty_reason(self) -> str:
         return "" if self.clients else self._empty_reason
+
+    def revoked_account_names(self) -> list:
+        return list(self._revoked_names)
 
 
 def _by_name(tools):
@@ -817,11 +822,11 @@ def test_no_clients_still_registers_tools_with_setup_error():
     ))
     assert set(tools.keys()) == {"spotify_play", "spotify_queue"}
     play_result = asyncio.run(tools["spotify_play"](query="Ariana Grande"))
-    assert "no spotify account configured" in play_result["error"]
+    assert "no spotify account is configured" in play_result["error"]
     assert "https://jts.local/spotify" in play_result["error"]
     assert "set one up" in play_result["error"]
     queue_result = asyncio.run(tools["spotify_queue"](query="Anti-Hero"))
-    assert "no spotify account configured" in queue_result["error"]
+    assert "no spotify account is configured" in queue_result["error"]
     assert "https://jts.local/spotify" in queue_result["error"]
 
 
@@ -833,26 +838,76 @@ def test_no_clients_no_setup_url_omits_url_phrase():
     renderer = FakeRenderer()
     tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     play_result = asyncio.run(tools["spotify_play"](query="X"))
-    assert play_result["error"] == "no spotify account configured."
+    assert play_result["error"] == "no spotify account is configured."
 
 
-def test_revoked_token_returns_session_expired_message():
+def test_revoked_token_returns_signed_out_message_with_account_name():
     """When the router's empty_reason is 'revoked' (Spotify-server-side
     invalidation, surfaced via build_clients failing with invalid_grant),
-    the user-facing error should distinguish "expired session" from
-    "never set up" — different actions for the user."""
-    router = FakeRouter(empty_reason="revoked")
+    the user-facing error should:
+      - distinguish "signed out" from "never set up" (different action)
+      - name the affected account so a household with multiple accounts
+        knows whose to re-link
+      - include the re-link URL"""
+    router = FakeRouter(empty_reason="revoked", revoked_names=["jasper"])
     renderer = FakeRenderer()
     tools = _by_name(make_spotify_tools(
         router, renderer, "JTS", setup_url="https://jts.local/spotify",
     ))
     play_result = asyncio.run(tools["spotify_play"](query="X"))
-    assert "session has expired" in play_result["error"]
-    assert "re-link" in play_result["error"]
-    assert "https://jts.local/spotify" in play_result["error"]
-    # And explicitly NOT the "set one up" phrasing — the user already
-    # set it up, the token just died.
-    assert "set one up" not in play_result["error"]
+    err = play_result["error"]
+    assert "signed jasper out" in err, f"got: {err}"
+    assert "re-link" in err
+    assert "https://jts.local/spotify" in err
+    # Explicitly NOT the "set one up" / "configure" phrasing.
+    assert "set one up" not in err
+    assert "no spotify account" not in err
+
+
+def test_revoked_multi_account_names_all_revoked():
+    """Two-household scenario: both household members' tokens revoked
+    at once (e.g. both reset their password in the same week). The
+    voice message should name BOTH so the user knows the scope of
+    re-linking required."""
+    router = FakeRouter(
+        empty_reason="revoked",
+        revoked_names=["jasper", "brittany"],
+    )
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
+    ))
+    play_result = asyncio.run(tools["spotify_play"](query="X"))
+    err = play_result["error"]
+    assert "jasper and brittany" in err, f"got: {err}"
+    assert "https://jts.local/spotify" in err
+
+
+def test_revoked_no_names_falls_back_to_generic_account_phrasing():
+    """Edge case: revoked reason but statuses didn't surface names
+    (shouldn't happen in production but the code path exists). The
+    message should still be coherent, not crash or say 'signed  out'."""
+    router = FakeRouter(empty_reason="revoked", revoked_names=[])
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
+    ))
+    play_result = asyncio.run(tools["spotify_play"](query="X"))
+    err = play_result["error"]
+    assert "your spotify account" in err
+    assert "signed" in err
+    assert "https://jts.local/spotify" in err
+
+
+def test_format_name_list_pluralization():
+    """English-list join used for voice output. Pin the spoken shape:
+    one → bare name; two → 'a and b'; three+ → Oxford comma."""
+    from jasper.tools.spotify import _format_name_list
+    assert _format_name_list([]) == ""
+    assert _format_name_list(["Jasper"]) == "jasper"  # lowercased
+    assert _format_name_list(["jasper", "brittany"]) == "jasper and brittany"
+    assert _format_name_list(["a", "b", "c"]) == "a, b, and c"
+    assert _format_name_list(["a", "b", "c", "d"]) == "a, b, c, and d"
 
 
 def test_revoked_then_relinked_recovers_without_daemon_restart():
@@ -916,9 +971,9 @@ def test_revoked_then_relinked_recovers_without_daemon_restart():
     ))
 
     # Voice command 1: rebuild_fn returns "still revoked" → tool surfaces
-    # the session-expired message.
+    # the signed-out message naming the account.
     first = asyncio.run(tools["spotify_play"](query="Beyonce"))
-    assert "session has expired" in first.get("error", "")
+    assert "signed jasper out" in first.get("error", "")
     # Voice command 2 must NOT be throttled by the rate-limit — patch
     # _now to advance past the cooldown so this is deterministic.
     with patch("jasper.spotify_router._now",

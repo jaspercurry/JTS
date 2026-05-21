@@ -354,6 +354,15 @@ class Router:
             return "revoked"
         return "needs_oauth"
 
+    def revoked_account_names(self) -> list[str]:
+        """Names of accounts whose tokens were revoked at last build.
+        Empty list when there are none (or when statuses isn't
+        populated). Voice tool reads this to name the affected
+        accounts in the spoken error — "spotify signed jasper out"
+        beats "your spotify session expired" because the user knows
+        which household member's account to re-link."""
+        return [s.name for s in self.statuses if s.state == ACCOUNT_REVOKED]
+
     async def resolve_for_transport(
         self, client_name: str, mpris_title: str
     ) -> AccountClient | None:

@@ -220,20 +220,25 @@ _SPOTIFY_PAGE_STYLE = PAGE_STYLE + """
   ul.accounts li .name { font-weight: 600; flex: 1; }
   ul.accounts li .badge { background: #4a8; color: white; padding: 0.1em 0.5em;
                             border-radius: 4px; font-size: 0.8em; }
-  .health-badge { padding: 0.1em 0.55em; border-radius: 4px;
-                  font-size: 0.78em; font-weight: 600;
-                  display: inline-block; cursor: help; }
+  .health-badge { padding: 0.18em 0.6em; border-radius: 5px;
+                  font-size: 0.8em; font-weight: 600;
+                  display: inline-block; cursor: help;
+                  letter-spacing: 0.01em;
+                  border: 1px solid transparent; }
   .health-badge.health-ok { background: #e7f6ec; color: #1c7c3a;
-                            border: 1px solid #bce0c8; }
+                            border-color: #bce0c8; }
   .health-badge.health-revoked { background: #fce8e8; color: #9b2222;
-                                  border: 1px solid #efb6b6; }
+                                  border-color: #efb6b6; }
   .health-badge.health-warn { background: #fff3d6; color: #8a6100;
-                              border: 1px solid #e7ce85; }
-  .relink-notice { background: #fff3f1; border: 1px solid #e7b9b3;
-                   border-radius: 6px; padding: 0.7em 0.9em;
-                   margin: 0 0 0.8em; }
-  .relink-notice p { margin: 0 0 0.7em; }
-  .relink-notice button { padding: 0.4em 1em; }
+                              border-color: #e7ce85; }
+  .relink-notice { background: #fff3f1;
+                   border: 1px solid #e7b9b3;
+                   border-left: 4px solid #c44;
+                   border-radius: 6px;
+                   padding: 0.85em 1em;
+                   margin: 0 0 1em; }
+  .relink-notice p { margin: 0 0 0.8em; line-height: 1.45; }
+  .relink-notice button { padding: 0.45em 1.1em; font-weight: 600; }
   .account-actions { display: flex; gap: 0.5em; margin: 0.7em 0 0.6em; }
   .account-actions form { margin: 0; }
   .account-actions button { padding: 0.35em 0.8em; font-size: 0.9em; }
@@ -629,30 +634,36 @@ def _account_playlists_section_html(account: Account) -> str:
 
 def _health_badge_html(status: AccountStatus | None) -> str:
     """Per-account badge: green check when the cached token still
-    refreshes, red warning when Spotify says the refresh token is
-    revoked (re-link required), grey when we couldn't probe at all.
-    Renders nothing when status is None — defensive: keeps the page
-    usable if the probe pipeline is uninitialised."""
+    refreshes, red warning when Spotify signed the account out (re-link
+    required), grey when we couldn't probe at all. Renders nothing when
+    status is None — defensive: keeps the page usable if the probe
+    pipeline is uninitialised. Unicode glyphs are deliberate UI
+    elements (consistent with the wizard's ✓ playlist preview marker),
+    not decorative emoji — they let the user scan a long account list
+    by colour + shape at a glance."""
     if status is None:
         return ""
     if status.state == ACCOUNT_OK:
-        return '<span class="health-badge health-ok" title="Token is valid">linked</span>'
+        return (
+            '<span class="health-badge health-ok"'
+            ' title="Token is valid">✓ linked</span>'
+        )
     if status.state == ACCOUNT_REVOKED:
         return (
             '<span class="health-badge health-revoked"'
-            ' title="Spotify revoked this refresh token. '
-            'Click Re-link below.">session expired</span>'
+            ' title="Spotify signed this account out. '
+            'Click Re-link below.">⚠ signed out</span>'
         )
     if status.state == ACCOUNT_NEEDS_OAUTH:
         return (
             '<span class="health-badge health-warn"'
             ' title="No cached token — re-OAuth needed">'
-            'not linked</span>'
+            '○ not linked</span>'
         )
     detail = html.escape(status.detail or "unknown")
     return (
         f'<span class="health-badge health-warn" title="{detail}">'
-        'status unknown</span>'
+        '? status unknown</span>'
     )
 
 
@@ -670,10 +681,10 @@ def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
     safe_name = html.escape(name)
     return f"""
 <div class="relink-notice">
-  <p><strong>Spotify revoked this account's refresh token.</strong>
-     Voice playback will fail until you re-link. Common causes: changed
-     your Spotify password, signed out everywhere, or a long period
-     of inactivity.</p>
+  <p><strong>Spotify signed {safe_name} out of this speaker.</strong>
+     Voice commands targeting this account won't work until you re-link.
+     This usually happens after a password change, signing out of all
+     devices on Spotify, or a long stretch without using the app.</p>
   <form method="post" action="start">
     <input type="hidden" name="name" value="{safe_name}">
     <button class="primary" type="submit">Re-link {safe_name}</button>

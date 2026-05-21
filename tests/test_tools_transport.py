@@ -56,6 +56,7 @@ class FakeRouter:
         self, transport_match=None, active_account=None,
         empty_reason: str = "no_accounts",
         rebuild_clients=None,
+        revoked_names=None,
     ) -> None:
         self._transport_match = transport_match
         self._active_account = active_account
@@ -65,6 +66,7 @@ class FakeRouter:
         self.clients = {}
         self._empty_reason = empty_reason
         self._rebuild_clients = rebuild_clients
+        self._revoked_names = list(revoked_names or [])
         self.refresh_calls = 0
 
     async def resolve_for_transport(self, client_name: str, title: str):
@@ -86,6 +88,9 @@ class FakeRouter:
 
     def empty_reason(self) -> str:
         return "" if self.clients else self._empty_reason
+
+    def revoked_account_names(self) -> list:
+        return list(self._revoked_names)
 
 
 def _by_name(tools):
@@ -239,21 +244,39 @@ def test_dispatch_spotify_targets_active_device():
     assert result == {"ok": True, "source": "spotify", "account": "jasper"}
 
 
-def test_dispatch_spotify_revoked_returns_session_expired_message():
+def test_dispatch_spotify_revoked_returns_signed_out_message_with_name():
     """When source=spotify and every account is revoked, transport must
-    say "session expired" — not "no account configured" (different
-    action for the user)."""
+    say "signed <name> out" (action-oriented + names the affected
+    account) — not "no account configured" (different action)."""
     renderer = FakeRenderer(renderers={"spotactive": True})
-    # No active account; empty_reason indicates revoked.
-    router = FakeRouter(active_account=None, empty_reason="revoked")
+    # No active account; empty_reason indicates revoked; name the
+    # household member so the LLM can speak it.
+    router = FakeRouter(
+        active_account=None, empty_reason="revoked",
+        revoked_names=["jasper"],
+    )
     tools = _by_name(make_transport_tools(renderer, router))
     result = asyncio.run(tools["pause"]())
     assert "error" in result
-    assert "session has expired" in result["error"]
+    assert "signed jasper out" in result["error"]
     assert "re-link" in result["error"]
     # The message must include the speaker hostname so the LLM can read
     # it aloud and the user knows where to go.
     assert "/spotify" in result["error"]
+
+
+def test_dispatch_spotify_revoked_multi_account_lists_all_names():
+    """Two-household scenario via transport tool. Both members' tokens
+    revoked; transport names both so the user knows the full re-link
+    scope."""
+    renderer = FakeRenderer(renderers={"spotactive": True})
+    router = FakeRouter(
+        active_account=None, empty_reason="revoked",
+        revoked_names=["jasper", "brittany"],
+    )
+    tools = _by_name(make_transport_tools(renderer, router))
+    result = asyncio.run(tools["pause"]())
+    assert "jasper and brittany" in result["error"]
 
 
 def test_dispatch_spotify_no_account_returns_old_message():

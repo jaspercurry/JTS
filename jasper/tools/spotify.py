@@ -46,6 +46,21 @@ _NOT_UNDERSTOOD = (
 )
 
 
+def _format_name_list(names: "list[str]") -> str:
+    """English list join for spoken output: ['jasper'] → 'jasper';
+    ['jasper', 'brittany'] → 'jasper and brittany';
+    ['a', 'b', 'c'] → 'a, b, and c'. Lowercased — voice tool error
+    messages are lowercase by convention (see other tool errors)."""
+    lowered = [n.lower() for n in names]
+    if not lowered:
+        return ""
+    if len(lowered) == 1:
+        return lowered[0]
+    if len(lowered) == 2:
+        return f"{lowered[0]} and {lowered[1]}"
+    return ", ".join(lowered[:-1]) + f", and {lowered[-1]}"
+
+
 def _playlist_score(query: str, name: str) -> int:
     """Fuzzy score (0-100) for a playlist name against the user's spoken
     query.
@@ -361,17 +376,20 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
     def _no_account_msg() -> str:
         """Pick the right user-facing message based on why the router is
         empty. Spoken verbatim by the LLM, so the phrasing is tuned for
-        speech: short, no jargon, action the user can take."""
+        speech: short, no jargon, names the affected account(s) so a
+        multi-household speaker tells the user *which* account to re-link
+        rather than a generic "your spotify session"."""
         reason = router.empty_reason() if router is not None else "no_accounts"
         if reason == "revoked":
-            base = (
-                "your spotify session has expired and needs to be re-linked."
-            )
-        else:
-            base = "no spotify account configured."
+            names = router.revoked_account_names() if router is not None else []
+            who = _format_name_list(names) if names else "your spotify account"
+            base = f"spotify signed {who} out."
+            if setup_url:
+                base += f" tell the user to re-link at {setup_url}."
+            return base
+        base = "no spotify account is configured."
         if setup_url:
-            verb = "re-link" if reason == "revoked" else "set one up"
-            base += f" tell the user to visit {setup_url} to {verb}."
+            base += f" tell the user to visit {setup_url} to set one up."
         return base
 
     async def _ensure_clients() -> bool:

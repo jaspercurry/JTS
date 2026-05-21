@@ -189,14 +189,16 @@ re-link via the wizard.
 
 **What you'll see when this happens:**
 
-- `/spotify` shows a red "session expired" badge on the affected
+- `/spotify` shows a red ⚠ "signed out" badge on the affected
   account's card. The card auto-opens, exposing an inline **Re-link
   *name*** button that POSTs to `/start` with the same account name
   (the OAuth callback then overwrites the existing cache file).
-- Voice commands targeting that account return *"your spotify
-  session has expired and needs to be re-linked. tell the user to
-  visit http://jts.local/spotify to re-link."* — spoken by the LLM
-  during the active turn, not as a pre-rendered cue.
+- Voice commands targeting that account return *"spotify signed
+  *name* out. tell the user to re-link at http://jts.local/spotify."*
+  — spoken by the LLM during the active turn, not as a pre-rendered
+  cue. When multiple accounts are revoked, all are named (e.g.
+  *"spotify signed jasper and brittany out"*) so the user knows the
+  full re-link scope.
 - Daemon startup log (`journalctl -u jasper-voice`) includes
   `event=spotify.startup_empty statuses=[('jasper', 'revoked')] setup_url=...`
   if the token was already revoked when the daemon started.
