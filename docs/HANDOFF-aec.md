@@ -1025,6 +1025,21 @@ CamillaDSP's output to 16 kHz on that route.)
   delay was nonsense. Fix: more-negative `SYS_DELAY` to shift mic
   later. (The proposed option-D topology removes this failure mode
   entirely by routing music through the chip itself.)
+
+> **Important caveat about the prior chip-AEC test result.** The
+> 2026-05-19 `SHF_BYPASS=0` run that produced 15% wake rate (cited
+> below in "Chip-pipeline-only alternative considered + rejected"
+> as evidence against chip AEC) ran in the dongle topology — chip
+> had NO USB-in reference signal at all. The chip's USB Adaptive
+> Mode PLL only engages when USB-in audio is flowing as the AEC
+> reference; with no reference, the PLL question doesn't even
+> arise, and the chip's AEC was running blind. **So the 15%
+> result tells us nothing about how chip AEC would perform in
+> option D's topology** (where music IS routed through USB-in).
+> The acausal-delay diagnosis above is the actual mechanism — and
+> it doesn't apply to option D. Don't cite the May 2026 result as
+> evidence against option D; the experimental conditions don't
+> match.
 - **Excessive positive delay** (peak >> 40 samples): filter still
   adapts but spends tail budget on bulk delay → less budget for
   room IR → poorer cancellation, slow convergence.
