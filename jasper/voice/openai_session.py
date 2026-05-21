@@ -1180,6 +1180,24 @@ class OpenAIRealtimeConnection(LiveConnection):
                     await turn._on_audio_delta(delta)
             return
 
+        # Assistant audio transcript — the text version of the audio
+        # the model is speaking. Production daemon ignores text (it
+        # plays audio); the eval harness consumes these via the
+        # `text_out` trace event. No-op when no trace is active.
+        # Both event names handled: `response.audio_transcript.delta`
+        # is OpenAI Realtime's GA name for transcript-during-audio;
+        # `response.output_text.delta` is OpenAI's text-modality event
+        # AND the Grok adapter's normalized name for `response.text.delta`.
+        if etype in (
+            "response.audio_transcript.delta",
+            "response.output_text.delta",
+        ):
+            delta = _event_field(event, "delta")
+            if isinstance(delta, str) and delta:
+                from .trace import emit as _trace_emit
+                _trace_emit("text_out", {"delta": delta})
+            return
+
         # Track the assistant audio item id for future barge-in support.
         if etype == "response.output_item.added":
             item = _event_field(event, "item") or {}

@@ -6,6 +6,9 @@ venv/
 .env
 .env.*
 !.env.example
+# .env.local for laptop-side voice-eval — gitignored to keep
+# API keys out of the repo. See tests/voice_eval/README.md.
+.env.local
 .pytest_cache/
 .ruff_cache/
 build/
@@ -28,3 +31,15 @@ captures/
 # Throwaway artifacts of jasper.cli.satellite_validation; regenerate
 # rather than commit. Whole tree is deletable post-validation.
 phase1_3/
+
+# Voice-eval harness artifacts:
+# - audio_cache/: OpenAI TTS-synthesized prompt WAVs (regenerate
+#   from text on first run, cached by sha256 — no need to ship)
+# - transcripts_out/: per-trial markdown + response WAV. Run-local.
+# - traces_out/: per-trial JSONL traces. Run-local.
+tests/voice_eval/audio_cache/*
+!tests/voice_eval/audio_cache/.gitkeep
+tests/voice_eval/transcripts_out/*
+!tests/voice_eval/transcripts_out/.gitkeep
+tests/voice_eval/traces_out/*
+!tests/voice_eval/traces_out/.gitkeep

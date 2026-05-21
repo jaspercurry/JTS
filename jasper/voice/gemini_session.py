@@ -1750,9 +1750,21 @@ class GeminiLiveSession(VoiceSession):
             self._last_activity_at = asyncio.get_event_loop().time()
             await self._handle_tool_call(tool_call)
 
-        # Server content: turn_complete + interrupted.
+        # Server content: turn_complete + interrupted + output transcription.
         sc = getattr(response, "server_content", None)
         if sc is not None:
+            # Output transcription = the text the model is speaking.
+            # Gemini Live ships these alongside audio chunks as part of
+            # the same server event. Production daemon ignores them
+            # (it plays audio, not text); the eval harness consumes
+            # them via the `text_out` trace event. No-op when no
+            # trace is active.
+            ot = getattr(sc, "output_transcription", None)
+            if ot is not None:
+                ot_text = getattr(ot, "text", None)
+                if isinstance(ot_text, str) and ot_text:
+                    from .trace import emit as _trace_emit
+                    _trace_emit("text_out", {"delta": ot_text})
             if getattr(sc, "turn_complete", False):
                 self._turn_count += 1
                 self._last_activity_at = asyncio.get_event_loop().time()

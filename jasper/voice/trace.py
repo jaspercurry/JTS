@@ -1,0 +1,234 @@
+"""Per-turn structured tracing for the voice loop.
+
+The voice-eval harness records what happened during a turn — every tool
+call (with args and result), every audio chunk in/out, session
+open/close — by setting a `TurnTrace` on a `ContextVar` for the
+duration of the turn, and reading it back when the turn ends.
+
+The schema is intentionally simple and provider-agnostic so the same
+shape can be emitted by either the synthetic test path or the live
+daemon path. Production trace ingestion (taking real user sessions
+and converting them into regression scenarios) is V2; the schema is
+ready for it today.
+
+This module is only imported by test code today. Importing it adds
+zero overhead and zero behaviour change to the daemon — the
+`ContextVar` defaults to `None`, the emit helpers no-op when nothing
+is listening, and the `traced_registry` wrapper is opt-in.
+"""
+from __future__ import annotations
+
+import time
+from contextvars import ContextVar
+from dataclasses import dataclass, field, replace
+from typing import Any
+
+from ..tools import Tool, ToolRegistry
+
+
+@dataclass
+class TraceEvent:
+    """One structured event in a turn.
+
+    `kind` is the event type — current vocabulary:
+
+      session_open   payload={provider, model, system_instruction_hash}
+      turn_start     payload={turn_id}
+      audio_in       payload={n_bytes, sample_rate}
+      tool_call      payload={name, args}
+      tool_return    payload={name, result, elapsed_ms, error?}
+      audio_out      payload={n_bytes}            (per chunk)
+      turn_complete  payload={tokens, usage_breakdown?}
+      turn_end       payload={reason}             (release/lost/error)
+      session_close  payload={reason}
+
+    Add new kinds as needed — consumers should ignore unknown kinds
+    so we can extend without coordinated changes."""
+    ts: float                # time.monotonic() at emission
+    kind: str
+    payload: dict[str, Any]
+
+
+@dataclass
+class TurnTrace:
+    """A complete record of one voice turn.
+
+    Mutable during the turn, snapshotted after. The harness creates a
+    fresh `TurnTrace` per scenario invocation, sets it as the active
+    trace via `set_active`, runs the turn, then reads `.events` for
+    assertions and writes the transcript."""
+    turn_id: str
+    session_id: str
+    provider: str
+    started_at: float = field(default_factory=time.monotonic)
+    events: list[TraceEvent] = field(default_factory=list)
+
+    def append(self, kind: str, payload: dict[str, Any]) -> None:
+        self.events.append(TraceEvent(time.monotonic(), kind, dict(payload)))
+
+    def tool_calls(self) -> list[TraceEvent]:
+        return [e for e in self.events if e.kind == "tool_call"]
+
+    def tool_returns(self) -> list[TraceEvent]:
+        return [e for e in self.events if e.kind == "tool_return"]
+
+    def spoken_text(self) -> str:
+        """Concatenated assistant-spoken text across the turn.
+
+        Built from `text_out` events that each provider's adapter
+        emits when the server sends transcript deltas alongside
+        audio. All three current providers (Gemini Live, OpenAI
+        Realtime, xAI Grok Voice Agent) stream these natively —
+        no STT pass needed, no Whisper dependency, 100% accurate
+        (this IS the text the model emitted, not a transcription).
+
+        Empty string when no text deltas arrived — meaningful in
+        its own right (model produced audio without transcripts,
+        or this provider's text channel isn't wired). The harness
+        falls back to "skip text assertion" when this happens."""
+        return "".join(
+            e.payload.get("delta") or ""
+            for e in self.events
+            if e.kind == "text_out"
+        )
+
+    def tool_pairs(self) -> list[tuple[TraceEvent, TraceEvent | None]]:
+        """Pair each tool_call with its matching tool_return (by name and
+        order). Returns are matched FIFO per name — handles the case
+        where the model calls the same tool twice in one turn."""
+        pending: dict[str, list[TraceEvent]] = {}
+        pairs: list[tuple[TraceEvent, TraceEvent | None]] = []
+        for ev in self.events:
+            if ev.kind == "tool_call":
+                pairs.append((ev, None))
+                pending.setdefault(ev.payload["name"], []).append(ev)
+            elif ev.kind == "tool_return":
+                callers = pending.get(ev.payload["name"]) or []
+                if not callers:
+                    continue
+                call = callers.pop(0)
+                for i, (c, r) in enumerate(pairs):
+                    if c is call:
+                        pairs[i] = (c, ev)
+                        break
+        return pairs
+
+
+_active: ContextVar[TurnTrace | None] = ContextVar("jts_voice_trace", default=None)
+
+
+def active() -> TurnTrace | None:
+    """Return the currently-active trace, or None if no tracing is on."""
+    return _active.get()
+
+
+def set_active(trace: TurnTrace | None):
+    """Set the active trace. Returns the token from `ContextVar.set` so
+    the caller can `reset` it cleanly via `reset_active(token)`."""
+    return _active.set(trace)
+
+
+def reset_active(token) -> None:
+    _active.reset(token)
+
+
+def emit(kind: str, payload: dict[str, Any] | None = None) -> None:
+    """Append an event to the active trace. No-op when nothing is
+    listening (the common production case)."""
+    trace = _active.get()
+    if trace is None:
+        return
+    trace.append(kind, payload or {})
+
+
+def traced_registry(registry: ToolRegistry) -> ToolRegistry:
+    """Return a new `ToolRegistry` with every tool's `fn` wrapped to
+    emit `tool_call` and `tool_return` events on the active trace.
+
+    The original registry is unchanged. Production code receives the
+    original; the harness receives the wrapped version. Adapter-side
+    dispatch (`tool.fn(**args)`) is unchanged — the wrapping happens
+    transparently inside the same call.
+
+    Safe to call when no trace is active — the wrapper's emit calls
+    are no-ops in that case. So the wrapped registry can be used in
+    contexts where tracing is sometimes on and sometimes off."""
+    import asyncio
+    import inspect
+
+    new = ToolRegistry()
+    for name, tool in registry.tools.items():
+        original_fn = tool.fn
+        is_coro = inspect.iscoroutinefunction(original_fn)
+
+        def _make_wrapper(orig, coro: bool):
+            if coro:
+                async def _async_wrapper(**kwargs):
+                    started = time.monotonic()
+                    emit("tool_call", {"name": orig.__name__, "args": dict(kwargs)})
+                    try:
+                        result = await orig(**kwargs)
+                    except Exception as e:  # noqa: BLE001
+                        emit("tool_return", {
+                            "name": orig.__name__,
+                            "result": None,
+                            "elapsed_ms": int((time.monotonic() - started) * 1000),
+                            "error": repr(e),
+                        })
+                        raise
+                    emit("tool_return", {
+                        "name": orig.__name__,
+                        "result": result,
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                    })
+                    return result
+                _async_wrapper.__name__ = orig.__name__
+                _async_wrapper.__doc__ = orig.__doc__
+                # Preserve tool decorator markers so build_tool re-reads them.
+                for attr in ("__jasper_tool_name__", "__jasper_tool_providers__"):
+                    if hasattr(orig, attr):
+                        setattr(_async_wrapper, attr, getattr(orig, attr))
+                return _async_wrapper
+
+            def _sync_wrapper(**kwargs):
+                started = time.monotonic()
+                emit("tool_call", {"name": orig.__name__, "args": dict(kwargs)})
+                try:
+                    result = orig(**kwargs)
+                except Exception as e:  # noqa: BLE001
+                    emit("tool_return", {
+                        "name": orig.__name__,
+                        "result": None,
+                        "elapsed_ms": int((time.monotonic() - started) * 1000),
+                        "error": repr(e),
+                    })
+                    raise
+                emit("tool_return", {
+                    "name": orig.__name__,
+                    "result": result,
+                    "elapsed_ms": int((time.monotonic() - started) * 1000),
+                })
+                return result
+            _sync_wrapper.__name__ = orig.__name__
+            _sync_wrapper.__doc__ = orig.__doc__
+            for attr in ("__jasper_tool_name__", "__jasper_tool_providers__"):
+                if hasattr(orig, attr):
+                    setattr(_sync_wrapper, attr, getattr(orig, attr))
+            return _sync_wrapper
+
+        wrapper = _make_wrapper(original_fn, is_coro)
+        # Preserve every other Tool field unchanged — parameters,
+        # description, providers — only fn is swapped for the wrapper.
+        new.tools[name] = replace(tool, fn=wrapper)
+    return new
+
+
+__all__ = [
+    "TraceEvent",
+    "TurnTrace",
+    "active",
+    "set_active",
+    "reset_active",
+    "emit",
+    "traced_registry",
+]
