@@ -12,27 +12,39 @@ def make_weather_tools(weather):
     @tool()
     async def get_weather(location: str = "") -> dict:
         """Return current conditions, today/tomorrow forecasts, hourly
-        slots for the next 7 days, and daily summaries for the next 14
-        days. location is optional — if empty, uses the speaker's default
+        slots for the next 7 days, daily summaries for the next 14
+        days, plus daily sunrise/sunset for any day in that range.
+        location is optional — if empty, uses the speaker's default
         location.
 
         Response shape:
           location, current_local_time, units ('°C' or '°F')
           now: {temperature, condition}
           today: {date, temperature_high, temperature_low, condition,
-                  precipitation_probability, will_rain}
+                  precipitation_probability, will_rain,
+                  sunrise, sunset}
           tomorrow: same shape as today
           hourly_forecast: list of {time, temperature, condition,
                   precipitation_probability} for 168 hours (7 days)
                   starting at the current hour. Use this for any
                   specific-hour question within the next week.
           daily_next_14d: list of 14 daily summaries (same shape as
-                  today), index 0 = today, index 13 = today + 13 days
+                  today, including sunrise/sunset), index 0 = today,
+                  index 13 = today + 13 days
+
+        Sunrise/sunset are ISO 8601 local-time strings (e.g.
+        "2026-05-21T20:14"). Convert to spoken form for the user
+        ("Sunset is at 8:14 PM.").
 
         Pick the relevant sub-object based on the user's question:
           'now' / 'right now'             → response.now
           'today' / 'is it raining'       → response.today
           'tomorrow'                      → response.tomorrow
+          'what time does the sun set' /
+          'when does the sun rise'        → response.today.sunset /
+                                            response.today.sunrise
+                                            (or response.tomorrow.* for
+                                            "tomorrow's sunset")
           'this evening' / 'tonight' /
           'tomorrow morning' /
           'what time will it rain
