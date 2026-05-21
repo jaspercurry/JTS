@@ -607,9 +607,68 @@ PY
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo
         echo "Created ${ENV_DIR}/jasper.env from template."
-        echo "Edit it and set GEMINI_API_KEY before starting jasper-voice."
+        echo "Pick a voice provider at http://${hostname_value}/voice before"
+        echo "starting jasper-voice — there is no default."
         echo
     fi
+    migrate_voice_provider
+}
+
+# Migrate stale JASPER_VOICE_PROVIDER from /etc/jasper/jasper.env to
+# /var/lib/jasper/voice_provider.env. The wizard at /voice owns this
+# variable; previously the install template also set a default
+# (JASPER_VOICE_PROVIDER=gemini), which created stale-vs-runtime
+# confusion when the wizard had written a different value.
+#
+# This function:
+#  - reads any JASPER_VOICE_PROVIDER= line out of /etc/jasper/jasper.env
+#  - if the wizard file (/var/lib/jasper/voice_provider.env) doesn't
+#    already define the variable, moves the value there
+#  - removes the line from /etc/jasper/jasper.env either way
+#
+# Idempotent: running multiple times produces the same end state.
+# Safe on fresh installs (where neither file has the var, this is a
+# no-op) and on long-lived installs (where the wizard file already
+# has the var, this just cleans up the stale line).
+migrate_voice_provider() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/voice_provider.env"
+
+    [[ -f "${jasper_env}" ]] || return 0
+    local line
+    line=$(grep -E '^JASPER_VOICE_PROVIDER=' "${jasper_env}" || true)
+    [[ -z "${line}" ]] && return 0
+
+    # value is everything after the first '='. Trim trailing CR/whitespace.
+    local stale_value="${line#JASPER_VOICE_PROVIDER=}"
+    stale_value="${stale_value%[$'\r\n ']*}"
+
+    install -d -m 0750 "${STATE_DIR}"
+
+    # If wizard file already declares the variable, just remove the
+    # stale jasper.env line — the wizard's value wins per systemd's
+    # EnvironmentFile load order regardless, this is just cleanup.
+    if [[ -f "${wizard_env}" ]] && grep -qE '^JASPER_VOICE_PROVIDER=' "${wizard_env}"; then
+        sed -i.bak '/^JASPER_VOICE_PROVIDER=/d' "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+        echo "  migrate_voice_provider: removed stale JASPER_VOICE_PROVIDER"
+        echo "    line from ${jasper_env} (wizard file already canonical)"
+        return 0
+    fi
+
+    # Migrate the value to the wizard file. Empty stale value (we just
+    # introduced this on a clean install) → don't write anything, just
+    # remove the line from jasper.env. Non-empty → preserve the
+    # operator's pre-cleanup choice so voice keeps working.
+    if [[ -n "${stale_value}" ]]; then
+        touch "${wizard_env}"
+        chmod 0640 "${wizard_env}"
+        echo "JASPER_VOICE_PROVIDER=${stale_value}" >> "${wizard_env}"
+        echo "  migrate_voice_provider: moved JASPER_VOICE_PROVIDER=${stale_value}"
+        echo "    from ${jasper_env} to ${wizard_env}"
+    fi
+    sed -i.bak '/^JASPER_VOICE_PROVIDER=/d' "${jasper_env}"
+    rm -f "${jasper_env}.bak"
 }
 
 install_systemd_units() {

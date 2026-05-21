@@ -131,20 +131,45 @@ HTTP — see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 ## Voice provider switching — read first
 
 The voice loop runs against any of three real-time speech-to-speech
-APIs behind a single env var. Architecture and per-provider
-trade-offs are in
+APIs. Architecture and per-provider trade-offs are in
 [`docs/HANDOFF-voice-providers.md`](docs/HANDOFF-voice-providers.md);
 this section is the operational summary.
 
-**Two ways to switch.** Either work; pick whichever fits the moment.
+### Single source of truth: `/var/lib/jasper/voice_provider.env`
+
+**`JASPER_VOICE_PROVIDER` lives in exactly one file**:
+[`/var/lib/jasper/voice_provider.env`](deploy/systemd/jasper-voice.service),
+written by the `/voice` wizard. **Never set it in
+`/etc/jasper/jasper.env`** — `install.sh` migrates any stale value
+out of there into the wizard file on every run, since having a
+default in BOTH led to stale-vs-runtime confusion (the wizard wrote
+one value, the install template still had another, and reading
+either file in isolation gave a wrong answer about "what's the
+active provider").
+
+There is **no fallback default**. Fresh installs land with the
+variable unset; `jasper-voice` refuses to start with a clear error
+("visit `http://jts.local/voice` and pick one") until the wizard
+writes the file. The doctor and the `/system/` dashboard surface
+this state. Same pattern applies to the per-provider keys
+(`GEMINI_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`) and model /
+voice selectors — all wizard-owned per
+[`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
+
+**To override without using the wizard** (CI, headless imaging,
+operator preference): write `JASPER_VOICE_PROVIDER=<id>` to
+`/var/lib/jasper/voice_provider.env` directly. systemd loads it on
+the next jasper-voice start.
+
+### Two ways to switch the active provider
 
 **Web UI (preferred, end-user friendly)** — visit
 `http://jts.local/voice/` from any device on the LAN. The page
 shows one card per provider for pasting API keys, picks model and
 voice from curated dropdowns, and has a single radio group at the
 top for "use this provider". Saving writes
-`/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
-`jasper-voice`. Source: [`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
+`/var/lib/jasper/voice_provider.env` and restarts `jasper-voice`.
+Source: [`jasper/web/voice_setup.py`](jasper/web/voice_setup.py).
 
 **Laptop-side script (operator-friendly, scriptable)**:
 

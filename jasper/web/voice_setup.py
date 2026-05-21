@@ -237,11 +237,15 @@ def _provider_is_configured(state: dict[str, str], provider: dict) -> bool:
 
 def _active_provider_id(state: dict[str, str]) -> str:
     """Active provider per the wizard's state (or the env if the wizard
-    file hasn't been written yet). Falls back to ``gemini`` so a fresh
-    install lands on something coherent — the page itself will then
-    flag that the active provider has no key configured yet."""
-    active = _value_for(state, "JASPER_VOICE_PROVIDER", "gemini")
-    return active if active in _VALID_PROVIDER_IDS else "gemini"
+    file hasn't been written yet). Returns empty string when no
+    provider has been chosen yet — the UI then renders with no radio
+    selected and no card highlighted, so the user has to make an
+    explicit choice. The earlier behaviour silently fell back to
+    ``gemini``, which produced the stale-default class of bug where
+    `/etc/jasper/jasper.env` and `/var/lib/jasper/voice_provider.env`
+    disagreed about what was active."""
+    active = _value_for(state, "JASPER_VOICE_PROVIDER", "")
+    return active if active in _VALID_PROVIDER_IDS else ""
 
 
 # ----------------------------------------------------------------------
