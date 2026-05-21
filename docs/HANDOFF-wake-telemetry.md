@@ -209,6 +209,43 @@ When the audio is rolled off, the DB row keeps `audio_on_path` /
 written; queries can filter by `audio_on_path IS NOT NULL` to
 restrict to events that still have audio on disk.
 
+### Pulling the corpus to a laptop
+
+`scripts/fetch-wake-events.sh` is the canonical fetcher. It
+snapshots the DB via Python's `sqlite3.backup` (consistent read
+without taking a write lock against the live jasper-voice), rsyncs
+both legs' WAVs back, and generates a TSV index for at-a-glance
+browsing:
+
+```sh
+bash scripts/fetch-wake-events.sh
+open wake-events/latest/index.tsv
+```
+
+Each run lands under `./wake-events/<UTC-timestamp>/`; the
+`wake-events/latest` symlink points at the most recent fetch. The
+`./wake-events/` tree is gitignored — regenerate on demand, don't
+commit captured audio.
+
+### Capture-ring fill — primary vs secondary loop
+
+Both legs need to feed their respective capture rings or the
+audio at fire time will be empty / single-leg.
+
+- Primary loop (`run()`): appends each frame to
+  `_capture_ring_on` after the pre-roll append, gated past
+  `_mic_muted` / `_measurement_active` so privacy promises hold.
+- Secondary loop (`_wake_secondary_loop`): appends each frame to
+  `_capture_ring_off` in the same gating position. **Easy to
+  forget** — the secondary loop's job is wake-detection scoring;
+  the capture-ring append is a separate concern that has to be
+  remembered separately. Shipped without it in the integration
+  branch; the result was `audio_off_path` NULL on every event
+  even though dual-stream was firing. Fix: explicit append before
+  the `_acquiring` / `_state` checks (so a wake fire's window
+  still has pre-fire context even if the utterance overlaps the
+  wake-to-turn-open buffer window).
+
 ---
 
 ## PR plan

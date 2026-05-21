@@ -657,6 +657,98 @@ versions (respeaker repo issue #8).
 
 ---
 
+## Wake-event telemetry — capture + labeling
+
+Every wake-word fire (and the funnel that follows) lands in a
+SQLite DB + per-event audio clips at
+`/var/lib/jasper/wake-events/`. Used for: knowing your actual
+wake rate, which AEC leg is firing more, building a labeled
+corpus for future model training.
+
+Full design, schema, queries:
+[`docs/HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md).
+
+### Enable the dual-stream OR-gate
+
+Default is single-stream (AEC ON only). The OR-gate fires wake
+on **either** AEC ON or AEC OFF crossing threshold — recovers the
+~60 % of wakes the `jarvis_v2` model silently misses on the AEC ON
+leg (the documented 0.001-confidence failure mode). Enable with:
+
+```sh
+echo 'JASPER_MIC_DEVICE_RAW=udp:9877' | sudo tee -a /etc/jasper/jasper.env
+sudo systemctl restart jasper-voice
+```
+
+Verify: `journalctl -u jasper-voice | grep UdpMicCapture` shows
+both 9876 + 9877 binding. After a wake, the log line carries both
+legs' scores: `event=wake.detected leg=off score_on=0.00 score_off=0.82`.
+
+### Pull the corpus to laptop for review
+
+```sh
+bash scripts/fetch-wake-events.sh
+open wake-events/latest/index.tsv
+```
+
+Lands as `./wake-events/<UTC-timestamp>/`:
+- `wake-events.sqlite3` — consistent snapshot via `.backup`
+  (jasper-voice keeps writing; the snapshot is safe to read)
+- `<event_id>.aec-on.wav` + `<event_id>.aec-off.wav` — 6 s windows
+  (4 s pre + 2 s post wake fire)
+- `index.tsv` — sortable TSV with timestamp, scores, outcome, label
+- `wake-events/latest` symlink updated each run
+
+### Label an event
+
+```sh
+sqlite3 wake-events/latest/wake-events.sqlite3 \
+  "UPDATE wake_events SET label='real_attempt' WHERE event_id='...'"
+```
+
+Suggested labels: `real_attempt`, `music`, `tv`, `ambient`,
+free-form. Empty by default — fill as you listen. `label_notes`
+column for longer commentary.
+
+### Quick funnel query
+
+```sh
+sqlite3 wake-events/latest/wake-events.sqlite3 "
+SELECT date(ts_utc) day, COUNT(*) wakes,
+       SUM(ts_turn_opened IS NOT NULL) opened,
+       SUM(ts_speech_detected IS NOT NULL) had_speech,
+       SUM(ts_turn_complete IS NOT NULL) completed
+FROM wake_events WHERE trigger_kind LIKE 'fire%' GROUP BY day"
+```
+
+More queries (per-leg fire breakdown, false-positive proxy, etc.)
+in the HANDOFF doc's "Useful queries" section.
+
+### Retention + privacy
+
+- WAVs: 500 MB ring buffer, oldest-first deletion (~3-6 weeks at
+  typical use). Tunable via `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES`.
+- DB rows kept forever. When audio rolls off, the row's
+  `audio_*_path` becomes the literal string `'rolled_off'` (not
+  NULL — preserves the historical fact that audio existed).
+- Mute mic privacy preserved: when `JASPER_MIC_MUTED=1`, the
+  wake-event capture rings stop filling — nothing recorded.
+
+### Architecture in one paragraph
+
+The AEC bridge emits **two** UDP streams: the post-AEC mono mic on
+`:9876` (existing) and the chip-direct mic (pre-AEC, post chip's
+own BF/NS/AGC/HPF) on `:9877`. jasper-voice opens both, runs
+independent `WakeWordDetector` instances per leg, OR-gates the
+fires with a shared 0.7 s refractory. `WakeEventStore`
+(`jasper/wake_events.py`) writes to SQLite at wake-fire +
+each funnel stage transition; a fire-and-forget task waits 2 s
+post-fire then snapshots both capture rings and writes the WAVs.
+Telemetry is **fail-soft** everywhere — store failures log at WARN
+and never block wake / session paths.
+
+---
+
 ## shairport-sync AP2 wedge — auto-recovers
 
 shairport-sync's AirPlay 2 control plane occasionally wedges with the
