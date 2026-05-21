@@ -1,0 +1,97 @@
+"""Bus regression scenarios.
+
+Same three-assertion shape as the other scenarios:
+  1. Trajectory: did the model call get_bus_arrivals?
+  2. Outcome: did the tool return a non-empty arrivals list?
+  3. Reality: do the tool's routes match the MTA's BusTime SIRI
+     response within tolerance?
+
+Read-only — no playback side-effects.
+
+============================================================
+COST NOTICE — read tests/voice_eval/harness.py top docstring
+============================================================
+Paid LLM API calls per turn. Read-only scenarios but the LLM
+cost still applies. PASS_K = 3 turns per scenario function.
+DO NOT loop or increase PASS_K without explicit human approval.
+============================================================
+"""
+from __future__ import annotations
+
+import pytest
+
+from tests.voice_eval import oracles
+
+
+PASS_K = 3
+
+
+@pytest.mark.parametrize("trial", range(PASS_K))
+async def test_next_bus_default_stop(harness, trial: int) -> None:
+    """Asks 'when's the next bus?' — at the speaker's configured stop
+    with multiple routes (e.g. B35 + B70 at 4 Av/39 St eastbound),
+    the model should call `get_bus_arrivals` with an empty route
+    string, get back arrivals for both, and speak the next few.
+
+    Three assertions:
+      1. Trajectory — model called get_bus_arrivals (NOT
+         get_subway_arrivals — we're not on a train question)
+      2. Outcome — tool returned at least one arrival (or, if MTA
+         honestly has no buses coming, the scenario skips rather
+         than fails)
+      3. Reality — the routes the tool returned match the routes
+         MTA's SIRI API returned just now, in the same order"""
+    if not harness.cfg.bus_enabled:
+        pytest.skip(
+            "voice-eval: bus not configured (JASPER_MTA_BUSTIME_KEY + "
+            "JASPER_BUS_STOP_ID required) — set them to run this scenario",
+        )
+
+    result = await harness.ask("when's the next bus?")
+
+    # 1. Trajectory
+    call = result.tool_call("get_bus_arrivals")
+    assert call is not None, (
+        f"[trial {trial}] model did not call get_bus_arrivals. "
+        f"Tool calls observed: "
+        f"{[r.name for r in result.tool_call_records] or 'none'}. "
+        f"See transcript: {result.transcript_path}"
+    )
+    if call.error:
+        pytest.fail(
+            f"[trial {trial}] tool raised: {call.error}. "
+            f"See transcript: {result.transcript_path}",
+        )
+
+    # 2. Outcome — got arrivals back
+    tool_arrivals = (call.result or {}).get("arrivals") or []
+    truth = await oracles.bus_arrivals(
+        stop_id=harness.cfg.bus_stop_id,
+        api_key=harness.cfg.mta_bustime_key,
+        routes=list(harness.cfg.bus_routes) or None,
+    )
+    if not truth:
+        pytest.skip(
+            f"[trial {trial}] MTA reports no upcoming buses at the "
+            f"configured stop right now. Re-run when the route is "
+            f"in service."
+        )
+    assert tool_arrivals, (
+        f"[trial {trial}] tool returned no arrivals while MTA shows "
+        f"{[(a['route'], a['minutes_from_now']) for a in truth]}. "
+        f"See transcript: {result.transcript_path}"
+    )
+
+    # 3. Reality — routes match in order. (We don't compare minute
+    # values exactly because BusTime updates every ~30s and the two
+    # fetches can be seconds apart, with ETAs swinging more than a
+    # minute under traffic.)
+    tool_routes = [a.get("route") for a in tool_arrivals]
+    truth_routes = [a.get("route") for a in truth]
+    # Tool may return more than oracle if oracle limits are tighter;
+    # compare the head.
+    n = min(len(tool_routes), len(truth_routes))
+    assert tool_routes[:n] == truth_routes[:n], (
+        f"[trial {trial}] tool routes {tool_routes[:n]} != MTA routes "
+        f"{truth_routes[:n]}. See transcript: {result.transcript_path}"
+    )

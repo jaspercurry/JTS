@@ -201,6 +201,12 @@ class Config:
     subway_default_direction: str
     subway_lines: tuple[str, ...]
 
+    # MTA BusTime — single-stop config for v1. The /buses wizard (future)
+    # will replace this with a multi-stop store under /var/lib/jasper.
+    mta_bustime_key: str
+    bus_stop_id: str
+    bus_routes: tuple[str, ...]
+
     volume_state_path: str
     volume_regress_after_sec: float
     volume_regress_safe_low_pct: int
@@ -570,6 +576,16 @@ class Config:
             subway_lines=tuple(
                 t for t in _env("JASPER_SUBWAY_LINES", "").replace(",", " ").split()
             ),
+            # NYC MTA bus (BusTime SIRI API). Stop ID is the GTFS bus
+            # stop — discover via `scripts/find-bus-stop.sh` or
+            # bustime-classic.mta.info/api/where/stops-for-location.json.
+            # Accepted in either form: "302680" or "MTA_302680".
+            # Empty stop_id OR empty key disables the tool.
+            mta_bustime_key=_env("JASPER_MTA_BUSTIME_KEY", ""),
+            bus_stop_id=_env("JASPER_BUS_STOP_ID", ""),
+            bus_routes=tuple(
+                t for t in _env("JASPER_BUS_ROUTES", "").replace(",", " ").split()
+            ),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_env(
@@ -632,6 +648,10 @@ class Config:
     @property
     def subway_enabled(self) -> bool:
         return bool(self.subway_station_id)
+
+    @property
+    def bus_enabled(self) -> bool:
+        return bool(self.bus_stop_id and self.mta_bustime_key)
 
     @property
     def spotify_enabled(self) -> bool:

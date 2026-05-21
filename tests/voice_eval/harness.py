@@ -74,9 +74,11 @@ from typing import Any
 
 from jasper.config import Config
 from jasper.renderer import RendererClient
+from jasper.bus import BusClient
 from jasper.subway import SubwayClient
 from jasper.tools import ToolRegistry
 from jasper.tools.spotify import make_spotify_tools
+from jasper.tools.bus import make_bus_tools
 from jasper.tools.subway import make_subway_tools
 from jasper.tools.time import make_time_tools
 from jasper.tools.transport import make_transport_tools
@@ -207,6 +209,16 @@ def _build_test_registry(cfg: Config) -> ToolRegistry:
             list(cfg.subway_lines) or None,
         )
         for fn in make_subway_tools(subway):
+            registry.register(fn)
+
+    # Bus — MTA BusTime SIRI client. Read-only.
+    if cfg.bus_enabled:
+        bus = BusClient(
+            stop_id=cfg.bus_stop_id,
+            api_key=cfg.mta_bustime_key,
+            configured_routes=list(cfg.bus_routes) or None,
+        )
+        for fn in make_bus_tools(bus):
             registry.register(fn)
 
     # Spotify — has playback side-effects. We register the tools
