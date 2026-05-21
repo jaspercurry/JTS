@@ -123,6 +123,13 @@ class BusClient:
             await self._http.aclose()
 
     @property
+    def stop_id(self) -> str:
+        """The normalized numeric stop id (no ``MTA_`` prefix). Read-only
+        accessor for consumers (e.g. the bus tool) that want to surface
+        the configured stop in their response."""
+        return self._stop_id
+
+    @property
     def enabled(self) -> bool:
         return bool(self._stop_id and self._api_key)
 

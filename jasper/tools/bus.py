@@ -51,7 +51,7 @@ def make_bus_tools(bus):
         the user knows what to clarify."""
         arrivals = await bus.get_arrivals(route)
         return {
-            "stop_id": bus._stop_id,
+            "stop_id": bus.stop_id,
             "arrivals": [a.as_dict() for a in arrivals],
         }
 
