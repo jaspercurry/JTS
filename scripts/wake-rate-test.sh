@@ -14,15 +14,17 @@
 # as production.
 #
 # Usage:
-#   bash scripts/wake-rate-test.sh 1            # capture test 1
-#   bash scripts/wake-rate-test.sh 2            # capture test 2
-#   SESSION=evening bash scripts/wake-rate-test.sh 1   # custom session
+#   bash scripts/wake-rate-test.sh 1                                   # default phrase + model (Jarvis + jarvis_v2)
+#   bash scripts/wake-rate-test.sh 2                                   # capture test 2
+#   SESSION=evening bash scripts/wake-rate-test.sh 1                   # custom session
+#   PHRASE="Hey Buddy" MODEL=/var/lib/jasper/wake/hey_buddy_en_medium.onnx \
+#     bash scripts/wake-rate-test.sh hey-buddy-1                       # alt phrase + model
 #
 # Captures live under logs/wake-rate/<session>/test-<N>/
 #   aec-on.wav      what voice consumes with AEC enabled (post-AEC)
 #   aec-off.wav     what voice consumes with AEC disabled (chip raw mic, pre-AEC)
 #   reference.wav   the music reference signal AEC subtracts
-#   result.txt      wake counts (AEC ON vs AEC OFF) + chip/bridge state
+#   result.txt      wake counts (AEC ON vs AEC OFF) + chip/bridge state + phrase/model
 #   capture.log     pi-side log
 #
 # Within one capture, aec-on.wav vs aec-off.wav compares the SAME mic
@@ -31,6 +33,11 @@
 #
 # Environment:
 #   SESSION        session folder name (default: today's UTC date)
+#   PHRASE         wake phrase (default: Jarvis). Used to find the
+#                  per-utterance template at
+#                  logs/wake-test-track/<slug>/<slug>.wav (xcorr finder)
+#   MODEL          Pi-side path to a wake-word ONNX (overrides default
+#                  jarvis_v2.onnx). E.g. /var/lib/jasper/wake/hey_buddy_en_medium.onnx
 #   DURATION       seconds to capture (default 120 — covers 108s track + reaction)
 #   THRESHOLD      override wake threshold (default reads from /etc/jasper/jasper.env)
 
@@ -42,6 +49,11 @@ TEST_NUM="${1:-1}"
 SESSION="${SESSION:-$(date -u +%Y-%m-%d)}"
 DURATION="${DURATION:-120}"
 THRESHOLD="${THRESHOLD:-}"
+PHRASE="${PHRASE:-Jarvis}"
+SLUG=$(echo "$PHRASE" | tr '[:upper:] ' '[:lower:]-')
+# MODEL — Pi-side path to the wake-word ONNX. Empty = let
+# _offline_wake_count.py use its compiled-in default (jarvis_v2).
+MODEL="${MODEL:-}"
 
 # Accept "1", "test-1", or "test1" — normalize to "test-N"
 case "$TEST_NUM" in
@@ -64,7 +76,14 @@ fi
 mkdir -p "$OUT_LOCAL"
 
 LOCAL_PY="$REPO_ROOT/scripts/_offline_wake_count.py"
-LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/jarvis.wav"
+# Template path for the cross-correlation utterance finder. Prefer the
+# per-phrase subdirectory (logs/wake-test-track/<slug>/<slug>.wav) if
+# present; fall back to the legacy flat path (logs/wake-test-track/<slug>.wav)
+# for backward compat with pre-2026-05-21 layouts.
+LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}/${SLUG}.wav"
+if [[ ! -f "$LOCAL_TEMPLATE" ]]; then
+    LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}.wav"
+fi
 if [[ ! -f "$LOCAL_PY" ]]; then
     echo "ERROR: $LOCAL_PY missing" >&2
     exit 1
@@ -159,19 +178,23 @@ rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"
 [[ -f "$OUT_LOCAL/ref.wav"       ]] && mv "$OUT_LOCAL/ref.wav"       "$OUT_LOCAL/reference.wav"
 
 # Run offline wake detection on the Pi (where openwakeword is installed).
-# Pass threshold override if requested.
+# Pass threshold + model overrides if requested.
 THRESH_ARG=""
 [[ -n "$THRESHOLD" ]] && THRESH_ARG="--threshold $THRESHOLD"
+MODEL_ARG=""
+[[ -n "$MODEL" ]] && MODEL_ARG="--model $MODEL"
 
 echo ""
-echo "Running offline wake-word detection on AEC ON output ..."
+echo "Running offline wake-word detection on AEC ON output (phrase='$PHRASE', model=${MODEL:-default}) ..."
 WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
-        $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
+        $TEMPLATE_ARG $THRESH_ARG $MODEL_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
 
 # Save + display
 {
   echo "Wake-rate test — $SESSION / $TEST_LABEL"
+  echo "Phrase:  $PHRASE  (slug=$SLUG)"
+  echo "Model:   ${MODEL:-(default jarvis_v2)}"
   echo "Capture: ${DURATION}s"
   echo ""
   echo "$PRE_STATE"
@@ -186,7 +209,7 @@ echo ""
 echo "─── AEC OFF  (aec-off.wav — chip raw mic 1, pre-AEC) ───"
 RAW_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
-        $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
+        $TEMPLATE_ARG $THRESH_ARG $MODEL_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
 echo "$RAW_RESULT" | tee -a "$OUT_LOCAL/result.txt"
 
 echo ""
