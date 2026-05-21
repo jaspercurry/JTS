@@ -541,6 +541,33 @@ diagnosis. The verification script
 `scripts/verify-ref-no-silence-bug.sh` confirms the fixes are
 active on any deployed build.
 
+**NS=low + AGC1 — 2026-05-20 production tuning.** Post-ref-fix
+wake-rate sweep surfaced two more knobs that moved the needle.
+Both are now production defaults:
+- `JASPER_AEC_NS_LEVEL=low` (was `moderate`) — less aggressive
+  noise suppression. The wake model relies on HF speech
+  consonants and aggressive NS strips them. Sweep on 2026-05-20:
+  NS=low 5/20 vs prev NS=moderate 4/20 in the same data.
+- `JASPER_AEC_AGC1_ENABLED=1` — WebRTC AGC1 in `kAdaptiveDigital`
+  mode replaces static `MIC_GAIN_DB` for level normalization.
+  Same wake rate as static +12 dB, but uniform output across
+  utterances (fixes "some Jarvises overblown, some too quiet").
+
+Knobs (env-controllable, `/etc/jasper/jasper.env`):
+- `JASPER_AEC_NS_ENABLED` (default 1)
+- `JASPER_AEC_NS_LEVEL` (default `low`; one of `low / moderate /
+  high / very_high` — Trixie's libwebrtc doesn't expose
+  `kVeryLow`)
+- `JASPER_AEC_AGC1_ENABLED` (default 0 in binding; production
+  has 1 in env)
+- `JASPER_AEC_AGC1_TARGET_DBFS` (default 9)
+- `JASPER_AEC_AGC1_MAX_GAIN_DB` (default 18)
+- `JASPER_AEC_AGC2` documented as no-op on this libwebrtc;
+  recommended off
+
+Bridge startup log confirms the live config:
+`engine=aec3 ns=on/low agc1=on(target=9,max=18dB) agc2=off ...`
+
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
 variant — the bridge reads raw mic 0 from channel 2 of the chip's
 USB capture, which only exists on that variant. The known-good

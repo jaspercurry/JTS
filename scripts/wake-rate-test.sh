@@ -14,11 +14,23 @@
 # as production.
 #
 # Usage:
-#   bash scripts/wake-rate-test.sh "AEC_ON_SHF_1"
-#   bash scripts/wake-rate-test.sh "AEC_ON_SHF_0"
-#   bash scripts/wake-rate-test.sh "AEC_OFF"
+#   bash scripts/wake-rate-test.sh 1            # capture test 1
+#   bash scripts/wake-rate-test.sh 2            # capture test 2
+#   SESSION=evening bash scripts/wake-rate-test.sh 1   # custom session
+#
+# Captures live under logs/wake-rate/<session>/test-<N>/
+#   aec-on.wav      what voice consumes with AEC enabled (post-AEC)
+#   aec-off.wav     what voice consumes with AEC disabled (chip raw mic, pre-AEC)
+#   reference.wav   the music reference signal AEC subtracts
+#   result.txt      wake counts (AEC ON vs AEC OFF) + chip/bridge state
+#   capture.log     pi-side log
+#
+# Within one capture, aec-on.wav vs aec-off.wav compares the SAME mic
+# input — only the bridge processing differs. Run the script 2-3 times
+# (test 1, test 2, test 3) for replicate captures.
 #
 # Environment:
+#   SESSION        session folder name (default: today's UTC date)
 #   DURATION       seconds to capture (default 120 — covers 108s track + reaction)
 #   THRESHOLD      override wake threshold (default reads from /etc/jasper/jasper.env)
 
@@ -26,16 +38,29 @@ set -euo pipefail
 
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
-LABEL="${1:-test}"
+TEST_NUM="${1:-1}"
+SESSION="${SESSION:-$(date -u +%Y-%m-%d)}"
 DURATION="${DURATION:-120}"
 THRESHOLD="${THRESHOLD:-}"
 
+# Accept "1", "test-1", or "test1" — normalize to "test-N"
+case "$TEST_NUM" in
+    test-*) TEST_LABEL="$TEST_NUM" ;;
+    test*) TEST_LABEL="test-${TEST_NUM#test}" ;;
+    *) TEST_LABEL="test-${TEST_NUM}" ;;
+esac
+
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-LOG_DIR="$REPO_ROOT/logs/wake-rate"
+LOG_DIR="$REPO_ROOT/logs/wake-rate/${SESSION}"
 mkdir -p "$LOG_DIR"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT_LOCAL="$LOG_DIR/${LABEL}-${TS}"
-OUT_REMOTE="/tmp/wake-rate-${TS}"
+OUT_LOCAL="$LOG_DIR/${TEST_LABEL}"
+OUT_REMOTE="/tmp/wake-rate-${SESSION}-${TEST_LABEL}-${TS}"
+
+# If a prior run of this test exists, archive it rather than clobber
+if [[ -d "$OUT_LOCAL" ]]; then
+    mv "$OUT_LOCAL" "${OUT_LOCAL}.prev.${TS}"
+fi
 mkdir -p "$OUT_LOCAL"
 
 LOCAL_PY="$REPO_ROOT/scripts/_offline_wake_count.py"
@@ -64,13 +89,13 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 2>&1 | grep 
 echo 'bridge:'
 systemctl is-active jasper-aec-bridge.service
 echo 'aec_mode.env:'
-cat /var/lib/jasper/aec_mode.env 2>/dev/null || echo '(default auto)'
+sudo cat /var/lib/jasper/aec_mode.env 2>/dev/null || echo '(default auto)'
 ")
 
 cat <<HEADER
 
 ═══════════════════════════════════════════════════════
-  Wake-rate test: $LABEL
+  Wake-rate test — session: $SESSION / $TEST_LABEL
 ═══════════════════════════════════════════════════════
 
   Output:    $OUT_LOCAL/
@@ -126,39 +151,48 @@ REMOTE_SCRIPT
 # Pull artifacts back
 rsync -avz "${PI_USER}@${PI_HOST}:${OUT_REMOTE}/" "$OUT_LOCAL/"
 
+# Rename Pi-side debug-record outputs to intuitive labels for easy
+# listening. mic_ch1 = chip-direct mic (pre-AEC = "AEC OFF" leg);
+# aec_output = post-AEC ("AEC ON" leg); ref = music reference.
+[[ -f "$OUT_LOCAL/aec_output.wav" ]] && mv "$OUT_LOCAL/aec_output.wav" "$OUT_LOCAL/aec-on.wav"
+[[ -f "$OUT_LOCAL/mic_ch1.wav"   ]] && mv "$OUT_LOCAL/mic_ch1.wav"   "$OUT_LOCAL/aec-off.wav"
+[[ -f "$OUT_LOCAL/ref.wav"       ]] && mv "$OUT_LOCAL/ref.wav"       "$OUT_LOCAL/reference.wav"
+
 # Run offline wake detection on the Pi (where openwakeword is installed).
 # Pass threshold override if requested.
 THRESH_ARG=""
 [[ -n "$THRESHOLD" ]] && THRESH_ARG="--threshold $THRESHOLD"
 
 echo ""
-echo "Running offline wake-word detection on aec_output.wav ..."
+echo "Running offline wake-word detection on AEC ON output ..."
 WAKE_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
         $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/aec_output.wav'" 2>&1)
 
 # Save + display
 {
-  echo "Wake-rate test result"
-  echo "Label:        $LABEL"
-  echo "Capture:      ${DURATION}s"
+  echo "Wake-rate test — $SESSION / $TEST_LABEL"
+  echo "Capture: ${DURATION}s"
   echo ""
   echo "$PRE_STATE"
   echo ""
-  echo "─── Offline wake detection on aec_output.wav ───"
+  echo "─── AEC ON   (aec-on.wav — post-AEC, what voice consumes today) ───"
   echo "$WAKE_RESULT"
 } | tee "$OUT_LOCAL/result.txt"
 
-# Also detect on the raw mic (pre-AEC) for comparison — answers
-# "would chip-direct mic have worked?" without needing a separate
-# capture.
+# Detect on the chip-direct mic (pre-AEC) too — same physical capture,
+# just without AEC processing. This is the "AEC OFF" leg.
 echo ""
-echo "─── Offline wake detection on mic_ch1.wav (chip raw, pre-AEC) ───"
+echo "─── AEC OFF  (aec-off.wav — chip raw mic 1, pre-AEC) ───"
 RAW_RESULT=$(ssh "${PI_USER}@${PI_HOST}" \
     "sudo /opt/jasper/.venv/bin/python /tmp/_offline_wake_count.py \
         $TEMPLATE_ARG $THRESH_ARG '${OUT_REMOTE}/mic_ch1.wav'" 2>&1)
 echo "$RAW_RESULT" | tee -a "$OUT_LOCAL/result.txt"
 
 echo ""
-echo "Files: $OUT_LOCAL/"
-ls "$OUT_LOCAL/"
+echo "Files in $OUT_LOCAL/:"
+ls -l "$OUT_LOCAL/" | awk 'NR>1 {print "  " $NF}'
+echo ""
+echo "  aec-on.wav      — what voice consumes with AEC enabled"
+echo "  aec-off.wav     — what voice consumes with AEC disabled (chip-direct)"
+echo "  reference.wav   — music signal AEC subtracts (listen for HF rolloff)"
