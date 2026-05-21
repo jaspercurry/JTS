@@ -441,6 +441,120 @@ async def test_retention_no_op_under_cap(tmp_path: Path):
         s.close()
 
 
+async def test_begin_event_populates_new_debug_columns(store: WakeEventStore):
+    """The added-after-v1 columns (mic_muted, per-leg mic RMS) are
+    populated on INSERT when the caller provides them. NULL when
+    omitted — matches single-stream / test-setup callsites that
+    don't have the values to hand."""
+    await store.begin_event(
+        event_id="evt-debug", trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9, peak_score_aec_off=0.1,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+        mic_muted=False,
+        mic_rms_dbfs_on=-18.5,
+        mic_rms_dbfs_off=-22.0,
+    )
+    row = await store.get_event("evt-debug")
+    assert row["mic_muted"] == 0
+    assert row["mic_rms_dbfs_on"] == pytest.approx(-18.5)
+    assert row["mic_rms_dbfs_off"] == pytest.approx(-22.0)
+
+
+async def test_begin_event_null_debug_columns_when_omitted(store: WakeEventStore):
+    """Single-stream / minimal callers can omit the new columns;
+    they store NULL cleanly without raising."""
+    await store.begin_event(
+        event_id="evt-minimal", trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.9, peak_score_aec_off=None,
+        threshold=0.5, wake_model="jarvis_v2.onnx",
+    )
+    row = await store.get_event("evt-minimal")
+    assert row["mic_muted"] is None
+    assert row["mic_rms_dbfs_on"] is None
+    assert row["mic_rms_dbfs_off"] is None
+
+
+def test_schema_migration_adds_columns_to_existing_db(tmp_path: Path):
+    """An older DB (created without the post-v1 columns) gets
+    them added via ALTER TABLE on open(). Existing rows survive
+    unchanged with NULL in the new columns."""
+    db_path = tmp_path / "wake-events.sqlite3"
+    # Simulate a pre-migration DB: create the table WITHOUT the new
+    # columns + insert one row.
+    legacy_conn = sqlite3.connect(str(db_path))
+    legacy_conn.execute("""
+        CREATE TABLE wake_events (
+          event_id            TEXT PRIMARY KEY,
+          ts_utc              TEXT NOT NULL,
+          trigger_kind        TEXT NOT NULL,
+          peak_score_aec_on   REAL,
+          peak_score_aec_off  REAL,
+          peak_offset_ms_on   INTEGER,
+          peak_offset_ms_off  INTEGER,
+          threshold           REAL NOT NULL,
+          ts_late_cancel      TEXT,
+          ts_peer_lost        TEXT,
+          ts_gate_blocked     TEXT,
+          ts_turn_opened      TEXT,
+          ts_speech_detected  TEXT,
+          ts_response_started TEXT,
+          ts_tool_called      TEXT,
+          ts_tool_completed   TEXT,
+          ts_turn_complete    TEXT,
+          outcome             TEXT NOT NULL,
+          outcome_detail      TEXT,
+          tool_name           TEXT,
+          wake_model          TEXT NOT NULL,
+          music_active        INTEGER NOT NULL DEFAULT 0,
+          music_renderer      TEXT,
+          music_volume_db     REAL,
+          voice_provider      TEXT,
+          bridge_config_json  TEXT,
+          audio_on_path       TEXT,
+          audio_off_path      TEXT,
+          label               TEXT,
+          label_notes         TEXT
+        )
+    """)
+    legacy_conn.execute(
+        "INSERT INTO wake_events (event_id, ts_utc, trigger_kind, "
+        "threshold, outcome, wake_model) VALUES (?, ?, ?, ?, ?, ?)",
+        ("legacy-1", "2026-05-21T20:00:00Z", "fire_aec_on",
+         0.5, "completed", "jarvis_v2.onnx"),
+    )
+    legacy_conn.commit()
+    legacy_conn.close()
+
+    # Open via WakeEventStore — should ALTER in the new columns
+    # idempotently, preserving the legacy row.
+    s = WakeEventStore(tmp_path)
+    s.open()
+    try:
+        # Legacy row survives with the new columns set to NULL
+        cur = s._conn.execute(  # type: ignore[union-attr]
+            "SELECT event_id, mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off "
+            "FROM wake_events WHERE event_id='legacy-1'"
+        )
+        row = cur.fetchone()
+        assert row == ("legacy-1", None, None, None)
+        # New columns are now in the table schema
+        cur = s._conn.execute(  # type: ignore[union-attr]
+            "PRAGMA table_info(wake_events)"
+        )
+        cols = {r[1] for r in cur.fetchall()}
+        assert "mic_muted" in cols
+        assert "mic_rms_dbfs_on" in cols
+        assert "mic_rms_dbfs_off" in cols
+    finally:
+        s.close()
+
+    # Calling open() again is still idempotent (no duplicate-column
+    # error from running ALTER TABLE a second time).
+    s2 = WakeEventStore(tmp_path)
+    s2.open()
+    s2.close()
+
+
 async def test_retention_only_writes_sentinel_for_legs_that_had_audio(
     tmp_path: Path,
 ):

@@ -148,7 +148,13 @@ CREATE TABLE IF NOT EXISTS wake_events (
   audio_off_path      TEXT,
 
   label               TEXT,
-  label_notes         TEXT
+  label_notes         TEXT,
+
+  -- Additional debug context (post-v1 additions; ALTER TABLE applies
+  -- to existing DBs via the schema migration in `open()`).
+  mic_muted           INTEGER,    -- 0/1; null on pre-migration rows
+  mic_rms_dbfs_on     REAL,       -- instantaneous RMS at fire-time, AEC ON leg
+  mic_rms_dbfs_off    REAL        -- same for AEC OFF; null in single-stream
 );
 
 CREATE INDEX IF NOT EXISTS idx_wake_events_ts       ON wake_events(ts_utc);
@@ -156,6 +162,16 @@ CREATE INDEX IF NOT EXISTS idx_wake_events_outcome  ON wake_events(outcome);
 CREATE INDEX IF NOT EXISTS idx_wake_events_trigger  ON wake_events(trigger_kind);
 CREATE INDEX IF NOT EXISTS idx_wake_events_label    ON wake_events(label);
 """
+
+# Schema additions that may need ALTER TABLE on already-deployed DBs.
+# Keep this list in sync with the trailing block of _SCHEMA_SQL. The
+# migration in `open()` is idempotent: it checks the current column
+# set via `PRAGMA table_info` and only ALTERs what's missing.
+_MIGRATION_COLUMNS: list[tuple[str, str]] = [
+    ("mic_muted", "INTEGER"),
+    ("mic_rms_dbfs_on", "REAL"),
+    ("mic_rms_dbfs_off", "REAL"),
+]
 
 
 def make_event_id(now: datetime | None = None, seq: int = 1) -> str:
@@ -241,6 +257,22 @@ class WakeEventStore:
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA foreign_keys=ON")
         conn.executescript(_SCHEMA_SQL)
+        # Apply ALTER TABLE migrations for columns added after v1.
+        # CREATE TABLE IF NOT EXISTS won't add columns to an existing
+        # table — that's what this loop is for. Idempotent: only
+        # ALTERs columns that aren't already present.
+        cur = conn.execute("PRAGMA table_info(wake_events)")
+        existing_cols = {row[1] for row in cur.fetchall()}
+        added: list[str] = []
+        for col, typ in _MIGRATION_COLUMNS:
+            if col not in existing_cols:
+                conn.execute(f"ALTER TABLE wake_events ADD COLUMN {col} {typ}")
+                added.append(col)
+        if added:
+            logger.info(
+                "wake_events: schema migration added columns: %s",
+                ", ".join(added),
+            )
         self._conn = conn
         logger.info(
             "wake_events: opened %s (max_audio_bytes=%d MB)",
@@ -270,6 +302,9 @@ class WakeEventStore:
         music_volume_db: float | None = None,
         voice_provider: str | None = None,
         bridge_config: dict[str, Any] | None = None,
+        mic_muted: bool | None = None,
+        mic_rms_dbfs_on: float | None = None,
+        mic_rms_dbfs_off: float | None = None,
     ) -> None:
         """INSERT a new wake event row. Audio is attached separately
         via `attach_audio` after the post-fire capture window closes —
@@ -290,8 +325,12 @@ class WakeEventStore:
                   threshold, outcome,
                   wake_model,
                   music_active, music_renderer, music_volume_db,
-                  voice_provider, bridge_config_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?, ?, ?, ?, ?, ?)
+                  voice_provider, bridge_config_json,
+                  mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off
+                ) VALUES (
+                  ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?,
+                  ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 """,
                 (
                     event_id, _now_iso(), trigger_kind,
@@ -302,6 +341,8 @@ class WakeEventStore:
                     1 if music_active else 0,
                     music_renderer, music_volume_db,
                     voice_provider, bridge_config_json,
+                    None if mic_muted is None else (1 if mic_muted else 0),
+                    mic_rms_dbfs_on, mic_rms_dbfs_off,
                 ),
             )
 

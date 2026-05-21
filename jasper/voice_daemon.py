@@ -1822,21 +1822,94 @@ class WakeLoop:
             # stream populates both; PR 3 alone only the firing leg).
             peak_on = getattr(self, "_recent_score_on", None)
             peak_off = getattr(self, "_recent_score_off", None)
+            recent_on_at = getattr(self, "_recent_score_on_at", 0.0)
+            recent_off_at = getattr(self, "_recent_score_off_at", 0.0)
             if leg == "on":
                 trigger_kind = "fire_aec_on"
                 peak_on = score
             else:  # leg == "off"
                 trigger_kind = "fire_aec_off"
                 peak_off = score
+            # Compute per-leg peak offset relative to wake-fire time.
+            # Negative = peak happened before fire (the typical case
+            # — model needs a few frames of context after the word
+            # before crossing threshold). 0 = peak == fire frame.
+            now_loop = asyncio.get_event_loop().time()
+            peak_off_ms = (
+                int((recent_off_at - now_loop) * 1000)
+                if recent_off_at else None
+            )
+            peak_on_ms = (
+                int((recent_on_at - now_loop) * 1000)
+                if recent_on_at else None
+            )
+            # Per-leg instantaneous mic RMS at fire-time, in dBFS.
+            # Sampled from the last frame in each capture ring so we
+            # get "what was the mic seeing right now" without an
+            # extra capture. Helps separate low-energy FPs from real
+            # attempts in offline review.
+            mic_rms_on = self._tail_frame_rms_dbfs(
+                getattr(self, "_capture_ring_on", None)
+            )
+            mic_rms_off = self._tail_frame_rms_dbfs(
+                getattr(self, "_capture_ring_off", None)
+            )
+            # Bridge config snapshot — env-var-driven knobs as seen
+            # by the bridge at startup. Useful when post-hoc analysis
+            # asks "what NS level was this event captured under?".
+            # Read here (not from the bridge) since the bridge is a
+            # separate process; we trust /etc/jasper/jasper.env to be
+            # the source of truth and that the bridge was restarted
+            # after any change.
+            bridge_config = {
+                "ns_enabled": os.environ.get("JASPER_AEC_NS_ENABLED", "1"),
+                "ns_level": os.environ.get("JASPER_AEC_NS_LEVEL", "low"),
+                "agc1_enabled": os.environ.get("JASPER_AEC_AGC1_ENABLED", "0"),
+                "agc1_target_dbfs": os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
+                "agc1_max_gain_db": os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
+                "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
+                "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
+                "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
+                "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
+            }
+            # Music context — best-effort from the TtsVolumeTracker's
+            # cached anchor (the loudness it last observed on the
+            # music chain via the 1-Hz `_anchor` poll). That value is
+            # already maintained without async I/O, so reading it on
+            # the wake hot path is free. Not a renderer probe (would
+            # add ~50 ms of async work); the anchor is a recent-ish
+            # cached number, accurate to within ~1 s.
+            music_volume_db = None
+            music_active_proxy = False
+            tracker = getattr(self, "_tts_volume_tracker", None)
+            if tracker is not None:
+                # `_anchor_dbfs` is the most recent observed
+                # music-chain RMS in dBFS (defaults to
+                # DEFAULT_ANCHOR_DBFS until the first tick observes
+                # real music). Proxy: louder than -60 dBFS = "music
+                # probably playing." Imperfect (TTS uses the same
+                # chain) but useful for FP correlation.
+                anchor = getattr(tracker, "_anchor_dbfs", None)
+                if anchor is not None and anchor > -120.0:
+                    music_volume_db = float(anchor)
+                    music_active_proxy = anchor > -60.0
             try:
                 await store.begin_event(
                     event_id=event_id,
                     trigger_kind=trigger_kind,
                     peak_score_aec_on=peak_on,
                     peak_score_aec_off=peak_off,
+                    peak_offset_ms_on=peak_on_ms,
+                    peak_offset_ms_off=peak_off_ms,
                     threshold=self._detector.threshold,
                     wake_model=self._cfg.wake_model,
                     voice_provider=getattr(self._cfg, "voice_provider", None),
+                    bridge_config=bridge_config,
+                    music_active=music_active_proxy,
+                    music_volume_db=music_volume_db,
+                    mic_muted=getattr(self, "_mic_muted", None),
+                    mic_rms_dbfs_on=mic_rms_on,
+                    mic_rms_dbfs_off=mic_rms_off,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -1917,6 +1990,16 @@ class WakeLoop:
         frames = list(ring)[-take:]
         # Each frame is a numpy int16 array; tobytes() is cheap.
         return b"".join(f.tobytes() for f in frames)
+
+    @staticmethod
+    def _tail_frame_rms_dbfs(ring: "deque | None") -> float | None:
+        """RMS in dBFS of the most-recent frame in `ring`, or None
+        if the ring is empty / missing. Used by `_handle_wake_frame`
+        to capture per-leg instantaneous mic level at fire-time for
+        the wake-event telemetry row."""
+        if ring is None or not ring:
+            return None
+        return _frame_rms_dbfs(ring[-1])
 
     async def _telemetry_stage(self, stage: str) -> None:
         """Best-effort funnel-stage UPDATE for the in-flight wake
