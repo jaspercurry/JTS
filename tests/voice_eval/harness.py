@@ -286,14 +286,14 @@ async def _send_pcm_to_turn(turn, pcm: bytes, *, provider: str) -> bool:
     calls across every scenario — the model heard the audio
     (responded with audio) but treated it as noise rather than a
     user request. Switching to `conversation.item.create` is the
-    fix.
+    fix, exposed by the OpenAI adapter as `submit_recorded_audio`.
 
     For other providers (Gemini, Grok), the streaming path is still
     used because their adapters don't have the same one-shot
     pre-recorded audio API documented."""
     if provider == "openai":
-        await _send_recorded_audio_openai(turn, pcm)
-        logger.info("voice-eval: sent %d bytes via conversation.item.create",
+        await turn.submit_recorded_audio(pcm)
+        logger.info("voice-eval: sent %d bytes via submit_recorded_audio",
                     len(pcm))
         return False
 
@@ -308,48 +308,6 @@ async def _send_pcm_to_turn(turn, pcm: bytes, *, provider: str) -> bool:
     logger.info("voice-eval: sent %d frames (%d bytes total) via append",
                 n, len(pcm))
     return True
-
-
-async def _send_recorded_audio_openai(turn, pcm_16khz: bytes) -> None:
-    """OpenAI Realtime — submit pre-recorded audio via
-    `conversation.item.create` (the documented path for recorded
-    audio) instead of `input_audio_buffer.append` (which is for
-    streaming live audio).
-
-    Accesses the OpenAI adapter's private upsample helper + raw
-    connection send. This is harness-internal and deliberately
-    couples to the openai adapter; if a future refactor changes the
-    adapter's private surface, this code needs to update too."""
-    import base64
-
-    from jasper.voice.openai_session import _upsample_16k_to_24k
-
-    # Upsample 16 kHz → 24 kHz. OpenAI Realtime audio input is
-    # 24 kHz mono int16. We pass `None` state because there's only
-    # one chunk (the whole recording) — no need to preserve state
-    # across calls.
-    pcm_24khz, _ = _upsample_16k_to_24k(pcm_16khz, None)
-    b64 = base64.b64encode(pcm_24khz).decode("ascii")
-
-    conn = turn._conn
-    # 1. Create the conversation item (full audio as a user message).
-    await conn._send_event({
-        "type": "conversation.item.create",
-        "item": {
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_audio", "audio": b64}],
-        },
-    })
-    # 2. Trigger the model to respond. No commit needed because the
-    #    item went straight into the conversation; there is no audio
-    #    buffer to flush.
-    await conn._send_event({"type": "response.create"})
-
-    # Mark the turn as committed so the adapter's `end_input()` is
-    # a no-op if the harness still calls it — and so cleanup paths
-    # behave correctly.
-    turn._committed = True
 
 
 # ---- transcript writer ---------------------------------------------

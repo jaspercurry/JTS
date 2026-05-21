@@ -148,8 +148,21 @@ def active() -> "TurnTrace | None":
 def set_active(trace: "TurnTrace | None"):
     """Set the active trace. Returns the previous value so the caller
     can `reset_active(token)` to restore — same set/reset shape as the
-    old ContextVar API."""
+    old ContextVar API.
+
+    Asserts no two non-None traces are active at once. Today's voice-eval
+    harness runs scenarios serially against one connection (the
+    ``_connection_lock`` enforces single-flight), so this assertion is
+    defensive only — but if a future maintainer adds concurrent
+    `ask()` calls, the existing module-global pattern would silently
+    interleave events into whichever trace happened to be set last.
+    The assertion turns that subtle data-corruption bug into a loud
+    AssertionError at the source."""
     global _active_trace
+    assert not (trace is not None and _active_trace is not None), (
+        "trace.set_active: another trace is already active "
+        f"({_active_trace!r}); concurrent turns are not supported"
+    )
     prev = _active_trace
     _active_trace = trace
     return prev

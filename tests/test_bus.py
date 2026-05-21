@@ -66,9 +66,9 @@ async def test_enabled_requires_key_and_stop():
 @pytest.mark.asyncio
 async def test_strips_MTA_prefix_from_stop_id():
     c = BusClient(stop_id="MTA_302680", api_key="k")
-    assert c._stop_id == "302680"
+    assert c.stop_id == "302680"
     c2 = BusClient(stop_id="302680", api_key="k")
-    assert c2._stop_id == "302680"
+    assert c2.stop_id == "302680"
 
 
 @pytest.mark.asyncio

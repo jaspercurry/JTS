@@ -227,6 +227,68 @@ class OpenAIRealtimeTurn(LiveTurn):
             self._turn_lost = True
             await self._audio_q.put(None)
 
+    async def submit_recorded_audio(self, pcm_16khz_int16: bytes) -> None:
+        """Submit a complete pre-recorded user audio blob in one shot.
+
+        OpenAI Realtime distinguishes two audio-input paths:
+
+          * ``input_audio_buffer.append`` (used by ``send_audio`` above)
+            — for live audio streamed over a long-running open buffer.
+          * ``conversation.item.create`` with ``input_audio`` content
+            — for complete pre-recorded files.
+
+        The latter is OpenAI's documented path for pre-recorded audio
+        (see developers.openai.com/api/docs/guides/realtime-conversations).
+        We use it from the voice-eval harness when feeding synthesized
+        prompt audio. The streaming path empirically caused the model
+        to ignore tool definitions on pre-recorded audio (2026-05-21
+        finding); the conversation-item path works correctly.
+
+        Internally:
+          1. Upsamples 16 kHz mono → 24 kHz (Realtime's required input
+             format) using this turn's resampler state, so it composes
+             cleanly with subsequent send_audio calls if any.
+          2. Base64-encodes and sends ``conversation.item.create`` with
+             ``input_audio`` content.
+          3. Sends ``response.create`` to trigger inference.
+          4. Marks the turn committed so a subsequent ``end_input()``
+             is a no-op (it would otherwise try to commit an empty
+             buffer and error with "the buffer is empty").
+
+        Caller is the voice-eval harness only; production daemon code
+        uses send_audio + end_input. The method lives on this adapter
+        (not on the ``LiveTurn`` Protocol) because the conversation-item
+        path is OpenAI-specific — other providers stream audio
+        differently."""
+        if self._released or self._turn_lost or self._committed:
+            return
+        pcm_24khz, self._resample_state = _upsample_16k_to_24k(
+            pcm_16khz_int16, self._resample_state,
+        )
+        if not pcm_24khz:
+            return
+        b64 = base64.b64encode(pcm_24khz).decode("ascii")
+        try:
+            await self._conn._send_event({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_audio", "audio": b64}],
+                },
+            })
+            await self._conn._send_event({"type": "response.create"})
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "openai turn: submit_recorded_audio failed (%s: %s); turn lost",
+                type(e).__name__, e,
+            )
+            self._turn_lost = True
+            await self._audio_q.put(None)
+            return
+        self._bytes_sent += len(pcm_16khz_int16)
+        self._committed = True
+
     async def end_input(self) -> None:
         """Commit the user audio buffer and trigger a response.
 
