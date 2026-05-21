@@ -18,16 +18,20 @@ http://jts.local/voice/
 # 2. Helper script (laptop → Pi over SSH):
 bash scripts/switch-voice-provider.sh openai
 
-# 3. Edit env file on the Pi (the lowest-level path):
-JASPER_VOICE_PROVIDER=gemini   # default; gemini-3.1-flash-live-preview
+# 3. Edit /var/lib/jasper/voice_provider.env directly on the Pi:
+JASPER_VOICE_PROVIDER=gemini   # gemini-3.1-flash-live-preview
 JASPER_VOICE_PROVIDER=openai   # gpt-realtime-2 (released 2026-05-07)
 JASPER_VOICE_PROVIDER=grok     # grok-voice-think-fast-1.0
 ```
 
-The web UI writes `/var/lib/jasper/voice_provider.env`, which
-`jasper-voice.service` sources via `EnvironmentFile=` AFTER
-`/etc/jasper/jasper.env` — so wizard values override operator
-defaults. Same pattern as `/spotify/` writes
+`JASPER_VOICE_PROVIDER` lives in **exactly one file** since PR #166:
+`/var/lib/jasper/voice_provider.env`. The web UI writes it;
+`jasper-voice.service` sources it via `EnvironmentFile=`. `install.sh`
+actively migrates any stale value out of `/etc/jasper/jasper.env`
+on each run — having a default in BOTH led to stale-vs-runtime
+confusion. There is **no fallback default**: fresh installs leave
+the variable unset and `jasper-voice` refuses to start until the
+wizard writes one. Same pattern as `/spotify/` writes
 `spotify_credentials.env`. Implementation:
 [`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py).
 
