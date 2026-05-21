@@ -559,9 +559,11 @@ def _build_system_instruction(
     every fresh open keeps the time accurate to within that window.
 
     `location` should be the user's home location (a city/neighborhood
-    string the geocoder can resolve). When set, Gemini stops asking
-    "what city are you in?" for location-sensitive questions outside
-    the weather tool's scope (sunset times, nearby places, traffic).
+    string the geocoder can resolve). When set, the model stops asking
+    "what city are you in?" for location-sensitive questions — both
+    inside the weather tool's scope (weather/sunset/sunrise/forecast,
+    all returned by get_weather) and outside it (nearby places,
+    traffic — for which we have no tool and the model must refuse).
 
     `google_accounts` should be the list of household-member labels
     that have linked Google accounts (e.g. ["jasper", "brittany"]).

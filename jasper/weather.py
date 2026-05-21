@@ -155,6 +155,13 @@ def _daily_summary(daily: dict, idx: int, override: dict | None = None) -> dict:
         "condition": _describe(code),
         "precipitation_probability": prob,
         "will_rain": _will_rain(code, prob),
+        # ISO 8601 local-time strings from Open-Meteo when
+        # `daily=sunrise,sunset` is requested. Returned verbatim; the
+        # model converts to spoken form ("8:14 PM"). Null when the
+        # forecast endpoint didn't include them (defensive for stale
+        # caches or upstream changes).
+        "sunrise": _at("sunrise"),
+        "sunset": _at("sunset"),
     }
 
 
@@ -314,7 +321,8 @@ class WeatherClient:
                 ),
                 "daily": (
                     "temperature_2m_max,temperature_2m_min,"
-                    "precipitation_probability_max,weather_code"
+                    "precipitation_probability_max,weather_code,"
+                    "sunrise,sunset"
                 ),
                 "temperature_unit": self._units,
                 "timezone": "auto",
