@@ -908,10 +908,11 @@ swap models, change prompts, or refactor without regressions.
 **Rules — apply to every PR:**
 
 - **Every new tool** the LLM can call (anything registered via
-  `make_*_tools` in `jasper/tools/`) ships with a regression
-  scenario under `tests/voice_eval/regression/`. No exceptions.
-  A tool with no scenario can't be reasoned about across model
-  swaps.
+  `make_*_tools` in [`jasper/tools/`](jasper/tools/)) ships with
+  a regression scenario under
+  [`tests/voice_eval/regression/`](tests/voice_eval/regression/).
+  No exceptions. A tool with no scenario can't be reasoned about
+  across model swaps.
 - **Every reported behavioural bug** (model hallucinates / skips a
   tool / misroutes / etc.) becomes a regression scenario *before*
   the fix lands. The scenario reproduces the bug; the fix turns it
@@ -923,9 +924,9 @@ swap models, change prompts, or refactor without regressions.
   device I/O are mocked.
 
 What the voice-eval harness is and how to run it:
-`tests/voice_eval/README.md`. TL;DR `.venv/bin/pytest
-tests/voice_eval/regression/` — runs each scenario 3× (pass^3)
-against the currently-active voice provider.
+[`tests/voice_eval/README.md`](tests/voice_eval/README.md). TL;DR
+`.venv/bin/pytest tests/voice_eval/regression/` — runs each
+scenario 3× (pass^3) against the currently-active voice provider.
 
 ### Voice-eval cost discipline — non-negotiable
 
