@@ -927,6 +927,78 @@ async def test_tool_call_response_done_does_NOT_complete_turn():
         await conn.stop()
 
 
+async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
+    """The idle watchdog measures from ``last_activity_at``. While a
+    tool round is in flight (function_call response.done received,
+    function_call_output sent, waiting for response 2), no audio has
+    arrived yet, so the pre-response branch of the watchdog is what
+    governs the turn — and at small ``JASPER_IDLE_TIMEOUT_SEC`` (e.g.
+    10 s) it WILL fire mid-dispatch unless the tool round itself
+    counts as activity.
+
+    Production symptom (2026-05-21, jasper-voice journal): user asked
+    a weather question, tool dispatched in 916 ms, then ``idle timeout
+    (pre-response phase, 10.0s); no chunks, ending turn`` fired ~0.6 s
+    after the result was sent — the daemon ended the turn one second
+    before response 2's audio arrived. The user heard nothing back;
+    the orphan-response warning logged 48 dropped audio tokens.
+
+    Fix: when the function_calls branch of ``_handle_response_done``
+    runs, advance the turn's ``_last_activity_at`` so the watchdog's
+    pre-response timer restarts from the tool dispatch, not from turn
+    start."""
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool()
+    def get_weather(location: str = "") -> dict:
+        """."""
+        return {"location": "Brooklyn", "temperature": 62}
+    registry.register(get_weather)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        anchor_before = turn.last_activity_at()
+
+        # Park briefly so the loop clock advances measurably.
+        await asyncio.sleep(0.05)
+
+        # Server sends the function_call response.done.
+        sess.feed({
+            "type": "response.done",
+            "response": {
+                "id": "resp_1",
+                "usage": {"input_tokens": 100, "output_tokens": 8},
+                "output": [
+                    {
+                        "type": "function_call",
+                        "call_id": "call_1",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    },
+                ],
+            },
+        })
+        # Wait for the dispatch + response.create to land.
+        await _wait_until(
+            lambda: any(e.get("type") == "response.create" for e in sess.sent),
+            timeout=2.0,
+        )
+        await asyncio.sleep(0.05)
+
+        anchor_after = turn.last_activity_at()
+        assert anchor_after > anchor_before, (
+            "tool round must advance last_activity_at so the pre-response "
+            "idle watchdog doesn't fire while waiting for response 2"
+        )
+
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
 async def test_unknown_tool_call_returns_error_payload():
     """If the model hallucinates a tool name we don't know about, we
     still must reply (otherwise the model hangs waiting for the

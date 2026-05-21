@@ -9,6 +9,7 @@ from jasper.weather import (
     WeatherClient,
     _build_summary,
     _describe,
+    _next_rain_window,
     _will_rain,
 )
 
@@ -314,6 +315,108 @@ def test_today_override_picks_worst_remaining_code():
     assert s["today"]["condition"] == "moderate rain"
     assert s["today"]["precipitation_probability"] == 80
     assert s["today"]["will_rain"] is True
+
+
+# --- next_rain_window ---
+
+
+def _hourly_probs(probs: list[int], start_date: str = "2024-05-15", start_hour: int = 0) -> dict:
+    """Build an hourly dict whose precipitation_probability varies per
+    hour. ``probs`` is the prob value at each hour starting from
+    ``start_date``T``start_hour``."""
+    n = len(probs)
+    times = []
+    d = int(start_date.split("-")[2])
+    h = start_hour
+    for _ in range(n):
+        times.append(f"2024-05-{d:02d}T{h:02d}:00")
+        h += 1
+        if h == 24:
+            h = 0
+            d += 1
+    return {
+        "time": times,
+        "temperature_2m": [15.0] * n,
+        "weather_code": [0] * n,
+        "precipitation_probability": probs,
+    }
+
+
+def test_next_rain_window_finds_upcoming_block():
+    # No rain through 16:00, then 70/80/60/10 — window is 17:00-20:00.
+    hourly = _hourly_probs(
+        [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+         70, 80, 60, 10, 10, 10, 10],
+        start_hour=0,
+    )
+    w = _next_rain_window(hourly, "2024-05-15T14:30")
+    assert w is not None
+    assert w["start"] == "2024-05-15T17:00"
+    assert w["end"] == "2024-05-15T20:00"
+    assert w["peak_probability"] == 80
+    assert w["duration_hours"] == 3
+    assert w["ends_after_forecast"] is False
+
+
+def test_next_rain_window_returns_none_when_no_rain():
+    hourly = _hourly_probs([5] * 24)
+    assert _next_rain_window(hourly, "2024-05-15T08:00") is None
+
+
+def test_next_rain_window_starts_at_current_hour_if_already_raining():
+    # Currently 14:30; the 14:00 slot is 60% — window starts now.
+    hourly = _hourly_probs(
+        [10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10,
+         60, 70, 50, 10, 10, 10, 10, 10, 10, 10],
+        start_hour=0,
+    )
+    w = _next_rain_window(hourly, "2024-05-15T14:30")
+    assert w is not None
+    assert w["start"] == "2024-05-15T14:00"
+    assert w["end"] == "2024-05-15T17:00"
+
+
+def test_next_rain_window_clips_at_forecast_edge():
+    # Rain starts at hour 22 of day 1 and continues to the end of the
+    # 48-hour forecast — no dry hour to mark the end.
+    hourly = _hourly_probs(
+        [10] * 22 + [70] * 26,
+        start_hour=0,
+    )
+    w = _next_rain_window(hourly, "2024-05-15T20:00")
+    assert w is not None
+    assert w["start"] == "2024-05-15T22:00"
+    assert w["ends_after_forecast"] is True
+
+
+def test_next_rain_window_skips_past_hours_before_current_time():
+    # Heavy rain in the morning (already passed), clear afternoon —
+    # should return None, not the past block.
+    hourly = _hourly_probs(
+        [80, 80, 80, 80, 80, 80,
+         10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10, 10],
+        start_hour=0,
+    )
+    assert _next_rain_window(hourly, "2024-05-15T12:30") is None
+
+
+def test_next_rain_window_handles_missing_data():
+    assert _next_rain_window({}, "2024-05-15T12:00") is None
+    assert _next_rain_window({"time": []}, "2024-05-15T12:00") is None
+    assert _next_rain_window(_hourly_probs([70] * 4), None) is None
+
+
+def test_build_summary_includes_next_rain_window():
+    # The default fixture has today_prob=70 across all of today's
+    # hours — so the window starts at the current hour and runs to
+    # midnight (then tomorrow's prob=10 ends it).
+    s = _build_summary(_open_meteo_response(), "Toronto", "celsius")
+    w = s["next_rain_window"]
+    assert w is not None
+    assert w["start"] == "2024-05-15T14:00"
+    # Tomorrow's 00:00 hour has prob=10 → window ends there.
+    assert w["end"] == "2024-05-16T00:00"
+    assert w["peak_probability"] == 70
 
 
 # --- WeatherClient with mock transport ---
