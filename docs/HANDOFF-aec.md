@@ -85,6 +85,24 @@ instead of leaving wake-word on an unfed UDP socket.
 > future "does AEC help?" question requires fresh measurement
 > after these fixes.
 
+> ### NS=low + AGC1 — 2026-05-20 production tuning
+>
+> Post-ref-fix wake-rate sweep surfaced two further knobs that
+> moved the needle. **Both are now production defaults:**
+>
+> - `JASPER_AEC_NS_LEVEL=low` (was `moderate`) — less aggressive
+>   noise suppression preserves HF speech consonants the wake model
+>   relies on. Wake rate: 5/20 vs prev 4/20 in the same data.
+> - `JASPER_AEC_AGC1_ENABLED=1` (default off in binding) — WebRTC
+>   AGC1 in `kAdaptiveDigital` mode replaces the static `MIC_GAIN_DB`
+>   approach for level normalization. Fixes "some Jarvises overblown,
+>   some too quiet" — uniform output across utterances regardless of
+>   instantaneous music level.
+>
+> Full details in **"NS aggressiveness + AGC1 dynamic gain — 2026-05-20
+> findings"** below. Sweep methodology is captured in user memory
+> `project_aec_wake_rate_forensic_methodology.md`.
+
 ### High-pass filter architecture
 
 The mic in this project is consumed only by software (openWakeWord
@@ -207,10 +225,11 @@ topology. Trade-off documented in "Lessons learned" below.
 | **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
 | **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ref_thread` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`. |
 | **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. Our raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ≈ mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
-| **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. |
-| **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | WebRTC's post-AEC AGC2 reshapes the speech envelope in a way openWakeWord's training distribution doesn't expect. Keep static gain instead. |
+| **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. With `AGC1_ENABLED=1` this stacks on top of AGC1's dynamic gain — drop to 0 if too hot. |
+| **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | Was investigated as a level-stabilizer; turns out our binding only sets `gain_controller2.enabled = true`, while the `adaptive_digital` sub-config defaults off in libwebrtc-audio-processing-1 v1.3-3. Net result: AGC2=on is a no-op for level control on this Trixie build. Use AGC1 instead (below). Kept env-tunable for backwards compatibility; recommended off. |
+| **`JASPER_AEC_AGC1_ENABLED`** + **`_TARGET_DBFS`** + **`_MAX_GAIN_DB`** | **1, 9, 18** | `/etc/jasper/jasper.env` | WebRTC AGC1 in `kAdaptiveDigital` mode — the same module HA Voice PE uses for this job. Dynamic gain per-utterance: targets `TARGET_DBFS`, applies up to `MAX_GAIN_DB` of headroom, peak-limiter prevents clipping. Wake-rate sweep on 2026-05-20 showed AGC1's params have minimal effect on Trixie's libwebrtc (the limiter dominates) but the consistent ~RMS 1213 output across utterances fixes the "some overblown, some too quiet" symptom that pure static gain produces. Tying with NS=low it ships at 5/20 vs baseline 4/20 in the same data. |
 | **AEC3 internal capture HPF** | 100 Hz 2nd-order Butter | `jasper_aec3/src/aec3_binding.cpp` | Enabled via `cfg.high_pass_filter.enabled = true`. Defense in depth with chip + ref HPFs. |
-| **AEC3 internal NS** | `kModerate` | binding | Provides the noise/music suppression that the chip's SHF NS would have given us, but with SHF_BYPASS=1 doesn't. |
+| **AEC3 internal NS** | **`kLow`** (was `kModerate` until 2026-05-20) | binding default + `/etc/jasper/jasper.env` `JASPER_AEC_NS_LEVEL` | Post-AEC noise/music suppression. More aggressive NS strips more HF speech-consonant features that openWakeWord depends on. Wake-rate sweep on 2026-05-20: `kLow` 5/20, `kModerate` (prev) 4/20, `kHigh` 3/20, `kVeryHigh` 2/20. `kLow` is the sweet spot; lower not exposed by Trixie v1.3-3 (no `kVeryLow`). Disable entirely via `JASPER_AEC_NS_ENABLED=0` for max HF preservation at the cost of residual music passing through. |
 
 ### Measured outcome at this tuning
 
@@ -594,6 +613,118 @@ The wake-rate test protocol in `scripts/wake-rate-test.sh` is
 unchanged. Re-running it is the next step. Pre-fix data is in
 `logs/wake-rate/SHF_1_v*` for reference but should be cited only
 for the "AEC OFF" leg.
+
+---
+
+## NS aggressiveness + AGC1 dynamic gain — 2026-05-20 findings
+
+Once the bridge ref-starvation bugs were fixed (above), wake-rate was
+still well below pre-degradation baselines. A forensic per-utterance
+analysis surfaced two further tuning knobs that move the needle.
+**These are now production defaults.**
+
+### What changed in the binding + bridge
+
+`jasper_aec3/src/aec3_binding.cpp` constructor now accepts:
+- `ns_enabled: bool` (default `true`) — toggle the post-AEC noise-
+  suppression stage entirely
+- `ns_level: str` (default **`"low"`**, was `"moderate"`) — one of
+  `low / moderate / high / very_high` (Trixie's
+  `libwebrtc-audio-processing-1` v1.3-3 doesn't expose `kVeryLow`)
+- `agc1_enabled: bool` (default `false`, **enabled in production via
+  env**) — turns on WebRTC AGC1 in `kAdaptiveDigital` mode for
+  per-utterance dynamic gain
+- `agc1_target_dbfs: int` (default `9`) — peak target for AGC1
+- `agc1_max_gain_db: int` (default `18`) — max gain headroom for AGC1
+
+`jasper/cli/aec_bridge.py` reads matching env vars and wires them
+through. Existing knobs (`JASPER_AEC_MIC_GAIN_DB`, `JASPER_AEC_AGC2`,
+etc.) preserved for backwards compat; AGC2 is a documented no-op on
+this binding/libwebrtc combination and should stay off.
+
+### Why these two knobs
+
+**NS level**: openWakeWord (the `speech_embedding` CNN + small Dense
+head) is brittle to spectral distortion. AEC3's post-cancellation
+noise-suppression makes per-frequency-band gain decisions; more
+aggressive NS = more HF speech-consonant features masked out =
+more silent misses on Jarvis utterances that humans hear cleanly.
+The 2026-05-20 NS sweep on the test-1 capture:
+
+| `JASPER_AEC_NS_LEVEL` | Wake rate | Notes |
+|---|---|---|
+| `off` (NS disabled) | 5/20 (25%) | tied for best |
+| **`low`** | **5/20 (25%)** | **new default** |
+| `moderate` (prev default) | 4/20 (20%) | baseline |
+| `high` | 3/20 (15%) | worse |
+| `very_high` | 2/20 (10%) | worst |
+
+`low` ties `off` for wake rate but retains some residual noise
+suppression for non-detection paths, so it ships as the default.
+
+**AGC1**: Static `MIC_GAIN_DB=+12` won 5/20 in the same sweep but
+produced uneven output — manual listening showed some Jarvises
+peak-clipped while others stayed quiet, depending on the AEC's
+instantaneous output level (which varies with music content). AGC1
+in `kAdaptiveDigital` mode levels per-utterance, fixing the
+"overblown vs quiet" inconsistency. Wake rate is the same as
+static +12 dB (5/20), but the output is uniformly ~RMS 1213 across
+every utterance, no clipping, no inter-utterance pumping. AGC1's
+`target_dbfs` / `max_gain_db` parameters had minimal effect in our
+sweep (limiter dominates); the defaults (9/18) are inherited from
+HA Voice PE's same-purpose configuration.
+
+### Forensic methodology that surfaced this
+
+Per-utterance analysis on the AEC output, NOT the wake-rate summary.
+The full methodology is documented in memory note
+`project_aec_wake_rate_forensic_methodology.md`. Key principle: don't
+trust `_offline_wake_count.py`'s cross-correlation utterance finder
+alone — it picks the top-N normalized peaks globally, which can
+include pre/post-track noise. Use the AEC ON output's energy envelope
+(200 ms windows, ≥3s spacing, t=10-118s range) to locate the real
+Jarvises, then extract ≥2s pre / 4s post around each peak (the model
+needs ~1-2s of trailing context to commit a wake score), then run the
+model in isolation with 4s silence padding to flush state between
+utterances. Save WAVs and listen — the operator's ear catches
+misalignment and audio degradation that the analyzer doesn't.
+
+### Sweep tooling (one-off scripts retained for next investigation)
+
+The 2026-05-20 sweep used three Python scripts that lived in `/tmp`
+during the session; they're not in `scripts/` because each is a
+single-purpose forensic tool, but if a future session needs the same
+analysis they can be reconstructed from the memory note or pulled
+from the session transcript. The pipeline:
+
+1. Run `wake-rate-test.sh test-N` to capture `(mic, ref, aec_output)`
+   into `logs/wake-rate/<session>/test-N/`
+2. Offline replay through `jasper_aec3.Aec3(...)` with arbitrary
+   config — the binding's expanded constructor (above) enables
+   sweeping NS / AGC1 settings without rebuilds
+3. Run `openwakeword.Model.predict()` on each output to count fires
+4. Extract per-utterance WAVs for manual listening sanity-check
+
+The same `(mic, ref)` pair was used across all 23 NS×gain configs in
+the 2026-05-20 sweep — eliminates phone-playback variance entirely,
+since every config sees identical physical input.
+
+### Open question
+
+14 of the 20 utterances in test-1 stayed at 0.001 confidence across
+ALL 23 sweep configs (every NS level, every gain, AGC1 on/off). NS
+and AGC1 reach 6/20 → 5/20 worth of Jarvises (≈10% absolute
+improvement). The remaining 14 fail for reasons NS/AGC1 don't touch
+— hypotheses include the openWakeWord head being miscalibrated for
+TTS Jarvis in music ([Agent 1 research, 2026-05-20 session]) and the
+phone playback level being lower than pre-fix baselines. Open
+research directions:
+- DTLN-aec as a learned echo-residual-suppressor that replaces AEC3's
+  destructive nonlinear stage ([breizhn/DTLN-aec](https://github.com/breizhn/DTLN-aec); MIT licensed; Pi-validated via
+  [PiDTLN](https://github.com/SaneBow/PiDTLN))
+- Retrain the openWakeWord head on AEC-passed Jarvis positives via
+  `automatic_model_training.ipynb` (free Colab T4, ~2 weekends of
+  work; the path most likely to recover the remaining 14)
 
 ---
 

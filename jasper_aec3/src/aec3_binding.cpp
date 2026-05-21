@@ -44,7 +44,12 @@ constexpr int kFrameSamples10ms = 160;
 
 class Aec3 {
 public:
-    Aec3(int stream_delay_ms = 40, bool enable_agc2 = false)
+    Aec3(int stream_delay_ms = 40, bool enable_agc2 = false,
+         bool ns_enabled = true,
+         const std::string& ns_level = "low",
+         bool agc1_enabled = false,
+         int agc1_target_dbfs = 9,
+         int agc1_max_gain_db = 18)
         : stream_cfg_(kSampleRate, kNumChannels),
           stream_delay_ms_(stream_delay_ms),
           enable_agc2_(enable_agc2) {
@@ -66,14 +71,37 @@ public:
         cfg.echo_canceller.enabled = true;
         cfg.echo_canceller.mobile_mode = false;  // → AEC3
         cfg.high_pass_filter.enabled = true;
-        cfg.noise_suppression.enabled = true;
-        cfg.noise_suppression.level =
-            webrtc::AudioProcessing::Config::NoiseSuppression::kModerate;
-        // AGC2 is the modern (post-AEC3) gain controller. Off by
-        // default to preserve the bridge's level characteristics for
-        // openWakeWord; enable when the wake-word detector is missing
-        // wakes at high SPL (AGC2 normalizes the post-AEC level back
-        // into the range the wake-word model was trained on).
+        cfg.noise_suppression.enabled = ns_enabled;
+        // Trixie's libwebrtc-audio-processing-1 v1.3-3 exposes only
+        // 4 NS levels (kLow / kModerate / kHigh / kVeryHigh); no
+        // kVeryLow despite upstream WebRTC having one.
+        using NSLevel =
+            webrtc::AudioProcessing::Config::NoiseSuppression::Level;
+        if      (ns_level == "low")        cfg.noise_suppression.level = NSLevel::kLow;
+        else if (ns_level == "moderate")  cfg.noise_suppression.level = NSLevel::kModerate;
+        else if (ns_level == "high")       cfg.noise_suppression.level = NSLevel::kHigh;
+        else if (ns_level == "very_high") cfg.noise_suppression.level = NSLevel::kVeryHigh;
+        else throw std::invalid_argument(
+            "ns_level must be one of: low, moderate, high, very_high");
+        // AGC1 is the legacy (well-trusted, used by Home Assistant
+        // Voice PE) gain controller. In kAdaptiveDigital mode it
+        // dynamically brings each utterance toward target_level_dbfs
+        // with up to compression_gain_db of gain, then limits peaks.
+        // This addresses post-AEC level variance — static MIC_GAIN_DB
+        // either over- or under-shoots depending on instantaneous
+        // music level, whereas AGC1 adapts per-utterance.
+        cfg.gain_controller1.enabled = agc1_enabled;
+        if (agc1_enabled) {
+            cfg.gain_controller1.mode =
+                webrtc::AudioProcessing::Config::GainController1::
+                    kAdaptiveDigital;
+            cfg.gain_controller1.target_level_dbfs = agc1_target_dbfs;
+            cfg.gain_controller1.compression_gain_db = agc1_max_gain_db;
+            cfg.gain_controller1.enable_limiter = true;
+        }
+        // AGC2 is the modern alternative. Empirically in our build it
+        // doesn't do much because adaptive_digital sub-config defaults
+        // off and we don't expose it; off by default. Use AGC1.
         cfg.gain_controller2.enabled = enable_agc2_;
         apm_->ApplyConfig(cfg);
     }
@@ -149,17 +177,26 @@ PYBIND11_MODULE(_aec3, m) {
               "(wraps libwebrtc-audio-processing-1 from Debian Trixie)";
 
     py::class_<Aec3>(m, "Aec3")
-        .def(py::init<int, bool>(),
+        .def(py::init<int, bool, bool, std::string, bool, int, int>(),
              py::arg("stream_delay_ms") = 40,
              py::arg("enable_agc2") = false,
+             py::arg("ns_enabled") = true,
+             py::arg("ns_level") = std::string("low"),
+             py::arg("agc1_enabled") = false,
+             py::arg("agc1_target_dbfs") = 9,
+             py::arg("agc1_max_gain_db") = 18,
              "Construct an AEC3 instance (16 kHz mono). stream_delay_ms "
              "hints AEC3's delay estimator with the expected ref-to-mic "
              "delay; default 40 ms is the measured value for the JTS "
-             "build (Pi 5 + AirPlay → CamillaDSP → dongle → speakers → "
-             "free-floating mic). enable_agc2 turns on WebRTC's modern "
-             "post-AEC gain controller — recommended at high SPL where "
-             "the AEC'd output's dynamic range can drift outside the "
-             "range openWakeWord was trained on.")
+             "build. ns_enabled / ns_level toggle and tune the post-AEC "
+             "noise-suppression stage (low / moderate / high / "
+             "very_high — Trixie v1.3-3 lacks kVeryLow). Empirically "
+             "ns_level='low' is the sweet spot for wake-word detection "
+             "in our pipeline. agc1_enabled turns on WebRTC AGC1 in "
+             "kAdaptiveDigital mode — dynamic gain that targets "
+             "agc1_target_dbfs with up to agc1_max_gain_db of headroom "
+             "(typical: target=9, max=18). Use this instead of "
+             "enable_agc2 (which has no useful effect in our build).")
         .def("process", &Aec3::process,
              py::arg("mic"), py::arg("ref"),
              "Process one buffer of mic and ref bytes (equal-length "

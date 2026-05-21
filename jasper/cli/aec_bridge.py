@@ -214,13 +214,40 @@ class _Aec3Engine:
         # systems where the binding isn't built (e.g. dev laptops
         # running the test suite).
         from jasper_aec3 import Aec3
-        enable_agc2 = os.environ.get(
-            "JASPER_AEC_AGC2", "0"
-        ).strip().lower() in ("1", "true", "yes", "on")
-        self._aec = Aec3(enable_agc2=enable_agc2)
+
+        def _env_bool(name: str, default: str) -> bool:
+            return os.environ.get(name, default).strip().lower() in (
+                "1", "true", "yes", "on",
+            )
+
+        ns_enabled = _env_bool("JASPER_AEC_NS_ENABLED", "1")
+        ns_level = os.environ.get(
+            "JASPER_AEC_NS_LEVEL", "low",
+        ).strip().lower()
+        agc1_enabled = _env_bool("JASPER_AEC_AGC1_ENABLED", "0")
+        agc1_target_dbfs = int(os.environ.get(
+            "JASPER_AEC_AGC1_TARGET_DBFS", "9",
+        ))
+        agc1_max_gain_db = int(os.environ.get(
+            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18",
+        ))
+        enable_agc2 = _env_bool("JASPER_AEC_AGC2", "0")
+        self._aec = Aec3(
+            enable_agc2=enable_agc2,
+            ns_enabled=ns_enabled,
+            ns_level=ns_level,
+            agc1_enabled=agc1_enabled,
+            agc1_target_dbfs=agc1_target_dbfs,
+            agc1_max_gain_db=agc1_max_gain_db,
+        )
         logger.info(
-            "engine=aec3 frame=%d agc2=%s (split internally to 10ms windows) rate=%d",
-            FRAME_SAMPLES, "on" if enable_agc2 else "off", SAMPLE_RATE,
+            "engine=aec3 ns=%s/%s agc1=%s(target=%d,max=%ddB) "
+            "agc2=%s frame=%d rate=%d",
+            "on" if ns_enabled else "off", ns_level,
+            "on" if agc1_enabled else "off",
+            agc1_target_dbfs, agc1_max_gain_db,
+            "on" if enable_agc2 else "off",
+            FRAME_SAMPLES, SAMPLE_RATE,
         )
 
     def process(self, mic: bytes, ref: bytes) -> bytes:
