@@ -842,38 +842,103 @@ shipped, ordered roughly by value-per-effort. Each entry includes
 what it is, why it's on the list, cost, risk, and prerequisites.
 Updated as paths get picked up or new ones surface.
 
-### A — livekit-wakeword test (small, high info value)
+### A — livekit-wakeword (parked 2026-05-21 — modest gains, not worth training)
 
-**What:** Train a "Jarvis" wake-word model with LiveKit's training
-pipeline. Architecturally the head is conv + multi-head attention
+**Status:** Explored on 2026-05-21 via the LAION BUD-E
+`hey_buddy_en_medium.onnx` model as a no-training smoke test
+(conv-attention head, same architecture livekit-wakeword would
+train for Jarvis). **Verdict: real but marginal architectural
+improvement. Not worth a weekend of training given today's
+empirical evidence.** Keeping on the list because the rationale
+still has theoretical merit and the runtime compatibility is
+proven — if priorities ever shift, the door is open.
+
+**What it is:** Train a "Jarvis" wake-word model with LiveKit's
+training pipeline. The head is 1D-conv + multi-head self-attention
 instead of openWakeWord's flatten + Dense MLP; the audio front-end
 (mel-spec → Google `speech_embedding` CNN → 16×96 feature matrix)
-is identical, and **the output ONNX is openWakeWord-runtime-
-compatible** — drop into our existing wake-word loader with no
-infrastructure change.
+is identical, so the output ONNX is openWakeWord-runtime-
+compatible — drop into our existing wake-word loader with no
+infrastructure change. **Verified 2026-05-21: BUD-E
+`hey_buddy_en_medium.onnx` loads in our openWakeWord runtime on
+Pi 5 and produces predictions.**
 
-**Why on the list:** The 0.997/0.001 bimodal behavior we observe
-(every Jarvis either fires confidently or silently misses, nothing
-in between) is the textbook failure mode of an uncalibrated
-flatten + BCE sigmoid head. Conv + attention gives the network
-temporal inductive bias the flatten step destroys, and is more
-robust to spectral distortion in the academic small-footprint KWS
-literature. The 14/20 silent-in-every-config Jarvises from the
-2026-05-20 sweep are the right validation set: if LiveKit's
-architecture recovers some, that's the win.
+**Why originally on the list:** The 0.997/0.001 bimodal behavior
+we observe (every Jarvis either fires confidently or silently
+misses, nothing in between) is the textbook failure mode of an
+uncalibrated flatten + BCE sigmoid head. Conv + attention gives
+the network temporal inductive bias the flatten step destroys,
+and is more robust to spectral distortion in the academic
+small-footprint KWS literature. The hope: recover some of the
+14/20 silent-in-every-config Jarvises from the 2026-05-20 sweep.
 
-**Cost:** ~1 weekend. Training on free Colab T4 (~1 hour active);
-data pipeline reuses Piper TTS positives + ACAV negatives + RIRs;
-the model exports as `.onnx`, scp into the JTS, point
-`JASPER_WAKE_MODEL` at it, restart `jasper-voice`.
+**What we found empirically (2026-05-21, same music level, same
+acoustic conditions, MIC_GAIN_DB=0 for both runs):**
 
-**Risk:** Low. Reversible in seconds (point `JASPER_WAKE_MODEL`
-back to `jarvis_v2.onnx`). The 100× FPPH / 17% recall numbers on
-LiveKit's PyPI page are vendor self-reported on their test set;
-absolute multipliers will differ on ours. Architectural improvement
-is the durable claim.
+| | `jarvis_v2` (openWakeWord flatten+Dense) | `hey_buddy_en_medium` (livekit-wakeword conv+attention) |
+|---|---|---|
+| Max model score | 0.997 | 0.702 |
+| AEC ON fires @ threshold 0.30 (per apples-to-apples envelope rescore) | 4 | 3 |
+| AEC OFF fires @ threshold 0.30 | 5 | 1 |
+| Frames in 0.10-0.30 ("near-miss") | ~5 each | OFF: 10, ON: 17 |
+| AEC ON > AEC OFF? | No (5 OFF > 4 ON) | **Yes (3 ON > 1 OFF)** |
 
-**Prerequisites:** None. Can start immediately.
+**Two genuine findings from the experiment:**
+
+1. **Conv-attention IS somewhat more AEC-robust.** For Hey Buddy
+   the AEC ON leg actually beats AEC OFF (3 vs 1) — the opposite
+   of Jarvis (4 ON vs 5 OFF). Two specific moments where the
+   conv-attention head fired through AEC distortion that the
+   chip-direct OFF leg missed entirely: t=20.96 (ON 0.638 vs OFF
+   0.062) and t=84.16 (ON 0.332 vs OFF 0.103). The architectural
+   argument has empirical support, just for AEC-specific
+   robustness, not overall sensitivity.
+
+2. **But LAION's `hey_buddy` is much less sensitive overall**
+   than fwartner's `jarvis_v2`. Max scores of 0.7 vs 0.99, many
+   more frames in the [0.10, 0.30] "near-miss" band. Different
+   training data, different calibration. At identical thresholds,
+   `jarvis_v2` produces more confident, less-borderline detections.
+   The two factors (better topology, less sensitive training)
+   roughly cancel out in our data.
+
+**Why this might still be worth pursuing later:**
+
+The Hey Buddy test compared a *different model* with a *different
+phrase* in a *different architecture*. A true same-phrase
+architectural A/B (training a Jarvis-specific livekit-wakeword
+model and running it head-to-head against fwartner's jarvis_v2)
+would tell us whether the conv-attention head's specific
+AEC-robustness advantage transfers — and whether the LAION
+calibration issue was the dominant variable, not the architecture
+itself. If a future session has time to invest in training, this
+question remains genuinely open. The runtime compatibility is
+proven; the only blocker is the training step.
+
+**Cost (if revisited):** ~1 weekend. Training on free Colab T4
+(~1 hour active); data pipeline reuses Piper TTS positives +
+ACAV negatives + RIRs; the model exports as `.onnx`, scp into
+the JTS, point `JASPER_WAKE_MODEL` at it, restart `jasper-voice`.
+
+**Risk (if revisited):** Low. Reversible in seconds (point
+`JASPER_WAKE_MODEL` back to `jarvis_v2.onnx`). The 100× FPPH /
+17% recall numbers on LiveKit's PyPI page are vendor self-
+reported on their test set; absolute multipliers will differ on
+ours. Architectural improvement is theoretically durable; the
+empirical magnitude per the 2026-05-21 BUD-E test is modest.
+
+**Infrastructure that landed and stays useful** (regardless of
+whether livekit training is pursued):
+- `scripts/wake-rate-test.sh` and `scripts/make-wake-test-track.sh`
+  now accept `PHRASE` and `MODEL` env vars (PR #167). Any future
+  cross-model or cross-phrase A/B uses the existing harness with
+  one extra env var.
+- LAION BUD-E `hey_buddy_en_medium.onnx` is installed at
+  `/var/lib/jasper/wake/` on the Pi as a confirmed-compatible
+  conv-attention test model. Available for future architectural
+  experiments without re-downloading.
+
+**Prerequisites:** None. Can start anytime; not currently planned.
 
 **Refs:** [livekit-wakeword PyPI](https://pypi.org/project/livekit-wakeword/),
 [piper-sample-generator](https://github.com/rhasspy/piper-sample-generator)
