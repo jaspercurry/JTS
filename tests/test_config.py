@@ -5,10 +5,22 @@ import pytest
 from jasper.config import Config
 
 
+@pytest.fixture(autouse=True)
+def _default_voice_provider(monkeypatch):
+    """Set JASPER_VOICE_PROVIDER=gemini for every test in this module.
+
+    The Config no longer has an implicit "gemini" default — production
+    forces the wizard to write the value to
+    /var/lib/jasper/voice_provider.env. Tests that explicitly delenv
+    or setenv `JASPER_VOICE_PROVIDER` override this fixture, which is
+    what the "unset" assertion tests want."""
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+
+
 def test_defaults_with_only_gemini_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     for var in [
-        "JASPER_VOICE_PROVIDER", "JASPER_GEMINI_MODEL", "JASPER_WAKE_MODEL",
+        "JASPER_GEMINI_MODEL", "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
         "JASPER_SPOTIFY_DEVICE_NAME",

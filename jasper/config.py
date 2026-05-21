@@ -241,7 +241,22 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        provider = _env("JASPER_VOICE_PROVIDER", "gemini")
+        # No default — the user MUST pick a provider via the wizard at
+        # http://${JASPER_HOSTNAME}/voice. Empty value here is a clear
+        # signal that first-time setup hasn't happened yet, not a
+        # silent "use gemini" fallback. The wizard writes
+        # /var/lib/jasper/voice_provider.env which the systemd unit
+        # sources after /etc/jasper/jasper.env; the wizard file is the
+        # canonical source of truth for this variable.
+        provider = _env("JASPER_VOICE_PROVIDER", "")
+        if not provider:
+            raise RuntimeError(
+                "JASPER_VOICE_PROVIDER is not set — visit "
+                "http://jts.local/voice (or your speaker's hostname) "
+                "and pick a provider. The wizard will write "
+                "/var/lib/jasper/voice_provider.env and restart "
+                "jasper-voice.",
+            )
         if provider not in {"gemini", "openai", "grok"}:
             raise RuntimeError(
                 f"unsupported JASPER_VOICE_PROVIDER={provider!r}; expected "
