@@ -1831,16 +1831,27 @@ class WakeLoop:
                 trigger_kind = "fire_aec_off"
                 peak_off = score
             # Compute per-leg peak offset relative to wake-fire time.
-            # Negative = peak happened before fire (the typical case
-            # — model needs a few frames of context after the word
-            # before crossing threshold). 0 = peak == fire frame.
-            now_loop = asyncio.get_event_loop().time()
+            # Use the SAME `now_loop` that `_handle_wake_frame`
+            # captured at the top — that's the canonical fire-time
+            # reference, and it's also what was just written to
+            # `_recent_score_<leg>_at` when this frame scored. NOT
+            # `asyncio.get_event_loop().time()` here — recomputing
+            # would include the detector.reset() latency (~200ms x
+            # 2 on Pi 5), making the firing leg's offset look like
+            # ~-400 ms instead of ~0 ms.
+            #
+            # Semantics: 0 = leg's last score == fire frame (the
+            # firing leg by definition). Negative N = leg's last
+            # score was N ms before fire (the OTHER leg, when its
+            # last score-bearing frame was earlier than the firing
+            # leg's).
+            wake_fire_time = now_loop
             peak_off_ms = (
-                int((recent_off_at - now_loop) * 1000)
+                int((recent_off_at - wake_fire_time) * 1000)
                 if recent_off_at else None
             )
             peak_on_ms = (
-                int((recent_on_at - now_loop) * 1000)
+                int((recent_on_at - wake_fire_time) * 1000)
                 if recent_on_at else None
             )
             # Per-leg instantaneous mic RMS at fire-time, in dBFS.
