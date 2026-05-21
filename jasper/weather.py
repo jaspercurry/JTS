@@ -204,6 +204,62 @@ def _today_override(hourly: dict, current_time: str | None) -> dict:
     return {"precipitation_probability": max_prob, "weather_code": code}
 
 
+def _next_rain_window(hourly: dict, current_time: str | None) -> dict | None:
+    """Find the next contiguous block of hours where
+    ``precipitation_probability >= RAIN_PROBABILITY_THRESHOLD``, starting
+    from ``current_time``. Returns ``{start, end, peak_probability,
+    duration_hours}`` or ``None`` if no rain is expected in the forecast.
+
+    The model needs both endpoints to answer "what time is it going to
+    rain" — it wants start AND end, not just start. Letting the model
+    scan ``hourly_forecast`` produced answers that gave only the start
+    time. A precomputed window means the same lookup every time."""
+    times = hourly.get("time") or []
+    probs = hourly.get("precipitation_probability") or []
+    if not current_time or not times:
+        return None
+    cur_hour = current_time[:13]
+    start_idx: int | None = None
+    end_idx: int | None = None
+    peak: int | None = None
+    for i, t in enumerate(times):
+        if not isinstance(t, str) or t < cur_hour:
+            continue
+        prob = probs[i] if i < len(probs) else None
+        if prob is None:
+            continue
+        p = int(prob)
+        if start_idx is None:
+            if p >= RAIN_PROBABILITY_THRESHOLD:
+                start_idx = i
+                peak = p
+        else:
+            if p >= RAIN_PROBABILITY_THRESHOLD:
+                if peak is None or p > peak:
+                    peak = p
+            else:
+                end_idx = i
+                break
+    if start_idx is None:
+        return None
+    # Rain continues to the edge of the forecast window — give the model
+    # whatever upper bound we have so the answer can be "into tomorrow"
+    # rather than open-ended. Mark `ends_after_forecast=True` so the
+    # model knows the end is a clip, not a real dry-out time.
+    if end_idx is None:
+        end_idx = len(times)
+        ends_after_forecast = True
+    else:
+        ends_after_forecast = False
+    return {
+        "start": times[start_idx],
+        "end": times[end_idx] if end_idx < len(times) else None,
+        "peak_probability": peak,
+        "duration_hours": end_idx - start_idx,
+        "ends_after_forecast": ends_after_forecast,
+    }
+
+
 def _daily_array(
     daily: dict,
     max_days: int = 14,
@@ -259,6 +315,9 @@ def _build_summary(forecast: dict, location_name: str, units: str) -> dict:
         # Indexed 0..13 starting today. For 'this week' / 'next week' /
         # 'on Friday' questions, slice this by the date field.
         "daily_next_14d": _daily_array(daily, 14, today_over),
+        # Precomputed answer to "when will it rain (start AND end)".
+        # Null when no rain expected in the forecast window.
+        "next_rain_window": _next_rain_window(hourly, cur_time),
     }
 
 

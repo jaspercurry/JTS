@@ -31,6 +31,13 @@ def make_weather_tools(weather):
           daily_next_14d: list of 14 daily summaries (same shape as
                   today, including sunrise/sunset), index 0 = today,
                   index 13 = today + 13 days
+          next_rain_window: {start, end, peak_probability,
+                  duration_hours, ends_after_forecast} for the next
+                  contiguous block of rainy hours, or null when no
+                  rain is expected. Use this for any "when will it
+                  rain" / "when will rain stop" question — the field
+                  gives you both endpoints, so you don't have to scan
+                  hourly_forecast.
 
         Sunrise/sunset are ISO 8601 local-time strings (e.g.
         "2026-05-21T20:14"). Convert to spoken form for the user
@@ -45,6 +52,14 @@ def make_weather_tools(weather):
                                             response.today.sunrise
                                             (or response.tomorrow.* for
                                             "tomorrow's sunset")
+          'when will it rain' /
+          'what time is it going to rain' /
+          'when will rain stop'           → response.next_rain_window —
+                                            always quote BOTH start and
+                                            end (or note "into tomorrow"
+                                            when ends_after_forecast is
+                                            true). Null means no rain
+                                            in the forecast window.
           'this evening' / 'tonight' /
           'tomorrow morning' /
           'what time will it rain
@@ -62,6 +77,8 @@ def make_weather_tools(weather):
 
         For rain questions, lead with the precipitation_probability
         percentage (e.g. 'There's a 70% chance of rain tonight').
+        When quoting a rain window, give both endpoints — 'Rain
+        starts around 7 PM and clears by 11 PM' — not just the start.
 
         Week-scope answers should be brief: lead with high/low ranges
         and call out any rainy days. Example: 'Highs in the low 70s,
