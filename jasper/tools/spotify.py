@@ -210,6 +210,27 @@ async def _resolve_query(
     safe_q = query.replace(chr(34), "")
 
     if kind == "playlist":
+        # Defensive query normalization: strip a trailing "playlist" /
+        # "playlists" before fuzzy-matching. The tool docstring tells
+        # the model to set `kind="playlist"` and pass just the playlist
+        # NAME (e.g. user says "play my Covers playlist" → query="Covers"),
+        # but in practice the model sometimes leaves the word "playlist"
+        # in the query string. That breaks fuzz.ratio: e.g. against the
+        # library [Covers, untitled playlist], query="covers playlist"
+        # scores ('untitled playlist', 62) > ('Covers', 57) because the
+        # shared word "playlist" tips the Levenshtein balance toward
+        # OTHER names that happen to contain "playlist". After this
+        # strip, query="covers playlist" → "covers" → ('Covers', 100).
+        # We only strip TRAILING occurrences so playlist names that
+        # actually start with "Playlist" (e.g. "Playlist Best of 2026")
+        # match correctly.
+        playlist_q = query.strip()
+        lower = playlist_q.lower()
+        for suffix in (" playlists", " playlist"):
+            if lower.endswith(suffix):
+                playlist_q = playlist_q[: -len(suffix)].rstrip()
+                break
+
         # User said the word "playlist". First try THEIR pool — the
         # account's configured-via-web-UI playlists merged with their
         # Spotify library. Configured wins ties (stable sort).
@@ -222,7 +243,7 @@ async def _resolve_query(
         # We do NOT fall back to general public playlist search —
         # 'Jaspany Jams' would otherwise fuzzy-match strangers' 'Jaslene's
         # Jams', which is exactly what we don't want.
-        ranked = await _user_library_ranked(sp, query, configured=configured_playlists)
+        ranked = await _user_library_ranked(sp, playlist_q, configured=configured_playlists)
         if ranked:
             logger.info(
                 "spotify_play: library candidates for query=%r → %s",
@@ -249,7 +270,10 @@ async def _resolve_query(
         # Library miss: try Spotify-owned playlists. Discover Weekly /
         # Release Radar / Daily Mix N are owned by 'spotify' and are
         # personalized to the listener when fetched with a user token.
-        spotify_owned = await _spotify_owned_playlist_match(sp, query)
+        # Use the normalized query here too — searching Spotify's
+        # catalog for "covers playlist" matches differently than
+        # "covers".
+        spotify_owned = await _spotify_owned_playlist_match(sp, playlist_q)
         if spotify_owned and spotify_owned[2] >= _PLAYLIST_THRESHOLD:
             logger.info(
                 "spotify_play: spotify-owned playlist hit %r (score=%d)",
@@ -472,9 +496,13 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             or "X by Y" (where X is a song title and Y is the artist).
           - "album": user explicitly said "the album X" or "X album".
           - "playlist": user explicitly said the word "playlist" — e.g.
-            "play X playlist", "the playlist X", "my X playlist". The
-            server will fuzzy-match against the user's saved playlists,
-            tolerant of voice-to-text mishears.
+            "play X playlist", "the playlist X", "my X playlist". Pass
+            ONLY the playlist name X as `query` — do NOT include the
+            word "playlist" itself ("Covers", not "Covers playlist").
+            Including "playlist" in the query biases fuzzy matching
+            toward any other playlist whose name happens to contain
+            that word. The server will fuzzy-match X against the user's
+            saved playlists, tolerant of voice-to-text mishears.
 
         Set `shuffle=true` when the user explicitly asks for shuffled
         playback — "shuffle X", "play X shuffled", "play X on shuffle".
