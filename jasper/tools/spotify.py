@@ -345,22 +345,48 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
 
     `setup_url` is woven into the no-account-configured error so a
     fresh install can answer "play X" requests with a spoken pointer
-    to the OAuth setup page. When the router has no clients, the
-    tools still register (so Gemini can call them) but every call
-    short-circuits to the no-account error — the alternative,
-    returning [] from this factory, made Gemini fall silent on
-    'play X' because it had no relevant tool to offer."""
-    has_clients = router is not None and bool(router.clients)
-    no_account_msg = "no spotify account configured."
-    if setup_url:
-        no_account_msg += f" tell the user to visit {setup_url} to set one up."
+    to the OAuth setup page. The tools always register (so the LLM
+    can call them); when no usable client is available, each call
+    short-circuits to a user-facing error that's specific to WHY —
+    "needs setup" vs "session expired" — so the user knows whether to
+    OAuth fresh or just re-link an existing account.
 
-    if has_clients:
-        from ..spotify_router import airplay_client_name
-        from .transport import _mpris_now_playing
+    The client-availability check happens per call (not at factory
+    time): `router.refresh_if_empty()` re-runs `build_clients` if the
+    router is currently empty, so re-linking via the web wizard
+    recovers the daemon without a manual restart."""
+    from ..spotify_router import airplay_client_name
+    from .transport import _mpris_now_playing
+
+    def _no_account_msg() -> str:
+        """Pick the right user-facing message based on why the router is
+        empty. Spoken verbatim by the LLM, so the phrasing is tuned for
+        speech: short, no jargon, action the user can take."""
+        reason = router.empty_reason() if router is not None else "no_accounts"
+        if reason == "revoked":
+            base = (
+                "your spotify session has expired and needs to be re-linked."
+            )
+        else:
+            base = "no spotify account configured."
+        if setup_url:
+            verb = "re-link" if reason == "revoked" else "set one up"
+            base += f" tell the user to visit {setup_url} to {verb}."
+        return base
+
+    async def _ensure_clients() -> bool:
+        """Per-call client availability check. Returns True iff the
+        router has at least one usable client after attempting a
+        lazy rebuild. Cheap when clients are already loaded; rate-
+        limited inside Router.refresh_if_empty for the empty path."""
+        if router is None:
+            return False
+        if router.clients:
+            return True
+        return await router.refresh_if_empty()
 
     async def _resolve_for_play() -> "tuple[object, str | None, list[str], str, dict[str, str]] | None":
-        if not has_clients:
+        if not await _ensure_clients():
             return None
         """Pick the active account and decide where to start_playback.
         Returns (sp, device_id, stop_renderers, account_name,
@@ -452,7 +478,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         mic does not stay open for follow-ups."""
         resolved = await _resolve_for_play()
         if resolved is None:
-            return {"error": no_account_msg}
+            return {"error": _no_account_msg()}
         sp, device_id, stops, account_name, configured_playlists = resolved
         if not device_id:
             # The speaker's librespot is running and advertising via mDNS
@@ -539,7 +565,7 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         """Search Spotify for a track and add it to the playback queue."""
         resolved = await _resolve_for_play()
         if resolved is None:
-            return {"error": no_account_msg}
+            return {"error": _no_account_msg()}
         sp, device_id, _, account_name, _ = resolved
         if not device_id:
             # Same root cause as spotify_play — see comment there.
