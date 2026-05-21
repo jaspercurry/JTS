@@ -219,3 +219,104 @@ def test_setting_only_verifier_is_clobbered_by_spotipy():
     # Spotipy regenerated the handshake — verifier in the payload is
     # NOT the one we set. This is the bug we're guarding against.
     assert sent_payload["code_verifier"] != captured_verifier
+
+
+# ---------------------------------------------------------------------
+# Token-health probe + rendering
+#
+# The /spotify page used to claim "configured" purely on file presence.
+# When Spotify revoked the refresh token (password change, security
+# sweep, supersede-by-newer-grant), the page lied and the voice tool
+# returned "no spotify account configured" with no signal to the user
+# that re-linking would fix it. The probe + badges close that loop.
+# ---------------------------------------------------------------------
+
+
+def test_probe_all_health_caches_within_ttl(tmp_path):
+    """Two consecutive renders within the TTL must not re-run
+    build_clients — that would hit Spotify's token endpoint per render."""
+    from jasper.web import spotify_setup as ss
+    ss._invalidate_health_cache()
+    calls = {"n": 0}
+    fake_result = MagicMock(clients={}, statuses=[])
+
+    def fake_build(_registry, *, client_id, redirect_uri):
+        calls["n"] += 1
+        return fake_result
+
+    cfg = {
+        "client_id": "abc123",
+        "mode": "bounce",
+        "registry_path": str(tmp_path / "registry.json"),
+        "bounce_redirect_uri": "https://example.com/cb",
+        "manual_redirect_uri": "http://127.0.0.1/cb",
+    }
+    # Empty registry so Registry.load returns something parseable.
+    (tmp_path / "registry.json").write_text('{"accounts": [], "default": ""}')
+    with patch.object(ss, "build_clients", side_effect=fake_build):
+        r1 = ss._probe_all_health(cfg)
+        r2 = ss._probe_all_health(cfg)
+    assert r1 is r2
+    assert calls["n"] == 1
+
+
+def test_probe_all_health_no_client_id_returns_empty_without_calling_build():
+    """Defensive: a credentials-less wizard render must not even try to
+    call build_clients — there's nothing to authenticate against."""
+    from jasper.web import spotify_setup as ss
+    ss._invalidate_health_cache()
+    calls = {"n": 0}
+
+    def fake_build(*a, **kw):
+        calls["n"] += 1
+        return MagicMock()
+
+    with patch.object(ss, "build_clients", side_effect=fake_build):
+        result = ss._probe_all_health({
+            "client_id": "", "mode": "bounce",
+            "registry_path": "/tmp/x", "bounce_redirect_uri": "",
+            "manual_redirect_uri": "",
+        })
+    assert result.clients == {} and result.statuses == []
+    assert calls["n"] == 0
+
+
+def test_health_badge_renders_per_state():
+    """The badge string differs by state so it's instantly visible whether
+    an account is healthy, expired, or unauthed."""
+    from jasper.spotify_router import (
+        ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
+    )
+    from jasper.web.spotify_setup import _health_badge_html
+    ok_html = _health_badge_html(AccountStatus(name="x", state=ACCOUNT_OK))
+    rev_html = _health_badge_html(AccountStatus(name="x", state=ACCOUNT_REVOKED))
+    needs_html = _health_badge_html(
+        AccountStatus(name="x", state=ACCOUNT_NEEDS_OAUTH),
+    )
+    assert "linked" in ok_html and "health-ok" in ok_html
+    assert "session expired" in rev_html and "health-revoked" in rev_html
+    assert "not linked" in needs_html and "health-warn" in needs_html
+    # None status (probe disabled / failed to run) renders nothing so the
+    # rest of the card stays usable.
+    assert _health_badge_html(None) == ""
+
+
+def test_relink_notice_only_shown_for_revoked():
+    """The "Re-link" CTA must appear only when the token is revoked —
+    not on healthy or not-yet-OAuthed accounts (different action)."""
+    from jasper.spotify_router import (
+        ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
+    )
+    from jasper.web.spotify_setup import _relink_notice_html
+    revoked = _relink_notice_html(
+        AccountStatus(name="jasper", state=ACCOUNT_REVOKED), "jasper",
+    )
+    assert "Re-link jasper" in revoked
+    assert 'action="start"' in revoked
+    assert _relink_notice_html(
+        AccountStatus(name="x", state=ACCOUNT_OK), "x",
+    ) == ""
+    assert _relink_notice_html(
+        AccountStatus(name="x", state=ACCOUNT_NEEDS_OAUTH), "x",
+    ) == ""
+    assert _relink_notice_html(None, "x") == ""

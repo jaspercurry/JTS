@@ -82,7 +82,15 @@ from ..accounts import (
     default_cache_path_for,
     DEFAULT_REGISTRY_PATH,
 )
-from ..spotify_router import SPOTIFY_SCOPE
+from ..spotify_router import (
+    ACCOUNT_NEEDS_OAUTH,
+    ACCOUNT_OK,
+    ACCOUNT_REVOKED,
+    SPOTIFY_SCOPE,
+    AccountStatus,
+    BuildResult,
+    build_clients,
+)
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ._common import (
     PAGE_STYLE,
@@ -212,6 +220,20 @@ _SPOTIFY_PAGE_STYLE = PAGE_STYLE + """
   ul.accounts li .name { font-weight: 600; flex: 1; }
   ul.accounts li .badge { background: #4a8; color: white; padding: 0.1em 0.5em;
                             border-radius: 4px; font-size: 0.8em; }
+  .health-badge { padding: 0.1em 0.55em; border-radius: 4px;
+                  font-size: 0.78em; font-weight: 600;
+                  display: inline-block; cursor: help; }
+  .health-badge.health-ok { background: #e7f6ec; color: #1c7c3a;
+                            border: 1px solid #bce0c8; }
+  .health-badge.health-revoked { background: #fce8e8; color: #9b2222;
+                                  border: 1px solid #efb6b6; }
+  .health-badge.health-warn { background: #fff3d6; color: #8a6100;
+                              border: 1px solid #e7ce85; }
+  .relink-notice { background: #fff3f1; border: 1px solid #e7b9b3;
+                   border-radius: 6px; padding: 0.7em 0.9em;
+                   margin: 0 0 0.8em; }
+  .relink-notice p { margin: 0 0 0.7em; }
+  .relink-notice button { padding: 0.4em 1em; }
   .account-actions { display: flex; gap: 0.5em; margin: 0.7em 0 0.6em; }
   .account-actions form { margin: 0; }
   .account-actions button { padding: 0.35em 0.8em; font-size: 0.9em; }
@@ -605,7 +627,58 @@ def _account_playlists_section_html(account: Account) -> str:
 </div>"""
 
 
-def _account_card_html(account: Account, *, is_default: bool, is_open: bool) -> str:
+def _health_badge_html(status: AccountStatus | None) -> str:
+    """Per-account badge: green check when the cached token still
+    refreshes, red warning when Spotify says the refresh token is
+    revoked (re-link required), grey when we couldn't probe at all.
+    Renders nothing when status is None — defensive: keeps the page
+    usable if the probe pipeline is uninitialised."""
+    if status is None:
+        return ""
+    if status.state == ACCOUNT_OK:
+        return '<span class="health-badge health-ok" title="Token is valid">linked</span>'
+    if status.state == ACCOUNT_REVOKED:
+        return (
+            '<span class="health-badge health-revoked"'
+            ' title="Spotify revoked this refresh token. '
+            'Click Re-link below.">session expired</span>'
+        )
+    if status.state == ACCOUNT_NEEDS_OAUTH:
+        return (
+            '<span class="health-badge health-warn"'
+            ' title="No cached token — re-OAuth needed">'
+            'not linked</span>'
+        )
+    detail = html.escape(status.detail or "unknown")
+    return (
+        f'<span class="health-badge health-warn" title="{detail}">'
+        'status unknown</span>'
+    )
+
+
+def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
+    """Banner + Re-link button inside the revoked card. The Re-link
+    button POSTs to /start with the account name pre-filled; the OAuth
+    callback overwrites the existing cache file at the same path."""
+    if status is None or status.state != ACCOUNT_REVOKED:
+        return ""
+    return f"""
+<div class="relink-notice">
+  <p><strong>Spotify revoked this account's refresh token.</strong>
+     Voice playback will fail until you re-link. Common causes: changed
+     your Spotify password, signed out everywhere, or a long period
+     of inactivity.</p>
+  <form method="post" action="start">
+    <input type="hidden" name="name" value="{name}">
+    <button class="primary" type="submit">Re-link {name}</button>
+  </form>
+</div>"""
+
+
+def _account_card_html(
+    account: Account, *, is_default: bool, is_open: bool,
+    status: AccountStatus | None = None,
+) -> str:
     pl_count = len(account.playlists)
     if pl_count == 0:
         count_label = "no custom playlists"
@@ -614,8 +687,17 @@ def _account_card_html(account: Account, *, is_default: bool, is_open: bool) -> 
     else:
         count_label = f"{pl_count} custom playlists"
     name = html.escape(account.name)
-    badge = '<span class="badge">default</span>' if is_default else ""
-    open_attr = " open" if is_open else ""
+    badges = []
+    if is_default:
+        badges.append('<span class="badge">default</span>')
+    health = _health_badge_html(status)
+    if health:
+        badges.append(health)
+    badge_html = " ".join(badges)
+    # Auto-open revoked cards: the user should see the re-link CTA
+    # without having to click into each account.
+    auto_open = is_open or (status is not None and status.state == ACCOUNT_REVOKED)
+    open_attr = " open" if auto_open else ""
     set_default_btn = (
         '<button class="secondary" type="submit" disabled>Default</button>'
         if is_default else
@@ -625,10 +707,11 @@ def _account_card_html(account: Account, *, is_default: bool, is_open: bool) -> 
 <details class="account"{open_attr}>
   <summary>
     <span class="name">{name}</span>
-    {badge}
+    {badge_html}
     <span class="pl-count">{count_label}</span>
   </summary>
   <div class="account-body">
+    {_relink_notice_html(status, name)}
     <div class="account-actions">
       <form method="post" action="default">
         <input type="hidden" name="name" value="{name}">
@@ -754,13 +837,20 @@ def _claim_speaker_section_html() -> str:
 def _management_html(
     registry: Registry, redirect_uri: str, client_id: str, mode: str,
     *, status_msg: str = "",
+    health_result: BuildResult | None = None,
 ) -> bytes:
     """State 3: at least one account is OAuthed."""
     cards = []
     for a in registry.accounts:
         is_default = a.name == registry.default_name
         is_open = is_default or bool(a.playlists)
-        cards.append(_account_card_html(a, is_default=is_default, is_open=is_open))
+        status = (
+            _status_by_name(health_result, a.name)
+            if health_result is not None else None
+        )
+        cards.append(_account_card_html(
+            a, is_default=is_default, is_open=is_open, status=status,
+        ))
 
     body = f"""
 <p class="sub">Each household member links their own Spotify account once.
@@ -851,6 +941,57 @@ def _resolve_playlist_name(sp, uri: str) -> str | None:
         raise
     name = ((info or {}).get("name") or "").strip()
     return name or None
+
+
+# Per-account token-health probe results, cached briefly so a page
+# refresh doesn't slam Spotify's auth endpoint. build_clients hits
+# /api/token for each account; without the cache, every render of the
+# /spotify page would be one HTTP round-trip per registered account,
+# which adds up under any reasonable rate of UI activity.
+_HEALTH_CACHE_TTL_SEC = 60.0
+_health_cache: dict[str, Any] = {"at": 0.0, "result": None}
+
+
+def _invalidate_health_cache() -> None:
+    """Drop the cached probe result so the next render re-checks. Call
+    after any mutation that could change a token's validity: a fresh
+    OAuth callback, manual paste-callback, account removal, or a
+    credentials reset."""
+    _health_cache["at"] = 0.0
+    _health_cache["result"] = None
+
+
+def _probe_all_health(cfg: dict[str, Any]) -> BuildResult:
+    """Per-account token-health probe with a short TTL cache. Returns
+    a `BuildResult` whose `statuses` list has one entry per registered
+    account. The wizard reads this to render an "ok / revoked /
+    not-yet-OAuthed" badge per card."""
+    if not cfg.get("client_id"):
+        return BuildResult(clients={}, statuses=[])
+    now = time.monotonic()
+    cached = _health_cache.get("result")
+    if cached is not None and (now - _health_cache["at"]) < _HEALTH_CACHE_TTL_SEC:
+        return cached
+    try:
+        registry = Registry.load(cfg["registry_path"])
+        result = build_clients(
+            registry,
+            client_id=cfg["client_id"],
+            redirect_uri=_redirect_uri_for_mode(cfg["mode"], cfg),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning("health probe build_clients failed: %s", e)
+        result = BuildResult(clients={}, statuses=[])
+    _health_cache["at"] = now
+    _health_cache["result"] = result
+    return result
+
+
+def _status_by_name(result: BuildResult, name: str) -> AccountStatus | None:
+    for s in result.statuses:
+        if s.name == name:
+            return s
+    return None
 
 
 def _spotify_client_for_account(cfg: dict[str, Any], account_name: str):
@@ -1012,9 +1153,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     status_msg=status_msg,
                 ))
                 return
+            health = _probe_all_health(cfg)
             self._send_html(_management_html(
                 registry, redirect_uri, cfg["client_id"], cfg["mode"],
                 status_msg=status_msg,
+                health_result=health,
             ))
 
         def _handle_setup_credentials(self, form: dict[str, str]) -> None:
@@ -1049,6 +1192,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             _delete_creds_file()
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
+            _invalidate_health_cache()
             _restart_voice_daemon()
             self._redirect("./?msg=Credentials+cleared.")
 
@@ -1164,6 +1308,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     f"./?msg=Auth+exchange+failed:+{urllib.parse.quote(str(e))}"
                 )
                 return
+            _invalidate_health_cache()
             _restart_voice_daemon()
             self._redirect(
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
@@ -1183,6 +1328,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         os.unlink(cache_path)
                     except OSError:
                         pass
+                _invalidate_health_cache()
                 _restart_voice_daemon()
                 self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
             else:

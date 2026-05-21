@@ -744,26 +744,48 @@ def _schedule_cue_regen(manager: AudioCueManager) -> None:
 
 def _build_router(cfg: Config) -> Router | None:
     """Build the multi-account spotify router, or None if Spotify
-    isn't configured at the env level."""
+    isn't configured at the env level.
+
+    The returned router carries a `rebuild_fn` so it can recover from
+    a startup-time revocation (or a re-link via the web wizard)
+    without a daemon restart: when `router.clients` is empty, the next
+    tool call triggers a rebuild via Router.refresh_if_empty()."""
     if not cfg.spotify_enabled:
         return None
-    accounts = Registry.load(cfg.spotify_accounts_path)
-    # First-run migration: if there's a legacy single-user OAuth cache
-    # and no accounts registered yet, wrap that cache as a "default"
-    # account so existing installs keep working without re-auth.
-    maybe_migrate_legacy(accounts, cfg.spotify_cache_path, default_name="default")
-    clients = build_clients(
-        accounts,
-        client_id=cfg.spotify_client_id,
-        redirect_uri=cfg.spotify_redirect_uri,
-    )
-    if not clients:
+
+    def _do_build() -> "tuple[dict, list]":
+        # Re-load the registry on every build — the wizard may have
+        # added or removed accounts (or written a fresh cache file)
+        # since the daemon started. maybe_migrate_legacy is a no-op
+        # after the first call so it's safe to run each time.
+        accounts = Registry.load(cfg.spotify_accounts_path)
+        maybe_migrate_legacy(
+            accounts, cfg.spotify_cache_path, default_name="default",
+        )
+        return build_clients(
+            accounts,
+            client_id=cfg.spotify_client_id,
+            redirect_uri=cfg.spotify_redirect_uri,
+        )
+
+    result = _do_build()
+    if not result.clients:
+        # Surface the per-account reasons at startup so a "Spotify
+        # tools are silent" report has a forensic trail.
         logger.info(
-            "spotify: no accounts have OAuth tokens; tools disabled until "
-            "someone visits %s",
+            "spotify: no accounts have usable tokens at startup "
+            "(statuses=%s); tools will retry on first call. "
+            "Re-link at %s",
+            [(s.name, s.state) for s in result.statuses],
             cfg.spotify_setup_url,
         )
-    return Router(clients=clients, default_name=accounts.default_name)
+    default_name = Registry.load(cfg.spotify_accounts_path).default_name
+    return Router(
+        clients=result.clients,
+        default_name=default_name,
+        statuses=result.statuses,
+        rebuild_fn=_do_build,
+    )
 
 
 def _build_registry(

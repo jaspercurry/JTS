@@ -233,3 +233,170 @@ def test_active_falls_back_to_default():
 def test_active_returns_none_with_no_clients():
     r = Router(clients={}, default_name="")
     assert asyncio.run(r.active(airplay_active=False)) is None
+
+
+# --- build_clients return value: BuildResult with per-account statuses ---
+
+
+def test_build_clients_returns_build_result_shape():
+    """Smoke test: build_clients now returns a BuildResult with
+    `clients` and `statuses` fields. The old return shape (bare dict)
+    is gone; callers that haven't migrated will break loudly."""
+    from jasper.spotify_router import BuildResult, build_clients
+    from jasper.accounts import Registry
+    empty_registry = Registry(accounts=[], default_name="")
+    result = build_clients(empty_registry, client_id="abc", redirect_uri="x")
+    assert isinstance(result, BuildResult)
+    assert result.clients == {}
+    assert result.statuses == []
+
+
+def test_build_clients_marks_missing_cache_as_needs_oauth(tmp_path):
+    """Account registered but cache file doesn't exist on disk → status
+    is 'needs_oauth', not 'revoked'. The wizard uses this to render
+    'not linked' vs 'session expired' badges."""
+    from jasper.spotify_router import (
+        ACCOUNT_NEEDS_OAUTH, build_clients,
+    )
+    from jasper.accounts import Account, Registry
+    registry = Registry(
+        accounts=[Account(name="ghost", cache_path=str(tmp_path / "missing.json"))],
+        default_name="ghost",
+    )
+    result = build_clients(registry, client_id="abc", redirect_uri="x")
+    assert result.clients == {}
+    assert len(result.statuses) == 1
+    assert result.statuses[0].name == "ghost"
+    assert result.statuses[0].state == ACCOUNT_NEEDS_OAUTH
+
+
+def test_classify_oauth_error_revoked_vs_other():
+    """The revoked-vs-error classifier drives the user-facing message.
+    Any error text containing 'invalid_grant' or 'revoked' maps to
+    revoked; everything else falls through to error."""
+    from jasper.spotify_router import (
+        ACCOUNT_ERROR, ACCOUNT_REVOKED, _classify_oauth_error,
+    )
+    state, _ = _classify_oauth_error(
+        Exception("error: invalid_grant, error_description: Refresh token revoked"),
+    )
+    assert state == ACCOUNT_REVOKED
+    state, _ = _classify_oauth_error(Exception("Connection timed out"))
+    assert state == ACCOUNT_ERROR
+    state, _ = _classify_oauth_error(Exception("HTTP 500 from Spotify"))
+    assert state == ACCOUNT_ERROR
+
+
+# --- Router.refresh_if_empty + empty_reason ---
+
+
+def test_router_refresh_if_empty_populates_from_rebuild_fn():
+    """When clients dict is empty and a rebuild_fn is set, refresh_if_empty
+    runs the rebuild and atomically replaces clients + statuses. This
+    is what lets a wizard re-link recover the daemon without a restart."""
+    from jasper.spotify_router import (
+        ACCOUNT_OK, AccountStatus, BuildResult,
+    )
+    rebuilt_ac = _ac("jasper", title="Hey Jude")
+
+    def rebuild():
+        return BuildResult(
+            clients={"jasper": rebuilt_ac},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+        )
+
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    assert asyncio.run(r.refresh_if_empty()) is True
+    assert "jasper" in r.clients
+    assert r.clients["jasper"] is rebuilt_ac
+    assert r.statuses[0].state == ACCOUNT_OK
+
+
+def test_router_refresh_if_empty_no_op_when_clients_present():
+    """The fast path: when clients is already non-empty, refresh_if_empty
+    returns True without calling rebuild_fn — every voice command goes
+    through this check, so it has to be cheap on the happy path."""
+    from jasper.spotify_router import AccountStatus, BuildResult
+    calls = {"n": 0}
+    def rebuild():
+        calls["n"] += 1
+        return BuildResult(clients={}, statuses=[])
+    ac = _ac("jasper", title="Hey Jude")
+    r = Router(clients={"jasper": ac}, default_name="jasper", rebuild_fn=rebuild)
+    assert asyncio.run(r.refresh_if_empty()) is True
+    assert calls["n"] == 0
+
+
+def test_router_refresh_if_empty_rate_limited():
+    """When a token is persistently revoked, every voice command would
+    otherwise hammer the rebuild path → one HTTP refresh attempt per
+    voice turn. Rate-limit blocks repeat rebuild calls inside the
+    window."""
+    from jasper.spotify_router import (
+        ACCOUNT_REVOKED, AccountStatus, BuildResult,
+    )
+    calls = {"n": 0}
+    def rebuild():
+        calls["n"] += 1
+        return BuildResult(
+            clients={},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
+        )
+    # Generous window so test timing doesn't matter.
+    r = Router(
+        clients={}, default_name="jasper",
+        rebuild_fn=rebuild, refresh_min_interval_sec=60.0,
+    )
+    asyncio.run(r.refresh_if_empty())
+    asyncio.run(r.refresh_if_empty())
+    asyncio.run(r.refresh_if_empty())
+    assert calls["n"] == 1
+
+
+def test_router_refresh_if_empty_propagates_statuses_even_when_clients_still_empty():
+    """A failed rebuild still surfaces per-account statuses so the tool
+    layer can render the right error message (revoked vs needs_oauth)."""
+    from jasper.spotify_router import (
+        ACCOUNT_REVOKED, AccountStatus, BuildResult,
+    )
+    def rebuild():
+        return BuildResult(
+            clients={},
+            statuses=[AccountStatus(
+                name="jasper", state=ACCOUNT_REVOKED, detail="revoked",
+            )],
+        )
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    assert asyncio.run(r.refresh_if_empty()) is False
+    assert r.statuses[0].state == ACCOUNT_REVOKED
+
+
+def test_router_empty_reason_returns_empty_when_clients_present():
+    ac = _ac("jasper", title="Hey Jude")
+    r = Router(clients={"jasper": ac}, default_name="jasper")
+    assert r.empty_reason() == ""
+
+
+def test_router_empty_reason_revoked_when_any_status_revoked():
+    from jasper.spotify_router import ACCOUNT_REVOKED, AccountStatus
+    r = Router(
+        clients={},
+        default_name="jasper",
+        statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
+    )
+    assert r.empty_reason() == "revoked"
+
+
+def test_router_empty_reason_no_accounts_when_no_statuses():
+    r = Router(clients={}, default_name="")
+    assert r.empty_reason() == "no_accounts"
+
+
+def test_router_empty_reason_needs_oauth_for_all_unauthed_accounts():
+    from jasper.spotify_router import ACCOUNT_NEEDS_OAUTH, AccountStatus
+    r = Router(
+        clients={},
+        default_name="jasper",
+        statuses=[AccountStatus(name="jasper", state=ACCOUNT_NEEDS_OAUTH)],
+    )
+    assert r.empty_reason() == "needs_oauth"

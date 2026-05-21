@@ -120,18 +120,43 @@ class FakeAccountClient:
 
 
 class FakeRouter:
-    def __init__(self, transport_match=None, active_account=None) -> None:
+    def __init__(
+        self, transport_match=None, active_account=None,
+        empty_reason: str = "no_accounts",
+        rebuild_clients=None,
+    ) -> None:
         self._transport_match = transport_match
         self._active_account = active_account
         self.clients = {"jasper": active_account or transport_match} if (
             active_account or transport_match
         ) else {}
+        self._empty_reason = empty_reason
+        # When set, refresh_if_empty() drops these into self.clients
+        # so the test can simulate "wizard re-link landed mid-call".
+        self._rebuild_clients = rebuild_clients
+        self.refresh_calls = 0
 
     async def resolve_for_transport(self, client_name: str, title: str):
         return self._transport_match
 
     async def active(self, *, airplay_active: bool):
         return self._active_account
+
+    async def refresh_if_empty(self) -> bool:
+        self.refresh_calls += 1
+        if self.clients:
+            return True
+        if self._rebuild_clients:
+            self.clients = dict(self._rebuild_clients)
+            # If a rebuild populated clients, also expose them via
+            # active() so the next call resolves cleanly.
+            if not self._active_account:
+                self._active_account = next(iter(self.clients.values()))
+            return True
+        return False
+
+    def empty_reason(self) -> str:
+        return "" if self.clients else self._empty_reason
 
 
 def _by_name(tools):
@@ -785,7 +810,7 @@ def test_no_clients_still_registers_tools_with_setup_error():
     "go OAuth at <setup_url>" error. Previously returned []; that made
     Gemini fall silent on 'play X' because it had no relevant tool to
     offer."""
-    router = FakeRouter()
+    router = FakeRouter()  # empty_reason defaults to "no_accounts"
     renderer = FakeRenderer()
     tools = _by_name(make_spotify_tools(
         router, renderer, "JTS", setup_url="https://jts.local/spotify",
@@ -794,6 +819,7 @@ def test_no_clients_still_registers_tools_with_setup_error():
     play_result = asyncio.run(tools["spotify_play"](query="Ariana Grande"))
     assert "no spotify account configured" in play_result["error"]
     assert "https://jts.local/spotify" in play_result["error"]
+    assert "set one up" in play_result["error"]
     queue_result = asyncio.run(tools["spotify_queue"](query="Anti-Hero"))
     assert "no spotify account configured" in queue_result["error"]
     assert "https://jts.local/spotify" in queue_result["error"]
@@ -808,6 +834,56 @@ def test_no_clients_no_setup_url_omits_url_phrase():
     tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
     play_result = asyncio.run(tools["spotify_play"](query="X"))
     assert play_result["error"] == "no spotify account configured."
+
+
+def test_revoked_token_returns_session_expired_message():
+    """When the router's empty_reason is 'revoked' (Spotify-server-side
+    invalidation, surfaced via build_clients failing with invalid_grant),
+    the user-facing error should distinguish "expired session" from
+    "never set up" — different actions for the user."""
+    router = FakeRouter(empty_reason="revoked")
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
+    ))
+    play_result = asyncio.run(tools["spotify_play"](query="X"))
+    assert "session has expired" in play_result["error"]
+    assert "re-link" in play_result["error"]
+    assert "https://jts.local/spotify" in play_result["error"]
+    # And explicitly NOT the "set one up" phrasing — the user already
+    # set it up, the token just died.
+    assert "set one up" not in play_result["error"]
+
+
+def test_revoked_then_relinked_recovers_without_daemon_restart():
+    """The bug we're solving: the router was empty at startup (every
+    refresh_token revoked); the user re-links via the wizard; the NEXT
+    voice command must pick up the new tokens without a daemon restart.
+    Modeled by a FakeRouter whose refresh_if_empty drops a freshly-built
+    client in."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "jts-device", "name": "JTS", "is_active": True}]},
+        playback={"is_playing": True, "device": {"id": "jts-device"}, "item": {"name": "X"}},
+        search_results={"artist": ("spotify:artist:abc", "Beyonce")},
+    )
+    new_client = FakeAccountClient("jasper", sp)
+    router = FakeRouter(
+        empty_reason="revoked",
+        rebuild_clients={"jasper": new_client},
+    )
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
+    ))
+    with patch("jasper.tools.spotify.resolve_target") as resolve_mock:
+        resolve_mock.return_value = MagicMock(
+            device_id="jts-device", stop_renderers=[],
+        )
+        result = asyncio.run(tools["spotify_play"](query="Beyonce"))
+    assert result.get("ok") is True, f"expected ok, got: {result}"
+    assert router.refresh_calls == 1, (
+        "spotify_play should have triggered exactly one lazy refresh attempt"
+    )
 
 
 def test_no_device_id_returns_device_error_before_search():

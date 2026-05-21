@@ -266,8 +266,19 @@ def make_transport_dispatcher(renderer, router):
             if source == "spotify":
                 if router is None:
                     return {"error": "spotify not configured"}
+                # Lazy rebuild covers the post-revocation re-link path:
+                # if the router went empty after a bad refresh, give it
+                # one more chance before we tell the user it's broken.
+                if not router.clients and hasattr(router, "refresh_if_empty"):
+                    await router.refresh_if_empty()
                 active = await router.active(airplay_active=False)
                 if active is None:
+                    reason = (
+                        router.empty_reason()
+                        if hasattr(router, "empty_reason") else ""
+                    )
+                    if reason == "revoked":
+                        return {"error": "your spotify session has expired — re-link in the spotify wizard."}
                     return {"error": "no spotify account configured"}
                 device_id = await _spotify_active_device_id(active.sp)
                 if action == "toggle":
