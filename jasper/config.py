@@ -100,6 +100,7 @@ class Config:
     wake_model: str
     wake_threshold: float
     mic_device: str
+    mic_device_raw: str
     mic_capture_rate: int
     mic_capture_channels: int
     tts_device: str
@@ -329,6 +330,23 @@ class Config:
             # the XVF3800's "Array: USB Audio (hw:N,0)"; "UMIK-2" matches
             # the MiniDSP UMIK-2). Empty/absent → PortAudio default.
             mic_device=_env("JASPER_MIC_DEVICE", "Array"),
+            # JASPER_MIC_DEVICE_RAW: optional second mic source for
+            # dual-stream wake detection. When set (typically to
+            # `udp:9877` paired with the bridge's chip-direct stream
+            # introduced in the wake-telemetry PR 1), the WakeLoop
+            # opens a second mic + a second WakeWordDetector and
+            # OR-gates fires across both legs — recovering the union
+            # of post-AEC and chip-direct detections.
+            #
+            # Empty / absent → single-stream behaviour (the existing
+            # production default while PR 2 rolls out). Accepts the
+            # same forms as JASPER_MIC_DEVICE (`udp:PORT`,
+            # `udp://HOST:PORT`, or a PortAudio device string for
+            # hypothetical hardware-second-mic configurations).
+            #
+            # See docs/HANDOFF-wake-telemetry.md for the architecture
+            # and the empirical case for OR-gating.
+            mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
             # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
             # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;
