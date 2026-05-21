@@ -143,7 +143,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   `/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
   `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
-  search & queue, weather, NYC subway times
+  search & queue, weather (now including daily sunrise/sunset),
+  NYC subway times, NYC MTA bus arrivals (single configured stop;
+  config in `.env.example`), current wall-clock time
 - ✅ Multi-user Spotify routing (each household member's account,
   routed by AirPlay title-match)
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
@@ -262,6 +264,10 @@ scripts/                        Operator helpers (run from laptop)
                                 works without phone interaction
 
 tests/                          Hardware-free pytest suite
+  voice_eval/                   End-to-end scenario tests against
+                                the live voice provider. Paid API
+                                calls — see CLAUDE.md "Voice-eval
+                                cost discipline" before running.
 ```
 
 ---

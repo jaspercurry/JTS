@@ -144,19 +144,21 @@ sudo vim /etc/jasper/jasper.env
 
 Required: an API key for whichever real-time voice provider you
 want active. The voice loop runs against any of three backends —
-pick one, paste the matching key. (You can switch later via the
-web wizard in Phase 3.5 without re-editing this file.)
+paste the matching key (or all three if you plan to A/B). You
+pick the active provider via the wizard in Phase 3.5, **not** in
+this file — `JASPER_VOICE_PROVIDER` is wizard-owned per PR #166
+and lives only in `/var/lib/jasper/voice_provider.env`.
 
-- `GEMINI_API_KEY=<your key from Google AI Studio>` —
-  default provider, cheapest (~$0.025/min)
-- `OPENAI_API_KEY=<your key from platform.openai.com>` — set
-  `JASPER_VOICE_PROVIDER=openai` to make it active (~$0.30/min)
-- `XAI_API_KEY=<your key from console.x.ai>` — set
-  `JASPER_VOICE_PROVIDER=grok` to make it active (~$0.05/min)
+- `GEMINI_API_KEY=<your key from Google AI Studio>` — Gemini
+  Live (~$0.025/min)
+- `OPENAI_API_KEY=<your key from platform.openai.com>` — OpenAI
+  Realtime (~$0.30/min)
+- `XAI_API_KEY=<your key from console.x.ai>` — xAI Grok (~$0.05/min)
 
-`jasper-voice` refuses to start if the active provider's key is
-missing or empty. If you set more than one key, the others stay
-benign — the wizard uses them when you switch providers.
+Fresh installs have no provider selected; `jasper-voice` refuses
+to start with a clear error until the wizard writes one. If you
+set more than one key, the others stay benign — the wizard uses
+them when you switch providers.
 
 Optional but recommended:
 
@@ -183,18 +185,19 @@ sudo systemctl restart jasper-voice
 
 ---
 
-## Phase 3.5 — Pick a voice provider via the wizard (2 min, optional)
+## Phase 3.5 — Pick a voice provider via the wizard (2 min, REQUIRED)
 
-This step is optional — the env file you just wrote already
-selects a provider. The wizard at `http://jts.local/voice/` is
-the friendlier path: paste keys, pick model and voice from
+`JASPER_VOICE_PROVIDER` is wizard-owned (PR #166) — `jasper-voice`
+refuses to start until you've picked one. Visit
+`http://jts.local/voice/`: paste keys, pick model and voice from
 curated dropdowns, flip the active provider with a single radio
 group. Saving writes `/var/lib/jasper/voice_provider.env` (mode
-0600), which `jasper-voice.service` sources AFTER
-`/etc/jasper/jasper.env` so wizard values override the operator
-defaults from Phase 3.
+0600), which `jasper-voice.service` sources via `EnvironmentFile=`.
+`install.sh` actively migrates any stale `JASPER_VOICE_PROVIDER`
+out of `/etc/jasper/jasper.env` on each run, so the wizard file is
+the only place it lives.
 
-Two reasons to use it:
+Bonus reasons to use the wizard (beyond it being required):
 
 - **Voice picker labels include gender/style hints.** `marin`
   is "feminine, warm", `ash` is "masculine, soft" — easier to
@@ -704,13 +707,12 @@ persist them to flash via that command.
   canonical reference is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md).
 
 **Wake fires but no voice response.**
-- The active provider's API key might be missing/invalid. Check
-  `/etc/jasper/jasper.env` (or `/var/lib/jasper/voice_provider.env`
-  if you used the `/voice/` wizard) for the right env var:
+- The active provider's API key might be missing/invalid. Keys
+  live in `/etc/jasper/jasper.env` — check for the right one:
   `GEMINI_API_KEY` / `OPENAI_API_KEY` / `XAI_API_KEY`.
-- The active provider can be confirmed with
-  `grep JASPER_VOICE_PROVIDER /etc/jasper/jasper.env
-  /var/lib/jasper/voice_provider.env` (later wins).
+- The active provider lives in `/var/lib/jasper/voice_provider.env`
+  (the only place since PR #166): `grep JASPER_VOICE_PROVIDER
+  /var/lib/jasper/voice_provider.env`.
 - Daily spend cap might be hit. Check
   `cat /var/lib/jasper/usage.db` via sqlite3.
 
