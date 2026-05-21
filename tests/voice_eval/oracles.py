@@ -27,6 +27,82 @@ import httpx
 _SUBWAYNOW_URL = "https://api.subwaynow.app/stops/{stop_id}"
 _SUBWAYNOW_AGENT = "jts-voice-eval"
 
+_MTA_BUSTIME_URL = (
+    "https://bustime-classic.mta.info/api/siri/stop-monitoring.json"
+)
+_MTA_BUSTIME_AGENT = "jts-voice-eval"
+
+
+async def bus_arrivals(
+    stop_id: str,
+    api_key: str,
+    *,
+    routes: list[str] | None = None,
+    limit: int = 4,
+    http: httpx.AsyncClient | None = None,
+) -> list[dict]:
+    """Direct MTA BusTime SIRI call. Returns minutes-from-now for the
+    next `limit` buses serving `stop_id`, optionally filtered to a
+    list of route short-names (e.g. ['B35', 'B70']).
+
+    Independent from the daemon code path so the eval scenario can
+    use this as ground truth — if the bus tool's response diverges
+    from this, that's a real bug. (vs. subway where we use the same
+    Subway Now source as the daemon, and the bug would be in our
+    adapter or transport layer, not the data source itself.)"""
+    import time as _time
+    from datetime import datetime
+    owns = http is None
+    client = http or httpx.AsyncClient(timeout=5.0)
+    try:
+        params = {
+            "key": api_key,
+            "MonitoringRef": stop_id.removeprefix("MTA_"),
+            "OperatorRef": "MTA",
+        }
+        r = await client.get(
+            _MTA_BUSTIME_URL,
+            params=params,
+            headers={"User-Agent": _MTA_BUSTIME_AGENT},
+        )
+        r.raise_for_status()
+        data = r.json()
+    finally:
+        if owns:
+            await client.aclose()
+
+    sd = (
+        data.get("Siri", {})
+        .get("ServiceDelivery", {})
+        .get("StopMonitoringDelivery") or [{}]
+    )[0]
+    visits = sd.get("MonitoredStopVisit") or []
+    route_filter = {r.upper() for r in (routes or [])}
+    now = datetime.now().astimezone()
+    out: list[dict] = []
+    for v in visits:
+        j = v.get("MonitoredVehicleJourney") or {}
+        line = str(j.get("PublishedLineName") or "").upper()
+        if route_filter and line not in route_filter:
+            continue
+        call = j.get("MonitoredCall") or {}
+        eta_raw = call.get("ExpectedArrivalTime")
+        if not eta_raw:
+            continue
+        try:
+            eta_dt = datetime.fromisoformat(eta_raw).astimezone()
+        except (TypeError, ValueError):
+            continue
+        delta = (eta_dt - now).total_seconds()
+        if delta <= -30:
+            continue
+        out.append({
+            "route": line,
+            "minutes_from_now": max(0, round(delta / 60)),
+        })
+    out.sort(key=lambda a: a["minutes_from_now"])
+    return out[:limit]
+
 
 async def subway_arrivals(
     station: str,

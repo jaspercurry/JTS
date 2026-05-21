@@ -22,6 +22,7 @@ from .watchdog import Heartbeat
 from .google_creds import GoogleClients, build_google_clients
 from .renderer import RendererClient
 from .spotify_router import BuildResult, Router, build_clients
+from .bus import BusClient
 from .subway import SubwayClient
 from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
@@ -29,6 +30,7 @@ from .tools.audio import make_audio_tools
 from .tools.calendar import make_calendar_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
+from .tools.bus import make_bus_tools
 from .tools.subway import make_subway_tools
 from .tools.time import make_time_tools
 from .tools.timer import make_timer_tools
@@ -116,6 +118,13 @@ SYSTEM_INSTRUCTION = (
     "every time — train times are live and a prior result is stale. "
     "Pass empty strings for line and direction when the user "
     "doesn't name them; the speaker's home station fills in.\n"
+    "  - Any question about the next bus, bus arrivals, or which "
+    "bus is coming → call get_bus_arrivals. Call it fresh every "
+    "time — bus arrivals are real-time. Pass an empty `route` "
+    "string for a bare 'when's the next bus'; pass a specific "
+    "route like 'B35' only if the user names one. The speaker "
+    "has a single configured bus stop with multiple routes; the "
+    "tool returns whichever buses are coming soonest.\n"
     "  - Music control ('play', 'pause', 'skip', 'previous', "
     "'resume', 'volume up', 'mute', etc.) → call the matching tool. "
     "Do not ask for confirmation.\n"
@@ -200,6 +209,14 @@ SYSTEM_INSTRUCTION = (
     "19 minutes.' Or, when station and line are obvious from "
     "context, the shorter form: 'Next train in 4 minutes, then "
     "11 and 17.'\n"
+    "  - get_bus_arrivals: prefer the `presentable_distance` field "
+    "for nearby buses — 'approaching', '1 stop away', '0.4 miles "
+    "away' is more honest than minute estimates because NYC bus "
+    "ETAs swing with traffic. For buses farther out, use minutes. "
+    "Mention the route ('B35', 'B70') so the user knows which is "
+    "coming. Examples: 'B35 approaching, B70 in about 8.' / 'Next "
+    "bus is the B70, 1 stop away.' / 'B35 in 4 minutes, B70 in 8, "
+    "then B35 in 22.'\n"
     "  - set_timer / cancel_timer: speak the response's `confirm` "
     "field verbatim. If cancel_timer returns `reason='ambiguous'`, "
     "read the candidate durations and ask which to cancel.\n"
@@ -813,6 +830,7 @@ def _build_registry(
     timer_scheduler: TimerScheduler | None = None,
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
+    bus: BusClient | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -830,6 +848,8 @@ def _build_registry(
     for fn in make_weather_tools(weather):
         registry.register(fn)
     for fn in make_subway_tools(subway):
+        registry.register(fn)
+    for fn in make_bus_tools(bus):
         registry.register(fn)
     for fn in make_time_tools():
         registry.register(fn)
@@ -2335,6 +2355,14 @@ async def run() -> None:
         )
         if cfg.subway_enabled else None
     )
+    bus = (
+        BusClient(
+            stop_id=cfg.bus_stop_id,
+            api_key=cfg.mta_bustime_key,
+            configured_routes=list(cfg.bus_routes) or None,
+        )
+        if cfg.bus_enabled else None
+    )
     # Volume coordinator: owns the canonical listening_level (0-100),
     # dispatches voice/dial-driven changes to the active source's own
     # attenuator (AirPlay DBus / Spotify HTTP / BT DBus) instead of
@@ -2447,6 +2475,7 @@ async def run() -> None:
         timer_scheduler=timer_scheduler,
         cues_manager=cues_manager,
         google_clients=google_clients,
+        bus=bus,
     )
 
     # Wire the timer pre-render hook so set_timer (and start-time
