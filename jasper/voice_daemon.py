@@ -1463,13 +1463,29 @@ class WakeLoop:
         every "stop listening" signal the primary loop respects.
         """
         assert self._mic_off is not None
+        # Wake-telemetry capture ring for the AEC OFF leg, parallel to
+        # the primary loop's `_capture_ring_on`. `getattr` so this
+        # stays safe in test setups that build WakeLoop via
+        # `__new__` + manual init (the dual-stream wake-handler tests).
+        capture_ring_off: deque | None = getattr(self, "_capture_ring_off", None)
         async for frame in self._mic_off.frames():
             if self._stop_event.is_set():
                 return
             if self._measurement_active.is_set():
                 continue
+            # Mute is a privacy promise — do NOT record audio for the
+            # wake-events corpus when the user has explicitly muted
+            # the mic. Mirrors the primary loop where the capture
+            # ring fills only AFTER the mute / measurement gates.
             if self._mic_muted:
                 continue
+            # Fill the capture ring while the user is "live" (gated
+            # past mute + measurement). Done BEFORE the acquiring /
+            # WAKE-state checks so a wake fire's 6 s window still has
+            # pre-fire context even if it overlaps the wake→turn-open
+            # buffering window.
+            if capture_ring_off is not None:
+                capture_ring_off.append(frame)
             if self._acquiring:
                 continue
             if self._state is not State.WAKE:
