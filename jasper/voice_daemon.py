@@ -30,6 +30,7 @@ from .tools.calendar import make_calendar_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.subway import make_subway_tools
+from .tools.time import make_time_tools
 from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
@@ -101,9 +102,15 @@ SYSTEM_INSTRUCTION = (
     "Call a tool whenever the user's request matches its purpose. "
     "These tools have data and capabilities you do not — answering "
     "from memory or guessing is incorrect. Specifically:\n"
-    "  - Any question about weather, temperature, rain, or forecast "
-    "→ call get_weather. If the user doesn't name a city, pass an "
-    "empty location string and the tool uses the speaker's default.\n"
+    "  - Any question about the current time, day of week, or date "
+    "('what time is it', 'what day is it', 'what's today's date') "
+    "→ call get_current_time. Your internal clock is the "
+    "session-open timestamp from the system prompt; it goes stale "
+    "within hours, so always call the tool for time queries.\n"
+    "  - Any question about weather, temperature, rain, sunrise, or "
+    "sunset → call get_weather. If the user doesn't name a city, "
+    "pass an empty location string and the tool uses the speaker's "
+    "default.\n"
     "  - Any question about the next train, subway arrivals, or "
     "which train is coming → call get_subway_arrivals. Call it fresh "
     "every time — train times are live and a prior result is stale. "
@@ -175,6 +182,10 @@ SYSTEM_INSTRUCTION = (
     "  - pause / resume / next_track / previous_track: 'Paused.' / "
     "'Resuming.' / 'Skipping.' / 'Going back.'\n"
     "  - get_volume: 'Volume is at 70%.'\n"
+    "  - get_current_time: speak the local time naturally — "
+    "'It's 3:47 PM.' or 'It's Thursday, May 21.' Round to natural "
+    "phrasing ('a quarter past 7') when the user asks casually. "
+    "Don't read out the timezone abbreviation unless asked.\n"
     "  - get_weather: pick the right scope from the response. "
     "now / today / tomorrow for current-and-near questions; "
     "hourly_forecast filtered by date+hour for 'this evening' / "
@@ -575,10 +586,17 @@ def _build_system_instruction(
     list itself only changes across restarts."""
     from datetime import datetime
     now_local = datetime.now().astimezone()
+    # The session-open timestamp is provided as orienting context only —
+    # it goes stale across the session's lifetime (potentially many
+    # hours; idle context-reset is opt-in and default off). For any
+    # actual time/date question, the model is told above to call
+    # get_current_time. Don't tell the model "use this directly" for
+    # time queries — that's the staleness bug the tool exists to fix.
     addendum = (
-        f" Right now it is {now_local.strftime('%A, %B %-d %Y, %-I:%M %p %Z')}"
-        f" ({now_local.tzname()}). Use this directly for time/date "
-        "questions — do not ask the user."
+        f" Session opened at {now_local.strftime('%A, %B %-d %Y, %-I:%M %p %Z')}"
+        f" ({now_local.tzname()}). For the actual current time, day, "
+        "or date, call get_current_time — the session-open timestamp "
+        "above goes stale within hours."
     )
     if location:
         addendum += (
@@ -812,6 +830,8 @@ def _build_registry(
     for fn in make_weather_tools(weather):
         registry.register(fn)
     for fn in make_subway_tools(subway):
+        registry.register(fn)
+    for fn in make_time_tools():
         registry.register(fn)
     if timer_scheduler is not None:
         for fn in make_timer_tools(timer_scheduler):

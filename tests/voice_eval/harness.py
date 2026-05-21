@@ -78,6 +78,7 @@ from jasper.subway import SubwayClient
 from jasper.tools import ToolRegistry
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.subway import make_subway_tools
+from jasper.tools.time import make_time_tools
 from jasper.tools.transport import make_transport_tools
 from jasper.tools.weather import make_weather_tools
 from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
@@ -192,6 +193,10 @@ def _build_test_registry(cfg: Config) -> ToolRegistry:
     # Weather — stateless HTTP client. Read-only.
     weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
     for fn in make_weather_tools(weather):
+        registry.register(fn)
+
+    # Time — pure datetime.now(). No backend, no failure modes.
+    for fn in make_time_tools():
         registry.register(fn)
 
     # Subway — stateless HTTP client. Read-only.
