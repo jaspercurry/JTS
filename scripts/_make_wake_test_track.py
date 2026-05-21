@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""Generate a wake-rate test audio track: N × 'Jarvis' with fixed gaps.
+"""Generate a wake-rate test audio track: N × <PHRASE> with fixed gaps.
 
 Runs on the Pi (uses OpenAI TTS via the API key in /etc/jasper/jasper.env).
 Pulled there by `scripts/make-wake-test-track.sh`.
 
-Output: /tmp/wake-test-track/{jarvis.wav, wake-test-track.wav, .m4a}
+Output: <out-dir>/{<slug>.wav, wake-test-track.wav, .m4a}
+  e.g. /tmp/wake-test-track/{jarvis.wav, wake-test-track.wav, ...}
+  or   /tmp/wake-test-track-hey-buddy/{hey-buddy.wav, wake-test-track.wav, ...}
 
 The track is fed to your phone (AirDrop) and played back during the
 wake-rate test. Same recorded utterance every time eliminates the
 'how loud was your voice this time' confound. Compare wake counts
-across chip/AEC configurations.
+across chip/AEC configurations or across wake models.
 """
 from __future__ import annotations
 
@@ -22,7 +24,12 @@ import wave
 from pathlib import Path
 
 
-OUT_DIR = Path("/tmp/wake-test-track")
+DEFAULT_OUT_DIR = Path("/tmp/wake-test-track")
+
+
+def _slug(phrase: str) -> str:
+    """Filename-safe slug for a phrase. 'Hey Buddy' -> 'hey-buddy'."""
+    return phrase.strip().lower().replace(" ", "-")
 
 
 def load_env(path: str = "/etc/jasper/jasper.env") -> None:
@@ -44,12 +51,16 @@ def load_env(path: str = "/etc/jasper/jasper.env") -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--reps", type=int, default=20,
-                    help="Number of 'Jarvis' utterances (default 20)")
+                    help="Number of utterances (default 20)")
     ap.add_argument("--gap-sec", type=float, default=4.0,
                     help="Silence after each utterance, seconds (default 4)")
     ap.add_argument("--word", default="Jarvis",
                     help="Text to synthesize (default 'Jarvis')")
+    ap.add_argument("--out-dir", type=Path, default=DEFAULT_OUT_DIR,
+                    help=f"Output directory (default {DEFAULT_OUT_DIR})")
     args = ap.parse_args()
+    OUT_DIR = args.out_dir
+    SLUG = _slug(args.word)
 
     load_env()
     # Also load the wizard-written overlay if present (voice provider
@@ -82,14 +93,14 @@ def main() -> int:
         return 1
 
     # 24 kHz mono int16 LE → wrap in WAV
-    jarvis_wav = OUT_DIR / "jarvis.wav"
-    with wave.open(str(jarvis_wav), "wb") as w:
+    utt_wav = OUT_DIR / f"{SLUG}.wav"
+    with wave.open(str(utt_wav), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(24000)
         w.writeframes(pcm)
     dur = len(pcm) / 2 / 24000
-    print(f"  → jarvis.wav: {dur:.2f}s ({len(pcm)} bytes)")
+    print(f"  → {utt_wav.name}: {dur:.2f}s ({len(pcm)} bytes)")
 
     # Build the test track via sox: jarvis + gap × reps
     silence_wav = OUT_DIR / f"silence-{args.gap_sec}s.wav"
@@ -101,7 +112,7 @@ def main() -> int:
     track_wav = OUT_DIR / "wake-test-track.wav"
     sox_inputs: list[str] = []
     for _ in range(args.reps):
-        sox_inputs.extend([str(jarvis_wav), str(silence_wav)])
+        sox_inputs.extend([str(utt_wav), str(silence_wav)])
     subprocess.run(["sox", *sox_inputs, str(track_wav)], check=True)
 
     track_dur = (dur + args.gap_sec) * args.reps
