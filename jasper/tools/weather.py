@@ -34,10 +34,11 @@ def make_weather_tools(weather):
           next_rain_window: {start, end, peak_probability,
                   duration_hours, ends_after_forecast} for the next
                   contiguous block of rainy hours, or null when no
-                  rain is expected. Use this for any "when will it
-                  rain" / "when will rain stop" question — the field
-                  gives you both endpoints, so you don't have to scan
-                  hourly_forecast.
+                  rain is expected. `end` is the first DRY hour after
+                  the window — when ends_after_forecast=true, rain
+                  runs past the end of the data and `end` is null
+                  (say "rain continues past <last hour>" instead of
+                  quoting an end time).
 
         Sunrise/sunset are ISO 8601 local-time strings (e.g.
         "2026-05-21T20:14"). Convert to spoken form for the user

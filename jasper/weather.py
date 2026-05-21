@@ -207,13 +207,28 @@ def _today_override(hourly: dict, current_time: str | None) -> dict:
 def _next_rain_window(hourly: dict, current_time: str | None) -> dict | None:
     """Find the next contiguous block of hours where
     ``precipitation_probability >= RAIN_PROBABILITY_THRESHOLD``, starting
-    from ``current_time``. Returns ``{start, end, peak_probability,
-    duration_hours}`` or ``None`` if no rain is expected in the forecast.
+    from ``current_time``. ``None`` when no rain in the forecast.
+
+    Return shape:
+        start                  ISO 8601 hour of the first rainy hour
+        end                    ISO 8601 hour of the first dry hour
+                               AFTER the window — i.e. the rain has
+                               stopped by this time. ``None`` when the
+                               window runs to the edge of the forecast.
+        peak_probability       max precipitation_probability across
+                               the window
+        duration_hours         end_idx - start_idx
+        ends_after_forecast    True when rain continues past the last
+                               hour we have data for. ``end`` is None
+                               in this case; the model should phrase
+                               the answer as "rain continues past
+                               <last hour>" rather than quoting an
+                               end time.
 
     The model needs both endpoints to answer "what time is it going to
     rain" — it wants start AND end, not just start. Letting the model
     scan ``hourly_forecast`` produced answers that gave only the start
-    time. A precomputed window means the same lookup every time."""
+    time."""
     times = hourly.get("time") or []
     probs = hourly.get("precipitation_probability") or []
     if not current_time or not times:
@@ -221,7 +236,7 @@ def _next_rain_window(hourly: dict, current_time: str | None) -> dict | None:
     cur_hour = current_time[:13]
     start_idx: int | None = None
     end_idx: int | None = None
-    peak: int | None = None
+    peak: int = 0
     for i, t in enumerate(times):
         if not isinstance(t, str) or t < cur_hour:
             continue
@@ -233,24 +248,16 @@ def _next_rain_window(hourly: dict, current_time: str | None) -> dict | None:
             if p >= RAIN_PROBABILITY_THRESHOLD:
                 start_idx = i
                 peak = p
+        elif p >= RAIN_PROBABILITY_THRESHOLD:
+            peak = max(peak, p)
         else:
-            if p >= RAIN_PROBABILITY_THRESHOLD:
-                if peak is None or p > peak:
-                    peak = p
-            else:
-                end_idx = i
-                break
+            end_idx = i
+            break
     if start_idx is None:
         return None
-    # Rain continues to the edge of the forecast window — give the model
-    # whatever upper bound we have so the answer can be "into tomorrow"
-    # rather than open-ended. Mark `ends_after_forecast=True` so the
-    # model knows the end is a clip, not a real dry-out time.
+    ends_after_forecast = end_idx is None
     if end_idx is None:
         end_idx = len(times)
-        ends_after_forecast = True
-    else:
-        ends_after_forecast = False
     return {
         "start": times[start_idx],
         "end": times[end_idx] if end_idx < len(times) else None,
