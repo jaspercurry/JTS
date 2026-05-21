@@ -220,6 +220,8 @@ def make_transport_dispatcher(renderer, router):
     async def _dispatch(action: str) -> dict:
         source = await _detect_source(renderer)
         logger.info("transport dispatch: action=%s source=%s", action, source)
+        # Used in two failure messages below; resolve once.
+        hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
         try:
             if source == "airplay":
                 matched = await _resolve_airplay_account(router)
@@ -241,7 +243,6 @@ def make_transport_dispatcher(renderer, router):
                 # No Spotify account playing the AirPlay track — try
                 # DACP for non-Spotify senders that expose it.
                 if not await _airplay_remote_available():
-                    hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
                     return {
                         "error": "the airplay sender isn't playing a track "
                         "from any configured spotify account, and the device "
@@ -269,16 +270,21 @@ def make_transport_dispatcher(renderer, router):
                 # Lazy rebuild covers the post-revocation re-link path:
                 # if the router went empty after a bad refresh, give it
                 # one more chance before we tell the user it's broken.
-                if not router.clients and hasattr(router, "refresh_if_empty"):
+                if not router.clients:
                     await router.refresh_if_empty()
                 active = await router.active(airplay_active=False)
                 if active is None:
-                    reason = (
-                        router.empty_reason()
-                        if hasattr(router, "empty_reason") else ""
-                    )
-                    if reason == "revoked":
-                        return {"error": "your spotify session has expired — re-link in the spotify wizard."}
+                    if router.empty_reason() == "revoked":
+                        from .spotify import _format_name_list
+                        names = router.revoked_account_names()
+                        who = (
+                            _format_name_list(names) if names
+                            else "your spotify account"
+                        )
+                        return {
+                            "error": f"spotify signed {who} out. "
+                            f"tell the user to re-link at {hostname}/spotify.",
+                        }
                     return {"error": "no spotify account configured"}
                 device_id = await _spotify_active_device_id(active.sp)
                 if action == "toggle":

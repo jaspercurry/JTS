@@ -61,6 +61,23 @@ _CACHE_TTL_SEC = 3600.0
 # and retrying just adds latency before falling through to DACP.
 _RETRY_BACKOFF_SEC = (0.20, 0.40)  # 2 retries, ~600ms total worst case
 
+# Minimum gap between Router.refresh_if_empty attempts when the previous
+# attempt produced no usable clients. Protects Spotify's /api/token from
+# being hammered on a persistently-revoked account (the user has to
+# re-link via the wizard for recovery; retrying every voice command
+# can't help). Tuned for "every voice command shouldn't trigger a network
+# refresh, but the user shouldn't wait long after re-linking either."
+# Tests monkey-patch this module attribute when they need deterministic
+# timing.
+_REFRESH_MIN_INTERVAL_SEC = 30.0
+
+
+def _now() -> float:
+    """Wrapped `time.monotonic` so tests can mock the refresh-cooldown
+    clock without affecting asyncio's event-loop clock (which also calls
+    `time.monotonic`)."""
+    return time.monotonic()
+
 
 @dataclass
 class AccountClient:
@@ -88,12 +105,27 @@ class AccountStatus:
 class BuildResult:
     clients: dict[str, AccountClient]
     statuses: list[AccountStatus]
+    # The registry's default_name at the moment of the build. Mirrored
+    # here so a rebuild_fn caller (Router.refresh_if_empty) can also
+    # update Router.default_name when the wizard changes which account
+    # is default — without a second Registry.load.
+    default_name: str = ""
 
 
 def _classify_oauth_error(exc: BaseException) -> tuple[str, str]:
     """Map a spotipy/refresh exception to (state, detail). Picks
-    'revoked' for any error whose text mentions invalid_grant — that's
-    the Spotify response for revoked/expired/superseded refresh tokens."""
+    'revoked' for any error whose `error` attr is 'invalid_grant', or
+    whose text mentions invalid_grant / revoked — that's the Spotify
+    response for revoked/expired/superseded refresh tokens.
+
+    Inspects `.error` first (the structured attribute spotipy's
+    SpotifyOauthError carries; future-proofs against upstream changes
+    to the str() format), then falls back to substring search on the
+    rendered text (catches plain-Exception cases used in tests + any
+    historical paths where the structured attr is missing)."""
+    error_attr = getattr(exc, "error", None)
+    if isinstance(error_attr, str) and error_attr.lower() == "invalid_grant":
+        return ACCOUNT_REVOKED, "refresh token revoked — re-link required"
     msg = str(exc)
     low = msg.lower()
     if "invalid_grant" in low or "revoked" in low:
@@ -108,9 +140,11 @@ def build_clients(
     redirect_uri: str,
 ) -> BuildResult:
     """Build a spotipy.Spotify client per registered account. Returns
-    a BuildResult with the usable clients dict AND a per-account status
+    a BuildResult with the usable clients dict, a per-account status
     list (so callers can distinguish "never set up" from "token revoked"
-    and surface the right message to the user).
+    and surface the right message to the user), and the registry's
+    default_name (mirrored so Router.refresh_if_empty can update its
+    default_name on a rebuild without a separate Registry.load).
 
     Uses PKCE (no client secret). Refresh tokens issued via the legacy
     Code+Secret flow will fail to refresh under PKCE — those accounts
@@ -172,7 +206,10 @@ def build_clients(
             statuses.append(AccountStatus(
                 name=account.name, state=state, detail=detail,
             ))
-    return BuildResult(clients=clients, statuses=statuses)
+    return BuildResult(
+        clients=clients, statuses=statuses,
+        default_name=registry.default_name,
+    )
 
 
 # DBus probe for shairport-sync's currently-connected ClientName.
@@ -234,12 +271,11 @@ class Router:
     default_name: str
     statuses: list[AccountStatus] = field(default_factory=list)
     rebuild_fn: Callable[[], BuildResult] | None = field(default=None, repr=False)
-    refresh_min_interval_sec: float = 30.0
     # None means "never attempted" — distinguishes the first call (which
-    # must always proceed) from a recent retry (which we rate-limit).
-    # Initializing to 0.0 was a bug: time.monotonic() near process start
-    # is < refresh_min_interval_sec, so the very first refresh would be
-    # silently throttled.
+    # must always proceed) from a recent retry (which we rate-limit at
+    # _REFRESH_MIN_INTERVAL_SEC). Initializing to 0.0 was a bug:
+    # time.monotonic() near process start is < the interval, so the very
+    # first refresh would be silently throttled.
     _last_refresh_attempt: float | None = field(
         default=None, init=False, repr=False,
     )
@@ -248,31 +284,48 @@ class Router:
     async def refresh_if_empty(self) -> bool:
         """If `clients` is empty and a `rebuild_fn` is set, rerun the
         build and replace `clients` + `statuses` if it succeeds.
-        Rate-limited to once per `refresh_min_interval_sec` so we don't
+        Rate-limited to once per `_REFRESH_MIN_INTERVAL_SEC` so we don't
         hammer Spotify's token endpoint on a persistently-revoked token
         (the user has to re-link via the wizard; retrying won't help).
 
-        Returns True iff `clients` is non-empty after the attempt."""
+        Returns True iff `clients` is non-empty after the attempt.
+
+        Failure-mode notes:
+        - If `rebuild_fn` raises (e.g. transient network error reading
+          the registry, or Spotify's auth endpoint 5xx'ing) we log,
+          return False, and do NOT advance the rate-limit timestamp —
+          the next voice command should retry immediately rather than
+          wait out the cooldown. The cooldown exists to throttle
+          PERSISTENT failures (revoked tokens), not transient ones.
+        - If `rebuild_fn` runs and produces a result with no clients
+          (e.g. all accounts revoked) we record the timestamp so we
+          don't pound /api/token on every subsequent voice command.
+        """
         if self.clients:
             return True
         if self.rebuild_fn is None:
             return False
-        now = time.monotonic()
+        now = _now()
         if (
             self._last_refresh_attempt is not None
-            and now - self._last_refresh_attempt < self.refresh_min_interval_sec
+            and now - self._last_refresh_attempt < _REFRESH_MIN_INTERVAL_SEC
         ):
             return bool(self.clients)
-        self._last_refresh_attempt = now
         try:
             result = await asyncio.to_thread(self.rebuild_fn)
         except Exception as e:  # noqa: BLE001
+            # Don't update _last_refresh_attempt — a transient failure
+            # shouldn't lock us out of retrying for the cooldown window.
             logger.warning("router: rebuild_fn raised: %s", e)
             return False
-        # Always replace statuses so the tool layer sees the latest
-        # per-account reason (the wizard may still show a stale "ok"
-        # for up to its own cache TTL — that's fine).
+        self._last_refresh_attempt = now
+        # Replace statuses + default_name so the tool layer sees the
+        # latest per-account reason and the wizard-current default.
+        # (The wizard may still show a stale "ok" for up to its own
+        # cache TTL — that's fine, the wizard owns its cache.)
         self.statuses = result.statuses
+        if result.default_name:
+            self.default_name = result.default_name
         if result.clients:
             self.clients = result.clients
             logger.info(
@@ -300,6 +353,15 @@ class Router:
         if any(s.state == ACCOUNT_REVOKED for s in self.statuses):
             return "revoked"
         return "needs_oauth"
+
+    def revoked_account_names(self) -> list[str]:
+        """Names of accounts whose tokens were revoked at last build.
+        Empty list when there are none (or when statuses isn't
+        populated). Voice tool reads this to name the affected
+        accounts in the spoken error — "spotify signed jasper out"
+        beats "your spotify session expired" because the user knows
+        which household member's account to re-link."""
+        return [s.name for s in self.statuses if s.state == ACCOUNT_REVOKED]
 
     async def resolve_for_transport(
         self, client_name: str, mpris_title: str

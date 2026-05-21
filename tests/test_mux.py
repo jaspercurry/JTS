@@ -163,3 +163,62 @@ async def test_pause_is_resilient_to_action_failures(mux, patched_probes):
     # State still updated despite the pause failure.
     assert mux._state.playing[Source.SPOTIFY] is True
     assert mux._state.playing[Source.AIRPLAY] is True
+
+
+# --- Regression test for the BuildResult return-shape change ---
+
+
+def test_ensure_spotify_router_consumes_build_result_correctly(tmp_path, monkeypatch):
+    """build_clients used to return a bare `dict[str, AccountClient]`.
+    PR #162 changed it to `BuildResult(clients=..., statuses=...,
+    default_name=...)`. Three callers (mux.py + control/server.py x2)
+    silently broke because they did `clients = build_clients(...)`
+    then `Router(clients=clients, ...)` — passing a dataclass where a
+    dict was expected.
+
+    This test pins the correct shape consumption for mux.py: given a
+    fake build_clients that returns a BuildResult, _ensure_spotify_router
+    must produce a Router whose `clients` field is the dict, not the
+    BuildResult itself."""
+    from unittest.mock import patch, MagicMock
+    from jasper.mux import Mux
+    from jasper.spotify_router import (
+        ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
+    )
+    from jasper.accounts import Account
+
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
+    monkeypatch.setenv(
+        "JASPER_SPOTIFY_ACCOUNTS_PATH", str(tmp_path / "accounts.json"),
+    )
+    (tmp_path / "accounts.json").write_text(
+        '{"accounts": [{"name": "jasper", "cache_path": "/nope"}], '
+        '"default": "jasper"}'
+    )
+
+    fake_client = AccountClient(
+        account=Account(name="jasper", cache_path="/nope"),
+        sp=MagicMock(),
+    )
+
+    def fake_build_clients(_registry, *, client_id, redirect_uri):
+        return BuildResult(
+            clients={"jasper": fake_client},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+            default_name="jasper",
+        )
+
+    mux = Mux.__new__(Mux)  # bypass full __init__
+    mux._spotify_router = None
+    mux._spotify_router_built = False
+
+    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+        router = mux._ensure_spotify_router()
+
+    assert isinstance(router, Router)
+    assert router.clients == {"jasper": fake_client}, (
+        "router.clients must be the dict from BuildResult.clients, "
+        "not the BuildResult itself"
+    )
+    assert isinstance(router.clients, dict)
+    assert router.statuses[0].state == ACCOUNT_OK

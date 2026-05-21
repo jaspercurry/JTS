@@ -272,8 +272,9 @@ def test_build_clients_marks_missing_cache_as_needs_oauth(tmp_path):
 
 def test_classify_oauth_error_revoked_vs_other():
     """The revoked-vs-error classifier drives the user-facing message.
-    Any error text containing 'invalid_grant' or 'revoked' maps to
-    revoked; everything else falls through to error."""
+    Any error whose `.error` attr is 'invalid_grant' or whose rendered
+    text contains 'invalid_grant'/'revoked' maps to revoked; everything
+    else falls through to error."""
     from jasper.spotify_router import (
         ACCOUNT_ERROR, ACCOUNT_REVOKED, _classify_oauth_error,
     )
@@ -285,6 +286,29 @@ def test_classify_oauth_error_revoked_vs_other():
     assert state == ACCOUNT_ERROR
     state, _ = _classify_oauth_error(Exception("HTTP 500 from Spotify"))
     assert state == ACCOUNT_ERROR
+
+
+def test_classify_oauth_error_inspects_error_attr_for_spotipy_exceptions():
+    """spotipy's SpotifyOauthError carries structured `.error` and
+    `.error_description` attributes. Inspect `.error` directly so a
+    future spotipy refactor of the str() format doesn't silently
+    reclassify revoked → error and break the user-facing message."""
+    from jasper.spotify_router import ACCOUNT_REVOKED, _classify_oauth_error
+
+    class FakeSpotifyOauthError(Exception):
+        # Mirrors spotipy's SpotifyOauthError shape.
+        def __init__(self, msg: str, error: str = "", error_description: str = ""):
+            super().__init__(msg)
+            self.error = error
+            self.error_description = error_description
+
+    # str() is empty but the structured attr is set — this is the case
+    # a substring-only classifier would misclassify.
+    exc = FakeSpotifyOauthError("", error="invalid_grant",
+                                error_description="Refresh token revoked")
+    state, detail = _classify_oauth_error(exc)
+    assert state == ACCOUNT_REVOKED
+    assert "re-link" in detail.lower()
 
 
 # --- Router.refresh_if_empty + empty_reason ---
@@ -331,7 +355,9 @@ def test_router_refresh_if_empty_rate_limited():
     """When a token is persistently revoked, every voice command would
     otherwise hammer the rebuild path → one HTTP refresh attempt per
     voice turn. Rate-limit blocks repeat rebuild calls inside the
-    window."""
+    cooldown window. Uses a controlled `time.monotonic` so the test is
+    deterministic regardless of CI scheduling."""
+    from unittest.mock import patch
     from jasper.spotify_router import (
         ACCOUNT_REVOKED, AccountStatus, BuildResult,
     )
@@ -342,15 +368,93 @@ def test_router_refresh_if_empty_rate_limited():
             clients={},
             statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
         )
-    # Generous window so test timing doesn't matter.
-    r = Router(
-        clients={}, default_name="jasper",
-        rebuild_fn=rebuild, refresh_min_interval_sec=60.0,
-    )
-    asyncio.run(r.refresh_if_empty())
-    asyncio.run(r.refresh_if_empty())
-    asyncio.run(r.refresh_if_empty())
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    # Three rapid calls inside the cooldown window: only the first
+    # should fire the rebuild_fn; the next two are throttled.
+    times = iter([1000.0, 1005.0, 1015.0])
+    with patch("jasper.spotify_router._now", side_effect=lambda: next(times)):
+        asyncio.run(r.refresh_if_empty())
+        asyncio.run(r.refresh_if_empty())
+        asyncio.run(r.refresh_if_empty())
     assert calls["n"] == 1
+
+
+def test_router_refresh_if_empty_retries_after_cooldown_window():
+    """The flip side of rate-limiting: after the cooldown elapses, the
+    next attempt actually fires. A one-shot lockout bug (e.g. wrong
+    comparison operator) would pass the rate-limit test above but fail
+    here."""
+    from unittest.mock import patch
+    from jasper.spotify_router import (
+        ACCOUNT_REVOKED, AccountStatus, BuildResult,
+        _REFRESH_MIN_INTERVAL_SEC,
+    )
+    calls = {"n": 0}
+    def rebuild():
+        calls["n"] += 1
+        return BuildResult(
+            clients={},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_REVOKED)],
+        )
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    times = iter([
+        1000.0,                                  # first attempt
+        1000.0 + _REFRESH_MIN_INTERVAL_SEC + 1.0,  # past cooldown
+    ])
+    with patch("jasper.spotify_router._now", side_effect=lambda: next(times)):
+        asyncio.run(r.refresh_if_empty())
+        asyncio.run(r.refresh_if_empty())
+    assert calls["n"] == 2
+
+
+def test_router_refresh_if_empty_swallows_rebuild_exception_and_keeps_cooldown_open():
+    """Transient failures (network blip during build_clients, OSError
+    reading the registry, etc.) must NOT advance the cooldown — that
+    would lock the user out of recovery for _REFRESH_MIN_INTERVAL_SEC
+    over a problem that may already be gone."""
+    calls = {"n": 0}
+    def rebuild():
+        calls["n"] += 1
+        raise RuntimeError("transient network failure")
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    assert asyncio.run(r.refresh_if_empty()) is False
+    # Immediately retry — should fire again, not be throttled, because
+    # the previous attempt raised.
+    assert asyncio.run(r.refresh_if_empty()) is False
+    assert calls["n"] == 2
+    assert r.clients == {}
+    assert r.statuses == []
+
+
+def test_router_refresh_if_empty_no_rebuild_fn_returns_false_without_side_effects():
+    """A Router constructed without a rebuild_fn (e.g. mux.py / control
+    daemon construct one-shot Routers) must return False cleanly when
+    asked to refresh — no AttributeError, no state mutation."""
+    r = Router(clients={}, default_name="jasper")
+    assert asyncio.run(r.refresh_if_empty()) is False
+    assert r._last_refresh_attempt is None
+
+
+def test_router_refresh_if_empty_updates_default_name_on_rebuild():
+    """When the wizard changes the default account (POST /default),
+    the rebuild_fn surfaces the new default via BuildResult.default_name.
+    Router.refresh_if_empty must mirror it onto self.default_name so
+    subsequent active() calls route to the new default."""
+    from jasper.spotify_router import (
+        ACCOUNT_OK, AccountStatus, BuildResult,
+    )
+    rebuilt_ac = _ac("brittany", title="Hey Jude")
+
+    def rebuild():
+        return BuildResult(
+            clients={"brittany": rebuilt_ac},
+            statuses=[AccountStatus(name="brittany", state=ACCOUNT_OK)],
+            default_name="brittany",
+        )
+
+    r = Router(clients={}, default_name="jasper", rebuild_fn=rebuild)
+    assert asyncio.run(r.refresh_if_empty()) is True
+    assert r.default_name == "brittany"
 
 
 def test_router_refresh_if_empty_propagates_statuses_even_when_clients_still_empty():
@@ -400,3 +504,108 @@ def test_router_empty_reason_needs_oauth_for_all_unauthed_accounts():
         statuses=[AccountStatus(name="jasper", state=ACCOUNT_NEEDS_OAUTH)],
     )
     assert r.empty_reason() == "needs_oauth"
+
+
+def test_router_revoked_account_names_filters_to_revoked_only():
+    """The voice tool reads this to name the affected accounts in the
+    spoken error. Must include only ACCOUNT_REVOKED entries — not
+    ACCOUNT_OK or ACCOUNT_NEEDS_OAUTH (those don't need re-linking)."""
+    from jasper.spotify_router import (
+        ACCOUNT_NEEDS_OAUTH, ACCOUNT_OK, ACCOUNT_REVOKED, AccountStatus,
+    )
+    r = Router(
+        clients={},
+        default_name="jasper",
+        statuses=[
+            AccountStatus(name="jasper", state=ACCOUNT_OK),
+            AccountStatus(name="brittany", state=ACCOUNT_REVOKED),
+            AccountStatus(name="guest", state=ACCOUNT_NEEDS_OAUTH),
+            AccountStatus(name="alice", state=ACCOUNT_REVOKED),
+        ],
+    )
+    assert r.revoked_account_names() == ["brittany", "alice"]
+
+
+def test_router_revoked_account_names_empty_when_no_revoked():
+    from jasper.spotify_router import ACCOUNT_OK, AccountStatus
+    r = Router(
+        clients={"jasper": _ac("jasper")},
+        default_name="jasper",
+        statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+    )
+    assert r.revoked_account_names() == []
+
+
+# --- Real-spotipy integration: the exact bug PR #162 fixed ---
+
+
+def test_build_clients_classifies_invalid_grant_from_real_spotipy(tmp_path):
+    """End-to-end pin for the production bug: spotipy's SpotifyPKCE,
+    given a cache file with an expired access_token + revoked
+    refresh_token, attempts the refresh and Spotify's auth server
+    returns HTTP 400 + invalid_grant. build_clients must classify
+    that as ACCOUNT_REVOKED and skip the client.
+
+    Mocks spotipy at the HTTP transport layer (requests.Session.post)
+    rather than at any spotipy boundary, so this would catch a
+    regression even if spotipy refactored its internal exception
+    handling. This is the test that would have caught the original
+    production bug end-to-end."""
+    import json
+    from unittest.mock import MagicMock, patch
+    from jasper.spotify_router import ACCOUNT_REVOKED, build_clients
+    from jasper.accounts import Account, Registry
+
+    # 1. Plant a cache file that looks like a real spotipy PKCE cache
+    #    with an expired access_token + a refresh_token.
+    cache_path = tmp_path / "jasper.json"
+    cache_path.write_text(json.dumps({
+        "access_token": "expired_access_token_value",
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": "the_revoked_refresh_token",
+        "scope": (
+            "user-modify-playback-state user-read-playback-state "
+            "user-read-currently-playing user-read-private "
+            "playlist-read-private playlist-read-collaborative"
+        ),
+        "expires_at": 0,  # in the past → spotipy will attempt refresh
+    }))
+    registry = Registry(
+        accounts=[Account(name="jasper", cache_path=str(cache_path))],
+        default_name="jasper",
+    )
+
+    # 2. Mock the HTTP POST that spotipy's refresh_access_token makes.
+    #    Spotify returns 400 + {"error": "invalid_grant", ...}.
+    import requests
+
+    def fake_post(*args, **kwargs):
+        resp = MagicMock()
+        resp.status_code = 400
+        resp.text = '{"error": "invalid_grant", "error_description": "Refresh token revoked"}'
+        resp.json.return_value = {
+            "error": "invalid_grant",
+            "error_description": "Refresh token revoked",
+        }
+        err = requests.exceptions.HTTPError(response=resp)
+        resp.raise_for_status.side_effect = err
+        return resp
+
+    with patch("spotipy.oauth2.requests.Session.post", side_effect=fake_post):
+        result = build_clients(
+            registry,
+            client_id="a" * 32,  # valid-looking PKCE client_id
+            redirect_uri="https://example.com/cb",
+        )
+
+    # 3. Account should be classified revoked, not OK or generic-error.
+    assert result.clients == {}, (
+        "revoked refresh_token should not produce a usable client"
+    )
+    assert len(result.statuses) == 1
+    assert result.statuses[0].name == "jasper"
+    assert result.statuses[0].state == ACCOUNT_REVOKED, (
+        f"expected REVOKED, got {result.statuses[0].state} "
+        f"(detail={result.statuses[0].detail!r})"
+    )
