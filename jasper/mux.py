@@ -214,7 +214,10 @@ class Mux:
                 default_name="default",
             )
             hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-            clients = build_clients(
+            # build_clients returns BuildResult (clients dict + per-account
+            # statuses). mux only needs the clients dict — it doesn't read
+            # statuses or surface revoked-vs-needs-oauth distinctions.
+            result = build_clients(
                 registry,
                 client_id=client_id,
                 redirect_uri=os.environ.get(
@@ -222,11 +225,13 @@ class Mux:
                     f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
                 ),
             )
-            if not clients:
+            if not result.clients:
                 logger.debug("spotify Web API: no accounts authorized")
                 return None
             self._spotify_router = Router(
-                clients=clients, default_name=registry.default_name,
+                clients=result.clients,
+                default_name=registry.default_name,
+                statuses=result.statuses,
             )
             return self._spotify_router
         except Exception as e:  # noqa: BLE001

@@ -320,3 +320,99 @@ def test_relink_notice_only_shown_for_revoked():
         AccountStatus(name="x", state=ACCOUNT_NEEDS_OAUTH), "x",
     ) == ""
     assert _relink_notice_html(None, "x") == ""
+
+
+def test_probe_all_health_invalidate_drops_cache(tmp_path):
+    """Wizard mutations (OAuth callback, remove, reset, setup-credentials)
+    bust the cache so the next render reflects the new state — the user
+    re-links, refreshes the page, sees green within the same render
+    cycle (not after the 60s TTL ages out)."""
+    from jasper.web import spotify_setup as ss
+    ss._invalidate_health_cache()
+    calls = {"n": 0}
+
+    def fake_build(_registry, *, client_id, redirect_uri):
+        calls["n"] += 1
+        return MagicMock(clients={}, statuses=[])
+
+    cfg = {
+        "client_id": "abc123",
+        "mode": "bounce",
+        "registry_path": str(tmp_path / "registry.json"),
+        "bounce_redirect_uri": "https://example.com/cb",
+        "manual_redirect_uri": "http://127.0.0.1/cb",
+    }
+    (tmp_path / "registry.json").write_text('{"accounts": [], "default": ""}')
+    with patch.object(ss, "build_clients", side_effect=fake_build):
+        ss._probe_all_health(cfg)
+        ss._invalidate_health_cache()
+        ss._probe_all_health(cfg)
+    assert calls["n"] == 2, (
+        "_invalidate_health_cache must force the next probe to re-run "
+        "build_clients, not return the cached result"
+    )
+
+
+def test_probe_all_health_caches_failure_as_empty_buildresult(tmp_path):
+    """A transient failure in build_clients (e.g. Registry.load raised
+    or spotipy import error) currently caches an empty BuildResult for
+    the full TTL. This is the trade-off documented in the wizard code:
+    keep the page renderable, accept up to 60s of stale "no accounts".
+
+    Pin the behavior so future refactors are deliberate about the
+    choice rather than silently swapping to "re-try every render."""
+    from jasper.web import spotify_setup as ss
+    ss._invalidate_health_cache()
+    calls = {"n": 0}
+
+    def boom(_registry, *, client_id, redirect_uri):
+        calls["n"] += 1
+        raise RuntimeError("network blip")
+
+    cfg = {
+        "client_id": "abc123",
+        "mode": "bounce",
+        "registry_path": str(tmp_path / "registry.json"),
+        "bounce_redirect_uri": "https://example.com/cb",
+        "manual_redirect_uri": "http://127.0.0.1/cb",
+    }
+    (tmp_path / "registry.json").write_text('{"accounts": [], "default": ""}')
+    with patch.object(ss, "build_clients", side_effect=boom):
+        r1 = ss._probe_all_health(cfg)
+        r2 = ss._probe_all_health(cfg)
+    assert calls["n"] == 1, (
+        "second call inside TTL must return the cached failure, not retry"
+    )
+    assert r1 is r2
+    assert r1.clients == {} and r1.statuses == []
+
+
+def test_relink_notice_html_escapes_name():
+    """Defense-in-depth: even though callers escape and the registry
+    constrains names to `[a-zA-Z0-9_-]+`, `_relink_notice_html` must
+    escape its own input so a future caller bypassing the upstream
+    safeguards doesn't open an XSS hole."""
+    from jasper.spotify_router import ACCOUNT_REVOKED, AccountStatus
+    from jasper.web.spotify_setup import _relink_notice_html
+    status = AccountStatus(name="x", state=ACCOUNT_REVOKED)
+    html_out = _relink_notice_html(status, '<script>alert("xss")</script>')
+    assert "<script>" not in html_out
+    assert "&lt;script&gt;" in html_out
+
+
+def test_status_by_name_returns_none_for_unknown_account():
+    """A registered account whose name doesn't appear in statuses (e.g.
+    probe ran against a stale registry snapshot) gets None — and the
+    badge renderer collapses that to no badge at all, which is the
+    intended "we couldn't determine" UX."""
+    from jasper.spotify_router import (
+        ACCOUNT_OK, AccountStatus, BuildResult,
+    )
+    from jasper.web.spotify_setup import _status_by_name, _health_badge_html
+    result = BuildResult(
+        clients={},
+        statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+    )
+    assert _status_by_name(result, "brittany") is None
+    # And the badge for unknown is empty, not a broken render.
+    assert _health_badge_html(None) == ""

@@ -247,7 +247,12 @@ def _build_spotify_router_or_none():
             default_name="default",
         )
         hostname = os.environ.get("JASPER_HOSTNAME", "jts.local")
-        clients = build_clients(
+        # build_clients returns BuildResult. The control daemon doesn't
+        # surface revoked-vs-needs-oauth status to the user, so we use
+        # the clients dict only — but still pass statuses through to the
+        # Router so /state can introspect them if a future endpoint adds
+        # a Spotify health probe.
+        result = build_clients(
             registry,
             client_id=client_id,
             redirect_uri=os.environ.get(
@@ -255,9 +260,13 @@ def _build_spotify_router_or_none():
                 f"https://jaspercurry.github.io/spotify-oauth-callback/?host={hostname}",
             ),
         )
-        if not clients:
+        if not result.clients:
             return None
-        return Router(clients=clients, default_name=registry.default_name)
+        return Router(
+            clients=result.clients,
+            default_name=registry.default_name,
+            statuses=result.statuses,
+        )
     except Exception as e:  # noqa: BLE001
         logger.debug("control daemon spotify router build failed: %s", e)
         return None
@@ -524,14 +533,19 @@ async def _toggle_transport() -> dict:
         )
         accounts = Registry.load(accounts_path)
         maybe_migrate_legacy(accounts, legacy_cache, default_name="default")
-        clients = build_clients(
+        # build_clients returns BuildResult (clients + statuses). Dial
+        # press is a one-shot operation that doesn't need lazy rebuild,
+        # so we don't wire a rebuild_fn here.
+        result = build_clients(
             accounts,
             client_id=client_id,
             redirect_uri=redirect_uri,
         )
-        if clients:
+        if result.clients:
             router = Router(
-                clients=clients, default_name=accounts.default_name,
+                clients=result.clients,
+                default_name=accounts.default_name,
+                statuses=result.statuses,
             )
 
     dispatch = make_transport_dispatcher(renderer, router)

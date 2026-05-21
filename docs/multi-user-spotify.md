@@ -158,17 +158,96 @@ Each person, on their own phone or laptop on the home Wi-Fi:
 That's it. No per-device setup. No "what's the AirPlay name on this
 device" form to fill in.
 
-### 3. Restart `jasper-voice` once
+### 3. No manual restart needed
 
-The voice daemon reads the registry at startup. After the first
-account is added, restart it once so the router builds clients for
-the new accounts:
-```
-sudo systemctl restart jasper-voice
-```
-Subsequent additions don't strictly need a restart — the wizard's
-account-add handler restarts the daemon for you. The "restart once"
-note is for the very first OAuthed account on a fresh install.
+The wizard's OAuth-callback handler restarts `jasper-voice` for you
+on every successful link — including the very first. The daemon's
+router also rebuilds itself lazily on the next voice command if its
+clients dict is empty (see "Refresh-token revocation & recovery"
+below), so even an out-of-band re-link (e.g., manual cache file
+edit) recovers without intervention.
+
+## Refresh-token revocation & recovery
+
+Spotify can revoke a refresh token at any time, on the server side,
+with no notice to us. Known triggers:
+
+- Password change
+- "Sign out everywhere" from Spotify account settings
+- A new OAuth grant for the same `(user, client_id, scopes)` from
+  another device superseding the older one
+- Refresh-token rotation race (two simultaneous refreshes of the
+  same token — the second's refresh is invalidated by the first's
+  rotation)
+- Spotify-side security sweeps (undocumented; community-reported
+  ~60-day inactivity windows)
+
+There is no Spotify API to refresh a refresh token without user
+interaction once it's revoked — this is an OAuth 2.0 + PKCE
+constraint, not something we can engineer around. The user must
+re-link via the wizard.
+
+**What you'll see when this happens:**
+
+- `/spotify` shows a red "session expired" badge on the affected
+  account's card. The card auto-opens, exposing an inline **Re-link
+  *name*** button that POSTs to `/start` with the same account name
+  (the OAuth callback then overwrites the existing cache file).
+- Voice commands targeting that account return *"your spotify
+  session has expired and needs to be re-linked. tell the user to
+  visit http://jts.local/spotify to re-link."* — spoken by the LLM
+  during the active turn, not as a pre-rendered cue.
+- Daemon startup log (`journalctl -u jasper-voice`) includes
+  `event=spotify.startup_empty statuses=[('jasper', 'revoked')] setup_url=...`
+  if the token was already revoked when the daemon started.
+
+**How recovery works (no daemon restart needed):**
+
+1. User clicks Re-link in the wizard, completes the OAuth flow.
+2. The wizard's `_exchange_and_finish` handler writes the new token
+   to the cache file, invalidates its own probe cache, and restarts
+   `jasper-voice`. The restart is the fast path.
+3. As a backup, the next voice command after a re-link triggers
+   `Router.refresh_if_empty()` — which re-runs `build_clients` and
+   atomically replaces the router's `clients` + `statuses` +
+   `default_name`. This covers cases where the restart fails or
+   the cache file was updated via some other path.
+
+**Implementation pointers:**
+
+- `jasper.spotify_router.build_clients` — returns a `BuildResult`
+  with `clients`, per-account `statuses` (`ACCOUNT_OK`,
+  `ACCOUNT_NEEDS_OAUTH`, `ACCOUNT_REVOKED`, `ACCOUNT_ERROR`), and
+  the registry's `default_name`. `_classify_oauth_error` inspects
+  the `SpotifyOauthError.error` attribute first (and falls back to
+  text substring search) so the classification survives spotipy
+  format changes.
+- `jasper.spotify_router.Router.refresh_if_empty()` — lazy rebuild
+  on first voice command after the clients dict went empty.
+  Rate-limited to once per `_REFRESH_MIN_INTERVAL_SEC` (30s) to
+  avoid hammering Spotify's `/api/token` on a persistently-revoked
+  account. Transient rebuild failures (exception raised) do NOT
+  advance the cooldown — only completed builds do.
+- `jasper.spotify_router.Router.empty_reason()` — classifies why
+  `clients` is empty (`"revoked"`, `"needs_oauth"`, `"no_accounts"`,
+  or `""` when non-empty). Tool layer reads this to pick the right
+  user-facing message.
+- `jasper.web.spotify_setup._probe_all_health` — wizard's per-page
+  health probe, calls `build_clients` and caches the result for 60s.
+  Cache is busted on every mutation (OAuth callback, account remove,
+  credentials reset, credentials change).
+
+**Debugging "Spotify isn't working":**
+
+1. Open `/spotify` — if any card is red, that's your answer.
+2. `journalctl -u jasper-voice | grep -E "spotify|event=spotify"` —
+   look for `event=spotify.startup_empty` or
+   `router: lazy rebuild produced no clients` lines.
+3. `sudo /opt/jasper/.venv/bin/python -c "from jasper.config import Config; from jasper.voice_daemon import _build_router; r = _build_router(Config.from_env()); print('clients:', list(r.clients.keys()) if r else 'no router'); print('statuses:', [(s.name, s.state) for s in (r.statuses if r else [])])"` for the live state.
+
+`sudo systemctl restart jasper-voice` should NOT be the first
+debugging step — the wizard already restarts on link, and the lazy
+rebuild covers any path that doesn't go through the wizard.
 
 ## How routing actually works
 

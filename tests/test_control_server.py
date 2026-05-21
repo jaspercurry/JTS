@@ -474,3 +474,49 @@ def test_dial_status_reports_recent_heartbeat(server_with_coordinator):
     assert body["age_seconds"] >= 12.0
     assert body["age_seconds"] < 30.0   # generous slack for slow CI
     assert "encoder" in body["last_message"]
+
+
+# --- Regression tests for the BuildResult return-shape change ---
+
+
+def test_make_spotify_router_consumes_build_result_correctly(tmp_path, monkeypatch):
+    """Pin the BuildResult shape consumption for control/server.py's
+    _build_spotify_router_or_none. Same regression as in mux:
+    previously `clients = build_clients(...)` was treated as a dict;
+    the change to BuildResult silently broke the volume-coordinator
+    wiring."""
+    from unittest.mock import patch, MagicMock
+    from jasper.control.server import _build_spotify_router_or_none
+    from jasper.spotify_router import (
+        ACCOUNT_OK, AccountClient, AccountStatus, BuildResult, Router,
+    )
+    from jasper.accounts import Account
+
+    monkeypatch.setenv("SPOTIFY_CLIENT_ID", "a" * 32)
+    monkeypatch.setenv(
+        "JASPER_SPOTIFY_ACCOUNTS_PATH", str(tmp_path / "accounts.json"),
+    )
+    (tmp_path / "accounts.json").write_text(
+        '{"accounts": [{"name": "jasper", "cache_path": "/nope"}], '
+        '"default": "jasper"}'
+    )
+
+    fake_client = AccountClient(
+        account=Account(name="jasper", cache_path="/nope"),
+        sp=MagicMock(),
+    )
+
+    def fake_build_clients(_registry, *, client_id, redirect_uri):
+        return BuildResult(
+            clients={"jasper": fake_client},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+            default_name="jasper",
+        )
+
+    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+        router = _build_spotify_router_or_none()
+
+    assert isinstance(router, Router)
+    assert isinstance(router.clients, dict)
+    assert "jasper" in router.clients
+    assert router.statuses[0].state == ACCOUNT_OK

@@ -170,8 +170,10 @@ Optional but recommended:
 
 Spotify (if you want voice search & queue):
 
-- `SPOTIFY_CLIENT_ID=<from your Spotify Developer App>`
-- `SPOTIFY_CLIENT_SECRET=<...>`
+- `SPOTIFY_CLIENT_ID=<from your Spotify Developer App>` — that's
+  all. PKCE flow is used; no Client Secret is required (the wizard
+  at `http://jts.local/spotify` is the preferred path and writes
+  this for you).
 
 After editing:
 

@@ -52,16 +52,40 @@ class FakeAccountClient:
 
 
 class FakeRouter:
-    def __init__(self, transport_match=None, active_account=None) -> None:
+    def __init__(
+        self, transport_match=None, active_account=None,
+        empty_reason: str = "no_accounts",
+        rebuild_clients=None,
+    ) -> None:
         self._transport_match = transport_match
         self._active_account = active_account
+        # Match the test_tools_spotify.py FakeRouter shape so transport
+        # and play tests stay analogous. clients defaults to empty
+        # (transport uses router.clients only to gate the lazy rebuild).
         self.clients = {}
+        self._empty_reason = empty_reason
+        self._rebuild_clients = rebuild_clients
+        self.refresh_calls = 0
 
     async def resolve_for_transport(self, client_name: str, title: str):
         return self._transport_match
 
     async def active(self, *, airplay_active: bool):
         return self._active_account
+
+    async def refresh_if_empty(self) -> bool:
+        self.refresh_calls += 1
+        if self.clients:
+            return True
+        if self._rebuild_clients:
+            self.clients = dict(self._rebuild_clients)
+            if not self._active_account:
+                self._active_account = next(iter(self.clients.values()))
+            return True
+        return False
+
+    def empty_reason(self) -> str:
+        return "" if self.clients else self._empty_reason
 
 
 def _by_name(tools):
@@ -213,6 +237,57 @@ def test_dispatch_spotify_targets_active_device():
     result = asyncio.run(tools["next_track"]())
     sp.next_track.assert_called_once_with(device_id="dev1")
     assert result == {"ok": True, "source": "spotify", "account": "jasper"}
+
+
+def test_dispatch_spotify_revoked_returns_session_expired_message():
+    """When source=spotify and every account is revoked, transport must
+    say "session expired" — not "no account configured" (different
+    action for the user)."""
+    renderer = FakeRenderer(renderers={"spotactive": True})
+    # No active account; empty_reason indicates revoked.
+    router = FakeRouter(active_account=None, empty_reason="revoked")
+    tools = _by_name(make_transport_tools(renderer, router))
+    result = asyncio.run(tools["pause"]())
+    assert "error" in result
+    assert "session has expired" in result["error"]
+    assert "re-link" in result["error"]
+    # The message must include the speaker hostname so the LLM can read
+    # it aloud and the user knows where to go.
+    assert "/spotify" in result["error"]
+
+
+def test_dispatch_spotify_no_account_returns_old_message():
+    """When source=spotify and no accounts are even registered (not
+    revoked, just never set up), transport keeps the older message —
+    no behavior change for that path."""
+    renderer = FakeRenderer(renderers={"spotactive": True})
+    router = FakeRouter(active_account=None, empty_reason="no_accounts")
+    tools = _by_name(make_transport_tools(renderer, router))
+    result = asyncio.run(tools["pause"]())
+    assert "error" in result
+    assert "no spotify account configured" in result["error"]
+
+
+def test_dispatch_spotify_lazy_rebuild_recovers():
+    """The wizard re-link landed mid-call: voice command issued while
+    router.clients is empty triggers refresh_if_empty, which now finds
+    a usable client. Transport routes to the rebuilt account.
+
+    This is the "no daemon restart required after re-link" promise
+    applied to the transport tool path."""
+    renderer = FakeRenderer(renderers={"spotactive": True})
+    sp = FakeSpotify(active_id="dev1")
+    rebuilt = FakeAccountClient("jasper", sp)
+    router = FakeRouter(
+        active_account=None,
+        empty_reason="revoked",
+        rebuild_clients={"jasper": rebuilt},
+    )
+    tools = _by_name(make_transport_tools(renderer, router))
+    result = asyncio.run(tools["pause"]())
+    assert result.get("ok") is True
+    assert result.get("source") == "spotify"
+    assert router.refresh_calls == 1
 
 
 def test_dispatch_no_source_returns_nothing_playing_error():

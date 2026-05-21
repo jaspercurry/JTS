@@ -659,9 +659,15 @@ def _health_badge_html(status: AccountStatus | None) -> str:
 def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
     """Banner + Re-link button inside the revoked card. The Re-link
     button POSTs to /start with the account name pre-filled; the OAuth
-    callback overwrites the existing cache file at the same path."""
+    callback overwrites the existing cache file at the same path.
+
+    `name` is escaped here for defense in depth — callers already
+    escape (see _account_card_html) and the registry constrains names
+    to `[a-zA-Z0-9_-]+`, but escaping at the render site keeps the
+    function safe if a future caller passes an unescaped name."""
     if status is None or status.state != ACCOUNT_REVOKED:
         return ""
+    safe_name = html.escape(name)
     return f"""
 <div class="relink-notice">
   <p><strong>Spotify revoked this account's refresh token.</strong>
@@ -669,8 +675,8 @@ def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
      your Spotify password, signed out everywhere, or a long period
      of inactivity.</p>
   <form method="post" action="start">
-    <input type="hidden" name="name" value="{name}">
-    <button class="primary" type="submit">Re-link {name}</button>
+    <input type="hidden" name="name" value="{safe_name}">
+    <button class="primary" type="submit">Re-link {safe_name}</button>
   </form>
 </div>"""
 
@@ -1183,6 +1189,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             cfg["client_id"] = client_id
             cfg["mode"] = mode
+            # client_id change invalidates every cached token-health
+            # verdict (verdicts are computed against the old client_id).
+            _invalidate_health_cache()
             _restart_voice_daemon()
             self._redirect(
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
