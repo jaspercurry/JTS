@@ -65,6 +65,13 @@ EnvironmentFile=-/var/lib/jasper/wake_model.env
 # transit tool surface — by design. Same override pattern as the
 # files above. Optional via the leading `-`.
 EnvironmentFile=-/var/lib/jasper/transit.env
+# Home Assistant URL + token (JASPER_HA_URL, JASPER_HA_TOKEN,
+# JASPER_HA_AGENT_ID) written by the wizard at
+# http://jts.local/homeassistant (PR 2). Optional via leading `-`;
+# the home_assistant tool is gated on both URL and token being set,
+# so a missing file just leaves smart-home control disabled.
+# See docs/HANDOFF-homeassistant.md.
+EnvironmentFile=-/var/lib/jasper/home_assistant.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 # `on-watchdog` covers BOTH clean failure (non-zero exit, segfault)

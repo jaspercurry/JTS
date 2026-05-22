@@ -1,0 +1,494 @@
+"""Home Assistant conversation-API client.
+
+Thin async wrapper around HA's `POST /api/conversation/process` endpoint.
+HA owns NLU + entity resolution + automation dispatch; this module is a
+relay that hands the user's utterance over and speaks whatever text HA
+returns. See `docs/HANDOFF-homeassistant.md` for the architecture choice
+(why conversation API, not MCP) and the full setup walkthrough.
+
+Endpoint reference:
+  POST {url}/api/conversation/process
+  Authorization: Bearer <long-lived-access-token>
+  Content-Type: application/json
+  Body: {"text": "...", "language": "en", "agent_id"?: "...",
+         "conversation_id"?: "..."}
+
+Response shape (exhaustive enums, confirmed against
+homeassistant/helpers/intent.py on the dev branch):
+
+  {
+    "response": {
+      "response_type": "action_done" | "query_answer" | "error",
+      "speech": {"plain": {"speech": "<text>"}}  # or "ssml"
+      "data": {
+        "code"?: "no_intent_match" | "no_valid_targets" |
+                 "failed_to_handle" | "unknown",
+        "success"?: [{...}],
+        "failed"?: [{...}],
+      },
+      "language": "en",
+    },
+    "conversation_id": "01JR1HZQS3JVV5CSDMDT7CTX7D",
+    "continue_conversation": false,
+  }
+
+Footgun: do NOT POST to `/api/services/conversation/process`. That
+endpoint returns no response body (HA core issues #93754, #104122 —
+still live in 2026). The purpose-built REST endpoint is the one used
+here.
+
+`no_valid_targets` is NOT a hard error. In multi-satellite homes,
+another device may have answered; speak the returned text regardless
+as long as it's non-empty.
+
+Bug-of-the-future: `agent_id` is functional but undocumented in HA's
+REST API surface. A future schema-tightening could break us. The
+regression test asserts the field is accepted; if HA ever 4xxs on it,
+we'll know.
+"""
+from __future__ import annotations
+
+import logging
+import time
+from dataclasses import dataclass, field
+from typing import Any
+
+import httpx
+
+logger = logging.getLogger(__name__)
+
+
+# Endpoint paths. Joined with the configured base URL.
+CONVERSATION_PATH = "/api/conversation/process"
+HEALTH_PATH = "/api/"
+CONFIG_PATH = "/api/config"
+STATES_PATH = "/api/states"
+
+# Split timeouts. Connect failures should fail FAST (HA down → model
+# speaks "I can't reach Home Assistant"); read failures should be
+# patient because LLM-backed HA agents (OpenAI Conversation, Anthropic,
+# Google Generative AI inside HA) legitimately take 30-60s for a
+# tool-using turn. 90s total is generous but not unbounded.
+DEFAULT_TIMEOUT = httpx.Timeout(timeout=90.0, connect=3.0)
+
+# Cheap health-check timeout — used by the wizard validation cascade.
+# Short because GET /api/ should return in <100ms on a healthy HA.
+HEALTH_TIMEOUT = httpx.Timeout(timeout=5.0, connect=3.0)
+
+# Conversation-ID idle reuse window. HA's empirical TTL is ~5 minutes;
+# we use 4 minutes with a safety margin. After this window, drop the
+# cached ID and let HA mint a fresh one on the next call.
+CONVERSATION_ID_TTL_SEC = 240.0
+
+# Outcome buckets — used in structured log lines so dashboards can
+# slice ha.call by category. Six in total, mirroring dubot's split:
+#   network       — connection refused, DNS failure, connector error
+#   timeout       — explicit asyncio/httpx timeout
+#   auth          — 401 from HA (token revoked / invalid)
+#   agent_error   — 5xx from HA (broken conversation entity, etc.)
+#   intent_miss   — 200 with response_type=error
+#   parse_error   — 200 but unexpected body shape
+#   ok            — everything else
+OUTCOME_OK = "ok"
+OUTCOME_NETWORK = "network"
+OUTCOME_TIMEOUT = "timeout"
+OUTCOME_AUTH = "auth"
+OUTCOME_AGENT_ERROR = "agent_error"
+OUTCOME_INTENT_MISS = "intent_miss"
+OUTCOME_PARSE_ERROR = "parse_error"
+
+
+@dataclass(frozen=True)
+class HAResponse:
+    """The parsed result of one `process()` call.
+
+    `success` is true when HA gave us non-empty text to speak, regardless
+    of `response_type`. An `action_done` with no speech is still a
+    semantic failure; an `error/no_valid_targets` with text ("Sorry, I
+    couldn't find that") is still speakable. The voice model speaks
+    `speech` verbatim either way.
+    """
+    speech: str
+    success: bool
+    response_type: str                  # "action_done" | "query_answer" | "error" | ""
+    error_code: str | None              # "no_intent_match" etc., None when not an error
+    outcome: str                        # one of OUTCOME_* above
+    conversation_id: str | None         # what HA returned (may differ from what we sent)
+    continue_conversation: bool         # hint only; HA's heuristic is known-flaky
+    targets_success: list[dict[str, Any]] = field(default_factory=list)
+    targets_failed: list[dict[str, Any]] = field(default_factory=list)
+    latency_ms: int = 0
+    error_detail: str = ""              # short human-readable detail for logging
+
+    def as_tool_result(self) -> dict[str, Any]:
+        """Shape returned to the voice model. Keep keys minimal — the
+        model speaks `spoken_response` or `error_detail` and uses
+        `success` to decide tone."""
+        return {
+            "spoken_response": self.speech,
+            "success": self.success,
+            "response_type": self.response_type,
+            "error_code": self.error_code,
+            "error_detail": self.error_detail if not self.success else "",
+        }
+
+
+class HAClient:
+    """Persistent async client for one HA instance.
+
+    Owns a long-lived `httpx.AsyncClient` (don't instantiate a fresh
+    one per call — TCP+TLS rebuild per turn is the dominant prior-art
+    anti-pattern in surveyed Python HA integrations). Reuses HTTP
+    keep-alive across calls.
+
+    `conversation_id` lifecycle is opaque to callers: the client
+    decides when to send one based on the prior response's
+    `continue_conversation` field + a 4-minute idle TTL. Reset
+    happens automatically on `continue_conversation=False` or after
+    `CONVERSATION_ID_TTL_SEC` of no calls. HA may rotate the ID
+    silently; we treat the returned ID as canonical.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        token: str,
+        *,
+        agent_id: str | None = None,
+        language: str = "en",
+        verify_ssl: bool = True,
+        timeout: httpx.Timeout | None = None,
+        http: httpx.AsyncClient | None = None,
+        clock=None,
+    ) -> None:
+        # Normalize: strip trailing slash and any trailing /api so callers
+        # can paste any of: http://homeassistant.local:8123,
+        # http://homeassistant.local:8123/, http://homeassistant.local:8123/api,
+        # http://homeassistant.local:8123/api/. Endpoints below assume
+        # we hold the bare base URL.
+        self._url = url.rstrip("/").removesuffix("/api").rstrip("/")
+        self._token = token
+        self._agent_id = agent_id.strip() if agent_id else ""
+        self._language = language.strip() or "en"
+        self._verify_ssl = verify_ssl
+        self._timeout = timeout or DEFAULT_TIMEOUT
+        self._http: httpx.AsyncClient | None = http
+        self._owns_http = http is None
+        self._clock = clock or time.monotonic
+
+        # conversation_id state. _conv_id_until is a monotonic deadline;
+        # when now > deadline, drop the cached ID.
+        self._conv_id: str | None = None
+        self._conv_id_until: float = 0.0
+
+    @property
+    def url(self) -> str:
+        return self._url
+
+    @property
+    def agent_id(self) -> str | None:
+        return self._agent_id or None
+
+    @property
+    def conversation_id(self) -> str | None:
+        """Current cached conversation_id — useful for the `/state`
+        aggregator and `/system/` dashboard card. May be None if no
+        call has happened yet, or if the TTL has expired."""
+        if self._conv_id and self._clock() < self._conv_id_until:
+            return self._conv_id
+        return None
+
+    async def _client(self) -> httpx.AsyncClient:
+        if self._http is None:
+            self._http = httpx.AsyncClient(
+                timeout=self._timeout,
+                verify=self._verify_ssl,
+                headers={"Authorization": f"Bearer {self._token}"},
+            )
+        return self._http
+
+    async def aclose(self) -> None:
+        if self._owns_http and self._http is not None:
+            await self._http.aclose()
+            self._http = None
+
+    def _headers(self) -> dict[str, str]:
+        # Used when a caller passed in its own AsyncClient (tests). The
+        # owned client carries the auth header on the session.
+        return {"Authorization": f"Bearer {self._token}"}
+
+    def _build_body(self, query: str) -> dict[str, Any]:
+        body: dict[str, Any] = {"text": query, "language": self._language}
+        if self._agent_id:
+            body["agent_id"] = self._agent_id
+        # Reuse conversation_id only within the idle TTL window. HA mints
+        # a fresh one if we omit, which is what we want after expiry.
+        if self._conv_id and self._clock() < self._conv_id_until:
+            body["conversation_id"] = self._conv_id
+        return body
+
+    async def process(self, query: str) -> HAResponse:
+        """Send a natural-language query to HA and return the parsed
+        response. Single try; no retry — `/api/conversation/process` is
+        not idempotent (a retried 'turn off the lights' could double-fire
+        a script). Six-bucket error categorization via `HAResponse.outcome`.
+        """
+        query = (query or "").strip()
+        if not query:
+            return self._error(OUTCOME_PARSE_ERROR, "empty query", started=0.0)
+
+        body = self._build_body(query)
+        started = self._clock()
+        client = await self._client()
+        try:
+            resp = await client.post(
+                self._url + CONVERSATION_PATH,
+                json=body,
+                headers=self._headers(),
+            )
+        except httpx.TimeoutException as e:
+            logger.warning(
+                "event=ha.call outcome=timeout query_len=%d detail=%r",
+                len(query), str(e),
+            )
+            return self._error(OUTCOME_TIMEOUT, "HA did not respond in time", started)
+        except httpx.HTTPError as e:
+            # ConnectError, NetworkError, ConnectTimeout-as-network, etc.
+            logger.warning(
+                "event=ha.call outcome=network query_len=%d detail=%r",
+                len(query), str(e),
+            )
+            return self._error(OUTCOME_NETWORK, str(e)[:200], started)
+
+        latency_ms = int((self._clock() - started) * 1000)
+
+        if resp.status_code == 401:
+            logger.warning(
+                "event=ha.call outcome=auth status=401 latency_ms=%d",
+                latency_ms,
+            )
+            return self._error(
+                OUTCOME_AUTH,
+                "Home Assistant token rejected — reconnect at the speaker's setup page",
+                started, latency_ms,
+            )
+        if resp.status_code >= 500:
+            text = (resp.text or "")[:200]
+            logger.warning(
+                "event=ha.call outcome=agent_error status=%d latency_ms=%d body=%s",
+                resp.status_code, latency_ms, text,
+            )
+            return self._error(
+                OUTCOME_AGENT_ERROR,
+                f"Home Assistant returned an internal error ({resp.status_code})",
+                started, latency_ms,
+            )
+        if resp.status_code != 200:
+            text = (resp.text or "")[:200]
+            logger.warning(
+                "event=ha.call outcome=parse_error status=%d latency_ms=%d body=%s",
+                resp.status_code, latency_ms, text,
+            )
+            return self._error(
+                OUTCOME_PARSE_ERROR,
+                f"unexpected status {resp.status_code}",
+                started, latency_ms,
+            )
+
+        try:
+            data = resp.json()
+        except ValueError as e:
+            logger.warning(
+                "event=ha.call outcome=parse_error detail=json_decode err=%r",
+                str(e),
+            )
+            return self._error(OUTCOME_PARSE_ERROR, "could not decode HA response", started, latency_ms)
+
+        return self._parse(data, latency_ms)
+
+    def _parse(self, data: dict[str, Any], latency_ms: int) -> HAResponse:
+        response = data.get("response") or {}
+        rtype = str(response.get("response_type") or "")
+        speech_obj = response.get("speech") or {}
+        # Prefer plain over ssml; both have the same {"speech": "..."} shape.
+        plain = speech_obj.get("plain") or {}
+        ssml = speech_obj.get("ssml") or {}
+        speech_text = str(plain.get("speech") or ssml.get("speech") or "").strip()
+
+        data_block = response.get("data") or {}
+        error_code = data_block.get("code")
+        targets_success = list(data_block.get("success") or [])
+        targets_failed = list(data_block.get("failed") or [])
+
+        conv_id = data.get("conversation_id")
+        continue_conv = bool(data.get("continue_conversation"))
+
+        # Update the cached conversation_id from HA's response. HA may
+        # rotate it silently; treat what comes back as canonical. Reset
+        # the cache when HA signals the conversation is done.
+        if continue_conv and conv_id:
+            self._conv_id = conv_id
+            self._conv_id_until = self._clock() + CONVERSATION_ID_TTL_SEC
+        else:
+            self._conv_id = None
+            self._conv_id_until = 0.0
+
+        # Outcome classification:
+        #   - non-error response_type with speech → ok
+        #   - response_type=error → intent_miss (even no_valid_targets, which
+        #     is benign in multi-satellite setups)
+        #   - non-error response_type but empty speech → parse_error
+        if rtype == "error":
+            outcome = OUTCOME_INTENT_MISS
+            success = False
+        elif speech_text:
+            outcome = OUTCOME_OK
+            success = True
+        else:
+            outcome = OUTCOME_PARSE_ERROR
+            success = False
+
+        logger.info(
+            "event=ha.call outcome=%s response_type=%s error_code=%s "
+            "speech_len=%d latency_ms=%d conv_id=%s continue=%s "
+            "targets_success=%d targets_failed=%d",
+            outcome, rtype or "-", error_code or "-",
+            len(speech_text), latency_ms,
+            (conv_id or "-")[:12], continue_conv,
+            len(targets_success), len(targets_failed),
+        )
+
+        return HAResponse(
+            speech=speech_text,
+            success=success,
+            response_type=rtype,
+            error_code=error_code,
+            outcome=outcome,
+            conversation_id=conv_id,
+            continue_conversation=continue_conv,
+            targets_success=targets_success,
+            targets_failed=targets_failed,
+            latency_ms=latency_ms,
+            error_detail="" if success else (
+                f"Home Assistant said it couldn't find anything matching that"
+                if error_code == "no_intent_match" else
+                f"Home Assistant couldn't handle that request"
+                if error_code in ("failed_to_handle", "unknown") else
+                f"Home Assistant returned no response"
+            ),
+        )
+
+    def _error(
+        self,
+        outcome: str,
+        detail: str,
+        started: float,
+        latency_ms: int | None = None,
+    ) -> HAResponse:
+        if latency_ms is None:
+            latency_ms = int((self._clock() - started) * 1000) if started else 0
+        # User-facing text for each outcome. Provider-agnostic per
+        # CLAUDE.md — no mention of Gemini/OpenAI/Grok.
+        speech_text = {
+            OUTCOME_NETWORK: "I can't reach Home Assistant right now.",
+            OUTCOME_TIMEOUT: "Home Assistant didn't respond in time.",
+            OUTCOME_AUTH: "I'm not authorized to control Home Assistant. "
+                          "Please reconnect at the speaker's setup page.",
+            OUTCOME_AGENT_ERROR: "Home Assistant had an internal error.",
+            OUTCOME_PARSE_ERROR: "Home Assistant returned a response I couldn't understand.",
+        }.get(outcome, "Something went wrong with Home Assistant.")
+        return HAResponse(
+            speech=speech_text,
+            success=False,
+            response_type="",
+            error_code=None,
+            outcome=outcome,
+            conversation_id=None,
+            continue_conversation=False,
+            latency_ms=latency_ms,
+            error_detail=detail,
+        )
+
+    # ---- Helpers used by the wizard (PR 2) and the doctor ------------------
+
+    async def healthcheck(self) -> bool:
+        """Cheap probe of `GET /api/` — returns True if HA responds 200
+        with the expected body. Used by the wizard's verify step and
+        `jasper-doctor` (skip-if-not-configured). Does NOT touch the
+        conversation endpoint — that would cost money on LLM-backed
+        HA agents."""
+        client = await self._client()
+        try:
+            resp = await client.get(
+                self._url + HEALTH_PATH,
+                headers=self._headers(),
+                timeout=HEALTH_TIMEOUT,
+            )
+        except httpx.HTTPError as e:
+            logger.debug("ha healthcheck: %r", e)
+            return False
+        if resp.status_code != 200:
+            return False
+        try:
+            return resp.json().get("message") == "API running."
+        except ValueError:
+            return False
+
+    async def config(self) -> dict[str, Any] | None:
+        """GET /api/config — used by the wizard to display location_name +
+        version after a successful connect. Returns None on any error."""
+        client = await self._client()
+        try:
+            resp = await client.get(
+                self._url + CONFIG_PATH,
+                headers=self._headers(),
+                timeout=HEALTH_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                return None
+            return resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.debug("ha config: %r", e)
+            return None
+
+    async def list_agents(self) -> list[dict[str, str]]:
+        """Enumerate HA conversation agents via `GET /api/states` filtered
+        to entity_id starting with `conversation.`. REST-only (avoids the
+        WebSocket auth dance that `conversation/agent/list` would
+        require). Returns a list of {"entity_id", "name"} dicts."""
+        client = await self._client()
+        try:
+            resp = await client.get(
+                self._url + STATES_PATH,
+                headers=self._headers(),
+                timeout=HEALTH_TIMEOUT,
+            )
+            if resp.status_code != 200:
+                return []
+            states = resp.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.debug("ha list_agents: %r", e)
+            return []
+
+        agents: list[dict[str, str]] = []
+        for s in states or []:
+            entity_id = str(s.get("entity_id") or "")
+            if not entity_id.startswith("conversation."):
+                continue
+            attrs = s.get("attributes") or {}
+            name = str(attrs.get("friendly_name") or entity_id.split(".", 1)[-1])
+            agents.append({"entity_id": entity_id, "name": name})
+        return agents
+
+
+def build_ha_client(cfg) -> HAClient | None:
+    """Construct an HAClient from a `Config` instance, or return None when
+    HA is not configured. Mirrors the gating pattern of the bus/subway
+    factories — None means the model never sees the tool."""
+    if not cfg.ha_enabled:
+        return None
+    return HAClient(
+        url=cfg.ha_url,
+        token=cfg.ha_token,
+        agent_id=cfg.ha_agent_id or None,
+    )

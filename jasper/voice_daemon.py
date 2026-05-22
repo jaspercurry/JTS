@@ -37,6 +37,7 @@ from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
 from .google_creds import GoogleClients, build_google_clients
+from .home_assistant import HAClient, build_ha_client
 from .renderer import RendererClient
 from .spotify_router import BuildResult, Router, build_clients
 from .bus import BusClient
@@ -48,6 +49,7 @@ from .tools.calendar import make_calendar_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.bus import make_bus_tools
+from .tools.home_assistant import make_home_assistant_tools
 from .tools.subway import make_subway_tools
 from .tools.time import make_time_tools
 from .tools.timer import make_timer_tools
@@ -150,6 +152,20 @@ SYSTEM_INSTRUCTION = (
     "tool unions arrivals across all of them — each arrival "
     "carries its own `stop_label` so you can name which stop "
     "each bus is at.\n"
+    "  - ANY smart-home control or query — lights, switches, "
+    "plugs, locks, blinds, covers, fans, thermostats, climate, "
+    "appliances, scenes, scripts, automations, area-scoped "
+    "commands ('turn off all the lights in the kitchen'), or "
+    "questions about device state ('is the front door locked?', "
+    "'what's the bedroom temperature?') → call home_assistant "
+    "with the user's request close to verbatim. Home Assistant "
+    "has its own language understanding; pass the literal phrase. "
+    "This includes household-configured custom phrases the user "
+    "has wired to automations ('bedroom medium', 'good night', "
+    "'movie time', 'I'm leaving') — pass them through unchanged. "
+    "If the home_assistant tool isn't available, smart-home "
+    "control isn't set up on this speaker — tell the user "
+    "briefly to visit the setup page and stop.\n"
     "  - Music control ('play', 'pause', 'skip', 'previous', "
     "'resume', 'volume up', 'mute', etc.) → call the matching tool. "
     "Do not ask for confirmation.\n"
@@ -240,6 +256,15 @@ SYSTEM_INSTRUCTION = (
     "the query asked for both directions or when context would "
     "be ambiguous. Skip naming when the user's question already "
     "pinned it ('next D uptown?' → just 'in 3 and 7 minutes.').\n"
+    "  - home_assistant: when success=true, speak the "
+    "`spoken_response` verbatim or in a very light paraphrase. "
+    "Home Assistant phrased its own response — do NOT add 'OK' "
+    "or 'Done' on top of it. If HA said 'Turned on the bedroom "
+    "lights' that's the full answer. When success=false, speak "
+    "the `error_detail` briefly in your own words ('Home "
+    "Assistant couldn't find that' / 'I can't reach Home "
+    "Assistant right now'). Don't apologize at length and don't "
+    "offer to try again unless the user asks.\n"
     "  - get_bus_arrivals: walk the `arrivals` list and speak "
     "each bus with route + minutes. Use `minutes_from_now`; "
     "ignore `presentable_distance` and `stops_from_call` — the "
@@ -881,6 +906,7 @@ def _build_registry(
     cues_manager: AudioCueManager | None = None,
     google_clients: GoogleClients | None = None,
     bus: BusClient | None = None,
+    ha: HAClient | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -900,6 +926,13 @@ def _build_registry(
     for fn in make_subway_tools(subway):
         registry.register(fn)
     for fn in make_bus_tools(bus):
+        registry.register(fn)
+    # Home Assistant — single tool surface (home_assistant) that wraps
+    # HA's /api/conversation/process endpoint. Gated on ha being non-None
+    # so the model never sees a tool whose every call would fail when
+    # HA isn't configured. See docs/HANDOFF-homeassistant.md for the
+    # architecture rationale (conversation API, not MCP).
+    for fn in make_home_assistant_tools(ha):
         registry.register(fn)
     for fn in make_time_tools():
         registry.register(fn)
@@ -2901,6 +2934,21 @@ async def run() -> None:
         )
         if cfg.bus_enabled else None
     )
+    # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
+    # is unset; the tool factory short-circuits to [] in that case so
+    # the model never sees a tool whose every call would fail. The
+    # client owns a long-lived httpx.AsyncClient for the daemon's
+    # lifetime — closed in the shutdown path below.
+    ha = build_ha_client(cfg)
+    if ha is not None:
+        logger.info("home_assistant: enabled url=%s agent_id=%s",
+                    ha.url, ha.agent_id or "(default)")
+    else:
+        logger.info(
+            "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
+            "or visit http://%s/homeassistant to configure)",
+            cfg.hostname,
+        )
     # Volume coordinator: owns the canonical listening_level (0-100),
     # dispatches voice/dial-driven changes to the active source's own
     # attenuator (AirPlay DBus / Spotify HTTP / BT DBus) instead of
@@ -3014,6 +3062,7 @@ async def run() -> None:
         cues_manager=cues_manager,
         google_clients=google_clients,
         bus=bus,
+        ha=ha,
     )
 
     # Wire the timer pre-render hook so set_timer (and start-time
@@ -3234,6 +3283,8 @@ async def run() -> None:
         await volume_coordinator.aclose()
         await connection.stop()
         await weather.aclose()
+        if ha is not None:
+            await ha.aclose()
 
 
 def main() -> None:
