@@ -27,7 +27,7 @@ import logging
 
 import httpx
 
-from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles
+from ..base import BoundingBox, CredentialSpec, Stop, TransitError, haversine_miles, scrub_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -122,9 +122,12 @@ class _NycBus:
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
-            raise TransitError(f"BusTime request failed: {e}")
+            # `e` may stringify with the full URL including ?key=…; scrub
+            # before surfacing — this message lands in the wizard's error
+            # banner where any LAN viewer would see it.
+            raise TransitError(f"BusTime request failed: {scrub_secrets(e)}")
         except ValueError as e:
-            raise TransitError(f"BusTime returned non-JSON: {e}")
+            raise TransitError(f"BusTime returned non-JSON: {scrub_secrets(e)}")
         finally:
             if owns:
                 c.close()
@@ -236,7 +239,10 @@ class _NycBus:
             r.raise_for_status()
             data = r.json()
         except (httpx.HTTPError, ValueError) as e:
-            logger.info("SIRI route enumeration failed for %s: %s", bare, e)
+            logger.info(
+                "SIRI route enumeration failed for %s: %s",
+                bare, scrub_secrets(e),
+            )
             return ()
         finally:
             if owns:
@@ -276,8 +282,9 @@ class _NycBus:
                 params={"key": value},
             )
         except httpx.HTTPError as e:
-            logger.warning("BusTime probe failed: %s", e)
-            return {CREDENTIAL.env_key: f"BusTime unreachable: {e}"}
+            scrubbed = scrub_secrets(e)
+            logger.warning("BusTime probe failed: %s", scrubbed)
+            return {CREDENTIAL.env_key: f"BusTime unreachable: {scrubbed}"}
         finally:
             if owns:
                 c.close()
