@@ -44,6 +44,8 @@ def test_owned_env_keys_includes_coords_and_provider_keys():
     assert "JASPER_SUBWAY_STATION_ID" in keys
     assert "JASPER_MTA_BUSTIME_KEY" in keys
     assert "JASPER_BUS_STOPS" in keys
+    assert "JASPER_CITIBIKE_STATIONS" in keys
+    assert "JASPER_CITIBIKE_EBIKE_ONLY" in keys
 
 
 def test_coords_returns_none_when_missing():
@@ -266,6 +268,79 @@ def test_apply_save_subway_direction_default_when_unset_renders_both():
     assert 'value="both" selected' in body
 
 
+# ---------- Citi Bike save behaviour ---------------------------------------
+
+
+def test_apply_save_no_citibike_marker_preserves_existing():
+    """Form without `citibike_stations` (card not rendered, e.g. user
+    outside coverage) must not touch citibike state. Mirrors the bus
+    locked-card guard but the marker is the hidden field's presence."""
+    current = {
+        "JASPER_CITIBIKE_STATIONS": "abc|9 Av",
+        "JASPER_CITIBIKE_EBIKE_ONLY": "1",
+    }
+    new, err = transit_setup._apply_save({}, current, bus_provider=_StubBus(True))
+    assert err is None
+    assert new["JASPER_CITIBIKE_STATIONS"] == "abc|9 Av"
+    assert new["JASPER_CITIBIKE_EBIKE_ONLY"] == "1"
+
+
+def test_apply_save_citibike_stations_persisted():
+    form = {"citibike_stations": "abc|9 Av,def|Atlantic"}
+    new, err = transit_setup._apply_save(form, {}, bus_provider=_StubBus(True))
+    assert err is None
+    assert new["JASPER_CITIBIKE_STATIONS"] == "abc|9 Av,def|Atlantic"
+    # ebike_only checkbox absent → flag dropped (default False).
+    assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
+
+
+def test_apply_save_citibike_ebike_only_checkbox_persists():
+    form = {
+        "citibike_stations": "abc|9 Av",
+        "citibike_ebike_only": "on",  # HTML checkbox default value
+    }
+    new, err = transit_setup._apply_save(form, {}, bus_provider=_StubBus(True))
+    assert err is None
+    assert new["JASPER_CITIBIKE_EBIKE_ONLY"] == "1"
+
+
+def test_apply_save_citibike_ebike_only_unchecked_drops_flag():
+    """Marker present, checkbox absent → flag was unchecked. Drop
+    the env var so the daemon sees default-False."""
+    current = {"JASPER_CITIBIKE_EBIKE_ONLY": "1"}
+    form = {"citibike_stations": "abc|9 Av"}  # no ebike_only key
+    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
+    assert err is None
+    assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
+
+
+def test_apply_save_citibike_empty_stations_drops_saved():
+    """Marker present but value empty → user unchecked every station.
+    Drop the saved list so the tool disables on next daemon restart."""
+    current = {"JASPER_CITIBIKE_STATIONS": "abc|9 Av,def|Atlantic"}
+    form = {"citibike_stations": ""}
+    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
+    assert err is None
+    assert "JASPER_CITIBIKE_STATIONS" not in new
+
+
+def test_apply_save_citibike_does_not_disturb_other_providers():
+    """Citi-Bike-only edit must not wipe subway / bus settings."""
+    current = {
+        "JASPER_SUBWAY_STATION_ID": "B12",
+        "JASPER_MTA_BUSTIME_KEY": "preexisting-key",
+        "JASPER_BUS_STOPS": "MTA_302680|4 Av/39 St eastbound",
+    }
+    form = {"citibike_stations": "abc|9 Av", "citibike_ebike_only": "on"}
+    new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
+    assert err is None
+    assert new["JASPER_SUBWAY_STATION_ID"] == "B12"
+    assert new["JASPER_MTA_BUSTIME_KEY"] == "preexisting-key"
+    assert new["JASPER_BUS_STOPS"] == "MTA_302680|4 Av/39 St eastbound"
+    assert new["JASPER_CITIBIKE_STATIONS"] == "abc|9 Av"
+    assert new["JASPER_CITIBIKE_EBIKE_ONLY"] == "1"
+
+
 # ---------- Clear action ---------------------------------------------------
 
 
@@ -273,12 +348,16 @@ def test_apply_clear_drops_only_owned_keys():
     current = {
         "JASPER_SUBWAY_STATION_ID": "B12",
         "JASPER_BUS_STOPS": "MTA_X|x",
+        "JASPER_CITIBIKE_STATIONS": "abc|9 Av",
+        "JASPER_CITIBIKE_EBIKE_ONLY": "1",
         "JASPER_TRANSIT_LAT": "40.6",
         "FOREIGN_KEY": "kept",
     }
     new = transit_setup._apply_clear(current)
     assert "JASPER_SUBWAY_STATION_ID" not in new
     assert "JASPER_BUS_STOPS" not in new
+    assert "JASPER_CITIBIKE_STATIONS" not in new
+    assert "JASPER_CITIBIKE_EBIKE_ONLY" not in new
     assert "JASPER_TRANSIT_LAT" not in new
     assert new["FOREIGN_KEY"] == "kept"
 
@@ -309,6 +388,62 @@ def test_index_html_with_coords_shows_subway_card(monkeypatch):
     # Bus card locked because no key.
     assert "needs an API key" in html
     assert "register" in html.lower() or "get a free" in html.lower()
+
+
+def test_index_html_with_coords_shows_citibike_card(monkeypatch):
+    """Citi Bike card renders alongside the subway and bus cards when
+    coords are inside the bbox. Stub `fetch_feed` so the render
+    doesn't make a real GBFS HTTP call."""
+    import jasper.citibike as citibike_mod
+
+    info = {"data": {"stations": [
+        {"station_id": "abc", "name": "9 Av & 41 St",
+         "lat": 40.65, "lon": -74.0, "capacity": 35},
+    ]}}
+    status = {"data": {"stations": [
+        {"station_id": "abc",
+         "num_bikes_available": 7, "num_ebikes_available": 3,
+         "num_docks_available": 25,
+         "is_renting": 1, "is_returning": 1, "is_installed": 1,
+         "last_reported": 1700000000},
+    ]}}
+    monkeypatch.setattr(
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: (
+            info if url == citibike_mod.STATION_INFO_URL else status
+        ),
+    )
+
+    state = {
+        "JASPER_TRANSIT_LAT": "40.646",
+        "JASPER_TRANSIT_LON": "-73.994",
+        "JASPER_TRANSIT_DISPLAY_NAME": "Sunset Park",
+    }
+    html = transit_setup._index_html(state).decode()
+    # Citi Bike card present
+    assert "Citi Bike" in html
+    # Live snapshot rendered: 7-3=4 classic, 3 ebikes, 25 docks
+    assert "4 classic, 3 e-bikes, 25 docks" in html
+    # E-bike-only toggle present
+    assert "Only mention e-bikes" in html
+    # Hidden marker field always emitted
+    assert 'name="citibike_stations"' in html
+
+
+def test_index_html_with_coords_renders_ebike_only_checked_when_set(monkeypatch):
+    import jasper.citibike as citibike_mod
+    monkeypatch.setattr(
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: {"data": {"stations": []}},
+    )
+    state = {
+        "JASPER_TRANSIT_LAT": "40.646",
+        "JASPER_TRANSIT_LON": "-73.994",
+        "JASPER_CITIBIKE_EBIKE_ONLY": "1",
+    }
+    html = transit_setup._index_html(state).decode()
+    # The checkbox should be rendered with `checked` attribute.
+    assert 'name="citibike_ebike_only" form="save-form" checked' in html
 
 
 def test_index_html_outside_nyc_shows_no_coverage():

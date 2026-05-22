@@ -289,6 +289,25 @@ def _apply_save(
             # → drop the saved list.
             new.pop("JASPER_BUS_STOPS", None)
 
+    # Citi Bike picks + ebike-only toggle. The hidden citibike_stations
+    # field's presence in the form is the "card was rendered" marker —
+    # absent means the user is out of coverage and we must not touch
+    # citibike state. Present (even empty) means the card was shown
+    # and the user's submission is authoritative.
+    if "citibike_stations" in form:
+        picks_raw = form["citibike_stations"].strip()
+        if picks_raw:
+            new["JASPER_CITIBIKE_STATIONS"] = picks_raw
+        else:
+            # Empty submission → drop saved stations entirely.
+            new.pop("JASPER_CITIBIKE_STATIONS", None)
+        # Checkbox is absent from form when unchecked (HTML form
+        # semantics). Presence implies checked.
+        if form.get("citibike_ebike_only", "").strip():
+            new["JASPER_CITIBIKE_EBIKE_ONLY"] = "1"
+        else:
+            new.pop("JASPER_CITIBIKE_EBIKE_ONLY", None)
+
     return new, None
 
 
@@ -827,6 +846,154 @@ def _bus_card_html(
 </section>"""
 
 
+def _citibike_card_html(
+    provider: transit.TransitProvider, state: dict[str, str],
+) -> str:
+    """Citi Bike picker card.
+
+    Keyless (GBFS is public), so unlike the bus card there's no
+    locked state — once we have coords, render the household-wide
+    e-bike-only toggle on top and the nearest stations underneath.
+    Each station row shows a live snapshot (classic / ebikes / docks)
+    so the user can pick informed; the voice tool re-fetches at
+    every query so the snapshot is informational only."""
+    coords = _coords(state)
+    if coords is None:
+        return f"""
+<section class="provider-card">
+  <h2>{html.escape(provider.label)} <span class="badge muted">awaiting address</span></h2>
+  <p class="blurb">Enter your address above to find nearby Citi Bike stations.</p>
+</section>"""
+
+    error: str | None = None
+    stops: list[transit.Stop] = []
+    try:
+        stops = provider.find_stops_near(*coords, count=10)
+    except transit.TransitError as e:
+        error = str(e)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("citibike stops fetch raised: %r", e)
+        error = f"unexpected error: {e}"
+
+    # Lazy-import via the runtime module — same cycle-break rationale
+    # as in jasper.transit.providers.citibike (`jasper.citibike`'s
+    # `from .transit.base import TransitError` triggers the registry
+    # which loads the provider which would re-enter the runtime).
+    from ..citibike import parse_saved_stations
+
+    saved_picks = parse_saved_stations(_value_for(state, "JASPER_CITIBIKE_STATIONS"))
+    saved_ids = {sid for sid, _ in saved_picks}
+    ebike_only = (
+        _value_for(state, "JASPER_CITIBIKE_EBIKE_ONLY", "").strip().lower()
+        in {"1", "true", "yes"}
+    )
+
+    badge = (
+        '<span class="badge">configured</span>' if saved_picks
+        else '<span class="badge muted">not configured</span>'
+    )
+
+    error_html = ""
+    if error:
+        error_html = (
+            f'<p class="msg err">Couldn\'t fetch Citi Bike stations: '
+            f'{html.escape(error)}. Your saved configuration is unchanged; '
+            f'try again in a minute.</p>'
+        )
+    elif not stops:
+        error_html = (
+            '<p class="msg">No Citi Bike stations within range of your '
+            'coordinates.</p>'
+        )
+
+    # Household-wide toggle. Sits above the picker because it changes
+    # the meaning of the picker's rendered counts (you might want to
+    # ignore stations with no e-bikes when this is on, even if they
+    # have plenty of classic bikes).
+    ebike_checkbox_html = f"""
+<label class="stop-row" style="background:#f4f8ff; border-color:#9bb7d4">
+  <input type="checkbox" name="citibike_ebike_only" form="save-form"{' checked' if ebike_only else ''}>
+  <span class="name">Only mention e-bikes in voice answers</span>
+  <span class="meta">classic-bike counts are hidden when on</span>
+</label>"""
+
+    rows_html_parts: list[str] = []
+    for s in stops:
+        is_active = s.stop_id in saved_ids
+        cls = "stop-row active" if is_active else "stop-row"
+        # The provider packs the live snapshot ("4 classic, 3 e-bikes,
+        # 25 docks") into `lines` as a single string. Render verbatim
+        # in the meta column.
+        snapshot = " / ".join(s.lines) if s.lines else ""
+        checkbox = (
+            f'<input type="checkbox" class="citibike-pick" '
+            f'data-station-id="{html.escape(s.stop_id)}" '
+            f'data-station-label="{html.escape(s.display_name)}"'
+            + (" checked" if is_active else "")
+            + ">"
+        )
+        meta_parts = [f"{s.distance_mi:.2f}&nbsp;mi"]
+        if snapshot:
+            meta_parts.append(html.escape(snapshot))
+        meta_html = (
+            '<span class="meta">' + " · ".join(meta_parts) + "</span>"
+        )
+        rows_html_parts.append(f"""
+<label class="{cls}">
+  {checkbox}
+  <span class="name">{html.escape(s.display_name)}</span>
+  {meta_html}
+</label>""")
+    rows_html = "\n".join(rows_html_parts)
+
+    initial_picks_value = ",".join(
+        f"{sid}|{label}" for sid, label in saved_picks
+    )
+
+    # Hidden field doubles as the "card was rendered" marker for
+    # _apply_save — if it's missing from the POST, the card wasn't
+    # shown (out-of-coverage user) and citibike state must not be
+    # mutated. Always emit it, even when the picker is empty.
+    return f"""
+<section class="provider-card">
+  <h2>{html.escape(provider.label)} {badge}</h2>
+  <p class="blurb">Pick every Citi Bike station near home you want in answers. The voice answer splits e-bikes from classic bikes and reports open docks. Snapshot counts below are live at page load; the voice tool re-fetches every time you ask, so they go stale within ~30 seconds.</p>
+  {error_html}
+
+  <h3 style="margin: 1.2em 0 0.4em; font-size: 0.95em; color: #444">Household-wide preference</h3>
+  {ebike_checkbox_html}
+
+  <h3 style="margin: 1.2em 0 0.4em; font-size: 0.95em; color: #444">Stations near you</h3>
+  {rows_html}
+
+  <input type="hidden" name="citibike_stations" id="citibike-stations-hidden"
+         form="save-form"
+         value="{html.escape(initial_picks_value)}">
+  <script>
+    // Mirror of the bus-stops sync — keep the hidden field in lockstep
+    // with checkbox state so the multi-select round-trips through
+    // urlencoded POST. Format matches `parse_saved_stations` in
+    // jasper/citibike.py: "id|label,id|label".
+    (function() {{
+      var hidden = document.getElementById('citibike-stations-hidden');
+      function sync() {{
+        var parts = [];
+        document.querySelectorAll('.citibike-pick:checked').forEach(function(cb) {{
+          var sid = cb.dataset.stationId || '';
+          var label = (cb.dataset.stationLabel || '').replace(/[|,]/g, ' ');
+          parts.push(label ? (sid + '|' + label) : sid);
+        }});
+        hidden.value = parts.join(',');
+      }}
+      document.querySelectorAll('.citibike-pick').forEach(function(cb) {{
+        cb.addEventListener('change', sync);
+      }});
+      sync();
+    }})();
+  </script>
+</section>"""
+
+
 def _no_coverage_html() -> str:
     return f"""
 <section class="no-coverage">
@@ -923,6 +1090,8 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
             cards.append(_subway_card_html(p, state))
         elif p.id == "nyc_bus":
             cards.append(_bus_card_html(p, state))
+        elif p.id == "citibike":
+            cards.append(_citibike_card_html(p, state))
         else:
             cards.append(f"""
 <section class="provider-card">
