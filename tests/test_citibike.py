@@ -411,10 +411,14 @@ def test_provider_find_stops_near_sorts_by_distance(monkeypatch):
         _station_status("med"),
         _station_status("far"),
     )
-    from jasper.transit.providers import citibike as provider_mod
+    # Patch on the source module — the provider lazy-imports
+    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # a startup-time import cycle, so the patch target must be the
+    # source module, not the provider's namespace.
+    import jasper.citibike as citibike_mod
     monkeypatch.setattr(
-        provider_mod, "fetch_feed",
-        lambda url, ttl: info if url == STATION_INFO_URL else status,
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
     )
     stops = PROVIDER.find_stops_near(40.66, -74.00, count=3)
     assert [s.stop_id for s in stops] == ["near", "med", "far"]
@@ -429,10 +433,14 @@ def test_provider_find_stops_near_excludes_uninstalled(monkeypatch):
         _station_status("on"),
         _station_status("off", installed=0),
     )
-    from jasper.transit.providers import citibike as provider_mod
+    # Patch on the source module — the provider lazy-imports
+    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # a startup-time import cycle, so the patch target must be the
+    # source module, not the provider's namespace.
+    import jasper.citibike as citibike_mod
     monkeypatch.setattr(
-        provider_mod, "fetch_feed",
-        lambda url, ttl: info if url == STATION_INFO_URL else status,
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
     )
     stops = PROVIDER.find_stops_near(40.66, -74.00, count=5)
     assert [s.stop_id for s in stops] == ["on"]
@@ -446,10 +454,14 @@ def test_provider_find_stops_near_excludes_status_missing(monkeypatch):
         _station_info("orphan", "Info Only", 40.66, -74.00),
     )
     status = _gbfs_envelope(_station_status("on"))
-    from jasper.transit.providers import citibike as provider_mod
+    # Patch on the source module — the provider lazy-imports
+    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # a startup-time import cycle, so the patch target must be the
+    # source module, not the provider's namespace.
+    import jasper.citibike as citibike_mod
     monkeypatch.setattr(
-        provider_mod, "fetch_feed",
-        lambda url, ttl: info if url == STATION_INFO_URL else status,
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
     )
     stops = PROVIDER.find_stops_near(40.66, -74.00, count=5)
     assert [s.stop_id for s in stops] == ["on"]
@@ -458,10 +470,14 @@ def test_provider_find_stops_near_excludes_status_missing(monkeypatch):
 def test_provider_find_stops_near_includes_snapshot(monkeypatch):
     info = _gbfs_envelope(_station_info("abc", "9 Av", 40.65, -74.00))
     status = _gbfs_envelope(_station_status("abc", bikes=7, ebikes=3, docks=25))
-    from jasper.transit.providers import citibike as provider_mod
+    # Patch on the source module — the provider lazy-imports
+    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # a startup-time import cycle, so the patch target must be the
+    # source module, not the provider's namespace.
+    import jasper.citibike as citibike_mod
     monkeypatch.setattr(
-        provider_mod, "fetch_feed",
-        lambda url, ttl: info if url == STATION_INFO_URL else status,
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
     )
     stops = PROVIDER.find_stops_near(40.66, -74.00, count=1)
     assert len(stops) == 1
@@ -476,10 +492,14 @@ def test_provider_find_stops_near_caps_at_count(monkeypatch):
     status_stations = [_station_status(f"s{i}") for i in range(15)]
     info = _gbfs_envelope(*info_stations)
     status = _gbfs_envelope(*status_stations)
-    from jasper.transit.providers import citibike as provider_mod
+    # Patch on the source module — the provider lazy-imports
+    # fetch_feed from jasper.citibike inside find_stops_near to break
+    # a startup-time import cycle, so the patch target must be the
+    # source module, not the provider's namespace.
+    import jasper.citibike as citibike_mod
     monkeypatch.setattr(
-        provider_mod, "fetch_feed",
-        lambda url, ttl: info if url == STATION_INFO_URL else status,
+        citibike_mod, "fetch_feed",
+        lambda url, ttl, **kw: info if url == STATION_INFO_URL else status,
     )
     assert len(PROVIDER.find_stops_near(40.66, -74.00, count=5)) == 5
     assert len(PROVIDER.find_stops_near(40.66, -74.00, count=10)) == 10
