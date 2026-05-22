@@ -3,6 +3,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from .bus import parse_bus_stops
+
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
     val = os.environ.get(name, default)
@@ -206,11 +208,10 @@ class Config:
     # directions when the voice query doesn't specify one.
     subway_default_direction: str
 
-    # MTA BusTime. `bus_stops` is a tuple of MonitoringRefs (v2 multi-
-    # stop). Single-stop configs from v1 are migrated to a one-element
-    # tuple by install.sh's migrate_transit_config.
+    # MTA BusTime. `bus_stops` is a tuple of (stop_id, label) pairs
+    # parsed from the wizard's JASPER_BUS_STOPS env var.
     mta_bustime_key: str
-    bus_stops: tuple[str, ...]
+    bus_stops: tuple[tuple[str, str], ...]
 
     # Home Assistant integration. The /homeassistant wizard (PR 2) writes
     # /var/lib/jasper/home_assistant.env with these values; daemon picks
@@ -637,14 +638,12 @@ class Config:
             # `stops-for-location` and SIRI-probes their live routes.
             # Empty key OR empty stops disables the tool.
             mta_bustime_key=_env("JASPER_MTA_BUSTIME_KEY", ""),
-            # JASPER_BUS_STOPS is the wizard-written comma list of
-            # MTA MonitoringRefs, optionally suffixed with `|label`
-            # per entry (e.g. "MTA_302680|4 Av/39 St eastbound").
-            # The bus client reads only the IDs out of this dataclass
-            # field — labels are kept by the wizard for display only.
-            bus_stops=tuple(
-                t for t in _env("JASPER_BUS_STOPS", "").replace(",", " ").split()
-            ),
+            # JASPER_BUS_STOPS is "id|label,id|label" — labels can
+            # contain spaces (e.g. "4 Av/39 St eastbound"), so a
+            # naive `.replace(",", " ").split()` like other list-
+            # shaped vars use would shred the labels into separate
+            # entries. Hand off to the canonical parser.
+            bus_stops=tuple(parse_bus_stops(_env("JASPER_BUS_STOPS", ""))),
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /homeassistant
             # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
