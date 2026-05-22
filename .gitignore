@@ -44,3 +44,8 @@ tests/voice_eval/transcripts_out/*
 tests/voice_eval/traces_out/*
 !tests/voice_eval/traces_out/.gitkeep
 wake-events/
+
+# Reference voice recordings (whisper/yell/music/fast/slow) used as
+# the stable A/B baseline for AEC engine + wake-word model swaps.
+# User-specific audio; never ship to the repo.
+reference-conditions/

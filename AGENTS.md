@@ -1003,6 +1003,15 @@ is gitignored — large binaries, regenerate as needed).
 
 ## Debugging — fetch evidence before guessing
 
+> **Before writing a new test or measurement script, check
+> [docs/testing-tooling.md](docs/testing-tooling.md).** It's the
+> index of every capture / scoring / forensic / diagnostic tool in
+> the repo, organized by "if you want to X, use Y". Several rounds
+> of duplication happened before this doc existed; the cost of
+> reading it (~3 min) is far less than the cost of building a
+> parallel tool. If you do add a new tool, add an entry there in
+> the same PR.
+
 When the user reports "it doesn't work" or asks about Pi-side
 behaviour, **before guessing**, fetch the actual logs:
 

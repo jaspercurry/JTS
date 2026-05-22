@@ -131,13 +131,93 @@ median crest  16.1 dB (squashed)    22.4 dB (matches AEC OFF — restored)
 pct_hard      0.50 %                0.00 %
 ```
 
+### Wake-word baseline against the reference corpus (2026-05-22)
+
+`jarvis_v2.onnx` scored offline against all 10 conditions × 2 streams
+(`reference-conditions/`, captured today). Per-condition peak score and
+fire counts at the production-default 0.5 threshold:
+
+```
+condition         aec-off    aec-on    fires@.5 (off/on)
+normal-quiet        0.997        0.997     53 /  50
+normal-music        0.997        0.996     17 /  20
+whisper-quiet       0.997        0.997     34 /  36
+whisper-music       0.997        0.279      2 /   0  ← silent miss on AEC ON
+yell-quiet          0.997        0.997     48 /  45
+yell-music          0.997        0.996     34 /  15  ← degraded on AEC ON
+fast-quiet          0.997        0.997     45 /  40
+fast-music          0.997        0.975     30 /   3  ← degraded on AEC ON
+slow-quiet          0.997        0.997     26 /  25
+slow-music          0.996        0.996     17 /  18
+```
+
+Filenames per condition: `aec-off.wav` (raw chip mic, pre-AEC3),
+`aec-on.wav` (post-AEC3 — what voice consumes today), `reference.wav`
+(playback reference signal — the AEC3 far-end). Naming matches
+`scripts/wake-rate-test.sh`'s output so analysis scripts work
+on either capture source.
+
+Full CSV at `reference-conditions/jarvis_v2-baseline-scores.csv` (gitignored).
+Re-running script: `python scripts/score-baseline-wakeword.py`.
+
+**Refined diagnosis** (replaces the earlier "AEC ON misses 100 %" framing):
+
+- The silent-miss failure mode is **concentrated in 2-3 specific cells**:
+  whisper-music (peak 0.997 → 0.279, complete fail), fast-music (peak
+  0.997 → 0.975 but fires drop 30 → 3), yell-music (fires drop 34 → 15).
+  Not universal across conditions.
+- Quiet conditions are fine. AEC ON ≈ raw mic for wake scoring on all
+  five no-music conditions.
+- The pattern matches the `hf_CV +0.286` forensic finding above —
+  AEC3's RS gating hits HF speech bins frame-by-frame, which is
+  disproportionately damaging when (a) the signal is quiet (whispers
+  depend on HF consonants) or (b) the signal is rapid (less repetition
+  for the smoothed score to recover from a gated frame).
+- Loudness is *not* the issue: whisper-music AEC output is only ~2 dB
+  quieter than raw mic, yet the wake score collapses from 0.997 to
+  0.279. The signal is being damaged in a different dimension than
+  amplitude.
+
+**Implication for the DTLN-aec experiment:** the cells to watch are
+exactly the music + edge-style ones. If DTLN-aec rescues
+whisper-music and fast-music without regressing normal-quiet or
+yell-quiet, that's a clear win and DTLN-aec should become the
+default. If it can't recover whisper-music, the wake model itself
+has insufficient HF robustness and Phase 4 (custom training) has
+to follow.
+
+### Shallow AEC3 knob tuning — already swept, no win (2026-05-22)
+
+A natural-seeming pre-DTLN test would be to sweep the already-exposed
+AEC3 binding knobs (`JASPER_AEC_NS_ENABLED`, `JASPER_AEC_NS_LEVEL`,
+`JASPER_AEC_AGC1_*`, `JASPER_AEC_STREAM_DELAY_MS`, `JASPER_AEC_AGC2`).
+**Don't.** User has swept all of these manually; none recover the
+whisper-music silent miss. The damage is upstream of those stages
+(in the AEC3 residual suppressor, per the `hf_CV` finding), and our
+binding doesn't expose the RS sub-config knobs.
+
+The deep RS knobs (`Suppressor.dominant_nearend_detection.snr_threshold`,
+`subband_nearend_detection.use`, `high_bands_suppression.max_gain_during_echo`)
+require exposing `EchoCanceller3Factory` from libwebrtc 1.3 — and that
+class is **not** in Trixie's `libwebrtc-audio-processing-dev 1.3-3`
+public headers (verified 2026-05-22). Only `EchoCanceller3Config` (the
+struct that holds the knobs) and the abstract `EchoControlFactory`
+base class are present. Exposing the concrete factory needs either
+header vendoring + ABI-risk linking, source-building libwebrtc with
+internal headers exposed, or finding a different package — all
+3-5+ day projects.
+
+This is why Phase 1 (DTLN-aec engine swap) skips ahead of Phase 2
+(AEC3 RS knob exposure): the engine swap is genuinely cheaper than
+fighting Trixie's libwebrtc surface area.
+
 ---
 
 ## The levers we can pull — ranked by expected impact
 
 | # | Lever | Current state | Effort | Expected impact | Why this ranking |
 |---|---|---|---|---|---|
-| 1 | **Wake-word engine** (jarvis_v2 → livekit-wakeword or personalized) | jarvis_v2 misses 100 % of attempts on AEC ON leg; user feedback "model is struggling to pick it up" | 1–3 days (Tier 1 on-Pi); 1–2 weeks (custom retrain) | **Massive** — addresses the root failure mode. Cleaner AEC won't help a model that silently misses | Direct production-data evidence. Model is the bottleneck. |
+| 1 | **Wake-word engine** (jarvis_v2 → personalized verifier, or custom livekit-wakeword) | jarvis_v2 misses 100 % of attempts on AEC ON leg; user feedback "model is struggling to pick it up" | 2–3 days (Tier 1 on-Pi verifier over jarvis_v2); 3–5 days (custom livekit-wakeword Jarvis — must train; no drop-in pretrained) | **Massive** — addresses the root failure mode. Cleaner AEC won't help a model that silently misses | Direct production-data evidence. Model is the bottleneck. **Revised 2026-05-22:** no longer the cheapest option since the "drop-in livekit-wakeword Jarvis" path doesn't exist. |
 | 2 | **AEC engine choice** (AEC3 → DTLN-aec, or run both) | AEC3 with RS tearing on sibilants | 2–3 days for parallel integration | **High** — fixes HF tearing without C++ binding work; neural model is drift-tolerant | Sidesteps the libwebrtc surface-area problem entirely. The user's stated preference. |
 | 3 | **TTS reference routing fix** (ALSA `multi` plugin) | TTS bypasses AEC entirely; user hears TTS echo in mic | 0.5–1 day (asoundrc change) | **High** for user experience during TTS responses; medium for wake-word | Architectural gap. Clean fix exists. |
 | 4 | **AEC3 RS knob exposure** (C++ binding rebuild) | Locked; defaults too aggressive on sibilants | 2–3 days (Meson subproject + binding refactor) | **High** — would fix the tearing in-engine; ONLY useful if we keep AEC3 | High-effort, only payoff if Phase 1 says "stay with AEC3" |
@@ -152,6 +232,16 @@ pct_hard      0.50 %                0.00 %
 personalization), in parallel with Lever 3 (TTS routing). Lever 4 (AEC3 RS
 knobs) only if Phase 1 keeps AEC3 in play. Lever 5 (wizard) after we know
 what the wizard should configure.
+
+**Why DTLN-aec is the first move now (revised 2026-05-22):** the original
+framing assumed wake-word personalization was the cheaper test. Discovery
+during the 2026-05-22 session showed livekit-wakeword has no pretrained
+"Jarvis" model — both wake-word options require comparable effort to the
+DTLN-aec spike. DTLN-aec runs first because (a) it tests the engine
+hypothesis directly, (b) whichever wake-word path we eventually pick will
+benefit from cleaner AEC inputs, and (c) we already have the reference
+baseline (`reference-conditions/`, 10 conditions × 3 streams, captured
+2026-05-22) to evaluate it against.
 
 ---
 
@@ -183,6 +273,13 @@ deployments — hence the report's "wizard picks the engine" framing.
 
 ### Wake-word engine: jarvis_v2 (openWakeWord) vs livekit-wakeword vs custom
 
+> **Update 2026-05-22:** livekit-wakeword does *not* ship a pre-trained "Jarvis"
+> model. It ships only `hey_livekit` as a demonstration of the pipeline. The
+> library is fundamentally a *training framework* — to use it for "Jarvis" you
+> have to run its training pipeline yourself (synthetic data generation +
+> training compute + export). That's a 3-5 day project, not a drop-in swap.
+> Implications below.
+
 | | `jarvis_v2.onnx` (current) | livekit-wakeword | Custom-trained (Tier 2) |
 |---|---|---|---|
 | Architecture | flatten + Dense MLP head | conv + multi-head attention | conv + multi-head attention, user-tuned |
@@ -191,11 +288,29 @@ deployments — hence the report's "wizard picks the engine" framing.
 | Recall (vendor benchmarks) | unknown | 86.1 % | should exceed both |
 | FPPH (vendor benchmarks) | unknown | 100× lower than jarvis_v2 (vendor claim) | configurable |
 | Trixie / Pi 5 compatibility | Proven | Proven (verified 2026-05-21 BUD-E smoke test) | Proven |
-| Runtime swap effort | None | Drop-in (ONNX) | Drop-in (ONNX) |
+| Runtime swap effort | None | **3-5 days** — must train a "Jarvis" model via livekit-wakeword's pipeline; only `hey_livekit` ships pretrained. ONNX swap itself is trivial; the training is the work. | Drop-in (ONNX) once trained |
+| Pretrained "Jarvis" available? | Yes (community) | **No** — `hey_livekit` only | n/a — user-trained by definition |
 
-**Net read:** the jarvis_v2 silent-miss failure mode is the dominant problem.
-livekit-wakeword is the safest stepping stone. Custom-trained on user's actual
-audio (already being captured in our wake-events corpus) is the endpoint.
+**Net read (updated):** there is no fast wake-word swap. The previously-implied
+"drop-in livekit-wakeword" doesn't exist for our wake word. Both real options
+(custom-trained livekit-wakeword *or* personalized on-Pi verifier on top of the
+existing jarvis_v2) require comparable effort to DTLN-aec, so wake-word work
+is no longer the cheaper first move it was framed as. This is why Phase 1
+(DTLN-aec) moves first regardless of which problem turns out dominant — the
+spike gives us cleaner inputs whichever wake-word path we pick afterward.
+
+The wake-word personalization options if/when we do them:
+- **Tier 1 — on-Pi verifier head over jarvis_v2** (Phase 4, ~2-3 days):
+  small classifier trained on user's actual "Jarvis" utterances, gates the
+  jarvis_v2 score. Keeps the openWakeWord pipeline; just adds a personal
+  yes/no head. Lowest infrastructure cost.
+- **Tier 2 — custom livekit-wakeword "Jarvis" model** (Phase 4b, ~3-5 days):
+  full training pipeline run (synthetic data gen + cloud compute + ONNX
+  export). Higher ceiling on quality, more infrastructure (Modal/RTX 4090
+  cloud spend, training pipeline maintenance).
+
+Both want the wake-events corpus (already capturing). Both can use the
+reference-conditions baseline (captured 2026-05-22) for evaluation.
 
 ### TTS reference routing — three fix approaches
 
@@ -273,13 +388,25 @@ Forensic metrics (extend `/tmp/analyze_tearing.py`):
 - ERLE in dB during music-only periods — measures cancellation effectiveness
 - Wake-word peak score distribution per leg
 
+**Pre-spike measurement:** before any bridge changes, run `jarvis_v2.onnx`
+offline against the 10-condition reference baseline (`reference-conditions/`,
+captured 2026-05-22). Score both `aec-off.wav` (raw mic — pre-AEC3)
+and `aec-on.wav` (today's AEC3 output) per condition. Persist
+as `reference-conditions/jarvis_v2-baseline-scores.csv` (gitignored — user's
+private corpus). This is the "before" snapshot that Phase 1's after-state
+will be compared against. Without it, "DTLN-aec scores better" is a vibe,
+not a number.
+
 **Decision point at the end of Phase 1:**
 
-- If DTLN-aec output sounds clean AND wake model scores well → commit to
+- If DTLN-aec output sounds clean AND wake model scores well on its output → commit to
   DTLN-aec as default. Skip Phase 2 (AEC3 binding work).
 - If DTLN-aec output sounds clean BUT wake model still struggles → wake-word
-  model is the issue. Skip both Phase 2 and the DTLN commit; go straight to
-  Phase 4 (wake-word personalization).
+  model is the issue. Skip both Phase 2 and the DTLN commit; go to Phase 4.
+  **Revised 2026-05-22:** Phase 4 is no longer the "fast path" it was once
+  framed as — both options (Tier 1 personalized verifier, Tier 2 custom
+  livekit-wakeword Jarvis) require real training work. Pick based on the
+  ceiling-vs-effort tradeoff in the "Wake-word engine" table above.
 - If DTLN-aec doesn't clearly win → fall back to Phase 2 (expose AEC3 RS
   knobs and tune properly).
 
