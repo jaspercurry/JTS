@@ -41,6 +41,7 @@ from .home_assistant import HAClient, build_ha_client
 from .renderer import RendererClient
 from .spotify_router import BuildResult, Router, build_clients
 from .bus import BusClient
+from .citibike import CitiBikeClient
 from .subway import SubwayClient
 from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
@@ -49,6 +50,7 @@ from .tools.calendar import make_calendar_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.bus import make_bus_tools
+from .tools.citibike import make_citibike_tools
 from .tools.home_assistant import make_home_assistant_tools
 from .tools.subway import make_subway_tools
 from .tools.time import make_time_tools
@@ -152,6 +154,17 @@ SYSTEM_INSTRUCTION = (
     "tool unions arrivals across all of them — each arrival "
     "carries its own `stop_label` so you can name which stop "
     "each bus is at.\n"
+    "  - Any question about Citi Bike, bike share, available "
+    "bikes, e-bikes, or open docks → call get_citibike_status. "
+    "Call it fresh every time — counts change minute-to-minute. "
+    "Pass an empty `station_label` for a general 'what's the "
+    "Citi Bike situation?' query; pass the user's spoken station "
+    "phrase ('9 Av', 'Atlantic') for a specific one — the "
+    "tool's substring match is case-insensitive and forgiving. "
+    "Each saved station's response splits classic bikes from "
+    "e-bikes (the household cares about that distinction). When "
+    "the response's `ebike_only_mode` is true, only e-bike "
+    "counts are returned — speak only those.\n"
     "  - ANY smart-home control or query — lights, switches, "
     "plugs, locks, blinds, covers, fans, thermostats, climate, "
     "appliances, scenes, scripts, automations, area-scoped "
@@ -281,6 +294,23 @@ SYSTEM_INSTRUCTION = (
     "pinned it. For a bus at 0 minutes, say 'approaching' or "
     "'now' instead of '0 minutes'. NEVER say 'stops away' or "
     "'miles away'.\n"
+    "  - get_citibike_status: speak each station's bike counts "
+    "plainly. When `ebike_only_mode` is FALSE (the default), "
+    "name BOTH e-bike and classic counts for each station: "
+    "'9 Av has 3 e-bikes and 5 classic; Atlantic has 2 e-bikes "
+    "and 4 classic.' When `ebike_only_mode` is TRUE, the "
+    "`classic_bikes` field is omitted — speak ONLY e-bike "
+    "counts: '9 Av has 3 e-bikes; Atlantic has 2.' Single-"
+    "station queries get a tighter answer: '9 Av: 3 e-bikes, "
+    "5 classic.' When a station's status is 'offline' or "
+    "'missing', call it out briefly ('Atlantic is offline') "
+    "and don't read its zero counts. Mention open docks only "
+    "when the user explicitly asked OR when a station has 3 "
+    "or fewer docks ('running low on docks at 9 Av'). When "
+    "`last_reported_age_seconds` > 120 on any station, preface "
+    "with 'as of a few minutes ago' so the user knows the "
+    "data is stale. When `no_match` is true, say 'I don't "
+    "have a saved station matching <filter>.'\n"
     "  - set_timer / cancel_timer: speak the response's `confirm` "
     "field verbatim. If cancel_timer returns `reason='ambiguous'`, "
     "read the candidate durations and ask which to cancel.\n"
@@ -710,12 +740,13 @@ def _build_system_instruction(
         # right speaker URL ("jts2.local/transit") rather than the
         # default. cfg.hostname is the canonical source.
         addendum += (
-            " Transit tools (subway, bus arrivals) aren't set up on this "
-            "speaker yet — no get_subway_arrivals or get_bus_arrivals tool "
-            "is available. If the user asks about the next train or next "
-            f"bus, briefly say: 'Transit isn't set up yet — visit "
-            f"{hostname}/transit to configure it.' Don't promise to check "
-            "or look it up; the data source is genuinely absent."
+            " Transit tools (subway, bus, Citi Bike) aren't set up on "
+            "this speaker yet — no get_subway_arrivals, get_bus_arrivals, "
+            "or get_citibike_status tool is available. If the user asks "
+            "about the next train, the next bus, or Citi Bike, briefly "
+            f"say: 'Transit isn't set up yet — visit {hostname}/transit "
+            "to configure it.' Don't promise to check or look it up; "
+            "the data source is genuinely absent."
         )
     if not ha_configured:
         # Same conditional pattern as transit above. Critical that the
@@ -939,6 +970,7 @@ def _build_registry(
     google_clients: GoogleClients | None = None,
     bus: BusClient | None = None,
     ha: HAClient | None = None,
+    citibike: CitiBikeClient | None = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -958,6 +990,12 @@ def _build_registry(
     for fn in make_subway_tools(subway):
         registry.register(fn)
     for fn in make_bus_tools(bus):
+        registry.register(fn)
+    # Citi Bike — keyless GBFS-backed. Gated on saved-station count
+    # (citibike.enabled) so the model never sees a tool whose every
+    # call would return zero stations. See jasper.citibike for the
+    # data layer (TTL cache, stale-on-error).
+    for fn in make_citibike_tools(citibike):
         registry.register(fn)
     # Home Assistant — single tool surface (home_assistant) that wraps
     # HA's /api/conversation/process endpoint. Gated on ha being non-None
@@ -2972,6 +3010,25 @@ async def run() -> None:
         )
         if cfg.bus_enabled else None
     )
+    # Citi Bike. None when no stations are saved; the tool factory
+    # short-circuits to [] in that case so the model never sees an
+    # always-empty tool. GBFS feeds are cached in-process (see
+    # jasper.citibike) so the per-call cost is two short HTTP GETs
+    # at worst, often zero.
+    citibike = (
+        CitiBikeClient(
+            saved_stations=list(cfg.citibike_stations),
+            ebike_only=cfg.citibike_ebike_only,
+        )
+        if cfg.citibike_enabled else None
+    )
+    if citibike is not None:
+        logger.info(
+            "citibike: enabled stations=%d ebike_only=%s",
+            len(cfg.citibike_stations), cfg.citibike_ebike_only,
+        )
+    else:
+        logger.info("citibike: disabled (no stations saved)")
     # Home Assistant client. None when JASPER_HA_URL or JASPER_HA_TOKEN
     # is unset; the tool factory short-circuits to [] in that case so
     # the model never sees a tool whose every call would fail. The
@@ -3101,6 +3158,7 @@ async def run() -> None:
         google_clients=google_clients,
         bus=bus,
         ha=ha,
+        citibike=citibike,
     )
 
     # Wire the timer pre-render hook so set_timer (and start-time
@@ -3150,12 +3208,17 @@ async def run() -> None:
         google_default_account = (
             google_clients.default_account_name() or ""
         ) if google_clients else ""
-        # transit_configured is true when either subway or bus
-        # client is live — the system prompt nudges the model toward
-        # /transit only when BOTH are absent. Partial configurations
-        # (e.g. subway set, bus not) don't need the nudge because
-        # the available tool surface still answers train queries.
-        transit_configured = bool(subway) or bool(bus and bus.enabled)
+        # transit_configured is true when ANY transit tool is live —
+        # the system prompt nudges the model toward /transit only when
+        # ALL transit options are absent. Partial configurations
+        # (e.g. subway set, bus/citibike not) don't need the nudge
+        # because the available tool surface still answers the modes
+        # the household has actually configured.
+        transit_configured = (
+            bool(subway)
+            or bool(bus and bus.enabled)
+            or bool(citibike and citibike.enabled)
+        )
         # ha_configured drives the home_assistant nudge — when HA is
         # disabled, the model needs explicit guidance to redirect
         # smart-home requests to the wizard rather than misrouting to
