@@ -36,9 +36,24 @@ ssh pi@jts.local 'journalctl -u jasper-voice -f' | grep "event=ha\."
 When `JASPER_HA_URL` and `JASPER_HA_TOKEN` are both set in
 [`/var/lib/jasper/home_assistant.env`](../deploy/systemd/jasper-voice.service),
 the `home_assistant` voice tool is registered and the model can call it.
-When either is missing, the tool isn't registered, the model can't see
+Env keys (defined as constants in
+[`jasper/home_assistant.py`](../jasper/home_assistant.py), imported
+everywhere they're read so a rename touches one file):
+
+| Key | Purpose |
+|---|---|
+| `JASPER_HA_URL` | Base URL, e.g. `http://homeassistant.local:8123` |
+| `JASPER_HA_TOKEN` | Long-Lived Access Token (JWT, ~180-220 chars) |
+| `JASPER_HA_AGENT_ID` | Optional `conversation.*` entity to route through |
+| `JASPER_HA_VERIFY_SSL` | `"0"`/`"false"`/`"no"` disables TLS verification (HTTPS-self-signed HA installs). Absent or `"1"` = verify (safe default). Wizard renders the toggle only when URL is `https://`. |
+| `JASPER_HA_RECENT_URLS` | JSON-encoded list of last 3 successful URLs — quick-pick in state 1 for households moving between networks |
+
+When either URL or token is missing, the tool isn't registered, the model can't see
 it, and smart-home requests get answered conversationally ("smart home
 isn't set up yet — visit jts.local/homeassistant").
+
+Setup is the wizard at `http://jts.local/homeassistant/`. The full
+three-state walkthrough is in [Setup walkthrough](#setup-walkthrough).
 
 ## Why the conversation API, not MCP
 
@@ -216,6 +231,17 @@ expects `{"message": "API running."}`) before persisting. Invalid
 token → URL stays, token dropped, user lands back in State 2 with
 the error. Valid → State 3.
 
+**HTTPS with self-signed certs.** HA's standard local-install posture
+is plain HTTP on port 8123. Households that have configured HTTPS
+with HA's self-signed cert (a real and common configuration — HA's
+docs walk through it) get a checkbox in State 2 saying "Accept a
+self-signed certificate". The checkbox is **only rendered when the
+URL is https://**; plain HTTP has no TLS to verify. Default off
+(verify enabled). Checking it writes `JASPER_HA_VERIFY_SSL=0` and
+propagates through to HAClient, probe_status, and the wizard's own
+verify step — so the household sees the same TLS behaviour at every
+layer of the stack.
+
 ### State 3: connected
 
 Status card showing instance name + version, the URL (masked),
@@ -229,7 +255,18 @@ override (or "Home Assistant default"). Inline:
 - **Disconnect** button (confirm-gated) → clears URL + token, keeps
   recent-URLs around for one-tap reconnect, restarts `jasper-voice`.
 
-The wizard does NOT poll. To re-test, click the Test button.
+**Post-save restart UX.** When the user lands on State 3 from a
+fresh `/save`, the redirect carries `restarting=1`. The page shows
+a "Configuring… the speaker is finishing its restart. Voice commands
+will work in a few seconds." chip and polls `/verify` every 1 s for
+up to 15 s. Once `/verify` returns ok, the chip flips to "✓ Ready"
+and the URL is cleaned via `history.replaceState`. On timeout, a
+friendly fallback chip with an inline Test button takes over. This
+prevents the user from speaking "Hey Jarvis, turn on the bedroom
+lights" against a still-rebooting daemon.
+
+The wizard does NOT poll outside the restart window. To re-test
+after the chip clears, click the Test button.
 
 ## The HAClient
 

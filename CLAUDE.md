@@ -526,6 +526,10 @@ Persists to `/var/lib/jasper/home_assistant.env`:
 JASPER_HA_URL=http://homeassistant.local:8123
 JASPER_HA_TOKEN=eyJ0eXAiOi…
 JASPER_HA_AGENT_ID=         # optional, empty = HA's default agent
+JASPER_HA_VERIFY_SSL=0      # optional, only written when user accepts
+                            # a self-signed cert in state 2. Wizard
+                            # renders the checkbox only for https://
+                            # URLs.
 ```
 
 Both URL and token must be set for `home_assistant` to register as a

@@ -435,8 +435,11 @@ async def _get_state(
         {connected: false, error: ...}. See jasper.home_assistant.probe_status."""
         from .. import home_assistant
         return await home_assistant.probe_status(
-            os.environ.get("JASPER_HA_URL", "").strip(),
-            os.environ.get("JASPER_HA_TOKEN", "").strip(),
+            os.environ.get(home_assistant.ENV_URL, "").strip(),
+            os.environ.get(home_assistant.ENV_TOKEN, "").strip(),
+            verify_ssl=os.environ.get(
+                home_assistant.ENV_VERIFY_SSL, "1",
+            ).strip() not in ("0", "false", "no"),
         )
 
     cam_db, airplay, voice_st, ha_status = await asyncio.gather(
@@ -733,8 +736,11 @@ def _make_handler(
                 try:
                     ha_status = asyncio.run(
                         _ha_mod.probe_status(
-                            os.environ.get("JASPER_HA_URL", "").strip(),
-                            os.environ.get("JASPER_HA_TOKEN", "").strip(),
+                            os.environ.get(_ha_mod.ENV_URL, "").strip(),
+                            os.environ.get(_ha_mod.ENV_TOKEN, "").strip(),
+                            verify_ssl=os.environ.get(
+                                _ha_mod.ENV_VERIFY_SSL, "1",
+                            ).strip() not in ("0", "false", "no"),
                         ),
                     )
                 except Exception:  # noqa: BLE001

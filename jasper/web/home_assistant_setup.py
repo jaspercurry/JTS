@@ -57,6 +57,7 @@ from typing import Any
 
 import httpx
 
+from .. import home_assistant as _ha_mod
 from ._common import (
     NAV_BACK_HTML,
     PAGE_STYLE,
@@ -94,11 +95,13 @@ VERIFY_TIMEOUT = httpx.Timeout(timeout=5.0, connect=3.0)
 # household ("home", "office", "parents' house") without UI clutter.
 RECENT_URLS_MAX = 3
 
-# Env keys.
-ENV_URL = "JASPER_HA_URL"
-ENV_TOKEN = "JASPER_HA_TOKEN"
-ENV_AGENT_ID = "JASPER_HA_AGENT_ID"
-ENV_RECENT_URLS = "JASPER_HA_RECENT_URLS"
+# Env keys — re-exported from jasper.home_assistant so the wizard's
+# state-file shape stays in sync with the daemon's config loader.
+ENV_URL = _ha_mod.ENV_URL
+ENV_TOKEN = _ha_mod.ENV_TOKEN
+ENV_AGENT_ID = _ha_mod.ENV_AGENT_ID
+ENV_VERIFY_SSL = _ha_mod.ENV_VERIFY_SSL
+ENV_RECENT_URLS = _ha_mod.ENV_RECENT_URLS
 
 
 # ---- URL normalization ------------------------------------------------------
@@ -137,6 +140,16 @@ def _normalize_url(raw: str) -> str:
         if parsed.scheme == "http":
             netloc = netloc + ":8123"
     return f"{parsed.scheme}://{netloc}".rstrip("/").removesuffix("/api").rstrip("/")
+
+
+# ---- verify_ssl ------------------------------------------------------------
+
+def _verify_ssl_from_state(state: dict[str, str]) -> bool:
+    """Read JASPER_HA_VERIFY_SSL from the env-file state. Default True;
+    the wizard only writes "0" when the user explicitly enables the
+    self-signed-cert checkbox. Mirrors config.py's parsing."""
+    raw = state.get(ENV_VERIFY_SSL, "1").strip()
+    return raw not in ("0", "false", "no")
 
 
 # ---- Recent-URLs persistence ------------------------------------------------
@@ -276,7 +289,9 @@ def discover_sync(timeout: float = DISCOVERY_TIMEOUT_SEC) -> list[dict[str, str]
 
 # ---- Validation against HA --------------------------------------------------
 
-async def _verify_async(url: str, token: str) -> dict[str, Any]:
+async def _verify_async(
+    url: str, token: str, *, verify_ssl: bool = True,
+) -> dict[str, Any]:
     """Probe GET /api/ to confirm URL + token combo. Returns a dict the
     handler ships back as JSON:
         {ok: bool, instance_name: str, version: str, error: str|null,
@@ -293,7 +308,9 @@ async def _verify_async(url: str, token: str) -> dict[str, Any]:
         return {"ok": False, "error": "Token is empty."}
 
     headers = {"Authorization": f"Bearer {token}"}
-    async with httpx.AsyncClient(timeout=VERIFY_TIMEOUT, headers=headers) as client:
+    async with httpx.AsyncClient(
+        timeout=VERIFY_TIMEOUT, headers=headers, verify=verify_ssl,
+    ) as client:
         try:
             r = await client.get(url + "/api/")
         except httpx.ConnectError:
@@ -372,10 +389,12 @@ async def _verify_async(url: str, token: str) -> dict[str, Any]:
     }
 
 
-def verify_sync(url: str, token: str) -> dict[str, Any]:
+def verify_sync(
+    url: str, token: str, *, verify_ssl: bool = True,
+) -> dict[str, Any]:
     """Sync wrapper around _verify_async — handler-side entry point."""
     try:
-        return asyncio.run(_verify_async(url, token))
+        return asyncio.run(_verify_async(url, token, verify_ssl=verify_ssl))
     except Exception as e:  # noqa: BLE001
         logger.exception("ha verify: unexpected error")
         return {"ok": False, "error": f"Internal error during validation: {e}"}
@@ -589,6 +608,27 @@ def _state_partial_html(state: dict[str, str]) -> str:
     with deep link to HA's profile page."""
     url = state.get(ENV_URL, "")
     profile_url = _profile_link(url)
+    is_https = url.startswith("https://")
+    verify_ssl = _verify_ssl_from_state(state)
+    # Show the self-signed-cert checkbox only when the URL is https.
+    # plain-http connections have no TLS to verify.
+    ssl_block = ""
+    if is_https:
+        ssl_block = f"""
+  <label style="display: flex; align-items: center; gap: 0.5em;
+                font-weight: 400; margin-top: 1em;">
+    <input type="checkbox" name="verify_ssl" value="on"
+           {'' if verify_ssl else 'checked'}
+           style="width: auto; margin: 0;">
+    <span><strong>Accept a self-signed certificate.</strong>
+    <span class="hint" style="display: block; margin-top: 0.2em;">
+      Enable this only for Home Assistant instances on your own LAN
+      that don't have a publicly-trusted certificate. Leaving it off
+      is the safe default and works for Nabu Casa / Let's Encrypt /
+      any other valid TLS.
+    </span></span>
+  </label>
+  <input type="hidden" name="verify_ssl_present" value="1">"""
     return f"""
 <p class="sub">Step 2 of 2 — paste a token so the speaker can talk to
 Home Assistant.</p>
@@ -613,6 +653,7 @@ Home Assistant.</p>
     scroll to the bottom, click <strong>Create Token</strong>, name it
     something like &ldquo;JTS Speaker&rdquo;, and paste the value here.
     The token is shown only once — copy it carefully.</small>
+  {ssl_block}
 
   <p style="margin-top: 1em;">
     <button type="submit">Verify and save</button>
@@ -691,30 +732,95 @@ to this Home Assistant instance.</p>
   const agentDisplay = document.getElementById('agent-display');
   const currentAgent = {json.dumps(agent_id)};
 
+  // restarting=1 marker → the page just landed from a successful
+  // /save. jasper-voice restarts asynchronously (--no-block), so
+  // /verify might 401 or hit a transient error for a few seconds.
+  // Poll /verify with a short cadence + a 15 s ceiling, show a
+  // "Configuring…" chip that clears once we see ok=true. Without
+  // this UX, the user sees a green "Connected to X" banner and may
+  // immediately try a voice command against a still-rebooting daemon.
+  const urlParams = new URLSearchParams(window.location.search);
+  const isRestarting = urlParams.get('restarting') === '1';
+
   // Populate the agent picker by re-verifying on page load. Cheap (one
-  // GET /api/states call to HA) and gives the user the live list.
-  (async () => {{
+  // GET /api/states call to HA) and gives the user the live list. When
+  // we're in the post-save restart window, this same fetch doubles as
+  // the readiness probe.
+  async function pollOnce() {{
     try {{
       const r = await fetch('./verify', {{method: 'POST'}});
-      const data = await r.json();
-      if (!data.ok) return;
-      const agents = data.agents || [];
-      for (const a of agents) {{
-        const opt = document.createElement('option');
-        opt.value = a.entity_id;
-        opt.textContent = a.name + ' (' + a.entity_id + ')';
-        if (a.entity_id === currentAgent) opt.selected = true;
-        agentSelect.appendChild(opt);
-      }}
-      // Update header status grid if there's an instance name we didn't
-      // know about before.
-      if (data.instance_name && data.instance_name !== 'Home Assistant') {{
-        document.title = data.instance_name + ' · Home Assistant · JTS speaker';
-      }}
+      return await r.json();
     }} catch (e) {{
-      // Network failure isn't blocking — the user can still disconnect
-      // / reconfigure. The Test button below surfaces the same error.
+      return null;
     }}
+  }}
+
+  function populateAgents(data) {{
+    if (!data || !data.ok) return;
+    // Wipe any prior options except the default one.
+    while (agentSelect.options.length > 1) {{
+      agentSelect.remove(1);
+    }}
+    const agents = data.agents || [];
+    for (const a of agents) {{
+      const opt = document.createElement('option');
+      opt.value = a.entity_id;
+      opt.textContent = a.name + ' (' + a.entity_id + ')';
+      if (a.entity_id === currentAgent) opt.selected = true;
+      agentSelect.appendChild(opt);
+    }}
+    if (data.instance_name && data.instance_name !== 'Home Assistant') {{
+      document.title = data.instance_name + ' · Home Assistant · JTS speaker';
+    }}
+  }}
+
+  (async () => {{
+    if (!isRestarting) {{
+      populateAgents(await pollOnce());
+      return;
+    }}
+    // Restart-window UX: insert a chip near the test button and poll
+    // /verify every 1 s for up to 15 s. The 15 s ceiling covers
+    // Type=notify boot for jasper-voice (model load + cue regen +
+    // realtime backend handshake on a Pi 5).
+    const chip = document.createElement('div');
+    chip.style.cssText = 'padding: 0.6em 0.9em; background: #fff4e0;' +
+      'border: 1px solid #f0c060; border-radius: 6px; margin: 1em 0;' +
+      'display: flex; align-items: center; gap: 0.5em;';
+    chip.innerHTML = '<span class="spinner"></span>' +
+      '<span>Configuring… the speaker is finishing its restart. ' +
+      'Voice commands will work in a few seconds.</span>';
+    document.querySelector('.status-grid').insertAdjacentElement('afterend', chip);
+
+    const deadline = Date.now() + 15000;
+    let last = null;
+    while (Date.now() < deadline) {{
+      last = await pollOnce();
+      if (last && last.ok) {{
+        chip.style.background = '#e6f9ec';
+        chip.style.borderColor = '#1db954';
+        chip.innerHTML = '<span style="color: #14542a; font-weight: 600;">' +
+          '✓ Ready.</span> Smart-home commands work now.';
+        populateAgents(last);
+        // Clean URL so a refresh doesn't re-run the restart UX.
+        history.replaceState(null, '', window.location.pathname);
+        return;
+      }}
+      await new Promise(r => setTimeout(r, 1000));
+    }}
+    // Timed out — show a friendly fallback.
+    chip.style.background = '#fff5f5';
+    chip.style.borderColor = '#fcc';
+    chip.innerHTML = '<span style="color: #844;">⚠</span> ' +
+      'The restart is taking longer than expected. Try ' +
+      '<button id="late-test" type="button" ' +
+      'style="background: #fff; color: #1db954; border: 1px solid #1db954;' +
+      'padding: 0.2em 0.5em; border-radius: 4px; margin: 0 0.2em;">Test connection</button> ' +
+      'in a moment.';
+    document.getElementById('late-test').addEventListener('click', async () => {{
+      populateAgents(await pollOnce());
+    }});
+    history.replaceState(null, '', window.location.pathname);
   }})();
 
   // Test connection button.
@@ -822,6 +928,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 state = read_env_file(cfg["state_path"])
                 result = verify_sync(
                     state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
+                    verify_ssl=_verify_ssl_from_state(state),
                 )
                 self._send_json(result)
                 return
@@ -838,6 +945,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             raw_url = (form.get("url") or "").strip()
             raw_token = (form.get("token") or "").strip()
             agent_id = (form.get("agent_id") or "").strip()
+            # The "Accept self-signed certificate" checkbox renders only
+            # in state 3 (and only when the URL is https://). Browser
+            # convention: absent = unchecked, "on" or any non-empty
+            # value = checked. False (verify=True) is the safe default.
+            # When the form omits the field entirely (e.g. state 1's
+            # bare URL submit), preserve whatever the env file already
+            # says — don't silently re-enable verification.
+            existing_for_ssl = read_env_file(cfg["state_path"])
+            if "verify_ssl_present" in form:
+                # Hidden marker — present in any form that knows about
+                # the checkbox. Lets us distinguish "user unchecked it"
+                # (verify_ssl absent) from "form doesn't have the field
+                # at all" (preserve existing).
+                verify_ssl = bool(form.get("verify_ssl"))
+            else:
+                verify_ssl = _verify_ssl_from_state(existing_for_ssl)
 
             normalized_url = _normalize_url(raw_url)
             if not normalized_url:
@@ -887,12 +1010,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # We have URL + token. Validate against the live HA before
             # persisting so we never write a broken config that would
             # leave the daemon talking to a dead URL.
-            result = verify_sync(normalized_url, token)
+            result = verify_sync(normalized_url, token, verify_ssl=verify_ssl)
             if not result.get("ok"):
                 # Keep the URL in the env file so the user lands in state
                 # 2 with a still-valid URL on the next render — only the
                 # token gets dropped.
                 values = {ENV_URL: normalized_url}
+                # Persist verify_ssl so state-2's hint is accurate.
+                if not verify_ssl:
+                    values[ENV_VERIFY_SSL] = "0"
                 recent = _recent_urls(existing)
                 if recent:
                     values[ENV_RECENT_URLS] = json.dumps(recent)
@@ -906,7 +1032,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 return
 
-            # Validation passed. Persist URL + token + agent + bump recent URLs.
+            # Validation passed. Persist URL + token + agent + verify_ssl +
+            # bump recent URLs.
             recent = _push_recent_url(_recent_urls(existing), normalized_url)
             values = {
                 ENV_URL: normalized_url,
@@ -914,6 +1041,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 ENV_AGENT_ID: agent_id,
                 ENV_RECENT_URLS: json.dumps(recent),
             }
+            # Only write the flag when explicitly off — keeps the env
+            # file small and matches "absent = default safe value".
+            if not verify_ssl:
+                values[ENV_VERIFY_SSL] = "0"
             try:
                 write_env_file(cfg["state_path"], values, mode=0o600)
             except OSError as e:
@@ -924,8 +1055,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             instance = result.get("instance_name") or "Home Assistant"
             version = result.get("version")
             label = f"{instance}" + (f" ({version})" if version else "")
+            # restarting=1 tells the connected-state page to show a
+            # "Configuring…" banner that auto-clears once /verify
+            # returns OK (daemon back up + HA still reachable).
             self._redirect(
-                "./?msg=" + urllib.parse.quote(
+                "./?restarting=1&msg=" + urllib.parse.quote(
                     f"Connected to {label}. The speaker is restarting to pick up the change.",
                 ),
             )
