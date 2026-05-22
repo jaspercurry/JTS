@@ -116,6 +116,23 @@ it to `scripts/_analyze_*.py` so future sessions can find it.
 
 ---
 
+## Model conversion (TFLite → ONNX)
+
+[`scripts/convert-dtln-aec.sh`](../scripts/convert-dtln-aec.sh)
+downloads breizhn/DTLN-aec's TFLite pretrained models (128 / 256
+unit, both stages) and converts them to ONNX so they can run with
+the Pi's `onnxruntime` (tflite-runtime has no Python 3.13 wheel —
+see `install.sh` comment). Verified 2026-05-22: TFLite vs ONNX
+outputs match within ~5×10⁻⁵ on random input. Uses `tf2onnx 1.17`;
+`tflite2onnx 0.4.1` fails on the SQUARE op DTLN-aec uses for
+spectrogram magnitudes.
+
+If a future neural-audio model ships TFLite-only, this is the
+template: run `tf2onnx --tflite` with `--opset 17`, sanity-check
+against the original on random input, ship the ONNX.
+
+---
+
 ## Test-track generation
 
 [`scripts/make-wake-test-track.sh`](../scripts/make-wake-test-track.sh) +
