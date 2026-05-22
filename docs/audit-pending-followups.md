@@ -415,26 +415,93 @@ model is taking longer than usual to emit the first audio chunk. The
 watchdog treats this as "API silent" and may fire prematurely on a
 slow generation day.
 
-A more precise design: treat **any** server-originated event during
-the turn as activity. Then "no activity" really means "the WebSocket
-is open but the server hasn't said anything at all" — actual silence,
-not "model is thinking." This would let us safely shrink the timeout
-(e.g. to 5–10 s) because false-positives go away.
+Specifically, OpenAI sends a chain of intermediate events between
+the daemon's `response.create` and the first `response.output_audio.delta`
+— `response.created`, `response.output_item.added`,
+`response.content_part.added`, transcript deltas — and the daemon
+currently dispatches them but **does not** advance the idle anchor on
+them. So on a slow-generation day, the WebSocket is alive and
+actively receiving server events, but `last_activity_at` hasn't
+moved since turn-start. At a tight timeout (the prod-pre-#187
+case of 10 s) the watchdog fires mid-flight even though the server
+is visibly working. At 20 s (current default) the margin absorbs
+typical slow days; rare outliers could still clip.
 
-Sketch:
-- OpenAI: thread `_note_activity()` into every event the dispatcher
-  routes — `response.created`, `response.output_item.added`,
-  `response.content_part.added`, transcript deltas, audio_transcript
-  events, etc. The dispatch in `_dispatch_event` is the single
-  funnel.
-- Gemini: same idea against `BidiGenerateContentServerMessage`'s
-  intermediate event shapes (less granular than OpenAI's — Gemini
-  doesn't expose a `response.created` equivalent, so the gain is
-  smaller).
-- Test: pin the contract — feeding a turn an intermediate non-audio
-  event resets the anchor.
+#### Solution alternatives
 
-Cost/benefit: tightens UX recovery from ~20 s to ~5 s on a genuine
-hang, at the price of a wider-surface refactor and more event-shape
-exposure to the daemon. Not worth doing speculatively; revisit if
-the 20 s default ever causes real trouble in production.
+**A. Treat any inbound event as activity (recommended)**
+
+Call `turn._note_activity()` at the top of `_dispatch_event`. ~5
+lines per adapter. The timer becomes a true "WebSocket open but
+server silent" detector — would let us tighten the default to
+5–10 s.
+
+- Pro: smallest diff, largest correctness win, reversible.
+- Con: doesn't help if the bottleneck is genuine first-chunk latency
+  with zero intermediate events (rare on OpenAI, more common on
+  Gemini whose wire format is less chatty).
+- Audit needed: confirm no provider sends "keepalive-only" events
+  that would defeat the timer. None observed today.
+
+**B. Two-stage state machine**
+
+Distinguish three phases per turn:
+- pre-ack: turn-start → `response.created`, tight (~2 s)
+- pre-output: ack → first transcript/audio/tool, medium (~10 s)
+- mid-response: existing tail logic
+
+- Pro: precise semantics per failure mode; informative diagnostics
+  ("server didn't ack in 2 s" vs "accepted but produced nothing in
+  10 s").
+- Con: larger refactor; per-provider event normalization (Gemini
+  has no clean `response.created` analog — would need a stand-in).
+
+**C. Per-provider timeout knobs**
+
+Add `JASPER_OPENAI_IDLE_TIMEOUT_SEC`, `JASPER_GEMINI_IDLE_TIMEOUT_SEC`,
+`JASPER_GROK_IDLE_TIMEOUT_SEC`. Calibrated to each provider's
+observed first-chunk latency.
+
+- Pro: one knob per provider.
+- Con: doesn't solve the underlying "watchdog ignores intermediate
+  events" problem; just papers it over with different numbers. More
+  config surface for marginal gain.
+
+**D. Do nothing**
+
+The current design is correct for the dominant cases after #186
+and #187. The remaining gap is a non-tool turn where the model
+takes >20 s for first audio. Observed worst case in our logs is
+7.7 s, so 20 s gives ~2.6× margin. If 20 s does fire on a slow
+day, the failure mode is recoverable (user wakes again,
+~20 s of ducked silence).
+
+#### Triggers to revisit
+
+Don't ship A or B speculatively. Concrete signals worth watching:
+
+- `openai response.done arrived AFTER turn release` warning fires
+  more than ~1× per week in `journalctl -u jasper-voice`.
+- p99 of first-chunk latency (the `first audio chunk from OpenAI in
+  %dms` log line) climbs above 15 s sustained.
+- Tighter UX recovery becomes a felt need (e.g. kid-mode where
+  20 s of ducked silence reads as broken).
+- A 4th provider lands with a different latency profile.
+
+#### Telemetry suggestion (pre-work)
+
+Before reaching for A or B, instrument the data: add an INFO log
+when first-chunk latency crosses (say) 12 s, and a structured
+counter in the `/state` snapshot for "turns closed by pre-response
+idle timeout." A month of operation gives a real distribution to
+size the timer against; right now we're guessing from a small log
+sample.
+
+#### Cost summary
+
+Solution A is ~30–50 LOC (the dispatcher hooks + Gemini's analog
++ tests for both adapters). Solution B is ~150–250 LOC with the
+state machine + test coverage of each phase + per-provider event
+mapping. C is ~20 LOC of config plumbing. None are urgent. If
+production data ever points at the bug, A first; only escalate to
+B if A's "any event resets" turns out too coarse.
