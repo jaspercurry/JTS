@@ -131,3 +131,77 @@ async def test_play_owned_playlist_covers(harness, trial: int) -> None:
             f"Spoken text: {result.spoken_text!r}. "
             f"See transcript: {result.transcript_path}"
         )
+
+
+@pytest.mark.parametrize("trial", range(PASS_K))
+async def test_play_new_artist_song_routes_to_latest_by_artist(
+    harness, trial: int,
+) -> None:
+    """Asks 'play the new Rainbow Kitten Surprise song'. The model
+    must route to `spotify_play_latest_by_artist` (NOT `spotify_play`)
+    — `spotify_play` does catalog search with no temporal grounding
+    and returns the wrong track, which is the bug this scenario was
+    written to lock down (reported 2026-05-22).
+
+    Trajectory assertion is the load-bearing one: if the model calls
+    `spotify_play("new Rainbow Kitten Surprise song")` instead, the
+    test fails on assertion 1 — the symptom of the bug.
+
+    Side-effect: starts playing whatever Spotify reports as RKS's
+    most-recent single/album. Skip via JASPER_VOICE_EVAL_SKIP_PLAYBACK=1
+    if the speaker is in use.
+    """
+    if _playback_skip():
+        pytest.skip(
+            "voice-eval: JASPER_VOICE_EVAL_SKIP_PLAYBACK=1 set — "
+            "skipping playback-affecting scenario",
+        )
+
+    result = await harness.ask("play the new Rainbow Kitten Surprise song")
+
+    # 1. Trajectory — the model must call the latest-by-artist tool,
+    # not the generic spotify_play. Catching this is the whole point
+    # of the scenario.
+    latest_call = result.tool_call("spotify_play_latest_by_artist")
+    play_call = result.tool_call("spotify_play")
+    assert latest_call is not None, (
+        f"[trial {trial}] model did not call "
+        f"spotify_play_latest_by_artist. "
+        f"Tools observed: "
+        f"{[r.name for r in result.tool_call_records] or 'none'}. "
+        f"If spotify_play was called instead, the system prompt's "
+        f"'new/newest/latest' rule didn't stick — that's the bug. "
+        f"See transcript: {result.transcript_path}"
+    )
+    assert play_call is None, (
+        f"[trial {trial}] model called spotify_play ALSO — should "
+        f"only call spotify_play_latest_by_artist. Double-tool calls "
+        f"on this phrasing mean the model is hedging. "
+        f"See transcript: {result.transcript_path}"
+    )
+    if latest_call.error:
+        pytest.fail(
+            f"[trial {trial}] tool raised: {latest_call.error}. "
+            f"See transcript: {result.transcript_path}",
+        )
+
+    # 2. Outcome — tool returned ok=True with kind ∈ {single, album}.
+    res = latest_call.result or {}
+    assert res.get("ok"), (
+        f"[trial {trial}] spotify_play_latest_by_artist did not return "
+        f"ok=True. Result: {res!r}. See transcript: {result.transcript_path}"
+    )
+    assert res.get("kind") in ("single", "album"), (
+        f"[trial {trial}] unexpected kind={res.get('kind')!r}; expected "
+        f"'single' or 'album'. See transcript: {result.transcript_path}"
+    )
+
+    # 3. Reality — the resolved artist must match the named artist.
+    # Catches a fuzzy mishit (resolving to a different artist whose
+    # name happens to contain "rainbow" or "kitten").
+    resolved_artist = (res.get("artist") or "").lower()
+    assert "rainbow kitten surprise" in resolved_artist, (
+        f"[trial {trial}] resolved to artist={res.get('artist')!r}, "
+        f"not 'Rainbow Kitten Surprise' — artist search landed on the "
+        f"wrong band. See transcript: {result.transcript_path}"
+    )

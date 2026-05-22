@@ -607,6 +607,116 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         }
 
     @tool()
+    async def spotify_play_latest_by_artist(artist: str) -> dict:
+        """Find a named artist's most recent release (single or album)
+        and start playback.
+
+        Use this when the user asks for "the new", "the newest", "the
+        latest", or "their newest" song / single / album / release by a
+        named artist — e.g. "play the new Rainbow Kitten Surprise song",
+        "play the latest Taylor Swift", "play Beyoncé's newest album".
+
+        For any other "play X" request — naming a specific song, artist,
+        album, or playlist without a recency qualifier — call
+        `spotify_play` instead. `spotify_play` does catalog search, which
+        has no temporal grounding; "new"/"latest"/"newest" in its query
+        is a non-load-bearing word and the wrong track comes back.
+
+        Returns the `confirm` field — speak it verbatim so the user
+        hears which release was actually selected. On error, speak the
+        `error` field verbatim.
+        """
+        resolved = await _resolve_for_play()
+        if resolved is None:
+            return {"error": _no_account_msg()}
+        sp, device_id, stops, account_name, _ = resolved
+        if not device_id:
+            # Same root cause as spotify_play — see comment there.
+            return {
+                "error": (
+                    f"Spotify Connect on the speaker isn't linked to your "
+                    f"account yet. Open Spotify, tap the device picker, "
+                    f"and select {librespot_name} once. Then try again."
+                ),
+            }
+
+        safe_artist = artist.replace(chr(34), "")
+        try:
+            artist_res = await asyncio.to_thread(
+                sp.search, q=f'artist:"{safe_artist}"', type="artist", limit=1
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("artist search failed: %s", e)
+            return {"error": _NOT_UNDERSTOOD}
+        items = ((artist_res or {}).get("artists") or {}).get("items") or []
+        if not items or not items[0]:
+            return {"error": _NOT_UNDERSTOOD}
+        artist_id = items[0].get("id")
+        artist_name = items[0].get("name") or artist
+        if not artist_id:
+            return {"error": _NOT_UNDERSTOOD}
+
+        try:
+            albums_res = await asyncio.to_thread(
+                sp.artist_albums,
+                artist_id,
+                include_groups="single,album",
+                limit=50,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("artist_albums failed for %s: %s", artist_name, e)
+            return {"error": _NOT_UNDERSTOOD}
+        releases = ((albums_res or {}).get("items") or [])
+        if not releases:
+            return {
+                "error": f"couldn't find any releases for {artist_name}."
+            }
+
+        # Sort by release_date descending. Spotify returns dates at one
+        # of three precisions: "day" (2026-05-15), "month" (2026-05), or
+        # "year" (2026). Pad less-specific values to the START of their
+        # period so a year-only "2026" can't accidentally outrank a more
+        # specific newer release like "2026-05-15" via lexicographic
+        # comparison ("2026" sorts BEFORE "2026-01-01" in plain string
+        # compare because shorter-prefix wins on equal prefix).
+        def _sort_key(r: dict) -> str:
+            date_str = r.get("release_date") or "0000-01-01"
+            precision = r.get("release_date_precision") or "day"
+            if precision == "year":
+                return f"{date_str}-01-01"
+            if precision == "month":
+                return f"{date_str}-01"
+            return date_str
+
+        releases.sort(key=_sort_key, reverse=True)
+        newest = releases[0]
+        uri = newest.get("uri")
+        name = newest.get("name") or artist_name
+        # album_type ∈ {"album", "single"} (compilation excluded via
+        # include_groups). Used to phrase the spoken confirmation
+        # naturally — "Playing X, the newest single from Y".
+        album_type = newest.get("album_type") or "release"
+        if not uri:
+            return {"error": _NOT_UNDERSTOOD}
+
+        if stops:
+            await stop_renderers(renderer, stops)
+        await asyncio.to_thread(
+            sp.start_playback, device_id=device_id, context_uri=uri
+        )
+
+        confirm = f"Playing {name}, the newest {album_type} from {artist_name}."
+        return {
+            "ok": True,
+            "playing": name,
+            "artist": artist_name,
+            "kind": album_type,
+            "release_date": newest.get("release_date"),
+            "account": account_name,
+            "confirm": confirm,
+        }
+
+    @tool()
     async def spotify_queue(query: str) -> dict:
         """Search Spotify for a track and add it to the playback queue."""
         resolved = await _resolve_for_play()
@@ -635,4 +745,4 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             "account": account_name,
         }
 
-    return [spotify_play, spotify_queue]
+    return [spotify_play, spotify_play_latest_by_artist, spotify_queue]
