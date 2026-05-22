@@ -28,22 +28,45 @@ defaults.pcm.rate_converter "samplerate_best"
 # Topology:
 #
 #   renderers (librespot, shairport-sync, bluealsa-aplay)
-#     → hw:Loopback,0,0  (snd-aloop playback)
+#     → pcm.jasper_renderer_in  (plug wrapping the dmix below)
 #                   │
-#                   ▼ (loop)
-#         hw:Loopback,1,0  (snd-aloop capture)
-#                   │
-#                   ▼ (plughw, rate-converts)
-#               jasper-camilla (CamillaDSP)
-#                   │
-#                   ▼ (writes to dmix below)
-#         pcm.jasper_out  ─── dmix ───┐
-#                                     │
-#         jasper-voice TTS  ──────────┤  (also writes to dmix)
-#                                     │
-#                                     ▼
-#                            hw:CARD=__DONGLE_CARD__,DEV=0
-#                                  Apple USB-C dongle → speakers
+#                   ▼
+#         pcm.jasper_renderer_mix  ── dmix ──┐
+#                                            │
+#                                            ▼
+#                  hw:Loopback,0,0  (snd-aloop playback)
+#                                            │
+#                                            ▼ (loop)
+#                  hw:Loopback,1,0  (snd-aloop capture)
+#                                            │
+#                                            ▼ (plughw, rate-converts)
+#                                  jasper-camilla (CamillaDSP)
+#                                            │
+#                                            ▼ (writes to dmix below)
+#                                  pcm.jasper_out  ─── dmix ──┐
+#                                                             │
+#                  jasper-voice TTS  ─────────────────────────┤  (also writes to dmix)
+#                                                             │
+#                                                             ▼
+#                                                  hw:CARD=__DONGLE_CARD__,DEV=0
+#                                                       Apple USB-C dongle → speakers
+#
+# Why the renderer-side dmix (added 2026-05-22): snd-aloop's
+# `hw:Loopback,0,0` is single-writer. Before this layer existed, any
+# attempt by a second renderer to open the loopback while another
+# held it returned ALSA -EBUSY (16). The user-visible symptoms:
+#   - librespot crash-looped 3-5× on EBUSY when shairport had the
+#     loopback open during a phantom AirPlay SETUP (45 s of stall).
+#   - "latest source wins" handover from AirPlay → Spotify Connect
+#     silently failed because librespot couldn't take the device.
+# Inserting a dmix in front lets all three renderers hold the FD
+# simultaneously; the dmix sums their streams sample-wise and writes
+# one stream to snd-aloop. Mux's job (latest-source-wins) shifts from
+# implicit-via-EBUSY to explicit-via-MPRIS/Web-API pauses — see
+# jasper.mux for the contract. dmix's own format/rate is fixed
+# (48 kHz S16_LE 2ch); renderers reach it through `pcm.jasper_renderer_in`
+# (a `plug:` wrapper) so each can write its native format / rate and
+# `samplerate_best` (set at the top of this file) handles conversion.
 #
 # When the AEC bridge is enabled (see CLAUDE.md "Acoustic echo
 # cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
@@ -53,15 +76,15 @@ defaults.pcm.rate_converter "samplerate_best"
 # configured for 48 kHz S16_LE stereo — the rate the bridge and
 # CamillaDSP both target internally.
 #
-# RATE LOCK FOOTGUN (snd-aloop is first-opener-wins): per the ALSA
-# wiki on Matrix:Module-aloop, the Loopback device takes its stream
-# parameters from the first process that opens it. If shairport-sync
-# opens hw:Loopback,0,0 directly at its native 44.1 kHz S32
-# (since 2026-05-11's PR #75, which removed the plughw resample
-# upstream), the loopback locks at 44.1 kHz until everyone closes
-# it. Subsequent dsnoop opens at 48 kHz then fall back to the
-# locked rate — readers that don't tolerate that get distorted or
-# silent audio.
+# RATE LOCK (former footgun, now neutralised by jasper_renderer_mix):
+# snd-aloop's parameters are set by whichever process opens
+# hw:Loopback,0,0 first (Matrix:Module-aloop on the ALSA wiki). Before
+# 2026-05-22, that was whichever renderer started first — typically
+# shairport at 44.1 kHz, which locked the loopback to 44.1 until
+# every consumer closed it. After 2026-05-22 the renderer-side dmix
+# opens the loopback at its declared rate (48 kHz S16_LE) and holds
+# it open for the lifetime of any renderer process; the rate is now
+# fully deterministic and downstream consumers can rely on 48 kHz.
 #
 # Two readers, two access paths:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in
@@ -80,6 +103,45 @@ defaults.pcm.rate_converter "samplerate_best"
 # We never want camilla to read `hw:Loopback,1,0` directly — that
 # would deny dsnoop the slave, and the bridge would fail to open
 # with `unable to open slave`.
+
+# Renderer-side dmix: all three renderers (librespot, shairport-sync,
+# bluealsa-aplay) write here instead of opening hw:Loopback,0,0
+# directly. Multi-writer-safe; sums sample-wise; writes one stream to
+# snd-aloop. See the comment block at the top of this file for the
+# why-this-exists rationale. Parameters mirror jasper_out (the dongle
+# dmix) for consistency: 48 kHz S16_LE stereo, period 1024 / buffer
+# 4096. ipc_key 7779 (unique vs 7777=jasper_out, 7778=jasper_capture).
+pcm.jasper_renderer_mix {
+    type dmix
+    ipc_key 7779
+    ipc_perm 0666
+    slave {
+        pcm "hw:Loopback,0,0"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+# Plug-wrapped front-end for renderers. Each renderer references
+# `jasper_renderer_in` in its service unit / config file; plug
+# handles rate + format conversion from the renderer's native shape
+# (e.g. librespot S24_3 44.1 kHz, shairport-sync S32 44.1 kHz,
+# bluez-alsa S16 48 kHz) down to the dmix's fixed 48 kHz S16_LE.
+# Resampling quality is governed by `defaults.pcm.rate_converter`
+# at the top of this file (samplerate_best — same libsamplerate
+# library that the rest of the chain uses, ~3-5% of one Pi 5 core
+# per active resampling renderer).
+pcm.jasper_renderer_in {
+    type plug
+    slave.pcm "jasper_renderer_mix"
+}
 
 pcm.jasper_capture {
     type dsnoop
