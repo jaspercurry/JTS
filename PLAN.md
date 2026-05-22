@@ -414,19 +414,16 @@ they don't get lost in the working tree.
   the same surface).
 
 - **Idle watchdog: any-event-as-activity redesign.** The
-  pre-response idle watchdog
-  ([`jasper/voice_daemon.py:_idle_watchdog`](jasper/voice_daemon.py))
-  treats audio chunks and tool-round milestones as activity but
-  ignores intermediate server events (`response.created`,
-  content-part adds, transcript deltas). On a slow generation
-  day with a 20 s timeout, that gap could still false-fire even
-  though the server is responsive. Reworking the dispatcher to
-  treat any inbound event as activity would let us safely shrink
-  the timeout to 5–10 s — actual silence becomes the only failure
-  mode. Cross-provider refactor with real test surface; not worth
-  doing speculatively. Revisit if production sees idle-timeout
-  false-fires on the current 20 s default. Full sketch in
-  [docs/audit-pending-followups.md](docs/audit-pending-followups.md).
+  pre-response idle watchdog ignores intermediate server events
+  (`response.created`, content-part adds, transcript deltas) that
+  prove the server is alive but pre-audio. Could safely tighten
+  the timeout from 20 s → 5–10 s with a small refactor. Four
+  alternatives + the observable signals that should trigger
+  shipping it are in [docs/audit-pending-followups.md](docs/audit-pending-followups.md)
+  under "Idle watchdog: any-event-as-activity." Add telemetry
+  first (first-chunk-latency log + pre-response-timeout counter
+  on `/state`) — a month of data is cheap evidence of whether the
+  redesign is needed.
 
 ---
 
