@@ -144,21 +144,26 @@ when the configured AEC mic is present with 6-channel firmware — see
   `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
   search & queue, weather (now including daily sunrise/sunset),
-  NYC subway times, NYC MTA bus arrivals (configured via the
-  `/transit/` wizard), current wall-clock time
+  NYC subway times, NYC MTA bus arrivals, NYC Citi Bike availability
+  (split between classic bikes and e-bikes, with open-dock counts;
+  all configured via the `/transit/` wizard), current wall-clock time
 - ✅ Multi-user Spotify routing (each household member's account,
   routed by AirPlay title-match)
 - ✅ Transit setup wizard at `http://jts.local/transit/` — type your
-  address, the page geocodes via OSM Nominatim, shows nearest subway
-  + bus stops, lets you pick. Multi-stop bus support — save both the
-  eastbound and westbound stops at your corner and "next bus" unions
-  arrivals across them. Subway "next train" returns every line at the
-  station including service-change reroutes (an N rerouted onto D
-  tracks at a D station appears in the same answer). Modular over
-  `jasper.transit.REGISTRY` so future cities/modes (Berlin BVG, Citi
-  Bike, …) are a single new module under `jasper/transit/providers/`.
-  NYC subway is keyless; NYC bus requires a free MTA BusTime API key —
-  that card is locked until the user pastes one.
+  address, the page geocodes via OSM Nominatim, shows nearest subway,
+  bus stops, and Citi Bike stations, lets you pick. Multi-stop bus
+  support — save both the eastbound and westbound stops at your
+  corner and "next bus" unions arrivals across them. Subway "next
+  train" returns every line at the station including service-change
+  reroutes (an N rerouted onto D tracks at a D station appears in the
+  same answer). Citi Bike multi-station picker with a household-wide
+  "only e-bikes" toggle; voice answers always split classic from
+  e-bike counts unless the toggle is on. Modular over
+  `jasper.transit.REGISTRY` so future cities/modes (Berlin BVG,
+  Capital Bikeshare DC, …) are a single new module under
+  `jasper/transit/providers/`. NYC subway and Citi Bike are keyless;
+  NYC bus requires a free MTA BusTime API key — that card is locked
+  until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect toggles. Bluetooth's off
   toggle prompts for confirmation when a paired wireless remote
@@ -227,9 +232,9 @@ jasper/                         Python daemon source
                                   mixer invariants, helpers. See mics/README.md.
   transit/                      Modular transit-provider registry —
                                   base Protocol + geocode.py + per-city
-                                  providers/. NYC subway + bus today,
-                                  contributor-extensible (Berlin BVG,
-                                  Citi Bike, …).
+                                  providers/. NYC subway + bus + Citi
+                                  Bike today, contributor-extensible
+                                  (Berlin BVG, Capital Bikeshare, …).
   web/                          stdlib http.server settings UIs at
                                   /spotify (account OAuth) and /voice
                                   (provider config + key paste) +
@@ -366,6 +371,17 @@ reference. Currently:
   `http://jts.local/ha/`. **Start here for
   `jasper/home_assistant.py`, the `home_assistant` voice tool,
   or anything related to the `/ha/` wizard.**
+- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) —
+  Citi Bike (NYC + Jersey City + Hoboken) bikeshare integration via
+  the GBFS open standard. Architecture (sync provider + sync runtime
+  client + async tool wrapper), the in-process 30 s / 1 h TTL cache
+  with stale-on-error semantics, the household-wide e-bike-only flag,
+  station-drift handling (Lyft retires stations periodically), and
+  the survey of prior art (Alexa skills, Home Assistant CityBikes,
+  Raycast extension, citibike.live). **Start here for
+  `jasper/citibike.py`, `jasper/transit/providers/citibike.py`, the
+  `get_citibike_status` voice tool, or the Citi Bike card in the
+  `/transit/` wizard.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option
