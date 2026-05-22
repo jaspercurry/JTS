@@ -15,7 +15,7 @@ something breaks.
 
 ```sh
 # Configure (one-time, household-facing):
-http://jts.local/homeassistant/
+http://jts.local/ha/
 
 # Try it:
 "Hey Jarvis, turn on the bedroom lights."
@@ -50,9 +50,9 @@ everywhere they're read so a rename touches one file):
 
 When either URL or token is missing, the tool isn't registered, the model can't see
 it, and smart-home requests get answered conversationally ("smart home
-isn't set up yet — visit jts.local/homeassistant").
+isn't set up yet — visit jts.local/ha").
 
-Setup is the wizard at `http://jts.local/homeassistant/`. The full
+Setup is the wizard at `http://jts.local/ha/`. The full
 three-state walkthrough is in [Setup walkthrough](#setup-walkthrough).
 
 ## Why the conversation API, not MCP
@@ -169,7 +169,7 @@ medium" means. HA does, and HA owns the routing. JTS is a relay.
 ```
 jasper/home_assistant.py            HAClient + HAResponse + probe_status + build_ha_client
 jasper/tools/home_assistant.py      make_home_assistant_tools(ha) → [home_assistant tool]
-jasper/web/home_assistant_setup.py  Wizard at /homeassistant/ (port 8778)
+jasper/web/home_assistant_setup.py  Wizard at /ha/ (port 8778)
 jasper/config.py                    ha_url / ha_token / ha_agent_id / ha_enabled
 jasper/voice_daemon.py              Registry wiring + SYSTEM_INSTRUCTION addition
 jasper/control/server.py            /state.home_assistant + /system/snapshot section
@@ -178,7 +178,7 @@ jasper/cli/doctor.py                check_home_assistant() (skip-if-not-configur
 
 deploy/systemd/jasper-voice.service EnvironmentFile=-/var/lib/jasper/home_assistant.env
 deploy/jasper-web.socket            ListenStream=127.0.0.1:8778
-deploy/nginx-jasper.conf            location /homeassistant/ → 127.0.0.1:8778
+deploy/nginx-jasper.conf            location /ha/ → 127.0.0.1:8778
 deploy/integrations.html            Home Assistant landing card
 deploy/index.html                   Integrations card mentions HA
 
@@ -191,7 +191,7 @@ tests/test_control_server.py        /state.home_assistant fail-soft tests (3)
 
 ## Setup walkthrough
 
-Visit `http://jts.local/homeassistant/` from any device on the LAN.
+Visit `http://jts.local/ha/` from any device on the LAN.
 The wizard is socket-activated (idle-exits after 10 min of no
 requests; first request takes ~500 ms to cold-start), so it costs
 zero RAM when nobody's using it.
@@ -400,22 +400,35 @@ OpenAI Realtime Prompting Guide pattern that CLAUDE.md already cites
 when HA isn't configured, the tool isn't in the registry, the model
 can't see it, and the model handles smart-home requests
 conversationally ("smart-home control isn't set up on this speaker
-— visit jts.local/homeassistant"). Same gating pattern as
+— visit jts.local/ha"). Same gating pattern as
 `make_bus_tools` and `make_subway_tools`.
 
 ## System prompt
 
 Slotted into `SYSTEM_INSTRUCTION` in
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) — two new
-blocks:
+[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) — two static
+blocks, plus one dynamic addendum the prompt builder appends only
+when HA isn't configured:
 
-1. **When to call** (in the tools section): conditional rules for
-   smart-home control + a positive list of phrase shapes the model
-   should pass through unchanged.
-2. **What to say after** (in the post-tool-return section): speak
-   `spoken_response` verbatim on success; speak `error_detail`
+1. **When to call** (static, in the tools section): conditional
+   rules for smart-home control + a positive list of phrase shapes
+   the model should pass through unchanged.
+2. **What to say after** (static, in the post-tool-return section):
+   speak `spoken_response` verbatim on success; speak `error_detail`
    briefly on failure; don't add 'OK' or 'Done' on top of HA's own
    wording.
+3. **Tool-unavailable nudge** (dynamic, only when `ha_configured=False`,
+   built into the `_build_system_instruction` addendum next to the
+   transit nudge): tells the model to say `'Smart-home control isn't
+   set up yet — visit {hostname}/ha to enable it.'` and
+   explicitly NOT to call any other tool. This guard exists because
+   without it, real-world voice logs showed the model misrouting
+   "turn on the bedroom lights" to `get_current_time` +
+   `get_now_playing` — calling unrelated tools instead of
+   recognising the request as smart-home-shaped-but-unavailable.
+   `{hostname}` is `cfg.hostname` so multi-speaker households
+   (`jts2.local`, `jts3.local`) see the speaker the user is actually
+   talking to.
 
 Provider-agnostic per CLAUDE.md. No mention of Gemini, OpenAI, or
 Grok. Conditional ("skip the preamble when…") not absolute.
@@ -476,7 +489,7 @@ The Home Assistant card on `http://jts.local/system/` polls
 | Configured + connected    | "✓ Connected" (green) + name/version |
 | Configured + unreachable  | "✗ Unreachable" (red) + error  |
 
-Plus the URL and a link to `/homeassistant`.
+Plus the URL and a link to `/ha`.
 
 ### jasper-doctor
 
@@ -636,7 +649,7 @@ manual nightly per the cost discipline.
 
 Required before each release that touches the HA path:
 
-1. Open `http://jts.local/homeassistant/` — wizard renders state 1
+1. Open `http://jts.local/ha/` — wizard renders state 1
 2. Click **Find Home Assistant** — at least one instance appears
    (or "No instances found" if the test HA is on a different
    subnet; manual URL fallback works)
@@ -703,9 +716,9 @@ advanced disclosure to route JTS specifically to the fast path.
 Three buckets:
 
 - **Auth.** Token revoked or rotated in HA. Visit
-  `/homeassistant/`, click Disconnect, re-paste a fresh LLAT.
+  `/ha/`, click Disconnect, re-paste a fresh LLAT.
 - **Network.** HA host changed IP, moved subnets, or shut down.
-  Visit `/homeassistant/`, click "Use a different URL", re-discover.
+  Visit `/ha/`, click "Use a different URL", re-discover.
 - **TLS** (HTTPS HA installs). Self-signed cert isn't trusted. See
   the HTTPS section below if it's been added.
 

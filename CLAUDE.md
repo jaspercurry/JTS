@@ -528,7 +528,7 @@ that makes household-specific phrases work. Full architecture in
 
 ### Configure
 
-Wizard at `http://jts.local/homeassistant/`. Three states (mirrors
+Wizard at `http://jts.local/ha/`. Three states (mirrors
 `/spotify/`'s shape):
 
 1. No URL → "Find Home Assistant" mDNS scan or manual URL entry
@@ -551,7 +551,7 @@ JASPER_HA_VERIFY_SSL=0      # optional, only written when user accepts
 Both URL and token must be set for `home_assistant` to register as a
 voice tool. When either is missing, the tool isn't visible to the
 model and smart-home requests get answered conversationally
-("smart-home isn't set up — visit jts.local/homeassistant").
+("smart-home isn't set up — visit jts.local/ha").
 
 ### Why the REST conversation API, not MCP
 

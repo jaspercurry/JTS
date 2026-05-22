@@ -37,6 +37,73 @@ from jasper.home_assistant import (
 )
 
 
+# ---- System-prompt addendum -----------------------------------------------
+#
+# When HA isn't configured, the system prompt grows a conditional clause
+# that redirects smart-home requests to the wizard URL. Without it, the
+# model has been observed (May 22 2026 production log) to misroute "turn
+# on the bedroom lights" to get_current_time + get_now_playing — calling
+# unrelated tools rather than the documented "tool unavailable" response.
+# The clause also has to interpolate cfg.hostname so multi-speaker
+# households (jts2.local, jts3.local) see the right URL.
+
+def test_system_prompt_includes_ha_nudge_when_unconfigured():
+    """When ha_configured=False, the prompt grows a clause with the
+    speaker's hostname and a 'do not call other tools' guard."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(
+        location="", ha_configured=False, hostname="jts.local",
+    )
+    assert "Home Assistant smart-home control isn't set up" in prompt
+    assert "jts.local/ha" in prompt
+    # The "do not call other tools" guard prevents the misroute we saw
+    # on 2026-05-22 (lights → time + now_playing).
+    assert "Do not call any other tool" in prompt
+
+
+def test_system_prompt_omits_ha_nudge_when_configured():
+    """When ha_configured=True (the default), no nudge is added — the
+    model relies on the static SYSTEM_INSTRUCTION's tool guidance."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(location="", ha_configured=True)
+    assert "Home Assistant smart-home control isn't set up" not in prompt
+    assert "/ha" not in prompt
+
+
+def test_system_prompt_ha_configured_defaults_to_true():
+    """Backwards-compat: callers not passing the new arg must NOT get
+    the nudge. The signature default is True (assume configured)."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(location="")
+    assert "Home Assistant smart-home control isn't set up" not in prompt
+
+
+def test_system_prompt_ha_nudge_uses_configured_hostname():
+    """Multi-speaker households (jts2.local, jts3.local) see the right
+    URL — the speaker the user is talking to, not a hardcoded default.
+    This was the staff-review-fix bug: the original prompt hardcoded
+    jts.local."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(
+        location="", ha_configured=False, hostname="jts2.local",
+    )
+    assert "jts2.local/ha" in prompt
+    # And explicitly NOT the wrong default
+    assert "jts.local/ha" not in prompt
+
+
+def test_system_prompt_transit_nudge_uses_configured_hostname():
+    """Same fix applies to the transit nudge — was hardcoding jts.local
+    before, breaking multi-speaker setups."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(
+        location="", transit_configured=False, hostname="jts2.local",
+    )
+    assert "jts2.local/transit" in prompt
+    # The OLD hardcoded form must not appear
+    assert "jts.local/transit" not in prompt
+
+
 # ---- Test scaffolding -------------------------------------------------------
 
 class _FakeClock:

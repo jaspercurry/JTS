@@ -169,7 +169,7 @@ _PAGE_BODY = """
   </div>
   <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;" id="ha-detail"></p>
   <p style="margin: 0.6em 0 0; font-size: 0.9em;">
-    Configure at <a href="/homeassistant/">jts.local/homeassistant</a>.
+    Configure at <a href="/ha/">jts.local/ha</a>.
   </p>
 </div>
 

@@ -1,4 +1,4 @@
-"""Home Assistant connection wizard at /homeassistant/.
+"""Home Assistant connection wizard at /ha/.
 
 Walks the household through three states:
 
@@ -35,7 +35,7 @@ PR core#161715 was still open as of May 2026. LLAT paste is the
 documented industry-standard path for headless HA integrations until
 device-flow ships. See docs/HANDOFF-homeassistant.md.
 
-URL surface (after nginx strips /homeassistant/):
+URL surface (after nginx strips /ha/):
   GET  /              page render (one of three states)
   POST /discover      mDNS browse, JSON list of found instances
   POST /verify        validate URL+token combo against GET /api/, JSON

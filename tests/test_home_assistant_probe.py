@@ -374,7 +374,7 @@ def test_check_home_assistant_skip_when_not_enabled():
     result = check_home_assistant(_Cfg())
     assert result.status == "ok"
     assert "not configured" in result.detail
-    assert "/homeassistant" in result.detail  # actionable hint
+    assert "/ha" in result.detail  # actionable hint
 
 
 def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
@@ -424,7 +424,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
     assert "unreachable" in result.detail.lower()
     assert "homeassistant.local:8123" in result.detail
     # Actionable hint pointing at the wizard
-    assert "/homeassistant" in result.detail
+    assert "/ha" in result.detail
 
 
 def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
