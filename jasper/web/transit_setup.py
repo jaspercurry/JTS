@@ -172,13 +172,6 @@ def _mask_key(value: str) -> str:
     return f"{value[:4]}…{value[-4:]}"
 
 
-def _split_list(raw: str) -> list[str]:
-    """Parse a comma/space-separated value the same way config.py does
-    (mta_routes uses the same shape). Empty inputs return an empty
-    list; whitespace tolerance is intentional."""
-    return [t.strip() for t in raw.replace(",", " ").split() if t.strip()]
-
-
 # ----------------------------------------------------------------------
 # Save logic — pure where possible.
 # ----------------------------------------------------------------------

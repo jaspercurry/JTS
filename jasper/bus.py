@@ -255,13 +255,13 @@ class BusClient:
             # httpx.HTTPError repr includes the full URL with ?key=… ;
             # scrub before logging so the key never lands in journalctl.
             logger.warning(
-                "bus: BusTime fetch failed for %s: %s",
+                "event=transit.bus.fetch.error stop=%s err=%s",
                 stop_id, scrub_secrets(repr(e)),
             )
             return None
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "bus: BusTime JSON parse failed for %s: %s",
+                "event=transit.bus.parse.error stop=%s err=%s",
                 stop_id, scrub_secrets(repr(e)),
             )
             return None
@@ -305,4 +305,7 @@ class BusClient:
         # Sort within the per-stop result so each cache entry is
         # already in ETA order; the outer union resorts after merging.
         out.sort(key=lambda a: a.minutes_from_now)
+        logger.info(
+            "event=transit.bus.fetch.ok stop=%s arrivals=%d", stop_id, len(out),
+        )
         return out

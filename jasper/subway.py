@@ -55,14 +55,13 @@ Layered features common to both paths:
 """
 from __future__ import annotations
 
-import csv
 import logging
 import time
-from dataclasses import dataclass
 from datetime import datetime
-from importlib import resources
 
 import httpx
+
+from .transit._mta_stations import Station as StationInfo, stations_by_id
 
 logger = logging.getLogger(__name__)
 
@@ -101,40 +100,18 @@ SUBWAYNOW_AGENT = "jts-jasper"
 SUBWAYNOW_TIMEOUT = 1.5
 
 
-@dataclass(frozen=True)
-class StationInfo:
-    stop_id: str
-    name: str
-    borough: str
-    lines: tuple[str, ...]
-    north_label: str
-    south_label: str
+# The runtime arrivals client uses the same `Station` dataclass as
+# the provider; `StationInfo` is re-exported above as an alias for
+# backwards-compat with any callers that imported it before the
+# shared module landed.
 
 
 def _load_stations() -> dict[str, StationInfo]:
-    """Read jasper/data/mta_stations.csv into a dict keyed by stop_id."""
-    path = resources.files("jasper.data").joinpath("mta_stations.csv")
-    out: dict[str, StationInfo] = {}
-    with path.open("r", encoding="utf-8") as f:
-        # Strip comment lines starting with '#'.
-        rows = (line for line in f if not line.lstrip().startswith("#"))
-        reader = csv.DictReader(rows)
-        for row in reader:
-            sid = (row.get("stop_id") or "").strip()
-            if not sid:
-                continue
-            lines = tuple(
-                t for t in (row.get("lines") or "").replace(";", " ").split()
-            )
-            out[sid] = StationInfo(
-                stop_id=sid,
-                name=(row.get("stop_name") or sid).strip(),
-                borough=(row.get("borough") or "").strip(),
-                lines=lines,
-                north_label=(row.get("north_label") or "").strip(),
-                south_label=(row.get("south_label") or "").strip(),
-            )
-    return out
+    """Stop-id-keyed view of the bundled stations CSV. Defensive
+    against a corrupt/missing CSV (returns {} rather than raising) —
+    `jasper-voice` boots through SubwayClient construction, so a
+    crashed CSV parse would take down the whole voice loop."""
+    return stations_by_id()
 
 
 def _build_aliases(station: StationInfo | None) -> dict[str, str]:
@@ -254,8 +231,16 @@ class SubwayClient:
             arrivals = self._arrivals_via_nyct_gtfs(directions, line_filter)
             source = "nyct-gtfs"
         if arrivals is None:
+            logger.warning(
+                "event=transit.subway.arrivals.error station=%s reason=all-sources-down",
+                self._station_id,
+            )
             return {"error": "couldn't reach MTA data sources"}
 
+        logger.info(
+            "event=transit.subway.arrivals.ok station=%s source=%s n=%d directions=%s",
+            self._station_id, source, len(arrivals), "+".join(directions),
+        )
         return self._wrap(arrivals, directions, source)
 
     def _validate(self, line: str, direction: str) -> dict:
@@ -329,14 +314,24 @@ class SubwayClient:
         try:
             data = self._fetch_subwaynow_cached(self._station_id)
         except Exception as e:  # noqa: BLE001
-            logger.info("subwaynow fetch failed (will fall back): %s", e)
+            logger.info(
+                "event=transit.subway.fetch.error station=%s source=subwaynow err=%r",
+                self._station_id, e,
+            )
             return None
         if not isinstance(data, dict):
+            logger.info(
+                "event=transit.subway.fetch.error station=%s source=subwaynow err=non-dict",
+                self._station_id,
+            )
             return None
         try:
             return self._extract_subwaynow(data, directions, line_filter)
         except (KeyError, TypeError, ValueError) as e:
-            logger.info("subwaynow parse failed (will fall back): %s", e)
+            logger.info(
+                "event=transit.subway.parse.error station=%s source=subwaynow err=%r",
+                self._station_id, e,
+            )
             return None
 
     def _fetch_subwaynow_cached(self, stop_id: str) -> dict:
@@ -437,8 +432,8 @@ class SubwayClient:
                 feed = self._get_feed(representative_line)
             except Exception as e:  # noqa: BLE001
                 logger.info(
-                    "nyct-gtfs feed unreachable (%s group): %s",
-                    representative_line, e,
+                    "event=transit.subway.fetch.error station=%s source=nyct-gtfs feed=%s err=%r",
+                    self._station_id, group, e,
                 )
                 continue
 
@@ -448,8 +443,8 @@ class SubwayClient:
                     age = (now - last_gen).total_seconds()
                     if age > STALE_AFTER_SEC:
                         logger.info(
-                            "nyct-gtfs feed stale (%ds) for %s group",
-                            int(age), representative_line,
+                            "event=transit.subway.feed.stale station=%s feed=%s age_s=%d",
+                            self._station_id, group, int(age),
                         )
                         continue
                 except TypeError:
@@ -472,7 +467,10 @@ class SubwayClient:
                             underway=True,
                         )
                     except Exception as e:  # noqa: BLE001
-                        logger.info("nyct-gtfs filter failed: %s", e)
+                        logger.info(
+                            "event=transit.subway.filter.error line=%s platform=%s err=%r",
+                            line, platform_id, e,
+                        )
                         continue
                     for trip in trips:
                         for stu in getattr(trip, "stop_time_updates", []) or []:

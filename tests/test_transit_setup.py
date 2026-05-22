@@ -56,13 +56,6 @@ def test_coords_returns_tuple_when_set():
     assert transit_setup._coords(state) == (40.646, -73.994)
 
 
-def test_split_list_handles_comma_and_space():
-    assert transit_setup._split_list("D, F, N") == ["D", "F", "N"]
-    assert transit_setup._split_list("B35 B70") == ["B35", "B70"]
-    assert transit_setup._split_list("") == []
-    assert transit_setup._split_list("  ,  ") == []
-
-
 def test_has_bus_key_only_checks_persisted_state(monkeypatch):
     """`_has_bus_key` must NOT consult os.environ. The wizard is a
     long-lived process; an operator-set value in /etc/jasper/jasper.env

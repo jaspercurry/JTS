@@ -11,11 +11,9 @@ this module needs lat/lon, that one needs north_label/south_label.
 """
 from __future__ import annotations
 
-import csv
 import logging
-from dataclasses import dataclass
-from importlib import resources
 
+from .._mta_stations import Station, load_stations
 from ..base import BoundingBox, Stop, haversine_miles
 
 logger = logging.getLogger(__name__)
@@ -39,67 +37,16 @@ _BOROUGH_DISPLAY = {
 }
 
 
-@dataclass(frozen=True)
-class _SubwayStation:
-    stop_id: str
-    name: str
-    borough: str
-    lines: tuple[str, ...]
-    lat: float
-    lon: float
+# The provider needs lat/lon for haversine ranking; legacy CSV rows
+# missing those columns are filtered out at module import. The CSV
+# parse itself is memoised in `_mta_stations.load_stations()`, shared
+# with the runtime subway client.
+_STATIONS: tuple[Station, ...] = tuple(
+    s for s in load_stations() if s.lat is not None and s.lon is not None
+)
 
 
-def _load_stations() -> tuple[_SubwayStation, ...]:
-    path = resources.files("jasper.data").joinpath("mta_stations.csv")
-    stations: list[_SubwayStation] = []
-    with path.open("r", encoding="utf-8") as f:
-        # Same comment-line strip pattern as jasper/subway.py.
-        non_comment = (line for line in f if not line.lstrip().startswith("#"))
-        for row in csv.DictReader(non_comment):
-            sid = (row.get("stop_id") or "").strip()
-            if not sid:
-                continue
-            try:
-                lat = float(row["lat"])
-                lon = float(row["lon"])
-            except (KeyError, ValueError):
-                # CSV row without lat/lon — predates the column. Skip
-                # silently rather than refuse to import: the arrivals
-                # tool still works for these via the existing CSV
-                # path; only nearest-stop discovery is affected.
-                continue
-            lines = tuple(
-                t for t in (row.get("lines") or "").replace(";", " ").split()
-            )
-            stations.append(_SubwayStation(
-                stop_id=sid,
-                name=(row.get("stop_name") or sid).strip(),
-                borough=(row.get("borough") or "").strip(),
-                lines=lines,
-                lat=lat, lon=lon,
-            ))
-    return tuple(stations)
-
-
-# Module-import IO — the file is bundled in the package, so this is
-# effectively a constant from the caller's perspective.
-#
-# Exception safety: if the CSV is corrupt mid-deploy (partial rsync,
-# bad refresh script run), don't take down `import jasper.transit`
-# (and by cascade the whole jasper-web daemon — all wizards). Fall
-# back to an empty tuple; the wizard card then renders "no stations
-# nearby" instead of 500-ing every settings page.
-try:
-    _STATIONS: tuple[_SubwayStation, ...] = _load_stations()
-except Exception:  # noqa: BLE001
-    logger.exception(
-        "mta_stations.csv unreadable; subway provider disabled. "
-        "Re-run scripts/refresh-mta-stations.sh and redeploy."
-    )
-    _STATIONS = ()
-
-
-def _format_display(s: _SubwayStation) -> str:
+def _format_display(s: Station) -> str:
     """Human label shown on the wizard card. Includes line and borough
     so the user can disambiguate co-named stations (there are ~20
     pairs of stations sharing a name across boroughs)."""
