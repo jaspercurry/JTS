@@ -320,6 +320,7 @@ tests/                          Hardware-free pytest suite
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle and which volume knob attenuates which path |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
+| [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-*.md](docs/) | Deep-dive on a subsystem | Investigation history + design rationale |
 
 The HANDOFF docs are the most engineer-relevant. Each one is the
