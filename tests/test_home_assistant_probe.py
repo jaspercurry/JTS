@@ -16,6 +16,19 @@ import jasper.home_assistant as ha_mod
 from jasper.home_assistant import HAClient, probe_status
 
 
+# ---- Auto-reset cache between tests ----------------------------------------
+
+@pytest.fixture(autouse=True)
+def _reset_probe_cache():
+    """probe_status caches results process-globally for 15s by default.
+    Without an auto-reset, a test that mocks 'connected' would poison
+    every subsequent test sharing the same (url, token) key. The reset
+    is cheap (clears two module-level vars)."""
+    ha_mod._reset_cache_for_tests()
+    yield
+    ha_mod._reset_cache_for_tests()
+
+
 # ---- probe_status (async) ---------------------------------------------------
 
 def _mock_client(handler):
@@ -146,6 +159,206 @@ async def test_probe_status_falls_back_when_config_endpoint_fails(monkeypatch):
     assert result["version"] is None
 
 
+# ---- Caching --------------------------------------------------------------
+#
+# These tests stub _probe_uncached so the cache layer is exercised in
+# isolation from the HTTP path. Each call to the stub increments a
+# counter we use to assert hit vs miss.
+
+@pytest.mark.asyncio
+async def test_cache_hit_skips_uncached_probe(monkeypatch):
+    """Second call within TTL with the same (url, token) reuses the
+    cached result without re-invoking _probe_uncached."""
+    calls = {"n": 0}
+
+    async def fake_uncached(url, token):
+        calls["n"] += 1
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    r1 = await probe_status("http://ha.local:8123", "tok")
+    r2 = await probe_status("http://ha.local:8123", "tok")
+
+    assert calls["n"] == 1
+    assert r1 == r2
+
+
+@pytest.mark.asyncio
+async def test_cache_expires_after_ttl(monkeypatch):
+    """After PROBE_CACHE_TTL_SEC elapses, the next call re-probes."""
+    calls = {"n": 0}
+
+    async def fake_uncached(url, token):
+        calls["n"] += 1
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    # Drive the cache's monotonic clock with a controllable clock.
+    fake_now = {"t": 1000.0}
+    monkeypatch.setattr(ha_mod.time, "monotonic", lambda: fake_now["t"])
+
+    await probe_status("http://ha.local:8123", "tok")
+    assert calls["n"] == 1
+    # Advance just past the TTL
+    fake_now["t"] += ha_mod.PROBE_CACHE_TTL_SEC + 0.1
+    await probe_status("http://ha.local:8123", "tok")
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_cache_keyed_on_url_and_token(monkeypatch):
+    """Changing url OR token invalidates the cache — the next probe
+    runs fresh."""
+    calls = {"n": 0}
+
+    async def fake_uncached(url, token):
+        calls["n"] += 1
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    await probe_status("http://ha-a.local:8123", "tok1")  # 1
+    await probe_status("http://ha-a.local:8123", "tok1")  # cache hit
+    await probe_status("http://ha-b.local:8123", "tok1")  # 2 (different url)
+    await probe_status("http://ha-b.local:8123", "tok2")  # 3 (different token)
+    assert calls["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_force_bypasses_cache(monkeypatch):
+    """jasper-doctor passes force=True so its output reflects ground
+    truth at invocation time, not whatever was last cached."""
+    calls = {"n": 0}
+
+    async def fake_uncached(url, token):
+        calls["n"] += 1
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    await probe_status("http://ha.local:8123", "tok")
+    await probe_status("http://ha.local:8123", "tok", force=True)
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
+async def test_force_does_not_poison_cache(monkeypatch):
+    """A force=True call doesn't write to the cache — subsequent
+    non-forced calls still see the pre-force cached value (if any)
+    or run fresh (if no prior cache). Either way, the force result
+    doesn't displace what a regular caller expects."""
+    cached_value = {
+        "configured": True, "connected": True, "url": "x",
+        "instance_name": "Old", "version": "1.0", "error": None,
+    }
+    fresh_value = {
+        "configured": True, "connected": True, "url": "x",
+        "instance_name": "New", "version": "2.0", "error": None,
+    }
+    state = {"return": cached_value, "calls": 0}
+
+    async def fake_uncached(url, token):
+        state["calls"] += 1
+        return state["return"]
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    # Prime the cache with `cached_value`.
+    r1 = await probe_status("http://ha.local:8123", "tok")
+    assert r1["instance_name"] == "Old"
+    # Force a call — sees the new state.
+    state["return"] = fresh_value
+    r2 = await probe_status("http://ha.local:8123", "tok", force=True)
+    assert r2["instance_name"] == "New"
+    # Regular call right after: should still see the cached value (the
+    # force=True call didn't displace it).
+    state["return"] = {"sentinel": "would-be-third-call"}
+    r3 = await probe_status("http://ha.local:8123", "tok")
+    assert r3["instance_name"] == "Old"
+    # Three uncached calls total: prime + force + (would-be-third never ran)
+    assert state["calls"] == 2
+
+
+# ---- State-transition logging ---------------------------------------------
+
+@pytest.mark.asyncio
+async def test_logs_reachable_on_first_connected_probe(monkeypatch, caplog):
+    """First probe that returns connected=true emits event=ha.reachable."""
+    async def fake_uncached(url, token):
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    import logging
+    with caplog.at_level(logging.INFO, logger="jasper.home_assistant"):
+        await probe_status("http://ha.local:8123", "tok")
+
+    assert any("event=ha.reachable" in r.message for r in caplog.records)
+    assert any("Home" in r.message and "2026.5.1" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_logs_unreachable_on_transition(monkeypatch, caplog):
+    """connected: true → false transition emits event=ha.unreachable."""
+    state = {"connected": True}
+
+    async def fake_uncached(url, token):
+        if state["connected"]:
+            return {
+                "configured": True, "connected": True, "url": url,
+                "instance_name": "Home", "version": "1.0", "error": None,
+            }
+        return {
+            "configured": True, "connected": False, "url": url,
+            "instance_name": None, "version": None,
+            "error": "Couldn't reach Home Assistant",
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    import logging
+    # Prime as reachable.
+    await probe_status("http://ha.local:8123", "tok")
+    # Force the next call to bypass cache + flip state.
+    state["connected"] = False
+    with caplog.at_level(logging.WARNING, logger="jasper.home_assistant"):
+        await probe_status("http://ha.local:8123", "tok", force=True)
+
+    assert any("event=ha.unreachable" in r.message for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_no_log_when_state_unchanged(monkeypatch, caplog):
+    """Two consecutive probes both returning connected=true don't emit
+    a second event=ha.reachable. We log on transitions, not per call."""
+    async def fake_uncached(url, token):
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "1.0", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    import logging
+    # First call logs (initial state).
+    await probe_status("http://ha.local:8123", "tok")
+    caplog.clear()
+    # Second forced call (cache bypass) — same state, no new log.
+    with caplog.at_level(logging.INFO, logger="jasper.home_assistant"):
+        await probe_status("http://ha.local:8123", "tok", force=True)
+
+    assert not any("event=ha.reachable" in r.message for r in caplog.records)
+
+
 # ---- doctor.check_home_assistant -------------------------------------------
 
 def test_check_home_assistant_skip_when_not_enabled():
@@ -167,7 +380,7 @@ def test_check_home_assistant_skip_when_not_enabled():
 def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token):
+    async def fake_probe(url, token, *, force=False):
         return {
             "configured": True, "connected": True, "url": url,
             "instance_name": "Brooklyn House", "version": "2026.5.1",
@@ -191,7 +404,7 @@ def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
 def test_check_home_assistant_fail_when_unreachable(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token):
+    async def fake_probe(url, token, *, force=False):
         return {
             "configured": True, "connected": False, "url": url,
             "instance_name": None, "version": None,
@@ -217,7 +430,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
 def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token):
+    async def fake_probe(url, token, *, force=False):
         raise RuntimeError("network stack exploded")
     monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
 

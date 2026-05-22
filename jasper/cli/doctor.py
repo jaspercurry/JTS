@@ -803,7 +803,10 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     except ImportError as e:
         return CheckResult(label, "fail", f"home_assistant import failed: {e}")
     try:
-        result = _asyncio.run(probe_status(cfg.ha_url, cfg.ha_token))
+        # force=True bypasses probe_status's 15s cache — the doctor is
+        # an ad-hoc diagnostic, not a polling consumer, and the user
+        # running `jasper-doctor` expects fresh ground truth.
+        result = _asyncio.run(probe_status(cfg.ha_url, cfg.ha_token, force=True))
     except Exception as e:  # noqa: BLE001
         return CheckResult(label, "fail", f"probe raised: {e}")
     if not result.get("connected"):
