@@ -82,7 +82,13 @@ _cache: dict[str, GeocodeResult] = {}
 
 
 def _throttle() -> None:
-    """Sleep just enough that successive Nominatim calls are ≥ 1 s apart."""
+    """Sleep just enough that successive Nominatim calls are ≥ 1 s apart.
+
+    Held under `_rate_lock` across the sleep on purpose: Nominatim's
+    policy is "single thread", not "1 req/sec per thread". With two
+    concurrent geocode requests, the second must wait for the first
+    to complete + the rate window — releasing the lock around sleep
+    would let both fire simultaneously."""
     global _last_call_mono
     with _rate_lock:
         elapsed = time.monotonic() - _last_call_mono
@@ -139,10 +145,13 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
                 result = _photon(query, client)
             except GeocodeError as photon_err:
                 # Compose both failures so the user sees what happened.
+                # Chain to photon_err explicitly so the daemon log
+                # surfaces the photon traceback; nominatim_err is
+                # captured in the message text.
                 raise GeocodeError(
                     f"couldn't find that address. "
                     f"(nominatim: {nominatim_err}; photon: {photon_err})"
-                )
+                ) from photon_err
     finally:
         if owns_client:
             client.close()
@@ -166,7 +175,7 @@ def _nominatim(query: str, client: httpx.Client) -> GeocodeResult:
         r.raise_for_status()
         data = r.json()
     except (httpx.HTTPError, ValueError) as e:
-        raise GeocodeError(f"nominatim request failed: {e}")
+        raise GeocodeError(f"nominatim request failed: {e}") from e
     if not data:
         raise GeocodeError("no match")
     hit = data[0]
@@ -178,7 +187,7 @@ def _nominatim(query: str, client: httpx.Client) -> GeocodeResult:
             source="nominatim",
         )
     except (KeyError, TypeError, ValueError) as e:
-        raise GeocodeError(f"nominatim returned malformed result: {e}")
+        raise GeocodeError(f"nominatim returned malformed result: {e}") from e
 
 
 def _photon(query: str, client: httpx.Client) -> GeocodeResult:
@@ -187,7 +196,7 @@ def _photon(query: str, client: httpx.Client) -> GeocodeResult:
         r.raise_for_status()
         data = r.json()
     except (httpx.HTTPError, ValueError) as e:
-        raise GeocodeError(f"photon request failed: {e}")
+        raise GeocodeError(f"photon request failed: {e}") from e
     features = data.get("features") or []
     if not features:
         raise GeocodeError("no match")
@@ -199,8 +208,8 @@ def _photon(query: str, client: httpx.Client) -> GeocodeResult:
     try:
         lon = float(coords[0])
         lat = float(coords[1])
-    except (TypeError, ValueError):
-        raise GeocodeError("photon returned non-numeric coordinates")
+    except (TypeError, ValueError) as e:
+        raise GeocodeError("photon returned non-numeric coordinates") from e
     props = feat.get("properties") or {}
     name_parts = [
         str(props.get(k))

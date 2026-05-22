@@ -66,16 +66,19 @@ class _NycBus:
     credentials = (CREDENTIAL,)
 
     def __init__(self, http: httpx.Client | None = None) -> None:
-        # `http` is injected by tests (httpx.MockTransport) and is None
-        # in production — the methods build their own short-lived
-        # client per call so resources don't leak across the 10-min
-        # wizard idle window.
+        # `http` is a TEST-ONLY injection point — pass an
+        # httpx.MockTransport-wired Client to drive the request flow
+        # offline. Production callers leave it None; the methods then
+        # build a short-lived client per call so resources don't leak
+        # across the 10-min wizard idle window. Don't reuse this seam
+        # for a long-lived production client without re-thinking the
+        # resource lifecycle.
         self._http = http
 
     def _client(self) -> tuple[httpx.Client, bool]:
         """Return (client, owns) where owns=True means the caller must
         close it. Lets the method body stay simple — one cleanup pattern
-        regardless of whether http was injected."""
+        regardless of whether http was injected at construction."""
         if self._http is not None:
             return self._http, False
         return httpx.Client(timeout=HTTP_TIMEOUT), True
@@ -156,7 +159,7 @@ class _NycBus:
             ranked.append((d, sid, name, slat, slon, short_names, direction_hint))
         ranked.sort(key=lambda t: t[0])
 
-        out: list[Stop] = []
+        results: list[Stop] = []
         for d, sid, name, slat, slon, short_names, direction_hint in ranked[:count]:
             # Display: "Name (direction) — Routes". Each section
             # omitted if empty so single-route stops stay concise.
@@ -165,7 +168,7 @@ class _NycBus:
                 display += f" ({direction_hint})"
             if short_names:
                 display += f" — {'/'.join(short_names)}"
-            out.append(Stop(
+            results.append(Stop(
                 stop_id=sid,
                 display_name=display,
                 lat=slat, lon=slon,
@@ -173,7 +176,7 @@ class _NycBus:
                 lines=tuple(short_names),
                 direction_hint=direction_hint,
             ))
-        return out
+        return results
 
     def validate_credentials(
         self, credentials: dict[str, str],

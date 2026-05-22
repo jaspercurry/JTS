@@ -138,16 +138,16 @@ class _NycSubway:
             for s in _STATIONS
         ]
         distances.sort(key=lambda t: t[0])
-        out: list[Stop] = []
+        results: list[Stop] = []
         for d, s in distances[:count]:
-            out.append(Stop(
+            results.append(Stop(
                 stop_id=s.stop_id,
                 display_name=_format_display(s),
                 lat=s.lat, lon=s.lon,
                 distance_mi=d,
                 lines=s.lines,
             ))
-        return out
+        return results
 
     def validate_credentials(
         self, credentials: dict[str, str],
