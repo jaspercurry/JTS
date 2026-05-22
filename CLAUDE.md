@@ -499,6 +499,119 @@ questions"), per the provider-prompt-guide rule.
 
 ---
 
+## Home Assistant integration — read first
+
+The speaker delegates smart-home control ("turn on the bedroom
+lights", "good night", "bedroom medium" → custom automation) to
+whatever Home Assistant the household has on the LAN. JTS is a
+relay: captures the utterance, hands it to HA's conversation
+pipeline, speaks back what HA returns. HA owns NLU, entity
+resolution, sentence triggers, automation dispatch — everything
+that makes household-specific phrases work. Full architecture in
+[`docs/HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md).
+
+### Configure
+
+Wizard at `http://jts.local/homeassistant/`. Three states (mirrors
+`/spotify/`'s shape):
+
+1. No URL → "Find Home Assistant" mDNS scan or manual URL entry
+2. URL set, no token → paste a Long-Lived Access Token from
+   `<HA URL>/profile/security`
+3. Connected → status card + test button + agent picker + disconnect
+
+Persists to `/var/lib/jasper/home_assistant.env`:
+
+```sh
+JASPER_HA_URL=http://homeassistant.local:8123
+JASPER_HA_TOKEN=eyJ0eXAiOi…
+JASPER_HA_AGENT_ID=         # optional, empty = HA's default agent
+```
+
+Both URL and token must be set for `home_assistant` to register as a
+voice tool. When either is missing, the tool isn't visible to the
+model and smart-home requests get answered conversationally
+("smart-home isn't set up — visit jts.local/homeassistant").
+
+### Why the REST conversation API, not MCP
+
+Verified against HA core source: HA's MCP server cannot trigger
+automations (no `automation.trigger` tool in its catalogue;
+`HassTurnOn` against an `automation.*` entity *enables* the
+automation rather than running it). Sentence triggers (the
+`trigger: conversation` automation pattern — HA's documented
+mechanism for household phrases) only fire through
+`default_agent._async_handle_message`, never through MCP. So MCP
+loses two critical surfaces a household has set up. See
+[`docs/HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md)
+"Why the conversation API, not MCP" for the full case.
+
+### Debug
+
+```sh
+# Tool registration at daemon startup:
+journalctl -u jasper-voice | grep "home_assistant:"
+# →  home_assistant: enabled url=http://... agent_id=(default)
+# OR home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN...)
+
+# Per-call structured events — six outcome buckets
+# (ok / network / timeout / auth / agent_error / intent_miss / parse_error):
+journalctl -u jasper-voice | grep "event=ha\.call"
+
+# Live state from jasper-control:
+curl -s http://jts.local:8780/state | jq .home_assistant
+
+# Diagnostic check (skip-if-not-configured):
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep "Home Assistant"
+
+# Dashboard card on http://jts.local/system/ shows:
+#   ✓ Connected to <name> (<version>) — green
+#   ✗ Unreachable + error detail — red
+#   Not configured
+```
+
+### Common gotchas
+
+- **`conversation_id` TTL ≈ 5 min idle**, observed not contractual.
+  HAClient caches with a 4-min safety margin; HA may rotate the ID
+  silently on each response, we treat what comes back as canonical.
+  After daemon restart the conversation context resets — fine, HA
+  mints a fresh ID.
+- **`agent_id` parameter is undocumented in HA's REST API surface**
+  but functional. A future HA schema-tightening could break us.
+  Regression test asserts the field is accepted.
+- **Footgun:** POST to `/api/conversation/process`, NOT
+  `/api/services/conversation/process`. The latter returns no
+  response body (HA core issues #93754, #104122 — live in 2026).
+- **HA's `response_type=error` returns HTTP 200**. Caller must
+  inspect the body, not just the status code. Covered by
+  `HAClient._parse` — outcome bucket is `intent_miss`.
+- **`no_valid_targets` is NOT a hard error**. In multi-satellite
+  homes, another device may have answered the same utterance. HA's
+  speech text is still useful to surface; we speak it.
+- **LLM-backed HA agents add 1-3 s latency**. If the household has
+  HA's default conversation agent set to OpenAI Conversation /
+  Anthropic / Google, every smart-home command pays for two LLM
+  hops (ours + theirs). To bypass: set `JASPER_HA_AGENT_ID=
+  conversation.home_assistant` in the wizard's Advanced disclosure
+  → JTS routes to HA's rule-based agent directly.
+
+### Switch / disconnect from the laptop
+
+No `switch-home-assistant.sh` helper yet (planned v1.1+). Manual
+paths for now:
+
+```sh
+# Re-test without opening the wizard:
+ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep "Home Assistant"
+
+# Disable (preserves recent URLs for one-tap reconnect):
+ssh pi@jts.local 'sudo rm -f /var/lib/jasper/home_assistant.env \
+  && sudo systemctl restart jasper-voice'
+```
+
+---
+
 ## Mic mute — persists across restarts
 
 User-driven mic mute is a privacy promise. When on, the wake loop

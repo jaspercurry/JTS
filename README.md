@@ -355,6 +355,17 @@ reference. Currently:
   Read before touching `jasper/watchdog.py`,
   `jasper/control/shairport_supervisor.py`, or the `Type=notify` /
   `WatchdogSec=` blocks in any service unit.
+- [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) —
+  Smart-home integration. The speaker delegates "turn on the
+  bedroom lights" / "good night" / household sentence triggers
+  to whatever Home Assistant the user has on the LAN, via HA's
+  REST conversation API (not MCP — covered in the doc with
+  primary-source citations: HA's MCP server has no
+  `automation.trigger` tool, and sentence triggers only fire
+  through HA's conversation pipeline). Wizard at
+  `http://jts.local/homeassistant/`. **Start here for
+  `jasper/home_assistant.py`, the `home_assistant` voice tool,
+  or anything related to the `/homeassistant/` wizard.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option
