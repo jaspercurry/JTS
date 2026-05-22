@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
+from .citibike import parse_saved_stations as _parse_citibike_stations
 
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
@@ -213,6 +214,17 @@ class Config:
     # parsed from the wizard's JASPER_BUS_STOPS env var.
     mta_bustime_key: str
     bus_stops: tuple[tuple[str, str], ...]
+
+    # Citi Bike (NYC + Jersey City + Hoboken). Tuple of (station_id, label)
+    # pairs parsed from the wizard's JASPER_CITIBIKE_STATIONS env var.
+    # `citibike_ebike_only` is a household-wide preference flag: when
+    # true, voice answers suppress classic-bike counts and only mention
+    # e-bike availability. Per-station overrides were considered (a
+    # household might only need e-bikes at the far station but accept
+    # classic at the near one) but global was explicitly requested for
+    # simplicity. See jasper.citibike for the GBFS data layer.
+    citibike_stations: tuple[tuple[str, str], ...]
+    citibike_ebike_only: bool
 
     # Home Assistant integration. The /ha wizard (PR 2) writes
     # /var/lib/jasper/home_assistant.env with these values; daemon picks
@@ -650,6 +662,19 @@ class Config:
             # shaped vars use would shred the labels into separate
             # entries. Hand off to the canonical parser.
             bus_stops=tuple(parse_bus_stops(_env("JASPER_BUS_STOPS", ""))),
+            # Citi Bike (NYC + JC + Hoboken). Same pipe-list format as
+            # JASPER_BUS_STOPS — see jasper.citibike.parse_saved_stations
+            # for the canonical parser. Empty list disables the tool.
+            citibike_stations=tuple(
+                _parse_citibike_stations(_env("JASPER_CITIBIKE_STATIONS", "")),
+            ),
+            # Household-wide e-bike-only preference. "1" / "true" / "yes"
+            # (case-insensitive) → True; anything else (empty, "0",
+            # "false") → False. Default False so a fresh install reports
+            # both kinds until the household opts in via the wizard.
+            citibike_ebike_only=_env(
+                "JASPER_CITIBIKE_EBIKE_ONLY", "",
+            ).strip().lower() in {"1", "true", "yes"},
             # Home Assistant. Empty url OR empty token disables the tool
             # (cfg.ha_enabled gates registration). The /ha
             # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
@@ -728,6 +753,12 @@ class Config:
     @property
     def bus_enabled(self) -> bool:
         return bool(self.bus_stops and self.mta_bustime_key)
+
+    @property
+    def citibike_enabled(self) -> bool:
+        # GBFS is keyless, so the only gating condition is whether
+        # the household has saved any stations.
+        return bool(self.citibike_stations)
 
     @property
     def spotify_enabled(self) -> bool:

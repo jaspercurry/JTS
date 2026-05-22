@@ -18,14 +18,14 @@ from __future__ import annotations
 
 import logging
 
-from ...citibike import (
-    INFO_TTL_SECONDS,
-    STATION_INFO_URL,
-    STATION_STATUS_URL,
-    STATUS_TTL_SECONDS,
-    fetch_feed,
-)
 from ..base import BoundingBox, Stop, haversine_miles
+
+# `jasper.citibike` imports `from .transit.base import TransitError`,
+# which triggers `transit/__init__.py`, which transitively loads this
+# provider module — re-entering `jasper.citibike` mid-init would hit a
+# partial module without the GBFS symbols. Lazy-import inside
+# `find_stops_near` breaks the cycle: by the time anything calls the
+# method, both modules have finished loading.
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,13 @@ class _CitiBike:
         credentials: dict[str, str] | None = None,
         count: int = 10,
     ) -> list[Stop]:
+        from ...citibike import (
+            INFO_TTL_SECONDS,
+            STATION_INFO_URL,
+            STATION_STATUS_URL,
+            STATUS_TTL_SECONDS,
+            fetch_feed,
+        )
         info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
         status = fetch_feed(STATION_STATUS_URL, STATUS_TTL_SECONDS)
         status_by_id = {
