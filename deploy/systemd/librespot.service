@@ -46,16 +46,21 @@ CacheDirectoryMode=0700
 # Format: S24_3 + tpdf dither = 24-bit packed output with triangular-
 # distribution dither, ~141 dB SNR, well below any DAC noise floor.
 #
-# Audio device: plughw:Loopback,0,0 — same snd-aloop subdevice that
-# shairport-sync and bluealsa-aplay write to. shairport's
-# session_timeout=1 ensures it releases the device promptly so
-# librespot can take over when the user switches sources.
+# Audio device: jasper_renderer_in — the plug-wrapped renderer-side
+# dmix defined in /root/.asoundrc (deploy/alsa/asoundrc.jasper).
+# All three renderers (librespot, shairport-sync, bluealsa-aplay)
+# write to this same logical device; dmix multi-writer-safely sums
+# their streams onto snd-aloop. Before 2026-05-22 the renderers
+# wrote directly to plughw:Loopback,0,0 (single-writer), which
+# caused librespot to crash-loop on ALSA -EBUSY when shairport had
+# the device open during phantom AirPlay SETUPs. See the rationale
+# block at the top of the asoundrc file.
 ExecStart=/usr/bin/librespot \
     --name ${JASPER_SPOTIFY_DEVICE_NAME} \
     --device-type speaker \
     --bitrate 320 \
     --backend alsa \
-    --device plughw:Loopback,0,0 \
+    --device jasper_renderer_in \
     --format S24_3 \
     --dither tpdf \
     --mixer softvol \

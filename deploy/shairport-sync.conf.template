@@ -80,26 +80,27 @@ sessioncontrol = {
 };
 
 alsa = {
-    // plughw (not hw) so ALSA's plug layer can resample 44100 ->
-    // 48000 on the way into the snd-aloop substream. CamillaDSP
-    // permanently holds the loopback capture side at 48000, which
-    // locks the substream's rate. shairport-sync only accepts
-    // output_rate values that are integer multiples of 44100
-    // (44100, 88200, 176400, 352800) -- 48000 is rejected with
-    // "Invalid output rate" and shairport falls back to "auto",
-    // which then fails at session start with "The output DAC can
-    // not be set to 44100 frames per second. The nearest speed
-    // available is 48000 fps." plughw lets shairport stay at the
-    // AirPlay-native 44100 and lets ALSA do the rate conversion.
-    // librespot uses the same approach for the same reason.
-    output_device = "plughw:Loopback,0,0";
+    // jasper_renderer_in: the plug-wrapped renderer-side dmix added
+    // 2026-05-22. See deploy/alsa/asoundrc.jasper for the rationale.
+    // Pre-2026-05-22 this was plughw:Loopback,0,0 directly, which
+    // meant any second renderer (librespot, bluealsa-aplay) opening
+    // the same device got ALSA -EBUSY and crashed. The dmix in
+    // front of the loopback makes the three renderers coexist; the
+    // plug layer on top of the dmix handles shairport's native
+    // 44100 -> the dmix's fixed 48000 conversion through libsamplerate
+    // (samplerate_best, set as the rate_converter default at the top
+    // of asoundrc.jasper). shairport-sync still only accepts
+    // output_rate values that are integer multiples of 44100, so
+    // 44100 stays here as shairport's native AirPlay rate; the
+    // resampling happens one layer up in plug.
+    output_device = "jasper_renderer_in";
     output_rate = 44100;
-    // S32 to match the snd-aloop substream's locked format
-    // (CamillaDSP reads at S32, librespot's plughw negotiates up
-    // from S24_3 to S32). plughw on the writer side would also
-    // convert from any format, so this is for efficiency rather
-    // than correctness -- skips a format-conversion step in the
-    // plug layer.
+    // S32 stays for the same reason it did before -- efficient when
+    // the plug layer above the dmix only has to downconvert format
+    // (S32 -> S16_LE), and the final output to the dongle (jasper_out)
+    // is S16_LE anyway. The 16 bits of resolution drop happens once
+    // at the renderer-dmix boundary instead of being split between
+    // multiple plug stages.
     output_format = "S32";
     use_mmap_if_available = "no";
     // Templated — see file header. With JTS's snd-aloop -> CamillaDSP

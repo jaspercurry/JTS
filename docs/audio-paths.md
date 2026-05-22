@@ -27,7 +27,9 @@ dmix instead, and compensate for the bypass in software (see
 
 ```
 MUSIC chain (gets CamillaDSP processing)
-    renderers → hw:Loopback,0,0 → snd-aloop → plughw:Loopback,1,0
+    renderers → pcm.jasper_renderer_in (plug)
+              → pcm.jasper_renderer_mix (dmix; multi-writer-safe)
+              → hw:Loopback,0,0 → snd-aloop → plughw:Loopback,1,0
               → jasper-camilla (main_volume + filters)
               → pcm.jasper_out (dmix on dongle)
               → dongle → amp → speakers
@@ -36,6 +38,15 @@ TTS / TEST-TONE chain (BYPASSES CamillaDSP)
     jasper-voice TtsPlayout → pcm.jasper_out (dmix on dongle)
                             → dongle → amp → speakers
 ```
+
+The renderer-side dmix (`jasper_renderer_mix`, fronted by
+`jasper_renderer_in`) was added 2026-05-22 so the three renderers
+(librespot, shairport-sync, bluealsa-aplay) can hold the device
+simultaneously. Without it, snd-aloop's `hw:Loopback,0,0` is
+single-writer; any second renderer trying to open it during a phantom
+or genuine session of another renderer returned ALSA -EBUSY, which
+crashed librespot in a respawn loop and made the user-reported
+"Spotify Connect handover from AirPlay" fail.
 
 Both legs converge at `pcm.jasper_out`, a dmix on the dongle. dmix
 sums the two writers' streams sample-wise and sends one stream to the
