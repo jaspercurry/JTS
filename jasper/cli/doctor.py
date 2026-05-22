@@ -828,6 +828,70 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     )
 
 
+def check_citibike(cfg: Config) -> CheckResult:
+    """Verify Citi Bike GBFS reachability + saved-station resolution.
+
+    Four states (mirrors `check_home_assistant`'s skip-if-not-
+    configured pattern):
+      - No saved stations → ok (skipped). Tool isn't registered.
+      - Saved stations, GBFS unreachable → fail. Tool will degrade to
+        cached / error responses at runtime.
+      - Saved stations, GBFS responsive, all saved IDs present in
+        the current station_information.json → ok with the count
+        (and an "(e-bike-only mode)" suffix when the global flag is
+        set).
+      - Saved stations, GBFS responsive, one or more saved IDs
+        missing → warn with the affected labels. Lyft periodically
+        retires stations; the user has to re-pick at /transit/.
+    """
+    label = "Citi Bike"
+    setup_url = f"http://{cfg.hostname}/transit"
+    if not cfg.citibike_enabled:
+        return CheckResult(
+            label, "ok",
+            f"not configured (skipped — visit {setup_url} to enable)",
+        )
+    try:
+        from ..citibike import (
+            INFO_TTL_SECONDS,
+            STATION_INFO_URL,
+            fetch_feed,
+        )
+    except ImportError as e:
+        return CheckResult(label, "fail", f"citibike module import failed: {e}")
+    try:
+        info = fetch_feed(STATION_INFO_URL, INFO_TTL_SECONDS)
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(
+            label, "fail",
+            f"GBFS unreachable: {e}. Saved-station drift cannot be "
+            f"validated; voice tool will degrade to cached data or "
+            f"return {{error}} at runtime.",
+        )
+    known_ids = {
+        s.get("station_id")
+        for s in (info.get("data") or {}).get("stations", [])
+        if isinstance(s, dict)
+    }
+    saved = list(cfg.citibike_stations)
+    missing = [(sid, lab) for sid, lab in saved if sid not in known_ids]
+    if missing:
+        names = ", ".join(lab for _, lab in missing[:3])
+        suffix = "" if len(missing) <= 3 else f" (+{len(missing) - 3} more)"
+        return CheckResult(
+            label, "warn",
+            f"{len(missing)}/{len(saved)} saved station(s) no longer in "
+            f"GBFS — Lyft retired them: {names}{suffix}. "
+            f"Re-pick at {setup_url}.",
+        )
+    extra = " (e-bike-only mode)" if cfg.citibike_ebike_only else ""
+    return CheckResult(
+        label, "ok",
+        f"connected — {len(saved)} saved station"
+        f"{'s' if len(saved) != 1 else ''}{extra}",
+    )
+
+
 def check_ram() -> CheckResult:
     try:
         with open("/proc/meminfo") as f:
@@ -1624,6 +1688,9 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         lambda: check_spotify_connect_device(cfg),
         lambda: check_google_tokens(cfg),
         lambda: check_home_assistant(cfg),
+        # Citi Bike: GBFS reachability + saved-station drift detection.
+        # Skip-if-not-configured matches the home_assistant pattern.
+        lambda: check_citibike(cfg),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),

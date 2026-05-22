@@ -221,6 +221,17 @@ def _build_test_registry(cfg: Config) -> ToolRegistry:
         for fn in make_bus_tools(bus):
             registry.register(fn)
 
+    # Citi Bike — keyless GBFS client. Read-only.
+    if cfg.citibike_enabled:
+        from jasper.citibike import CitiBikeClient
+        from jasper.tools.citibike import make_citibike_tools
+        citibike = CitiBikeClient(
+            saved_stations=list(cfg.citibike_stations),
+            ebike_only=cfg.citibike_ebike_only,
+        )
+        for fn in make_citibike_tools(citibike):
+            registry.register(fn)
+
     # Spotify — has playback side-effects. We register the tools
     # whenever the router can be built; scenarios that exercise
     # playback gate themselves on `JASPER_VOICE_EVAL_SKIP_PLAYBACK`.

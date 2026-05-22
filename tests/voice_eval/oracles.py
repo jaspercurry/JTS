@@ -156,6 +156,78 @@ async def subway_arrivals(
     return minutes[:limit]
 
 
+# ---- citibike -------------------------------------------------------
+
+_CITIBIKE_INFO_URL = "https://gbfs.citibikenyc.com/gbfs/en/station_information.json"
+_CITIBIKE_STATUS_URL = "https://gbfs.citibikenyc.com/gbfs/en/station_status.json"
+_CITIBIKE_AGENT = "jts-voice-eval"
+
+
+async def citibike_status(
+    stations: list[tuple[str, str]],
+    *,
+    http: httpx.AsyncClient | None = None,
+) -> dict[str, dict] | None:
+    """Direct GBFS oracle. Returns a dict keyed by station_id with
+    per-station `{ebikes, classic_bikes, docks, is_renting,
+    is_installed}` for each saved station.
+
+    Independent from the daemon code path (no `jasper.citibike`
+    cache, no `CitiBikeClient`, no provider). The tool's response is
+    compared to this dict to catch any adapter / cache / parsing
+    divergence.
+
+    Returns `None` if either GBFS feed is unavailable — the test
+    then skips rather than fails (an upstream GBFS outage isn't our
+    code's fault)."""
+    owns = http is None
+    client = http or httpx.AsyncClient(timeout=5.0)
+    try:
+        try:
+            info_r = await client.get(
+                _CITIBIKE_INFO_URL, headers={"User-Agent": _CITIBIKE_AGENT},
+            )
+            info_r.raise_for_status()
+            info = info_r.json()
+            status_r = await client.get(
+                _CITIBIKE_STATUS_URL, headers={"User-Agent": _CITIBIKE_AGENT},
+            )
+            status_r.raise_for_status()
+            status = status_r.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+    finally:
+        if owns:
+            await client.aclose()
+
+    info_ids = {
+        s.get("station_id")
+        for s in (info.get("data") or {}).get("stations", [])
+        if isinstance(s, dict)
+    }
+    status_by_id: dict[str, dict] = {}
+    for s in (status.get("data") or {}).get("stations", []):
+        if isinstance(s, dict) and "station_id" in s:
+            status_by_id[s["station_id"]] = s
+
+    out: dict[str, dict] = {}
+    for sid, _label in stations:
+        if sid not in info_ids or sid not in status_by_id:
+            out[sid] = {"missing": True}
+            continue
+        st = status_by_id[sid]
+        bikes = int(st.get("num_bikes_available", 0) or 0)
+        ebikes = int(st.get("num_ebikes_available", 0) or 0)
+        out[sid] = {
+            "ebikes": ebikes,
+            "classic_bikes": max(0, bikes - ebikes),
+            "docks": int(st.get("num_docks_available", 0) or 0),
+            "is_renting": bool(st.get("is_renting", 1)),
+            "is_installed": bool(st.get("is_installed", 1)),
+        }
+    return out
+
+
 # ---- weather --------------------------------------------------------
 
 _GEOCODE_URL = "https://geocoding-api.open-meteo.com/v1/search"

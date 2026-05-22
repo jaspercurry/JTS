@@ -552,3 +552,106 @@ def test_check_peering_discovery_no_avahi_browse_warns(monkeypatch):
     monkeypatch.setattr("jasper.cli.doctor.shutil.which", lambda p: None)
     r = doctor.check_peering_discovery()
     assert r.status == "warn"
+
+
+# -------------------------------------------------- check_citibike
+
+
+def _citibike_cfg(monkeypatch, *, stations: str = "", ebike_only: str = "") -> Config:
+    """Fresh Config with only the citibike + voice-provider env vars set.
+
+    Drops every JASPER_CITIBIKE_* from the calling shell so the test
+    picks up only the values we pass, then sets a minimal voice
+    provider config so `Config.from_env()` doesn't trip the
+    JASPER_VOICE_PROVIDER-not-set RuntimeError."""
+    for var in (
+        "JASPER_CITIBIKE_STATIONS", "JASPER_CITIBIKE_EBIKE_ONLY",
+        "GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
+        "JASPER_VOICE_PROVIDER",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "AIza-stub")
+    if stations:
+        monkeypatch.setenv("JASPER_CITIBIKE_STATIONS", stations)
+    if ebike_only:
+        monkeypatch.setenv("JASPER_CITIBIKE_EBIKE_ONLY", ebike_only)
+    return Config.from_env()
+
+
+def test_check_citibike_skips_when_not_configured(monkeypatch):
+    cfg = _citibike_cfg(monkeypatch)  # no stations saved
+    r = doctor.check_citibike(cfg)
+    assert r.status == "ok"
+    assert "not configured" in r.detail
+
+
+def test_check_citibike_ok_when_all_saved_ids_resolve(monkeypatch):
+    """Saved stations all present in GBFS → ok with the count."""
+    import jasper.citibike as citibike_mod
+
+    info = {"data": {"stations": [
+        {"station_id": "abc"}, {"station_id": "def"},
+    ]}}
+    monkeypatch.setattr(citibike_mod, "fetch_feed", lambda url, ttl, **kw: info)
+    cfg = _citibike_cfg(
+        monkeypatch, stations="abc|9 Av,def|Atlantic",
+    )
+    r = doctor.check_citibike(cfg)
+    assert r.status == "ok"
+    assert "2 saved station" in r.detail
+    assert "e-bike-only mode" not in r.detail
+
+
+def test_check_citibike_ok_renders_ebike_only_suffix(monkeypatch):
+    import jasper.citibike as citibike_mod
+    info = {"data": {"stations": [{"station_id": "abc"}]}}
+    monkeypatch.setattr(citibike_mod, "fetch_feed", lambda url, ttl, **kw: info)
+    cfg = _citibike_cfg(
+        monkeypatch, stations="abc|9 Av", ebike_only="1",
+    )
+    r = doctor.check_citibike(cfg)
+    assert r.status == "ok"
+    assert "e-bike-only mode" in r.detail
+
+
+def test_check_citibike_warns_when_some_saved_ids_missing(monkeypatch):
+    """One saved station retired by Lyft → warn naming the affected
+    station, but don't fail (the OK ones still work)."""
+    import jasper.citibike as citibike_mod
+    info = {"data": {"stations": [{"station_id": "abc"}]}}  # def is gone
+    monkeypatch.setattr(citibike_mod, "fetch_feed", lambda url, ttl, **kw: info)
+    cfg = _citibike_cfg(
+        monkeypatch, stations="abc|9 Av,def|Gone Station",
+    )
+    r = doctor.check_citibike(cfg)
+    assert r.status == "warn"
+    assert "Gone Station" in r.detail
+    assert "1/2" in r.detail
+
+
+def test_check_citibike_fails_when_gbfs_unreachable(monkeypatch):
+    import jasper.citibike as citibike_mod
+
+    def _raise(url, ttl, **kw):
+        raise RuntimeError("network down")
+    monkeypatch.setattr(citibike_mod, "fetch_feed", _raise)
+    cfg = _citibike_cfg(monkeypatch, stations="abc|9 Av")
+    r = doctor.check_citibike(cfg)
+    assert r.status == "fail"
+    assert "GBFS unreachable" in r.detail
+
+
+def test_check_citibike_caps_missing_list_at_three_with_suffix(monkeypatch):
+    """When > 3 stations are missing, the detail names the first 3 and
+    appends a '+N more' suffix so the line stays scannable."""
+    import jasper.citibike as citibike_mod
+    info = {"data": {"stations": []}}  # everything retired
+    monkeypatch.setattr(citibike_mod, "fetch_feed", lambda url, ttl, **kw: info)
+    cfg = _citibike_cfg(
+        monkeypatch,
+        stations="a|A,b|B,c|C,d|D,e|E",
+    )
+    r = doctor.check_citibike(cfg)
+    assert r.status == "warn"
+    assert "+2 more" in r.detail
