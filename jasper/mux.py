@@ -12,10 +12,19 @@ Renderer support:
   Spotify (librespot):
     detect: read /run/librespot/state.json (written by
             --onevent hook on every player event)
-    pause:  Spotify Web API via spotipy — librespot 0.8.0 has no
-            local control HTTP. We iterate household accounts and
-            issue PUT /me/player/pause to whoever has the JTS
-            device active.
+    pause:  Two-tier escalation. Tier 1 is Spotify Web API via
+            spotipy — librespot 0.8.0 has no local control HTTP.
+            We iterate household accounts and issue
+            PUT /me/player/pause to any account that has the JTS
+            device in its list. Tier 2 (added 2026-05-22) is
+            `systemctl restart librespot.service` if Tier 1 fails
+            — guarantees librespot releases its FD on the renderer
+            dmix so the new winner is heard alone. Tier 2 is
+            necessary because after the 2026-05-22 dmix change,
+            two renderers no longer contend for ALSA EBUSY; without
+            Tier 2 an un-pauseable librespot would simply mix audio
+            alongside the new winner. Off-switch:
+            JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing"
     pause:  MPRIS Pause method
@@ -50,6 +59,20 @@ class Source(str, Enum):
     SPOTIFY = "spotify"
     AIRPLAY = "airplay"
     BLUETOOTH = "bluetooth"
+
+
+def _spotify_preempt_restart_disabled() -> bool:
+    """Env-var escape hatch for the Spotify-preempt Tier 2 escalation
+    (the systemctl restart librespot fallback added 2026-05-22).
+
+    Set JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled to revert preempt
+    to "Web API only, mix-on-failure" behaviour — useful if the
+    restart is ever found to cause more disruption than the brief
+    audio mix it was meant to avoid. Default: enabled.
+    """
+    return os.environ.get(
+        "JASPER_MUX_SPOTIFY_PREEMPT_RESTART", "",
+    ).strip().lower() == "disabled"
 
 
 @dataclass
@@ -155,12 +178,29 @@ class Mux:
         logger.info("preempting %s", source.value)
         if source == Source.SPOTIFY:
             ok = await self._spotify_pause_via_web_api()
-            if not ok:
+            if ok:
+                return
+            # Tier 1 failed. After the 2026-05-22 renderer-dmix change,
+            # an un-pauseable librespot doesn't crash on EBUSY anymore —
+            # it just keeps streaming and mixes with the new winner.
+            # The user's contract ("we cannot have both played at the
+            # same time") requires us to force a release. systemctl
+            # restart kills librespot's FD on the renderer dmix; the
+            # new winner is then heard alone for the ~2-3 s before
+            # systemd brings librespot back as an idle Connect device.
+            if _spotify_preempt_restart_disabled():
                 logger.warning(
-                    "spotify pause: no Web API account could pause the JTS "
-                    "device; AirPlay and Spotify will mix briefly until "
-                    "Spotify times out (~30s) or the user pauses on phone",
+                    "spotify pause: no Web API account could pause the "
+                    "JTS device; escalation disabled — AirPlay and "
+                    "Spotify will mix until the user pauses on phone",
                 )
+                return
+            logger.warning(
+                "spotify pause: Web API failed; escalating to "
+                "`systemctl restart librespot.service` to force "
+                "release of the renderer dmix",
+            )
+            await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
             ok = await _busctl(
                 "call", "org.mpris.MediaPlayer2.ShairportSync",
@@ -240,28 +280,47 @@ class Mux:
 
     async def _spotify_pause_via_web_api(self) -> bool:
         """Try every authorized account; pause whichever has the JTS
-        device. Returns True if any account successfully paused."""
+        device. Returns True if any account successfully paused.
+
+        Pre-2026-05-22 this only tried devices where `is_active` was
+        True. That left a real failure window: librespot can be
+        emitting audio to JTS while the Web API's `is_active` flag
+        still shows the previous device (the flag lags behind player
+        state and is sometimes stale across multiple seconds).
+        We now also try any device named JTS regardless of `is_active`
+        — pause_playback will return an error if the device truly
+        isn't reachable, which we swallow at debug level and continue.
+        """
         router = self._ensure_spotify_router()
         if router is None:
             return False
         device_name = os.environ.get("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
-        for ac in router.clients.values():
-            try:
-                devices = await asyncio.to_thread(ac.sp.devices)
-            except Exception as e:  # noqa: BLE001
-                logger.debug(
-                    "spotify devices() failed for %s: %s", ac.account.name, e,
-                )
-                continue
-            for d in (devices.get("devices") or []):
-                if d.get("name") == device_name and d.get("is_active"):
+        # Two-pass: first prefer is_active devices (lowest-latency
+        # path); fall through to any JTS-named device if that fails.
+        for prefer_active in (True, False):
+            for ac in router.clients.values():
+                try:
+                    devices = await asyncio.to_thread(ac.sp.devices)
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(
+                        "spotify devices() failed for %s: %s",
+                        ac.account.name, e,
+                    )
+                    continue
+                for d in (devices.get("devices") or []):
+                    if d.get("name") != device_name:
+                        continue
+                    if prefer_active and not d.get("is_active"):
+                        continue
                     try:
                         await asyncio.to_thread(
                             ac.sp.pause_playback, device_id=d.get("id"),
                         )
                         logger.info(
-                            "spotify pause via Web API: account=%s device=%s",
+                            "spotify pause via Web API: "
+                            "account=%s device=%s active=%s",
                             ac.account.name, d.get("id"),
+                            d.get("is_active"),
                         )
                         return True
                     except Exception as e:  # noqa: BLE001
@@ -271,6 +330,58 @@ class Mux:
                         )
                         continue
         return False
+
+    async def _spotify_force_restart_librespot(self) -> bool:
+        """Tier 2 escalation: restart librespot.service to force it
+        to drop its FD on the renderer dmix.
+
+        Effects observed at the dmix layer: librespot exits, the dmix
+        client count drops, the dmix slave (hw:Loopback,0,0) is
+        released to the next writer. systemd respawns librespot in
+        ~2-3 s (Restart=always); during that gap, the new winner
+        (AirPlay / Bluetooth) is heard alone. After respawn, librespot
+        is back as an idle Spotify Connect device — the credential
+        cache (--system-cache /var/cache/librespot) persists, so the
+        user's phone re-sees JTS in the Connect picker without
+        re-authenticating. The catch: any state inside librespot's
+        current session (track position, queue) is lost — the next
+        Spotify Connect cast picks up fresh.
+
+        We use `systemctl restart` rather than `kill -TERM` so the
+        same `Restart=always` policy that handles every other
+        librespot exit also handles this one — no special-case
+        recovery path.
+
+        Returns True on `systemctl restart` exit code 0. Logged but
+        not retried on failure (the only thing that would happen on
+        retry is more log spam — the failure mode is "systemctl
+        unavailable" which doesn't self-heal).
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "systemctl", "restart", "librespot.service",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=5.0,
+            )
+        except (FileNotFoundError, asyncio.TimeoutError) as e:
+            logger.warning(
+                "spotify force-restart: systemctl invocation failed: %s", e,
+            )
+            return False
+        if proc.returncode != 0:
+            logger.warning(
+                "spotify force-restart: systemctl exit=%d stderr=%r",
+                proc.returncode, stderr[:200],
+            )
+            return False
+        logger.info(
+            "spotify force-restart: librespot.service restarted "
+            "(Tier 2 escalation succeeded)",
+        )
+        return True
 
 
 async def _busctl(*args: str) -> Optional[str]:
