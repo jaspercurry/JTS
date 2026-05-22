@@ -363,9 +363,9 @@ reference. Currently:
   primary-source citations: HA's MCP server has no
   `automation.trigger` tool, and sentence triggers only fire
   through HA's conversation pipeline). Wizard at
-  `http://jts.local/homeassistant/`. **Start here for
+  `http://jts.local/ha/`. **Start here for
   `jasper/home_assistant.py`, the `home_assistant` voice tool,
-  or anything related to the `/homeassistant/` wizard.**
+  or anything related to the `/ha/` wizard.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option

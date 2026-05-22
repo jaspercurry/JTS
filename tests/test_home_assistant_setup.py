@@ -1,4 +1,4 @@
-"""Tests for the /homeassistant/ wizard.
+"""Tests for the /ha/ wizard.
 
 What's exercised:
   - URL normalization (scheme/port defaulting, trailing-slash/api-suffix

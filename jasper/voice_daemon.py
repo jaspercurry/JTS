@@ -735,7 +735,7 @@ def _build_system_instruction(
             "thermostats, locks, blinds, scenes, scripts, household "
             "automations) or asks about the state of devices in the home, "
             f"say exactly: 'Smart-home control isn't set up yet — visit "
-            f"{hostname}/homeassistant to enable it.' Do not call any other "
+            f"{hostname}/ha to enable it.' Do not call any other "
             "tool in this case — not get_current_time, not get_now_playing, "
             "not get_weather. The user's request cannot be fulfilled without "
             "the home_assistant tool; redirecting them to the setup page is "
@@ -2984,7 +2984,7 @@ async def run() -> None:
     else:
         logger.info(
             "home_assistant: disabled (set JASPER_HA_URL + JASPER_HA_TOKEN, "
-            "or visit http://%s/homeassistant to configure)",
+            "or visit http://%s/ha to configure)",
             cfg.hostname,
         )
     # Volume coordinator: owns the canonical listening_level (0-100),

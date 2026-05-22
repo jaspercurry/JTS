@@ -214,7 +214,7 @@ class Config:
     mta_bustime_key: str
     bus_stops: tuple[tuple[str, str], ...]
 
-    # Home Assistant integration. The /homeassistant wizard (PR 2) writes
+    # Home Assistant integration. The /ha wizard (PR 2) writes
     # /var/lib/jasper/home_assistant.env with these values; daemon picks
     # them up via systemd EnvironmentFile. URL is the base of the HA
     # install (e.g. "http://homeassistant.local:8123"); token is a
@@ -651,7 +651,7 @@ class Config:
             # entries. Hand off to the canonical parser.
             bus_stops=tuple(parse_bus_stops(_env("JASPER_BUS_STOPS", ""))),
             # Home Assistant. Empty url OR empty token disables the tool
-            # (cfg.ha_enabled gates registration). The /homeassistant
+            # (cfg.ha_enabled gates registration). The /ha
             # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
             # operators can also set them directly in /etc/jasper/jasper.env
             # for headless / CI imaging. agent_id is optional — empty
@@ -749,5 +749,5 @@ class Config:
         home_assistant tool is gated on this in `_build_registry`; when
         false, the model never sees the tool and handles smart-home
         requests conversationally ("smart-home control isn't set up
-        yet — visit jts.local/homeassistant")."""
+        yet — visit jts.local/ha")."""
         return bool(self.ha_url and self.ha_token)

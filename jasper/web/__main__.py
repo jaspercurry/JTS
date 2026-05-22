@@ -15,7 +15,7 @@ unit per wizard. nginx routes:
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
   /peers/    →  127.0.0.1:8776  (jasper.web.peering_setup)
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
-  /homeassistant/ → 127.0.0.1:8778  (jasper.web.home_assistant_setup)
+  /ha/ → 127.0.0.1:8778  (jasper.web.home_assistant_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -223,7 +223,7 @@ def main() -> int:
         ("/wifi", wifi_port),
         ("/peers", peers_port),
         ("/transit", transit_port),
-        ("/homeassistant", ha_port),
+        ("/ha", ha_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -243,7 +243,7 @@ def main() -> int:
         ("/wifi", wifi_server),
         ("/peers", peers_server),
         ("/transit", transit_server),
-        ("/homeassistant", ha_server),
+        ("/ha", ha_server),
     ):
         threading.Thread(
             target=_serve_forever,

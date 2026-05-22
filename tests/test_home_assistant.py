@@ -55,7 +55,7 @@ def test_system_prompt_includes_ha_nudge_when_unconfigured():
         location="", ha_configured=False, hostname="jts.local",
     )
     assert "Home Assistant smart-home control isn't set up" in prompt
-    assert "jts.local/homeassistant" in prompt
+    assert "jts.local/ha" in prompt
     # The "do not call other tools" guard prevents the misroute we saw
     # on 2026-05-22 (lights → time + now_playing).
     assert "Do not call any other tool" in prompt
@@ -67,7 +67,7 @@ def test_system_prompt_omits_ha_nudge_when_configured():
     from jasper.voice_daemon import _build_system_instruction
     prompt = _build_system_instruction(location="", ha_configured=True)
     assert "Home Assistant smart-home control isn't set up" not in prompt
-    assert "/homeassistant" not in prompt
+    assert "/ha" not in prompt
 
 
 def test_system_prompt_ha_configured_defaults_to_true():
@@ -87,9 +87,9 @@ def test_system_prompt_ha_nudge_uses_configured_hostname():
     prompt = _build_system_instruction(
         location="", ha_configured=False, hostname="jts2.local",
     )
-    assert "jts2.local/homeassistant" in prompt
+    assert "jts2.local/ha" in prompt
     # And explicitly NOT the wrong default
-    assert "jts.local/homeassistant" not in prompt
+    assert "jts.local/ha" not in prompt
 
 
 def test_system_prompt_transit_nudge_uses_configured_hostname():

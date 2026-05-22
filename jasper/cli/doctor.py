@@ -791,7 +791,7 @@ def check_home_assistant(cfg: Config) -> CheckResult:
     import asyncio as _asyncio
 
     label = "Home Assistant"
-    setup_url = f"http://{cfg.hostname}/homeassistant"
+    setup_url = f"http://{cfg.hostname}/ha"
     if not cfg.ha_enabled:
         return CheckResult(
             label, "ok",
