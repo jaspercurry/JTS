@@ -407,9 +407,10 @@ expose cert/identity fields.
 
 ## Transit configuration — read first
 
-The subway and bus tools (`get_subway_arrivals`, `get_bus_arrivals`)
-are configured via the wizard at `http://jts.local/transit/`. The
-wizard owns **every** transit env var:
+The subway, bus, and Citi Bike tools (`get_subway_arrivals`,
+`get_bus_arrivals`, `get_citibike_status`) are configured via the
+wizard at `http://jts.local/transit/`. The wizard owns **every**
+transit env var:
 
 - `JASPER_TRANSIT_LAT`, `JASPER_TRANSIT_LON`,
   `JASPER_TRANSIT_DISPLAY_NAME` (wizard scaffolding; user's geocoded
@@ -418,6 +419,10 @@ wizard owns **every** transit env var:
   (empty = both directions)
 - `JASPER_MTA_BUSTIME_KEY`, `JASPER_BUS_STOPS` (multi-stop list
   formatted as `id|label,id|label`, parsed by `jasper.bus.parse_bus_stops`)
+- `JASPER_CITIBIKE_STATIONS` (multi-station, same `id|label,id|label`
+  shape as bus, parsed by `jasper.citibike.parse_saved_stations`),
+  `JASPER_CITIBIKE_EBIKE_ONLY` (`"1"` to suppress classic-bike
+  counts in voice answers; empty / `"0"` reports both kinds)
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
@@ -460,6 +465,27 @@ field is the fallback when SIRI is silent (off-peak quiet stop).
 yet in `transit.env`, the wizard renders the bus card unlocked
 with a yellow notice — values are visible, save moves them into
 the wizard's owned file.
+
+**Citi Bike flow.** Keyless (GBFS is public CDN at
+`gbfs.citibikenyc.com`). Card unlocks as soon as the user's
+coordinates are inside the bbox (NYC + Jersey City + Hoboken).
+A household-wide "Only mention e-bikes" toggle sits above the
+multi-station picker; check it when the household only rides
+e-bikes and the classic-bike count is noise. Each picker row
+shows a live snapshot (`{classic} classic, {ebikes} e-bikes,
+{docks} docks`) so users pick informed; the voice tool re-fetches
+every time so the snapshot is informational only. **GBFS feeds
+are cached in-process** at [`jasper/citibike.py`](jasper/citibike.py)
+(30 s for `station_status`, 1 h for `station_information`) with
+**stale-on-error**: a transient GBFS outage serves the last cached
+copy at WARN log level — the voice answer degrades to "as of a
+few minutes ago…" rather than going silent. Per-station response
+includes `last_reported_age_seconds` so the LLM can disclose
+staleness. **Station drift** (a saved station retired by Lyft)
+surfaces as `status="missing"` in the tool response and is logged
+at WARN by `CitiBikeClient.get_status`; `jasper-doctor`'s
+`check_citibike` flags drift at boot/probe time. Full design
+in [`docs/HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md).
 
 **Address geocoding** runs against OSM Nominatim (Photon as
 fallback). No API key, but the policy requires a descriptive
@@ -504,13 +530,16 @@ destination-anchored label ("Coney Island") makes voice answers
 materially better. Edit by hand to override; the next refresh
 keeps your edits.
 
-**Transit nudge.** When the daemon boots with neither subway nor
-bus configured, `_build_system_instruction` in
+**Transit nudge.** When the daemon boots with neither subway,
+bus, nor Citi Bike configured, `_build_system_instruction` in
 [`jasper/voice_daemon.py`](jasper/voice_daemon.py) appends a
 conditional instruction redirecting transit questions to
 `jts.local/transit`. Conditional ("if the user asks about the
 next train, say X") not absolute ("never answer transit
-questions"), per the provider-prompt-guide rule.
+questions"), per the provider-prompt-guide rule. Partial
+configurations (e.g. subway set, Citi Bike not) don't fire the
+nudge — the registered tools answer what's configured; the
+absent tools just aren't visible to the model.
 
 ---
 
