@@ -246,16 +246,21 @@ SYSTEM_INSTRUCTION = (
     "summarise as a high/low range with any rainy days called "
     "out — e.g. 'Highs in the low 70s, lows around 55. Mostly "
     "sunny except Thursday with a 60% chance of rain.'\n"
-    "  - get_subway_arrivals: walk the `arrivals` list and speak "
-    "each train's line + direction + minutes. Examples: 'Next "
-    "Manhattan-bound D in 3 minutes, then an N in 7.' / 'D in 3, "
-    "N in 7 — both Manhattan-bound.' / 'Manhattan-bound D in 3, "
-    "Coney-bound D in 6.' Name the line for each train when "
-    "multiple lines are coming (rerouted train mixed in with "
-    "regulars, or multi-line station). Name the direction when "
-    "the query asked for both directions or when context would "
-    "be ambiguous. Skip naming when the user's question already "
-    "pinned it ('next D uptown?' → just 'in 3 and 7 minutes.').\n"
+    "  - get_subway_arrivals: walk the FULL `arrivals` list and "
+    "speak EVERY arrival the tool returned — the tool already "
+    "caps the list at the right size for a one-sentence answer, "
+    "so reading fewer than what's there is hiding live data from "
+    "the user. Each arrival has line + direction + minutes. "
+    "Examples (4 arrivals in the list → 4 in the spoken answer): "
+    "'Manhattan-bound D in 1, N in 4, R in 6, then another D in "
+    "8.' / 'D in 1, N in 4, R in 6, D in 8 — all Manhattan-bound.' "
+    "/ 'Manhattan-bound D in 3, Coney-bound D in 6, then N at 11 "
+    "and R at 14.' Name the line for each train when multiple "
+    "lines are coming (rerouted train mixed in with regulars, or "
+    "multi-line station). Name the direction when the query asked "
+    "for both directions or when context would be ambiguous. Skip "
+    "naming when the user's question already pinned it ('next D "
+    "uptown?' → 'in 3, 7, 12, and 16 minutes.').\n"
     "  - home_assistant: when success=true, speak the "
     "`spoken_response` verbatim or in a very light paraphrase. "
     "Home Assistant phrased its own response — do NOT add 'OK' "
@@ -2925,12 +2930,18 @@ async def run() -> None:
         )
         if cfg.subway_enabled else None
     )
-    # cfg.bus_stops is a list of MonitoringRefs (v2 multi-stop). Empty
-    # list → bus disabled, runtime tool not registered.
+    # cfg.bus_stops is a list of (stop_id, label) pairs parsed from
+    # the wizard's JASPER_BUS_STOPS env var. Split into the two
+    # arguments BusClient expects: ids drive the SIRI fan-out;
+    # labels drive `stop_label` on each returned arrival so the
+    # voice model can name the stop in its answer.
     bus = (
         BusClient(
-            stop_ids=list(cfg.bus_stops),
+            stop_ids=[sid for sid, _ in cfg.bus_stops],
             api_key=cfg.mta_bustime_key,
+            stop_labels={
+                sid: label for sid, label in cfg.bus_stops if label
+            },
         )
         if cfg.bus_enabled else None
     )

@@ -84,6 +84,32 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.spotify_enabled is False
 
 
+def test_bus_stops_preserves_labels_with_spaces(monkeypatch):
+    """Regression: JASPER_BUS_STOPS labels can contain spaces (MTA
+    name + direction, e.g. "4 Av/39 St eastbound"). Earlier the
+    config used `.replace(",", " ").split()` which shredded the
+    label into separate "stops" — saw it in production with
+    "MTA_302680|39 ST/4 AV SE" parsing into four bogus stops."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv(
+        "JASPER_BUS_STOPS",
+        "MTA_302680|39 ST/4 AV SE,MTA_302682|39 ST/4 AV NW",
+    )
+    cfg = Config.from_env()
+    assert cfg.bus_stops == (
+        ("MTA_302680", "39 ST/4 AV SE"),
+        ("MTA_302682", "39 ST/4 AV NW"),
+    )
+
+
+def test_bus_stops_bare_id_no_label(monkeypatch):
+    """Stops without a `|label` suffix still parse — empty label."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setenv("JASPER_BUS_STOPS", "MTA_302680")
+    cfg = Config.from_env()
+    assert cfg.bus_stops == (("MTA_302680", ""),)
+
+
 def test_missing_gemini_key_raises_when_provider_is_gemini(monkeypatch):
     monkeypatch.delenv("GEMINI_API_KEY", raising=False)
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")
