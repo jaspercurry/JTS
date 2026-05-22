@@ -67,9 +67,10 @@ class _NycBus:
     bbox = NYC_BBOX
     env_keys = (
         "JASPER_MTA_BUSTIME_KEY",
-        # v2 multi-stop schema. Value is "id|label,id|label" — see
-        # `jasper.bus.parse_bus_stops`. install.sh migrates the v1
-        # singular JASPER_BUS_STOP_ID into a one-element list here.
+        # Multi-stop list. Value is "id|label,id|label" — see
+        # `jasper.bus.parse_bus_stops` for the parser. Opposing-
+        # direction stops at one intersection are saved as two
+        # separate entries (they have distinct MTA stop IDs).
         "JASPER_BUS_STOPS",
     )
     credentials = (CREDENTIAL,)

@@ -423,12 +423,10 @@ All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
 them in `/etc/jasper/jasper.env`. `install.sh`'s
 `migrate_transit_config` moves any stale operator-set values into
-the wizard file on every deploy AND converts the v1 schema
-(`JASPER_BUS_STOP_ID` singular, `JASPER_BUS_ROUTES`, `JASPER_SUBWAY_LINES`)
-to v2 on the next deploy. `jasper-voice.service` sources both files
-with the wizard file last so it wins on conflicts.
+the wizard file on every deploy. `jasper-voice.service` sources
+both files with the wizard file last so it wins on conflicts.
 
-**Subway behavior (v2).** "Next train" returns every line stopping
+**Subway behavior.** "Next train" returns every line stopping
 at the station — including trains rerouted from other lines during
 service changes. This works because Subway Now's `/api/stops/{id}`
 endpoint aggregates across all 7 MTA GTFS-RT feeds server-side

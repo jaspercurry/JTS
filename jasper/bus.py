@@ -188,10 +188,9 @@ class BusClient:
         by ETA ascending, capped at `limit`.
 
         `route` (optional): filter to a single short name like 'B35'.
-        Empty string returns every route at every stop. v1 had a
-        global `configured_routes` allow-list; that's gone — pick
-        direction-specific stops (which are already route-shaped)
-        and lean on the post-fetch `route` arg for ad-hoc filtering."""
+        Empty string returns every route at every stop — direction-
+        specific stops already shape the result; the `route` arg is
+        for ad-hoc filtering when the user names a specific one."""
         if not self.enabled:
             return []
 

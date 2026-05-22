@@ -26,7 +26,6 @@ def test_defaults_with_only_gemini_key(monkeypatch):
         "JASPER_SPOTIFY_DEVICE_NAME",
         "JASPER_DEFAULT_LOCATION", "JASPER_WEATHER_UNITS",
         "JASPER_SUBWAY_STATION_ID", "JASPER_SUBWAY_DEFAULT_DIRECTION",
-        "JASPER_SUBWAY_LINES",
         "SPOTIFY_CLIENT_ID",
     ]:
         monkeypatch.delenv(var, raising=False)
@@ -76,9 +75,12 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.weather_default_location == ""
     assert cfg.weather_units == "celsius"
     assert cfg.subway_station_id == ""
-    assert cfg.subway_default_direction == "uptown"
-    assert cfg.subway_lines == ()
+    # Empty default direction means "both directions" at query time —
+    # set by the /transit/ wizard's "Both" radio.
+    assert cfg.subway_default_direction == ""
     assert cfg.subway_enabled is False
+    assert cfg.bus_stops == ()
+    assert cfg.bus_enabled is False
     assert cfg.spotify_enabled is False
 
 

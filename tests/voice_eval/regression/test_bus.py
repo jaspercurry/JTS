@@ -44,7 +44,7 @@ async def test_next_bus_default_stop(harness, trial: int) -> None:
     if not harness.cfg.bus_enabled:
         pytest.skip(
             "voice-eval: bus not configured (JASPER_MTA_BUSTIME_KEY + "
-            "JASPER_BUS_STOP_ID required) — set them to run this scenario",
+            "JASPER_BUS_STOPS required) — set them to run this scenario",
         )
 
     result = await harness.ask("when's the next bus?")
