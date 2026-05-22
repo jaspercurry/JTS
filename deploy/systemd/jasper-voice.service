@@ -58,6 +58,13 @@ EnvironmentFile=-/var/lib/jasper/google_credentials.env
 # the leading `-` — daemon falls back to bundled "hey_jarvis" when
 # the file is missing. See jasper/wake_models.py for the registry.
 EnvironmentFile=-/var/lib/jasper/wake_model.env
+# Transit settings (subway station, bus stop, MTA BusTime key, etc.)
+# written by the wizard at http://jts.local/transit/. Subway and bus
+# tools register only when the relevant env vars are populated, so a
+# fresh install with no transit configured leaves the model with no
+# transit tool surface — by design. Same override pattern as the
+# files above. Optional via the leading `-`.
+EnvironmentFile=-/var/lib/jasper/transit.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 # `on-watchdog` covers BOTH clean failure (non-zero exit, segfault)

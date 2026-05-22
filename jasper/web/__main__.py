@@ -13,6 +13,8 @@ unit per wizard. nginx routes:
   /sources/  →  127.0.0.1:8773  (jasper.web.sources_setup)
   /wake/     →  127.0.0.1:8774  (jasper.web.wake_setup)
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
+  /peers/    →  127.0.0.1:8776  (jasper.web.peering_setup)
+  /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -42,6 +44,7 @@ from . import (
     peering_setup,
     sources_setup,
     spotify_setup,
+    transit_setup,
     voice_setup,
     wake_setup,
     wifi_setup,
@@ -76,6 +79,7 @@ def main() -> int:
     wake_port = int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774"))
     wifi_port = int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775"))
     peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
+    transit_port = int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -162,6 +166,17 @@ def main() -> int:
         target_for(peers_port), state_path=peers_state,
     )
 
+    # Transit setup wizard — address geocode → nearest subway/bus
+    # stops → save into /var/lib/jasper/transit.env. Modular over
+    # jasper.transit.REGISTRY so new cities/modes plug in without
+    # touching this file.
+    transit_state = os.environ.get(
+        "JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE,
+    )
+    transit_server = transit_setup.make_server(
+        target_for(transit_port), state_path=transit_state,
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -176,6 +191,7 @@ def main() -> int:
         wake_server.RequestHandlerClass,
         wifi_server.RequestHandlerClass,
         peers_server.RequestHandlerClass,
+        transit_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -189,6 +205,7 @@ def main() -> int:
         ("/wake", wake_port),
         ("/wifi", wifi_port),
         ("/peers", peers_port),
+        ("/transit", transit_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -207,6 +224,7 @@ def main() -> int:
         ("/wake", wake_server),
         ("/wifi", wifi_server),
         ("/peers", peers_server),
+        ("/transit", transit_server),
     ):
         threading.Thread(
             target=_serve_forever,

@@ -144,10 +144,17 @@ when the configured AEC mic is present with 6-channel firmware — see
   `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify
   search & queue, weather (now including daily sunrise/sunset),
-  NYC subway times, NYC MTA bus arrivals (single configured stop;
-  config in `.env.example`), current wall-clock time
+  NYC subway times, NYC MTA bus arrivals (configured via the
+  `/transit/` wizard), current wall-clock time
 - ✅ Multi-user Spotify routing (each household member's account,
   routed by AirPlay title-match)
+- ✅ Transit setup wizard at `http://jts.local/transit/` — type your
+  address, the page geocodes via OSM Nominatim, shows nearest subway
+  + bus stops, lets you pick. Modular over `jasper.transit.REGISTRY`
+  so future cities/modes (Berlin BVG, Citi Bike, …) are a single
+  new module under `jasper/transit/providers/`. NYC subway is
+  keyless; NYC bus requires a free MTA BusTime API key — that card
+  is locked until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect toggles. Bluetooth's off
   toggle prompts for confirmation when a paired wireless remote
@@ -214,9 +221,15 @@ jasper/                         Python daemon source
                                   module per supported mic (xvf3800.py
                                   today). Identity, firmware variants,
                                   mixer invariants, helpers. See mics/README.md.
+  transit/                      Modular transit-provider registry —
+                                  base Protocol + geocode.py + per-city
+                                  providers/. NYC subway + bus today,
+                                  contributor-extensible (Berlin BVG,
+                                  Citi Bike, …).
   web/                          stdlib http.server settings UIs at
                                   /spotify (account OAuth) and /voice
-                                  (provider config + key paste)
+                                  (provider config + key paste) +
+                                  /transit (address geocode + stop pick)
   data/                         Static data (subway stops, etc.)
   ...                           accounts, spotify_router, vad,
                                 volume_persistence, etc.
@@ -446,7 +459,7 @@ and openwakeword stub diet landed.
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
@@ -455,11 +468,11 @@ and openwakeword stub diet landed.
 
 The four web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts seven URL surfaces (Spotify, voice,
-Google, AirPlay, Sources, Wake, Wi-Fi) on seven loopback ports; the
-other three daemons each host one. All four exit after 10 min of no
-requests, so the resident cost is zero between admin sessions. First
-request after idle takes ~500-800 ms (Python startup); invisible
+its pages. `jasper-web` alone hosts nine URL surfaces (Spotify, voice,
+Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit) on nine loopback
+ports; the other three daemons each host one. All four exit after 10
+min of no requests, so the resident cost is zero between admin sessions.
+First request after idle takes ~500-800 ms (Python startup); invisible
 during the OAuth round-trip or BT pair flow.
 
 **Total Pss baseline with AEC on**: ~330 MB jasper-* daemons +
