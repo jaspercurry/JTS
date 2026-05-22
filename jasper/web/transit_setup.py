@@ -51,7 +51,10 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from concurrent.futures import ThreadPoolExecutor
+
 from .. import transit
+from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ._common import (
     PAGE_STYLE,
@@ -133,6 +136,40 @@ def _has_bus_key(state: dict[str, str]) -> bool:
     key out of jasper.env. Consulting the persisted state directly
     keeps render decisions and save decisions consistent."""
     return bool(state.get("JASPER_MTA_BUSTIME_KEY", "").strip())
+
+
+def _bus_key_source(state: dict[str, str]) -> str:
+    """Return where the bus key lives: 'state' / 'env' / 'none'.
+
+    'state' = persisted in /var/lib/jasper/transit.env (the wizard's
+              owned file; what `_has_bus_key` looks at).
+    'env'   = visible in os.environ (operator pasted it into
+              /etc/jasper/jasper.env directly, OR migrated by
+              install.sh into transit.env which systemd re-sourced
+              into our env on the next jasper-web spawn).
+    'none'  = not set anywhere.
+
+    Used to drive the locked / soft-unlocked / unlocked card states.
+    Save decisions still hinge on `_has_bus_key` (state-only) — this
+    function is for rendering only."""
+    if state.get("JASPER_MTA_BUSTIME_KEY", "").strip():
+        return "state"
+    if os.environ.get("JASPER_MTA_BUSTIME_KEY", "").strip():
+        return "env"
+    return "none"
+
+
+def _mask_key(value: str) -> str:
+    """Render a BusTime key as `prefix…suffix` for display. Empty input
+    returns empty string. Mirrors `_common.mask_secret` but inlined
+    here so the bus card can show a value sourced from os.environ
+    (which `_common` doesn't know about)."""
+    value = value.strip()
+    if not value:
+        return ""
+    if len(value) <= 8:
+        return "…" * len(value)
+    return f"{value[:4]}…{value[-4:]}"
 
 
 def _split_list(raw: str) -> list[str]:
@@ -217,13 +254,12 @@ def _apply_save(
         new.pop("JASPER_SUBWAY_DEFAULT_DIRECTION", None)
     elif sub_dir in ("uptown", "downtown"):
         new["JASPER_SUBWAY_DEFAULT_DIRECTION"] = sub_dir
-    sub_lines_raw = form.get("nyc_subway_lines")
-    if sub_lines_raw is not None:
-        parsed = _split_list(sub_lines_raw)
-        if parsed:
-            new["JASPER_SUBWAY_LINES"] = ",".join(parsed)
-        else:
-            new.pop("JASPER_SUBWAY_LINES", None)
+    # JASPER_SUBWAY_LINES was a v1 positive filter that locked the
+    # tool to a specific line list at the station. Removed in v2 — the
+    # tool's default ("show all lines stopping here") catches reroutes
+    # and the user can still narrow via the explicit `line` arg.
+    # Drop any v1 residue so it doesn't linger in transit.env.
+    new.pop("JASPER_SUBWAY_LINES", None)
 
     # Bus key — pasted means replace; blank means keep. The lookup
     # endpoint requires a key, so we validate on paste.
@@ -246,23 +282,31 @@ def _apply_save(
             )
         new["JASPER_MTA_BUSTIME_KEY"] = new_key
 
-    # Bus stop pick + routes. Defensive against the locked-card POST
+    # Bus stop picks (multi). Defensive against the locked-card POST
     # bypass: if no key is in `new` (either from this form or already
     # persisted), refuse to write bus picks. A crafted POST that
-    # submits nyc_bus_stop without a key would otherwise persist a
-    # stop_id the daemon can't use — the runtime SIRI client also
-    # needs the key and would fail silently at every voice query.
+    # submits picks without a key would otherwise persist stop IDs
+    # the daemon can't use — the runtime SIRI client also needs the
+    # key and would fail silently at every voice query.
     if new.get("JASPER_MTA_BUSTIME_KEY", "").strip():
-        bus_stop = (form.get("nyc_bus_stop") or "").strip()
-        if bus_stop:
-            new["JASPER_BUS_STOP_ID"] = bus_stop
-        bus_routes_raw = form.get("nyc_bus_routes")
-        if bus_routes_raw is not None:
-            parsed = _split_list(bus_routes_raw)
-            if parsed:
-                new["JASPER_BUS_ROUTES"] = ",".join(parsed)
-            else:
-                new.pop("JASPER_BUS_ROUTES", None)
+        # The form ships `nyc_bus_stop` as a list (multi-checkbox).
+        # _common.read_form collapses duplicates to the last value
+        # by default, so the wizard sends a separate hidden field
+        # `nyc_bus_stops` carrying the full comma-joined selection.
+        # See _bus_card_html for the contract.
+        picks_raw = (form.get("nyc_bus_stops") or "").strip()
+        if picks_raw:
+            new["JASPER_BUS_STOPS"] = picks_raw
+        elif "nyc_bus_stops" in form:
+            # Explicit empty submission (every checkbox unchecked)
+            # → drop the saved list.
+            new.pop("JASPER_BUS_STOPS", None)
+    # v1 residue cleanup. JASPER_BUS_STOP_ID + JASPER_BUS_ROUTES were
+    # the singular schema; v2 replaces them with JASPER_BUS_STOPS
+    # (list, with optional embedded labels). Sweep on any save so
+    # an upgrade doesn't leave stale keys in transit.env.
+    new.pop("JASPER_BUS_STOP_ID", None)
+    new.pop("JASPER_BUS_ROUTES", None)
 
     return new, None
 
@@ -335,11 +379,23 @@ _TRANSIT_PAGE_STYLE = PAGE_STYLE + """
     transition: background 0.12s, border-color 0.12s;
   }
   .stop-row:hover { background: #f0fff4; border-color: #1db954; }
-  .stop-row input[type=radio] {
+  .stop-row input[type=radio],
+  .stop-row input[type=checkbox] {
     width: auto; flex: none; margin-right: 0.6em;
   }
   .stop-row.active { background: #f0fff4; border-color: #1db954; }
   .stop-row .name { font-weight: 600; }
+
+  /* Bus-stop cluster header — groups opposing-direction stops at
+     the same MTA-named intersection (e.g. "4 AV/39 ST"). The
+     directions sit one indent below as `.stop-row` rows. */
+  .cluster-heading {
+    margin: 0.9em 0 0.2em; padding: 0.2em 0;
+    display: flex; align-items: baseline; gap: 0.5em;
+  }
+  .cluster-heading strong { color: #222; font-size: 0.98em; }
+  .cluster-heading .meta { color: #888; font-size: 0.85em; }
+
   .stop-row .meta {
     color: #888; font-size: 0.85em;
     font-variant-numeric: tabular-nums;
@@ -500,7 +556,6 @@ def _subway_card_html(
     active_dir = _value_for(state, "JASPER_SUBWAY_DEFAULT_DIRECTION").lower()
     if active_dir not in ("uptown", "downtown"):
         active_dir = "both"
-    active_lines = _value_for(state, "JASPER_SUBWAY_LINES")
 
     badge = (
         '<span class="badge">configured</span>' if active_stop
@@ -514,7 +569,7 @@ def _subway_card_html(
     dir_options = [
         ("uptown", "Uptown (Manhattan-bound at most stations)"),
         ("downtown", "Downtown (Coney/Brooklyn-bound at most stations)"),
-        ("both", "Both — ask each time"),
+        ("both", "Both directions"),
     ]
     dir_html = "".join(
         f'<option value="{html.escape(v)}"'
@@ -525,20 +580,14 @@ def _subway_card_html(
     return f"""
 <section class="provider-card">
   <h2>{html.escape(provider.label)} {badge}</h2>
-  <p class="blurb">Pick the station closest to home. Voice answers will default to this one when you ask for the next train.</p>
+  <p class="blurb">Pick the station closest to home. &ldquo;Next train&rdquo; questions return every line that stops here, including trains rerouted from other lines during service changes.</p>
   {rows_html}
 
   <label for="nyc_subway_direction">Default direction</label>
   <select id="nyc_subway_direction" name="nyc_subway_direction" form="save-form">
     {dir_html}
   </select>
-
-  <label for="nyc_subway_lines">Lines that stop here (optional)</label>
-  <input id="nyc_subway_lines" name="nyc_subway_lines" type="text"
-         form="save-form"
-         placeholder="D"
-         value="{html.escape(active_lines)}">
-  <small>Comma- or space-separated. Leave blank to allow any line that serves the station.</small>
+  <small>Used when the voice query doesn't name a direction. Pick &ldquo;Both&rdquo; if you want every train in either direction by default; the voice tool still honors a specific direction on request.</small>
 </section>"""
 
 
@@ -553,7 +602,9 @@ def _bus_card_html(
   <p class="blurb">Enter your address above to find nearby bus stops.</p>
 </section>"""
 
-    if not _has_bus_key(state):
+    key_source = _bus_key_source(state)
+
+    if key_source == "none":
         # Locked state: ONLY a register link + key input. Everything
         # else is intentionally hidden — there's nothing useful for
         # the user to do until they have a key.
@@ -577,28 +628,49 @@ def _bus_card_html(
   <small>Paste your key here, then save. We'll validate it against MTA, then show nearby stops on the next page.</small>
 </section>"""
 
-    # Key set. Fetch nearby stops via BusTime. Failure here is
-    # non-fatal — keep the card up with an actionable error.
+    # Key is set — either in state (wizard-owned) or in env (operator
+    # set via /etc/jasper/jasper.env, or post-migration via systemd
+    # re-sourcing). Both unlock the card so the user can see what's
+    # configured; the `env` source adds a yellow banner explaining
+    # where the value lives.
     credentials = {"JASPER_MTA_BUSTIME_KEY": _value_for(state, "JASPER_MTA_BUSTIME_KEY")}
     error: str | None = None
     stops: list[transit.Stop] = []
     try:
-        stops = provider.find_stops_near(*coords, credentials=credentials, count=5)
+        stops = provider.find_stops_near(*coords, credentials=credentials, count=8)
     except transit.TransitError as e:
         error = str(e)
     except Exception as e:  # noqa: BLE001
         logger.warning("bus stops fetch raised: %r", e)
         error = f"unexpected error: {e}"
 
-    active_stop = _value_for(state, "JASPER_BUS_STOP_ID")
-    # OBA returns "MTA_302680"; saved value may match either with or
-    # without the prefix. Normalise for comparison so the active radio
-    # checks correctly regardless of which form the user saved.
-    active_stop_norm = active_stop.removeprefix("MTA_")
-    active_routes = _value_for(state, "JASPER_BUS_ROUTES")
+    # SIRI-probe each candidate stop in parallel to enumerate the
+    # routes ACTUALLY dispatching there. OBA's static `routes` field
+    # lags real-world dispatch (the B70-at-4 Av/39 St case); SIRI is
+    # ground truth. Fan out across stops to keep the render under the
+    # nginx read timeout.
+    siri_routes_by_stop: dict[str, tuple[str, ...]] = {}
+    if stops and hasattr(provider, "enumerate_live_routes"):
+        def _probe(stop_id: str) -> tuple[str, tuple[str, ...]]:
+            try:
+                return stop_id, provider.enumerate_live_routes(
+                    stop_id, credentials=credentials,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.info("SIRI probe failed for %s: %s", stop_id, e)
+                return stop_id, ()
+        with ThreadPoolExecutor(max_workers=len(stops)) as pool:
+            for sid, routes in pool.map(_probe, [s.stop_id for s in stops]):
+                siri_routes_by_stop[sid] = routes
+
+    # Parse saved picks. JASPER_BUS_STOPS = "id|label,id|label"; the
+    # wizard's hidden field carries the same format on POST. Build a
+    # set of bare ids (no MTA_ prefix) for radio-state comparison.
+    saved_picks = parse_bus_stops(_value_for(state, "JASPER_BUS_STOPS"))
+    saved_ids_norm = {sid.removeprefix("MTA_") for sid, _ in saved_picks}
 
     badge = (
-        '<span class="badge">configured</span>' if active_stop
+        '<span class="badge">configured</span>' if saved_picks
         else '<span class="badge muted">not configured</span>'
     )
 
@@ -611,46 +683,159 @@ def _bus_card_html(
         )
     elif not stops:
         error_html = (
-            '<p class="msg">No bus stops within 1&nbsp;km of your coordinates.</p>'
+            '<p class="msg">No bus stops within ~1&nbsp;km of your coordinates.</p>'
         )
 
+    # Soft-unlock banner: only render when the key is from os.environ
+    # (operator-set externally) rather than the wizard's own file.
+    # Saving in the wizard from this state writes the key into
+    # transit.env for the first time; from then on the source flips to
+    # 'state' and this banner disappears.
+    external_notice_html = ""
+    if key_source == "env":
+        external_notice_html = (
+            '<p class="msg" style="background:#fff7e6;border-color:#f0c060;color:#5a4500">'
+            'ℹ️ Detected an MTA BusTime API key in '
+            '<code>/etc/jasper/jasper.env</code> (set outside the wizard). '
+            'The daemon is using it already. Saving any change here will '
+            'persist your picks (and the key) into '
+            '<code>/var/lib/jasper/transit.env</code>, where the wizard '
+            'owns it from then on.</p>'
+        )
+
+    # Masked-key readout — same shape as voice_setup.py shows for OAuth
+    # secrets. Sourced from `_value_for` so it works whether the key
+    # lives in state or in env. Empty string → render nothing.
+    saved_key = _value_for(state, "JASPER_MTA_BUSTIME_KEY")
+    masked = _mask_key(saved_key)
+    key_source_label = {
+        "state": "/var/lib/jasper/transit.env",
+        "env": "/etc/jasper/jasper.env (external)",
+    }.get(key_source, "")
+    masked_key_html = (
+        f'<p class="meta" style="margin-top:0.4em">Saved key: '
+        f'<code>{html.escape(masked)}</code> '
+        f'<span style="color:#888">({html.escape(key_source_label)})</span></p>'
+        if masked else ""
+    )
+
+    # Cluster stops by their MTA `name` field — both eastbound and
+    # westbound at one intersection share that string. Inside each
+    # cluster, list each direction separately so the user can pick
+    # one, the other, or both. Preserve outer ordering (closest-first)
+    # by using a dict (insertion-ordered) keyed on name.
+    clusters: dict[str, list[transit.Stop]] = {}
+    for s in stops:
+        key = s.name or s.display_name
+        clusters.setdefault(key, []).append(s)
+
     rows_html = ""
-    if stops:
-        rows: list[str] = []
-        for s in stops:
-            norm = s.stop_id.removeprefix("MTA_")
-            is_active = norm == active_stop_norm
-            cls = "stop-row active" if is_active else "stop-row"
-            radio = (
-                f'<input type="radio" name="nyc_bus_stop" '
-                f'value="{html.escape(s.stop_id)}" form="save-form"'
-                + (" checked" if is_active else "")
-                + ">"
+    if clusters:
+        cluster_html: list[str] = []
+        for name, group in clusters.items():
+            # Routes shown for the cluster header are the union of
+            # SIRI-enumerated routes across its stops, or the OBA
+            # `lines` fallback when SIRI was silent.
+            cluster_routes_set: set[str] = set()
+            for s in group:
+                live = siri_routes_by_stop.get(s.stop_id, ())
+                cluster_routes_set.update(live or s.lines)
+            cluster_routes = sorted(cluster_routes_set)
+
+            heading_routes = (
+                f'<span class="meta">{html.escape("/".join(cluster_routes))}</span>'
+                if cluster_routes else ""
             )
-            rows.append(f"""
-<label class="{cls}">
-  {radio}
-  <span class="name">{html.escape(s.display_name)}</span>
+            heading = f"""
+<div class="cluster-heading">
+  <strong>{html.escape(name)}</strong>
+  {heading_routes}
+</div>"""
+
+            direction_rows: list[str] = []
+            for s in group:
+                bare = s.stop_id.removeprefix("MTA_")
+                is_active = bare in saved_ids_norm
+                cls = "stop-row active" if is_active else "stop-row"
+                # Per-stop routes (SIRI ∪ OBA). When SIRI returned
+                # nothing for this stop, fall through to whatever
+                # OBA said (better than blank for off-peak stops).
+                live = siri_routes_by_stop.get(s.stop_id, ())
+                routes_here = live or s.lines
+                routes_label = (
+                    f' <span class="meta">{html.escape("/".join(routes_here))}</span>'
+                    if routes_here else ""
+                )
+                dir_label = s.direction_hint or "—"
+                # Each checkbox carries the stop_id + label as a
+                # data-* attribute so the JS sync handler below can
+                # rebuild the hidden `nyc_bus_stops` field's joined
+                # value on every change.
+                label_for_pipe = f"{name} {dir_label}".strip()
+                checkbox = (
+                    f'<input type="checkbox" class="bus-stop-pick" '
+                    f'data-stop-id="{html.escape(s.stop_id)}" '
+                    f'data-stop-label="{html.escape(label_for_pipe)}"'
+                    + (" checked" if is_active else "")
+                    + ">"
+                )
+                direction_rows.append(f"""
+<label class="{cls}" style="padding-left:1.6em">
+  {checkbox}
+  <span class="name">{html.escape(dir_label)}</span>
+  {routes_label}
   <span class="meta">{s.distance_mi:.2f}&nbsp;mi</span>
 </label>""")
-        rows_html = "\n".join(rows)
+            cluster_html.append(
+                heading + "\n" + "\n".join(direction_rows),
+            )
+        rows_html = "\n".join(cluster_html)
+
+    # Serialise saved picks into the same id|label,id|label format the
+    # form ships back. This is the initial value of the hidden input;
+    # the JS sync handler updates it on every checkbox change.
+    initial_picks_value = ",".join(
+        f"{sid}|{label}" if label else sid
+        for sid, label in saved_picks
+    )
 
     return f"""
 <section class="provider-card">
   <h2>{html.escape(provider.label)} {badge}</h2>
-  <p class="blurb">Pick the bus stop closest to home. Each stop is direction-specific — the eastbound and westbound stops on the same street have different IDs.</p>
+  <p class="blurb">Pick every bus stop near home you want included in &ldquo;next bus&rdquo; answers. Both directions at an intersection? Check both — the voice answer names each stop so you'll hear which is which.</p>
+  {external_notice_html}
   {error_html}
   {rows_html}
 
-  <label for="nyc_bus_routes">Routes to track (optional)</label>
-  <input id="nyc_bus_routes" name="nyc_bus_routes" type="text"
+  <input type="hidden" name="nyc_bus_stops" id="nyc-bus-stops-hidden"
          form="save-form"
-         placeholder="B35, B70"
-         value="{html.escape(active_routes)}">
-  <small>Comma- or space-separated. Leave blank to show all routes at the stop.</small>
+         value="{html.escape(initial_picks_value)}">
+  <script>
+    // Sync checkbox state into the hidden field on every change so a
+    // multi-select round-trips cleanly through the urlencoded form.
+    // The hidden value format matches `parse_bus_stops` in
+    // jasper/bus.py: "id|label,id|label".
+    (function() {{
+      var hidden = document.getElementById('nyc-bus-stops-hidden');
+      function sync() {{
+        var parts = [];
+        document.querySelectorAll('.bus-stop-pick:checked').forEach(function(cb) {{
+          var sid = cb.dataset.stopId || '';
+          var label = (cb.dataset.stopLabel || '').replace(/[|,]/g, ' ');
+          parts.push(label ? (sid + '|' + label) : sid);
+        }});
+        hidden.value = parts.join(',');
+      }}
+      document.querySelectorAll('.bus-stop-pick').forEach(function(cb) {{
+        cb.addEventListener('change', sync);
+      }});
+      sync();  // initial reconciliation
+    }})();
+  </script>
 
   <details style="margin-top: 1em">
     <summary style="cursor:pointer; color:#666; font-size:0.9em">Replace API key</summary>
+    {masked_key_html}
     <label for="nyc_bus_key">{html.escape(provider.credentials[0].label)}</label>
     <input id="nyc_bus_key" name="nyc_bus_key" type="password"
            form="save-form"
@@ -677,16 +862,16 @@ def _no_coverage_html() -> str:
 
 
 def _advanced_section_html(state: dict[str, str]) -> str:
-    """Manual stop IDs / lat-lon / routes. Sits behind a `<details>`
-    so the median user never sees it; power users + recovery from a
-    bad save path can use it without re-doing the address step."""
+    """Manual stop IDs / lat-lon. Sits behind a `<details>` so the
+    median user never sees it; power users + recovery from a bad
+    save path can use it without re-doing the address step."""
     lat, lon = "", ""
     coords = _coords(state)
     if coords is not None:
         lat = f"{coords[0]:.3f}"
         lon = f"{coords[1]:.3f}"
     sub_stop = _value_for(state, "JASPER_SUBWAY_STATION_ID")
-    bus_stop = _value_for(state, "JASPER_BUS_STOP_ID")
+    bus_stops_raw = _value_for(state, "JASPER_BUS_STOPS")
     return f"""
 <details class="advanced">
   <summary>Advanced — enter coordinates or stop IDs manually</summary>
@@ -712,12 +897,12 @@ def _advanced_section_html(state: dict[str, str]) -> str:
       <a href="https://data.ny.gov/Transportation/MTA-Subway-Stations/39hk-dx4f" target="_blank" rel="noopener">data.ny.gov</a>.
     </small>
 
-    <label for="adv_bus_stop">Bus stop ID</label>
-    <input id="adv_bus_stop" name="nyc_bus_stop" type="text"
+    <label for="adv_bus_stops">Bus stops</label>
+    <input id="adv_bus_stops" name="nyc_bus_stops" type="text"
            form="save-form"
-           placeholder="MTA_302680"
-           value="{html.escape(bus_stop)}">
-    <small>Accepts either <code>MTA_302680</code> or just <code>302680</code>. Find your stop ID on the BusTime bus-stop sign or at <a href="https://bustime.mta.info/" target="_blank" rel="noopener">bustime.mta.info</a>.</small>
+           placeholder="MTA_302680|4 Av/39 St eastbound,MTA_302682|4 Av/39 St westbound"
+           value="{html.escape(bus_stops_raw)}">
+    <small>Comma-separated list. Each entry is <code>id</code> or <code>id|label</code>. Accepts either <code>MTA_302680</code> or just <code>302680</code>. Find IDs on the BusTime bus-stop sign or at <a href="https://bustime.mta.info/" target="_blank" rel="noopener">bustime.mta.info</a>.</small>
   </div>
 </details>"""
 

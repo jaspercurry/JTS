@@ -150,11 +150,15 @@ when the configured AEC mic is present with 6-channel firmware — see
   routed by AirPlay title-match)
 - ✅ Transit setup wizard at `http://jts.local/transit/` — type your
   address, the page geocodes via OSM Nominatim, shows nearest subway
-  + bus stops, lets you pick. Modular over `jasper.transit.REGISTRY`
-  so future cities/modes (Berlin BVG, Citi Bike, …) are a single
-  new module under `jasper/transit/providers/`. NYC subway is
-  keyless; NYC bus requires a free MTA BusTime API key — that card
-  is locked until the user pastes one.
+  + bus stops, lets you pick. Multi-stop bus support — save both the
+  eastbound and westbound stops at your corner and "next bus" unions
+  arrivals across them. Subway "next train" returns every line at the
+  station including service-change reroutes (an N rerouted onto D
+  tracks at a D station appears in the same answer). Modular over
+  `jasper.transit.REGISTRY` so future cities/modes (Berlin BVG, Citi
+  Bike, …) are a single new module under `jasper/transit/providers/`.
+  NYC subway is keyless; NYC bus requires a free MTA BusTime API key —
+  that card is locked until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
   AirPlay / Bluetooth / Spotify Connect toggles. Bluetooth's off
   toggle prompts for confirmation when a paired wireless remote

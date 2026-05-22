@@ -4,36 +4,50 @@ from . import tool
 
 
 def make_bus_tools(bus):
-    """Build the bus-arrivals tool backed by a BusClient. Returns
-    an empty list when buses aren't configured for the speaker
-    (no API key, no stop id) — so the model never sees a tool whose
-    every call would fail."""
+    """Build the bus-arrivals tool backed by a BusClient. Returns an
+    empty list when buses aren't configured for the speaker (no API
+    key, no stops) — so the model never sees a tool whose every call
+    would fail."""
     if bus is None or not bus.enabled:
         return []
 
     @tool()
     async def get_bus_arrivals(route: str = "") -> dict:
-        """Return the next bus arrivals at the speaker's configured
-        bus stop.
+        """Return the next bus arrivals across the speaker's configured
+        bus stops, sorted by ETA, capped at 4 total.
 
         `route` is optional — a single short route name like 'B35',
-        'B70', 'M15'. Empty string returns all configured routes at
-        the stop (the default; for v1 the speaker has one stop with
-        multiple routes serving it).
+        'B70', 'M15'. Empty string returns every route at every
+        configured stop.
 
         Bare 'next bus' / 'when's the next bus' questions should pass
-        an empty string — the configured stop + route filter fill in.
+        an empty string. The tool unions arrivals across all saved
+        stops, so a user with both eastbound and westbound stops at
+        their corner gets both directions in one answer.
 
         Response shape:
-          {stop_id, arrivals: [
-            {route, destination, minutes_from_now,
-             presentable_distance, stops_from_call}, ...
-          ]}
+          {
+            stops_queried: ["302680", "302682"],
+            arrivals: [
+              {route, destination, minutes_from_now,
+               presentable_distance, stops_from_call,
+               stop_id, stop_label}, ...
+            ]
+          }
+          Each arrival carries its own `stop_label` so the voice
+          answer can say which stop each bus is at — important when
+          the user has opposing-direction stops saved at the same
+          intersection.
 
         Voice answer style:
-          'Next B35 in 5 minutes, B70 in 8.'
-          'Next bus is the B35, approaching now.'
-          'Next bus in 3 minutes — that's the B35, 1 stop away.'
+          'B35 westbound in 4 minutes at 4 Av/39 St, B70 eastbound in 7.'
+          'Next bus is the B35, approaching now at 4 Av/39 St eastbound.'
+          'B35 in 3 minutes (1 stop away).'  (single stop, no ambiguity)
+
+        Name the stop_label inline when multiple stops are configured
+        OR when arrivals from different stops appear in one response;
+        skip it when only one stop is queried OR the user's question
+        already pins the stop.
 
         The `presentable_distance` field is the MTA's NYC-specific
         format ('approaching', '1 stop away', '0.7 miles away'). For
@@ -51,7 +65,7 @@ def make_bus_tools(bus):
         the user knows what to clarify."""
         arrivals = await bus.get_arrivals(route)
         return {
-            "stop_id": bus.stop_id,
+            "stops_queried": list(bus.stop_ids),
             "arrivals": [a.as_dict() for a in arrivals],
         }
 

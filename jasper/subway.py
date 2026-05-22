@@ -3,16 +3,46 @@
 Two data paths, primary + fallback:
 
 1. **Subway Now** (api.subwaynow.app) — third-party server (open source as
-   blahblahblah-/goodservice-v2) that polls MTA's GTFS-RT every 15s and
-   computes ETAs from observed segment travel times rather than the
-   schedule-based arrivals MTA publishes. This is what Tidbyt uses; it
-   produces noticeably more accurate countdowns on B-Division (B/D/F/M/N/Q/R)
-   where MTA's own data is fixed-block-coarse.
+   blahblahblah-/subwaynow-server) that polls all 7 MTA GTFS-RT feeds
+   every 15s and writes a station-keyed `routes_stop_at` index server-
+   side. **One call returns every train at the station regardless of
+   which feed group it came from** — including trains rerouted off
+   their normal line during service changes (an N running on D tracks
+   stays in the NQRW feed; Subway Now indexes it under the D station's
+   stop_id anyway). This is what Tidbyt's goodservice app and HA's MTA
+   integration both use; see prior-art research at v2 review time.
 
 2. **nyct-gtfs direct** (api-endpoint.mta.info GTFS-RT protobuf) —
-   self-contained fallback used when Subway Now is slow/down. No API key.
-   Same data Tidbyt would otherwise have access to, just without the
-   smoothing.
+   self-contained fallback used when Subway Now is slow/down. **Route-
+   keyed at the library layer** — each `NYCTFeed(line)` loads one of
+   MTA's 7 line-group feeds, and queries are filtered by that feed
+   group. We poll each unique feed for the station's CSV-documented
+   lines and union. **Reroutes are not visible on this path** — an N
+   at a D station would live in NQRW, which we wouldn't poll for a
+   D-only station. Acceptable degradation: Subway Now is the primary
+   for a reason, and reroutes are a rare overlap with Subway-Now
+   outages.
+
+Response shape (both paths):
+
+  {
+    "station": str,
+    "directions_queried": ["N"] / ["S"] / ["N", "S"],
+    "arrivals": [
+      {
+        "line": "D",
+        "direction": "N",
+        "direction_label": "Manhattan",
+        "minutes_from_now": 3,
+      },
+      ...
+    ],
+    "source": "subwaynow" | "nyct-gtfs",
+  }
+
+Arrivals are sorted by ETA ascending, capped at 4. The voice model
+weaves them into a response naming line + direction per train so
+the user knows which is which.
 
 Layered features common to both paths:
 - 20-second in-memory cache to avoid re-polling on rapid voice queries.
@@ -57,6 +87,11 @@ _BASE_ALIASES: dict[str, str] = {
 
 STALE_AFTER_SEC = 120
 CACHE_WINDOW_SEC = 20
+
+# How many arrivals to cap the response at, across both directions.
+# Picked to fit a one-sentence voice answer ("D Manhattan in 3, N
+# Manhattan in 7, D Coney in 5, N Coney in 12") without dragging.
+ARRIVAL_LIMIT = 4
 
 # Subway Now (Tidbyt's data source).
 SUBWAYNOW_URL = "https://api.subwaynow.app/stops/{stop_id}"
@@ -154,31 +189,26 @@ def feed_url_for_line(line: str) -> str | None:
     return f"{base}-{suffix}" if suffix else base
 
 
-def arrivals_in_minutes(
-    arrival_times: list[datetime],
-    now: datetime,
-    limit: int = 3,
-) -> list[int]:
-    """Convert a list of arrival timestamps into 'minutes from now',
-    keeping only future arrivals, rounded, sorted, capped at `limit`."""
-    out = []
-    for t in arrival_times:
-        delta = (t - now).total_seconds()
-        if delta <= 0:
-            continue
-        out.append(round(delta / 60))
-    out.sort()
-    return out[:limit]
-
-
 class SubwayClient:
-    """Subway Now (primary) + nyct-gtfs (fallback) subway arrivals."""
+    """Subway Now (primary) + nyct-gtfs (fallback) subway arrivals.
+
+    Direction handling:
+      - `direction="both"` or `""` with no configured default → both N+S
+      - `direction="uptown"` / `"north"` / station-specific label → N
+      - `direction="downtown"` / `"south"` / station-specific label → S
+      - `direction=""` with a configured default → use the default
+
+    Line handling:
+      - `line=""` → all lines stopping at the station (Subway Now path
+        sees reroutes; nyct-gtfs fallback covers the station's
+        CSV-documented lines only)
+      - `line="D"` → filter to that line post-fetch
+    """
 
     def __init__(
         self,
         station_id: str,
-        default_direction: str = "uptown",
-        configured_lines: list[str] | None = None,
+        default_direction: str = "",
         feed_factory=None,                  # injectable; defaults to nyct_gtfs.NYCTFeed
         http_get=None,                      # injectable; defaults to httpx.get
         clock=None,                         # injectable; defaults to datetime.now
@@ -187,11 +217,9 @@ class SubwayClient:
         self._station_id = station_id
         self._station = self._stations.get(station_id)
         self._aliases = _build_aliases(self._station)
+        # Empty string → "both directions" — the wizard's "Both" radio
+        # writes an empty env value for exactly this case.
         self._default_direction = default_direction
-        self._lines = (
-            tuple(configured_lines) if configured_lines
-            else (self._station.lines if self._station else ())
-        )
         self._feed_factory = feed_factory
         self._http_get = http_get or self._default_http_get
         self._clock = clock or (lambda: datetime.now())
@@ -208,25 +236,27 @@ class SubwayClient:
     def _default_http_get(url: str, params: dict) -> httpx.Response:
         return httpx.get(url, params=params, timeout=SUBWAYNOW_TIMEOUT)
 
-    def get_arrivals(self, line: str, direction: str = "") -> dict:
-        """Return next arrivals for `line` in `direction` from the
-        configured station. Tries Subway Now first; falls back to nyct-gtfs
-        on any failure or unparseable response. Returns {error: ...} if
-        validation fails or both paths are unavailable."""
+    def get_arrivals(self, line: str = "", direction: str = "") -> dict:
+        """Return next arrivals at the configured station.
+
+        Defaults: line="" → all lines, direction="" → the configured
+        default (or both if no default). Both default to "all" to
+        match the user's natural "next train" question."""
         validated = self._validate(line, direction)
         if "error" in validated:
             return validated
-        line = validated["line"]
-        ns = validated["ns"]
+        line_filter: str = validated["line"]
+        directions: list[str] = validated["directions"]
 
-        result = self._arrivals_via_subwaynow(line, ns)
-        if result is not None:
-            return self._wrap(line, ns, result, source="subwaynow")
-
-        result = self._arrivals_via_nyct_gtfs(line, ns)
-        if result is None:
+        arrivals = self._arrivals_via_subwaynow(directions, line_filter)
+        source = "subwaynow"
+        if arrivals is None:
+            arrivals = self._arrivals_via_nyct_gtfs(directions, line_filter)
+            source = "nyct-gtfs"
+        if arrivals is None:
             return {"error": "couldn't reach MTA data sources"}
-        return self._wrap(line, ns, result, source="nyct-gtfs")
+
+        return self._wrap(arrivals, directions, source)
 
     def _validate(self, line: str, direction: str) -> dict:
         if self._station is None:
@@ -237,58 +267,65 @@ class SubwayClient:
                 ),
             }
         line = (line or "").strip().upper()
-        if not line:
-            # Empty line → default to the single configured line, if there
-            # is only one. At a multi-line station we can't safely guess.
-            if len(self._lines) == 1:
-                line = self._lines[0]
-            else:
-                served = ", ".join(self._lines) or "(none configured)"
+        if line and line not in LINE_TO_FEED:
+            return {"error": f"unknown subway line: {line}"}
+
+        dir_text = (direction or "").strip().lower()
+        if dir_text == "both":
+            directions = ["N", "S"]
+        elif dir_text:
+            ns = normalise_direction(dir_text, self._aliases)
+            if ns is None:
                 return {
                     "error": (
-                        f"which line? {self.station_name} serves: {served}"
+                        f"didn't recognise direction '{direction}'. Try "
+                        "'uptown', 'downtown', 'both', or one of: "
+                        f"{self._station.north_label}, {self._station.south_label}."
                     ),
                 }
-        if line not in LINE_TO_FEED:
-            return {"error": f"unknown subway line: {line}"}
-        if self._lines and line not in self._lines:
-            return {
-                "error": (
-                    f"the {line} train doesn't stop at {self.station_name} — "
-                    f"served lines: {', '.join(self._lines)}"
-                ),
-            }
-        direction_text = direction or self._default_direction
-        ns = normalise_direction(direction_text, self._aliases)
-        if ns is None:
-            return {
-                "error": (
-                    f"didn't recognise direction '{direction_text}'. Try "
-                    "'uptown', 'downtown', or one of: "
-                    f"{self._station.north_label}, {self._station.south_label}."
-                ),
-            }
-        return {"line": line, "ns": ns}
+            directions = [ns]
+        else:
+            # Empty direction → use configured default. Configured
+            # default empty (or 'both') → both directions.
+            configured = (self._default_direction or "").strip().lower()
+            if not configured or configured == "both":
+                directions = ["N", "S"]
+            else:
+                ns = normalise_direction(configured, self._aliases)
+                directions = [ns] if ns else ["N", "S"]
 
-    def _wrap(self, line: str, ns: str, minutes: list[int], source: str) -> dict:
-        direction_label = (
-            self._station.north_label if ns == "N" else self._station.south_label
-        )
+        return {"line": line, "directions": directions}
+
+    def _direction_label(self, ns: str) -> str:
+        if self._station is None:
+            return ns
+        return self._station.north_label if ns == "N" else self._station.south_label
+
+    def _wrap(
+        self,
+        arrivals: list[dict],
+        directions: list[str],
+        source: str,
+    ) -> dict:
         return {
-            "line": line,
-            "direction": ns,
-            "direction_label": direction_label,
             "station": self.station_name,
-            "next_arrivals_minutes": minutes,
+            "directions_queried": directions,
+            "arrivals": arrivals,
             "source": source,
         }
 
     # --- Subway Now path ------------------------------------------------
 
-    def _arrivals_via_subwaynow(self, line: str, ns: str) -> list[int] | None:
-        """Try the Subway Now API. Returns a list of minutes-from-now (may
-        be empty == "no upcoming trains"), or None to signal "couldn't get
-        an answer here, try the next path."""
+    def _arrivals_via_subwaynow(
+        self,
+        directions: list[str],
+        line_filter: str,
+    ) -> list[dict] | None:
+        """Try the Subway Now API. Returns a list of arrival dicts
+        (may be empty == "no upcoming trains") or None to signal
+        "couldn't get an answer here, try the next path." Subway Now's
+        station endpoint already aggregates across all 7 MTA feeds —
+        we just iterate, optionally line-filter, and shape."""
         try:
             data = self._fetch_subwaynow_cached(self._station_id)
         except Exception as e:  # noqa: BLE001
@@ -297,7 +334,7 @@ class SubwayClient:
         if not isinstance(data, dict):
             return None
         try:
-            return self._extract_subwaynow(data, line, ns)
+            return self._extract_subwaynow(data, directions, line_filter)
         except (KeyError, TypeError, ValueError) as e:
             logger.info("subwaynow parse failed (will fall back): %s", e)
             return None
@@ -314,73 +351,157 @@ class SubwayClient:
         self._sn_cache[stop_id] = (data, now_mono)
         return data
 
-    @staticmethod
-    def _extract_subwaynow(data: dict, line: str, ns: str) -> list[int]:
-        """Return the next arrivals (in minutes from the response's
-        server-side timestamp, not the local clock — avoids client clock
-        skew). Mirrors the extraction logic in tidbyt/community
-        goodservice.star: prefer the realtime-extrapolated
-        `estimated_current_stop_arrival_time`, computed against the
-        top-level `timestamp`."""
+    def _extract_subwaynow(
+        self,
+        data: dict,
+        directions: list[str],
+        line_filter: str,
+    ) -> list[dict]:
+        """Iterate `upcoming_trips.{north,south}` for each requested
+        direction. Each trip carries its own `route_id` already — no
+        client-side line filtering against a configured allow-list
+        (that was the v1 mistake that hid reroutes). Optional explicit
+        `line_filter` from the tool call narrows post-fetch."""
         ref_ts = int(data["timestamp"])
-        bucket = "north" if ns == "N" else "south"
-        trips = (data.get("upcoming_trips") or {}).get(bucket) or []
-        minutes: list[int] = []
-        for trip in trips:
-            if (trip.get("route_id") or "").upper() != line:
-                continue
-            eta = trip.get("estimated_current_stop_arrival_time")
-            if eta is None:
-                eta = trip.get("current_stop_arrival_time")
-            if eta is None:
-                continue
-            delta = int(float(eta) - ref_ts)
-            if delta <= 0:
-                continue
-            minutes.append(round(delta / 60))
-        minutes.sort()
-        return minutes[:3]
+        arrivals: list[dict] = []
+        for ns in directions:
+            bucket = "north" if ns == "N" else "south"
+            trips = (data.get("upcoming_trips") or {}).get(bucket) or []
+            direction_label = self._direction_label(ns)
+            for trip in trips:
+                route = (trip.get("route_id") or "").strip().upper()
+                if not route:
+                    continue
+                if line_filter and route != line_filter:
+                    continue
+                eta = trip.get("estimated_current_stop_arrival_time")
+                if eta is None:
+                    eta = trip.get("current_stop_arrival_time")
+                if eta is None:
+                    continue
+                delta = int(float(eta) - ref_ts)
+                if delta <= 0:
+                    continue
+                arrivals.append({
+                    "line": route,
+                    "direction": ns,
+                    "direction_label": direction_label,
+                    "minutes_from_now": round(delta / 60),
+                })
+        arrivals.sort(key=lambda a: a["minutes_from_now"])
+        return arrivals[:ARRIVAL_LIMIT]
 
     # --- nyct-gtfs fallback ---------------------------------------------
 
-    def _arrivals_via_nyct_gtfs(self, line: str, ns: str) -> list[int] | None:
-        """Fallback. Returns a list of minutes-from-now, or None if the
-        feed is unreachable / stale / errors out."""
-        platform_id = f"{self._station_id}{ns}"
-        try:
-            feed = self._get_feed(line)
-        except Exception as e:  # noqa: BLE001
-            logger.info("nyct-gtfs feed unreachable: %s", e)
+    def _arrivals_via_nyct_gtfs(
+        self,
+        directions: list[str],
+        line_filter: str,
+    ) -> list[dict] | None:
+        """Fallback. Iterates the station's CSV-documented lines (or
+        just `line_filter` if set), loads each unique feed, filters by
+        platform_id. Reroutes from other lines are NOT visible — that's
+        the documented cost of falling back to per-feed polling.
+
+        Returns a list of arrival dicts, or None if every feed was
+        unreachable (signalling complete failure)."""
+        if self._station is None:
             return None
 
-        last_gen = getattr(feed, "last_generated", None)
+        # Which lines to poll? Explicit filter wins; otherwise the
+        # station's CSV-documented lines.
+        if line_filter:
+            lines_to_poll: tuple[str, ...] = (line_filter,)
+        else:
+            lines_to_poll = self._station.lines
+        if not lines_to_poll:
+            return []
+
+        # Deduplicate by feed group so we don't load BDFM twice for a
+        # D+F station. The representative line per group is just the
+        # one we'll hand the feed factory; the factory itself maps
+        # line → feed group internally.
+        feeds_to_load: dict[str, str] = {}
+        for line in lines_to_poll:
+            group = LINE_TO_FEED.get(line)
+            if group is None:
+                continue
+            feeds_to_load[group] = line
+
         now = self._clock()
-        if last_gen is not None:
-            try:
-                age = (now - last_gen).total_seconds()
-                if age > STALE_AFTER_SEC:
-                    logger.info("nyct-gtfs feed stale (%ds)", int(age))
-                    return None
-            except TypeError:
-                pass
+        arrivals: list[dict] = []
+        any_feed_succeeded = False
 
-        try:
-            trips = feed.filter_trips(
-                line_id=line, headed_for_stop_id=platform_id, underway=True,
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.info("nyct-gtfs filter failed: %s", e)
+        for group, representative_line in feeds_to_load.items():
+            try:
+                feed = self._get_feed(representative_line)
+            except Exception as e:  # noqa: BLE001
+                logger.info(
+                    "nyct-gtfs feed unreachable (%s group): %s",
+                    representative_line, e,
+                )
+                continue
+
+            last_gen = getattr(feed, "last_generated", None)
+            if last_gen is not None:
+                try:
+                    age = (now - last_gen).total_seconds()
+                    if age > STALE_AFTER_SEC:
+                        logger.info(
+                            "nyct-gtfs feed stale (%ds) for %s group",
+                            int(age), representative_line,
+                        )
+                        continue
+                except TypeError:
+                    pass
+
+            any_feed_succeeded = True
+
+            # Within the feed, query each line in the group that we
+            # care about, for each direction.
+            for line in lines_to_poll:
+                if LINE_TO_FEED.get(line) != group:
+                    continue
+                for ns in directions:
+                    platform_id = f"{self._station_id}{ns}"
+                    direction_label = self._direction_label(ns)
+                    try:
+                        trips = feed.filter_trips(
+                            line_id=line,
+                            headed_for_stop_id=platform_id,
+                            underway=True,
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.info("nyct-gtfs filter failed: %s", e)
+                        continue
+                    for trip in trips:
+                        for stu in getattr(trip, "stop_time_updates", []) or []:
+                            if getattr(stu, "stop_id", None) != platform_id:
+                                continue
+                            ts = (
+                                getattr(stu, "arrival", None)
+                                or getattr(stu, "departure", None)
+                            )
+                            if ts is None:
+                                continue
+                            try:
+                                delta = (ts - now).total_seconds()
+                            except TypeError:
+                                continue
+                            if delta <= 0:
+                                continue
+                            arrivals.append({
+                                "line": line,
+                                "direction": ns,
+                                "direction_label": direction_label,
+                                "minutes_from_now": round(delta / 60),
+                            })
+
+        if not any_feed_succeeded:
             return None
 
-        arrival_times: list[datetime] = []
-        for trip in trips:
-            for stu in getattr(trip, "stop_time_updates", []) or []:
-                if getattr(stu, "stop_id", None) != platform_id:
-                    continue
-                ts = getattr(stu, "arrival", None) or getattr(stu, "departure", None)
-                if ts is not None:
-                    arrival_times.append(ts)
-        return arrivals_in_minutes(arrival_times, now)
+        arrivals.sort(key=lambda a: a["minutes_from_now"])
+        return arrivals[:ARRIVAL_LIMIT]
 
     def _get_feed(self, line: str):
         now_mono = time.monotonic()

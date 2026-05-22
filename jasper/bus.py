@@ -2,20 +2,28 @@
 
 One source of truth, no fallback (unlike subway, which has both
 Subway Now and nyct-gtfs). The MTA's BusTime is the canonical
-authority for bus ETAs — it's what their own bus-prediction signs
-use and what every NYC bus app pulls from. No third-party
-alternative offers more useful data.
+authority for bus ETAs — what their own bus-prediction signs use
+and what every NYC bus app pulls from.
 
-API endpoint:
+**v2 — multi-stop fan-out.** The client holds a list of configured
+stops (typically opposing-direction stops at the same intersection).
+Every `get_arrivals` call fans out to all stops in parallel and
+unions the results, sorted by ETA and capped at a limit. Each
+arrival carries its own `stop_id` + `stop_label` so the voice model
+can say which stop each bus is at:
+
+    "B35 westbound in 4 minutes at 4 Av/39 St, B70 eastbound in 7."
+
+API endpoint per stop:
   https://bustime-classic.mta.info/api/siri/stop-monitoring.json
     ?key=<MTA_BUSTIME_KEY>
     &MonitoringRef=<numeric-stop-id, e.g. 302680>
     &OperatorRef=MTA
 
-Free, requires API key (signup at bustime.mta.info/wiki/Developers/Index,
-~30 min manual approval). No published rate limits but reasonable
-use expected. 20-second in-process cache here keeps us well under
-any plausible ceiling for voice-rate queries.
+SIRI is single-`MonitoringRef` per call (no batch endpoint exists
+per MTA's BusTime wiki); fan-out is intrinsic when configuring
+multiple stops. Per-stop caches stay independent so a fast user
+re-query for a different stop doesn't bust the others.
 
 Response surface (the bits we use, paraphrased):
 
@@ -23,23 +31,16 @@ Response surface (the bits we use, paraphrased):
     .MonitoredVehicleJourney
       .PublishedLineName        ("B35" / "B70" / etc.)
       .DestinationName          ("BROWNSVILLE M GASTON via CHURCH")
-      .DirectionRef             ("0" or "1")
       .MonitoredCall
         .ExpectedArrivalTime    ISO 8601 wall-clock
         .Extensions.Distances
-          .PresentableDistance  ("approaching" / "1 stop away" /
-                                 "0.7 miles away" /
-                                 "1.5 miles, 4 stops away")
+          .PresentableDistance  ("approaching" / "1 stop away" / ...)
           .StopsFromCall        numeric stops away
           .DistanceFromCall     metres away
-
-The PresentableDistance is the NYC-specific format that gives users
-genuinely useful info — "approaching" matters more than "arriving in
-1 min" in practice. We pass it through so the voice answer can pick
-the friendlier framing.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass
@@ -66,15 +67,21 @@ CACHE_WINDOW_SEC = 20
 # include one that already left). 30 s of slack absorbs clock skew.
 PAST_GRACE_SEC = 30
 
+# Default voice-answer cap. Picked to match subway's ARRIVAL_LIMIT
+# and to fit a one-sentence response without dragging.
+DEFAULT_LIMIT = 4
+
 
 @dataclass
 class BusArrival:
-    """One upcoming bus visit at the configured stop."""
+    """One upcoming bus visit at one of the configured stops."""
     route: str                  # "B35", "B70" — short name, voice-friendly
     destination: str            # raw DestinationName from MTA
     minutes_from_now: int       # rounded, never negative
     presentable_distance: str   # "approaching" / "0.7 miles away" / etc.
     stops_from_call: int | None  # numeric stops away if available
+    stop_id: str                # bare numeric (no MTA_ prefix)
+    stop_label: str             # e.g., "4 Av/39 St eastbound"
 
     def as_dict(self) -> dict:
         return {
@@ -83,98 +90,146 @@ class BusArrival:
             "minutes_from_now": self.minutes_from_now,
             "presentable_distance": self.presentable_distance,
             "stops_from_call": self.stops_from_call,
+            "stop_id": self.stop_id,
+            "stop_label": self.stop_label,
         }
 
 
-class BusClient:
-    """MTA BusTime SIRI arrivals at the speaker's configured bus stop.
+def parse_bus_stops(raw: str) -> list[tuple[str, str]]:
+    """Parse the JASPER_BUS_STOPS env var into a list of (stop_id, label).
 
-    Stateless-ish — owns an httpx.AsyncClient and a small per-stop
-    cache. The stop ID is set at construction (one stop per speaker
-    for v1; future versions can configure multiple stops once the
-    /buses wizard lands)."""
+    Each stop is `id|label`; stops are comma-separated. Labels are
+    optional (a bare id is fine). Empty entries and whitespace are
+    tolerated. MTA stop names don't contain `|` or `,` so this is
+    safe; the wizard sanitises labels on save just in case.
+
+    Examples:
+        "MTA_302680|4 Av/39 St eastbound,MTA_302682|4 Av/39 St westbound"
+        "MTA_302680,MTA_302682"          # no labels
+        "MTA_302680|4 Av/39 St"          # one stop with label
+    """
+    out: list[tuple[str, str]] = []
+    for token in (raw or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        if "|" in token:
+            sid, _, label = token.partition("|")
+            out.append((sid.strip(), label.strip()))
+        else:
+            out.append((token, ""))
+    return out
+
+
+class BusClient:
+    """SIRI arrivals across one or more configured bus stops.
+
+    Holds a flat list of stops; every query fans out in parallel,
+    unions, sorts by ETA, caps at `limit`. Tests inject `http` (an
+    `httpx.AsyncClient` wired to MockTransport) and `clock` (for
+    deterministic ETA→minutes math)."""
 
     def __init__(
         self,
-        stop_id: str,
+        stop_ids: list[str],
         api_key: str,
-        configured_routes: list[str] | None = None,
+        stop_labels: dict[str, str] | None = None,
         http: httpx.AsyncClient | None = None,
         clock=None,
     ) -> None:
-        # Stop IDs in OneBusAway have an "MTA_" prefix (e.g. "MTA_302680")
-        # but the SIRI MonitoringRef wants the bare numeric ("302680").
-        # Accept both forms in config — strip the prefix here so the
-        # operator can paste either.
-        self._stop_id = stop_id.removeprefix("MTA_") if stop_id else ""
+        # Normalise stop IDs: strip the OBA "MTA_" prefix that SIRI
+        # doesn't accept on the MonitoringRef. Accept either form in
+        # config so users can paste IDs they see in OBA responses or
+        # on physical bus-stop signs.
+        normalised: list[str] = []
+        for sid in stop_ids or []:
+            s = (sid or "").strip().removeprefix("MTA_")
+            if s:
+                normalised.append(s)
+        self._stop_ids: tuple[str, ...] = tuple(normalised)
+        # Stop labels are keyed by the NORMALISED id so callers can
+        # look them up regardless of whether they pass MTA_ or bare.
+        self._stop_labels: dict[str, str] = {
+            (k or "").strip().removeprefix("MTA_"): (v or "").strip()
+            for k, v in (stop_labels or {}).items()
+        }
         self._api_key = api_key
-        self._configured_routes = (
-            tuple(r.strip().upper() for r in configured_routes if r.strip())
-            if configured_routes else ()
-        )
         self._http = http or httpx.AsyncClient(timeout=BUSTIME_TIMEOUT)
         self._owns_http = http is None
         self._clock = clock or (lambda: datetime.now().astimezone())
-        # (timestamp_monotonic, list[BusArrival])
-        self._cache: tuple[float, list[BusArrival]] | None = None
+        # Per-stop cache: stop_id (normalised) -> (mono_ts, list[BusArrival]).
+        self._cache: dict[str, tuple[float, list[BusArrival]]] = {}
 
     async def aclose(self) -> None:
         if self._owns_http:
             await self._http.aclose()
 
     @property
-    def stop_id(self) -> str:
-        """The normalized numeric stop id (no ``MTA_`` prefix). Read-only
-        accessor for consumers (e.g. the bus tool) that want to surface
-        the configured stop in their response."""
-        return self._stop_id
+    def stop_ids(self) -> tuple[str, ...]:
+        """Normalised stop ids the client polls. Read-only accessor for
+        consumers (e.g. the bus tool) that want to surface configured
+        stops in their response."""
+        return self._stop_ids
 
     @property
     def enabled(self) -> bool:
-        return bool(self._stop_id and self._api_key)
+        return bool(self._stop_ids and self._api_key)
+
+    def label_for(self, stop_id: str) -> str:
+        """Human label for a stop id (bare or MTA_-prefixed). Falls
+        back to the bare id when no label was configured."""
+        bare = (stop_id or "").strip().removeprefix("MTA_")
+        return self._stop_labels.get(bare) or bare
 
     async def get_arrivals(
-        self, route: str = "", limit: int = 4,
+        self, route: str = "", limit: int = DEFAULT_LIMIT,
     ) -> list[BusArrival]:
-        """Return upcoming arrivals at the configured stop.
+        """Return upcoming arrivals across all configured stops, sorted
+        by ETA ascending, capped at `limit`.
 
-        `route` (optional): filter to a single short route name
-        (e.g. "B35"). Empty string returns all configured routes.
-
-        `limit`: maximum number of arrivals to return after filtering.
-        4 is enough for "next few" answers without dragging the
-        spoken response."""
+        `route` (optional): filter to a single short name like 'B35'.
+        Empty string returns every route at every stop. v1 had a
+        global `configured_routes` allow-list; that's gone — pick
+        direction-specific stops (which are already route-shaped)
+        and lean on the post-fetch `route` arg for ad-hoc filtering."""
         if not self.enabled:
             return []
 
-        now_mono = time.monotonic()
-        # Cache check
-        if self._cache is not None:
-            cached_at, cached = self._cache
-            if now_mono - cached_at < CACHE_WINDOW_SEC:
-                arrivals = cached
-            else:
-                arrivals = await self._fetch_and_parse()
-                self._cache = (now_mono, arrivals)
-        else:
-            arrivals = await self._fetch_and_parse()
-            self._cache = (now_mono, arrivals)
+        # Fan out in parallel. asyncio.gather preserves order but we
+        # don't depend on it — flat-extend handles whatever ordering.
+        tasks = [
+            self._fetch_for_stop_cached(sid) for sid in self._stop_ids
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter
-        target = route.strip().upper() if route else ""
-        if target:
+        arrivals: list[BusArrival] = []
+        for r in results:
+            if isinstance(r, BaseException):
+                # Per-stop failure shouldn't kill the others; we logged
+                # the cause inside _fetch_for_stop already.
+                continue
+            arrivals.extend(r)
+
+        if route:
+            target = route.strip().upper()
             arrivals = [a for a in arrivals if a.route.upper() == target]
-        elif self._configured_routes:
-            arrivals = [
-                a for a in arrivals
-                if a.route.upper() in self._configured_routes
-            ]
+
+        arrivals.sort(key=lambda a: a.minutes_from_now)
         return arrivals[:limit]
 
-    async def _fetch_and_parse(self) -> list[BusArrival]:
+    async def _fetch_for_stop_cached(self, stop_id: str) -> list[BusArrival]:
+        now_mono = time.monotonic()
+        cached = self._cache.get(stop_id)
+        if cached is not None and now_mono - cached[0] < CACHE_WINDOW_SEC:
+            return cached[1]
+        arrivals = await self._fetch_for_stop(stop_id)
+        self._cache[stop_id] = (now_mono, arrivals)
+        return arrivals
+
+    async def _fetch_for_stop(self, stop_id: str) -> list[BusArrival]:
         params = {
             "key": self._api_key,
-            "MonitoringRef": self._stop_id,
+            "MonitoringRef": stop_id,
             "OperatorRef": "MTA",
         }
         headers = {"User-Agent": BUSTIME_AGENT}
@@ -183,19 +238,23 @@ class BusClient:
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
-            logger.warning("bus: BusTime fetch failed: %r", e)
+            logger.warning("bus: BusTime fetch failed for %s: %r", stop_id, e)
             return []
         except Exception as e:  # noqa: BLE001
-            logger.warning("bus: BusTime JSON parse failed: %r", e)
+            logger.warning("bus: BusTime JSON parse failed for %s: %r", stop_id, e)
             return []
 
+        return self._parse_siri(data, stop_id)
+
+    def _parse_siri(self, data: dict, stop_id: str) -> list[BusArrival]:
         sd = (
-            data.get("Siri", {})
+            (data or {}).get("Siri", {})
             .get("ServiceDelivery", {})
             .get("StopMonitoringDelivery") or [{}]
         )[0]
         visits = sd.get("MonitoredStopVisit") or []
         now = self._clock()
+        label = self.label_for(stop_id)
         out: list[BusArrival] = []
         for v in visits:
             journey = v.get("MonitoredVehicleJourney") or {}
@@ -218,7 +277,10 @@ class BusClient:
                 minutes_from_now=mins,
                 presentable_distance=str(ext.get("PresentableDistance") or ""),
                 stops_from_call=ext.get("StopsFromCall"),
+                stop_id=stop_id,
+                stop_label=label,
             ))
-        # Sort by arrival time
+        # Sort within the per-stop result so each cache entry is
+        # already in ETA order; the outer union resorts after merging.
         out.sort(key=lambda a: a.minutes_from_now)
         return out

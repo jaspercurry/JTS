@@ -77,6 +77,12 @@ class Stop:
     distance_mi: float
     lines: tuple[str, ...] = field(default_factory=tuple)
     direction_hint: str = ""
+    # Raw name field as the provider's source reports it (e.g.
+    # "4 AV/39 ST"). Used by the wizard to cluster opposing-direction
+    # stops at the same intersection — MTA gives both sides the same
+    # name and disambiguates via `direction_hint`. Empty string =
+    # provider doesn't expose a name (defaults to `display_name`).
+    name: str = ""
 
 
 class TransitError(Exception):

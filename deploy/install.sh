@@ -622,45 +622,53 @@ PY
 }
 
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
-# wizard-owned /var/lib/jasper/transit.env. The wizard at /transit owns
-# every JASPER_SUBWAY_*, JASPER_BUS_*, and JASPER_MTA_BUSTIME_KEY variable;
-# operators who pasted those into jasper.env on an older install (pre-
-# wizard) get them moved automatically. Mirrors migrate_voice_provider
-# exactly — same idempotency, same safety on fresh installs.
+# wizard-owned /var/lib/jasper/transit.env, AND convert v1 schema to
+# v2 schema along the way. The wizard at /transit owns every transit
+# env variable; operators who pasted those into jasper.env on an older
+# install (pre-wizard) get them moved automatically.
+#
+# v1 → v2 schema deltas:
+#  - JASPER_BUS_STOP_ID (singular) → JASPER_BUS_STOPS (comma list with
+#    optional embedded labels). Migration carries the single ID into a
+#    one-element list with no label.
+#  - JASPER_BUS_ROUTES (positive route filter) → removed. v2 has no
+#    per-tool global route filter; the user picks direction-specific
+#    stops which are already route-shaped.
+#  - JASPER_SUBWAY_LINES (positive line filter) → removed. v2 returns
+#    every line at the station by default, surfacing reroutes too.
+#
+# Idempotent. Safe on fresh installs (no-op) and on long-lived ones
+# (sweeps any residue).
 migrate_transit_config() {
     local jasper_env="${ENV_DIR}/jasper.env"
     local wizard_env="${STATE_DIR}/transit.env"
-    local keys=(
+
+    # Keys preserved by v2 — moved into the wizard file as-is.
+    local keep_keys=(
         JASPER_SUBWAY_STATION_ID
         JASPER_SUBWAY_DEFAULT_DIRECTION
-        JASPER_SUBWAY_LINES
         JASPER_MTA_BUSTIME_KEY
-        JASPER_BUS_STOP_ID
+    )
+    # Keys removed in v2 — swept from both files.
+    local drop_keys=(
+        JASPER_SUBWAY_LINES
         JASPER_BUS_ROUTES
     )
 
-    [[ -f "${jasper_env}" ]] || return 0
-
-    # Bail early if jasper.env has none of these — common case for
-    # fresh installs and for already-migrated long-lived installs.
-    local any=0
-    local k
-    for k in "${keys[@]}"; do
-        if grep -qE "^${k}=" "${jasper_env}"; then any=1; break; fi
-    done
-    [[ "${any}" -eq 0 ]] && return 0
+    [[ -f "${jasper_env}" ]] || true
 
     install -d -m 0750 "${STATE_DIR}"
 
-    for k in "${keys[@]}"; do
-        local line stale_value
+    # Move preserved keys.
+    local k line stale_value
+    for k in "${keep_keys[@]}"; do
+        [[ -f "${jasper_env}" ]] || break
         line=$(grep -E "^${k}=" "${jasper_env}" || true)
         [[ -z "${line}" ]] && continue
         stale_value="${line#${k}=}"
         stale_value="${stale_value%[$'\r\n ']*}"
 
         if [[ -f "${wizard_env}" ]] && grep -qE "^${k}=" "${wizard_env}"; then
-            # Wizard file already canonical; just clean up jasper.env.
             sed -i.bak "/^${k}=/d" "${jasper_env}"
             rm -f "${jasper_env}.bak"
             echo "  migrate_transit_config: removed stale ${k} line from ${jasper_env}"
@@ -676,6 +684,45 @@ migrate_transit_config() {
         fi
         sed -i.bak "/^${k}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
+    done
+
+    # Drop deprecated v1 keys from both files.
+    for k in "${drop_keys[@]}"; do
+        if [[ -f "${jasper_env}" ]] && grep -qE "^${k}=" "${jasper_env}"; then
+            sed -i.bak "/^${k}=/d" "${jasper_env}"
+            rm -f "${jasper_env}.bak"
+            echo "  migrate_transit_config: dropped v1 ${k} from ${jasper_env}"
+        fi
+        if [[ -f "${wizard_env}" ]] && grep -qE "^${k}=" "${wizard_env}"; then
+            sed -i.bak "/^${k}=/d" "${wizard_env}"
+            rm -f "${wizard_env}.bak"
+            echo "  migrate_transit_config: dropped v1 ${k} from ${wizard_env}"
+        fi
+    done
+
+    # v1 → v2 bus stop schema: singular JASPER_BUS_STOP_ID becomes a
+    # one-element JASPER_BUS_STOPS list. Migrates in either file.
+    local stop_file
+    for stop_file in "${jasper_env}" "${wizard_env}"; do
+        [[ -f "${stop_file}" ]] || continue
+        line=$(grep -E "^JASPER_BUS_STOP_ID=" "${stop_file}" || true)
+        [[ -z "${line}" ]] && continue
+        stale_value="${line#JASPER_BUS_STOP_ID=}"
+        stale_value="${stale_value%[$'\r\n ']*}"
+
+        if [[ -n "${stale_value}" ]]; then
+            # Only write the new list if no JASPER_BUS_STOPS already exists
+            # in either file (avoid stomping a wizard-written value).
+            if ! { [[ -f "${wizard_env}" ]] && grep -qE "^JASPER_BUS_STOPS=" "${wizard_env}"; }; then
+                touch "${wizard_env}"
+                chmod 0640 "${wizard_env}"
+                echo "JASPER_BUS_STOPS=${stale_value}" >> "${wizard_env}"
+                echo "  migrate_transit_config: converted JASPER_BUS_STOP_ID=${stale_value}"
+                echo "    → JASPER_BUS_STOPS in ${wizard_env}"
+            fi
+        fi
+        sed -i.bak "/^JASPER_BUS_STOP_ID=/d" "${stop_file}"
+        rm -f "${stop_file}.bak"
     done
 }
 

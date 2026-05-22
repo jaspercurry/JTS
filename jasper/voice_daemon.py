@@ -133,15 +133,23 @@ SYSTEM_INSTRUCTION = (
     "  - Any question about the next train, subway arrivals, or "
     "which train is coming → call get_subway_arrivals. Call it fresh "
     "every time — train times are live and a prior result is stale. "
-    "Pass empty strings for line and direction when the user "
-    "doesn't name them; the speaker's home station fills in.\n"
+    "Pass empty strings for line and direction by default — the tool "
+    "returns every line stopping at the home station in the "
+    "configured direction(s), including trains rerouted from other "
+    "lines during service changes (an N running on D tracks shows "
+    "up alongside regular Ds). Pass a specific line ('D') only when "
+    "the user names it; pass 'both' for direction when the user "
+    "wants both directions in one answer.\n"
     "  - Any question about the next bus, bus arrivals, or which "
     "bus is coming → call get_bus_arrivals. Call it fresh every "
     "time — bus arrivals are real-time. Pass an empty `route` "
     "string for a bare 'when's the next bus'; pass a specific "
     "route like 'B35' only if the user names one. The speaker "
-    "has a single configured bus stop with multiple routes; the "
-    "tool returns whichever buses are coming soonest.\n"
+    "may have multiple configured bus stops near home (e.g. "
+    "opposing-direction stops at the same intersection). The "
+    "tool unions arrivals across all of them — each arrival "
+    "carries its own `stop_label` so you can name which stop "
+    "each bus is at.\n"
     "  - Music control ('play', 'pause', 'skip', 'previous', "
     "'resume', 'volume up', 'mute', etc.) → call the matching tool. "
     "Do not ask for confirmation.\n"
@@ -222,18 +230,27 @@ SYSTEM_INSTRUCTION = (
     "summarise as a high/low range with any rainy days called "
     "out — e.g. 'Highs in the low 70s, lows around 55. Mostly "
     "sunny except Thursday with a 60% chance of rain.'\n"
-    "  - get_subway_arrivals: 'Next uptown D trains in 5, 12, and "
-    "19 minutes.' Or, when station and line are obvious from "
-    "context, the shorter form: 'Next train in 4 minutes, then "
-    "11 and 17.'\n"
-    "  - get_bus_arrivals: speak the next 3 arrivals as minutes "
-    "from now, same shape as subway. Use the `minutes_from_now` "
-    "field; ignore `presentable_distance` and `stops_from_call` — "
-    "the user wants minutes, not stops or miles. Mention the route "
-    "for each so the user knows which bus is which. Examples: "
-    "'Next B70 in 2 minutes, then another B70 in 5, and a B35 in "
-    "12.' / 'B70 in 2, 5, then B35 in 12.' / 'B35 in 4, B70 in 8, "
-    "then B35 in 22.' For a bus at 0 minutes, say 'approaching' or "
+    "  - get_subway_arrivals: walk the `arrivals` list and speak "
+    "each train's line + direction + minutes. Examples: 'Next "
+    "Manhattan-bound D in 3 minutes, then an N in 7.' / 'D in 3, "
+    "N in 7 — both Manhattan-bound.' / 'Manhattan-bound D in 3, "
+    "Coney-bound D in 6.' Name the line for each train when "
+    "multiple lines are coming (rerouted train mixed in with "
+    "regulars, or multi-line station). Name the direction when "
+    "the query asked for both directions or when context would "
+    "be ambiguous. Skip naming when the user's question already "
+    "pinned it ('next D uptown?' → just 'in 3 and 7 minutes.').\n"
+    "  - get_bus_arrivals: walk the `arrivals` list and speak "
+    "each bus with route + minutes. Use `minutes_from_now`; "
+    "ignore `presentable_distance` and `stops_from_call` — the "
+    "user wants minutes, not stops or miles. Name `stop_label` "
+    "when multiple stops are configured AND arrivals from "
+    "different stops appear in one response — examples: 'B35 "
+    "westbound at 4 Av/39 St in 4 minutes, B70 eastbound in 7.' "
+    "/ 'B35 at the eastbound stop in 2, then a B35 at the "
+    "westbound stop in 5.' Skip the stop label when arrivals "
+    "all come from one stop OR the user's question already "
+    "pinned it. For a bus at 0 minutes, say 'approaching' or "
     "'now' instead of '0 minutes'. NEVER say 'stops away' or "
     "'miles away'.\n"
     "  - set_timer / cancel_timer: speak the response's `confirm` "
@@ -2872,15 +2889,15 @@ async def run() -> None:
         SubwayClient(
             cfg.subway_station_id,
             cfg.subway_default_direction,
-            list(cfg.subway_lines) or None,
         )
         if cfg.subway_enabled else None
     )
+    # cfg.bus_stops is a list of MonitoringRefs (v2 multi-stop). Empty
+    # list → bus disabled, runtime tool not registered.
     bus = (
         BusClient(
-            stop_id=cfg.bus_stop_id,
+            stop_ids=list(cfg.bus_stops),
             api_key=cfg.mta_bustime_key,
-            configured_routes=list(cfg.bus_routes) or None,
         )
         if cfg.bus_enabled else None
     )
