@@ -16,10 +16,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 
 from . import librespot_state
 
 logger = logging.getLogger(__name__)
+
+
+# Match a non-empty xesam:title in busctl's MPRIS Metadata output.
+# Format is a single line containing key/type/value triples; the
+# title appears as:  "xesam:title" s "Some Song Name"
+# (string type indicator `s`, then quoted value).
+# Empty metadata renders as `v a{sv} 0\n` with no title key at all,
+# so a search-fail is the phantom signal.
+_AIRPLAY_TITLE_RE = re.compile(rb'"xesam:title"\s+s\s+"([^"]+)"')
 
 
 async def spotify_playing(
@@ -32,9 +43,78 @@ async def spotify_playing(
     return librespot_state.is_playing(librespot_state_path)
 
 
+def _airplay_metadata_gate_disabled() -> bool:
+    """Env-var escape hatch for the metadata-corroboration predicate.
+
+    Set JASPER_AIRPLAY_METADATA_GATE=disabled to revert airplay_playing()
+    to its pre-2026-05-22 contract (PlaybackStatus alone). Useful if a
+    field condition is found where shairport's xesam:title is genuinely
+    empty during real audio (so far no such case is known) and the
+    full revert is needed without a redeploy.
+    """
+    return os.environ.get(
+        "JASPER_AIRPLAY_METADATA_GATE", "",
+    ).strip().lower() == "disabled"
+
+
+async def _airplay_has_metadata_title() -> bool:
+    """True iff shairport-sync's MPRIS Metadata carries a non-empty
+    xesam:title at the moment we ask.
+
+    Corroborates PlaybackStatus when distinguishing genuine AirPlay
+    sessions from phantom SETUPs. Apple devices (macOS especially)
+    cycle SETUP→TEARDOWN every ~30 s when JTS is selected as an
+    AirPlay output but no app is sustained-streaming. shairport-sync
+    reports PlaybackStatus=Playing for those cycles even though no
+    audio frames carry a track title from the sender. Genuine sessions
+    populate xesam:title with the sender's current track.
+
+    Fail-soft: any DBus / busctl error returns False, treating an
+    unverifiable session as phantom. The off-switch above is the
+    escape hatch if this ever produces false negatives in the field.
+    """
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "busctl", "--system", "call",
+            "org.mpris.MediaPlayer2.ShairportSync",
+            "/org/mpris/MediaPlayer2",
+            "org.freedesktop.DBus.Properties", "Get", "ss",
+            "org.mpris.MediaPlayer2.Player", "Metadata",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
+    except (FileNotFoundError, asyncio.TimeoutError) as e:
+        logger.debug("busctl Metadata probe failed: %s", e)
+        return False
+    if proc.returncode != 0:
+        return False
+    return _AIRPLAY_TITLE_RE.search(stdout) is not None
+
+
 async def airplay_playing() -> bool:
-    """shairport-sync exposes MPRIS PlaybackStatus on the system bus.
-    True iff there's an active AirPlay session producing audio."""
+    """True iff shairport-sync is currently emitting AirPlay audio.
+
+    Predicate is two-part since 2026-05-22:
+      1) MPRIS `PlaybackStatus == "Playing"`, AND
+      2) MPRIS `Metadata` carries a non-empty `xesam:title`.
+
+    The metadata corroboration is what distinguishes a *genuine*
+    AirPlay session (sender carries track title in DAAP metadata)
+    from a *phantom* SETUP — the latter happens whenever an Apple
+    device (notably macOS) has JTS selected as an AirPlay output
+    but no app is sustained-streaming; macOS opens/tears down audio
+    streams on ~30 s cycles as a keepalive, and shairport-sync
+    reports PlaybackStatus=Playing for each cycle even though no
+    audio actually reaches the speakers (ALSA loopback typically
+    owned by librespot). Trusting PlaybackStatus alone caused
+    jasper-mux to flap source every 30 s and the volume coordinator
+    to duck Spotify by -25 dB on each cycle.
+
+    Off-switch (env-driven, see _airplay_metadata_gate_disabled):
+        JASPER_AIRPLAY_METADATA_GATE=disabled
+    reverts to the pre-fix PlaybackStatus-only behaviour.
+    """
     try:
         proc = await asyncio.create_subprocess_exec(
             "busctl", "--system", "call",
@@ -54,7 +134,13 @@ async def airplay_playing() -> bool:
     # busctl emits a single line like:  v s "Playing"
     # (variant-of-string-of-value). Substring match is robust to
     # leading/trailing whitespace busctl may add.
-    return b'"Playing"' in stdout
+    if b'"Playing"' not in stdout:
+        return False
+    # PlaybackStatus is Playing. Corroborate with metadata unless
+    # the gate is disabled via the escape-hatch env var.
+    if _airplay_metadata_gate_disabled():
+        return True
+    return await _airplay_has_metadata_title()
 
 
 async def bluetooth_playing() -> bool:
