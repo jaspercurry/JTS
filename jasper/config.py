@@ -621,16 +621,16 @@ class Config:
             subway_default_direction=_env(
                 "JASPER_SUBWAY_DEFAULT_DIRECTION", "",
             ),
-            # NYC MTA bus (BusTime SIRI API). Stop ID is the GTFS bus
-            # stop — discover via `scripts/find-bus-stop.sh` or
-            # bustime-classic.mta.info/api/where/stops-for-location.json.
-            # Accepted in either form: "302680" or "MTA_302680".
-            # Empty stop_id OR empty key disables the tool.
+            # NYC MTA bus (BusTime SIRI API). Configured through the
+            # /transit/ wizard, which discovers nearby stops via OBA
+            # `stops-for-location` and SIRI-probes their live routes.
+            # Empty key OR empty stops disables the tool.
             mta_bustime_key=_env("JASPER_MTA_BUSTIME_KEY", ""),
-            # JASPER_BUS_STOPS is a comma-separated list of MTA
-            # MonitoringRefs (e.g. "MTA_302680,MTA_302682"). The
-            # wizard writes this; install.sh migrates the v1
-            # singular JASPER_BUS_STOP_ID into here.
+            # JASPER_BUS_STOPS is the wizard-written comma list of
+            # MTA MonitoringRefs, optionally suffixed with `|label`
+            # per entry (e.g. "MTA_302680|4 Av/39 St eastbound").
+            # The bus client reads only the IDs out of this dataclass
+            # field — labels are kept by the wizard for display only.
             bus_stops=tuple(
                 t for t in _env("JASPER_BUS_STOPS", "").replace(",", " ").split()
             ),

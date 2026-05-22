@@ -358,9 +358,9 @@ class SubwayClient:
         line_filter: str,
     ) -> list[dict]:
         """Iterate `upcoming_trips.{north,south}` for each requested
-        direction. Each trip carries its own `route_id` already — no
-        client-side line filtering against a configured allow-list
-        (that was the v1 mistake that hid reroutes). Optional explicit
+        direction. Each trip carries its own `route_id` already; we
+        emit every trip in the buckets so trains rerouted from other
+        lines surface alongside regulars. Optional explicit
         `line_filter` from the tool call narrows post-fetch."""
         ref_ts = int(data["timestamp"])
         arrivals: list[dict] = []

@@ -254,12 +254,6 @@ def _apply_save(
         new.pop("JASPER_SUBWAY_DEFAULT_DIRECTION", None)
     elif sub_dir in ("uptown", "downtown"):
         new["JASPER_SUBWAY_DEFAULT_DIRECTION"] = sub_dir
-    # JASPER_SUBWAY_LINES was a v1 positive filter that locked the
-    # tool to a specific line list at the station. Removed in v2 — the
-    # tool's default ("show all lines stopping here") catches reroutes
-    # and the user can still narrow via the explicit `line` arg.
-    # Drop any v1 residue so it doesn't linger in transit.env.
-    new.pop("JASPER_SUBWAY_LINES", None)
 
     # Bus key — pasted means replace; blank means keep. The lookup
     # endpoint requires a key, so we validate on paste.
@@ -301,12 +295,6 @@ def _apply_save(
             # Explicit empty submission (every checkbox unchecked)
             # → drop the saved list.
             new.pop("JASPER_BUS_STOPS", None)
-    # v1 residue cleanup. JASPER_BUS_STOP_ID + JASPER_BUS_ROUTES were
-    # the singular schema; v2 replaces them with JASPER_BUS_STOPS
-    # (list, with optional embedded labels). Sweep on any save so
-    # an upgrade doesn't leave stale keys in transit.env.
-    new.pop("JASPER_BUS_STOP_ID", None)
-    new.pop("JASPER_BUS_ROUTES", None)
 
     return new, None
 
