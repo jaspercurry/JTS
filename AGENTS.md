@@ -981,6 +981,23 @@ specific project:
   [docs/HANDOFF-audible-feedback.md](docs/HANDOFF-audible-feedback.md)
   for the full pattern. Cue text must stay provider-agnostic
   (no "Google" / "Gemini" — voice backend is replaceable).
+- **Codify, don't memorise.** If a runtime value matters for the
+  speaker to behave correctly, it MUST be set somewhere the next
+  fresh Pi will pick up automatically — either as a code default
+  in [`jasper/config.py`](jasper/config.py), a seeded value in
+  [`.env.example`](.env.example) (with a prose comment explaining
+  what it does and why this default), or an explicit step in
+  [`install.sh`](deploy/install.sh). Setting a value live on a Pi
+  and not codifying it is a hidden runtime dependency — the next
+  rebuild silently behaves differently. Same principle applies to
+  the wizards: the wizard writes a file to `/var/lib/jasper/`,
+  but the wizard itself is the codification, and absence of the
+  file MUST fail loudly (not silently default). For env-var
+  changes specifically: every `JASPER_*` line added to
+  `.env.example` ships with a prose comment block above it (what,
+  why this default, recommended ranges if it's tunable). The
+  template doubles as documentation — no separate "tuning knobs"
+  page.
 
 ---
 

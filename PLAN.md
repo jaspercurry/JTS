@@ -389,6 +389,30 @@ they don't get lost in the working tree.
   context. Single-session fix; needs a bench test against AirPlay
   + Spotify Connect to confirm none of the other paths regress.
 
+- **install.sh: merge new `.env.example` keys into existing
+  `/etc/jasper/jasper.env` on subsequent runs.** Today `install.sh`
+  only seeds `/etc/jasper/jasper.env` on FIRST install
+  (`if [[ ! -f ... ]]`). Operator customisations are correctly
+  preserved across deploys, but the inverse problem also exists:
+  when a new env var is added to `.env.example`, existing Pis
+  don't pick it up — they fall through to the code default in
+  `jasper/config.py`, which may differ from the new template
+  default. Hit this on 2026-05-21 with `JASPER_IDLE_TIMEOUT_SEC`
+  (old Pi env still had `=10` while we bumped template + code
+  default to `=20`).
+
+  Fix shape: existing keys preserved, missing keys appended with
+  their `.env.example` defaults + comments. Pattern is the same
+  as the `JASPER_VOICE_PROVIDER` migration block already in
+  install.sh — generalise that. Should also report the additions
+  (`installed N new env keys: …`) so operators know to review.
+
+  Worth pairing with: a doctor check that diffs the runtime env
+  against `.env.example` and flags keys that are missing OR have
+  values different from the template default (operator
+  customisations vs stale-not-yet-migrated values are usefully
+  the same surface).
+
 - **Idle watchdog: any-event-as-activity redesign.** The
   pre-response idle watchdog
   ([`jasper/voice_daemon.py:_idle_watchdog`](jasper/voice_daemon.py))
