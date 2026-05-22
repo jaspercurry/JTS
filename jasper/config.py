@@ -212,6 +212,17 @@ class Config:
     mta_bustime_key: str
     bus_stops: tuple[str, ...]
 
+    # Home Assistant integration. The /homeassistant wizard (PR 2) writes
+    # /var/lib/jasper/home_assistant.env with these values; daemon picks
+    # them up via systemd EnvironmentFile. URL is the base of the HA
+    # install (e.g. "http://homeassistant.local:8123"); token is a
+    # Long-Lived Access Token from HA's profile page; agent_id is an
+    # optional override to route JTS to a specific conversation agent
+    # (empty = use HA's default). See docs/HANDOFF-homeassistant.md.
+    ha_url: str
+    ha_token: str
+    ha_agent_id: str
+
     volume_state_path: str
     volume_regress_after_sec: float
     volume_regress_safe_low_pct: int
@@ -634,6 +645,15 @@ class Config:
             bus_stops=tuple(
                 t for t in _env("JASPER_BUS_STOPS", "").replace(",", " ").split()
             ),
+            # Home Assistant. Empty url OR empty token disables the tool
+            # (cfg.ha_enabled gates registration). The /homeassistant
+            # wizard (PR 2) writes these to /var/lib/jasper/home_assistant.env;
+            # operators can also set them directly in /etc/jasper/jasper.env
+            # for headless / CI imaging. agent_id is optional — empty
+            # means "let HA pick the default" (its UI-configured choice).
+            ha_url=_env("JASPER_HA_URL", "").strip().rstrip("/"),
+            ha_token=_env("JASPER_HA_TOKEN", "").strip(),
+            ha_agent_id=_env("JASPER_HA_AGENT_ID", "").strip(),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_env(
@@ -714,3 +734,12 @@ class Config:
         tools also require at least one OAuthed account before they
         register — see `_build_registry`."""
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def ha_enabled(self) -> bool:
+        """True iff Home Assistant URL + token are both set. The
+        home_assistant tool is gated on this in `_build_registry`; when
+        false, the model never sees the tool and handles smart-home
+        requests conversationally ("smart-home control isn't set up
+        yet — visit jts.local/homeassistant")."""
+        return bool(self.ha_url and self.ha_token)
