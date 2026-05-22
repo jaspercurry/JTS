@@ -314,6 +314,26 @@ per-call structured logging, and crucially **never touches
 on LLM-backed HA agents (OpenAI Conversation, Anthropic, etc.). It
 only hits `GET /api/` and `GET /api/config`.
 
+**Cached by default.** Results are cached process-globally for
+`PROBE_CACHE_TTL_SEC = 15.0` seconds keyed by `(url, token)`. Without
+the cache, the dashboard polling `/system/snapshot` every 5 s with
+HA unreachable would block each poll for the full 5 s `HEALTH_TIMEOUT`,
+hammering a dead URL. With the cache, one probe per 15 s is the
+worst case. Pass `force=True` to bypass the cache when fresh ground
+truth matters — `jasper-doctor` does this so its output reflects
+state-at-invocation-time, not the last cached value.
+
+**State-transition logging.** `probe_status` emits one log line per
+`(configured, connected)` transition, not per call:
+
+```
+event=ha.reachable url=http://homeassistant.local:8123 instance=Home version=2026.5.1
+event=ha.unreachable url=http://homeassistant.local:8123 error=Couldn't reach Home Assistant — check the URL and token.
+```
+
+That's the right signal for "when did HA go down?" diagnostics
+without per-poll log noise.
+
 Return shape:
 
 ```python
@@ -504,11 +524,13 @@ text either way.
 | HA configured, daemon idle                     | ~30 KB (httpx pool)       | ~0                    |
 | HA configured, voice session active            | +~5 KB per turn           | ~5ms per tool call    |
 | HA configured + healthy, dashboard open        | +~80 KB transient         | ~10ms per 5s poll     |
-| HA configured + unreachable, dashboard open    | +~80 KB transient         | ~5000ms per 5s poll ⚠ |
+| HA configured + unreachable, dashboard open    | +~80 KB transient         | ~5000ms per 15s poll   |
 
-**The unreachable-HA-with-dashboard-open scenario is the only
-red flag.** Mitigation tracked separately; see "Future work" if
-you're reading this before the cache lands.
+The unreachable-HA-with-dashboard-open scenario is the worst case.
+With the 15s probe cache (see `probe_status` above), one probe per
+15 seconds is the floor we can hit without changing the
+architecture. The dashboard still updates other cards every 5
+seconds — only the HA card pays the cache TTL.
 
 ## Resilience model
 

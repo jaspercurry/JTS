@@ -494,13 +494,65 @@ def build_ha_client(cfg) -> HAClient | None:
     )
 
 
-async def probe_status(url: str, token: str) -> dict[str, Any]:
+# ---- probe_status: cached one-shot probe ----------------------------------
+#
+# probe_status is consumed by jasper-control's /state aggregator,
+# /system/snapshot, and jasper-doctor. The dashboard polls
+# /system/snapshot every 5 seconds while it's open, which means without
+# caching, an unreachable HA would block each poll for up to 5 seconds
+# (HEALTH_TIMEOUT) — making the dashboard unusable when HA is down AND
+# burning ~12 wasted RPM against a dead URL. We cache the probe result
+# with a TTL of PROBE_CACHE_TTL_SEC. Doctor passes force=True to bypass
+# the cache so its output reflects ground truth at invocation time.
+#
+# The cache is module-global and process-local. That's fine because:
+#  - jasper-control is a single process; one cache per process.
+#  - jasper-voice also calls probe_status indirectly (via HAClient) for
+#    its own purposes, but probe_status is only invoked from the
+#    control daemon — voice owns its own HAClient lifecycle separately.
+#
+# Cache key is (url, token). When the wizard updates the env, the key
+# changes and the next probe is uncached.
+
+# Cache for probe_status. Aligned to how often HA reachability actually
+# changes in a household (reboots, network blips): 15 s is plenty fresh
+# for a dashboard polled every 5 s, and limits a dead HA to one probe
+# per 15 s rather than one per 5.
+PROBE_CACHE_TTL_SEC = 15.0
+
+# (deadline_monotonic, url, token, result_dict). None = no cached value.
+_probe_cache: tuple[float, str, str, dict[str, Any]] | None = None
+
+# Last (configured, connected) tuple — used to log state transitions.
+# Module-global so a single jasper-control process sees the same
+# transition history across /state and /system/snapshot calls.
+_last_state: tuple[bool, bool] | None = None
+
+
+def _reset_cache_for_tests() -> None:
+    """Wipe module state. Tests should call this between scenarios so
+    cached responses don't leak across them."""
+    global _probe_cache, _last_state
+    _probe_cache = None
+    _last_state = None
+
+
+async def probe_status(
+    url: str, token: str, *, force: bool = False,
+) -> dict[str, Any]:
     """One-shot reachability + version probe of an HA instance.
 
     Used by jasper-control's /state aggregator, the /system/ dashboard
     card, and jasper-doctor — none of which need the full HAClient
     lifecycle (no conversation_id, no per-call structured logging).
     Returns a dict the caller ships directly as JSON.
+
+    Results are cached process-globally for PROBE_CACHE_TTL_SEC seconds
+    keyed by (url, token). Pass `force=True` to bypass the cache when
+    fresh ground truth matters (jasper-doctor does this).
+
+    Logs `event=ha.unreachable` and `event=ha.reachable` on state
+    transitions — one log line per change, not per call.
 
     Result shape:
       {
@@ -512,6 +564,66 @@ async def probe_status(url: str, token: str) -> dict[str, Any]:
         "error":        str | None,     # short human-readable detail
       }
     """
+    global _probe_cache, _last_state
+
+    now = time.monotonic()
+    if not force and _probe_cache is not None:
+        deadline, cached_url, cached_token, cached_result = _probe_cache
+        if now < deadline and cached_url == url and cached_token == token:
+            return cached_result
+
+    result = await _probe_uncached(url, token)
+
+    if not force:
+        _probe_cache = (now + PROBE_CACHE_TTL_SEC, url, token, result)
+
+    # Emit one log line per (configured, connected) state transition.
+    # Avoids per-poll noise — the dashboard polls every 5 s, doctor runs
+    # ad-hoc; we only want to know "when did HA go down" / "when did
+    # it come back". Logged after the cache write so reads during a
+    # transition still see the new result.
+    new_state = (bool(result.get("configured")), bool(result.get("connected")))
+    if _last_state is None:
+        # First-ever probe: log the initial state for forensics, but only
+        # when configured (no point logging "unconfigured, untouched").
+        if new_state[0]:
+            if new_state[1]:
+                logger.info(
+                    "event=ha.reachable url=%s instance=%s version=%s",
+                    result.get("url") or url,
+                    result.get("instance_name") or "?",
+                    result.get("version") or "?",
+                )
+            else:
+                logger.warning(
+                    "event=ha.unreachable url=%s error=%s",
+                    result.get("url") or url,
+                    result.get("error") or "unknown",
+                )
+    elif new_state != _last_state:
+        if new_state[0] and new_state[1]:
+            logger.info(
+                "event=ha.reachable url=%s instance=%s version=%s",
+                result.get("url") or url,
+                result.get("instance_name") or "?",
+                result.get("version") or "?",
+            )
+        elif new_state[0] and not new_state[1]:
+            logger.warning(
+                "event=ha.unreachable url=%s error=%s",
+                result.get("url") or url,
+                result.get("error") or "unknown",
+            )
+        elif not new_state[0]:
+            logger.info("event=ha.unconfigured")
+    _last_state = new_state
+
+    return result
+
+
+async def _probe_uncached(url: str, token: str) -> dict[str, Any]:
+    """The real probe. Separate from probe_status() so the cache wrapper
+    stays thin and the inner logic stays testable in isolation."""
     if not url or not token:
         return {
             "configured": False, "connected": False, "url": url,
