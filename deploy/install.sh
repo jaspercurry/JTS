@@ -639,6 +639,8 @@ migrate_transit_config() {
         JASPER_SUBWAY_DEFAULT_DIRECTION
         JASPER_MTA_BUSTIME_KEY
         JASPER_BUS_STOPS
+        JASPER_CITIBIKE_STATIONS
+        JASPER_CITIBIKE_EBIKE_ONLY
     )
 
     [[ -f "${jasper_env}" ]] || return 0

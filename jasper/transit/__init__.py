@@ -62,15 +62,20 @@ from .base import (
     TransitProvider,
     haversine_miles,
 )
-from .providers import nyc_bus, nyc_subway
+from .providers import citibike, nyc_bus, nyc_subway
 
 
 # Display order on the wizard. Subway first because most users will
 # use it AND it's keyless (no friction); bus second because it
-# requires the user to go register externally first.
+# requires the user to go register externally first; Citi Bike last
+# because it's the newest and the niche-est (not everyone bikes).
+# Keyless GBFS so it could in principle slot above bus, but reordering
+# would shuffle the visual layout for existing users — keep new
+# additions at the bottom.
 REGISTRY: tuple[TransitProvider, ...] = (
     nyc_subway.PROVIDER,
     nyc_bus.PROVIDER,
+    citibike.PROVIDER,
 )
 
 

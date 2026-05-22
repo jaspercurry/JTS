@@ -47,7 +47,7 @@ async def drain_acquire_buffer(
     *,
     vad_predict: Callable[[Any], float] | None = None,
     speech_threshold: float = 0.15,
-    min_consecutive_speech: int = 2,
+    min_consecutive_speech: int = 3,
 ) -> tuple[int, bool]:
     """Pop frames from `buffer` and forward each via
     ``turn.send_audio`` in FIFO order. Loops until the buffer is
@@ -73,6 +73,21 @@ async def drain_acquire_buffer(
     buffer. Stateful VADs (Silero) also benefit from getting the
     acquire frames in order — the LSTM is warm when live frames
     start.
+
+    Default ``min_consecutive_speech=3`` (≈240 ms at 80 ms/frame)
+    is the closest whole-frame match to the live-mic VAD gate's
+    ``SUSTAINED_SPEECH_TO_ARM_SEC = 0.20`` in
+    ``jasper/voice_daemon.py``. The two paths' gates must stay in
+    sync — the acquire path pre-arms ``_user_speech_seen`` and
+    bypasses the live gate entirely, so a looser threshold here
+    silently undoes the wake-tail filtering the live gate is
+    designed for. Was 2 frames (~160 ms); on slow-talker turns
+    with quiet music playing, the wake-word tail + faint music
+    vocals routinely cleared 2 consecutive frames at Silero ≥ 0.15.
+    Pre-arm fired, silence detector started counting, and the
+    turn ended after ``END_OF_UTTERANCE_SILENCE_SEC`` before the
+    user spoke — model hallucinated a follow-up from cached
+    prior-turn context.
 
     Returns ``(count, sustained_speech_detected)``.
     ``sustained_speech_detected`` is always ``False`` if
