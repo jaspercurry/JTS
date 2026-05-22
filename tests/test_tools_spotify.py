@@ -70,12 +70,37 @@ class FakeSpotify:
         if hit is None:
             return {f"{type}s": {"items": []}}
         uri, name = hit
-        return {f"{type}s": {"items": [{"uri": uri, "name": name}]}}
+        # Mirror Spotify's real response: both `id` and `uri` are
+        # populated. Derive id from the trailing segment of the URI
+        # (e.g. spotify:artist:rks → rks).
+        item_id = uri.rsplit(":", 1)[-1] if uri else ""
+        return {f"{type}s": {"items": [{"uri": uri, "id": item_id, "name": name}]}}
 
     def current_user_playlists(self, limit=50):
         return {
             "items": [{"uri": uri, "name": name} for uri, name in self._library]
         }
+
+    def artist_albums(self, artist_id, include_groups=None, limit=50):
+        """Return a list of releases preconfigured via `with_releases`.
+        The first call records its kwargs on the instance so tests can
+        assert the tool passed include_groups='single,album'."""
+        self.last_artist_albums_id = artist_id
+        self.last_artist_albums_include_groups = include_groups
+        return {"items": list(getattr(self, "_releases", []))}
+
+    def with_releases(self, releases: list) -> "FakeSpotify":
+        """Configure the items returned by artist_albums.
+
+        Each entry is a dict in Spotify's shape — minimally:
+            {"uri": "spotify:album:abc",
+             "name": "X",
+             "album_type": "single",        # 'album' | 'single'
+             "release_date": "2026-05-20",
+             "release_date_precision": "day"}
+        """
+        self._releases = releases
+        return self
 
     def shuffle(self, state, device_id=None):
         self.last_shuffle_state = state
@@ -820,7 +845,9 @@ def test_no_clients_still_registers_tools_with_setup_error():
     tools = _by_name(make_spotify_tools(
         router, renderer, "JTS", setup_url="https://jts.local/spotify",
     ))
-    assert set(tools.keys()) == {"spotify_play", "spotify_queue"}
+    assert set(tools.keys()) == {
+        "spotify_play", "spotify_play_latest_by_artist", "spotify_queue",
+    }
     play_result = asyncio.run(tools["spotify_play"](query="Ariana Grande"))
     assert "no spotify account is configured" in play_result["error"]
     assert "https://jts.local/spotify" in play_result["error"]
@@ -1026,6 +1053,228 @@ def test_no_device_id_returns_device_error_before_search():
 
 # ============================================================
 # helpers
+# ============================================================
+# spotify_play_latest_by_artist — "play the new X" by named artist
+# ============================================================
+
+
+def test_latest_picks_most_recent_release_across_singles_and_albums():
+    """User asks for the new Rainbow Kitten Surprise song. Catalog has
+    a 2024 album and a 2026-05-21 single; the single wins because it's
+    most recent. Tool starts playback with the single's URI."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={
+            "artist": ("spotify:artist:rks", "Rainbow Kitten Surprise"),
+        },
+    ).with_releases([
+        {
+            "uri": "spotify:album:old-lp",
+            "name": "Love Hate Music Box",
+            "album_type": "album",
+            "release_date": "2024-09-13",
+            "release_date_precision": "day",
+        },
+        {
+            "uri": "spotify:album:new-single",
+            "name": "Rainbow Kitten Surprise New Single",
+            "album_type": "single",
+            "release_date": "2026-05-21",
+            "release_date_precision": "day",
+        },
+    ])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Rainbow Kitten Surprise"),
+    )
+
+    assert result.get("ok") is True
+    assert result.get("artist") == "Rainbow Kitten Surprise"
+    assert result.get("playing") == "Rainbow Kitten Surprise New Single"
+    assert result.get("kind") == "single"
+    assert result.get("release_date") == "2026-05-21"
+
+    # Field-qualified artist search so STRFKR's track titled "Rainbow
+    # Kitten Surprise" can't outrank the actual band.
+    assert sp.last_search_q == 'artist:"Rainbow Kitten Surprise"'
+    # Singles + albums only — appears_on / compilation should be
+    # excluded (a feature on another artist's album is not "their new
+    # release").
+    assert sp.last_artist_albums_include_groups == "single,album"
+
+    sp.start_playback.assert_called_once()
+    _, kwargs = sp.start_playback.call_args
+    assert kwargs.get("context_uri") == "spotify:album:new-single"
+    assert kwargs.get("device_id") == "renderer-id"
+
+    confirm = result.get("confirm", "")
+    assert "Rainbow Kitten Surprise New Single" in confirm
+    assert "newest single" in confirm
+    assert "Rainbow Kitten Surprise" in confirm
+
+
+def test_latest_returns_album_phrase_when_newest_release_is_album():
+    """Album wins on date → confirm uses 'newest album' phrasing,
+    `kind=album`."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"artist": ("spotify:artist:abc", "Taylor Swift")},
+    ).with_releases([
+        {
+            "uri": "spotify:album:newest-lp",
+            "name": "Midnights",
+            "album_type": "album",
+            "release_date": "2026-03-01",
+            "release_date_precision": "day",
+        },
+        {
+            "uri": "spotify:album:older-single",
+            "name": "Some Single",
+            "album_type": "single",
+            "release_date": "2025-12-01",
+            "release_date_precision": "day",
+        },
+    ])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Taylor Swift"),
+    )
+
+    assert result.get("ok") is True
+    assert result.get("kind") == "album"
+    assert "newest album" in result.get("confirm", "")
+
+
+def test_latest_handles_mixed_release_date_precisions():
+    """Pad year-only/month-only release_dates to the START of their
+    period. A year-only '2026' must NOT outrank a day-precision
+    '2026-04-15' — without padding, lexicographic '2026' < '2026-04-15'
+    flips the sort and the year-only entry would win wrongly."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"artist": ("spotify:artist:abc", "Old Band")},
+    ).with_releases([
+        {
+            "uri": "spotify:album:year-only",
+            "name": "Year Only Release",
+            "album_type": "album",
+            "release_date": "2026",
+            "release_date_precision": "year",
+        },
+        {
+            "uri": "spotify:album:day-precise",
+            "name": "Day Precise Single",
+            "album_type": "single",
+            "release_date": "2026-04-15",
+            "release_date_precision": "day",
+        },
+    ])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Old Band"),
+    )
+
+    assert result.get("ok") is True
+    assert result.get("playing") == "Day Precise Single"
+
+
+def test_latest_returns_clarification_when_artist_not_found():
+    """No artist matches → return the standard 'didn't understand'
+    clarification error. The model speaks this verbatim."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={},  # artist search returns no items
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Nonexistent Band"),
+    )
+
+    assert "error" in result
+    assert "didn't understand" in result["error"]
+    sp.start_playback.assert_not_called()
+
+
+def test_latest_returns_error_when_artist_has_no_releases():
+    """Artist resolves but has no singles/albums (e.g. catalog has only
+    appears_on/compilation, both excluded). Tell the user, don't crash
+    and don't fall back to something unrelated."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"artist": ("spotify:artist:silent", "Silent Artist")},
+    ).with_releases([])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Silent Artist"),
+    )
+
+    assert "error" in result
+    assert "Silent Artist" in result["error"]
+    sp.start_playback.assert_not_called()
+
+
+def test_latest_no_device_returns_device_error_before_search():
+    """Same fail-fast contract as spotify_play — if no device is
+    reachable, surface the device-linking instruction rather than
+    burning the artist-search API call."""
+    sp = FakeSpotify(
+        devices={"devices": []},
+        search_results={"artist": ("spotify:artist:abc", "X")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    with patch(
+        "jasper.tools.spotify.resolve_target",
+        new=lambda *a, **k: _coro_return(_FakeResolution(None, [])),
+    ):
+        tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+        result = asyncio.run(
+            tools["spotify_play_latest_by_artist"](artist="X"),
+        )
+
+    assert "error" in result
+    assert "Spotify Connect on the speaker isn't linked" in result["error"]
+    assert "JTS" in result["error"]
+    assert sp.last_search_q is None
+
+
+def test_latest_no_clients_returns_setup_error():
+    """No accounts configured → speak the setup-URL error, don't crash."""
+    router = FakeRouter()
+    renderer = FakeRenderer()
+    tools = _by_name(make_spotify_tools(
+        router, renderer, "JTS", setup_url="https://jts.local/spotify",
+    ))
+    assert "spotify_play_latest_by_artist" in tools
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Beyoncé"),
+    )
+    assert "no spotify account is configured" in result["error"]
+    assert "https://jts.local/spotify" in result["error"]
+
+
 # ============================================================
 
 
