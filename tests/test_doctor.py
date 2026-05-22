@@ -655,3 +655,91 @@ def test_check_citibike_caps_missing_list_at_three_with_suffix(monkeypatch):
     r = doctor.check_citibike(cfg)
     assert r.status == "warn"
     assert "+2 more" in r.detail
+
+
+# ---- shairport-sync.conf output_device check ---------------------------
+
+def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
+    """Have the doctor read a synthetic shairport-sync.conf instead of
+    /etc/shairport-sync.conf. The function takes no args and hardcodes
+    the path, so we substitute the `Path` constructor at the module
+    level via a thin shim."""
+    target = tmp_path / "shairport-sync.conf"
+    target.write_text(conf_text)
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/shairport-sync.conf":
+            return target
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor, "Path", fake_path)
+
+
+def test_shairport_check_jasper_renderer_in_is_ok(monkeypatch, tmp_path):
+    """Canonical post-PR-#214 wiring: output_device targets the dmix
+    front-end. Doctor should report `ok`."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"
+    assert "jasper_renderer_in" in r.detail
+
+
+def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
+    monkeypatch, tmp_path,
+):
+    """Pre-PR-#214 wiring: output_device still points at the bare
+    loopback. Doctor warns and tells the user to redeploy. This is
+    the legacy-but-functional path, not a hard failure."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "plughw:Loopback,0,0";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "plughw:Loopback" in r.detail
+    assert "redeploy" in r.detail.lower() or "deploy-to-pi" in r.detail
+
+
+def test_shairport_check_raw_hw_loopback_fails(monkeypatch, tmp_path):
+    """Raw `hw:Loopback,0,0` bypasses plug entirely. shairport requests
+    44.1 kHz and snd-aloop is locked at 48 kHz → silent rejection.
+    This is the hard-fail case."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "hw:Loopback,0,0";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "fail"
+
+
+def test_shairport_check_missing_output_device_warns(monkeypatch, tmp_path):
+    """A conf without an output_device line at all means shairport is
+    using its own default — almost certainly wrong on this host."""
+    _patch_shairport_conf(
+        monkeypatch, 'alsa = {\n    output_rate = 44100;\n};\n', tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "warn"
+    assert "no `output_device`" in r.detail
+
+
+def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
+    """// comments referencing plughw:Loopback (e.g. PR-history notes
+    in the template) must not bait the check into reporting `ok` when
+    the active line says something else."""
+    conf = (
+        "alsa = {\n"
+        '    // Pre-2026-05-22 this was plughw:Loopback,0,0 directly\n'
+        '    output_device = "jasper_renderer_in";\n'
+        "};\n"
+    )
+    _patch_shairport_conf(monkeypatch, conf, tmp_path)
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"

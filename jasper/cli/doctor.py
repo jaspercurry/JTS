@@ -1727,18 +1727,30 @@ async def run_async(cfg: Config) -> list[CheckResult]:
 
 
 def check_shairport_sync_loopback_plughw() -> CheckResult:
-    """Verify the deployed shairport-sync.conf uses `plughw:Loopback,0,0`
-    (not raw `hw:Loopback,0,0`). The Loopback substream is locked at
-    48 kHz by CamillaDSP, but AirPlay is natively 44.1 kHz; raw `hw:`
-    fails the rate negotiation and silently rejects every iPhone /
-    Mac connection ("device shows up but won't connect"). plughw lets
-    ALSA's plug layer resample on the way in.
+    """Verify the deployed shairport-sync.conf uses a multi-writer-safe
+    renderer device.
 
-    This caught us once when the fix in commit `d6c946c` lived on a
-    feature branch and never made it to main. The check runs against
-    the deployed file (not the repo) so it catches both sources of
-    drift: branch that wasn't merged, and manual on-Pi edits."""
-    label = "shairport-sync.conf: plughw:Loopback"
+    Canonical (since 2026-05-22, PR #214 "Claim B"): `jasper_renderer_in`
+    — the plug-wrapped front-end of the renderer-side dmix
+    (`pcm.jasper_renderer_mix`). The dmix sits in front of
+    `hw:Loopback,0,0` so librespot, shairport-sync, and bluealsa-aplay
+    can hold the device simultaneously. Without it, snd-aloop's
+    single-writer constraint caused EBUSY crashes during multi-renderer
+    handover and the volume-flap / Spotify-Connect-handover bugs.
+
+    Acceptable legacy: `plughw:Loopback,0,0` — works on a box that
+    skipped the PR #214 deploy. The plug layer still handles rate
+    negotiation (44.1k AirPlay → 48k Loopback), but the device is
+    single-writer so multi-renderer scenarios will EBUSY-crash one
+    renderer until the user redeploys.
+
+    Failure: raw `hw:Loopback,0,0` — bypasses ALSA's plug layer; AirPlay
+    sessions silently rejected because shairport requests 44.1k and the
+    Loopback substream is locked at 48k.
+
+    Check runs against the DEPLOYED file (not the repo) so it catches
+    both kinds of drift: branch not yet merged, and manual on-Pi edits."""
+    label = "shairport-sync.conf: output_device"
     p = Path("/etc/shairport-sync.conf")
     if not p.exists():
         return CheckResult(
@@ -1763,11 +1775,21 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "on shairport-sync's default (probably wrong).",
         )
     line = active_lines[0]
-    if 'plughw:Loopback' in line:
+    if "jasper_renderer_in" in line:
         return CheckResult(
             label, "ok",
-            "plughw:Loopback,0,0 (correct — ALSA plug layer resamples "
-            "44.1k AirPlay → 48k Loopback)",
+            "jasper_renderer_in (canonical since PR #214 — plug-wrapped "
+            "dmix; multi-writer-safe with librespot + bluealsa-aplay)",
+        )
+    if 'plughw:Loopback' in line:
+        return CheckResult(
+            label, "warn",
+            "plughw:Loopback,0,0 — pre-PR-#214 wiring. Works, but the "
+            "loopback is single-writer so a phantom AirPlay SETUP from "
+            "another device will crash-loop librespot on EBUSY. Redeploy "
+            "(`bash scripts/deploy-to-pi.sh`) to pick up the renderer "
+            "dmix that fixes this. Source of truth: "
+            "deploy/shairport-sync.conf.template.",
         )
     if '"hw:Loopback' in line or "'hw:Loopback" in line:
         return CheckResult(
@@ -1776,9 +1798,8 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "will be silently rejected because Loopback is locked at "
             "48 kHz and shairport requests 44.1 kHz. Symptom: iPhone / "
             "Mac sees JTS in the picker but can't establish a session. "
-            "Fix: edit /etc/shairport-sync.conf, change `hw:` → `plughw:`, "
-            "`systemctl restart shairport-sync`. The fix in source is "
-            "deploy/debian-stack/etc/shairport-sync.conf (commit d6c946c).",
+            "Fix: redeploy via `bash scripts/deploy-to-pi.sh`. Source "
+            "of truth: deploy/shairport-sync.conf.template.",
         )
     return CheckResult(
         label, "warn",
