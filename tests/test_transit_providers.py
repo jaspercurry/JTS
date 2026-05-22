@@ -271,3 +271,212 @@ def test_nyc_bus_validate_credentials_unknown_key_raises():
     provider = _bus_with_handler(lambda req: pytest.fail("should not call"))
     with pytest.raises(NotImplementedError, match="UNKNOWN_KEY"):
         provider.validate_credentials({"UNKNOWN_KEY": "x"})
+
+
+# ---- enumerate_live_routes ------------------------------------------------
+#
+# The motivating use case for v2: OBA's static `routes` field for a stop
+# lagged real-world dispatch (e.g. B70 newly serving 4 Av/39 St didn't
+# appear in OBA's stop record). SIRI is ground truth — the wizard probes
+# every candidate stop to enumerate the routes actually dispatching there.
+
+def _siri_visit(line: str) -> dict:
+    return {"MonitoredVehicleJourney": {"PublishedLineName": line}}
+
+
+def _siri_envelope(visits: list[dict]) -> dict:
+    return {
+        "Siri": {
+            "ServiceDelivery": {
+                "StopMonitoringDelivery": [{"MonitoredStopVisit": visits}],
+            },
+        },
+    }
+
+
+def test_enumerate_live_routes_dedups_and_preserves_first_seen_order():
+    """SIRI returns one visit per imminent bus, often repeating the same
+    route (multiple B35s arriving back-to-back). We dedupe and keep the
+    order of first appearance so the displayed list reads naturally."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "stop-monitoring.json" in request.url.path
+        assert request.url.params.get("MonitoringRef") == "302680"
+        assert request.url.params.get("key") == "k"
+        return httpx.Response(200, json=_siri_envelope([
+            _siri_visit("B70"),
+            _siri_visit("B35"),
+            _siri_visit("B70"),  # dup
+            _siri_visit("B35"),  # dup
+        ]))
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ("B70", "B35")
+
+
+def test_enumerate_live_routes_strips_MTA_prefix_from_stop_id():
+    seen_refs: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_refs.append(request.url.params.get("MonitoringRef") or "")
+        return httpx.Response(200, json=_siri_envelope([]))
+
+    provider = _bus_with_handler(handler)
+    provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    provider.enumerate_live_routes(
+        "302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    # Both inputs hit SIRI with the bare numeric stop ID.
+    assert seen_refs == ["302680", "302680"]
+
+
+def test_enumerate_live_routes_empty_visits_returns_empty_tuple():
+    """A quiet stop with no buses in the next ~30 min — the wizard
+    falls back to OBA's static `routes` field for display."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_siri_envelope([]))
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ()
+
+
+def test_enumerate_live_routes_returns_empty_on_401():
+    """Bad key → quiet failure. The validate_credentials path is the
+    one that surfaces "key rejected" to the user; the route probe is
+    informational and should never break the wizard render."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401)
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "bad"},
+    )
+    assert routes == ()
+
+
+def test_enumerate_live_routes_returns_empty_on_5xx():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ()
+
+
+def test_enumerate_live_routes_returns_empty_on_network_error():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("network down")
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ()
+
+
+def test_enumerate_live_routes_returns_empty_on_malformed_envelope():
+    """SIRI returns JSON but the expected nested path is missing —
+    don't crash, fall through to empty."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "shape"})
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ()
+
+
+def test_enumerate_live_routes_returns_empty_when_no_credentials():
+    """No key passed → don't probe at all. Matches the wizard's
+    "key required" lock-state."""
+    provider = _bus_with_handler(lambda req: pytest.fail("should not call"))
+    assert provider.enumerate_live_routes("MTA_302680") == ()
+    assert provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": ""},
+    ) == ()
+
+
+def test_enumerate_live_routes_returns_empty_for_blank_stop_id():
+    """Defensive: caller passed an empty stop_id (probably a
+    misparse upstream)."""
+    provider = _bus_with_handler(lambda req: pytest.fail("should not call"))
+    assert provider.enumerate_live_routes(
+        "", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    ) == ()
+
+
+def test_enumerate_live_routes_skips_visits_with_blank_line_names():
+    """SIRI occasionally emits a visit without PublishedLineName
+    (incomplete trip data). Don't include "" in the routes list."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_siri_envelope([
+            _siri_visit("B35"),
+            {"MonitoredVehicleJourney": {}},  # missing PublishedLineName
+            {"MonitoredVehicleJourney": {"PublishedLineName": "   "}},
+            _siri_visit("B70"),
+        ]))
+
+    provider = _bus_with_handler(handler)
+    routes = provider.enumerate_live_routes(
+        "MTA_302680", credentials={"JASPER_MTA_BUSTIME_KEY": "k"},
+    )
+    assert routes == ("B35", "B70")
+
+
+# ---- scrub_secrets --------------------------------------------------------
+#
+# Defense against `httpx.HTTPError.__str__` interpolating the full URL
+# (including `?key=SECRET`) into user-facing error banners and journalctl.
+# Regression for B2 from the staff-engineer review.
+
+def test_scrub_secrets_redacts_key_param_in_url():
+    from jasper.transit.base import scrub_secrets
+    url = "https://bustime-classic.mta.info/api/?key=ABC-DEF-123&MonitoringRef=302680"
+    assert scrub_secrets(url) == (
+        "https://bustime-classic.mta.info/api/?key=***&MonitoringRef=302680"
+    )
+
+
+def test_scrub_secrets_redacts_key_when_not_first_param():
+    from jasper.transit.base import scrub_secrets
+    url = "https://example.com/?lat=40.65&key=ABC123&lon=-73.99"
+    assert "ABC123" not in scrub_secrets(url)
+    assert "key=***" in scrub_secrets(url)
+
+
+def test_scrub_secrets_handles_httpx_error_repr():
+    """Real httpx exceptions stringify with the full URL embedded —
+    this test pins the wrapping to ensure scrubbing reaches it."""
+    from jasper.transit.base import scrub_secrets
+    fake_repr = (
+        "HTTPStatusError(\"Server error '500' for url "
+        "'https://bustime-classic.mta.info/api/?key=SECRET_VAL&x=y'\")"
+    )
+    out = scrub_secrets(fake_repr)
+    assert "SECRET_VAL" not in out
+    assert "key=***" in out
+
+
+def test_scrub_secrets_does_not_match_prose_mentions_of_key():
+    """The regex requires a `?` or `&` boundary so we don't shred
+    sentences that happen to contain the word 'key'."""
+    from jasper.transit.base import scrub_secrets
+    msg = "the bus card asks for an MTA BusTime API key in the wizard"
+    assert scrub_secrets(msg) == msg
+
+
+# ---- Cache resilience (M2) ------------------------------------------------
+#
+# Tests for BusClient live in test_bus.py — this one verifies the
+# provider side hasn't regressed: validate_credentials must propagate
+# the error message without caching a False answer.

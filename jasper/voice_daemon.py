@@ -3296,6 +3296,15 @@ async def run() -> None:
         await weather.aclose()
         if ha is not None:
             await ha.aclose()
+        if bus is not None:
+            # BusClient owns an httpx.AsyncClient with a connection
+            # pool; without aclose() the pool's idle connections +
+            # FDs leak across daemon restart cycles. Mirror the
+            # weather/ha pattern.
+            try:
+                await bus.aclose()
+            except Exception:  # noqa: BLE001
+                logger.exception("bus.aclose failed during shutdown")
 
 
 def main() -> None:

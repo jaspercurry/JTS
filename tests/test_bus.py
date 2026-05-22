@@ -396,3 +396,88 @@ async def test_multi_stop_caps_at_limit_across_stops():
     finally:
         await client.aclose()
     assert len(arrivals) == 4
+
+
+# ---- Cache resilience -----------------------------------------------------
+#
+# Regression for M2 from the staff-engineer review: pre-fix, a transient
+# 503 / timeout / parse error cached an empty list, then the next call
+# within the 20 s window returned "no buses" confidently from the cache.
+# Post-fix, fetch failures bypass the cache.
+
+
+@pytest.mark.asyncio
+async def test_failed_fetch_does_not_poison_cache():
+    """First call: upstream 503 → empty result, no cache entry.
+    Second call: upstream recovers → fresh fetch returns arrivals.
+    Without the fix, the second call would have hit the cached []
+    and returned no buses."""
+    now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
+    good = _siri_response([
+        _visit("B35", "BROWNSVILLE", "2026-05-21T16:33:00+00:00"),
+    ])
+    call_state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_state["n"] += 1
+        if call_state["n"] == 1:
+            return httpx.Response(503)
+        return httpx.Response(200, json=good)
+
+    transport = httpx.MockTransport(handler)
+    http = httpx.AsyncClient(transport=transport)
+    client = BusClient(
+        stop_ids=["MTA_302680"], api_key="k", http=http, clock=lambda: now,
+    )
+    try:
+        first = await client.get_arrivals()
+        second = await client.get_arrivals()
+    finally:
+        await client.aclose()
+    assert first == []                  # nothing to show on failure
+    assert len(second) == 1             # cache was NOT poisoned
+    assert second[0].route == "B35"
+    assert call_state["n"] == 2         # upstream was hit twice
+
+
+@pytest.mark.asyncio
+async def test_failed_fetch_serves_stale_cache_when_available():
+    """Refinement of the above: if we previously had a good response
+    cached, a transient failure on the next refresh should serve the
+    stale entry (still within reason) rather than empty. Empty is the
+    fallback only when there's nothing cached at all."""
+    now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
+    good = _siri_response([
+        _visit("B35", "BROWNSVILLE", "2026-05-21T16:33:00+00:00"),
+    ])
+    call_state = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_state["n"] += 1
+        if call_state["n"] == 1:
+            return httpx.Response(200, json=good)
+        return httpx.Response(503)
+
+    transport = httpx.MockTransport(handler)
+    http = httpx.AsyncClient(transport=transport)
+    client = BusClient(
+        stop_ids=["MTA_302680"], api_key="k", http=http, clock=lambda: now,
+    )
+    try:
+        first = await client.get_arrivals()
+        # Force a re-fetch by busting the time window — the in-memory
+        # cache key is monotonic, so we have to drive a separate stop
+        # to verify the staleness fallback. Simpler check: pre-populate
+        # the cache via the first call, then bypass the window by
+        # accessing the private cache (test-only).
+        # Drop the time stamp so the cache appears expired.
+        cache_entry = client._cache["302680"]
+        client._cache["302680"] = (cache_entry[0] - 100.0, cache_entry[1])
+        second = await client.get_arrivals()
+    finally:
+        await client.aclose()
+    assert len(first) == 1
+    # Cache stale + upstream failed → serve the stale value rather
+    # than empty.
+    assert len(second) == 1
+    assert second[0].route == "B35"

@@ -650,7 +650,11 @@ migrate_transit_config() {
         line=$(grep -E "^${k}=" "${jasper_env}" || true)
         [[ -z "${line}" ]] && continue
         stale_value="${line#${k}=}"
-        stale_value="${stale_value%[$'\r\n ']*}"
+        # Trim ONLY CR/LF — NOT spaces. JASPER_BUS_STOPS labels
+        # contain spaces (e.g. "39 ST/4 AV SE"); a `%[ \t\r\n]*`
+        # glob would shred them at the first space.
+        stale_value="${stale_value%$'\r'}"
+        stale_value="${stale_value%$'\n'}"
 
         if [[ -f "${wizard_env}" ]] && grep -qE "^${k}=" "${wizard_env}"; then
             sed -i.bak "/^${k}=/d" "${jasper_env}"

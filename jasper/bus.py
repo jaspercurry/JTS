@@ -48,6 +48,8 @@ from datetime import datetime
 
 import httpx
 
+from .transit.base import scrub_secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -217,15 +219,28 @@ class BusClient:
         return arrivals[:limit]
 
     async def _fetch_for_stop_cached(self, stop_id: str) -> list[BusArrival]:
+        """Per-stop cached fetch. Returns the cached list when fresh,
+        the fresh fetch on a hit, or `[]` if the upstream is failing
+        AND we have no cached entry to serve. Critically, transient
+        fetch failures do NOT poison the cache — `_fetch_for_stop`
+        returns None on error, and we skip the cache write so the
+        next call retries upstream rather than serving a confident
+        empty-list fallback for the full cache window."""
         now_mono = time.monotonic()
         cached = self._cache.get(stop_id)
         if cached is not None and now_mono - cached[0] < CACHE_WINDOW_SEC:
             return cached[1]
         arrivals = await self._fetch_for_stop(stop_id)
+        if arrivals is None:
+            # Upstream failed — don't overwrite a previously-good cache
+            # entry; let the user see whatever stale data is still
+            # within the window if there is any, otherwise return
+            # empty for this call only.
+            return cached[1] if cached is not None else []
         self._cache[stop_id] = (now_mono, arrivals)
         return arrivals
 
-    async def _fetch_for_stop(self, stop_id: str) -> list[BusArrival]:
+    async def _fetch_for_stop(self, stop_id: str) -> list[BusArrival] | None:
         params = {
             "key": self._api_key,
             "MonitoringRef": stop_id,
@@ -237,11 +252,19 @@ class BusClient:
             r.raise_for_status()
             data = r.json()
         except httpx.HTTPError as e:
-            logger.warning("bus: BusTime fetch failed for %s: %r", stop_id, e)
-            return []
+            # httpx.HTTPError repr includes the full URL with ?key=… ;
+            # scrub before logging so the key never lands in journalctl.
+            logger.warning(
+                "bus: BusTime fetch failed for %s: %s",
+                stop_id, scrub_secrets(repr(e)),
+            )
+            return None
         except Exception as e:  # noqa: BLE001
-            logger.warning("bus: BusTime JSON parse failed for %s: %r", stop_id, e)
-            return []
+            logger.warning(
+                "bus: BusTime JSON parse failed for %s: %s",
+                stop_id, scrub_secrets(repr(e)),
+            )
+            return None
 
         return self._parse_siri(data, stop_id)
 

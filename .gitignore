@@ -44,3 +44,7 @@ tests/voice_eval/transcripts_out/*
 tests/voice_eval/traces_out/*
 !tests/voice_eval/traces_out/.gitkeep
 wake-events/
+
+# Per-session scratch and WIP files used by Claude Code agents.
+# These are local-only notes; never commit them.
+.claude/
