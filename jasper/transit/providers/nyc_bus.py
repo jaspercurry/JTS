@@ -148,12 +148,24 @@ class _NycBus:
             except (KeyError, TypeError, ValueError):
                 continue
             d = haversine_miles(lat, lon, slat, slon)
-            route_ids = s.get("routeIds") or s.get("routes") or []
-            short_names = [
-                str(route_map.get(rid) or rid).strip()
-                for rid in route_ids
-                if rid
-            ]
+            # OBA-flavoured shapes vary: `routeIds` is a list of string
+            # IDs we look up in route_map; `routes` (the shape MTA's
+            # BusTime actually returns) is a list of dicts with their
+            # own shortName field already attached. Handle both — the
+            # dict path was broken in the first cut of this provider
+            # ("unhashable type: dict" when route_map.get was passed a
+            # dict as the key, surfaced live in production).
+            route_entries = s.get("routeIds") or s.get("routes") or []
+            short_names: list[str] = []
+            for r in route_entries:
+                if isinstance(r, str):
+                    short_names.append(str(route_map.get(r) or r).strip())
+                elif isinstance(r, dict):
+                    short_names.append(str(
+                        r.get("shortName") or r.get("longName") or r.get("id") or ""
+                    ).strip())
+                # Anything else (None, int) silently skipped — defensive.
+            short_names = [n for n in short_names if n]
             name = str(s.get("name") or sid)
             direction_hint = str(s.get("direction") or "").strip()
             ranked.append((d, sid, name, slat, slon, short_names, direction_hint))
