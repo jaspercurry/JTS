@@ -1,24 +1,24 @@
-// Laptop-only spike: WebRTC AEC3 binding with the deep
-// EchoCanceller3Config knobs exposed, by vendoring & statically
-// linking webrtc-audio-processing v2.1 from PipeWire's upstream
-// fork.
+// AEC3 v2.1 binding — REVISION 2 (2026-05-22 night)
 //
-// The pattern: build v2.1 with default_library=static (already done
-// at /tmp/webrtc-aec3-vendor/builddir/), include the internal
-// modules/audio_processing/aec3/echo_canceller3.h header from the
-// SOURCE tree (the install only ships public api/audio/ headers),
-// write our own EchoControlFactory subclass whose Create() returns
-// an EchoCanceller3 with a custom EchoCanceller3Config, pass it to
-// AudioProcessingBuilder via SetEchoControlFactory.
-//
-// Mirrors jasper_aec3/src/aec3_binding.cpp's API shape so the
-// offline test scripts can swap engines transparently. Adds:
-//   - rs_subband_nearend            (bool)
-//   - rs_snr_threshold              (float)
-//   - rs_hold_duration              (int, frames)
-//   - rs_high_bands_max_gain        (float)
-//   - filter_refined_length_blocks  (int)
-//   - ep_strength_bounded_erl       (bool)
+// Adds knobs the research surfaced that round-1 V2tune missed:
+//   - ep_strength.bounded_erl = false by default (was true, which
+//     SILENTLY DISABLES Transparent Mode — the music-friendly mode
+//     we actually want)
+//   - suppressor.conservative_hf_suppression (bool) — the single-
+//     line "less aggressive HF suppression" knob
+//   - suppressor.normal_tuning.mask_hf.{enr_transparent,enr_suppress,
+//     emr_transparent} — WebRTC's HF defaults are 4x more aggressive
+//     than LF defaults (0.07 / 0.1 / 0.3 vs 0.3 / 0.4 / 0.3); we
+//     can flatten to LF parity
+//   - suppressor.normal_tuning.max_dec_factor_lf — gain attack rate
+//     (default 0.25; lower = slower attack = less perceived pumping)
+//   - erle.onset_detection (bool) — kills the onset transient
+//   - erle.max_l / erle.max_h — caps on NLP depth per band
+//   - echo_audibility.use_stationarity_properties (bool) — lets
+//     music's stationarity gate engage, reducing suppression
+//   - ep_strength.default_gain — prior on echo path strength
+//     (default 1.0; lower = AEC3 assumes echo is weaker = less
+//     over-suppression)
 
 #include <pybind11/pybind11.h>
 
@@ -31,9 +31,9 @@
 
 #include "api/audio/echo_canceller3_config.h"
 #include "api/audio/echo_control.h"
+#include "api/scoped_refptr.h"
 #include "modules/audio_processing/aec3/echo_canceller3.h"
 #include "modules/audio_processing/include/audio_processing.h"
-#include "api/scoped_refptr.h"
 
 namespace py = pybind11;
 
@@ -43,9 +43,6 @@ constexpr int kSampleRate = 16000;
 constexpr int kNumChannels = 1;
 constexpr int kFrameSamples10ms = 160;
 
-// Our custom factory: takes a pre-built EchoCanceller3Config and
-// returns a new EchoCanceller3 each time AudioProcessing requests
-// one. AudioProcessing owns the returned pointer.
 class JasperEchoControlFactory : public webrtc::EchoControlFactory {
 public:
     explicit JasperEchoControlFactory(webrtc::EchoCanceller3Config cfg)
@@ -56,9 +53,7 @@ public:
         int num_render_channels,
         int num_capture_channels) override {
         return std::make_unique<webrtc::EchoCanceller3>(
-            cfg_,
-            /*multichannel_config=*/std::nullopt,
-            sample_rate_hz,
+            cfg_, std::nullopt, sample_rate_hz,
             static_cast<size_t>(num_render_channels),
             static_cast<size_t>(num_capture_channels));
     }
@@ -70,35 +65,75 @@ private:
 class Aec3V2 {
 public:
     Aec3V2(int stream_delay_ms,
-           // Stock AudioProcessing::Config knobs (mirror jasper_aec3)
+           // Top-level AudioProcessing::Config knobs
            bool ns_enabled,
            const std::string& ns_level,
            bool agc1_enabled,
            int agc1_target_dbfs,
            int agc1_max_gain_db,
-           // NEW: deep EchoCanceller3Config knobs
+           // Filter
+           int filter_refined_length_blocks,
+           // EpStrength
+           bool ep_strength_bounded_erl,
+           float ep_strength_default_gain,
+           // Erle (NEW)
+           float erle_max_l,
+           float erle_max_h,
+           bool erle_onset_detection,
+           // EchoAudibility (NEW)
+           bool use_stationarity_properties,
+           // Suppressor — round 1 knobs
            bool rs_subband_nearend,
            float rs_snr_threshold,
            int rs_hold_duration,
-           float rs_high_bands_max_gain,
-           int filter_refined_length_blocks,
-           bool ep_strength_bounded_erl)
+           // Suppressor — NEW knobs from research
+           bool conservative_hf_suppression,
+           float mask_hf_enr_transparent,
+           float mask_hf_enr_suppress,
+           float mask_hf_emr_transparent,
+           float normal_max_dec_factor_lf)
         : stream_cfg_(kSampleRate, kNumChannels),
           stream_delay_ms_(stream_delay_ms) {
-        // Build the deep EchoCanceller3Config from kwargs.
         webrtc::EchoCanceller3Config aec3_cfg;
+
+        // Filter
         aec3_cfg.filter.refined.length_blocks =
             static_cast<size_t>(filter_refined_length_blocks);
+
+        // EpStrength
         aec3_cfg.ep_strength.bounded_erl = ep_strength_bounded_erl;
+        aec3_cfg.ep_strength.default_gain = ep_strength_default_gain;
+
+        // Erle (caps how deep NLP can attenuate; lower = less pumping
+        // but less cancellation)
+        aec3_cfg.erle.max_l = erle_max_l;
+        aec3_cfg.erle.max_h = erle_max_h;
+        aec3_cfg.erle.onset_detection = erle_onset_detection;
+
+        // EchoAudibility
+        aec3_cfg.echo_audibility.use_stationarity_properties =
+            use_stationarity_properties;
+
+        // Suppressor — dominant nearend
         aec3_cfg.suppressor.use_subband_nearend_detection = rs_subband_nearend;
         aec3_cfg.suppressor.dominant_nearend_detection.snr_threshold =
             rs_snr_threshold;
         aec3_cfg.suppressor.dominant_nearend_detection.hold_duration =
             rs_hold_duration;
-        aec3_cfg.suppressor.high_bands_suppression.max_gain_during_echo =
-            rs_high_bands_max_gain;
 
-        // Build the AudioProcessing pipeline with our factory plugged in.
+        // Suppressor — the new HF knobs
+        aec3_cfg.suppressor.conservative_hf_suppression =
+            conservative_hf_suppression;
+        aec3_cfg.suppressor.normal_tuning.mask_hf.enr_transparent =
+            mask_hf_enr_transparent;
+        aec3_cfg.suppressor.normal_tuning.mask_hf.enr_suppress =
+            mask_hf_enr_suppress;
+        aec3_cfg.suppressor.normal_tuning.mask_hf.emr_transparent =
+            mask_hf_emr_transparent;
+        aec3_cfg.suppressor.normal_tuning.max_dec_factor_lf =
+            normal_max_dec_factor_lf;
+
+        // Build APM with our factory
         webrtc::AudioProcessingBuilder builder;
         builder.SetEchoControlFactory(
             std::make_unique<JasperEchoControlFactory>(std::move(aec3_cfg)));
@@ -108,9 +143,6 @@ public:
                 "AudioProcessingBuilder::Create() returned null");
         }
 
-        // Top-level AudioProcessing::Config: still need to enable the
-        // pre/post stages (HPF, NS, AGC1). echo_canceller.enabled is
-        // implicit when an EchoControlFactory is set.
         webrtc::AudioProcessing::Config cfg;
         cfg.echo_canceller.enabled = true;
         cfg.high_pass_filter.enabled = true;
@@ -149,10 +181,8 @@ public:
         }
         const auto* mic = reinterpret_cast<const int16_t*>(mic_str.data());
         const auto* ref = reinterpret_cast<const int16_t*>(ref_str.data());
-
         std::vector<int16_t> output(total_samples);
         std::vector<int16_t> reverse_scratch(kFrameSamples10ms);
-
         for (size_t i = 0; i < total_samples; i += kFrameSamples10ms) {
             apm_->ProcessReverseStream(
                 ref + i, stream_cfg_, stream_cfg_, reverse_scratch.data());
@@ -166,8 +196,6 @@ public:
     }
 
 private:
-    // v2.1's AudioProcessingBuilder::Create() returns scoped_refptr,
-    // not unique_ptr like v1.3. (Refcounted, automatic release.)
     rtc::scoped_refptr<webrtc::AudioProcessing> apm_;
     webrtc::StreamConfig stream_cfg_;
     int stream_delay_ms_;
@@ -176,24 +204,42 @@ private:
 }  // namespace
 
 PYBIND11_MODULE(_aec3_v2_spike, m) {
-    m.doc() = "AEC3 v2.1 spike binding with deep EchoCanceller3Config knobs";
+    m.doc() = "AEC3 v2.1 binding (rev 2) with full deep-tune surface";
     py::class_<Aec3V2>(m, "Aec3V2")
         .def(py::init<int, bool, std::string, bool, int, int,
-                      bool, float, int, float, int, bool>(),
+                      int, bool, float,
+                      float, float, bool,
+                      bool,
+                      bool, float, int,
+                      bool, float, float, float, float>(),
              py::arg("stream_delay_ms") = 40,
              py::arg("ns_enabled") = true,
              py::arg("ns_level") = std::string("low"),
              py::arg("agc1_enabled") = true,
              py::arg("agc1_target_dbfs") = 9,
              py::arg("agc1_max_gain_db") = 18,
-             // Defaults below = the research-report-recommended starting
-             // values from HANDOFF-aec.md line 2294-2297.
-             py::arg("rs_subband_nearend") = true,
-             py::arg("rs_snr_threshold") = 20.0f,
-             py::arg("rs_hold_duration") = 50,
-             py::arg("rs_high_bands_max_gain") = 1.0f,
-             py::arg("filter_refined_length_blocks") = 30,
-             py::arg("ep_strength_bounded_erl") = true)
+             // Filter
+             py::arg("filter_refined_length_blocks") = 13,    // webrtc default
+             // EpStrength
+             py::arg("ep_strength_bounded_erl") = false,       // FIXED: was true (kills Transparent Mode)
+             py::arg("ep_strength_default_gain") = 1.0f,       // webrtc default
+             // Erle
+             py::arg("erle_max_l") = 4.0f,                     // webrtc default
+             py::arg("erle_max_h") = 1.5f,                     // webrtc default
+             py::arg("erle_onset_detection") = true,           // webrtc default
+             // EchoAudibility
+             py::arg("use_stationarity_properties") = false,   // webrtc default
+             // Suppressor — dominant nearend
+             py::arg("rs_subband_nearend") = false,            // webrtc default
+             py::arg("rs_snr_threshold") = 30.0f,              // webrtc default
+             py::arg("rs_hold_duration") = 50,                 // webrtc default
+             // Suppressor — NEW knobs
+             py::arg("conservative_hf_suppression") = false,   // webrtc default
+             py::arg("mask_hf_enr_transparent") = 0.07f,       // webrtc default (4x more aggressive than LF!)
+             py::arg("mask_hf_enr_suppress") = 0.1f,           // webrtc default
+             py::arg("mask_hf_emr_transparent") = 0.3f,        // webrtc default
+             py::arg("normal_max_dec_factor_lf") = 0.25f       // webrtc default
+            )
         .def("process", &Aec3V2::process,
              py::arg("mic"), py::arg("ref"));
 }
