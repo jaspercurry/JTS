@@ -192,10 +192,11 @@ Adapter wiring today:
 - **OpenAI** (`openai_session.py`): `OpenAIRealtimeTurn._note_activity()`
   is called from the function_calls branch of `_handle_response_done`
   and from `_on_response_done`. Grok inherits this path verbatim.
-- **Gemini** (`gemini_session.py`): partial — advances the anchor
-  once when `tool_call` is first seen, but not again across a slow or
-  chained dispatch. Has not been observed in production but is the
-  same shape of bug.
+- **Gemini** (`gemini_session.py`): `GeminiLiveTurn._note_activity()`
+  is called on tool_call arrival in `_on_response`, inside the
+  per-tool loop in `_handle_tool_call`, and once more after
+  `send_tool_response` lands. Mirrors OpenAI's coverage — every
+  tool-round milestone resets the anchor.
 
 New providers should either expose a `_note_activity()` (or
 equivalent) and call it on every tool-round server event, or document

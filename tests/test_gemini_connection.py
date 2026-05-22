@@ -933,3 +933,76 @@ async def test_connection_lost_marks_turn_lost_during_active_turn():
         assert turn.turn_lost() is True
     finally:
         await conn.stop()
+
+
+@dataclass
+class _FC:
+    """Stand-in for the SDK's FunctionCall items inside tool_call.function_calls."""
+    name: str
+    id: str = "fc-1"
+    args: dict | None = None
+
+
+@dataclass
+class _ToolCall:
+    """Stand-in for response.tool_call (carries one or more function_calls)."""
+    function_calls: list[_FC] = field(default_factory=list)
+
+
+async def test_tool_round_advances_idle_anchor_so_watchdog_does_not_fire():
+    """The daemon's pre-response idle watchdog
+    (`jasper/voice_daemon.py:_idle_watchdog`) reads
+    ``turn.last_activity_at()`` and abandons the turn when no audio
+    has arrived for ``JASPER_IDLE_TIMEOUT_SEC``. During a tool round
+    (model emits a ``tool_call``, client dispatches, calls
+    ``send_tool_response``, waits for the audio answer) no audio
+    arrives — so without explicit anchor resets the watchdog can fire
+    mid-dispatch at small timeout values.
+
+    Mirrors ``test_openai_session.py``'s equivalent contract test.
+    Pin: at minimum the per-tool reset inside ``_handle_tool_call``
+    advances the anchor — proves the cross-provider contract from
+    docs/HANDOFF-voice-providers.md is enforced for Gemini."""
+    from jasper.tools import tool as tool_decorator
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+
+    @tool_decorator()
+    def get_weather(location: str = "") -> dict:
+        """."""
+        return {"location": "Brooklyn", "temperature": 62}
+    registry.register(get_weather)
+
+    await conn.start(registry, "")
+    try:
+        sess = factory.sessions[0]
+        turn = await conn.acquire_turn()
+        anchor_before = turn.last_activity_at()
+
+        # Park briefly so the loop clock advances measurably.
+        await asyncio.sleep(0.05)
+
+        # Server sends a tool_call. The connection's receive loop
+        # routes it to turn._on_response which calls _handle_tool_call
+        # with the turn passed in; the dispatcher resets the anchor
+        # per-tool and again after send_tool_response.
+        sess.feed(_Resp(tool_call=_ToolCall(function_calls=[
+            _FC(name="get_weather", id="fc-1", args={}),
+        ])))
+        # Wait for the dispatcher to invoke send_tool_response.
+        await _wait_until(
+            lambda: len(sess.sent_tool_responses) >= 1,
+            timeout=2.0,
+        )
+        await asyncio.sleep(0.05)
+
+        anchor_after = turn.last_activity_at()
+        assert anchor_after > anchor_before, (
+            "tool round must advance last_activity_at so the "
+            "pre-response idle watchdog doesn't fire while waiting "
+            "for the audio answer"
+        )
+
+        await turn.release()
+    finally:
+        await conn.stop()
