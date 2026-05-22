@@ -125,14 +125,25 @@ class TransitProvider(Protocol):
         stops nearby (rare — usually means the user is outside coverage)."""
         ...
 
-    def validate_credential(self, env_key: str, value: str) -> bool:
-        """Return True if `value` is accepted by the provider's API.
+    def validate_credentials(
+        self, credentials: dict[str, str],
+    ) -> dict[str, str] | None:
+        """Probe the provider's API to confirm credentials work.
 
-        Used by the wizard for a cheap probe before saving a freshly-
-        pasted key. Implementations should pick a low-cost endpoint
-        (no parameters where possible) and return False on any failure
-        path — auth, network, parse error — rather than raising. The
-        wizard's UX is binary: valid (proceed) or invalid (show error)."""
+        Returns `None` on success, or `{env_key: error_message}` for
+        every credential the provider rejects. The dict-keyed-by-env_key
+        shape is intentional: providers like London TfL need
+        `app_id` + `app_key` together — a one-key signature would force
+        the wizard to test each in isolation (and TfL doesn't expose
+        single-key checks). NYC Bus is single-cred but uses the same
+        shape for uniformity.
+
+        Implementations should pick a low-cost endpoint (no parameters
+        where possible) and return error messages rather than raising —
+        the wizard's UX is "show error and let the user retry"; raising
+        kills the redirect path. Unknown env_keys (typos) may raise
+        `NotImplementedError` since those are programming errors, not
+        user-facing conditions."""
         ...
 
 

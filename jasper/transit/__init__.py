@@ -17,15 +17,23 @@ providers cover a user's geocoded coordinates.
   1. Drop a module under `jasper/transit/providers/` exposing a
      `PROVIDER` instance that satisfies `TransitProvider`.
   2. Append `<module>.PROVIDER` to `REGISTRY` below.
-  3. Add a tool factory under `jasper/tools/` to expose the new
+  3. Add a card-renderer branch in `jasper.web.transit_setup._index_html`
+     so the wizard knows how to surface the new provider's stops
+     picker (subway-style direction radio? bus-style locked-on-key?
+     bike-share-style dock picker?). The wizard's fallback renders a
+     placeholder card for unknown providers so the page still works
+     while a contributor wires this up.
+  4. Add a tool factory under `jasper/tools/` to expose the new
      provider's live data to the voice model (mirror
      `jasper/tools/subway.py` or `jasper/tools/bus.py`).
-  4. Add the provider's env keys to `install.sh`'s migration
+  5. Add the provider's env keys to `install.sh`'s migration
      function so hand-edits to `/etc/jasper/jasper.env` flow into
      `/var/lib/jasper/transit.env`.
 
-No central plumbing changes are needed in the wizard itself —
-it's data-driven by this REGISTRY.
+Steps 1, 2, and 5 are pure-data. Step 3 is UI dispatch (one branch
+in one function). Step 4 is the runtime tool. The discovery layer
+(bbox coverage, find-stops-near, credential probe) is fully
+data-driven over this REGISTRY.
 """
 from __future__ import annotations
 

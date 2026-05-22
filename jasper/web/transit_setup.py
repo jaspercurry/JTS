@@ -125,7 +125,14 @@ def _coords(state: dict[str, str]) -> tuple[float, float] | None:
 
 
 def _has_bus_key(state: dict[str, str]) -> bool:
-    return bool(_value_for(state, "JASPER_MTA_BUSTIME_KEY"))
+    """True iff a BusTime key is persisted in the wizard's state file.
+
+    Intentionally does NOT consult `os.environ`. The wizard process
+    is long-lived (10-min idle); `os.environ` is captured at process
+    start and won't reflect a post-startup migration that moved the
+    key out of jasper.env. Consulting the persisted state directly
+    keeps render decisions and save decisions consistent."""
+    return bool(state.get("JASPER_MTA_BUSTIME_KEY", "").strip())
 
 
 def _split_list(raw: str) -> list[str]:
@@ -202,13 +209,14 @@ def _apply_save(
     if sub_stop:
         new["JASPER_SUBWAY_STATION_ID"] = sub_stop
     sub_dir = (form.get("nyc_subway_direction") or "").strip().lower()
-    if sub_dir in ("uptown", "downtown", "both", ""):
-        if sub_dir and sub_dir != "both":
-            new["JASPER_SUBWAY_DEFAULT_DIRECTION"] = sub_dir
-        elif sub_dir == "both":
-            # Empty value = no default direction; daemon prompts on bare
-            # "next train" queries.
-            new.pop("JASPER_SUBWAY_DEFAULT_DIRECTION", None)
+    # `both` explicitly drops the env var (daemon prompts each time).
+    # uptown/downtown sets the explicit default. Anything else (typo,
+    # absent field on a partial form) leaves state unchanged so a
+    # bus-only save doesn't reset the subway direction.
+    if sub_dir == "both":
+        new.pop("JASPER_SUBWAY_DEFAULT_DIRECTION", None)
+    elif sub_dir in ("uptown", "downtown"):
+        new["JASPER_SUBWAY_DEFAULT_DIRECTION"] = sub_dir
     sub_lines_raw = form.get("nyc_subway_lines")
     if sub_lines_raw is not None:
         parsed = _split_list(sub_lines_raw)
@@ -224,13 +232,13 @@ def _apply_save(
         if bus_provider is None:
             return current, "Bus provider unavailable."
         try:
-            ok = bus_provider.validate_credential(
-                "JASPER_MTA_BUSTIME_KEY", new_key,
+            errors = bus_provider.validate_credentials(
+                {"JASPER_MTA_BUSTIME_KEY": new_key},
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("bus credential probe raised: %r", e)
-            ok = False
-        if not ok:
+            errors = {"JASPER_MTA_BUSTIME_KEY": "probe failed"}
+        if errors:
             return current, (
                 "MTA BusTime rejected that key. Double-check you copied it "
                 "correctly, or wait a few minutes — fresh keys can take ~30 "
@@ -238,17 +246,23 @@ def _apply_save(
             )
         new["JASPER_MTA_BUSTIME_KEY"] = new_key
 
-    # Bus stop pick. Same "blank means keep" semantics as subway.
-    bus_stop = (form.get("nyc_bus_stop") or "").strip()
-    if bus_stop:
-        new["JASPER_BUS_STOP_ID"] = bus_stop
-    bus_routes_raw = form.get("nyc_bus_routes")
-    if bus_routes_raw is not None:
-        parsed = _split_list(bus_routes_raw)
-        if parsed:
-            new["JASPER_BUS_ROUTES"] = ",".join(parsed)
-        else:
-            new.pop("JASPER_BUS_ROUTES", None)
+    # Bus stop pick + routes. Defensive against the locked-card POST
+    # bypass: if no key is in `new` (either from this form or already
+    # persisted), refuse to write bus picks. A crafted POST that
+    # submits nyc_bus_stop without a key would otherwise persist a
+    # stop_id the daemon can't use — the runtime SIRI client also
+    # needs the key and would fail silently at every voice query.
+    if new.get("JASPER_MTA_BUSTIME_KEY", "").strip():
+        bus_stop = (form.get("nyc_bus_stop") or "").strip()
+        if bus_stop:
+            new["JASPER_BUS_STOP_ID"] = bus_stop
+        bus_routes_raw = form.get("nyc_bus_routes")
+        if bus_routes_raw is not None:
+            parsed = _split_list(bus_routes_raw)
+            if parsed:
+                new["JASPER_BUS_ROUTES"] = ",".join(parsed)
+            else:
+                new.pop("JASPER_BUS_ROUTES", None)
 
     return new, None
 
@@ -478,10 +492,14 @@ def _subway_card_html(
 </section>"""
 
     active_stop = _value_for(state, "JASPER_SUBWAY_STATION_ID")
-    active_dir = (
-        _value_for(state, "JASPER_SUBWAY_DEFAULT_DIRECTION").lower()
-        or "uptown"
-    )
+    # Default-direction is unset in env when the user picked "both"
+    # (or hasn't configured yet). Render "both" selected for that
+    # case so a submit-without-touch round-trips to the same empty
+    # value — selecting "uptown" by default would silently mutate
+    # unconfigured state into "uptown" on the next save.
+    active_dir = _value_for(state, "JASPER_SUBWAY_DEFAULT_DIRECTION").lower()
+    if active_dir not in ("uptown", "downtown"):
+        active_dir = "both"
     active_lines = _value_for(state, "JASPER_SUBWAY_LINES")
 
     badge = (
@@ -596,11 +614,6 @@ def _bus_card_html(
             '<p class="msg">No bus stops within 1&nbsp;km of your coordinates.</p>'
         )
 
-    # Match either OBA form (with or without MTA_ prefix) against the
-    # saved active id so the right row stays checked across save flows.
-    stops_with_norm: list[transit.Stop] = []
-    for s in stops:
-        stops_with_norm.append(s)
     rows_html = ""
     if stops:
         rows: list[str] = []
@@ -729,6 +742,15 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
 {_advanced_section_html(state)}"""
         return _wrap_transit_page("Transit", body, status_msg=status_msg)
 
+    # Per-provider card dispatch. Discovery (bbox + find_stops_near
+    # + validate_credentials) is data-driven from the REGISTRY, but
+    # each provider's wizard card is bespoke enough — subway has a
+    # direction radio, bus has the locked-until-keyed state, future
+    # Citi Bike would have a dock-capacity readout — that branching
+    # here is honest. New providers add a branch; the unknown-id
+    # fallback below keeps the page rendering while the contributor
+    # wires up theirs. See jasper/transit/__init__.py for the full
+    # contribution checklist.
     cards: list[str] = []
     for p in providers_covering:
         if p.id == "nyc_subway":
@@ -736,10 +758,6 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
         elif p.id == "nyc_bus":
             cards.append(_bus_card_html(p, state))
         else:
-            # Future-proof: any new provider not handled by a dedicated
-            # renderer falls back to a placeholder so the page still
-            # works — the contributor adding the provider sees what
-            # they need to wire next.
             cards.append(f"""
 <section class="provider-card">
   <h2>{html.escape(p.label)} <span class="badge muted">no UI yet</span></h2>
@@ -806,9 +824,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 state = _load_state(cfg["state_path"])
-                self._send_html(_index_html(
-                    state, status_msg=qs.get("msg", [""])[0],
-                ))
+                # Wrap render in a top-level guard: an unexpected
+                # exception (corrupt CSV, malformed env file, etc.)
+                # should yield a useful page with a diagnostic banner
+                # rather than 500ing the whole route. The wizard's job
+                # is to tell the user what to do next.
+                try:
+                    body = _index_html(state, status_msg=qs.get("msg", [""])[0])
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("transit wizard render failed")
+                    body = _wrap_transit_page(
+                        "Transit",
+                        f'<p class="msg err">Couldn\'t render the page: '
+                        f'{html.escape(str(e))}. Check the daemon logs for '
+                        f'the full traceback (<code>journalctl -u jasper-web</code>).</p>',
+                    )
+                self._send_html(body)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 

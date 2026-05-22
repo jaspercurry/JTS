@@ -23,8 +23,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 OUT="${REPO_ROOT}/jasper/data/mta_stations.csv"
 
-RAW="$(mktemp)"
-trap 'rm -f "${RAW}"' EXIT
+# Keep the staging file ON the same filesystem as OUT so the Python
+# os.replace at the bottom is a true atomic rename. /tmp is often a
+# separate filesystem (especially on macOS dev machines) and os.replace
+# across filesystems raises OSError: EXDEV.
+RAW="${OUT}.fetch.tmp"
+trap 'rm -f "${RAW}" "${OUT}.tmp"' EXIT
 
 # data.ny.gov Socrata CSV endpoint. $limit=600 covers the 496-station
 # dataset with headroom; $select trims to the columns we use so the
@@ -32,8 +36,22 @@ trap 'rm -f "${RAW}"' EXIT
 URL="https://data.ny.gov/resource/39hk-dx4f.csv?\$limit=600&\$select=gtfs_stop_id,stop_name,borough,daytime_routes,gtfs_latitude,gtfs_longitude,north_direction_label,south_direction_label"
 
 echo "Fetching MTA Subway Stations from data.ny.gov..."
-curl --silent --show-error --fail --max-time 30 "${URL}" -o "${RAW}"
-echo "  $(wc -l < "${RAW}" | tr -d ' ') lines fetched"
+# Retry 3x with 2 s delay so a transient Socrata 503 doesn't fail the
+# refresh outright. --fail still exits non-zero on a final 4xx/5xx.
+curl --silent --show-error --fail --max-time 30 \
+    --retry 3 --retry-delay 2 \
+    "${URL}" -o "${RAW}"
+fetched=$(grep -c '' "${RAW}" || echo 0)
+echo "  ${fetched} lines fetched"
+
+# Row-count sanity guard: refuse to write a near-empty CSV. Saw 0-row
+# responses from Socrata once during a backend bug — silently shipping
+# an empty bundled CSV would disable every speaker's subway lookup.
+if [[ "${fetched}" -lt 400 ]]; then
+    echo "Refusing to refresh: fetched only ${fetched} lines (expected ~497)." >&2
+    echo "Inspect ${RAW} and re-run." >&2
+    exit 1
+fi
 
 python3 - "${RAW}" "${OUT}" <<'PY'
 """Transform Socrata CSV → our schema. Writes atomically (tempfile + rename).

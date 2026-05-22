@@ -63,12 +63,16 @@ def test_split_list_handles_comma_and_space():
     assert transit_setup._split_list("  ,  ") == []
 
 
-def test_has_bus_key_falls_back_to_environ(monkeypatch):
-    """Wizard should reflect what the daemon would actually use — that
-    means honouring an operator-set value in /etc/jasper/jasper.env even
-    if it hasn't been migrated yet."""
-    monkeypatch.setenv("JASPER_MTA_BUSTIME_KEY", "from-env")
-    assert transit_setup._has_bus_key({})
+def test_has_bus_key_only_checks_persisted_state(monkeypatch):
+    """`_has_bus_key` must NOT consult os.environ. The wizard is a
+    long-lived process; an operator-set value in /etc/jasper/jasper.env
+    is captured at process start and won't reflect a post-startup
+    migration. Reading only the persisted state file keeps render
+    decisions consistent with save decisions."""
+    monkeypatch.setenv("JASPER_MTA_BUSTIME_KEY", "ghost-value-in-env")
+    # Empty state → no key, regardless of os.environ.
+    assert not transit_setup._has_bus_key({})
+    # State value → key present.
     assert transit_setup._has_bus_key({"JASPER_MTA_BUSTIME_KEY": "from-state"})
 
 
@@ -141,15 +145,18 @@ def test_apply_geocode_manual_out_of_range_errors():
 
 class _StubBus:
     """In-process stand-in for the bus provider that captures key probes
-    and reports whatever validity the test wants."""
+    and reports whatever validity the test wants. Matches the
+    `validate_credentials(creds: dict) -> dict | None` Protocol shape."""
     def __init__(self, accept: bool):
         self.accept = accept
         self.probed: list[str] = []
 
-    def validate_credential(self, env_key: str, value: str) -> bool:
-        assert env_key == "JASPER_MTA_BUSTIME_KEY"
+    def validate_credentials(self, credentials):
+        value = credentials.get("JASPER_MTA_BUSTIME_KEY", "")
         self.probed.append(value)
-        return self.accept
+        if self.accept:
+            return None
+        return {"JASPER_MTA_BUSTIME_KEY": "rejected by stub"}
 
 
 def test_apply_save_subway_pick_persists():
@@ -177,8 +184,13 @@ def test_apply_save_subway_lines_csv_normalised():
 
 
 def test_apply_save_empty_picks_preserve_existing():
-    """User saves with only bus fields set — subway must not be wiped."""
-    current = {"JASPER_SUBWAY_STATION_ID": "B12"}
+    """User saves with only bus fields set — subway must not be wiped.
+    Test setup includes a saved key so the bus card is unlocked
+    (the locked-card guard would otherwise drop the bus stop)."""
+    current = {
+        "JASPER_SUBWAY_STATION_ID": "B12",
+        "JASPER_MTA_BUSTIME_KEY": "preexisting-key",
+    }
     form = {"nyc_bus_stop": "MTA_302680"}
     new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
     assert err is None
@@ -216,6 +228,61 @@ def test_apply_save_blank_key_keeps_existing():
     assert err is None
     assert new["JASPER_MTA_BUSTIME_KEY"] == "old-key"
     assert bus.probed == []  # no probe for blank
+
+
+def test_apply_save_locked_card_ignores_bus_picks_without_key():
+    """Defensive check against a crafted POST that submits
+    nyc_bus_stop/nyc_bus_routes while the bus card is locked (no key
+    set). Without this guard, the daemon would persist a stop_id it
+    can't use (the SIRI client also needs the key)."""
+    new, err = transit_setup._apply_save(
+        {
+            "nyc_bus_stop": "MTA_302680",
+            "nyc_bus_routes": "B35,B70",
+        },
+        {},  # no key in state, no key in form
+        bus_provider=_StubBus(True),
+    )
+    assert err is None
+    assert "JASPER_BUS_STOP_ID" not in new
+    assert "JASPER_BUS_ROUTES" not in new
+
+
+def test_apply_save_locked_card_accepts_bus_picks_when_key_set_via_form():
+    """Inverse of the locked-card guard: if the user pastes a key AND
+    a stop pick in the same submit (e.g. the bus card had just been
+    unlocked on the previous render), the picks land alongside the key."""
+    bus = _StubBus(accept=True)
+    new, err = transit_setup._apply_save(
+        {
+            "nyc_bus_key": "fresh-key",
+            "nyc_bus_stop": "MTA_302680",
+            "nyc_bus_routes": "B35",
+        },
+        {},
+        bus_provider=bus,
+    )
+    assert err is None
+    assert new["JASPER_MTA_BUSTIME_KEY"] == "fresh-key"
+    assert new["JASPER_BUS_STOP_ID"] == "MTA_302680"
+    assert new["JASPER_BUS_ROUTES"] == "B35"
+
+
+def test_apply_save_subway_direction_default_when_unset_renders_both():
+    """Round-trip safety: state with no JASPER_SUBWAY_DEFAULT_DIRECTION
+    must render with "both" selected, NOT "uptown" — otherwise a
+    submit-without-touch silently mutates unconfigured state into
+    "uptown" on the next save."""
+    # We exercise the rendered HTML directly since this is render-time
+    # behavior; the save-time half is covered by the
+    # _both_clears_default test above.
+    state = {
+        "JASPER_TRANSIT_LAT": "40.646",
+        "JASPER_TRANSIT_LON": "-73.994",
+    }
+    body = transit_setup._index_html(state).decode()
+    # "Both" option is selected when no default direction is set.
+    assert 'value="both" selected' in body
 
 
 # ---------- Clear action ---------------------------------------------------
@@ -280,7 +347,13 @@ def test_index_html_outside_nyc_shows_no_coverage():
 @pytest.fixture
 def wizard_server(tmp_path: Path, monkeypatch):
     """Spin up the real handler on a random port with a tmpdir state
-    file and a stub restart hook. Yields (base_url, state_path)."""
+    file and a stub restart hook. Yields (base_url, state_path).
+
+    Also wipes the geocode module's process-wide cache + rate-limit
+    state before each test — otherwise a previous test that called
+    the real geocoder (none should, but defensive) could leak into
+    this one's cache-hit assertions."""
+    geocode_mod._reset_cache_for_tests()
     state_path = str(tmp_path / "transit.env")
     restarts: list[None] = []
     # NB: patch the symbol where it's looked up, not where defined —
@@ -298,6 +371,7 @@ def wizard_server(tmp_path: Path, monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+        geocode_mod._reset_cache_for_tests()
 
 
 def _post(url: str, form: dict) -> urllib.request.addinfourl:

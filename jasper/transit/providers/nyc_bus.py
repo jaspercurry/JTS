@@ -128,8 +128,17 @@ class _NycBus:
             for r in (body.get("references", {}).get("routes") or [])
         }
 
-        ranked: list[tuple[float, dict, list[str]]] = []
+        # (distance, stop_id, name, lat, lon, route_short_names, direction)
+        ranked: list[tuple[float, str, str, float, float, list[str], str]] = []
         for s in raw_stops:
+            sid = str(s.get("id") or "").strip()
+            if not sid:
+                # OBA has historically always populated `id`, but
+                # being defensive costs us nothing and a missing id
+                # would otherwise propagate as a Stop with empty
+                # stop_id — the daemon would then look up routes by
+                # empty string forever.
+                continue
             try:
                 slat = float(s["lat"])
                 slon = float(s["lon"])
@@ -142,14 +151,13 @@ class _NycBus:
                 for rid in route_ids
                 if rid
             ]
-            ranked.append((d, s, short_names))
+            name = str(s.get("name") or sid)
+            direction_hint = str(s.get("direction") or "").strip()
+            ranked.append((d, sid, name, slat, slon, short_names, direction_hint))
         ranked.sort(key=lambda t: t[0])
 
         out: list[Stop] = []
-        for d, s, short_names in ranked[:count]:
-            sid = str(s["id"])
-            name = str(s.get("name") or sid)
-            direction_hint = str(s.get("direction") or "").strip()
+        for d, sid, name, slat, slon, short_names, direction_hint in ranked[:count]:
             # Display: "Name (direction) — Routes". Each section
             # omitted if empty so single-route stops stay concise.
             display = name
@@ -160,19 +168,26 @@ class _NycBus:
             out.append(Stop(
                 stop_id=sid,
                 display_name=display,
-                lat=float(s["lat"]), lon=float(s["lon"]),
+                lat=slat, lon=slon,
                 distance_mi=d,
                 lines=tuple(short_names),
                 direction_hint=direction_hint,
             ))
         return out
 
-    def validate_credential(self, env_key: str, value: str) -> bool:
-        if env_key != CREDENTIAL.env_key:
-            raise NotImplementedError(f"unknown credential {env_key!r}")
-        value = value.strip()
+    def validate_credentials(
+        self, credentials: dict[str, str],
+    ) -> dict[str, str] | None:
+        value = (credentials.get(CREDENTIAL.env_key) or "").strip()
+        unknown_keys = set(credentials) - {CREDENTIAL.env_key}
+        if unknown_keys:
+            raise NotImplementedError(
+                f"nyc_bus only owns {CREDENTIAL.env_key!r}; "
+                f"got unknown {sorted(unknown_keys)}"
+            )
         if not value:
-            return False
+            return {CREDENTIAL.env_key: "key is empty"}
+
         c, owns = self._client()
         try:
             r = c.get(
@@ -181,23 +196,24 @@ class _NycBus:
             )
         except httpx.HTTPError as e:
             logger.warning("BusTime probe failed: %s", e)
-            return False
+            return {CREDENTIAL.env_key: f"BusTime unreachable: {e}"}
         finally:
             if owns:
                 c.close()
-        # 401/403 = key explicitly rejected. Anything else non-200 is
-        # a transient infra issue and we don't want to falsely tell
-        # the user their key is bad — but we also can't validate, so
-        # return False with a logged warning.
+        # Non-200 = transient infra issue or explicit auth reject.
+        # Either way the user can't proceed; we report the same
+        # message and let them re-try.
         if r.status_code != 200:
             logger.info("BusTime probe HTTP %d for key probe", r.status_code)
-            return False
+            return {CREDENTIAL.env_key: f"BusTime returned HTTP {r.status_code}"}
         try:
             data = r.json()
         except ValueError:
-            return False
+            return {CREDENTIAL.env_key: "BusTime returned non-JSON response"}
         # OBA wraps responses with a numeric code; 200 = ok.
-        return data.get("code") == 200
+        if data.get("code") != 200:
+            return {CREDENTIAL.env_key: "BusTime rejected the key"}
+        return None
 
 
 PROVIDER = _NycBus()

@@ -101,11 +101,18 @@ def test_nyc_subway_far_from_nyc_returns_distant_stops():
     assert stops[0].distance_mi > 3000
 
 
-def test_nyc_subway_validate_credential_raises():
-    """Subway is keyless; calling validate_credential is a programming
-    error, not a user error. NotImplementedError makes the bug loud."""
-    with pytest.raises(NotImplementedError):
-        nyc_subway.PROVIDER.validate_credential("X", "y")
+def test_nyc_subway_validate_credentials_empty_succeeds():
+    """Keyless provider: an empty credentials dict is OK (nothing to
+    validate). Returning None per the Protocol's success contract."""
+    assert nyc_subway.PROVIDER.validate_credentials({}) is None
+
+
+def test_nyc_subway_validate_credentials_rejects_unknown_keys():
+    """Keyless provider given keys it doesn't own — programmer error
+    on the caller's side. Reported per-key rather than raised so the
+    wizard's flow doesn't 500."""
+    errors = nyc_subway.PROVIDER.validate_credentials({"FOO": "x"})
+    assert errors == {"FOO": "nyc_subway is keyless"}
 
 
 # ---- NYC Bus --------------------------------------------------------------
@@ -183,39 +190,49 @@ def test_nyc_bus_find_stops_handles_http_error():
         )
 
 
-def test_nyc_bus_validate_credential_true_on_oba_200_response():
+def test_nyc_bus_validate_credentials_none_on_oba_200():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "agencies-with-coverage.json" in request.url.path
         return httpx.Response(200, json={"code": 200, "data": []})
 
     provider = _bus_with_handler(handler)
-    assert provider.validate_credential("JASPER_MTA_BUSTIME_KEY", "good-key")
+    assert provider.validate_credentials(
+        {"JASPER_MTA_BUSTIME_KEY": "good-key"},
+    ) is None
 
 
-def test_nyc_bus_validate_credential_false_on_401():
+def test_nyc_bus_validate_credentials_reports_401():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(401)
 
     provider = _bus_with_handler(handler)
-    assert not provider.validate_credential("JASPER_MTA_BUSTIME_KEY", "bad-key")
+    errors = provider.validate_credentials(
+        {"JASPER_MTA_BUSTIME_KEY": "bad-key"},
+    )
+    assert errors and "JASPER_MTA_BUSTIME_KEY" in errors
+    assert "401" in errors["JASPER_MTA_BUSTIME_KEY"]
 
 
-def test_nyc_bus_validate_credential_false_on_network_error():
+def test_nyc_bus_validate_credentials_reports_network_error():
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("network down")
 
     provider = _bus_with_handler(handler)
-    assert not provider.validate_credential("JASPER_MTA_BUSTIME_KEY", "key")
+    errors = provider.validate_credentials({"JASPER_MTA_BUSTIME_KEY": "key"})
+    assert errors and "unreachable" in errors["JASPER_MTA_BUSTIME_KEY"]
 
 
-def test_nyc_bus_validate_credential_false_on_empty_value():
+def test_nyc_bus_validate_credentials_empty_value_rejected():
     """Don't even probe the network with a blank value — short circuit."""
     provider = _bus_with_handler(lambda req: pytest.fail("should not call"))
-    assert not provider.validate_credential("JASPER_MTA_BUSTIME_KEY", "")
-    assert not provider.validate_credential("JASPER_MTA_BUSTIME_KEY", "   ")
+    errors = provider.validate_credentials({"JASPER_MTA_BUSTIME_KEY": ""})
+    assert errors == {"JASPER_MTA_BUSTIME_KEY": "key is empty"}
 
 
-def test_nyc_bus_validate_credential_unknown_env_key_raises():
+def test_nyc_bus_validate_credentials_unknown_key_raises():
+    """Unknown env_key = programming error (typo in caller). The
+    Protocol allows raising for unknown keys; cred-rejection is the
+    user-facing path and uses the error dict."""
     provider = _bus_with_handler(lambda req: pytest.fail("should not call"))
-    with pytest.raises(NotImplementedError):
-        provider.validate_credential("UNKNOWN_KEY", "x")
+    with pytest.raises(NotImplementedError, match="UNKNOWN_KEY"):
+        provider.validate_credentials({"UNKNOWN_KEY": "x"})

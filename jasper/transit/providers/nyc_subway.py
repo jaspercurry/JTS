@@ -83,7 +83,20 @@ def _load_stations() -> tuple[_SubwayStation, ...]:
 
 # Module-import IO — the file is bundled in the package, so this is
 # effectively a constant from the caller's perspective.
-_STATIONS: tuple[_SubwayStation, ...] = _load_stations()
+#
+# Exception safety: if the CSV is corrupt mid-deploy (partial rsync,
+# bad refresh script run), don't take down `import jasper.transit`
+# (and by cascade the whole jasper-web daemon — all wizards). Fall
+# back to an empty tuple; the wizard card then renders "no stations
+# nearby" instead of 500-ing every settings page.
+try:
+    _STATIONS: tuple[_SubwayStation, ...] = _load_stations()
+except Exception:  # noqa: BLE001
+    logger.exception(
+        "mta_stations.csv unreadable; subway provider disabled. "
+        "Re-run scripts/refresh-mta-stations.sh and redeploy."
+    )
+    _STATIONS = ()
 
 
 def _format_display(s: _SubwayStation) -> str:
@@ -136,8 +149,14 @@ class _NycSubway:
             ))
         return out
 
-    def validate_credential(self, env_key: str, value: str) -> bool:
-        raise NotImplementedError("nyc_subway has no credentials to validate")
+    def validate_credentials(
+        self, credentials: dict[str, str],
+    ) -> dict[str, str] | None:
+        # Provider is keyless. Empty input → success (nothing to check).
+        # Non-empty input is a programming error — the wizard shouldn't
+        # be calling this on a keyless provider — but we don't raise,
+        # just report each unknown key as rejected.
+        return {k: "nyc_subway is keyless" for k in credentials} or None
 
 
 PROVIDER = _NycSubway()
