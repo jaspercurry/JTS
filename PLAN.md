@@ -69,7 +69,7 @@ Starting points:
 | **v6** | **Wireless subwoofer** node + crossover in master CamillaDSP | Strict superset of v5; biggest video story |
 | **v7** | Direct device-to-device **mesh** (master AP+STA, slave priority fallback) | Networking polish; only matters at v5+ scale |
 | **v8** | **USB gadget** (UAC2) inline DSP mode | Blocked on Pi linux #6289 / #6569 being fixed; lowest priority |
-| **v9** | Home Assistant bridge tool (single proxy function) | Optional; opens HA's 3000+ integrations to anyone who already runs HA |
+| ~~**v9**~~ | ~~Home Assistant bridge tool (single proxy function)~~ | **Shipped in v1** (May 2026) via `home_assistant` voice tool wrapping HA's `/api/conversation/process`. JTS is first-of-kind for xAI Grok Voice + HA. Wizard at `http://jts.local/homeassistant/`. Full architecture in [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md). |
 
 The v1 architecture decisions that protect this sequence:
 - **Always-on CamillaDSP** is the pre-req for ducking *and* room
