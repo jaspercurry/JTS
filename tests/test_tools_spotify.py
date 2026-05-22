@@ -81,13 +81,41 @@ class FakeSpotify:
             "items": [{"uri": uri, "name": name} for uri, name in self._library]
         }
 
-    def artist_albums(self, artist_id, include_groups=None, limit=50):
-        """Return a list of releases preconfigured via `with_releases`.
-        The first call records its kwargs on the instance so tests can
-        assert the tool passed include_groups='single,album'."""
+    def artist_albums(self, artist_id, include_groups=None, limit=20):
+        """Return a page of releases preconfigured via `with_releases`.
+
+        Mirrors the real Spotify endpoint's hard cap of 10 per page —
+        passing limit > 10 RAISES, matching the live API's HTTP 400
+        "Invalid limit" response. This is the regression pin for the
+        2026-05-22 bug where the tool passed limit=50 (spotipy's
+        signature accepted it, but the live API rejected it).
+        """
+        if limit is None or limit > 10:
+            raise ValueError(
+                f"FakeSpotify: limit={limit!r} exceeds Spotify's documented "
+                f"max=10 for /artists/{{id}}/albums — the live API returns "
+                f"HTTP 400 'Invalid limit' here. Use limit<=10 and paginate."
+            )
         self.last_artist_albums_id = artist_id
         self.last_artist_albums_include_groups = include_groups
-        return {"items": list(getattr(self, "_releases", []))}
+        self.last_artist_albums_limit = limit
+        releases = list(getattr(self, "_releases", []))
+        page = releases[:limit]
+        next_url = "fake://next" if len(releases) > limit else None
+        self._remaining_releases = releases[limit:]
+        return {"items": page, "next": next_url}
+
+    def next(self, response):
+        """Pagination follower used by spotipy. Returns the next slice
+        of the configured releases until exhausted."""
+        remaining = list(getattr(self, "_remaining_releases", []) or [])
+        if not remaining:
+            return {"items": [], "next": None}
+        limit = getattr(self, "last_artist_albums_limit", 10)
+        page = remaining[:limit]
+        self._remaining_releases = remaining[limit:]
+        next_url = "fake://next" if self._remaining_releases else None
+        return {"items": page, "next": next_url}
 
     def with_releases(self, releases: list) -> "FakeSpotify":
         """Configure the items returned by artist_albums.
@@ -1258,6 +1286,79 @@ def test_latest_no_device_returns_device_error_before_search():
     assert "Spotify Connect on the speaker isn't linked" in result["error"]
     assert "JTS" in result["error"]
     assert sp.last_search_q is None
+
+
+def test_latest_paginates_and_picks_newest_across_pages():
+    """The Spotify API caps `limit` at 10/page AND does not document a
+    sort order. Both constraints mean we MUST page through everything
+    and sort client-side — picking the newest from the first 10 items
+    in arbitrary order is wrong.
+
+    This scenario stages 15 releases (two pages of 10) with the newest
+    deliberately on the second page. If the tool stopped after one
+    page, or didn't sort, it would pick an older release.
+    """
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"artist": ("spotify:artist:prolific", "Prolific Artist")},
+    ).with_releases([
+        # 14 older releases, then the newest at the end of the list
+        # (will land on page 2 since the fake pages in stored order).
+        {"uri": f"spotify:album:old-{i}", "name": f"Old {i}",
+         "album_type": "album", "release_date": f"2022-01-{i:02d}",
+         "release_date_precision": "day"}
+        for i in range(1, 15)
+    ] + [
+        {"uri": "spotify:album:newest", "name": "Brand New Drop",
+         "album_type": "single", "release_date": "2026-05-21",
+         "release_date_precision": "day"},
+    ])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="Prolific Artist"),
+    )
+
+    assert result.get("ok") is True, result
+    assert result.get("playing") == "Brand New Drop"
+    assert result.get("release_date") == "2026-05-21"
+    # And limit=10 was honored — the fake raises if the tool passes
+    # anything higher, so reaching this assertion proves it.
+    assert sp.last_artist_albums_limit == 10
+
+
+def test_latest_limit_must_not_exceed_api_max_of_10():
+    """Regression pin for 2026-05-22 bug. The tool MUST request
+    limit<=10; the fake's artist_albums raises if not, mirroring the
+    live API's HTTP 400 'Invalid limit'. If a future refactor
+    silently raises the limit, this test catches it."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"artist": ("spotify:artist:abc", "X")},
+    ).with_releases([
+        {"uri": "spotify:album:a", "name": "A",
+         "album_type": "single", "release_date": "2026-05-01",
+         "release_date_precision": "day"},
+    ])
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    # If the tool passed limit > 10, the fake's artist_albums would
+    # raise ValueError, the tool would catch it as a generic Exception
+    # and return the _NOT_UNDERSTOOD error — i.e. test would observe
+    # error instead of ok=True.
+    result = asyncio.run(
+        tools["spotify_play_latest_by_artist"](artist="X"),
+    )
+    assert result.get("ok") is True, (
+        f"tool didn't reach playback — likely passed limit>10. "
+        f"Result: {result!r}"
+    )
 
 
 def test_latest_no_clients_returns_setup_error():

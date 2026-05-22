@@ -656,17 +656,42 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         if not artist_id:
             return {"error": _NOT_UNDERSTOOD}
 
+        # Page through the artist's releases. Two constraints force
+        # pagination instead of one big call:
+        #   1. The API caps `limit` at 10 per page (the live endpoint
+        #      returns HTTP 400 'Invalid limit' for anything higher,
+        #      verified 2026-05-22 against the published max=10 in
+        #      developer.spotify.com — spotipy's own default of 20 is
+        #      stale relative to the current API).
+        #   2. Sort order is undocumented, so we can't assume the
+        #      newest release is in the first 10 items — we have to
+        #      collect everything and sort client-side.
+        # Cap total items at 100 (10 pages) so a freak artist with
+        # thousands of releases doesn't stall the turn; for any real
+        # "what's their newest?" use case, 100 is more than enough.
+        releases: list[dict] = []
         try:
-            albums_res = await asyncio.to_thread(
+            page = await asyncio.to_thread(
                 sp.artist_albums,
                 artist_id,
                 include_groups="single,album",
-                limit=50,
+                limit=10,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("artist_albums failed for %s: %s", artist_name, e)
             return {"error": _NOT_UNDERSTOOD}
-        releases = ((albums_res or {}).get("items") or [])
+        while page:
+            releases.extend(page.get("items") or [])
+            if not page.get("next") or len(releases) >= 100:
+                break
+            try:
+                page = await asyncio.to_thread(sp.next, page)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "artist_albums pagination failed for %s: %s",
+                    artist_name, e,
+                )
+                break
         if not releases:
             return {
                 "error": f"couldn't find any releases for {artist_name}."
