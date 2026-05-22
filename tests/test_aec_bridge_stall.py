@@ -44,6 +44,10 @@ from jasper.cli.aec_bridge import (  # noqa: E402
     BridgeStalled,
     FRAME_SAMPLES,
     MicDeviceUnavailable,
+    OUT_FRAME_BYTES,
+    OUT_HOST,
+    OUT_PORT,
+    OUT_PORT_RAW,
     _aec_loop,
     _shutdown,
     _validate_mic_device,
@@ -179,3 +183,136 @@ def test_main_exits_before_engine_init_when_mic_missing(monkeypatch):
 
     assert aec_bridge.main() == 1
     engine_cls.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Dual-stream UDP output (PR 1 of the wake-telemetry series).
+#
+# The bridge emits two UDP streams from `_aec_loop`:
+#   - OUT_PORT (default 9876) — post-AEC output (existing behaviour)
+#   - OUT_PORT_RAW (default 9877) — chip-direct mic (pre-AEC), the
+#     same near-end bytes AEC3 consumes for cancellation.
+# Both batched to OUT_FRAME_BYTES (1280-sample / 80 ms) packets so
+# the consumer (jasper-voice's UdpMicCapture) sees identical chunk
+# shapes. See docs/HANDOFF-wake-telemetry.md for the rationale.
+# ---------------------------------------------------------------------------
+
+
+def _mock_socket():
+    """A `socket.socket()` substitute with the methods _aec_loop calls."""
+    s = MagicMock()
+    s.setblocking = MagicMock()
+    s.sendto = MagicMock()
+    s.close = MagicMock()
+    return s
+
+
+def test_aec_loop_emits_both_streams(monkeypatch):
+    """Four mic frames in → one packet out on EACH port. AEC output
+    bytes go to OUT_PORT; chip-direct mic bytes go to OUT_PORT_RAW."""
+    import socket as real_socket
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    # Disable post-AEC gain so engine output bytes == AEC packet bytes.
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock])
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    # 8 frames of 320 samples each = 16 ms × 8 = 2 full 1280-sample
+    # batches per leg. Each mic frame is byte-distinct so we can
+    # verify which bytes landed in which packet.
+    mic_frames = [
+        bytes([i & 0xff]) * (FRAME_SAMPLES * 2)
+        for i in range(1, 9)
+    ]
+    aec_frames = [
+        bytes([(i + 100) & 0xff]) * (FRAME_SAMPLES * 2)
+        for i in range(1, 9)
+    ]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+
+    _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine)
+
+    # Two sockets created — primary AEC, then raw mic.
+    assert socket_factory.call_count == 2
+    aec_sock.setblocking.assert_called_once_with(False)
+    raw_sock.setblocking.assert_called_once_with(False)
+
+    # Each leg emitted exactly 2 packets (8 frames / 4 per packet).
+    assert aec_sock.sendto.call_count == 2
+    assert raw_sock.sendto.call_count == 2
+
+    # Primary stream: bytes match engine output, destination = OUT_PORT.
+    expected_aec_p1 = b"".join(aec_frames[:4])
+    expected_aec_p2 = b"".join(aec_frames[4:])
+    aec_call_1, aec_call_2 = aec_sock.sendto.call_args_list
+    assert aec_call_1.args == (expected_aec_p1, (OUT_HOST, OUT_PORT))
+    assert aec_call_2.args == (expected_aec_p2, (OUT_HOST, OUT_PORT))
+    assert len(aec_call_1.args[0]) == OUT_FRAME_BYTES
+
+    # Raw stream: bytes match input mic, destination = OUT_PORT_RAW.
+    expected_raw_p1 = b"".join(mic_frames[:4])
+    expected_raw_p2 = b"".join(mic_frames[4:])
+    raw_call_1, raw_call_2 = raw_sock.sendto.call_args_list
+    assert raw_call_1.args == (expected_raw_p1, (OUT_HOST, OUT_PORT_RAW))
+    assert raw_call_2.args == (expected_raw_p2, (OUT_HOST, OUT_PORT_RAW))
+    assert len(raw_call_1.args[0]) == OUT_FRAME_BYTES
+
+    # Both sockets closed on exit (finally block).
+    aec_sock.close.assert_called_once()
+    raw_sock.close.assert_called_once()
+
+
+def test_raw_sendto_failure_does_not_affect_aec_stream(monkeypatch):
+    """BlockingIOError on the raw socket is swallowed and logged;
+    the primary AEC stream continues unaffected. Independent sockets,
+    independent failure domains."""
+    import socket as real_socket
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw_sock.sendto.side_effect = BlockingIOError(
+        "simulated kernel UDP send buffer full"
+    )
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock])
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+
+    _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine)
+
+    # Raw attempted its single packet; the BlockingIOError did NOT
+    # propagate to the AEC stream, which sent its packet normally.
+    assert raw_sock.sendto.call_count == 1
+    assert aec_sock.sendto.call_count == 1
+    aec_sock.sendto.assert_called_once_with(
+        b"".join(aec_frames), (OUT_HOST, OUT_PORT),
+    )
+
+
+def test_raw_port_overridable_via_env(monkeypatch):
+    """Operators can move the raw stream off the default 9877
+    (e.g. for two-bridge testing) without touching the AEC port."""
+    monkeypatch.setenv("JASPER_AEC_UDP_PORT_RAW", "19877")
+
+    # Re-import to pick up the env var. (Module-level constant.)
+    import importlib
+    import jasper.cli.aec_bridge as bridge_mod
+    importlib.reload(bridge_mod)
+
+    try:
+        assert bridge_mod.OUT_PORT_RAW == 19877
+        # Default AEC port unaffected
+        assert bridge_mod.OUT_PORT == 9876
+    finally:
+        # Restore defaults so subsequent tests see canonical ports.
+        monkeypatch.delenv("JASPER_AEC_UDP_PORT_RAW", raising=False)
+        importlib.reload(bridge_mod)

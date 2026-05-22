@@ -77,12 +77,29 @@ class WakeWordDetector:
 
     def feed(self, frame: np.ndarray) -> float | None:
         """Score one frame. Returns the wake score if the threshold was
-        crossed (so the caller can log it for tuning), else None."""
-        scores = self._model.predict(frame)
-        score = float(scores.get(self._key, 0.0))
+        crossed (so the caller can log it for tuning), else None.
+
+        Kept for callers that only need the "did it fire?" answer.
+        New code wanting the raw per-frame score (e.g. dual-stream wake
+        OR-gating that tracks per-leg recent peaks, or telemetry
+        writing scores below threshold to disk) should use
+        `score_frame()` instead — `feed`'s None-return swallows the
+        sub-threshold information."""
+        score = self.score_frame(frame)
         if score >= self._threshold:
             return score
         return None
+
+    def score_frame(self, frame: np.ndarray) -> float:
+        """Score one frame and return the raw wake-score (0.0-1.0).
+
+        Unlike `feed`, returns the score regardless of threshold —
+        callers track recent peaks across frames, run OR-gate logic
+        across multiple legs, or write sub-threshold scores to
+        telemetry. Threshold comparison is the caller's job.
+        """
+        scores = self._model.predict(frame)
+        return float(scores.get(self._key, 0.0))
 
     def reset(self) -> None:
         """Reset internal model state after a wake fires.

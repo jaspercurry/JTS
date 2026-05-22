@@ -253,6 +253,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
@@ -320,6 +321,14 @@ reference. Currently:
   restructure, or anything related to the `/peers/` wizard.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
+- [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
+  Dual-stream wake-word detection (AEC ON + AEC OFF, OR-gated)
+  plus SQLite-backed per-event telemetry with audio capture and
+  funnel tracking through to LLM response / tool call. Replaces
+  the synthetic phone-track wake-rate methodology with real
+  production-attempt data. Read for the schema, the per-PR
+  staging plan, and the design decisions (no real-time labelling,
+  no "I just said Jarvis" button, OR-gate fires immediately).
 - [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — Canonical
   reference for the Seeed ReSpeaker XVF3800 (USB UA) microphone:
   hardware identity, firmware variants, full parameter space, DFU

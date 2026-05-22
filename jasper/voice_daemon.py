@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
@@ -8,12 +9,28 @@ import sys
 from collections import deque
 from enum import Enum
 
+
+@contextlib.asynccontextmanager
+async def _nullcontext_async(value):
+    """Async equivalent of `contextlib.nullcontext`. Yields `value`
+    without entering or exiting anything. Used at the WakeLoop
+    construction site to make the optional second mic `async with`
+    a single statement regardless of whether the second mic is
+    configured (yields None) or is a real UdpMicCapture context."""
+    yield value
+
 from .accounts import Registry, maybe_migrate_legacy
 from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
     drain_acquire_buffer,
 )
-from .audio_io import MicCapture, TtsPlayout, make_mic_capture
+from .audio_io import MicCapture, TtsPlayout, UdpMicCapture, make_mic_capture
+from .wake_events import (
+    WakeEventStore,
+    make_event_id,
+    CAPTURE_PRE_SEC,
+    CAPTURE_POST_SEC,
+)
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
 from .camilla import CamillaController, CueDuck, Ducker
@@ -1003,10 +1020,23 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
 
 
 class WakeLoop:
-    """Single mic consumer. Dispatches each frame to either the wake-word
-    detector (WAKE state) or the active live turn (SESSION state). No
-    second consumer iterating over mic.frames() — eliminates the implicit
-    frame-ownership coupling between wake-listen and active-turn paths.
+    """Mic consumer. Dispatches each primary-mic frame to either the
+    wake-word detector (WAKE state) or the active live turn (SESSION
+    state). One consumer iterating over the primary `mic.frames()` —
+    eliminates implicit frame-ownership coupling between wake-listen
+    and active-turn paths.
+
+    Dual-stream wake detection (when `mic_off` + `detector_off` are
+    set): a parallel secondary consumer reads a second mic source
+    (typically the bridge's chip-direct UDP stream — see
+    docs/HANDOFF-wake-telemetry.md PR 1) and runs an independent
+    `WakeWordDetector` instance on every frame. Either leg crossing
+    threshold fires the wake event (OR-gate). A shared refractory +
+    asyncio lock guarantees one user attempt = one wake event
+    regardless of which leg(s) crossed first. The secondary leg is
+    wake-detection-only: its frames don't populate pre-roll or
+    flow into sessions — the primary AEC ON stream remains the
+    canonical session audio source.
     """
 
     def __init__(
@@ -1025,11 +1055,40 @@ class WakeLoop:
         cues: AudioCueManager | None = None,
         camilla: CamillaController | None = None,
         heartbeat: "Heartbeat | None" = None,
+        mic_off: "UdpMicCapture | None" = None,
+        detector_off: WakeWordDetector | None = None,
+        wake_event_store: WakeEventStore | None = None,
     ) -> None:
         self._cfg = cfg
         self._mic = mic
         self._tts = tts
         self._detector = detector
+        # Secondary wake-detection leg. Both must be present to enable
+        # dual-stream mode; if only one is set we treat as misconfigured
+        # and stay single-stream (logs a warning at run() startup so the
+        # operator notices).
+        self._mic_off = mic_off
+        self._detector_off = detector_off
+        # Per-leg recent wake scores (raw, 0.0-1.0). Updated every frame
+        # the corresponding leg scores (regardless of threshold). Read
+        # at fire time so the wake event payload carries BOTH legs'
+        # most-recent peaks — even when only one leg crossed threshold,
+        # the other leg's score gives signal on whether AEC helped or
+        # hurt for this specific utterance.
+        self._recent_score_on: float = 0.0
+        self._recent_score_off: float = 0.0
+        # Wall-clock (asyncio loop time) at which each leg's recent
+        # score was set. Used at fire time to confirm the other leg's
+        # score is from the same time window (not a stale score from
+        # 3 seconds ago when, say, AEC OFF hasn't been scored recently
+        # because frames stopped arriving on 9877).
+        self._recent_score_on_at: float = 0.0
+        self._recent_score_off_at: float = 0.0
+        # Shared OR-gate lock across the two leg loops. Held only for
+        # the critical section that sets refractory_until + reads the
+        # other leg's recent score. Without this, both legs could race
+        # to fire the same wake event simultaneously.
+        self._wake_fire_lock: asyncio.Lock = asyncio.Lock()
         self._connection = connection
         self._ducker = ducker
         # Direct camilla handle for `CueDuck` (snapshot-based duck
@@ -1131,6 +1190,37 @@ class WakeLoop:
         # the new turn at _begin_turn so the first phoneme of the
         # command isn't clipped.
         self._pre_roll: deque = deque(maxlen=PRE_ROLL_FRAMES)
+
+        # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
+        # Separate from `_pre_roll` because the capture-ring sizing is
+        # tuned for offline review (~6 s windows around each wake
+        # event) and the pre-roll is tuned for first-phoneme
+        # preservation in turn-open (~560 ms). Conflating them would
+        # force one to compromise on the other's dimension.
+        #
+        # The store handles the SQLite writes + audio capture +
+        # retention; this set of attributes is just the WakeLoop's
+        # contribution: the ring + the in-flight event id.
+        #
+        # CAPTURE_RING_FRAMES sized to (pre + post) seconds with safety
+        # margin: 4 + 2 = 6 s window, +2 s slack for the 2 s post-fire
+        # collection window so we don't run off the end of the ring.
+        self._wake_event_store: WakeEventStore | None = wake_event_store
+        _capture_ring_frames = int(
+            ((CAPTURE_PRE_SEC + CAPTURE_POST_SEC) * MicCapture.OUTPUT_RATE
+             / MicCapture.OUTPUT_FRAME_SAMPLES) + 25
+        )
+        self._capture_ring_on: deque = deque(maxlen=_capture_ring_frames)
+        # PR 2 (dual-stream) wakes will populate this; PR 3 only
+        # references it via getattr-tolerant code so this PR is
+        # independent of the merge order.
+        self._capture_ring_off: deque = deque(maxlen=_capture_ring_frames)
+        # The wake event currently in flight, or None when in WAKE
+        # state with no pending event. Set in `_handle_wake_frame` on
+        # fire; cleared in `_end_turn` after the final outcome write.
+        # Funnel-stage hooks scattered through the wake / session /
+        # arbitrate flow consult this to know which row to UPDATE.
+        self._current_event_id: str | None = None
         # Buffer for frames captured during the wake → turn-acquired
         # window. When wake fires, `_handle_wake_frame` kicks off
         # `_acquire_and_drain` as a background task and sets
@@ -1284,54 +1374,142 @@ class WakeLoop:
                 logger.warning("cue %s restore failed: %s", slug, e)
 
     async def run(self) -> None:
-        async for frame in self._mic.frames():
-            if self._heartbeat is not None:
-                self._heartbeat.bump()
-            if self._stop_event.is_set():
-                if self._state is State.SESSION:
-                    await self._end_turn()
-                return
+        # Optional secondary wake-detection leg. Spawned only when both
+        # `mic_off` and `detector_off` were passed at construction
+        # time; logs a warning + stays single-stream if only one is
+        # set (misconfiguration). See class docstring + the OR-gate
+        # logic in `_handle_wake_frame` for the dual-stream design.
+        secondary_task: asyncio.Task | None = None
+        if self._mic_off is not None and self._detector_off is not None:
+            secondary_task = asyncio.create_task(
+                self._wake_secondary_loop(),
+                name="wake-secondary-aec-off",
+            )
+        elif (self._mic_off is None) ^ (self._detector_off is None):
+            logger.warning(
+                "dual-stream wake misconfigured: mic_off=%s detector_off=%s "
+                "(both must be set; staying single-stream)",
+                self._mic_off, self._detector_off,
+            )
+        try:
+            async for frame in self._mic.frames():
+                if self._heartbeat is not None:
+                    self._heartbeat.bump()
+                if self._stop_event.is_set():
+                    if self._state is State.SESSION:
+                        await self._end_turn()
+                    return
 
-            # Room-correction measurement window: drop the frame
-            # entirely (no wake-word feed, no session dispatch, no
-            # pre-roll append). Dropping pre-roll matters — sweep tail
-            # in the pre-roll would prepend ~1.4 s of test-tone audio
-            # to whatever turn the user starts immediately after the
-            # window closes. Active sessions never reach this branch
-            # because measurement_pause() refuses to set the event
-            # while State.SESSION (returns BUSY).
+                # Room-correction measurement window: drop the frame
+                # entirely (no wake-word feed, no session dispatch, no
+                # pre-roll append). Dropping pre-roll matters — sweep tail
+                # in the pre-roll would prepend ~1.4 s of test-tone audio
+                # to whatever turn the user starts immediately after the
+                # window closes. Active sessions never reach this branch
+                # because measurement_pause() refuses to set the event
+                # while State.SESSION (returns BUSY).
+                if self._measurement_active.is_set():
+                    continue
+
+                # User has muted the mic. Drain the frame (don't backpressure
+                # the AEC bridge / mic capture upstream) but skip wake
+                # detection and session forwarding entirely. No pre-roll
+                # append either — when unmuted, the user's first "Hey Jarvis"
+                # is the natural start of their utterance; carrying a mute-
+                # era pre-roll would prepend silence (or whatever room
+                # ambience leaked through) to the next turn.
+                if self._mic_muted:
+                    continue
+
+                # Continuously fill the pre-roll ring. When wake fires, the
+                # last N frames already in this deque are what we replay
+                # into the turn so the user's first phoneme isn't lost.
+                self._pre_roll.append(frame)
+                # Independent capture ring for wake-event telemetry — sized
+                # for the 6 s offline-review window, not the 560 ms turn-
+                # open window. Always-on regardless of state so the moment
+                # a wake fires, the pre-fire context is already on hand.
+                self._capture_ring_on.append(frame)
+
+                # Acquire window: between wake firing and the new turn
+                # being ready to accept audio. `_acquire_and_drain`
+                # opens the turn in the background and drains this
+                # buffer into it; the main loop just collects frames
+                # here so a multi-second context reset doesn't truncate
+                # the user's command. See ACQUIRE_BUFFER_MAX_FRAMES.
+                if self._acquiring:
+                    self._acquire_buffer.append(frame)
+                    continue
+
+                if self._state is State.WAKE:
+                    await self._handle_wake_frame(frame, leg="on")
+                else:
+                    await self._handle_session_frame(frame)
+        finally:
+            # Cancel + join the secondary loop on any exit path. Without
+            # this the task could outlive run() and keep scoring frames
+            # against a stopped detector / closed mic.
+            if secondary_task is not None:
+                secondary_task.cancel()
+                try:
+                    await secondary_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+
+    async def _wake_secondary_loop(self) -> None:
+        """Parallel wake-only consumer of the secondary (AEC OFF) mic.
+
+        Scores every frame through `_detector_off` and dispatches to
+        `_handle_wake_frame(frame, leg='off')`, which shares refractory
+        + the OR-gate lock with the primary loop so one user attempt
+        fires at most one wake event regardless of which leg(s) cross
+        threshold first.
+
+        This leg is **wake-detection-only**: frames are NOT appended
+        to pre-roll, NOT routed to `_acquire_buffer` during the
+        wake→turn-open window, and NOT forwarded to live sessions.
+        The primary AEC ON stream remains the canonical session
+        audio source — keeps session quality unchanged and avoids
+        feeding the LLM mixed dual-stream audio.
+
+        Mirrors the primary-loop gating (measurement window, mic
+        mute, acquiring, state=WAKE) so the AEC OFF leg respects
+        every "stop listening" signal the primary loop respects.
+        """
+        assert self._mic_off is not None
+        # Wake-telemetry capture ring for the AEC OFF leg, parallel to
+        # the primary loop's `_capture_ring_on`. `getattr` so this
+        # stays safe in test setups that build WakeLoop via
+        # `__new__` + manual init (the dual-stream wake-handler tests).
+        capture_ring_off: deque | None = getattr(self, "_capture_ring_off", None)
+        async for frame in self._mic_off.frames():
+            if self._stop_event.is_set():
+                return
             if self._measurement_active.is_set():
                 continue
-
-            # User has muted the mic. Drain the frame (don't backpressure
-            # the AEC bridge / mic capture upstream) but skip wake
-            # detection and session forwarding entirely. No pre-roll
-            # append either — when unmuted, the user's first "Hey Jarvis"
-            # is the natural start of their utterance; carrying a mute-
-            # era pre-roll would prepend silence (or whatever room
-            # ambience leaked through) to the next turn.
+            # Mute is a privacy promise — do NOT record audio for the
+            # wake-events corpus when the user has explicitly muted
+            # the mic. Mirrors the primary loop where the capture
+            # ring fills only AFTER the mute / measurement gates.
             if self._mic_muted:
                 continue
-
-            # Continuously fill the pre-roll ring. When wake fires, the
-            # last N frames already in this deque are what we replay
-            # into the turn so the user's first phoneme isn't lost.
-            self._pre_roll.append(frame)
-
-            # Acquire window: between wake firing and the new turn
-            # being ready to accept audio. `_acquire_and_drain`
-            # opens the turn in the background and drains this
-            # buffer into it; the main loop just collects frames
-            # here so a multi-second context reset doesn't truncate
-            # the user's command. See ACQUIRE_BUFFER_MAX_FRAMES.
+            # Fill the capture ring while the user is "live" (gated
+            # past mute + measurement). Done BEFORE the acquiring /
+            # WAKE-state checks so a wake fire's 6 s window still has
+            # pre-fire context even if it overlaps the wake→turn-open
+            # buffering window.
+            if capture_ring_off is not None:
+                capture_ring_off.append(frame)
             if self._acquiring:
-                self._acquire_buffer.append(frame)
                 continue
-
-            if self._state is State.WAKE:
-                await self._handle_wake_frame(frame)
-            else:
-                await self._handle_session_frame(frame)
+            if self._state is not State.WAKE:
+                # Secondary leg ignores frames during a live session
+                # — only the primary stream feeds the LLM. The leg
+                # resumes scoring when the session ends (state →
+                # WAKE) and the primary loop's `_acquiring` drops
+                # back to False.
+                continue
+            await self._handle_wake_frame(frame, leg="off")
 
     async def measurement_pause(self) -> str:
         """Open a measurement window. Set the gate event, pause the
@@ -1527,29 +1705,93 @@ class WakeLoop:
             self._measurement_safety_task = None
         return "ok"
 
-    async def _handle_wake_frame(self, frame) -> None:
-        # During refractory, swallow frames so TTS bleed doesn't self-trigger.
-        if asyncio.get_event_loop().time() < self._refractory_until:
-            return
-        score = self._detector.feed(frame)
-        if score is None:
+    async def _handle_wake_frame(self, frame, *, leg: str = "on") -> None:
+        """Score one frame on the named leg ('on' = post-AEC primary,
+        'off' = chip-direct secondary). Always tracks the leg's
+        recent peak. If the threshold is crossed AND we win the
+        OR-gate race against the other leg, fires a single wake event
+        with BOTH legs' recent scores attached.
+
+        Refractory + acquiring checks ensure one user attempt = one
+        wake event, regardless of which leg(s) fire first."""
+        # Quick refractory check — both legs early-out without scoring
+        # while the previous wake's TTS may still be bleeding into the
+        # mic. Cheap to do per-leg per-frame.
+        now_loop = asyncio.get_event_loop().time()
+        if now_loop < self._refractory_until:
             return
 
-        # Reset openWakeWord's internal smoothing/state right after a
-        # wake fires. Without this, the model stays primed for several
-        # seconds — its baseline activation is elevated, so music
-        # vocals or TTS-tail bleed can easily push past the threshold
-        # and false-fire on the next listening window. Symptom: clean
-        # wake on the first turn, then unprompted ducking dips while
-        # music plays after the response. Resetting here zeroes the
-        # bias so the next WAKE pass is judged fresh.
+        # Score the frame on this leg's detector. Always track the raw
+        # score (regardless of threshold) so the OTHER leg, when it
+        # fires, can pull our most-recent peak into the wake-event
+        # payload — even if we never crossed threshold for this
+        # utterance.
+        detector = self._detector if leg == "on" else self._detector_off
+        if detector is None:
+            return
+        score = detector.score_frame(frame)
+        if leg == "on":
+            self._recent_score_on = score
+            self._recent_score_on_at = now_loop
+        else:
+            self._recent_score_off = score
+            self._recent_score_off_at = now_loop
+
+        if score < detector.threshold:
+            return
+
+        # Threshold crossed on this leg. Try to win the OR-gate race
+        # against the other leg's loop. The lock is held only for the
+        # critical section (re-check refractory + set refractory + read
+        # the other leg's recent score); the rest of the wake flow
+        # happens with the lock released so both loops stay responsive.
+        async with self._wake_fire_lock:
+            if asyncio.get_event_loop().time() < self._refractory_until:
+                # The other leg won the race while we awaited the
+                # lock. Bow out — only one wake event per user attempt.
+                return
+            # Win. Set refractory IMMEDIATELY so the other leg's next
+            # frame backs off cleanly. `_arbitrate_acquire_drain` will
+            # extend this in its finally block.
+            self._refractory_until = now_loop + WAKE_REFRACTORY_SEC
+            peak_on = self._recent_score_on
+            peak_off = self._recent_score_off
+            # If a leg's most-recent score is older than the per-frame
+            # cadence × a small safety factor, treat it as "no recent
+            # frame from that leg" — surfaces an AEC OFF stream that
+            # stopped feeding (bridge crash / PR 1 not yet deployed)
+            # without lying about a stale score in the wake event.
+            STALE_SEC = 0.32  # 4× MicCapture's 80 ms frame period
+            if leg != "on" and (now_loop - self._recent_score_on_at) > STALE_SEC:
+                peak_on = None  # type: ignore[assignment]
+            if leg != "off" and (now_loop - self._recent_score_off_at) > STALE_SEC:
+                peak_off = None  # type: ignore[assignment]
+
+        # Reset BOTH detectors after a wake fires. openWakeWord's
+        # prediction smoothing keeps recent-activation state across
+        # calls; without resetting, the post-fire baseline stays
+        # elevated and music vocals or TTS-tail bleed can false-fire
+        # on the next listening window. Reset the loser as well as
+        # the winner because the loser's score was also elevated by
+        # the user's wake utterance.
         self._detector.reset()
+        if self._detector_off is not None:
+            self._detector_off.reset()
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
         logger.info(
-            "event=wake.detected score=%.2f threshold=%.2f",
-            score, self._detector.threshold,
+            "event=wake.detected leg=%s score_on=%s score_off=%s threshold=%.2f",
+            leg,
+            f"{peak_on:.2f}" if peak_on is not None else "none",
+            f"{peak_off:.2f}" if peak_off is not None else "none",
+            detector.threshold,
+        )
+        # Use the firing-leg's score for the existing event payload
+        # field so downstream code (peering ranker, etc.) keeps
+        # working without per-leg awareness.
+        score = peak_on if leg == "on" and peak_on is not None else (
+            peak_off if leg == "off" and peak_off is not None else score
         )
 
         # Pre-compute the "can we actually serve this turn?" gates.
@@ -1579,6 +1821,138 @@ class WakeLoop:
         # divide by full-scale to get linear amplitude.
         rms_dbfs = _frame_rms_dbfs(frame)
 
+        # Wake-event telemetry — open a row for the funnel hooks to
+        # UPDATE as the event progresses. Cheap (single SQLite INSERT
+        # in WAL mode); failure is logged but does not block wake
+        # response (telemetry is not a wake-blocking dependency).
+        # `getattr` so this stays safe for tests that build WakeLoop
+        # via `__new__` + manual attribute init (peering tests,
+        # dual-stream wake-handler tests).
+        store = getattr(self, "_wake_event_store", None)
+        if store is not None:
+            event_id = make_event_id()
+            self._current_event_id = event_id
+            # Pull whichever leg's recent peak is current (PR 2 dual-
+            # stream populates both; PR 3 alone only the firing leg).
+            peak_on = getattr(self, "_recent_score_on", None)
+            peak_off = getattr(self, "_recent_score_off", None)
+            recent_on_at = getattr(self, "_recent_score_on_at", 0.0)
+            recent_off_at = getattr(self, "_recent_score_off_at", 0.0)
+            if leg == "on":
+                trigger_kind = "fire_aec_on"
+                peak_on = score
+            else:  # leg == "off"
+                trigger_kind = "fire_aec_off"
+                peak_off = score
+            # Compute per-leg peak offset relative to wake-fire time.
+            # Use the SAME `now_loop` that `_handle_wake_frame`
+            # captured at the top — that's the canonical fire-time
+            # reference, and it's also what was just written to
+            # `_recent_score_<leg>_at` when this frame scored. NOT
+            # `asyncio.get_event_loop().time()` here — recomputing
+            # would include the detector.reset() latency (~200ms x
+            # 2 on Pi 5), making the firing leg's offset look like
+            # ~-400 ms instead of ~0 ms.
+            #
+            # Semantics: 0 = leg's last score == fire frame (the
+            # firing leg by definition). Negative N = leg's last
+            # score was N ms before fire (the OTHER leg, when its
+            # last score-bearing frame was earlier than the firing
+            # leg's).
+            wake_fire_time = now_loop
+            peak_off_ms = (
+                int((recent_off_at - wake_fire_time) * 1000)
+                if recent_off_at else None
+            )
+            peak_on_ms = (
+                int((recent_on_at - wake_fire_time) * 1000)
+                if recent_on_at else None
+            )
+            # Per-leg instantaneous mic RMS at fire-time, in dBFS.
+            # Sampled from the last frame in each capture ring so we
+            # get "what was the mic seeing right now" without an
+            # extra capture. Helps separate low-energy FPs from real
+            # attempts in offline review.
+            mic_rms_on = self._tail_frame_rms_dbfs(
+                getattr(self, "_capture_ring_on", None)
+            )
+            mic_rms_off = self._tail_frame_rms_dbfs(
+                getattr(self, "_capture_ring_off", None)
+            )
+            # Bridge config snapshot — env-var-driven knobs as seen
+            # by the bridge at startup. Useful when post-hoc analysis
+            # asks "what NS level was this event captured under?".
+            # Read here (not from the bridge) since the bridge is a
+            # separate process; we trust /etc/jasper/jasper.env to be
+            # the source of truth and that the bridge was restarted
+            # after any change.
+            bridge_config = {
+                "ns_enabled": os.environ.get("JASPER_AEC_NS_ENABLED", "1"),
+                "ns_level": os.environ.get("JASPER_AEC_NS_LEVEL", "low"),
+                "agc1_enabled": os.environ.get("JASPER_AEC_AGC1_ENABLED", "0"),
+                "agc1_target_dbfs": os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
+                "agc1_max_gain_db": os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
+                "ref_gain_db": os.environ.get("JASPER_AEC_REF_GAIN_DB", "0"),
+                "mic_gain_db": os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"),
+                "ref_hpf_hz": os.environ.get("JASPER_AEC_REF_HPF_HZ", "125"),
+                "chip_hpf_hz": os.environ.get("JASPER_AEC_CHIP_HPF_HZ", "125"),
+            }
+            # Music context — best-effort from the TtsVolumeTracker's
+            # cached anchor (the loudness it last observed on the
+            # music chain via the 1-Hz `_anchor` poll). That value is
+            # already maintained without async I/O, so reading it on
+            # the wake hot path is free. Not a renderer probe (would
+            # add ~50 ms of async work); the anchor is a recent-ish
+            # cached number, accurate to within ~1 s.
+            music_volume_db = None
+            music_active_proxy = False
+            tracker = getattr(self, "_tts_volume_tracker", None)
+            if tracker is not None:
+                # `_anchor_dbfs` is the most recent observed
+                # music-chain RMS in dBFS (defaults to
+                # DEFAULT_ANCHOR_DBFS until the first tick observes
+                # real music). Proxy: louder than -60 dBFS = "music
+                # probably playing." Imperfect (TTS uses the same
+                # chain) but useful for FP correlation.
+                anchor = getattr(tracker, "_anchor_dbfs", None)
+                if anchor is not None and anchor > -120.0:
+                    music_volume_db = float(anchor)
+                    music_active_proxy = anchor > -60.0
+            try:
+                await store.begin_event(
+                    event_id=event_id,
+                    trigger_kind=trigger_kind,
+                    peak_score_aec_on=peak_on,
+                    peak_score_aec_off=peak_off,
+                    peak_offset_ms_on=peak_on_ms,
+                    peak_offset_ms_off=peak_off_ms,
+                    threshold=self._detector.threshold,
+                    wake_model=self._cfg.wake_model,
+                    voice_provider=getattr(self._cfg, "voice_provider", None),
+                    bridge_config=bridge_config,
+                    music_active=music_active_proxy,
+                    music_volume_db=music_volume_db,
+                    mic_muted=getattr(self, "_mic_muted", None),
+                    mic_rms_dbfs_on=mic_rms_on,
+                    mic_rms_dbfs_off=mic_rms_off,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "wake_events: begin_event failed (will skip telemetry "
+                    "for this event): %s", e,
+                )
+                self._current_event_id = None
+            # Schedule the audio capture finalize as a fire-and-forget
+            # task. Sleeps for the post-fire window, then snapshots the
+            # capture rings and writes WAVs. Not added to `_bg_tasks`
+            # per the "fire-once-and-exit tasks not in bg_tasks" rule
+            # in this file.
+            if self._current_event_id is not None:
+                asyncio.create_task(
+                    self._finalize_event_audio(self._current_event_id),
+                    name="wake-event-audio-finalize",
+                )
+
         # Spawn the arbitrate+acquire+drain pipeline as a background
         # task so the main mic loop stays responsive (frames continue
         # piling into _acquire_buffer for up to 20 s — see
@@ -1595,6 +1969,111 @@ class WakeLoop:
             ),
             name="wake-arbitrate-acquire-drain",
         )
+
+    async def _finalize_event_audio(self, event_id: str) -> None:
+        """Wait the post-fire collection window, then snapshot both
+        capture rings and persist as WAV files via the store.
+
+        Fire-and-forget — failure logs WARN but doesn't propagate.
+        Capture truncation is acceptable on daemon shutdown (the row
+        keeps its NULL audio_*_path, queries can filter them out)."""
+        if self._wake_event_store is None:
+            return
+        try:
+            await asyncio.sleep(CAPTURE_POST_SEC)
+            # Snapshot count = pre + post window in frames. Take the
+            # most recent N frames from each ring; rings may hold
+            # slightly more than this thanks to the slack in the
+            # maxlen sizing. concatenating bytes is cheap.
+            from .audio_io import MicCapture as _MC
+            n_frames = int(
+                (CAPTURE_PRE_SEC + CAPTURE_POST_SEC)
+                * _MC.OUTPUT_RATE / _MC.OUTPUT_FRAME_SAMPLES
+            )
+            audio_on = self._snapshot_ring(self._capture_ring_on, n_frames)
+            audio_off = self._snapshot_ring(self._capture_ring_off, n_frames)
+            await self._wake_event_store.attach_audio(
+                event_id=event_id,
+                audio_on=audio_on,
+                audio_off=audio_off,
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: attach_audio failed for %s: %s", event_id, e,
+            )
+
+    @staticmethod
+    def _snapshot_ring(ring: deque, n_frames: int) -> bytes | None:
+        """Take the LAST `n_frames` from the ring and concatenate
+        their bytes. Returns None if the ring is empty (e.g. AEC OFF
+        leg not present in single-stream mode)."""
+        if not ring:
+            return None
+        # Take the trailing n_frames; if fewer are available, take
+        # everything (early-startup case: rings haven't filled yet).
+        take = min(len(ring), n_frames)
+        frames = list(ring)[-take:]
+        # Each frame is a numpy int16 array; tobytes() is cheap.
+        return b"".join(f.tobytes() for f in frames)
+
+    @staticmethod
+    def _tail_frame_rms_dbfs(ring: "deque | None") -> float | None:
+        """RMS in dBFS of the most-recent frame in `ring`, or None
+        if the ring is empty / missing. Used by `_handle_wake_frame`
+        to capture per-leg instantaneous mic level at fire-time for
+        the wake-event telemetry row."""
+        if ring is None or not ring:
+            return None
+        return _frame_rms_dbfs(ring[-1])
+
+    async def _telemetry_stage(self, stage: str) -> None:
+        """Best-effort funnel-stage UPDATE for the in-flight wake
+        event. No-op when telemetry is disabled, when no event is
+        currently in flight, or when the store write fails — the
+        wake / session path is never blocked or interrupted by
+        telemetry trouble (logged at WARN; row stays with the
+        missing column NULL).
+
+        Uses `getattr` so it stays safe for callers that construct
+        WakeLoop via `__new__` + manual attribute init (the peering
+        tests do this) and don't populate the telemetry attrs."""
+        store = getattr(self, "_wake_event_store", None)
+        event_id = getattr(self, "_current_event_id", None)
+        if store is None or event_id is None:
+            return
+        try:
+            await store.update_stage(event_id, stage)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: update_stage(%s) failed: %s", stage, e,
+            )
+
+    async def _telemetry_outcome(
+        self, outcome: str, detail: str | None = None,
+    ) -> None:
+        """Best-effort terminal-outcome UPDATE for the in-flight wake
+        event. Same fail-soft + `getattr`-tolerant pattern as
+        `_telemetry_stage`. Clears `_current_event_id` after the
+        write so subsequent funnel hooks for the next wake start
+        clean."""
+        store = getattr(self, "_wake_event_store", None)
+        event_id = getattr(self, "_current_event_id", None)
+        if store is None or event_id is None:
+            # Still clear the id (if it exists) so the next wake
+            # starts from a clean state.
+            if hasattr(self, "_current_event_id"):
+                self._current_event_id = None
+            return
+        # Clear early so subsequent stray funnel-hook calls don't keep
+        # writing against a finalised row.
+        self._current_event_id = None
+        try:
+            await store.set_outcome(event_id, outcome, detail)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "wake_events: set_outcome(%s) failed for %s: %s",
+                outcome, event_id, e,
+            )
 
     async def _arbitrate_acquire_drain(
         self,
@@ -1635,6 +2114,8 @@ class WakeLoop:
             # again after the arbitration await (which can take up
             # to 500 ms — plenty of time for the user to mute).
             if self._wake_late_cancelled("pre_arb"):
+                await self._telemetry_stage("late_cancel")
+                await self._telemetry_outcome("late_cancel", "pre_arb")
                 return  # finally clears _acquiring + buffer
 
             # Step 1: peer arbitration.
@@ -1646,14 +2127,20 @@ class WakeLoop:
                 # Another peer is handling it. Stay silent — losers
                 # don't play chirps or cues; they just back off.
                 logger.info("event=peering.wake.lost score=%.2f", score)
+                await self._telemetry_stage("peer_lost")
+                await self._telemetry_outcome("peer_lost")
                 return  # finally clears _acquiring + buffer
 
             if self._wake_late_cancelled("post_arb"):
+                await self._telemetry_stage("late_cancel")
+                await self._telemetry_outcome("late_cancel", "post_arb")
                 return
 
             # Step 2: gate cues — only the winner pays this cost.
             if not spend_allowed:
                 logger.warning("daily spend cap reached; voice disabled until rollover")
+                await self._telemetry_stage("gate_blocked")
+                await self._telemetry_outcome("gate_blocked", "spend_cap_reached")
                 await self._play_cue("spend_cap_reached")
                 return
             if conn_paused:
@@ -1661,6 +2148,8 @@ class WakeLoop:
                     "wake detected but live connection is paused (reconnect/backoff); "
                     "ignoring this wake event",
                 )
+                await self._telemetry_stage("gate_blocked")
+                await self._telemetry_outcome("gate_blocked", "connection_paused")
                 await self._play_cue("cant_connect")
                 return
 
@@ -1676,6 +2165,7 @@ class WakeLoop:
             )
 
             await self._begin_turn()  # ends with state = SESSION
+            await self._telemetry_stage("turn_opened")
             # Notify peering that we've opened a session (winner-only
             # heartbeat starts firing). Fire-and-forget — voice's own
             # session lifecycle is the source of truth.
@@ -1701,8 +2191,10 @@ class WakeLoop:
             # Fast-talker compensation: see _begin_turn comment block.
             if speech_in_acquire and not self._user_speech_seen:
                 self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
         except Exception as e:  # noqa: BLE001
             logger.exception("turn acquire failed: %s", e)
+            await self._telemetry_outcome("session_failed", str(e)[:200])
             await self._play_cue("cant_connect")
             await self._cleanup_after_failed_begin()
             self._acquire_buffer.clear()
@@ -1922,6 +2414,7 @@ class WakeLoop:
                     sustained * 1000, speech_prob,
                 )
                 self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
             self._silence_started_at = 0.0
         else:
             # Sub-threshold frame breaks the run. Wake-tail residual
@@ -2114,6 +2607,18 @@ class WakeLoop:
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
     async def _end_turn(self, reason: str = "ended") -> None:
+        # Wake-event telemetry: record the terminal state of the
+        # in-flight event. `_user_speech_seen` tells us whether the
+        # session got real user input — if not, the wake was likely
+        # a false positive (music transient, TTS bleed) or the user
+        # changed their mind. Either way the outcome is 'no_speech',
+        # which dual-stream FP analysis keys off.
+        await self._telemetry_stage("turn_complete")
+        terminal_outcome = (
+            "completed" if self._user_speech_seen else "no_speech"
+        )
+        await self._telemetry_outcome(terminal_outcome, reason)
+
         # Notify peering daemon EARLY (before slow cleanup) so peers
         # un-suppress promptly. Other devices' next wake events should
         # start a fresh arbitration; waiting for our chirp + duck
@@ -2561,11 +3066,27 @@ async def run() -> None:
         # under the resilience-ladder PR 2 architecture) or back to
         # the PortAudio MicCapture for anything else (`Array` for
         # chip-direct, a `hw:` substring for any other USB mic).
+        #
+        # Optional secondary mic for dual-stream wake detection (the
+        # OR-gate path documented in docs/HANDOFF-wake-telemetry.md).
+        # When `cfg.mic_device_raw` is set (e.g. `udp:9877` paired
+        # with the bridge's chip-direct stream), the WakeLoop reads
+        # both streams in parallel and fires wake on either crossing
+        # threshold. Empty `mic_device_raw` keeps the existing
+        # single-stream behaviour.
+        mic_off_cm = (
+            make_mic_capture(
+                cfg.mic_device_raw,
+                capture_rate=cfg.mic_capture_rate,
+                capture_channels=cfg.mic_capture_channels,
+            )
+            if cfg.mic_device_raw else _nullcontext_async(None)
+        )
         async with make_mic_capture(
             cfg.mic_device,
             capture_rate=cfg.mic_capture_rate,
             capture_channels=cfg.mic_capture_channels,
-        ) as mic, TtsPlayout(
+        ) as mic, mic_off_cm as mic_off, TtsPlayout(
             cfg.tts_device,
             output_rate=cfg.tts_output_rate,
             # Constructor gain doesn't matter at runtime — TtsPlayout
@@ -2607,6 +3128,37 @@ async def run() -> None:
             # jasper/watchdog.py header.
             heartbeat = Heartbeat(stale_threshold_sec=5.0, interval_sec=10.0)
             heartbeat.start()
+            # Second WakeWordDetector instance for the AEC OFF leg.
+            # openWakeWord's `Model` carries internal prediction-buffer
+            # state per instance — two independent detectors so the
+            # legs don't cross-contaminate. Same model file and same
+            # threshold; only the input stream differs. Constructed
+            # only when mic_off is present.
+            detector_off = (
+                WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
+                if mic_off is not None else None
+            )
+            # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
+            # Opens the SQLite DB synchronously at startup so the daemon
+            # is "ready" only after the schema migration is applied —
+            # avoids racy "begin_event before CREATE TABLE" failures on
+            # first-ever boot. Failure to open is logged + the daemon
+            # continues with telemetry disabled (the wake / session
+            # path is unaffected).
+            wake_event_store: WakeEventStore | None = None
+            try:
+                wake_event_store = WakeEventStore(
+                    cfg.wake_events_dir,
+                    max_audio_bytes=cfg.wake_events_max_audio_bytes,
+                )
+                wake_event_store.open()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "wake_events: failed to open store at %s: %s "
+                    "(continuing with telemetry disabled)",
+                    cfg.wake_events_dir, e,
+                )
+                wake_event_store = None
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
@@ -2614,6 +3166,9 @@ async def run() -> None:
                 cues=cues_manager,
                 camilla=camilla,
                 heartbeat=heartbeat,
+                mic_off=mic_off,
+                detector_off=detector_off,
+                wake_event_store=wake_event_store,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
             # the wake loop's session-aware cue play. Done here (after
@@ -2645,6 +3200,11 @@ async def run() -> None:
                     await control_socket.wait_closed()
                 except Exception:  # noqa: BLE001
                     pass
+                if wake_event_store is not None:
+                    try:
+                        wake_event_store.close()
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("wake_events store close: %s", e)
     finally:
         # Stop the scheduler FIRST so any in-flight `_run` tasks that
         # were about to fire get cancelled before we tear down the
