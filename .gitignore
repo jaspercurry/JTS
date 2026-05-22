@@ -48,3 +48,8 @@ wake-events/
 # Per-session scratch and WIP files used by Claude Code agents.
 # These are local-only notes; never commit them.
 .claude/
+
+# Reference voice recordings (whisper/yell/music/fast/slow) used as
+# the stable A/B baseline for AEC engine + wake-word model swaps.
+# User-specific audio; never ship to the repo.
+reference-conditions/
