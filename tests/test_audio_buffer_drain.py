@@ -163,12 +163,13 @@ async def test_drain_handles_bounded_deque():
 
 @pytest.mark.asyncio
 async def test_drain_with_vad_flags_sustained_speech():
-    """Fast-talker compensation: 2 consecutive frames above the speech
-    threshold should set sustained_speech_detected=True. Caller uses
-    this to pre-arm its end-of-utterance silence detector so live
-    frames see "watch for silence" rather than "wait for speech to
-    arm" (which never happens if the user's whole question is in
-    the acquire window)."""
+    """Fast-talker compensation: a run of ≥``min_consecutive_speech``
+    consecutive frames above the speech threshold should set
+    sustained_speech_detected=True. Caller uses this to pre-arm
+    its end-of-utterance silence detector so live frames see
+    "watch for silence" rather than "wait for speech to arm"
+    (which never happens if the user's whole question is in the
+    acquire window)."""
 
     buf: deque = deque()
     for i in range(4):
@@ -176,7 +177,8 @@ async def test_drain_with_vad_flags_sustained_speech():
     turn = _FakeTurn()
     # First frame is silence (wake-word tail) then 3 frames of
     # speech — typical pattern when fast talker starts the question
-    # immediately after the wake word.
+    # immediately after the wake word. 3 consecutive speech frames
+    # clears the default ``min_consecutive_speech=3`` gate.
     scores = {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.95}
     predict = lambda f: scores[f.tag]
 
@@ -213,8 +215,9 @@ async def test_drain_with_vad_requires_consecutive_frames():
     """A single high-score frame (e.g. a transient click registered
     as speech by Silero) must NOT pre-arm. Only sustained
     speech-above-threshold across `min_consecutive_speech` frames
-    counts. Defaults to 2 frames = 160 ms which mirrors the
-    SUSTAINED_SPEECH_TO_ARM_SEC threshold used on live frames."""
+    counts. Defaults to 3 frames ≈ 240 ms which mirrors the
+    SUSTAINED_SPEECH_TO_ARM_SEC = 0.20 s threshold used on live
+    frames."""
 
     buf: deque = deque()
     for i in range(4):
@@ -222,6 +225,37 @@ async def test_drain_with_vad_requires_consecutive_frames():
     turn = _FakeTurn()
     # Alternating: speech, silence, speech, silence — never 2 in a row.
     scores = {0: 0.91, 1: 0.02, 2: 0.88, 3: 0.04}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn, vad_predict=predict, speech_threshold=0.15,
+    )
+
+    assert count == 4
+    assert speech_seen is False
+
+
+@pytest.mark.asyncio
+async def test_drain_with_two_consecutive_speech_frames_stays_unarmed():
+    """Regression: 2 consecutive speech frames (~160 ms) must NOT
+    arm. That length is the natural signature of the wake-word
+    tail + quiet music vocals when the user wakes the speaker
+    while music is playing — pre-arming on it ends the turn after
+    END_OF_UTTERANCE_SILENCE_SEC of "user thinking" silence,
+    before the user has time to start speaking. The model then
+    receives ~1 s of pre-roll + wake-tail audio and fabricates a
+    follow-up question from the prior turn's cached tool result.
+
+    The fix matches the acquire path's gate to the live path's
+    SUSTAINED_SPEECH_TO_ARM_SEC = 0.20 s; with 80 ms frames that's
+    a ≥3-frame run."""
+
+    buf: deque = deque()
+    for i in range(4):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # Silence + 2 consecutive speech (wake-word tail signature) + silence.
+    scores = {0: 0.02, 1: 0.91, 2: 0.88, 3: 0.04}
     predict = lambda f: scores[f.tag]
 
     count, speech_seen = await drain_acquire_buffer(
