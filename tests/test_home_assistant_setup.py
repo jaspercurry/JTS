@@ -134,7 +134,7 @@ def wizard_server(tmp_path, monkeypatch):
     # Default verify mock: success. Individual tests override.
     monkeypatch.setattr(
         ha_setup, "verify_sync",
-        lambda url, token: {
+        lambda url, token, *, verify_ssl=True: {
             "ok": True, "url": url, "instance_name": "Home", "version": "2026.5.1",
             "agents": [{"entity_id": "conversation.home_assistant", "name": "Home Assistant"}],
         },
@@ -229,6 +229,10 @@ def test_save_full_round_trip_writes_env_and_restarts(wizard_server):
     })
     assert status == 303
     assert "Connected to Home" in urllib.parse.unquote(loc)
+    # restarting=1 marker lets the connected page show its
+    # "Configuring…" UX instead of letting the user immediately
+    # try voice commands against a still-rebooting daemon.
+    assert "restarting=1" in loc
     saved = _read_env(state_path)
     assert saved[ha_setup.ENV_URL] == "http://homeassistant.local:8123"
     assert saved[ha_setup.ENV_TOKEN] == "eyJ0eXAi.test-token"
@@ -239,12 +243,83 @@ def test_save_full_round_trip_writes_env_and_restarts(wizard_server):
     assert len(restarts) == 1
 
 
+def test_verify_ssl_env_var_constant_matches_module():
+    """The wizard re-exports ENV_* constants from jasper.home_assistant
+    rather than defining its own — that's the staff-review fix for
+    env-var-string duplication. Confirm the re-export holds and the
+    new VERIFY_SSL constant is in the chain."""
+    import jasper.home_assistant as ha_mod
+    assert ha_setup.ENV_URL == ha_mod.ENV_URL == "JASPER_HA_URL"
+    assert ha_setup.ENV_TOKEN == ha_mod.ENV_TOKEN == "JASPER_HA_TOKEN"
+    assert ha_setup.ENV_AGENT_ID == ha_mod.ENV_AGENT_ID == "JASPER_HA_AGENT_ID"
+    assert ha_setup.ENV_VERIFY_SSL == ha_mod.ENV_VERIFY_SSL == "JASPER_HA_VERIFY_SSL"
+    assert ha_setup.ENV_RECENT_URLS == ha_mod.ENV_RECENT_URLS == "JASPER_HA_RECENT_URLS"
+
+
+def test_save_persists_verify_ssl_off_when_checkbox_unchecked(wizard_server):
+    """Submitting the connected/partial form with verify_ssl_present=1
+    AND no verify_ssl field (= checkbox unchecked = user opted into
+    self-signed) writes JASPER_HA_VERIFY_SSL=0 to the env file."""
+    base_url, state_path, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "https://homeassistant.local:8123",
+        "token": "test-token",
+        "agent_id": "",
+        "verify_ssl_present": "1",
+        # verify_ssl field omitted — checkbox unchecked
+    })
+    saved = _read_env(state_path)
+    assert saved[ha_setup.ENV_VERIFY_SSL] == "0"
+
+
+def test_save_omits_verify_ssl_when_default_safe(wizard_server):
+    """When verify_ssl_present is absent (state-1 URL-only form) AND
+    no prior verify_ssl was saved, the env file should NOT contain
+    the verify_ssl key — absent = default safe (verify enabled)."""
+    base_url, state_path, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local",
+        "token": "test-token",
+        "agent_id": "",
+        # no verify_ssl_present, no verify_ssl
+    })
+    saved = _read_env(state_path)
+    assert ha_setup.ENV_VERIFY_SSL not in saved
+
+
+def test_state_partial_renders_checkbox_for_https_url(wizard_server):
+    """HTTPS URLs show the self-signed-cert checkbox in state 2;
+    plain HTTP doesn't (no TLS to verify)."""
+    base_url, state_path, _ = wizard_server
+    # State 2 — HTTPS URL, no token yet
+    _post(f"{base_url}/save", {
+        "url": "https://homeassistant.local:8123",
+        "token": "",
+        "agent_id": "",
+    })
+    _, body = _get(f"{base_url}/")
+    assert "Accept a self-signed certificate" in body
+    assert "verify_ssl" in body
+
+
+def test_state_partial_omits_checkbox_for_http_url(wizard_server):
+    """Plain HTTP URLs don't show the cert checkbox."""
+    base_url, state_path, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local",  # normalizes to http://
+        "token": "",
+        "agent_id": "",
+    })
+    _, body = _get(f"{base_url}/")
+    assert "Accept a self-signed certificate" not in body
+
+
 def test_save_with_invalid_token_keeps_url_drops_token(wizard_server, monkeypatch):
     base_url, state_path, restarts = wizard_server
     # Override verify to fail with an auth error
     monkeypatch.setattr(
         ha_setup, "verify_sync",
-        lambda url, token: {"ok": False, "error": "Token wasn't accepted."},
+        lambda url, token, *, verify_ssl=True: {"ok": False, "error": "Token wasn't accepted."},
     )
     status, _, loc = _post(f"{base_url}/save", {
         "url": "homeassistant.local",
@@ -265,7 +340,7 @@ def test_save_rejects_garbage_url(wizard_server, monkeypatch):
     # Make sure verify never runs for an unparseable URL
     monkeypatch.setattr(
         ha_setup, "verify_sync",
-        lambda url, token: pytest.fail("verify should not be called"),
+        lambda url, token, *, verify_ssl=True: pytest.fail("verify should not be called"),
     )
     status, _, loc = _post(f"{base_url}/save", {
         "url": "://not-a-url",

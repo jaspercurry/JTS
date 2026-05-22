@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
 
 
@@ -223,6 +224,11 @@ class Config:
     ha_url: str
     ha_token: str
     ha_agent_id: str
+    # When False, HAClient skips TLS verification — needed for HA
+    # installs running HTTPS with a self-signed cert (a common
+    # configuration HA users have). Wizard exposes a checkbox under
+    # connection details that only renders when the URL is https://.
+    ha_verify_ssl: bool
 
     volume_state_path: str
     volume_regress_after_sec: float
@@ -650,9 +656,12 @@ class Config:
             # operators can also set them directly in /etc/jasper/jasper.env
             # for headless / CI imaging. agent_id is optional — empty
             # means "let HA pick the default" (its UI-configured choice).
-            ha_url=_env("JASPER_HA_URL", "").strip().rstrip("/"),
-            ha_token=_env("JASPER_HA_TOKEN", "").strip(),
-            ha_agent_id=_env("JASPER_HA_AGENT_ID", "").strip(),
+            ha_url=_env(_ha_env.ENV_URL, "").strip().rstrip("/"),
+            ha_token=_env(_ha_env.ENV_TOKEN, "").strip(),
+            ha_agent_id=_env(_ha_env.ENV_AGENT_ID, "").strip(),
+            # Default to verifying. Wizard writes "0" only when the
+            # household explicitly opts into self-signed-cert mode.
+            ha_verify_ssl=_env(_ha_env.ENV_VERIFY_SSL, "1").strip() not in ("0", "false", "no"),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
             volume_state_path=_env(

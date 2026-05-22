@@ -171,7 +171,7 @@ async def test_cache_hit_skips_uncached_probe(monkeypatch):
     cached result without re-invoking _probe_uncached."""
     calls = {"n": 0}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         calls["n"] += 1
         return {
             "configured": True, "connected": True, "url": url,
@@ -191,7 +191,7 @@ async def test_cache_expires_after_ttl(monkeypatch):
     """After PROBE_CACHE_TTL_SEC elapses, the next call re-probes."""
     calls = {"n": 0}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         calls["n"] += 1
         return {
             "configured": True, "connected": True, "url": url,
@@ -217,7 +217,7 @@ async def test_cache_keyed_on_url_and_token(monkeypatch):
     runs fresh."""
     calls = {"n": 0}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         calls["n"] += 1
         return {
             "configured": True, "connected": True, "url": url,
@@ -238,7 +238,7 @@ async def test_force_bypasses_cache(monkeypatch):
     truth at invocation time, not whatever was last cached."""
     calls = {"n": 0}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         calls["n"] += 1
         return {
             "configured": True, "connected": True, "url": url,
@@ -267,7 +267,7 @@ async def test_force_does_not_poison_cache(monkeypatch):
     }
     state = {"return": cached_value, "calls": 0}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         state["calls"] += 1
         return state["return"]
     monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
@@ -293,7 +293,7 @@ async def test_force_does_not_poison_cache(monkeypatch):
 @pytest.mark.asyncio
 async def test_logs_reachable_on_first_connected_probe(monkeypatch, caplog):
     """First probe that returns connected=true emits event=ha.reachable."""
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         return {
             "configured": True, "connected": True, "url": url,
             "instance_name": "Home", "version": "2026.5.1", "error": None,
@@ -313,7 +313,7 @@ async def test_logs_unreachable_on_transition(monkeypatch, caplog):
     """connected: true → false transition emits event=ha.unreachable."""
     state = {"connected": True}
 
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         if state["connected"]:
             return {
                 "configured": True, "connected": True, "url": url,
@@ -341,7 +341,7 @@ async def test_logs_unreachable_on_transition(monkeypatch, caplog):
 async def test_no_log_when_state_unchanged(monkeypatch, caplog):
     """Two consecutive probes both returning connected=true don't emit
     a second event=ha.reachable. We log on transitions, not per call."""
-    async def fake_uncached(url, token):
+    async def fake_uncached(url, token, *, verify_ssl=True):
         return {
             "configured": True, "connected": True, "url": url,
             "instance_name": "Home", "version": "1.0", "error": None,
@@ -380,7 +380,7 @@ def test_check_home_assistant_skip_when_not_enabled():
 def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token, *, force=False):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
             "configured": True, "connected": True, "url": url,
             "instance_name": "Brooklyn House", "version": "2026.5.1",
@@ -404,7 +404,7 @@ def test_check_home_assistant_ok_when_probe_succeeds(monkeypatch):
 def test_check_home_assistant_fail_when_unreachable(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token, *, force=False):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
             "configured": True, "connected": False, "url": url,
             "instance_name": None, "version": None,
@@ -430,7 +430,7 @@ def test_check_home_assistant_fail_when_unreachable(monkeypatch):
 def test_check_home_assistant_fail_when_probe_raises(monkeypatch):
     from jasper.cli import doctor
 
-    async def fake_probe(url, token, *, force=False):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
         raise RuntimeError("network stack exploded")
     monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
 

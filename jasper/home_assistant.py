@@ -58,6 +58,16 @@ import httpx
 logger = logging.getLogger(__name__)
 
 
+# Env var names — single source of truth for the JASPER_HA_* keys.
+# Imported by jasper.config, jasper.web.home_assistant_setup, and
+# jasper.control.server. Anywhere else hardcoding these strings is a
+# refactoring footgun.
+ENV_URL = "JASPER_HA_URL"
+ENV_TOKEN = "JASPER_HA_TOKEN"
+ENV_AGENT_ID = "JASPER_HA_AGENT_ID"
+ENV_VERIFY_SSL = "JASPER_HA_VERIFY_SSL"
+ENV_RECENT_URLS = "JASPER_HA_RECENT_URLS"
+
 # Endpoint paths. Joined with the configured base URL.
 CONVERSATION_PATH = "/api/conversation/process"
 HEALTH_PATH = "/api/"
@@ -491,6 +501,7 @@ def build_ha_client(cfg) -> HAClient | None:
         url=cfg.ha_url,
         token=cfg.ha_token,
         agent_id=cfg.ha_agent_id or None,
+        verify_ssl=bool(getattr(cfg, "ha_verify_ssl", True)),
     )
 
 
@@ -538,7 +549,7 @@ def _reset_cache_for_tests() -> None:
 
 
 async def probe_status(
-    url: str, token: str, *, force: bool = False,
+    url: str, token: str, *, force: bool = False, verify_ssl: bool = True,
 ) -> dict[str, Any]:
     """One-shot reachability + version probe of an HA instance.
 
@@ -572,7 +583,7 @@ async def probe_status(
         if now < deadline and cached_url == url and cached_token == token:
             return cached_result
 
-    result = await _probe_uncached(url, token)
+    result = await _probe_uncached(url, token, verify_ssl=verify_ssl)
 
     if not force:
         _probe_cache = (now + PROBE_CACHE_TTL_SEC, url, token, result)
@@ -621,7 +632,9 @@ async def probe_status(
     return result
 
 
-async def _probe_uncached(url: str, token: str) -> dict[str, Any]:
+async def _probe_uncached(
+    url: str, token: str, *, verify_ssl: bool = True,
+) -> dict[str, Any]:
     """The real probe. Separate from probe_status() so the cache wrapper
     stays thin and the inner logic stays testable in isolation."""
     if not url or not token:
@@ -630,7 +643,7 @@ async def _probe_uncached(url: str, token: str) -> dict[str, Any]:
             "instance_name": None, "version": None,
             "error": None,
         }
-    client = HAClient(url=url, token=token)
+    client = HAClient(url=url, token=token, verify_ssl=verify_ssl)
     try:
         if not await client.healthcheck():
             return {

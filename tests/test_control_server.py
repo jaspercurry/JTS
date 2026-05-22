@@ -415,7 +415,7 @@ def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
     monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
     monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
 
-    async def fake_probe(url, token):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
             "configured": True, "connected": True, "url": url,
             "instance_name": "Brooklyn House", "version": "2026.5.1",
@@ -441,7 +441,7 @@ def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, mo
     monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
     monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
 
-    async def fake_probe(url, token):
+    async def fake_probe(url, token, *, force=False, verify_ssl=True):
         return {
             "configured": True, "connected": False, "url": url,
             "instance_name": None, "version": None,
