@@ -252,6 +252,73 @@ Phase 1 framing predates the strength of this offline data).
   block). AEC3 added <10 ms. May feel slower for snappy wake →
   response sequencing; measure end-to-end before assuming.
 
+### AEC3 deep-tune spike — vendor v2.1, infrastructure works but tuning doesn't rescue (2026-05-22 night)
+
+After the DTLN-aec offline result above, ran the parallel
+experiment from `docs/HANDOFF-aec.md` section E: vendor
+`webrtc-audio-processing` v2.1 statically and write our own
+`EchoControlFactory` that exposes `EchoCanceller3Config`'s deep
+knobs (`suppressor.dominant_nearend_detection.snr_threshold`,
+`suppressor.use_subband_nearend_detection`,
+`filter.refined.length_blocks`, `ep_strength.bounded_erl`, etc.).
+Code preserved at
+[`experiments/aec3-v2-deep-tune-spike/`](../experiments/aec3-v2-deep-tune-spike/);
+README there has the full rebuild recipe.
+
+**5-leg event count comparison** (proper peak detection, 0.7 s
+refractory):
+
+```
+condition      |   raw   AEC3  V2tune   D128   D256
+normal-quiet   |   11     11      11     10     11
+normal-music   |    5      7       5      8      9
+whisper-quiet  |    9      8       8     10      6
+whisper-music  |    1      0       0      1      2  ← V2tune did NOT rescue
+yell-quiet     |   10     10      10     10     10
+yell-music     |   11      6       7      9      7
+fast-quiet     |   11     11      11     10     11
+fast-music     |    8      3       1      8      6  ← V2tune REGRESSED
+slow-quiet     |    7      7       7      7      6
+slow-music     |    7      7       5      4      7
+```
+
+V2tune config = research-report-recommended starting values
+(`filter.refined.length_blocks=30`, `ep_strength.bounded_erl=true`,
+`suppressor.use_subband_nearend_detection=true`,
+`suppressor.dominant_nearend_detection.snr_threshold=20`,
+`hold_duration=50`, `high_bands_suppression.max_gain_during_echo=1.0`).
+
+**Read:**
+
+- **The infrastructure works.** We CAN build v2.1 statically, expose
+  the deep config struct through a custom `EchoControlFactory`, and
+  link a pybind11 extension against it. The HANDOFF-aec.md path is
+  technically viable.
+- **The research-recommended values did not rescue the silent miss.**
+  whisper-music peak score = 0.000 (worse than AEC3-stock's 0.279).
+  fast-music regressed from 3 events to 1.
+- **v2.1 with default-constructed `EchoCanceller3Config` ALSO scored
+  whisper-music at 0.002.** This isn't "we picked bad knob values" —
+  v2.1's AEC3 itself behaves differently (worse on our signal) than
+  Trixie's v1.3 implementation. The behavior delta is real; tuning
+  it back to v1.3 parity would itself be a search.
+- **DTLN-aec (especially 256) is the only engine that genuinely
+  rescues the failing cells without regressing the working ones.**
+  This finding combined with V2tune's failure means the offline data
+  is unambiguous: DTLN-256 should be the production AEC engine.
+
+**Implications:**
+
+- Don't pursue AEC3 deep tuning further without a specific
+  hypothesis about what knob combination would help. Open-ended
+  knob search has been deprioritized.
+- A future tuning wizard (the user's "wizard around it" idea)
+  remains feasible — the infrastructure is preserved. But the
+  search-space difficulty + the v1.3→v2.1 behavior delta mean
+  it's a multi-week project, not a few days.
+- Tonight's data is enough to commit to DTLN-256 as the
+  production AEC.
+
 ### Shallow AEC3 knob tuning — already swept, no win (2026-05-22)
 
 A natural-seeming pre-DTLN test would be to sweep the already-exposed
