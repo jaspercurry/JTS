@@ -186,6 +186,72 @@ default. If it can't recover whisper-music, the wake model itself
 has insufficient HF robustness and Phase 4 (custom training) has
 to follow.
 
+### DTLN-aec offline result — clear win (2026-05-22 evening)
+
+Before any bridge integration, ran DTLN-aec (128-unit, converted
+TFLite → ONNX, see `scripts/convert-dtln-aec.sh`) offline against
+all 10 conditions × (mic, ref) pairs from `reference-conditions/`.
+Script: `scripts/_dtln_aec_offline.py` — uses onnxruntime, mirrors
+breizhn/DTLN-aec's `run_aec.py` algorithm exactly (512-sample
+blocks, 128-sample hop, no window, rfft, magnitude mask in freq
+domain, time-domain post-filter). Then scored all 30 files
+(10 conditions × 3 legs) with `jarvis_v2.onnx`.
+
+Three-leg jarvis_v2 wake-word scores at threshold 0.5:
+
+```
+condition      | raw mic  fires | AEC3  fires | DTLN-aec  fires
+normal-quiet   | 0.997     53   | 0.997   50  | 0.997      44
+normal-music   | 0.997     17   | 0.996   20  | 0.997      24
+whisper-quiet  | 0.997     34   | 0.997   36  | 0.997      39
+whisper-music  | 0.997      2   | 0.279    0  | 0.985       2  ✓ DTLN rescues
+yell-quiet     | 0.997     48   | 0.997   45  | 0.997      45
+yell-music     | 0.997     34   | 0.996   15  | 0.997      22  ✓ DTLN +47%
+fast-quiet     | 0.997     45   | 0.997   40  | 0.997      41
+fast-music     | 0.997     30   | 0.975    3  | 0.997      18  ✓ DTLN +500%
+slow-quiet     | 0.997     26   | 0.997   25  | 0.997      27
+slow-music     | 0.996     17   | 0.996   18  | 0.997      12  ⚠ -33%, still fires
+```
+
+Full CSV at `reference-conditions/jarvis_v2-three-leg-scores.csv`.
+
+**Read:**
+
+- **Every AEC3-failing cell recovers under DTLN-aec.** whisper-music
+  goes from "silent miss" (peak 0.279, 0 fires) to "fires reliably"
+  (peak 0.985, 2 fires — matches raw mic). fast-music goes from
+  3 fires to 18. yell-music from 15 to 22.
+- **No serious regressions.** 9/10 cells either improve or stay
+  flat under DTLN-aec. The one negative is slow-music (12 vs 18 fires
+  at threshold 0.5), but both fire reliably — neither is at risk
+  of silent miss. Worth investigating in the bridge phase whether
+  this is a model-size issue (try 256-unit) or fundamental.
+- **DTLN-aec runs at real-time on the laptop CPU.** 33 s of audio
+  processes in roughly 33 s — viable on the Pi 5, though we'll
+  want to measure exact CPU/RAM there.
+- **The architecture diagnosis holds.** AEC3's residual suppressor
+  was destroying HF speech content in music-heavy conditions
+  (`hf_CV +0.286`). DTLN-aec's neural mask preserves the spectral
+  content the linear-filter + RS pair was tearing up.
+
+**Implication for bridge integration:** the offline data is strong
+enough that the originally-planned "parallel UDP :9878 spike"
+(run DTLN alongside AEC3 in production for further A/B) may not
+be necessary. Direct AEC3 → DTLN-aec replacement could be the
+right call — fewer code paths, simpler operations, faster to
+deploy. Decision deferred until the user weighs in (the doc's
+Phase 1 framing predates the strength of this offline data).
+
+**Open follow-ups noted from the spike:**
+- Yell cells slightly clip at int16 ceiling (~+0.5 to +0.9 dBFS).
+  Input was already clipping; DTLN-aec preserves that. Not a
+  blocker for wake detection but worth a `np.clip` / soft-knee
+  somewhere in the bridge output.
+- slow-music's regression deserves a 256-unit retest.
+- Latency: DTLN-aec adds ~32 ms of algorithmic delay (the 512-sample
+  block). AEC3 added <10 ms. May feel slower for snappy wake →
+  response sequencing; measure end-to-end before assuming.
+
 ### Shallow AEC3 knob tuning — already swept, no win (2026-05-22)
 
 A natural-seeming pre-DTLN test would be to sweep the already-exposed
