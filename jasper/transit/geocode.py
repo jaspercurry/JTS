@@ -138,8 +138,8 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
             result = _nominatim(query, client)
         except GeocodeError as nominatim_err:
             logger.info(
-                "nominatim miss for %r (%s); falling back to photon",
-                query, nominatim_err,
+                "event=transit.geocode.fallback source=nominatim "
+                "reason=%r", str(nominatim_err),
             )
             try:
                 result = _photon(query, client)
@@ -148,6 +148,11 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
                 # Chain to photon_err explicitly so the daemon log
                 # surfaces the photon traceback; nominatim_err is
                 # captured in the message text.
+                logger.warning(
+                    "event=transit.geocode.error "
+                    "nominatim=%r photon=%r",
+                    str(nominatim_err), str(photon_err),
+                )
                 raise GeocodeError(
                     f"couldn't find that address. "
                     f"(nominatim: {nominatim_err}; photon: {photon_err})"
@@ -156,6 +161,9 @@ def geocode(query: str, *, http: httpx.Client | None = None) -> GeocodeResult:
         if owns_client:
             client.close()
 
+    logger.info(
+        "event=transit.geocode.ok source=%s", result.source,
+    )
     _cache[key] = result
     return result
 

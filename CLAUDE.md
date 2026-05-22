@@ -470,14 +470,30 @@ address is never persisted; only the resulting coords (3 decimals)
 land in `transit.env`. The wizard discloses this inline next to
 the address field.
 
-**Modular provider registry.** Adding a new city or transit
-system is a single new module under
-[`jasper/transit/providers/`](jasper/transit/providers/) +
-one line in `REGISTRY` at
-[`jasper/transit/__init__.py`](jasper/transit/__init__.py). The
-wizard is data-driven over that registry — no central plumbing
-changes needed. See `nyc_subway.py` (keyless, CSV-backed) and
-`nyc_bus.py` (credentialed, REST-backed) for the two shapes.
+**Modular provider registry.** The discovery layer (bbox, find-
+stops-near, credential probe) is fully data-driven from `REGISTRY`
+at [`jasper/transit/__init__.py`](jasper/transit/__init__.py).
+Adding a new city or transit system also touches **four** other
+spots — none of them load-bearing for the abstraction, but you'll
+need to know they exist:
+  1. New provider module under [`jasper/transit/providers/`](jasper/transit/providers/)
+  2. One line in REGISTRY
+  3. One `elif p.id == "<slug>":` branch in
+     `_index_html` at [`jasper/web/transit_setup.py`](jasper/web/transit_setup.py)
+     (each provider's wizard card is bespoke — subway has a direction
+     radio, bus has the locked-on-key flow)
+  4. A `make_<slug>_tools(client)` factory under
+     [`jasper/tools/`](jasper/tools/) wired into `voice_daemon.py`'s
+     tool registration list
+  5. The `keys=(...)` bash array in `migrate_transit_config` at
+     [`deploy/install.sh`](deploy/install.sh:624) — duplicates
+     `transit.all_env_keys()` because install.sh runs before Python
+     is available
+
+See `nyc_subway.py` (keyless, CSV-backed) and `nyc_bus.py`
+(credentialed, REST-backed) for the two shapes. The registry's own
+module docstring at `jasper/transit/__init__.py` walks through these
+5 steps in more detail.
 
 **Refreshing subway data.** The bundled CSV at
 [`jasper/data/mta_stations.csv`](jasper/data/mta_stations.csv) is

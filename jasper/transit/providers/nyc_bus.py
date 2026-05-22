@@ -240,7 +240,7 @@ class _NycBus:
             data = r.json()
         except (httpx.HTTPError, ValueError) as e:
             logger.info(
-                "SIRI route enumeration failed for %s: %s",
+                "event=transit.bus.siri_probe.error stop=%s err=%s",
                 bare, scrub_secrets(e),
             )
             return ()
@@ -283,7 +283,9 @@ class _NycBus:
             )
         except httpx.HTTPError as e:
             scrubbed = scrub_secrets(e)
-            logger.warning("BusTime probe failed: %s", scrubbed)
+            logger.warning(
+                "event=transit.bus.validate.error err=%s", scrubbed,
+            )
             return {CREDENTIAL.env_key: f"BusTime unreachable: {scrubbed}"}
         finally:
             if owns:
@@ -292,7 +294,9 @@ class _NycBus:
         # Either way the user can't proceed; we report the same
         # message and let them re-try.
         if r.status_code != 200:
-            logger.info("BusTime probe HTTP %d for key probe", r.status_code)
+            logger.info(
+                "event=transit.bus.validate.rejected status=%d", r.status_code,
+            )
             return {CREDENTIAL.env_key: f"BusTime returned HTTP {r.status_code}"}
         try:
             data = r.json()
