@@ -119,7 +119,6 @@ class _NycSubway:
     env_keys = (
         "JASPER_SUBWAY_STATION_ID",
         "JASPER_SUBWAY_DEFAULT_DIRECTION",
-        "JASPER_SUBWAY_LINES",
     )
     credentials = ()  # keyless
 

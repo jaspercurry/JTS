@@ -201,14 +201,16 @@ class Config:
     weather_units: str
 
     subway_station_id: str
+    # Configured default direction for subway queries. "uptown" /
+    # "downtown" set a specific default; "" or "both" → answer in both
+    # directions when the voice query doesn't specify one.
     subway_default_direction: str
-    subway_lines: tuple[str, ...]
 
-    # MTA BusTime — single-stop config for v1. The /buses wizard (future)
-    # will replace this with a multi-stop store under /var/lib/jasper.
+    # MTA BusTime. `bus_stops` is a tuple of MonitoringRefs (v2 multi-
+    # stop). Single-stop configs from v1 are migrated to a one-element
+    # tuple by install.sh's migrate_transit_config.
     mta_bustime_key: str
-    bus_stop_id: str
-    bus_routes: tuple[str, ...]
+    bus_stops: tuple[str, ...]
 
     volume_state_path: str
     volume_regress_after_sec: float
@@ -614,11 +616,10 @@ class Config:
             # Find your stop_id at data.ny.gov/dataset/...subway-stations
             # (column: "GTFS Stop ID"). 9 Av on the West End line is "B12".
             subway_station_id=_env("JASPER_SUBWAY_STATION_ID", ""),
+            # No fallback default — empty means "both directions" at
+            # query time. The wizard's "Both" radio writes empty here.
             subway_default_direction=_env(
-                "JASPER_SUBWAY_DEFAULT_DIRECTION", "uptown",
-            ),
-            subway_lines=tuple(
-                t for t in _env("JASPER_SUBWAY_LINES", "").replace(",", " ").split()
+                "JASPER_SUBWAY_DEFAULT_DIRECTION", "",
             ),
             # NYC MTA bus (BusTime SIRI API). Stop ID is the GTFS bus
             # stop — discover via `scripts/find-bus-stop.sh` or
@@ -626,9 +627,12 @@ class Config:
             # Accepted in either form: "302680" or "MTA_302680".
             # Empty stop_id OR empty key disables the tool.
             mta_bustime_key=_env("JASPER_MTA_BUSTIME_KEY", ""),
-            bus_stop_id=_env("JASPER_BUS_STOP_ID", ""),
-            bus_routes=tuple(
-                t for t in _env("JASPER_BUS_ROUTES", "").replace(",", " ").split()
+            # JASPER_BUS_STOPS is a comma-separated list of MTA
+            # MonitoringRefs (e.g. "MTA_302680,MTA_302682"). The
+            # wizard writes this; install.sh migrates the v1
+            # singular JASPER_BUS_STOP_ID into here.
+            bus_stops=tuple(
+                t for t in _env("JASPER_BUS_STOPS", "").replace(",", " ").split()
             ),
             # Persistent speaker-volume file. Read at boot to restore
             # CamillaDSP main_volume, written on every change.
@@ -695,7 +699,7 @@ class Config:
 
     @property
     def bus_enabled(self) -> bool:
-        return bool(self.bus_stop_id and self.mta_bustime_key)
+        return bool(self.bus_stops and self.mta_bustime_key)
 
     @property
     def spotify_enabled(self) -> bool:

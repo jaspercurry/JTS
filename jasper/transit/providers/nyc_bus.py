@@ -1,18 +1,22 @@
 """NYC MTA Bus transit provider — requires a BusTime API key.
 
-Uses two BusTime endpoints:
+Uses three BusTime endpoints:
 
 1. `/api/where/stops-for-location.json` — nearest stops to a lat/lon.
    The wizard calls this when the user has both coords and a key.
 2. `/api/where/agencies-with-coverage.json` — credential probe.
    Cheap call (no parameters except `key=`); used to test a
    freshly-pasted key before persisting it.
+3. `/api/siri/stop-monitoring.json` — per-stop live arrivals; used
+   here purely to **enumerate the routes actually serving each
+   candidate stop** during the wizard's nearest-stops render. The
+   OBA `routes` field on `stops-for-location` is GTFS-static-derived
+   and lags real-world dispatch (per the BusTime wiki, OBA at MTA
+   explicitly excludes real-time data). SIRI is the ground truth.
+   See the v2 design review for the prior art behind this choice.
 
-Both are the OneBusAway-flavoured REST API documented at
-https://bustime.mta.info/wiki/Developers/OneBusAwayRESTfulAPI. The
-SIRI endpoint at `/api/siri/stop-monitoring.json` is what the runtime
-tool (`jasper/bus.py`) hits — this module never touches it. Same key
-is shared across both endpoints per the BusTime wiki.
+The SIRI runtime client at `jasper/bus.py` hits the same endpoint
+for live arrivals. Same key is shared per the BusTime wiki.
 
 The provider is stateless. The wizard supplies the credential at call
 time so an unsaved key can be tested without disk IO.
@@ -29,6 +33,9 @@ logger = logging.getLogger(__name__)
 
 
 BUSTIME_BASE = "https://bustime-classic.mta.info/api/where"
+BUSTIME_SIRI_URL = (
+    "https://bustime-classic.mta.info/api/siri/stop-monitoring.json"
+)
 HTTP_TIMEOUT = 4.0
 
 # Same metro bbox as the subway provider.
@@ -60,8 +67,10 @@ class _NycBus:
     bbox = NYC_BBOX
     env_keys = (
         "JASPER_MTA_BUSTIME_KEY",
-        "JASPER_BUS_STOP_ID",
-        "JASPER_BUS_ROUTES",
+        # v2 multi-stop schema. Value is "id|label,id|label" — see
+        # `jasper.bus.parse_bus_stops`. install.sh migrates the v1
+        # singular JASPER_BUS_STOP_ID into a one-element list here.
+        "JASPER_BUS_STOPS",
     )
     credentials = (CREDENTIAL,)
 
@@ -187,8 +196,64 @@ class _NycBus:
                 distance_mi=d,
                 lines=tuple(short_names),
                 direction_hint=direction_hint,
+                name=name,
             ))
         return results
+
+    def enumerate_live_routes(
+        self,
+        stop_id: str,
+        *,
+        credentials: dict[str, str] | None = None,
+    ) -> tuple[str, ...]:
+        """Probe SIRI for the routes currently dispatching at a stop.
+
+        Returns a deduplicated tuple of distinct `PublishedLineName`
+        values observed in the last few `MonitoredStopVisit` entries.
+        On any failure returns an empty tuple — the caller (wizard)
+        falls back to the OBA `routes` field for display when this
+        comes up empty (quiet stop, off-peak hours, network blip).
+
+        Why this exists: MTA's OBA `stops-for-location` returns only
+        GTFS-static-scheduled routes per stop, which lags real-world
+        dispatch. A stop the user sees serving B35 + B70 in person
+        may show as B35-only in OBA. SIRI reflects what's actually
+        coming. See the v2 design review for the citation chain.
+        """
+        key = (credentials or {}).get(CREDENTIAL.env_key, "").strip()
+        if not key or not stop_id:
+            return ()
+        bare = stop_id.removeprefix("MTA_").strip()
+        params = {
+            "key": key,
+            "MonitoringRef": bare,
+            "OperatorRef": "MTA",
+        }
+        c, owns = self._client()
+        try:
+            r = c.get(BUSTIME_SIRI_URL, params=params)
+            r.raise_for_status()
+            data = r.json()
+        except (httpx.HTTPError, ValueError) as e:
+            logger.info("SIRI route enumeration failed for %s: %s", bare, e)
+            return ()
+        finally:
+            if owns:
+                c.close()
+
+        sd = (
+            (data or {}).get("Siri", {})
+            .get("ServiceDelivery", {})
+            .get("StopMonitoringDelivery") or [{}]
+        )[0]
+        visits = sd.get("MonitoredStopVisit") or []
+        seen: list[str] = []  # preserve first-seen order for determinism
+        for v in visits:
+            journey = v.get("MonitoredVehicleJourney") or {}
+            name = str(journey.get("PublishedLineName") or "").strip()
+            if name and name not in seen:
+                seen.append(name)
+        return tuple(seen)
 
     def validate_credentials(
         self, credentials: dict[str, str],

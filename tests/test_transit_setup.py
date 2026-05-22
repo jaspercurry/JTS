@@ -43,7 +43,13 @@ def test_owned_env_keys_includes_coords_and_provider_keys():
     assert transit_setup.LON_ENV in keys
     assert "JASPER_SUBWAY_STATION_ID" in keys
     assert "JASPER_MTA_BUSTIME_KEY" in keys
-    assert "JASPER_BUS_STOP_ID" in keys
+    assert "JASPER_BUS_STOPS" in keys
+    # v1 schema removed in v2 — these MUST NOT be claimed as owned
+    # (so the clear handler doesn't try to scrub them; the apply-save
+    # path drops them as a one-shot sweep instead).
+    assert "JASPER_BUS_STOP_ID" not in keys
+    assert "JASPER_BUS_ROUTES" not in keys
+    assert "JASPER_SUBWAY_LINES" not in keys
 
 
 def test_coords_returns_none_when_missing():
@@ -177,25 +183,30 @@ def test_apply_save_subway_direction_both_clears_default():
     assert "JASPER_SUBWAY_DEFAULT_DIRECTION" not in new
 
 
-def test_apply_save_subway_lines_csv_normalised():
-    form = {"nyc_subway_lines": "D F  N"}
-    new, _ = transit_setup._apply_save(form, {}, bus_provider=_StubBus(True))
-    assert new["JASPER_SUBWAY_LINES"] == "D,F,N"
+def test_apply_save_drops_v1_subway_lines_residue():
+    """v1 had JASPER_SUBWAY_LINES as a positive filter on top of the
+    voice tool. v2 removed it (the tool defaults to "all lines at
+    this station"). Any save sweeps the v1 residue out of state so
+    it doesn't linger in transit.env across an upgrade."""
+    current = {"JASPER_SUBWAY_LINES": "D,F,N"}  # left over from v1
+    new, err = transit_setup._apply_save({}, current, bus_provider=_StubBus(True))
+    assert err is None
+    assert "JASPER_SUBWAY_LINES" not in new
 
 
 def test_apply_save_empty_picks_preserve_existing():
     """User saves with only bus fields set — subway must not be wiped.
     Test setup includes a saved key so the bus card is unlocked
-    (the locked-card guard would otherwise drop the bus stop)."""
+    (the locked-card guard would otherwise drop the bus stops)."""
     current = {
         "JASPER_SUBWAY_STATION_ID": "B12",
         "JASPER_MTA_BUSTIME_KEY": "preexisting-key",
     }
-    form = {"nyc_bus_stop": "MTA_302680"}
+    form = {"nyc_bus_stops": "MTA_302680|4 Av/39 St eastbound"}
     new, err = transit_setup._apply_save(form, current, bus_provider=_StubBus(True))
     assert err is None
     assert new["JASPER_SUBWAY_STATION_ID"] == "B12"
-    assert new["JASPER_BUS_STOP_ID"] == "MTA_302680"
+    assert new["JASPER_BUS_STOPS"] == "MTA_302680|4 Av/39 St eastbound"
 
 
 def test_apply_save_valid_bus_key_is_persisted_after_probe():
@@ -232,40 +243,34 @@ def test_apply_save_blank_key_keeps_existing():
 
 def test_apply_save_locked_card_ignores_bus_picks_without_key():
     """Defensive check against a crafted POST that submits
-    nyc_bus_stop/nyc_bus_routes while the bus card is locked (no key
-    set). Without this guard, the daemon would persist a stop_id it
-    can't use (the SIRI client also needs the key)."""
+    nyc_bus_stops while the bus card is locked (no key set). Without
+    this guard, the daemon would persist stop_ids it can't use (the
+    SIRI client also needs the key)."""
     new, err = transit_setup._apply_save(
-        {
-            "nyc_bus_stop": "MTA_302680",
-            "nyc_bus_routes": "B35,B70",
-        },
+        {"nyc_bus_stops": "MTA_302680|4 Av/39 St eastbound"},
         {},  # no key in state, no key in form
         bus_provider=_StubBus(True),
     )
     assert err is None
-    assert "JASPER_BUS_STOP_ID" not in new
-    assert "JASPER_BUS_ROUTES" not in new
+    assert "JASPER_BUS_STOPS" not in new
 
 
 def test_apply_save_locked_card_accepts_bus_picks_when_key_set_via_form():
     """Inverse of the locked-card guard: if the user pastes a key AND
-    a stop pick in the same submit (e.g. the bus card had just been
+    stop picks in the same submit (e.g. the bus card had just been
     unlocked on the previous render), the picks land alongside the key."""
     bus = _StubBus(accept=True)
     new, err = transit_setup._apply_save(
         {
             "nyc_bus_key": "fresh-key",
-            "nyc_bus_stop": "MTA_302680",
-            "nyc_bus_routes": "B35",
+            "nyc_bus_stops": "MTA_302680|4 Av/39 St eastbound",
         },
         {},
         bus_provider=bus,
     )
     assert err is None
     assert new["JASPER_MTA_BUSTIME_KEY"] == "fresh-key"
-    assert new["JASPER_BUS_STOP_ID"] == "MTA_302680"
-    assert new["JASPER_BUS_ROUTES"] == "B35"
+    assert new["JASPER_BUS_STOPS"] == "MTA_302680|4 Av/39 St eastbound"
 
 
 def test_apply_save_subway_direction_default_when_unset_renders_both():
@@ -291,13 +296,13 @@ def test_apply_save_subway_direction_default_when_unset_renders_both():
 def test_apply_clear_drops_only_owned_keys():
     current = {
         "JASPER_SUBWAY_STATION_ID": "B12",
-        "JASPER_BUS_STOP_ID": "MTA_X",
+        "JASPER_BUS_STOPS": "MTA_X|x",
         "JASPER_TRANSIT_LAT": "40.6",
         "FOREIGN_KEY": "kept",
     }
     new = transit_setup._apply_clear(current)
     assert "JASPER_SUBWAY_STATION_ID" not in new
-    assert "JASPER_BUS_STOP_ID" not in new
+    assert "JASPER_BUS_STOPS" not in new
     assert "JASPER_TRANSIT_LAT" not in new
     assert new["FOREIGN_KEY"] == "kept"
 
@@ -449,7 +454,7 @@ def test_handler_clear_relocks_bus_card_on_next_render(wizard_server):
         "JASPER_TRANSIT_LAT": "40.646",
         "JASPER_TRANSIT_LON": "-73.994",
         "JASPER_MTA_BUSTIME_KEY": "configured-key",
-        "JASPER_BUS_STOP_ID": "MTA_302680",
+        "JASPER_BUS_STOPS": "MTA_302680|4 Av/39 St eastbound",
     }, mode=transit_setup.TRANSIT_FILE_MODE)
 
     # Sanity check: with the key configured, the bus card is unlocked.

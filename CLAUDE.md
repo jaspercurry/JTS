@@ -415,23 +415,54 @@ wizard owns **every** transit env var:
 - `JASPER_TRANSIT_LAT`, `JASPER_TRANSIT_LON`,
   `JASPER_TRANSIT_DISPLAY_NAME` (wizard scaffolding; user's geocoded
   home, ~110 m precision)
-- `JASPER_SUBWAY_STATION_ID`, `JASPER_SUBWAY_DEFAULT_DIRECTION`,
-  `JASPER_SUBWAY_LINES`
-- `JASPER_MTA_BUSTIME_KEY`, `JASPER_BUS_STOP_ID`, `JASPER_BUS_ROUTES`
+- `JASPER_SUBWAY_STATION_ID`, `JASPER_SUBWAY_DEFAULT_DIRECTION`
+  (empty = both directions)
+- `JASPER_MTA_BUSTIME_KEY`, `JASPER_BUS_STOPS` (multi-stop list
+  formatted as `id|label,id|label`, parsed by `jasper.bus.parse_bus_stops`)
 
 All live in **`/var/lib/jasper/transit.env`** at mode 0640 — same
 single-source-of-truth pattern as `voice_provider.env`. Never put
 them in `/etc/jasper/jasper.env`. `install.sh`'s
 `migrate_transit_config` moves any stale operator-set values into
-the wizard file on every deploy. `jasper-voice.service` sources
-both files with the wizard file last so it wins on conflicts.
+the wizard file on every deploy AND converts the v1 schema
+(`JASPER_BUS_STOP_ID` singular, `JASPER_BUS_ROUTES`, `JASPER_SUBWAY_LINES`)
+to v2 on the next deploy. `jasper-voice.service` sources both files
+with the wizard file last so it wins on conflicts.
+
+**Subway behavior (v2).** "Next train" returns every line stopping
+at the station — including trains rerouted from other lines during
+service changes. This works because Subway Now's `/api/stops/{id}`
+endpoint aggregates across all 7 MTA GTFS-RT feeds server-side
+(an N rerouted onto D tracks at a D station appears in the same
+response as the regular Ds). The nyct-gtfs fallback can only see
+the station's CSV-documented lines (no reroutes during fallback —
+documented degradation; Subway Now outages are rare). See
+[`jasper/subway.py`](jasper/subway.py) docstring for the full
+prior-art chain.
 
 **Two-step bus flow.** MTA BusTime requires a free API key
 (register at the wiki — link in the wizard). The bus card is
 **locked** until a key is pasted: nothing else renders, because
 the stops-lookup endpoint itself needs that key. Saved → re-render
-unlocks the picker. This is intentional friction matching the
-"go register first" prerequisite.
+unlocks the picker. The unlocked card shows nearby stops grouped
+by intersection (opposing-direction stops at one corner cluster);
+**check multiple stops** if you want voice answers covering both
+directions. Each arrival in the voice answer names its
+`stop_label` so you can tell which bus is at which stop.
+
+**Routes per stop come from SIRI, not OBA.** MTA's OBA
+`stops-for-location` returns GTFS-static-scheduled routes only —
+lagging real-world dispatch (e.g. B70 was rerouted via 4 Av/39 St
+in 2023 but OBA still listed only B35 for that stop). The wizard
+SIRI-probes each candidate stop in parallel during render to
+enumerate the routes actually dispatching there. OBA's `routes`
+field is the fallback when SIRI is silent (off-peak quiet stop).
+
+**External-config soft-unlock.** If `JASPER_MTA_BUSTIME_KEY` is in
+`os.environ` (from a hand-edited `/etc/jasper/jasper.env`) but not
+yet in `transit.env`, the wizard renders the bus card unlocked
+with a yellow notice — values are visible, save moves them into
+the wizard's owned file.
 
 **Address geocoding** runs against OSM Nominatim (Photon as
 fallback). No API key, but the policy requires a descriptive
