@@ -429,10 +429,21 @@ async def _get_state(
         except (FileNotFoundError, OSError, asyncio.TimeoutError, RuntimeError):
             return None
 
-    cam_db, airplay, voice_st = await asyncio.gather(
+    async def _ha_status() -> dict:
+        """Probe the configured HA instance for /state. Fails soft —
+        unconfigured returns {configured: false}; unreachable returns
+        {connected: false, error: ...}. See jasper.home_assistant.probe_status."""
+        from .. import home_assistant
+        return await home_assistant.probe_status(
+            os.environ.get("JASPER_HA_URL", "").strip(),
+            os.environ.get("JASPER_HA_TOKEN", "").strip(),
+        )
+
+    cam_db, airplay, voice_st, ha_status = await asyncio.gather(
         _camilla_volume(),
         _airplay_playing(),
         _voice_status(),
+        _ha_status(),
     )
 
     spotify_blob = librespot_state.read(
@@ -494,6 +505,7 @@ async def _get_state(
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
         },
+        "home_assistant": ha_status,
     }
 
 
@@ -707,10 +719,33 @@ def _make_handler(
                 # Snapshot for the /system dashboard. Current values +
                 # 60-min ring buffers for the sparklines + build info
                 # + cloud activity rolled up from UsageStore (per-
-                # provider sessions/tokens/cost month-to-date).
+                # provider sessions/tokens/cost month-to-date) +
+                # home_assistant connection status.
                 # Sampler may be None in tests / direct CLI invocation;
                 # surface an empty history rather than 500.
                 from .system_metrics import read_build_info
+                from .. import home_assistant as _ha_mod
+
+                # HA probe is async + slow-ish (~50-200 ms typical against
+                # a healthy local HA, fails fast on unreachable). Run it
+                # via asyncio.run so the rest of /system/snapshot stays
+                # synchronous like the existing handler.
+                try:
+                    ha_status = asyncio.run(
+                        _ha_mod.probe_status(
+                            os.environ.get("JASPER_HA_URL", "").strip(),
+                            os.environ.get("JASPER_HA_TOKEN", "").strip(),
+                        ),
+                    )
+                except Exception:  # noqa: BLE001
+                    # Fail-soft per the existing aggregator convention —
+                    # never break /system/snapshot because HA is wedged.
+                    ha_status = {
+                        "configured": False, "connected": False, "url": "",
+                        "instance_name": None, "version": None,
+                        "error": "probe failed",
+                    }
+
                 payload: dict[str, Any] = {
                     "build": read_build_info(),
                     "metrics": (
@@ -720,6 +755,7 @@ def _make_handler(
                     "voice_provider": os.environ.get(
                         "JASPER_VOICE_PROVIDER", "gemini",
                     ),
+                    "home_assistant": ha_status,
                 }
                 self._send_json(payload)
                 return

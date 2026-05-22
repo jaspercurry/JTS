@@ -160,6 +160,19 @@ _PAGE_BODY = """
   </table>
 </div>
 
+<div class="card" id="ha-card">
+  <h2>Home Assistant</h2>
+  <div class="kv">
+    <div class="k">Status</div><div class="v" id="ha-status">—</div>
+    <div class="k">URL</div><div class="v" id="ha-url">—</div>
+    <div class="k">Version</div><div class="v" id="ha-version">—</div>
+  </div>
+  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;" id="ha-detail"></p>
+  <p style="margin: 0.6em 0 0; font-size: 0.9em;">
+    Configure at <a href="/homeassistant/">jts.local/homeassistant</a>.
+  </p>
+</div>
+
 <div class="card" id="aec-card">
   <h2>AEC3 echo cancellation</h2>
   <p class="muted" style="margin: 0 0 0.6em; font-size: 0.85em;">
@@ -429,6 +442,33 @@ _SCRIPT = r"""
     } else {
       document.getElementById('cloud-today').textContent = '—';
       document.getElementById('cloud-mtd').textContent = '—';
+    }
+
+    // Home Assistant card
+    const ha = snap.home_assistant || { configured: false };
+    const statusEl = document.getElementById('ha-status');
+    const urlEl = document.getElementById('ha-url');
+    const versionEl = document.getElementById('ha-version');
+    const detailEl = document.getElementById('ha-detail');
+    if (!ha.configured) {
+      statusEl.textContent = 'Not configured';
+      statusEl.style.color = '';
+      urlEl.textContent = '—';
+      versionEl.textContent = '—';
+      detailEl.textContent = '';
+    } else if (ha.connected) {
+      statusEl.textContent = '✓ Connected';
+      statusEl.style.color = '#14542a';
+      urlEl.textContent = ha.url || '—';
+      versionEl.textContent = (ha.instance_name || 'Home Assistant') +
+        (ha.version ? ' (' + ha.version + ')' : '');
+      detailEl.textContent = '';
+    } else {
+      statusEl.textContent = '✗ Unreachable';
+      statusEl.style.color = '#a33';
+      urlEl.textContent = ha.url || '—';
+      versionEl.textContent = '—';
+      detailEl.textContent = ha.error || 'Connection failed.';
     }
 
     // Network

@@ -390,6 +390,76 @@ def test_state_502_when_aggregator_raises(
     assert "error" in body
 
 
+def test_state_home_assistant_unconfigured(server_with_coordinator, monkeypatch):
+    """When JASPER_HA_URL/TOKEN are unset, /state.home_assistant returns
+    configured=false with no error — fail-soft for the dashboard."""
+    base, _ = server_with_coordinator
+    monkeypatch.delenv("JASPER_HA_URL", raising=False)
+    monkeypatch.delenv("JASPER_HA_TOKEN", raising=False)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    ha = body["home_assistant"]
+    assert ha["configured"] is False
+    assert ha["connected"] is False
+    assert ha["error"] is None
+
+
+def test_state_home_assistant_connected(server_with_coordinator, monkeypatch):
+    """Configured + reachable: /state.home_assistant carries instance_name
+    + version from /api/config. We monkeypatch probe_status so the test
+    never touches the network."""
+    import jasper.home_assistant as ha_mod
+    base, _ = server_with_coordinator
+
+    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
+    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
+
+    async def fake_probe(url, token):
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Brooklyn House", "version": "2026.5.1",
+            "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    ha = body["home_assistant"]
+    assert ha["configured"] is True
+    assert ha["connected"] is True
+    assert ha["instance_name"] == "Brooklyn House"
+    assert ha["version"] == "2026.5.1"
+
+
+def test_state_home_assistant_unreachable_fails_soft(server_with_coordinator, monkeypatch):
+    """Configured but probe fails: response still 200 with the rest of
+    /state intact; home_assistant carries the error string."""
+    import jasper.home_assistant as ha_mod
+    base, _ = server_with_coordinator
+
+    monkeypatch.setenv("JASPER_HA_URL", "http://homeassistant.local:8123")
+    monkeypatch.setenv("JASPER_HA_TOKEN", "test-token")
+
+    async def fake_probe(url, token):
+        return {
+            "configured": True, "connected": False, "url": url,
+            "instance_name": None, "version": None,
+            "error": "Couldn't reach Home Assistant — check the URL and token.",
+        }
+    monkeypatch.setattr(ha_mod, "probe_status", fake_probe)
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    ha = body["home_assistant"]
+    assert ha["configured"] is True
+    assert ha["connected"] is False
+    assert ha["error"]
+    # Other /state sections still populated despite HA failure
+    assert "audio" in body
+    assert "renderers" in body
+
+
 # --- /session/* endpoints (phase 3) ---
 
 

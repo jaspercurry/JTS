@@ -492,3 +492,46 @@ def build_ha_client(cfg) -> HAClient | None:
         token=cfg.ha_token,
         agent_id=cfg.ha_agent_id or None,
     )
+
+
+async def probe_status(url: str, token: str) -> dict[str, Any]:
+    """One-shot reachability + version probe of an HA instance.
+
+    Used by jasper-control's /state aggregator, the /system/ dashboard
+    card, and jasper-doctor — none of which need the full HAClient
+    lifecycle (no conversation_id, no per-call structured logging).
+    Returns a dict the caller ships directly as JSON.
+
+    Result shape:
+      {
+        "configured":   bool,           # url AND token both present
+        "connected":    bool,           # GET /api/ returned 200 + sigil
+        "url":          str,            # what we probed (normalized)
+        "instance_name": str | None,    # from /api/config.location_name
+        "version":      str | None,     # from /api/config.version
+        "error":        str | None,     # short human-readable detail
+      }
+    """
+    if not url or not token:
+        return {
+            "configured": False, "connected": False, "url": url,
+            "instance_name": None, "version": None,
+            "error": None,
+        }
+    client = HAClient(url=url, token=token)
+    try:
+        if not await client.healthcheck():
+            return {
+                "configured": True, "connected": False, "url": client.url,
+                "instance_name": None, "version": None,
+                "error": "Couldn't reach Home Assistant — check the URL and token.",
+            }
+        cfg = await client.config()
+        return {
+            "configured": True, "connected": True, "url": client.url,
+            "instance_name": (cfg or {}).get("location_name") or "Home Assistant",
+            "version": (cfg or {}).get("version"),
+            "error": None,
+        }
+    finally:
+        await client.aclose()

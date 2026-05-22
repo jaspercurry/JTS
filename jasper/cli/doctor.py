@@ -774,6 +774,53 @@ def check_state_dir(cfg: Config) -> CheckResult:
     return CheckResult("state dir", "ok", str(p))
 
 
+def check_home_assistant(cfg: Config) -> CheckResult:
+    """Verify Home Assistant connectivity for the home_assistant voice tool.
+
+    Three states matter:
+      - URL or token not set → ok (skipped, not enabled). The home_assistant
+        tool is gated on both being present.
+      - Both set, but GET /api/ fails (network, auth, 5xx) → fail with an
+        actionable hint pointing at the setup wizard.
+      - Both set, GET /api/ succeeds → ok with the instance name + version.
+
+    Mirrors the skip-if-not-configured pattern of check_google_tokens.
+    Synchronous wrapper around the async probe so it slots into run_async's
+    sync-check list without restructuring.
+    """
+    import asyncio as _asyncio
+
+    label = "Home Assistant"
+    setup_url = f"http://{cfg.hostname}/homeassistant"
+    if not cfg.ha_enabled:
+        return CheckResult(
+            label, "ok",
+            f"not configured (skipped — visit {setup_url} to enable "
+            f"smart-home control)",
+        )
+    try:
+        from ..home_assistant import probe_status
+    except ImportError as e:
+        return CheckResult(label, "fail", f"home_assistant import failed: {e}")
+    try:
+        result = _asyncio.run(probe_status(cfg.ha_url, cfg.ha_token))
+    except Exception as e:  # noqa: BLE001
+        return CheckResult(label, "fail", f"probe raised: {e}")
+    if not result.get("connected"):
+        return CheckResult(
+            label, "fail",
+            f"configured but unreachable at {result.get('url') or cfg.ha_url}: "
+            f"{result.get('error') or 'unknown error'}. Re-check the URL "
+            f"and token at {setup_url}.",
+        )
+    name = result.get("instance_name") or "Home Assistant"
+    version = result.get("version") or "?"
+    return CheckResult(
+        label, "ok",
+        f"connected to {name} ({version}) at {result.get('url')}",
+    )
+
+
 def check_ram() -> CheckResult:
     try:
         with open("/proc/meminfo") as f:
@@ -1569,6 +1616,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         lambda: check_spotify_cache(cfg),
         lambda: check_spotify_connect_device(cfg),
         lambda: check_google_tokens(cfg),
+        lambda: check_home_assistant(cfg),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),
