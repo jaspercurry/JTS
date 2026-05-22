@@ -179,6 +179,41 @@ def test_nyc_bus_find_stops_parses_oba_response():
     assert "E" in near.display_name  # direction hint included
 
 
+def test_nyc_bus_find_stops_parses_routes_as_dict_list():
+    """MTA's BusTime production response embeds `routes` as a list of
+    route dicts (not string IDs in a separate references block).
+    Regression for the "unhashable type: dict" crash that surfaced
+    live: dict-shape routes must be parsed by extracting shortName
+    directly, not by route_map lookup."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={
+            "data": {
+                "stops": [
+                    {
+                        "id": "MTA_302680",
+                        "name": "4 AV/39 ST",
+                        "lat": 40.6533, "lon": -73.9994,
+                        "direction": "E",
+                        # MTA BusTime production shape: list of dicts,
+                        # no separate references block.
+                        "routes": [
+                            {"id": "MTA NYCT_B35", "shortName": "B35"},
+                            {"id": "MTA NYCT_B70", "shortName": "B70"},
+                        ],
+                    },
+                ],
+            },
+        })
+
+    provider = _bus_with_handler(handler)
+    stops = provider.find_stops_near(
+        40.65, -73.999, credentials={"JASPER_MTA_BUSTIME_KEY": "k"}, count=5,
+    )
+    assert len(stops) == 1
+    assert stops[0].lines == ("B35", "B70")
+    assert "B35/B70" in stops[0].display_name
+
+
 def test_nyc_bus_find_stops_handles_http_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
