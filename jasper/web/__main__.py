@@ -15,6 +15,7 @@ unit per wizard. nginx routes:
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
   /peers/    →  127.0.0.1:8776  (jasper.web.peering_setup)
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
+  /homeassistant/ → 127.0.0.1:8778  (jasper.web.home_assistant_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -41,6 +42,7 @@ from . import (
     _systemd,
     airplay_setup,
     google_setup,
+    home_assistant_setup,
     peering_setup,
     sources_setup,
     spotify_setup,
@@ -80,6 +82,7 @@ def main() -> int:
     wifi_port = int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775"))
     peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
     transit_port = int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777"))
+    ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -177,6 +180,19 @@ def main() -> int:
         target_for(transit_port), state_path=transit_state,
     )
 
+    # Home Assistant connection wizard — mDNS discovery + LLAT paste +
+    # optional conversation-agent picker. Writes
+    # /var/lib/jasper/home_assistant.env (URL, token, optional agent_id)
+    # and restarts jasper-voice on save. The home_assistant tool gates
+    # on URL + token both being set, so a missing file leaves smart-home
+    # control disabled by default.
+    ha_state = os.environ.get(
+        "JASPER_HA_FILE", home_assistant_setup.HA_ENV_FILE,
+    )
+    ha_server = home_assistant_setup.make_server(
+        target_for(ha_port), state_path=ha_state,
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -192,6 +208,7 @@ def main() -> int:
         wifi_server.RequestHandlerClass,
         peers_server.RequestHandlerClass,
         transit_server.RequestHandlerClass,
+        ha_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -206,6 +223,7 @@ def main() -> int:
         ("/wifi", wifi_port),
         ("/peers", peers_port),
         ("/transit", transit_port),
+        ("/homeassistant", ha_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -225,6 +243,7 @@ def main() -> int:
         ("/wifi", wifi_server),
         ("/peers", peers_server),
         ("/transit", transit_server),
+        ("/homeassistant", ha_server),
     ):
         threading.Thread(
             target=_serve_forever,
