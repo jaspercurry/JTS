@@ -237,6 +237,7 @@ deploy/
   nginx-jasper.conf             Standalone /spotify + /dial HTTPS site
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
+  HANDOFF-mic-quality-v2.md     Active workstream: sequencing for DTLN-aec spike + wake-word path + wizard
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
@@ -302,6 +303,14 @@ reference. Currently:
   restructure, or anything related to the `/peers/` wizard.**
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
+- [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
+  Active workstream. The sequencing + lever inventory + decision
+  history for getting the mic to work reliably across whisper /
+  yell / fast / slow / music / silence. **Read this first when
+  picking up mic-quality work in a fresh session.** Cross-refs
+  HANDOFF-aec.md (engine internals) + HANDOFF-wake-telemetry.md
+  (measurement infrastructure already deployed) so this doc stays
+  short on what's documented elsewhere.
 - [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
   Dual-stream wake-word detection (AEC ON + AEC OFF, OR-gated)
   plus SQLite-backed per-event telemetry with audio capture and

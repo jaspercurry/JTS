@@ -1,0 +1,545 @@
+# HANDOFF: Mic quality v2 — DTLN-aec spike, wake-word path, calibration wizard
+
+**Audience:** fresh Claude / Codex session picking up the mic-quality work
+after the wake-telemetry subsystem (PR #191) landed on main.
+
+**Goal:** make the JTS microphone reliable across the full range of normal
+human voice — whisper, yell, fast, slow, music playing, music silent — on
+whatever USB mic the user owns, not specifically the XVF3800.
+
+**Read first** (in this order):
+1. This doc — sequencing + lever inventory + decision history
+2. [`docs/HANDOFF-wake-telemetry.md`](HANDOFF-wake-telemetry.md) — the
+   measurement infrastructure already deployed
+3. [`docs/HANDOFF-aec.md`](HANDOFF-aec.md) — what's been tried on the AEC
+   side and why various paths were rejected
+4. [`CLAUDE.md`](../CLAUDE.md) "Wake-event telemetry" section — operational
+   commands (fetch / audit / label)
+
+---
+
+## TL;DR for the impatient
+
+**Three concrete things we know from production data on 2026-05-22:**
+
+1. **Wake-word model is the biggest bottleneck.** 100 % of dual-stream
+   wake fires came in via the AEC OFF leg; the AEC ON leg's
+   `jarvis_v2.onnx` scored 0.001 (silent miss) on every utterance.
+   The OR-gate is currently doing all the heavy lifting; without it
+   the wake rate would collapse.
+2. **AEC3's residual suppressor is gating HF speech bins frame-by-frame.**
+   `hf_CV` is +0.286 higher on AEC ON vs AEC OFF for identical static
+   spectra — the bins are flickering, not broadly attenuated. This is
+   the "tearing / raggedy upper edge" the user reports hearing on
+   sibilants. RS knobs that would soften this are present in Trixie's
+   `libwebrtc-audio-processing-dev 1.3-3` but **not exposed** through
+   our `jasper_aec3` pybind11 binding's public constructor.
+3. **TTS is not in the AEC reference path** (architectural). The bridge's
+   `pcm.jasper_capture` dsnoop taps the music snd-aloop chain; TTS goes
+   straight to the dongle's dmix and bypasses the loopback. AEC has no
+   reference for the TTS signal, so when the speaker is talking the mic
+   picks it up and AEC passes it through.
+
+**The proposed plan:**
+
+- **Phase 1** (next session): wire **DTLN-aec** into the bridge as a
+  parallel UDP output on `:9878`, alongside AEC3 on `:9876`. Wake loop
+  scores all three streams (AEC3, DTLN-aec, raw chip). DB schema gets
+  a 3rd score column. Listen + measure to decide which engine to
+  default to.
+- **Phase 2**: depending on Phase 1, either commit to DTLN-aec
+  (architecturally clean — no RS tearing) or do the C++ binding work
+  to expose AEC3's residual suppressor knobs.
+- **Phase 3**: wake-word personalization (livekit-wakeword Tier 1
+  on-Pi verifier — 5-8 utterances of the user saying "Jarvis" / "Jasper").
+- **Phase 4**: TTS reference routing fix (ALSA `multi` plugin so the
+  TTS path also feeds the loopback that AEC reads).
+- **Phase 5+**: calibration wizard, cloud retrain, speaker ID (per the
+  research report — see "Research synthesis" below).
+
+The user's instinct that **DTLN-aec is the highest-information first
+move** is correct. If it materially beats AEC3 on Jasper's actual
+audio, much of the AEC3 RS-knob work becomes moot.
+
+---
+
+## Current state — what's actually deployed
+
+**Pi:** `jts.local`, commit `4457d00` (merge commit on `main`).
+
+**Active config** (`/etc/jasper/jasper.env`):
+
+```
+JASPER_MIC_DEVICE=udp:9876        # post-AEC stream from bridge
+JASPER_MIC_DEVICE_RAW=udp:9877    # chip-direct stream from bridge (PR #191)
+JASPER_AEC_MIC_GAIN_DB=0          # was 6; changed 2026-05-22 to fix tanh distortion
+JASPER_AEC_NS_ENABLED=1           # noise suppression on
+JASPER_AEC_NS_LEVEL=low           # gentle
+JASPER_AEC_AGC1_ENABLED=1         # adaptive digital AGC
+JASPER_AEC_AGC1_TARGET_DBFS=9     # -9 dBFS target
+JASPER_AEC_AGC1_MAX_GAIN_DB=18    # cap
+JASPER_AEC_REF_GAIN_DB=0
+JASPER_AEC_CHIP_HPF_HZ=125
+JASPER_AEC_REF_HPF_HZ=125
+```
+
+**What's running:**
+
+| Component | Status | Notes |
+|---|---|---|
+| `jasper-aec-bridge` | Active | Emits AEC ON on `:9876` + chip-direct on `:9877`; AEC3 via `jasper_aec3` pybind11 binding |
+| `jasper-voice` | Active | Dual-stream WakeLoop, OR-gates AEC ON + AEC OFF via `_handle_wake_frame(leg=…)` |
+| `jasper-aec-reconcile` | Active | Auto-enables AEC bridge on 6-ch firmware |
+| `wake_events` SQLite | Active at `/var/lib/jasper/wake-events/wake-events.sqlite3` | 17 columns; ALTER-migrated; 6 s WAV per leg per event |
+
+**Telemetry that's already capturing:**
+
+- Every wake event (fire or near-miss) → DB row + 2 WAVs
+- Per-leg peak scores + peak offsets
+- Funnel timestamps: `ts_turn_opened`, `ts_speech_detected`, `ts_turn_complete`
+- Outcomes: `completed`, `no_speech` (FP proxy), `late_cancel`, `peer_lost`, `gate_blocked`, `session_failed`
+- Context: bridge config snapshot, music volume from CamillaDSP anchor,
+  mic mute, per-leg RMS dBFS
+
+**Analysis scripts in place** (laptop side):
+
+| Script | What it does |
+|---|---|
+| `scripts/fetch-wake-events.sh` | Pulls DB + WAVs, generates `index.csv` + `index.tsv`, opens Finder |
+| `scripts/audit-wake-events.sh` | Forensic audit — WAV integrity, cross-leg parity (xcorr), DB column populated counts |
+| `/tmp/analyze_aec_distortion.py` | Per-clip peak/RMS/crest/tanh-zone analysis (NOT in repo — promote when stable) |
+| `/tmp/analyze_tearing.py` | NS / RS / AGC-pump / frame-boundary / alias detectors (NOT in repo) |
+
+**Last forensic run** (today, 9 dual-leg events with `MIC_GAIN_DB=0`):
+
+```
+metric        AEC ON   AEC OFF   delta     interpretation
+flat_var      0.126    0.118     +0.008    no NS musical noise
+hf_CV         0.924    0.638     +0.286    RS gating HF speech bins (the "tearing")
+frame_50Hz    0.088    0.052     +0.036    no frame-boundary clicks
+pump          0.095    0.053     +0.043    no AGC pumping
+hf_alias     -30.2     -30.2     -0.01     no resampler aliasing
+```
+
+vs yesterday (`MIC_GAIN_DB=6`) — peak distortion was eliminated:
+
+```
+metric        YESTERDAY (gain=6)    TODAY (gain=0)
+median peak   30,514 (pinned)       26,681 (natural)
+median RMS    -16.6 dBFS            -23.5 dBFS  (matches the -6 dB env change)
+median crest  16.1 dB (squashed)    22.4 dB (matches AEC OFF — restored)
+pct_hard      0.50 %                0.00 %
+```
+
+---
+
+## The levers we can pull — ranked by expected impact
+
+| # | Lever | Current state | Effort | Expected impact | Why this ranking |
+|---|---|---|---|---|---|
+| 1 | **Wake-word engine** (jarvis_v2 → livekit-wakeword or personalized) | jarvis_v2 misses 100 % of attempts on AEC ON leg; user feedback "model is struggling to pick it up" | 1–3 days (Tier 1 on-Pi); 1–2 weeks (custom retrain) | **Massive** — addresses the root failure mode. Cleaner AEC won't help a model that silently misses | Direct production-data evidence. Model is the bottleneck. |
+| 2 | **AEC engine choice** (AEC3 → DTLN-aec, or run both) | AEC3 with RS tearing on sibilants | 2–3 days for parallel integration | **High** — fixes HF tearing without C++ binding work; neural model is drift-tolerant | Sidesteps the libwebrtc surface-area problem entirely. The user's stated preference. |
+| 3 | **TTS reference routing fix** (ALSA `multi` plugin) | TTS bypasses AEC entirely; user hears TTS echo in mic | 0.5–1 day (asoundrc change) | **High** for user experience during TTS responses; medium for wake-word | Architectural gap. Clean fix exists. |
+| 4 | **AEC3 RS knob exposure** (C++ binding rebuild) | Locked; defaults too aggressive on sibilants | 2–3 days (Meson subproject + binding refactor) | **High** — would fix the tearing in-engine; ONLY useful if we keep AEC3 | High-effort, only payoff if Phase 1 says "stay with AEC3" |
+| 5 | **Calibration wizard** (per-environment auto-tuning) | None | 1–2 weeks for skeleton | **Medium-high** for distribution; medium for Jasper's single install | Crucial for OSS scaling, less crucial for one Pi |
+| 6 | **Wake-word personalization Tier 2** (cloud retrain, ~150 utterances) | None | 1 week + Modal/RTX 4090 budget (~$0.50/train) | **Medium-high** — generalizes across user voice variation (tired, sick, etc.) | Tier 1 (Lever 1) gets 80 % of the win; Tier 2 closes the gap |
+| 7 | **NS / AGC tuning sweep** | NS=low, AGC1 on (target=9, max=18) | hours per knob | **Low-medium** — likely diminishing returns vs Phase 1/2 | Already swept extensively (HANDOFF-aec.md "2026-05-20 findings") |
+| 8 | **Speaker ID** (Picovoice Eagle, household member attribution) | None | 1 day to wire | **Low** for mic quality; **medium** for downstream UX | Unblocks per-user routing, doesn't fix mic |
+| 9 | **MIC_GAIN_DB** | 0 (set today, distortion gone) | minutes | **Already done** | Closed |
+| 10 | **Chip-side AEC** (XVF3800 hardware AEC) | Off; tried, doesn't work in our split-DAC topology | Multi-week re-architecture | **Probably negative** | Investigated + rejected in HANDOFF-aec.md "Chip-AEC delay tolerance" |
+
+**Highest-leverage sequence:** Lever 2 (DTLN-aec spike) → Lever 1 (wake-word
+personalization), in parallel with Lever 3 (TTS routing). Lever 4 (AEC3 RS
+knobs) only if Phase 1 keeps AEC3 in play. Lever 5 (wizard) after we know
+what the wizard should configure.
+
+---
+
+## Research synthesis — the report's key findings
+
+The full report is preserved in `docs/research/mic-quality-v2-report.md`
+(check whether the user wants it committed — currently lives only in this
+conversation transcript). One-paragraph distillations follow.
+
+### AEC engine: AEC3 vs DTLN-aec
+
+| | AEC3 | DTLN-aec |
+|---|---|---|
+| Type | Adaptive linear filter + spectral residual suppressor | Two-stage neural net (STFT + LSTM) |
+| Trixie availability | `libwebrtc-audio-processing-dev 1.3-3` (installed) | Not packaged; bring via PyPI / TFLite |
+| Pi 5 CPU | ~5 % | ~20 % (256-unit model) |
+| Pi 5 RAM | ~85 MB | ~50–100 MB depending on size |
+| Latency | <10 ms | ~10 ms (STFT framing) |
+| Clock drift tolerance | Poor — filter loses convergence | Excellent — no adaptive filter to diverge |
+| Speaker non-linearity tolerance | Poor — assumes linear path | Excellent — learned model |
+| HF speech preservation | Brittle (current symptom) | Trained for it |
+| Config surface for tuning | Rich (when binding exposes it) | Mostly fixed; pick model size |
+| Telephony vs smart-speaker training data | Designed for both | Trained on AEC Challenge (telephony) |
+
+**Net read for Jasper's chain:** DTLN-aec is the right *default* given the
+USB-mic + separate-DAC + independent-crystal topology, which is exactly the
+case the report says AEC3 struggles with. AEC3 may still win on CPU-constrained
+deployments — hence the report's "wizard picks the engine" framing.
+
+### Wake-word engine: jarvis_v2 (openWakeWord) vs livekit-wakeword vs custom
+
+| | `jarvis_v2.onnx` (current) | livekit-wakeword | Custom-trained (Tier 2) |
+|---|---|---|---|
+| Architecture | flatten + Dense MLP head | conv + multi-head attention | conv + multi-head attention, user-tuned |
+| Training data | Community-collected | LiveKit benchmark | User's mic + voice + room |
+| Front-end | Google speech_embedding | Same | Same |
+| Recall (vendor benchmarks) | unknown | 86.1 % | should exceed both |
+| FPPH (vendor benchmarks) | unknown | 100× lower than jarvis_v2 (vendor claim) | configurable |
+| Trixie / Pi 5 compatibility | Proven | Proven (verified 2026-05-21 BUD-E smoke test) | Proven |
+| Runtime swap effort | None | Drop-in (ONNX) | Drop-in (ONNX) |
+
+**Net read:** the jarvis_v2 silent-miss failure mode is the dominant problem.
+livekit-wakeword is the safest stepping stone. Custom-trained on user's actual
+audio (already being captured in our wake-events corpus) is the endpoint.
+
+### TTS reference routing — three fix approaches
+
+Per [`/root/.asoundrc`](../deploy/alsa/) inspection:
+
+- `pcm.jasper_capture` = dsnoop on `hw:Loopback,1,0` (music snd-aloop chain only)
+- `pcm.jasper_out` = dmix on `hw:CARD=A,DEV=0` (Apple USB dongle direct)
+- TTS writes to `pcm.jasper_out`; never reaches `pcm.jasper_capture`
+
+| | Effort | Risk | Notes |
+|---|---|---|---|
+| A. Route TTS through CamillaDSP + snd-aloop | medium | medium — TtsVolumeTracker math assumes post-Camilla; ducking changes | Cleanest data flow; biggest behavioral change |
+| B. Bridge accepts two reference streams (music + TTS), mixes before AEC3 | high | medium — AEC3 takes single mono ref; sample-rate alignment | Most flexible long-term |
+| **C. ALSA `multi` plugin: TTS forks to dongle AND loopback** | medium | low — TTS audio path unchanged at speaker | Recommended starting point; zero Python changes |
+
+### Calibration wizard
+
+The report proposes a 3-phase wizard:
+
+- **Phase A (acoustic measurement, ~30 s):** noise floor + ESS sweep for IR
+  + clock-drift measurement. No user speech.
+- **Phase B (AEC configuration, ~30 s):** engine selection from Phase A
+  numbers + per-engine config + ERLE validation + sibilant-survival check.
+  No user speech.
+- **Phase C (wake-word personalization, ~60–90 s):** 5–8 utterances + train
+  verifier head + threshold tuning. Optional Tier 2 cloud retrain.
+
+This is the right OSS-distribution framing but **not the right next move
+for Jasper's single Pi.** We already know most of what the wizard would
+measure for his specific install (drift is bad, music chain is fine, etc.).
+The wizard work pays off later — after we've picked the engine and wake-word
+model that the wizard should actually configure.
+
+---
+
+## Recommended sequencing — five phases
+
+### Phase 1 — DTLN-aec parallel spike (next session, 2–3 days)
+
+**Goal:** measure DTLN-aec on Jasper's actual signal chain. Don't replace
+AEC3 — run alongside, listen + measure, then decide.
+
+**What to build:**
+
+1. Add DTLN-aec as a parallel path in `jasper/cli/aec_bridge.py`. Emit
+   its output on a third UDP port `:9878` while the existing AEC3 output
+   stays on `:9876` and raw chip stays on `:9877`.
+2. DTLN-aec source options (pick one in this order):
+   - [breizhn/DTLN-aec](https://github.com/breizhn/DTLN-aec) — TFLite,
+     ~50–100 MB RAM. Use the 256-unit model first; fall back to 128 if
+     CPU/RAM tight on Pi 5.
+   - [SaneBow/PiDTLN](https://github.com/SaneBow/PiDTLN) — Pi-validated
+     wrapper, XNNPACK delegate, real-time on Pi 4.
+3. Extend `jasper/voice_daemon.py`'s WakeLoop to ingest three UDP streams
+   (extend the existing dual-stream pattern). Score wake on each leg
+   independently. OR-gate across all three with shared refractory.
+4. Schema: add `peak_score_dtln_aec` REAL + `audio_dtln_path` TEXT to
+   `wake_events` via the same idempotent ALTER pattern.
+5. Capture ring: add `_capture_ring_dtln`; attach_audio writes a third WAV.
+6. Update `index.csv` columns to include DTLN score + path.
+
+**What to measure:**
+
+For each captured wake, three legs of audio + three scores. Listen:
+
+- Does DTLN-aec sound cleaner than AEC3 on the user's voice?
+- Does DTLN-aec also cancel music (the AEC3 strength)?
+- Does DTLN-aec also cancel TTS (after the routing fix in Phase 3)?
+- Does the wake model score better on DTLN-aec output than AEC3 output?
+
+Forensic metrics (extend `/tmp/analyze_tearing.py`):
+
+- `hf_CV` on DTLN-aec vs AEC3 — should be much closer to AEC OFF if DTLN
+  preserves HF properly
+- ERLE in dB during music-only periods — measures cancellation effectiveness
+- Wake-word peak score distribution per leg
+
+**Decision point at the end of Phase 1:**
+
+- If DTLN-aec output sounds clean AND wake model scores well → commit to
+  DTLN-aec as default. Skip Phase 2 (AEC3 binding work).
+- If DTLN-aec output sounds clean BUT wake model still struggles → wake-word
+  model is the issue. Skip both Phase 2 and the DTLN commit; go straight to
+  Phase 4 (wake-word personalization).
+- If DTLN-aec doesn't clearly win → fall back to Phase 2 (expose AEC3 RS
+  knobs and tune properly).
+
+### Phase 2 — AEC3 RS knob exposure (only if Phase 1 keeps AEC3)
+
+**Goal:** stop hand-waving about the residual suppressor. Expose
+`EchoCanceller3Config::Suppressor` to the binding's constructor.
+
+**What to build:**
+
+1. In `jasper_aec3/src/aec3_binding.cpp`, build an `EchoCanceller3Config`
+   from constructor kwargs and pass it to `EchoCanceller3Factory`. Knobs
+   needed (verified present in libwebrtc 1.3 headers):
+   - `suppressor.use_subband_nearend_detection` (bool)
+   - `suppressor.dominant_nearend_detection.snr_threshold` (float)
+   - `suppressor.dominant_nearend_detection.hold_duration` (int)
+   - `suppressor.dominant_nearend_detection.trigger_threshold` (float)
+   - `suppressor.high_bands_suppression.max_gain_during_echo` (float)
+2. Expose to Python via the existing `Aec3(...)` kwargs.
+3. Add new env vars: `JASPER_AEC_RS_SNR_THRESHOLD`, `JASPER_AEC_RS_HOLD_MS`,
+   `JASPER_AEC_RS_SUBBAND_NEAREND`, `JASPER_AEC_RS_HIGH_BANDS_MAX_GAIN`.
+4. Re-run tearing analysis. Target: `hf_CV` delta vs AEC OFF drops below
+   +0.05.
+
+### Phase 3 — TTS reference routing fix
+
+**Goal:** AEC sees TTS so it can cancel it.
+
+**What to build:**
+
+Option C (recommended): replace `pcm.jasper_out` with a `multi` plugin
+that forks the dmix output into both the dongle AND a feed into the
+existing `hw:Loopback,0,0` (the snd-aloop input that the music chain
+uses). Result: TTS audio at the dongle is unchanged (same dmix it was
+hitting), but a copy enters the loopback alongside music, dsnoop'd as
+the AEC reference.
+
+Touches:
+
+- `/root/.asoundrc` — add the multi plugin, define new pcm name (e.g.
+  `pcm.jasper_out_with_aec_ref`)
+- Change `JASPER_TTS_DEVICE` from `jasper_out` to the new pcm name
+- Update `jasper/web/voice_setup.py` if it references `jasper_out`
+
+Risks:
+
+- Latency on TTS path may shift slightly (snd-aloop adds ~20 ms buffering)
+- If music + TTS sum in the loopback in ways CamillaDSP doesn't expect,
+  could create feedback. Need to check whether CamillaDSP's output path
+  is the same as snd-aloop's read side, or independent.
+
+### Phase 4 — Wake-word personalization (Tier 1, on-Pi verifier)
+
+**Goal:** address the silent-miss failure mode by training a verifier on
+the user's actual voice.
+
+**Pre-condition:** at least 30 captured wake events with labels
+(`real_attempt` vs `music` vs `tv` etc.) in the SQLite. The current
+corpus already has 23+ events; needs labeling.
+
+**What to build:**
+
+1. Wizard page at `http://jts.local/wake-review/` (was deferred per
+   `feedback_wake_telemetry_labeling_via_sqlite_no_web_ui.md`, but
+   personalization needs labeled data so re-evaluate the deferral).
+2. Capture script: 5–8 utterances of "Jarvis" / "Jasper" via the existing
+   wake-event capture path, but tag them as enrollment.
+3. Verifier training:
+   - For openWakeWord path: small logistic regression on (16, 96)
+     embeddings (use `openwakeword.custom_verifier_model` if available
+     — we stubbed it out for RAM reasons; un-stub for training, re-stub
+     for runtime).
+   - For livekit-wakeword path: small attention head trained on the same
+     features.
+4. Threshold tuning: per-user FAR target (default <1 FP per 24 h).
+5. Atomic model swap: write to `/var/lib/jasper/wake/<user>_verifier.onnx`,
+   point `JASPER_WAKE_MODEL` at it via reconciler.
+
+### Phase 5 — Calibration wizard (after Phases 1–4 stabilize)
+
+Only worth building once we know:
+- Which AEC engine the wizard should configure
+- Which wake-word model it should personalize
+- What measurements actually drive the engine pick
+
+Build the report's three-phase wizard (acoustic measurement → AEC config →
+wake-word personalization) once those are settled. Skeleton estimate from
+the report: 3–5 days for the AEC half, another 3–5 for the wake-word half.
+
+### Phase 6+ — Cloud retrain, speaker ID, telemetry expansion
+
+Per the report. Defer until Phase 5 ships and the local pipeline is solid.
+
+---
+
+## Testing methodology
+
+### What we already have
+
+- **Per-event SQLite + WAV capture** for every wake fire and every
+  near-miss. Lets us replay user-specific audio through any AEC config
+  offline.
+- **Distortion analyzer** (`/tmp/analyze_aec_distortion.py`) — peak,
+  RMS, crest, tanh-zone occupancy, hard-clip count.
+- **Tearing analyzer** (`/tmp/analyze_tearing.py`) — NS musical noise,
+  RS HF gating, frame-boundary clicks, AGC pumping, HF aliasing.
+- **Audit script** (`scripts/audit-wake-events.sh`) — cross-leg time
+  alignment, duration parity, DB completeness.
+- **CSV export** for spreadsheet review + labeling.
+
+### What we need to add for Phase 1
+
+1. **Three-leg comparison script.** Same per-clip metrics but with a
+   third column for DTLN-aec. Output a CSV with `event_id`,
+   `score_aec3`, `score_dtln`, `score_off`, plus the metrics for each
+   leg.
+2. **Wake-word offline replay script.** Run a specific ONNX model
+   against captured WAVs and report scores. Lets us evaluate "would
+   livekit-wakeword have fired on this clip that jarvis_v2 missed?"
+   without redeploying.
+3. **Listening playlist generator.** Bash script that creates a folder
+   with N most recent events × M legs (e.g. 5 events × 3 legs = 15 WAVs)
+   ordered such that the user can A/B/C compare. Open Finder at the end.
+
+### Five reference conditions to test against (per user)
+
+The user's stated requirements — "whisper, yell, music, fast, slow." Every
+candidate config (AEC3 variant, DTLN-aec variant, wake-word model) should
+be tested against the same 5 reference recordings:
+
+| condition | how to capture | what's hard about it |
+|---|---|---|
+| Whisper | user whispers "Hey Jarvis" 3× near mic | low RMS — AGC may over-amp + add noise; HF consonants weak |
+| Yell | user yells "Hey Jarvis" 3× across room | risk of hard clipping; chip AGC may pump |
+| Music | typical music playing at usual user volume + 3 normal "Hey Jarvis" | tests AEC under load |
+| Fast | user says "Heyjarvis" 3× quickly | short utterance, less context for model |
+| Slow | user says "Hey... Jarvis" 3× with long gap | model may give up before second word |
+
+These should live in a stable reference dataset (e.g. `tests/reference-conditions/`)
+so every future engine/model change can be A/B'd against the same baseline.
+**Build this in Phase 1.**
+
+---
+
+## Decisions already made (don't relitigate)
+
+These are in user memory at
+`/Users/jaspercurry/.claude/projects/-Users-jaspercurry-Code-JTS/memory/` —
+listed here so a fresh session doesn't waste a round arguing about them:
+
+- **PR flow required for main** (`feedback_always_use_pr_flow.md`).
+  Every change goes feature-branch + PR + merge. No direct-push.
+- **Canonical deploy is `bash scripts/deploy-to-pi.sh`**
+  (`feedback_deploy_run_install_sh.md`). Don't hand-roll rsync.
+- **JTS is a production speaker — must be resilient**
+  (`feedback_speaker_must_be_resilient_and_plug_and_play.md`). New
+  failure modes must auto-recover or surface audibly.
+- **Silent failure is unacceptable**
+  (`feedback_silent_failure_unacceptable.md`). Every wake-blocking
+  failure needs an audible cue.
+- **Wake-telemetry labeling via SQLite, no web UI for v1**
+  (`feedback_wake_telemetry_labeling_via_sqlite_no_web_ui.md`).
+  **Note:** this constraint may need to relax for Phase 4
+  (personalization needs labeled data — wizard UI may be the right
+  capture surface). Check with user before building.
+- **For AEC work, prefer engine-internal changes over topology
+  rearchitecture** (`feedback_aec_keep_bridge_architecture.md`).
+  DTLN-aec is engine-internal (drop-in replacement at the same
+  bridge call site). TTS routing fix is topology — flag this
+  explicitly when proposing.
+
+---
+
+## Open questions for next session to resolve early
+
+1. **DTLN-aec source:** which Python wrapper? Direct TFLite or PiDTLN?
+   Resolve before writing the bridge code.
+2. **WakeLoop architecture:** does it stay 3 parallel UDP captures + 3
+   detectors, or do we collapse into a fused-score model? Probably keep
+   parallel for Phase 1 (easier to A/B), revisit later.
+3. **Should the third leg (DTLN) be the session audio source?** Today
+   the primary AEC ON leg feeds the LLM session. If DTLN ends up
+   sounding cleaner, switching the session source matters. But this
+   has knock-on effects (TTS volume tracker math, etc.) — flag for
+   user decision.
+4. **Tier 2 cloud retrain — Modal vs RTX 4090 Community?** Cost vs
+   convenience. The report frames it as "we'll decide later" but it
+   becomes blocking once Phase 4 lands.
+5. **Reference conditions location:** in-repo (committed to git) or
+   user-private (on disk only)? In-repo enables regression testing;
+   user-private respects privacy. Probably user-private with a
+   gitignored reference path declared in env.
+
+---
+
+## Working notes for the spike
+
+**Pi state on 2026-05-22:**
+- Main branch deployed (SHA `4457d00`)
+- 23 wake events in DB, 18 WAV pairs
+- Dual-stream active, MIC_GAIN_DB=0 active
+- 100 % of recent fires came in on AEC OFF leg
+
+**Where the bridge code lives:**
+- `jasper/cli/aec_bridge.py` — single-source-of-truth for the bridge process
+- `_aec_loop` is the function to extend (currently emits AEC3 to OUT_PORT,
+  raw to OUT_PORT_RAW; add DTLN-aec to a new OUT_PORT_DTLN)
+- `_Aec3Engine` is the class — model the DTLN integration after it
+  (`_DtlnAecEngine`?)
+
+**Where the wake loop code lives:**
+- `jasper/voice_daemon.py` `WakeLoop._handle_wake_frame(frame, *, leg=…)`
+- `_wake_secondary_loop` is the parallel task for AEC OFF
+- Add `_wake_tertiary_loop` for DTLN; OR-gate logic in `_handle_wake_frame`
+  already supports any leg label
+
+**Where the schema lives:**
+- `jasper/wake_events.py` `_SCHEMA_SQL` (CREATE TABLE for fresh installs)
+- `_MIGRATION_COLUMNS` list at module top — add new columns there + they
+  get ALTER'd on next `open()`
+
+**Where to extend the analysis:**
+- `scripts/_audit_wake_events.py` (canonical audit; in repo)
+- `/tmp/analyze_aec_distortion.py` (NOT in repo — promote to
+  `scripts/_analyze_aec_distortion.py` when stable)
+- `/tmp/analyze_tearing.py` (NOT in repo — same treatment)
+
+---
+
+## What to do first when picking this up
+
+1. **Read the three companion docs** (HANDOFF-wake-telemetry, HANDOFF-aec,
+   CLAUDE.md "Wake-event telemetry" section). Don't restate what's already
+   documented.
+2. **Fetch the latest corpus** + run audit + run distortion + tearing
+   analyzers to confirm the current state matches this doc:
+   ```sh
+   bash scripts/fetch-wake-events.sh
+   bash scripts/audit-wake-events.sh
+   /Users/jaspercurry/Code/JTS/.venv/bin/python /tmp/analyze_tearing.py wake-events/latest 2>&1 | tail -25
+   ```
+3. **Resolve the Phase 1 open questions** with the user (DTLN source,
+   leg architecture, session audio source).
+4. **Build the reference-conditions capture flow** (whisper / yell /
+   music / fast / slow) before any engine change — these are the
+   baseline against which everything is measured.
+5. **Then start Phase 1.**
+
+---
+
+## Bottom line
+
+The mic chain is one knob away from being good (wake-word model) and one
+architectural fix away from being great (AEC engine). DTLN-aec is the
+fastest way to find out whether the AEC architecture is actually limiting
+us — and if it is, we know what to do; if it isn't, we've saved 2 weeks of
+binding work. Pair that with wake-word personalization once we have
+labeled data, and the system fits the user's stated requirements
+(whisper to yell, fast to slow, music to silence).
+
+The calibration wizard is the right product surface for shipping this to
+others, but for Jasper's single install it's the *last* phase, not the
+first. Get the underlying engines right, then automate.
