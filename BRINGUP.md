@@ -226,6 +226,51 @@ for the full per-provider trade-off table.
 
 ---
 
+## Phase 3.6 — Configure transit (one-time, 2 min, optional)
+
+Skip this phase if you're not in NYC (or Jersey City / Hoboken — Citi
+Bike covers those). The voice tools work without it; queries about
+"next train" / "next bus" / "Citi Bike situation" without
+configuration get a polite "transit isn't set up — visit
+`jts.local/transit` to configure it."
+
+From any browser on the LAN:
+
+```
+http://jts.local/transit/
+```
+
+The wizard:
+
+1. **Geocodes your home address** via OSM Nominatim (no API key, no
+   account). Only the resulting coordinates (rounded to ~110 m) are
+   saved on the speaker — the address itself never lands on disk.
+2. Renders one card per transit provider whose coverage area
+   includes your coordinates. As of now:
+   - **NYC Subway** (keyless) — pick a station + default direction
+     ("uptown" / "downtown" / "both"). "Next train" returns every
+     line stopping at the station, including service-change reroutes.
+   - **NYC MTA Bus** — needs a free MTA BusTime API key. The card
+     is locked until you paste one; register at the link inside the
+     wizard (~30 min approval window). Multi-stop support: save both
+     directions at your corner and voice answers union them.
+   - **NYC Citi Bike** (keyless, GBFS-backed) — multi-station picker
+     with a household-wide "Only mention e-bikes" toggle for if your
+     household only rides e-bikes. Each station's voice answer
+     splits classic-bike vs. e-bike counts and reports open docks.
+     Covers NYC + Jersey City + Hoboken.
+
+Save and the daemon restarts in ~5 seconds, picking up the new
+config. Everything lives in `/var/lib/jasper/transit.env` (wizard-
+owned; the systemd unit's `EnvironmentFile=` sources it).
+
+> **Do not** put `JASPER_SUBWAY_*`, `JASPER_BUS_*`,
+> `JASPER_MTA_BUSTIME_KEY`, or `JASPER_CITIBIKE_*` in
+> `/etc/jasper/jasper.env`. If they're there from an older install,
+> `install.sh` migrates them into the wizard file on the next deploy.
+
+---
+
 ## Phase 4 — Initial volume calibration (2 min)
 
 The Apple dongle's `Headphone` control is the **fixed analog
