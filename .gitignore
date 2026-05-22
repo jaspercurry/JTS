@@ -53,3 +53,7 @@ wake-events/
 # the stable A/B baseline for AEC engine + wake-word model swaps.
 # User-specific audio; never ship to the repo.
 reference-conditions/
+
+# AEC3 v2.1 deep-tune spike — locally-built pybind11 extension
+experiments/aec3-v2-deep-tune-spike/*.so
+experiments/aec3-v2-deep-tune-spike/*.dylib
