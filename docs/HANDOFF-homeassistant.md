@@ -406,16 +406,29 @@ conversationally ("smart-home control isn't set up on this speaker
 ## System prompt
 
 Slotted into `SYSTEM_INSTRUCTION` in
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) — two new
-blocks:
+[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) — two static
+blocks, plus one dynamic addendum the prompt builder appends only
+when HA isn't configured:
 
-1. **When to call** (in the tools section): conditional rules for
-   smart-home control + a positive list of phrase shapes the model
-   should pass through unchanged.
-2. **What to say after** (in the post-tool-return section): speak
-   `spoken_response` verbatim on success; speak `error_detail`
+1. **When to call** (static, in the tools section): conditional
+   rules for smart-home control + a positive list of phrase shapes
+   the model should pass through unchanged.
+2. **What to say after** (static, in the post-tool-return section):
+   speak `spoken_response` verbatim on success; speak `error_detail`
    briefly on failure; don't add 'OK' or 'Done' on top of HA's own
    wording.
+3. **Tool-unavailable nudge** (dynamic, only when `ha_configured=False`,
+   built into the `_build_system_instruction` addendum next to the
+   transit nudge): tells the model to say `'Smart-home control isn't
+   set up yet — visit {hostname}/homeassistant to enable it.'` and
+   explicitly NOT to call any other tool. This guard exists because
+   without it, real-world voice logs showed the model misrouting
+   "turn on the bedroom lights" to `get_current_time` +
+   `get_now_playing` — calling unrelated tools instead of
+   recognising the request as smart-home-shaped-but-unavailable.
+   `{hostname}` is `cfg.hostname` so multi-speaker households
+   (`jts2.local`, `jts3.local`) see the speaker the user is actually
+   talking to.
 
 Provider-agnostic per CLAUDE.md. No mention of Gemini, OpenAI, or
 Grok. Conditional ("skip the preamble when…") not absolute.

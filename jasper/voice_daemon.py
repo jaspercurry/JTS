@@ -642,6 +642,8 @@ def _build_system_instruction(
     google_accounts: list[str] | None = None,
     default_google_account: str = "",
     transit_configured: bool = True,
+    ha_configured: bool = True,
+    hostname: str = "jts.local",
 ) -> str:
     """Return the system instruction with current local time, the
     user's home location, and the linked Google account names
@@ -704,13 +706,40 @@ def _build_system_instruction(
         # guidance in CLAUDE.md. Models obey "in this specific case,
         # say X" better than "never do Y". Provider-agnostic phrasing
         # — no mention of Gemini/OpenAI/Grok.
+        # Hostname is interpolated so multi-Pi households see the
+        # right speaker URL ("jts2.local/transit") rather than the
+        # default. cfg.hostname is the canonical source.
         addendum += (
             " Transit tools (subway, bus arrivals) aren't set up on this "
             "speaker yet — no get_subway_arrivals or get_bus_arrivals tool "
             "is available. If the user asks about the next train or next "
-            "bus, briefly say: 'Transit isn't set up yet — visit "
-            "jts.local/transit to configure it.' Don't promise to check "
+            f"bus, briefly say: 'Transit isn't set up yet — visit "
+            f"{hostname}/transit to configure it.' Don't promise to check "
             "or look it up; the data source is genuinely absent."
+        )
+    if not ha_configured:
+        # Same conditional pattern as transit above. Critical that the
+        # model also DOES NOT call any other tool in this case — we've
+        # observed (May 22 voice log) the model misrouting "turn on the
+        # bedroom lights" to get_current_time + get_now_playing when no
+        # home_assistant tool exists. The "do not call any other tool"
+        # clause prevents that misroute. The specific URL with the
+        # configured hostname lets the user actually find the wizard
+        # — multi-speaker households on the same LAN have
+        # jts2.local / jts3.local hostnames, so hardcoding "jts.local"
+        # would point the wrong way.
+        addendum += (
+            " Home Assistant smart-home control isn't set up on this "
+            "speaker yet — no home_assistant tool is available. If the "
+            "user asks to control any smart-home device (lights, switches, "
+            "thermostats, locks, blinds, scenes, scripts, household "
+            "automations) or asks about the state of devices in the home, "
+            f"say exactly: 'Smart-home control isn't set up yet — visit "
+            f"{hostname}/homeassistant to enable it.' Do not call any other "
+            "tool in this case — not get_current_time, not get_now_playing, "
+            "not get_weather. The user's request cannot be fulfilled without "
+            "the home_assistant tool; redirecting them to the setup page is "
+            "the correct response."
         )
     return SYSTEM_INSTRUCTION + addendum
 
@@ -3127,6 +3156,12 @@ async def run() -> None:
         # (e.g. subway set, bus not) don't need the nudge because
         # the available tool surface still answers train queries.
         transit_configured = bool(subway) or bool(bus and bus.enabled)
+        # ha_configured drives the home_assistant nudge — when HA is
+        # disabled, the model needs explicit guidance to redirect
+        # smart-home requests to the wizard rather than misrouting to
+        # unrelated tools (observed misroute: lights → get_current_time
+        # + get_now_playing on May 22 2026).
+        ha_configured = ha is not None
         await connection.start(
             registry,
             lambda: _build_system_instruction(
@@ -3134,6 +3169,8 @@ async def run() -> None:
                 google_accounts=google_account_names,
                 default_google_account=google_default_account,
                 transit_configured=transit_configured,
+                ha_configured=ha_configured,
+                hostname=cfg.hostname,
             ),
         )
         # `make_mic_capture` routes to UdpMicCapture for
