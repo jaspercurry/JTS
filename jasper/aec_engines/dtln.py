@@ -69,8 +69,11 @@ class DTLNEngine:
         if not m1.is_file() or not m2.is_file():
             raise FileNotFoundError(
                 f"DTLN ONNX models missing in {model_dir}: looking for "
-                f"{m1.name} + {m2.name}. Convert via "
-                f"scripts/convert-dtln-aec.sh and SCP to {model_dir}."
+                f"{m1.name} + {m2.name}. install.sh normally fetches them "
+                f"from the dtln-models-v1 release of jaspercurry/JTS — see "
+                f"jasper/aec_engines/dtln_models.py for the registry. To "
+                f"install by hand: `gh release download dtln-models-v1 "
+                f"--repo jaspercurry/JTS --dir {model_dir}`."
             )
 
         # Single-threaded inference: more deterministic timing, less

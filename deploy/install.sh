@@ -804,6 +804,74 @@ PY
         echo "  re-run install.sh once you're online to retry the downloads"
     fi
 
+    # DTLN-aec ONNX model bundle for the triple-stream wake architecture.
+    # Registry at jasper/aec_engines/dtln_models.py — same idempotency
+    # + best-effort shape as the wake-model download above. The bridge's
+    # _select_engine() runs with DTLN disabled when these files are
+    # missing, so a failed download degrades gracefully (triple-stream
+    # falls back to dual-stream: AEC ON + AEC OFF). Files are hash-
+    # verified post-download so a corrupted partial fetch (truncated
+    # ONNX = cryptic onnxruntime error at engine init) is caught here.
+    install -d -m 0755 -o root -g root /var/lib/jasper/dtln
+    if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import hashlib
+import os
+import sys
+import urllib.request
+
+from jasper.aec_engines.dtln_models import REGISTRY, DTLN_MODELS_DIR
+
+def sha256_file(p: str) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+failures = 0
+for entry in REGISTRY:
+    for path, url, expected_sha in entry.files(DTLN_MODELS_DIR):
+        dest = str(path)
+        if os.path.exists(dest) and os.path.getsize(dest) > 0:
+            if sha256_file(dest) == expected_sha:
+                print(f"  dtln model present: {path.name}")
+                continue
+            print(f"  dtln model hash mismatch, re-downloading: {path.name}")
+            os.unlink(dest)
+        print(f"  downloading dtln model: {path.name}")
+        print(f"    from: {url}")
+        tmp = dest + ".tmp"
+        try:
+            urllib.request.urlretrieve(url, tmp)
+            got = sha256_file(tmp)
+            if got != expected_sha:
+                print(f"  hash mismatch after download: got {got}, "
+                      f"expected {expected_sha}", file=sys.stderr)
+                os.unlink(tmp)
+                failures += 1
+                continue
+            os.replace(tmp, dest)
+            os.chmod(dest, 0o644)
+        except Exception as e:  # noqa: BLE001
+            print(f"  failed: {e}", file=sys.stderr)
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            failures += 1
+
+sys.exit(1 if failures else 0)
+PY
+    then
+        echo "  warning: one or more DTLN model downloads failed"
+        echo "  the bridge will fall back to dual-stream (AEC ON + AEC OFF only)"
+        echo
+        echo "  Anonymous download from the release returns 404 while the"
+        echo "  jaspercurry/JTS repo is still private. Manual install:"
+        echo "    gh release download dtln-models-v1 --repo jaspercurry/JTS \\"
+        echo "        --dir /var/lib/jasper/dtln"
+        echo "    sudo systemctl restart jasper-aec-bridge"
+        echo "  (one-time; once the repo goes public install.sh handles it)"
+    fi
+
     # Seed /var/lib/jasper/wake_model.env with the recommended default
     # on FIRST install only. Existing files are left alone — the /wake/
     # picker owns this file once the user has touched it, and we never
