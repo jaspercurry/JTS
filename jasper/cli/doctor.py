@@ -927,6 +927,56 @@ def _aec_mode_setting() -> str:
     return "auto"
 
 
+def _wake_leg_setting(key: str, default: bool) -> bool:
+    """Read a JASPER_WAKE_LEG_* boolean from aec_mode.env, with the
+    same normalization the bash reconciler does. Defaults applied when
+    the file is missing, the key is missing, or the value is malformed
+    — matches install.sh's reconcile_aec_state seeds."""
+    p = Path("/var/lib/jasper/aec_mode.env")
+    if not p.exists():
+        return default
+    try:
+        for line in p.read_text().split("\n"):
+            line = line.strip()
+            if line.startswith(f"{key}="):
+                val = line.split("=", 1)[1].strip().strip("'\"").lower()
+                if val in ("1", "on", "true", "yes", "y",
+                           "enabled", "enable"):
+                    return True
+                if val in ("0", "off", "false", "no", "n",
+                           "disabled", "disable", ""):
+                    return False
+                return default
+    except OSError:
+        pass
+    return default
+
+
+def check_wake_legs_configured() -> CheckResult:
+    """Reports which additive wake-detection legs are armed via the
+    /system Wake detection card (raw chip-direct + DTLN neural). The
+    AEC3 master leg is reported separately by check_aec_bridge_running.
+
+    Skips cleanly if AEC is disabled — leg booleans are meaningless
+    without the bridge emitting on the UDP ports they consume."""
+    aec_mode = _aec_mode_setting()
+    if aec_mode != "auto":
+        return CheckResult(
+            "Wake legs", "ok",
+            f"n/a — AEC mode is {aec_mode}; additive legs require AEC on",
+        )
+    raw = _wake_leg_setting("JASPER_WAKE_LEG_RAW", True)
+    dtln = _wake_leg_setting("JASPER_WAKE_LEG_DTLN", False)
+    armed = [name for name, on in
+             (("aec3", True), ("raw", raw), ("dtln", dtln))
+             if on]
+    detail = (
+        f"{len(armed)} leg(s) armed: {', '.join(armed)}. "
+        f"Toggle at http://jts.local/system (Wake detection card)."
+    )
+    return CheckResult("Wake legs", "ok", detail)
+
+
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
     chip's ASR-tap channel (1 of the 6-ch firmware, see
@@ -2136,6 +2186,11 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
+        # Reports which additive wake-detection legs the user has
+        # armed via the /system Wake detection card (raw + DTLN).
+        # Doesn't fail on any combination — pure visibility — so
+        # the operator sees their config at a glance.
+        check_wake_legs_configured,
         # Triple-stream tertiary leg health. Skips cleanly when
         # JASPER_AEC_DTLN_ENABLED is unset (dual-stream / single-stream
         # configs). Catches silent ONNX-load failures that would

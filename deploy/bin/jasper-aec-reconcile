@@ -69,10 +69,19 @@ load_env_file() {
 
 ensure_mode_file() {
     if [[ -f "$MODE_FILE" ]]; then
+        # File exists. Seed any missing keys so an older deploy's
+        # mode file picks up the new leg defaults on next reconcile.
+        # Existing values for already-present keys are left alone.
+        if ! grep -q '^JASPER_WAKE_LEG_RAW=' "$MODE_FILE"; then
+            printf 'JASPER_WAKE_LEG_RAW=1\n' >> "$MODE_FILE"
+        fi
+        if ! grep -q '^JASPER_WAKE_LEG_DTLN=' "$MODE_FILE"; then
+            printf 'JASPER_WAKE_LEG_DTLN=0\n' >> "$MODE_FILE"
+        fi
         return
     fi
     install -d -m 0755 "$(dirname "$MODE_FILE")"
-    printf 'JASPER_AEC_MODE=auto\n' > "$MODE_FILE"
+    printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\n' > "$MODE_FILE"
     chmod 0644 "$MODE_FILE"
 }
 
@@ -130,6 +139,66 @@ normalize_mode() {
             echo "disabled"
             ;;
     esac
+}
+
+# Normalize the JASPER_WAKE_LEG_* booleans to "1" or "0". The wizard
+# only writes "1" / "0", but operators editing aec_mode.env by hand
+# might use yes/no/true/false. Default is supplied by the caller —
+# RAW defaults on, DTLN defaults off.
+normalize_bool() {
+    local value="${1:-}"
+    value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+    case "$value" in
+        1|on|true|yes|y|enabled|enable)
+            echo "1"
+            ;;
+        0|off|false|no|n|disabled|disable|"")
+            echo "0"
+            ;;
+        *)
+            log "unknown bool ${value}; treating as 0"
+            echo "0"
+            ;;
+    esac
+}
+
+# Map wake-leg booleans to the underlying env vars that
+# jasper-aec-bridge and jasper-voice each read at startup. When the
+# bridge isn't going to run (bridge_running="0"), clear all three —
+# they're meaningless without a bridge emitting on the UDP ports,
+# and a stale JASPER_MIC_DEVICE_RAW=udp:9877 leaves the voice
+# secondary UdpMicCapture spinning on a port nobody talks to.
+#
+# The booleans themselves stay preserved in $MODE_FILE — that's the
+# user's wizard-managed intent. We just don't *apply* them when the
+# bridge is down. When the user re-enables AEC, the legs they had
+# configured come back automatically on the next reconcile pass.
+write_leg_env() {
+    local bridge_running="$1"
+    local leg_raw="$2"
+    local leg_dtln="$3"
+    local raw_udp dtln_udp dtln_flag
+    if [[ "$bridge_running" == "1" ]]; then
+        if [[ "$leg_raw" == "1" ]]; then
+            raw_udp="udp:${AEC_UDP_PORT_RAW}"
+        else
+            raw_udp=""
+        fi
+        if [[ "$leg_dtln" == "1" ]]; then
+            dtln_udp="udp:${AEC_UDP_PORT_DTLN}"
+            dtln_flag="1"
+        else
+            dtln_udp=""
+            dtln_flag="0"
+        fi
+    else
+        raw_udp=""
+        dtln_udp=""
+        dtln_flag="0"
+    fi
+    set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_RAW "$raw_udp"
+    set_env_var "$ENV_FILE" JASPER_MIC_DEVICE_DTLN "$dtln_udp"
+    set_env_var "$ENV_FILE" JASPER_AEC_DTLN_ENABLED "$dtln_flag"
 }
 
 card_id_from_spec() {
@@ -302,9 +371,18 @@ load_env_file "$MODE_FILE"
 AEC_MODE="$(normalize_mode "${JASPER_AEC_MODE:-auto}")"
 AEC_MIC_DEVICE="${JASPER_AEC_MIC_DEVICE:-Array}"
 AEC_UDP_PORT="${JASPER_AEC_UDP_PORT:-9876}"
+AEC_UDP_PORT_RAW="${JASPER_AEC_UDP_PORT_RAW:-9877}"
+AEC_UDP_PORT_DTLN="${JASPER_AEC_UDP_PORT_DTLN:-9878}"
 UDP_DEVICE="udp:${AEC_UDP_PORT}"
 split_candidates "${JASPER_MIC_DEVICE_CANDIDATES:-$AEC_MIC_DEVICE}"
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
+# Additive wake-detection legs (see write_leg_env for the mapping).
+# JASPER_AEC_MODE remains the master toggle; these only matter when
+# the bridge is running. Defaults — RAW on (cheap, gives OR-fusion
+# wake-rate recovery for ~5 MB), DTLN off (~75 MB + 25% one core,
+# opt-in via /system/ wake-detection card).
+LEG_RAW="$(normalize_bool "${JASPER_WAKE_LEG_RAW:-1}")"
+LEG_DTLN="$(normalize_bool "${JASPER_WAKE_LEG_DTLN:-0}")"
 
 if [[ "$CHECK_ONLY" == "1" ]]; then
     if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
@@ -321,16 +399,18 @@ else
     PRESENT_MIC=""
 fi
 
-log "mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>}"
+log "mode=${AEC_MODE} current_mic=${CURRENT_MIC:-<unset>} aec_mic=${AEC_MIC_DEVICE} candidates=${MIC_CANDIDATES[*]:-<none>} legs=raw:${LEG_RAW},dtln:${LEG_DTLN}"
 
 if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     log "custom JASPER_MIC_DEVICE=${CURRENT_MIC}; leaving voice config untouched"
     stop_disable_aec
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN"
     exit 0
 fi
 
 if [[ "$AEC_MODE" == "disabled" ]]; then
     stop_disable_aec
+    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN"
     if [[ -n "$PRESENT_MIC" ]]; then
         if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
             set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
@@ -359,12 +439,14 @@ if aec_ready "$AEC_MIC_DEVICE"; then
     else
         log "6-channel ${AEC_MIC_DEVICE} present; AEC UDP mic already selected"
     fi
+    write_leg_env "1" "$LEG_RAW" "$LEG_DTLN"
     enable_start_aec
     restart_voice
     exit 0
 fi
 
 stop_disable_aec
+write_leg_env "0" "$LEG_RAW" "$LEG_DTLN"
 if [[ -n "$PRESENT_MIC" ]]; then
     if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"

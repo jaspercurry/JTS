@@ -141,3 +141,146 @@ def test_check_aec_ready_reflects_mode_and_firmware(tmp_path: Path) -> None:
     (tmp_path / "aec_mode.env").write_text("JASPER_AEC_MODE=auto\n")
     (tmp_path / "asound" / "Array" / "stream0").write_text("Capture:\n  Channels: 2\n")
     assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+
+
+# ---------- Wake-detection leg mapping ------------------------------------
+# The reconciler maps two booleans in aec_mode.env to three underlying
+# env vars in jasper.env that the bridge + voice each read at startup.
+# These tests pin the mapping + the "clear-on-bridge-off" behavior.
+
+
+def _write_mode_with_legs(
+    tmp_path: Path,
+    mode: str = "auto",
+    raw: str = "1",
+    dtln: str = "0",
+) -> None:
+    (tmp_path / "aec_mode.env").write_text(
+        f"JASPER_AEC_MODE={mode}\n"
+        f"JASPER_WAKE_LEG_RAW={raw}\n"
+        f"JASPER_WAKE_LEG_DTLN={dtln}\n"
+    )
+
+
+def test_ensure_mode_file_seeds_default_leg_keys(tmp_path: Path) -> None:
+    """Fresh install (no aec_mode.env): the reconciler creates the file
+    with the documented defaults — AEC auto, RAW on, DTLN off. These
+    must match install.sh's reconcile_aec_state seed verbatim."""
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_AEC_MODE=auto" in body
+    assert "JASPER_WAKE_LEG_RAW=1" in body
+    assert "JASPER_WAKE_LEG_DTLN=0" in body
+
+
+def test_ensure_mode_file_appends_missing_leg_keys(tmp_path: Path) -> None:
+    """Pre-leg-toggle deploy: aec_mode.env has only JASPER_AEC_MODE.
+    Reconciler should append the new keys with defaults — preserving
+    the operator's mode but picking up new fields on upgrade."""
+    (tmp_path / "aec_mode.env").write_text("JASPER_AEC_MODE=disabled\n")
+    _write_env(tmp_path, "Array")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_AEC_MODE=disabled" in body
+    assert "JASPER_WAKE_LEG_RAW=1" in body
+    assert "JASPER_WAKE_LEG_DTLN=0" in body
+
+
+def test_aec_on_dual_stream_writes_raw_clears_dtln(tmp_path: Path) -> None:
+    """AEC auto + RAW=1 + DTLN=0 → writes raw UDP device, clears
+    DTLN device, sets DTLN_ENABLED=0. The default dual-stream OSS
+    config."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="0")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_DTLN=" in body  # explicitly cleared
+    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" not in body
+    assert "JASPER_AEC_DTLN_ENABLED=0" in body
+
+
+def test_aec_on_triple_stream_writes_all_three(tmp_path: Path) -> None:
+    """AEC auto + RAW=1 + DTLN=1 → writes raw UDP device, DTLN UDP
+    device, and DTLN_ENABLED=1. The opt-in 2 GB Pi config."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="1", dtln="1")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" in body
+
+
+def test_aec_on_single_stream_clears_both_legs(tmp_path: Path) -> None:
+    """AEC auto + RAW=0 + DTLN=0 → clears all leg-related env vars.
+    The 1 GB Pi minimum config when an operator deliberately opts
+    out of the dual-stream default."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="0")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    # All three values present but explicitly empty / 0 — set_env_var
+    # always writes the line; the reconciler is the only writer.
+    assert "JASPER_MIC_DEVICE_RAW=\n" in body or "JASPER_MIC_DEVICE_RAW=" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+    assert "JASPER_AEC_DTLN_ENABLED=0" in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" not in body
+
+
+def test_aec_disabled_clears_all_legs_even_when_booleans_on(tmp_path: Path) -> None:
+    """AEC disabled → clears every leg env var regardless of the
+    boolean state in aec_mode.env. A stale JASPER_MIC_DEVICE_RAW
+    when the bridge is off would leave voice listening on a port
+    nobody talks to (CPU waste in tight retry). Booleans stay
+    intact in aec_mode.env — when AEC is re-enabled they apply
+    again on the next reconcile."""
+    _write_env(tmp_path, "Array")
+    _write_mode_with_legs(tmp_path, mode="disabled", raw="1", dtln="1")
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:" not in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" not in body
+    # Booleans in mode file are preserved.
+    mode_body = (tmp_path / "aec_mode.env").read_text()
+    assert "JASPER_WAKE_LEG_RAW=1" in mode_body
+    assert "JASPER_WAKE_LEG_DTLN=1" in mode_body
+
+
+def test_normalize_bool_accepts_yes_no(tmp_path: Path) -> None:
+    """Operators editing aec_mode.env by hand might write yes/no or
+    true/false rather than 1/0. The reconciler should accept either
+    — wizard always writes 1/0, but hand-edits shouldn't silently
+    fall through to defaults."""
+    _write_env(tmp_path, "udp:9876")
+    (tmp_path / "aec_mode.env").write_text(
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=yes\n"
+        "JASPER_WAKE_LEG_DTLN=true\n"
+    )
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" in body
+
+
+def test_dtln_alone_is_valid_config(tmp_path: Path) -> None:
+    """RAW=0 + DTLN=1 is a valid (if unusual) two-leg config —
+    primary AEC3 + tertiary DTLN, no chip-direct. The reconciler
+    must honor the user's choice rather than coerce it."""
+    _write_env(tmp_path, "udp:9876")
+    _write_mode_with_legs(tmp_path, mode="auto", raw="0", dtln="1")
+    _write_card(tmp_path, channels=6)
+    _run_reconcile(tmp_path, "--reason", "test")
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
+    assert "JASPER_MIC_DEVICE_DTLN=udp:9878" in body
+    assert "JASPER_AEC_DTLN_ENABLED=1" in body

@@ -548,6 +548,17 @@ the `jasper_aec3` pybind11 binding around Trixie's
 music with the production REF_GAIN/MIC_GAIN tunings, at ~3-8% of
 one Pi 5 core and ~95 MB RAM.
 
+**Wake detection runs as up to three OR-gated layers** the user
+controls from the `/system/` Wake detection card: AEC3 (the
+master, always-on when the bridge is up), plus two additive
+sub-layers. Defaults out of the box: AEC3 on, raw chip-direct on
+(dual-stream — cheap, ~5 MB), DTLN neural off (heavy, ~75 MB / ~25%
+one core — opt-in for 2 GB Pis). Toggle any of them at
+[http://jts.local/system](http://jts.local/system); the reconciler
+restarts the bridge + voice and the change takes effect in ~15 s.
+Sensitivity slider lives on the same card. Full lever set in
+AGENTS.md "AEC bridge — reconciler toggle".
+
 The transport is UDP (not snd-aloop's `LoopbackAEC` card, which is
 what the original design used) because snd-aloop's kernel-side
 `loopback_cable` wedges when a consumer is SIGKILL'd, requiring a

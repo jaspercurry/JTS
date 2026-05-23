@@ -211,34 +211,124 @@ def start_peering_daemon_if_enabled() -> None:
 
 
 _AEC_MODE_FILE = "/var/lib/jasper/aec_mode.env"
+_WAKE_MODEL_FILE = "/var/lib/jasper/wake_model.env"
+
+# Default leg policy — must match deploy/install.sh's reconcile_aec_state
+# and deploy/bin/jasper-aec-reconcile's ensure_mode_file. Raw is on
+# by default (~5 MB / negligible CPU, gives OR-fusion wake-rate
+# recovery), DTLN is off by default (~75 MB / ~25% one core, opt-in).
+_LEG_DEFAULT_RAW = True
+_LEG_DEFAULT_DTLN = False
 
 
-def _read_aec_mode() -> str:
-    """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
-    'auto' (the install.sh default) when the file is missing or
-    unparseable — matches the reconciler's own behaviour."""
+def _parse_env_bool(raw: str, default: bool) -> bool:
+    """Same normalization the bash reconciler does — accept yes/no/etc."""
+    value = raw.strip().strip("'\"").lower()
+    if value in ("1", "true", "on", "yes", "y", "enabled", "enable"):
+        return True
+    if value in ("0", "false", "off", "no", "n", "disabled", "disable", ""):
+        return False
+    return default
+
+
+def _read_aec_state() -> dict:
+    """Full /var/lib/jasper/aec_mode.env state — mode + both leg
+    booleans. Missing keys fall back to the documented defaults so a
+    partial file from a pre-leg-toggle deploy still parses sanely.
+
+    The reconciler's ensure_mode_file appends any missing keys on its
+    next run, so this fallback is a one-pass deal — but it must be
+    correct for the GET that races that first reconcile."""
+    state = {
+        "mode": "auto",
+        "leg_raw": _LEG_DEFAULT_RAW,
+        "leg_dtln": _LEG_DEFAULT_DTLN,
+    }
     try:
         with open(_AEC_MODE_FILE) as f:
             for line in f:
                 line = line.strip()
                 if line.startswith("JASPER_AEC_MODE="):
-                    return line.split("=", 1)[1].strip().strip("'\"") or "auto"
+                    val = line.split("=", 1)[1].strip().strip("'\"") or "auto"
+                    state["mode"] = val
+                elif line.startswith("JASPER_WAKE_LEG_RAW="):
+                    state["leg_raw"] = _parse_env_bool(
+                        line.split("=", 1)[1], _LEG_DEFAULT_RAW,
+                    )
+                elif line.startswith("JASPER_WAKE_LEG_DTLN="):
+                    state["leg_dtln"] = _parse_env_bool(
+                        line.split("=", 1)[1], _LEG_DEFAULT_DTLN,
+                    )
     except OSError:
         pass
-    return "auto"
+    return state
+
+
+def _read_aec_mode() -> str:
+    """Compatibility shim — returns just the mode string."""
+    return _read_aec_state()["mode"]
 
 
 def _write_aec_mode(mode: str) -> None:
-    """Atomic write of the env file. mode must be 'auto' or 'disabled'."""
+    """Atomic write of the AEC mode key, preserving leg keys."""
     if mode not in ("auto", "disabled"):
         raise ValueError(f"invalid mode: {mode!r}")
-    tmp = _AEC_MODE_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        f.write(f"JASPER_AEC_MODE={mode}\n")
-        f.flush()
-        os.fsync(f.fileno())
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, _AEC_MODE_FILE)
+    _atomic_rewrite_env(_AEC_MODE_FILE, {"JASPER_AEC_MODE": mode})
+
+
+def _write_aec_leg(leg: str, enabled: bool) -> None:
+    """Atomic write of one wake-leg boolean, preserving every other key
+    in aec_mode.env (mode, the other leg).
+
+    Caller is responsible for kicking the reconciler — this just
+    persists the user's intent. Restart blast-radius lives in the
+    reconciler since it has the actual mode + presence context."""
+    if leg not in ("raw", "dtln"):
+        raise ValueError(f"invalid leg: {leg!r}")
+    key = f"JASPER_WAKE_LEG_{leg.upper()}"
+    _atomic_rewrite_env(_AEC_MODE_FILE, {key: "1" if enabled else "0"})
+
+
+def _atomic_rewrite_env(path: str, updates: dict) -> None:
+    """Read-modify-write of a systemd env file. Updates the given keys,
+    preserves all others. Atomic via tempfile + rename. Used by
+    _write_aec_mode and _write_aec_leg so concurrent toggles can't
+    leave the file half-written."""
+    from ..web._common import read_env_file, write_env_file
+    state = read_env_file(path)
+    state.update(updates)
+    write_env_file(path, state, mode=0o644)
+
+
+def _read_wake_threshold() -> float:
+    """Read JASPER_WAKE_THRESHOLD from /var/lib/jasper/wake_model.env
+    (the /wake/ wizard's home) with the daemon's compiled-in default
+    (0.5) as fallback. Same precedence the daemon uses on startup."""
+    try:
+        from ..web._common import read_env_file
+        val = read_env_file(_WAKE_MODEL_FILE).get("JASPER_WAKE_THRESHOLD", "")
+    except OSError:
+        val = ""
+    if not val:
+        val = os.environ.get("JASPER_WAKE_THRESHOLD", "")
+    try:
+        return float(val) if val else 0.5
+    except ValueError:
+        return 0.5
+
+
+def _write_wake_threshold(value: float) -> None:
+    """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
+    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed (the
+    /wake/ wizard previously owned both; the slider moved to /system/
+    in the wake-detection-card refactor but the env file stays the
+    same so the daemon's load path doesn't change)."""
+    if not 0.0 <= value <= 1.0:
+        raise ValueError(f"threshold out of range: {value}")
+    _atomic_rewrite_env(
+        _WAKE_MODEL_FILE,
+        {"JASPER_WAKE_THRESHOLD": f"{value:.2f}"},
+    )
 
 
 def _aec_bridge_active() -> bool:
@@ -251,6 +341,28 @@ def _aec_bridge_active() -> bool:
         return result.stdout.strip() == "active"
     except (OSError, subprocess.SubprocessError):
         return False
+
+
+def _aec_full_status() -> dict:
+    """JSON shape returned by GET /aec — the single source of truth
+    for the /system Wake detection card. Includes both the configured
+    state (from aec_mode.env) and the observed bridge service state.
+
+    Per-leg observed state isn't returned separately today. A
+    configured leg is implicitly "active" when (a) AEC mode is auto,
+    (b) the bridge is active, and (c) the leg is configured on. DTLN
+    load failures surface via jasper-doctor's check_aec_bridge_dtln_engine,
+    which the /system Diagnostics disclosure runs on demand."""
+    state = _read_aec_state()
+    return {
+        "mode": state["mode"],
+        "bridge_active": _aec_bridge_active(),
+        "legs": {
+            "raw": {"configured": state["leg_raw"]},
+            "dtln": {"configured": state["leg_dtln"]},
+        },
+        "threshold": _read_wake_threshold(),
+    }
 
 
 def _read_cloud_activity() -> dict[str, Any]:
@@ -851,15 +963,21 @@ def _make_handler(
                 self._send_json({"muted": bool(st.get("mic_muted", False))})
                 return
             if self.path == "/aec":
-                # Software AEC bridge state. Mode is the persisted
+                # Software AEC bridge state + per-leg config + wake
+                # threshold. Mode and leg booleans are the persisted
                 # request (what the operator asked for, via /system
-                # dashboard or aec_mode.env); bridge_active is the
-                # observed truth from systemd. They diverge briefly
-                # during a reconciler-driven transition (~10-15 s).
-                self._send_json({
-                    "mode": _read_aec_mode(),
-                    "bridge_active": _aec_bridge_active(),
-                })
+                # Wake detection card or aec_mode.env); bridge_active
+                # is the observed truth from systemd. They diverge
+                # briefly during a reconciler-driven transition
+                # (~10-15 s). Threshold is read from wake_model.env
+                # so the slider on /system stays in sync with the
+                # /wake/ wizard (both write the same file).
+                #
+                # DTLN load failures don't surface in this payload —
+                # /system's Diagnostics disclosure runs jasper-doctor
+                # which has check_aec_bridge_dtln_engine for the
+                # silent-failure case.
+                self._send_json(_aec_full_status())
                 return
             if self.path == "/state":
                 # Cross-daemon snapshot — voice / audio / renderers /
@@ -1273,6 +1391,124 @@ def _make_handler(
                     "mode": new_mode,
                     "bridge_active": _aec_bridge_active(),
                 })
+                return
+
+            if self.path == "/aec/leg":
+                # Toggle one of the additive wake-detection legs
+                # (raw chip-direct or DTLN neural). The reconciler
+                # maps the boolean back to the underlying env vars
+                # the bridge + voice each read at startup, then
+                # restarts whichever daemons need to pick up the
+                # change. Per-leg sub-toggles are only meaningful
+                # when JASPER_AEC_MODE=auto and the bridge is up;
+                # the reconciler clears the underlying vars when
+                # AEC is disabled so a stale leg config doesn't
+                # leave voice listening on a port nobody talks to.
+                #
+                # Risk model: LAN-trust, same as /aec/toggle.
+                try:
+                    body = self._read_json()
+                except (ValueError, OSError) as e:
+                    self._send_json(
+                        {"error": f"invalid request body: {e}"}, status=400,
+                    )
+                    return
+                leg = body.get("leg")
+                enabled_val = body.get("enabled")
+                if leg not in ("raw", "dtln"):
+                    self._send_json(
+                        {"error": "leg must be 'raw' or 'dtln'"}, status=400,
+                    )
+                    return
+                if not isinstance(enabled_val, bool):
+                    self._send_json(
+                        {"error": "enabled must be a boolean"}, status=400,
+                    )
+                    return
+                try:
+                    _write_aec_leg(leg, enabled_val)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        {"error": f"write aec_mode.env failed: {e}"},
+                        status=502,
+                    )
+                    return
+                try:
+                    subprocess.Popen(
+                        ["systemctl", "start",
+                         "jasper-aec-reconcile.service"],
+                    )
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"reconciler start failed: {e}"},
+                        status=502,
+                    )
+                    return
+                logger.info(
+                    "event=aec.leg leg=%s enabled=%s client=%s",
+                    leg, enabled_val, self.address_string(),
+                )
+                self._send_json(_aec_full_status())
+                return
+
+            if self.path == "/aec/threshold":
+                # Sensitivity slider on the /system Wake detection
+                # card. Writes JASPER_WAKE_THRESHOLD into
+                # wake_model.env (same file the /wake/ wizard owns
+                # for the model picker) and restarts jasper-voice
+                # — the openWakeWord detector reads the threshold
+                # at startup, so a hot config change without a
+                # restart wouldn't take effect on the next wake.
+                #
+                # AEC-mode and leg toggles share the reconciler
+                # which already restarts voice; threshold-only
+                # changes bypass the reconciler since they don't
+                # need the bridge to restart. Non-blocking — the
+                # slider's "Applying…" state is just UX.
+                try:
+                    body = self._read_json()
+                except (ValueError, OSError) as e:
+                    self._send_json(
+                        {"error": f"invalid request body: {e}"}, status=400,
+                    )
+                    return
+                try:
+                    threshold = float(body.get("threshold"))
+                except (TypeError, ValueError):
+                    self._send_json(
+                        {"error": "threshold must be a number"}, status=400,
+                    )
+                    return
+                if not 0.0 <= threshold <= 1.0:
+                    self._send_json(
+                        {"error": "threshold must be between 0 and 1"},
+                        status=400,
+                    )
+                    return
+                try:
+                    _write_wake_threshold(threshold)
+                except (OSError, ValueError) as e:
+                    self._send_json(
+                        {"error": f"write wake_model.env failed: {e}"},
+                        status=502,
+                    )
+                    return
+                try:
+                    subprocess.Popen(
+                        ["systemctl", "restart", "--no-block",
+                         "jasper-voice.service"],
+                    )
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"voice restart failed: {e}"},
+                        status=502,
+                    )
+                    return
+                logger.info(
+                    "event=wake.threshold value=%.2f client=%s",
+                    threshold, self.address_string(),
+                )
+                self._send_json({"threshold": threshold})
                 return
 
             if self.path in ("/system/restart/voice",
