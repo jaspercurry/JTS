@@ -173,6 +173,14 @@ OUT_RATE = 16000
 # plumbing). Safe to deploy alone; jasper-voice ignores it until
 # PR 2 ships.
 OUT_PORT_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW", "9877"))
+# Optional 3rd UDP stream: DTLN-aec output. The bridge constructs a
+# DTLNEngine when JASPER_AEC_DTLN_ENABLED=1 and shares the same mic +
+# ref capture with the AEC3 engine. Each input chunk is fed to BOTH
+# engines; AEC3 output goes to OUT_PORT, DTLN output to OUT_PORT_DTLN.
+# Adds ~95 MB RAM + ~12% of one Pi 5 core. Disabled by default during
+# the triple-stream rollout; flip via env var per
+# docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
+OUT_PORT_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_DTLN", "9878"))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
 # 320-sample AEC frames into one UDP packet keeps the
 # bridge↔voice contract symmetric with the existing MicCapture
@@ -646,9 +654,38 @@ def _aec_loop(  # noqa: PLR0915
     out_sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out_sock_raw.setblocking(False)
     out_dest_raw = (OUT_HOST, OUT_PORT_RAW)
+
+    # Optional DTLN-aec parallel engine. Constructed once, mutated
+    # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
+    # for the streaming algorithm.
+    dtln_engine = None
+    out_sock_dtln = None
+    out_dest_dtln = None
+    out_batch_dtln = bytearray()
+    if _env_bool("JASPER_AEC_DTLN_ENABLED", "0"):
+        try:
+            from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
+            dtln_size = int(os.environ.get("JASPER_AEC_DTLN_SIZE", "256"))
+            dtln_engine = DTLNEngine(
+                model_dir=default_model_dir(), model_size=dtln_size,
+            )
+            out_sock_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            out_sock_dtln.setblocking(False)
+            out_dest_dtln = (OUT_HOST, OUT_PORT_DTLN)
+            logger.info(
+                "DTLN-aec engine enabled: size=%d, udp out=%s:%d",
+                dtln_size, OUT_HOST, OUT_PORT_DTLN,
+            )
+        except (FileNotFoundError, ImportError) as e:
+            logger.warning(
+                "JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: %s. "
+                "Continuing with AEC3 only.", e,
+            )
+
     logger.info(
-        "udp outputs: aec=%s:%d raw=%s:%d frame=%d samples (%d bytes)",
+        "udp outputs: aec=%s:%d raw=%s:%d%s frame=%d samples (%d bytes)",
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW,
+        f" dtln={OUT_HOST}:{OUT_PORT_DTLN}" if dtln_engine else "",
         OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
     # Aggregate four AEC frames (320 samples each) into one UDP
@@ -801,6 +838,38 @@ def _aec_loop(  # noqa: PLR0915
             # not how much the post-gain stage amplified the residual.
             clean_aec_only = clean
 
+            # DTLN-aec parallel processing path (optional 3rd UDP leg).
+            # Runs AFTER the AEC3 engine.process so the wake loop's
+            # primary mic stream is on its normal critical path; the
+            # extra ~1.5 ms of DTLN inference per frame is on the slack
+            # side of the 20 ms frame budget. State is carried by the
+            # DTLNEngine instance across calls.
+            if dtln_engine is not None:
+                try:
+                    dtln_clean = dtln_engine.process(mic_bytes, ref_bytes)
+                except Exception as e:  # noqa: BLE001
+                    # Don't let a DTLN crash take the bridge down — log
+                    # and disable the parallel path. The AEC3 engine is
+                    # the production critical path; DTLN is observational.
+                    logger.exception(
+                        "DTLN-aec process() crashed; disabling DTLN path: %s", e,
+                    )
+                    dtln_engine = None
+                    dtln_clean = b""
+                if dtln_clean:
+                    out_batch_dtln.extend(dtln_clean)
+                    if len(out_batch_dtln) >= OUT_FRAME_BYTES:
+                        try:
+                            out_sock_dtln.sendto(
+                                bytes(out_batch_dtln[:OUT_FRAME_BYTES]),
+                                out_dest_dtln,
+                            )
+                        except BlockingIOError:
+                            logger.warning(
+                                "udp dtln sendto would block, dropping frame"
+                            )
+                        del out_batch_dtln[:OUT_FRAME_BYTES]
+
             # Debug WAV record: writes happen here so the captured
             # frames are exactly what the bridge measured for its
             # internal "attenuation" log + what the AEC emitted before
@@ -883,6 +952,8 @@ def _aec_loop(  # noqa: PLR0915
     finally:
         out_sock.close()
         out_sock_raw.close()
+        if out_sock_dtln is not None:
+            out_sock_dtln.close()
         for w in (mic_wav, aec_wav, ref_wav):
             if w is not None:
                 try:
