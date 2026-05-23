@@ -1040,21 +1040,54 @@ corpus for future model training.
 Full design, schema, queries:
 [`docs/HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md).
 
-### Enable the dual-stream OR-gate
+### Enable multi-leg wake OR-gate
 
-Default is single-stream (AEC ON only). The OR-gate fires wake
-on **either** AEC ON or AEC OFF crossing threshold — recovers the
-~60 % of wakes the `jarvis_v2` model silently misses on the AEC ON
-leg (the documented 0.001-confidence failure mode). Enable with:
+Default with `JASPER_MIC_DEVICE=udp:9876` is single-stream. Two
+levels of OR-gating are available, each via env vars set in
+`/etc/jasper/jasper.env`. Both are **strictly opt-in** and
+**independent** — keeping them off means the speaker runs the
+exact same single-stream wake path it always has.
+
+**Dual-stream** (AEC ON + AEC OFF, shipped in PR #191). Recovers
+the ~60% of wakes the `jarvis_v2` model silently misses on the
+AEC ON leg (the documented 0.001-confidence failure mode):
 
 ```sh
 echo 'JASPER_MIC_DEVICE_RAW=udp:9877' | sudo tee -a /etc/jasper/jasper.env
 sudo systemctl restart jasper-voice
 ```
 
+**Triple-stream** (AEC ON + AEC OFF + DTLN-aec, shipped 2026-05-23
+on `claude/aec3-best-a-prod`). Adds the DTLN-aec neural engine as
+a third leg, OR-gated with the other two. Three env vars; the
+first two switch the bridge to BEST_A + DTLN, the third tells
+voice to listen on the new UDP port:
+
+```sh
+sudo tee -a /etc/jasper/jasper.env <<'EOF'
+JASPER_MIC_DEVICE_RAW=udp:9877
+JASPER_MIC_DEVICE_DTLN=udp:9878
+JASPER_AEC_DTLN_ENABLED=1
+EOF
+sudo systemctl restart jasper-aec-bridge jasper-voice
+```
+
 Verify: `journalctl -u jasper-voice | grep UdpMicCapture` shows
-both 9876 + 9877 binding. After a wake, the log line carries both
-legs' scores: `event=wake.detected leg=off score_on=0.00 score_off=0.82`.
+all configured ports binding. The bridge's startup log carries
+the engine selection: `engine=aec3_v2(BEST_A) ... DTLN-aec ready
+... udp outputs: aec=127.0.0.1:9876 raw=127.0.0.1:9877
+dtln=127.0.0.1:9878`. After a wake fires, the wake_events DB row
+carries scores across every active leg + a `fired_legs` CSV
+(`'off'`, `'dtln,off'`, `'dtln,off,on'`, etc.).
+
+**Rip-out is single env-var changes.** To revert triple → dual,
+set `JASPER_AEC_DTLN_ENABLED=0` (drops DTLN from the bridge) and
+remove or empty `JASPER_MIC_DEVICE_DTLN` (voice stops opening
+the tertiary listener); the `mic_device_dtln` column in config
+defaults to empty so leaving the line out works too. To revert
+to single-stream, also empty `JASPER_MIC_DEVICE_RAW`. To revert
+BEST_A back to legacy AEC3 v1.3, append `JASPER_AEC_BINDING=v1`.
+All three layers are independent and graceful.
 
 ### Pull the corpus to laptop for review
 
@@ -1065,8 +1098,8 @@ bash scripts/fetch-wake-events.sh        # pops Finder open on macOS
 Lands as `./wake-events/<UTC-timestamp>/`:
 - `wake-events.sqlite3` — consistent snapshot via `.backup`
   (jasper-voice keeps writing; the snapshot is safe to read)
-- `<event_id>.aec-on.wav` + `<event_id>.aec-off.wav` — 6 s windows
-  (4 s pre + 2 s post wake fire)
+- `<event_id>.aec-on.wav` + `<event_id>.aec-off.wav` (+ `.aec-dtln.wav`
+  on triple-stream events) — 6 s windows (4 s pre + 2 s post wake fire)
 - `index.csv` — newest-first metadata table (open in Numbers /
   Excel / Sheets); includes per-leg peak scores, peak offsets,
   RMS levels, music context, bridge config, funnel outcome
@@ -1118,10 +1151,31 @@ FROM wake_events WHERE trigger_kind LIKE 'fire%' GROUP BY day"
 More queries (per-leg fire breakdown, false-positive proxy, etc.)
 in the HANDOFF doc's "Useful queries" section.
 
+### Weekly review of which legs are firing
+
+Triple-stream-aware analyzer that summarizes the corpus by leg pattern:
+
+```sh
+bash scripts/analyze-three-leg.sh                  # analyzes wake-events/latest
+bash scripts/analyze-three-leg.sh --top 10         # 10 events per category
+```
+
+Five sections in the output: Venn-style fire breakdown across the
+canonical patterns (`'on'`, `'off'`, `'dtln'`, `'dtln,off'`,
+`'dtln,off,on'`, ...) with mean per-leg score per pattern; per-leg
+score distribution (P10/P50/P90/Max — catches a silently-dead leg);
+solo-save counts (★ marks "Only DTLN fired", the headline metric
+for evaluating the third leg's distinct value); listening playlist
+with `afplay` paths; funnel by pattern (fired → turn → speech →
+tool — flags a pattern that never reaches speech as a false-fire
+indicator). Pure-stdlib Python, ~instant.
+
 ### Retention + privacy
 
-- WAVs: 500 MB ring buffer, oldest-first deletion (~3-6 weeks at
-  typical use). Tunable via `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES`.
+- WAVs: 1 GB ring buffer by default (~5-7 weeks at 30-50 events/day
+  with triple-stream's 3 WAVs per event), oldest-first deletion.
+  Tunable via `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES`. Pre-triple-stream
+  the default was 500 MB.
 - DB rows kept forever. When audio rolls off, the row's
   `audio_*_path` becomes the literal string `'rolled_off'` (not
   NULL — preserves the historical fact that audio existed).
@@ -1130,14 +1184,21 @@ in the HANDOFF doc's "Useful queries" section.
 
 ### Architecture in one paragraph
 
-The AEC bridge emits **two** UDP streams: the post-AEC mono mic on
-`:9876` (existing) and the chip-direct mic (pre-AEC, post chip's
-own BF/NS/AGC/HPF) on `:9877`. jasper-voice opens both, runs
-independent `WakeWordDetector` instances per leg, OR-gates the
-fires with a shared 0.7 s refractory. `WakeEventStore`
-(`jasper/wake_events.py`) writes to SQLite at wake-fire +
-each funnel stage transition; a fire-and-forget task waits 2 s
-post-fire then snapshots both capture rings and writes the WAVs.
+The AEC bridge emits **up to three** UDP streams: the post-AEC mono
+mic on `:9876` (AEC3, default BEST_A on v2 binding), the chip-direct
+mic (pre-AEC, post chip's own BF/NS/AGC/HPF) on `:9877`, and the
+DTLN-aec engine on `:9878` (when `JASPER_AEC_DTLN_ENABLED=1`).
+jasper-voice opens whichever ports are configured via `JASPER_MIC_DEVICE`
+(`udp:9876` always), `JASPER_MIC_DEVICE_RAW` (optional), and
+`JASPER_MIC_DEVICE_DTLN` (optional). Per-leg `WakeWordDetector`
+instances score every frame and OR-gate their fires with a shared
+0.7 s refractory. `WakeEventStore` (`jasper/wake_events.py`) writes
+to SQLite at wake-fire + each funnel stage transition; a
+fire-and-forget task waits 2 s post-fire then snapshots each active
+leg's capture ring and writes one WAV per leg. The schema has
+per-leg `peak_score_*`, `audio_*_path`, `mic_rms_dbfs_*` columns +
+a `fired_legs` CSV recording which legs crossed threshold at fire
+time — the analyze-three-leg.sh script keys off this column.
 Telemetry is **fail-soft** everywhere — store failures log at WARN
 and never block wake / session paths.
 
