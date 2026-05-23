@@ -629,3 +629,152 @@ async def test_retention_marks_dtln_path_as_rolled_off(tmp_path: Path):
         assert row2["audio_dtln_path"] == "evt-2.aec-dtln.wav"
     finally:
         s.close()
+
+
+# ---------------------------------------------------------------------------
+# record_flag — voice-driven issue flagging (jasper/tools/diagnostic.py)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_event(
+    store: WakeEventStore, event_id: str, ts_utc: str | None = None,
+) -> None:
+    """Insert a minimal wake_event row with a controllable ts_utc.
+
+    `begin_event` stamps `_now_iso()` and exposes no override, so
+    test ordering would race in the millisecond column. We overwrite
+    via direct SQL after the insert — tests need deterministic time
+    ordering for the `ORDER BY ts_utc DESC` lookup in `record_flag`."""
+    await store.begin_event(
+        event_id=event_id,
+        trigger_kind="fire_aec_on",
+        peak_score_aec_on=0.85,
+        peak_score_aec_off=0.10,
+        threshold=0.5,
+        wake_model="jarvis_v2.onnx",
+    )
+    if ts_utc is not None:
+        # The store's connection is the only writer in tests; no
+        # concurrent record_flag during seeding, so a direct UPDATE
+        # is safe. (Production callers never set ts_utc.)
+        store._conn.execute(  # noqa: SLF001
+            "UPDATE wake_events SET ts_utc = ? WHERE event_id = ?",
+            (ts_utc, event_id),
+        )
+
+
+async def test_record_flag_returns_none_when_only_in_flight_event_exists(
+    store: WakeEventStore,
+):
+    """First-ever wake on a fresh boot: the only row in the DB is the
+    in-flight flag event itself, so there's nothing prior to flag.
+    Should return None cleanly (no crash, no spurious self-flag)."""
+    await _seed_event(store, "evt-only", "2026-05-23T19:00:00+00:00")
+    result = await store.record_flag(reason="testing")
+    assert result is None
+    # The only event MUST NOT have been marked — there's no prior
+    # event to flag, so we should make no changes.
+    row = await store.get_event("evt-only")
+    assert row["label"] is None
+    assert row["label_notes"] is None
+
+
+async def test_record_flag_marks_prior_event_and_flag_action(
+    store: WakeEventStore,
+):
+    """Two events exist: 'evt-prior' (the bad one) and 'evt-flag'
+    (the user saying 'flag that'). record_flag should mark evt-prior
+    as voice_flagged with the reason in label_notes, and evt-flag as
+    flag_action so analysis can filter it out."""
+    await _seed_event(store, "evt-prior", "2026-05-23T19:00:00+00:00")
+    await _seed_event(store, "evt-flag",  "2026-05-23T19:00:05+00:00")
+
+    result = await store.record_flag(reason="cut me off mid-pause")
+
+    assert result is not None
+    assert result["flagged_event_id"] == "evt-prior"
+    assert result["flag_action_event_id"] == "evt-flag"
+
+    prior = await store.get_event("evt-prior")
+    assert prior["label"] == "voice_flagged"
+    assert "cut me off mid-pause" in prior["label_notes"]
+    # label_notes carries an ISO timestamp prefix so later review
+    # knows WHEN the flag was made, even if the wake event's own
+    # ts_utc is much older.
+    assert prior["label_notes"].startswith("2026-")
+    assert "|" in prior["label_notes"]
+
+    flag = await store.get_event("evt-flag")
+    assert flag["label"] == "flag_action"
+    # The flag event keeps label_notes null — only the flagged event
+    # carries the reason. This is so a future query like
+    # `SELECT label_notes FROM wake_events WHERE label='voice_flagged'`
+    # returns exactly the user's complaints, not flag-action chatter.
+    assert flag["label_notes"] is None
+
+
+async def test_record_flag_skips_existing_flag_action_events(
+    store: WakeEventStore,
+):
+    """User flags multiple times in a row. Each flag-action event
+    should look past PREVIOUS flag-action events to find the most
+    recent REAL interaction. Without this, second-flag would target
+    the first flag-action event and the prior real event would
+    never get flagged."""
+    await _seed_event(store, "evt-real",   "2026-05-23T19:00:00+00:00")
+    await _seed_event(store, "evt-flag-1", "2026-05-23T19:00:05+00:00")
+    # First flag — marks evt-real and evt-flag-1.
+    first = await store.record_flag(reason="first complaint")
+    assert first["flagged_event_id"] == "evt-real"
+
+    # Second flag — comes shortly after. evt-flag-1 is now labeled
+    # 'flag_action', so the query should skip it and target evt-real
+    # again (the only remaining real event).
+    await _seed_event(store, "evt-flag-2", "2026-05-23T19:00:10+00:00")
+    second = await store.record_flag(reason="second complaint")
+    assert second is not None
+    assert second["flagged_event_id"] == "evt-real"
+    assert second["flag_action_event_id"] == "evt-flag-2"
+
+    # evt-real's label_notes should now have the SECOND complaint
+    # (v1 overwrites; per record_flag docstring, only one flag per
+    # event is supported).
+    row = await store.get_event("evt-real")
+    assert "second complaint" in row["label_notes"]
+    assert "first complaint" not in row["label_notes"]
+
+
+async def test_record_flag_targets_most_recent_real_event(
+    store: WakeEventStore,
+):
+    """When multiple real events exist, flag the MOST RECENT one —
+    not an older one. This matches user expectation: 'flag that'
+    means the thing that JUST happened, not something from earlier."""
+    await _seed_event(store, "evt-old",   "2026-05-23T18:00:00+00:00")
+    await _seed_event(store, "evt-mid",   "2026-05-23T18:30:00+00:00")
+    await _seed_event(store, "evt-prior", "2026-05-23T19:00:00+00:00")
+    await _seed_event(store, "evt-flag",  "2026-05-23T19:00:05+00:00")
+
+    result = await store.record_flag(reason="that one")
+    assert result["flagged_event_id"] == "evt-prior"
+
+    # The older events stay clean.
+    assert (await store.get_event("evt-old"))["label"] is None
+    assert (await store.get_event("evt-mid"))["label"] is None
+
+
+async def test_record_flag_reason_with_pipe_character_preserved(
+    store: WakeEventStore,
+):
+    """The label_notes format is `{iso_ts}|{reason}`, so a reason
+    that itself contains a `|` could confuse a naive parser. We
+    don't escape — the convention is split-on-first-pipe-only when
+    reading back. Document the behavior so reviewers know what to
+    expect."""
+    await _seed_event(store, "evt-prior", "2026-05-23T19:00:00+00:00")
+    await _seed_event(store, "evt-flag",  "2026-05-23T19:00:05+00:00")
+    await store.record_flag(reason="said A|B|C as if")
+    row = await store.get_event("evt-prior")
+    # Pipe-laden reasons survive intact — parsers should split on
+    # the FIRST pipe only.
+    assert row["label_notes"].endswith("|said A|B|C as if")

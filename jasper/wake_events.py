@@ -464,6 +464,105 @@ class WakeEventStore:
                 (outcome, outcome_detail, tool_name, event_id),
             )
 
+    async def record_flag(self, reason: str) -> dict[str, Any] | None:
+        """Mark the most-recent prior wake event as user-flagged for
+        offline review, and mark the in-flight flag event itself so
+        analysis queries can filter it out of "real interaction" rollups.
+
+        Triggered by the `flag_recent_issue` voice tool when the user
+        says something like "flag that" or "the last one cut me off."
+        See `jasper/tools/diagnostic.py` for the LLM-facing surface
+        and the prompting rules that decide when this fires.
+
+        Lookup rule. We want the most recent prior event that was a
+        REAL interaction, not another flag-action event. So query the
+        2 most recent events whose ``label`` is null or not
+        'flag_action':
+
+          - ``events[0]`` = the in-flight flag event (the wake whose
+            session is currently running this tool call). It exists
+            because ``begin_event`` ran when wake fired, and the tool
+            dispatch happens later in the same turn.
+          - ``events[1]`` = the most recent prior real event — the
+            one the user is flagging.
+
+        Atomically:
+          - ``events[1].label`` ← 'voice_flagged' (overwriting any
+            prior label; only one voice flag per event in v1)
+          - ``events[1].label_notes`` ← '{iso_ts}|{reason}' (preserves
+            timestamp + the user's complaint so later review knows
+            when AND why the flag was made; we don't append because
+            v1 expects at most one flag per event and the upgrade
+            path is "look at audio + listen + rewrite by hand")
+          - ``events[0].label`` ← 'flag_action' (the act-of-flagging
+            event itself; lets `WHERE label != 'flag_action'` queries
+            isolate real interactions)
+
+        Returns a dict describing the flag outcome:
+          {
+            "flagged_event_id": str,    # the event we marked
+            "flagged_ts_utc":   str,    # its original ts
+            "flagged_outcome":  str,    # its terminal outcome
+            "flag_action_event_id": str # this turn's event id
+          }
+        or ``None`` if there is no prior real event to flag (fresh
+        boot, first wake after restart, etc.).
+
+        Fail-soft: never raises on a DB-internal error — telemetry
+        bugs must not silence the speaker. The caller (the voice
+        tool) treats None as "nothing to flag" and crafts a spoken
+        response accordingly."""
+        self._require_open()
+        async with self._lock():
+            cur = self._conn.execute(  # type: ignore[union-attr]
+                # The two most recent events that aren't themselves
+                # flag-action rows. See class docstring for why this
+                # query gives us [current_flag_event, prior_real_event].
+                """
+                SELECT event_id, ts_utc, outcome
+                FROM wake_events
+                WHERE label IS NULL OR label != 'flag_action'
+                ORDER BY ts_utc DESC
+                LIMIT 2
+                """,
+            )
+            rows = cur.fetchall()
+            if len(rows) < 2:
+                # Only the in-flight flag event exists, OR no events
+                # at all. Nothing prior to flag.
+                return None
+            cols = [d[0] for d in cur.description]
+            flag_action = dict(zip(cols, rows[0]))
+            target = dict(zip(cols, rows[1]))
+
+            now = _now_iso()
+            label_notes = f"{now}|{reason}"
+            # Two updates inside the single async-lock window so a
+            # second concurrent record_flag (impossible given the
+            # refractory window, but defensive) can't interleave.
+            self._conn.execute(  # type: ignore[union-attr]
+                """
+                UPDATE wake_events
+                SET label = 'voice_flagged', label_notes = ?
+                WHERE event_id = ?
+                """,
+                (label_notes, target["event_id"]),
+            )
+            self._conn.execute(  # type: ignore[union-attr]
+                """
+                UPDATE wake_events
+                SET label = 'flag_action'
+                WHERE event_id = ?
+                """,
+                (flag_action["event_id"],),
+            )
+            return {
+                "flagged_event_id": target["event_id"],
+                "flagged_ts_utc": target["ts_utc"],
+                "flagged_outcome": target["outcome"],
+                "flag_action_event_id": flag_action["event_id"],
+            }
+
     # ----- reads (mostly for tests / future review UI) --------------
 
     async def get_event(self, event_id: str) -> dict[str, Any] | None:

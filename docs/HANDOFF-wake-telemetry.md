@@ -169,7 +169,13 @@ CREATE TABLE wake_events (
   audio_off_path      TEXT,
 
   -- Human-supplied (PR 4)
-  label               TEXT,                -- 'real_attempt' | 'music' | 'tv' | 'ambient' | ...
+  --   manual triage via sqlite3 CLI: 'real_attempt' | 'music' | 'tv' |
+  --   'ambient' | 'unclear' | 'mute_or_correction' | ...
+  --   voice-tool-written (jasper/tools/diagnostic.py):
+  --     'voice_flagged'  — user said "flag that"; complaint in label_notes
+  --     'flag_action'    — the wake of the "flag that" utterance itself,
+  --                        filter out of real-interaction rollups
+  label               TEXT,
   label_notes         TEXT
 );
 
