@@ -492,24 +492,35 @@ barge-in is actually insufficient under real use.
 
 ### What you'd build
 
-A small instrumentation addition to
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) and
-[`jasper/wake_events.py`](../jasper/wake_events.py):
+Less than the first version of this doc implied — much of the
+measurement substrate already exists or is in active development
+under [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md). The
+barge-in story extends that program rather than building parallel
+infrastructure. Concrete additions:
 
 1. Per turn during TTS playback, log every frame where Silero VAD
    score crosses an "attempted barge-in" threshold (e.g. > 0.10,
-   below the 0.15 gate, to catch near-misses too).
+   below the 0.15 gate, to catch near-misses too). Live in
+   [`jasper/voice_daemon.py`](../jasper/voice_daemon.py) alongside
+   the existing in-session VAD plumbing at line ~2365.
 2. For each such moment, record: TTS RMS at the moment, music
    RMS at the moment, whether the gate (≥0.15) actually fired,
    time from gate fire to `tts.flush()` completion, and whether
    the user re-spoke within ~5 s (proxy for "first attempt
    failed, user tried again").
 3. Capture short audio clips of the mic and the AEC reference
-   around each attempt (use the existing wake-events capture
-   ring buffers, plumb through a "barge-in" event type).
+   around each attempt — extend the existing wake-events capture
+   ring buffers in [`jasper/wake_events.py`](../jasper/wake_events.py)
+   with a "barge-in" event type. Reuses the SQLite schema and the
+   500 MB rolling audio retention from
+   [HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md).
 4. Run for two to four weeks of normal household use.
-5. Use the existing `bash scripts/fetch-wake-events.sh` flow
-   plus a small query script to summarise.
+5. Use the existing `bash scripts/fetch-wake-events.sh` flow plus
+   a small query script to summarise. The capture / scoring
+   tooling being developed under PR #206 (mic-quality-v2) is the
+   natural place to add barge-in-specific scoring queries —
+   coordinate so the indexes generalize across both workstreams
+   rather than diverge.
 
 ### What the data tells you
 
@@ -555,10 +566,21 @@ The XVF3800's on-chip AEC was disabled deliberately
 ([HANDOFF-aec.md](HANDOFF-aec.md): the chip's AEC assumed the
 chip drove the speaker via its own codec, which JTS doesn't —
 audio routes through the Apple dongle). A topology change that
-returned the speaker drive to the chip's codec would
-re-enable chip AEC and solve barge-in cleanly. But the dongle
-was chosen for DAC quality; the chip's AIC3104 is meaningfully
-worse. Hard to imagine this trade landing as positive.
+returned the speaker drive to the chip's codec would re-enable
+chip AEC and solve barge-in cleanly. But the dongle was chosen
+for DAC quality; the chip's AIC3104 is meaningfully worse. Hard
+to imagine this trade landing as positive.
+
+There is a local `chip-aec-experiment` branch (commit `5e63dca`,
+"chip-AEC convergence test, Phase 1-4 infrastructure") that
+explored whether chip AEC could converge in the *current*
+topology rather than requiring the codec swap. The branch
+predates several rounds of main work and is currently dormant.
+If chip AEC ever gets re-examined, that branch is the starting
+point — read its commit message and infrastructure additions
+before re-deriving the question. The branch's existence does
+not change the dismissal above; it documents that the question
+has been picked up and put down at least once.
 
 ### Different AEC engine
 
@@ -717,5 +739,12 @@ Internal cross-references (for the next reader):
   NO_INTERRUPTION history.
 - [HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md) — the
   capture-and-label pattern Option C would extend.
-- [satellites.md](docs/satellites.md) — multi-mic arbitration
+- [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) — active
+  workstream building the measurement infrastructure Option C
+  would extend rather than duplicate.
+- [satellites.md](satellites.md) — multi-mic arbitration
   design that Option B would simplify.
+
+---
+
+Last verified: 2026-05-23
