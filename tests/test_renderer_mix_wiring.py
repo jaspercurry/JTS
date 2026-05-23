@@ -124,3 +124,35 @@ def test_no_renderer_writes_directly_to_loopback():
                 f"{path.name}:{lineno} references plughw:Loopback,0,0 "
                 f"outside a comment: {line!r}"
             )
+
+
+def test_install_writes_asound_conf_to_system_wide_location():
+    """PR #223 — the renderer ALSA PCM defs MUST land in a system-wide
+    file (/etc/asound.conf, mode 0644) so non-root renderer users
+    (shairport-sync, pi) can resolve user-space PCM names. The
+    previous location (/root/.asoundrc, mode 0600) was visible only
+    to root and broke AirPlay + Spotify Connect after PR #214. This
+    test locks down the install destination so a future edit can't
+    silently regress us back to a per-user file."""
+    install = (REPO / "deploy" / "install.sh").read_text()
+    # The destination must be /etc/asound.conf with mode 0644.
+    assert "> /etc/asound.conf" in install, (
+        "install.sh must redirect the rendered asoundrc to "
+        "/etc/asound.conf (system-wide, readable by non-root "
+        "renderer users)."
+    )
+    assert "chmod 0644 /etc/asound.conf" in install, (
+        "install.sh must chmod 0644 /etc/asound.conf — non-root "
+        "renderers need read access."
+    )
+    # And the pre-#223 destination must NOT be the active install
+    # path (a backup/migration line is fine; that's how upgrades
+    # work). Specifically, no `> /root/.asoundrc` redirect.
+    for lineno, line in enumerate(install.splitlines(), 1):
+        if line.strip().startswith("#"):
+            continue
+        assert "> /root/.asoundrc" not in line, (
+            f"install.sh:{lineno} writes to /root/.asoundrc — that "
+            "broke non-root renderer ALSA resolution (PR #223). "
+            "Write to /etc/asound.conf instead."
+        )

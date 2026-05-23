@@ -1221,7 +1221,8 @@ Output lands in `./logs/`. Read the `*-latest.*` symlinks:
   May 2026; see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
 - `logs/camilladsp-latest.yml` — current CamillaDSP config on
   the Pi
-- `logs/asoundrc-latest.txt` — current `/root/.asoundrc`
+- `logs/asoundrc-latest.txt` — current `/etc/asound.conf`
+  (legacy: `/root/.asoundrc`; migrated 2026-05-23 per PR #223)
 - `logs/jasper.env-latest.txt` — current env (secrets redacted)
 - `logs/sessions-latest.txt` — last 20 voice sessions with token
   counts and estimated cost
@@ -1338,10 +1339,22 @@ specific project:
   the integration. Don't reinvent.
 - **Surgical changes — file ownership.** Our files live under
   `/opt/jasper/`, `/etc/camilladsp/`, `/etc/jasper/`,
-  `/etc/modprobe.d/snd-aloop.conf`, `/root/.asoundrc`,
+  `/etc/modprobe.d/snd-aloop.conf`, `/etc/asound.conf`,
   `/etc/shairport-sync.conf`, `/etc/nginx/sites-enabled/jasper.conf`,
   and `/etc/systemd/system/{jasper-*,librespot,shairport-sync,nqptp,bt-agent}.service`.
   Touch only what you must when modifying these.
+- **Renderer ALSA device names must resolve as the renderer's
+  runtime user.** When changing a renderer's ALSA device (the
+  `--device` in librespot.service, `output_device` in
+  shairport-sync.conf, `--pcm` in bluealsa-aplay's drop-in), the
+  new name MUST be openable via `sudo -u $USER aplay -D $DEVICE
+  -c 2 -r 48000 -f S16_LE -d 0.1 /dev/zero`. This catches the
+  PR #214 bug class: a user-space ALSA PCM defined only in a
+  root-readable `~/.asoundrc` fails to resolve under non-root
+  renderer users (shairport-sync, pi). System-wide PCM defs go
+  in `/etc/asound.conf` (mode 0644). `jasper-doctor`'s
+  `check_renderer_device_resolvable` runs this probe on every
+  install — but verify by hand before relying on it.
 - **No silent failure paths.** Any new code path that would
   prevent the speaker from responding to a wake event MUST also
   trigger an audio cue (so the user hears why nothing happened).

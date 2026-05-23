@@ -12,8 +12,20 @@
 # of headroom. Switch to `samplerate_medium` if CPU ever matters.
 defaults.pcm.rate_converter "samplerate_best"
 
-# /root/.asoundrc — installed by deploy/install.sh with
+# /etc/asound.conf — installed by deploy/install.sh with
 # __DONGLE_CARD__ substituted by the detected USB-C dongle name.
+#
+# Location: /etc/asound.conf (NOT /root/.asoundrc). The system-wide
+# location is required so non-root renderer users (shairport-sync as
+# `shairport-sync`, librespot as `pi`) can resolve the user-space PCM
+# names defined below. A per-user `~/.asoundrc` is mode 0600 by default
+# and only root can read root's — which broke AirPlay and Spotify
+# Connect when PR #214 switched the renderers to user-space PCM names
+# (PR #223 fixed it by moving here). When changing renderer device
+# names in the future, MUST verify the renderer's User= can open the
+# new device via `sudo -u $USER aplay -D $DEVICE ...`. See
+# jasper-doctor's `check_renderer_device_resolvable` for the codified
+# version of that probe.
 #
 # Why this file exists:
 #   - jasper-voice's TTS needs a path to the speakers that's separate

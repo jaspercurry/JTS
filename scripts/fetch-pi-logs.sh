@@ -83,7 +83,11 @@ remote "cat /etc/camilladsp/v1.yml 2>/dev/null" \
     > "$OUT/camilladsp-${TS}.yml" 2>/dev/null || true
 ln -sf "camilladsp-${TS}.yml" "$OUT/camilladsp-latest.yml" 2>/dev/null || true
 
-remote "sudo cat /root/.asoundrc 2>/dev/null" \
+# /etc/asound.conf since 2026-05-23 (PR #223) — moved from
+# /root/.asoundrc so non-root renderer users (shairport-sync, pi)
+# can resolve user-space PCM names. Fall back to /root/.asoundrc
+# if we're talking to a pre-PR-#223 Pi.
+remote "cat /etc/asound.conf 2>/dev/null || sudo cat /root/.asoundrc 2>/dev/null" \
     > "$OUT/asoundrc-${TS}.txt" 2>/dev/null || true
 ln -sf "asoundrc-${TS}.txt" "$OUT/asoundrc-latest.txt" 2>/dev/null || true
 

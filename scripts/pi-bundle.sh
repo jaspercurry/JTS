@@ -32,7 +32,11 @@ dmesg -T --since "$since" > "$DIR/dmesg.log" 2>/dev/null || \
 sed -E 's/^(GEMINI_API_KEY|SPOTIFY_CLIENT_SECRET)=.*/\1=<redacted>/' \
     /etc/jasper/jasper.env > "$DIR/jasper.env.txt" 2>/dev/null || true
 cp /etc/camilladsp/v1.yml "$DIR/camilladsp.yml" 2>/dev/null || true
-cp /root/.asoundrc "$DIR/asoundrc" 2>/dev/null || true
+# /etc/asound.conf since PR #223 (2026-05-23); fall back to the
+# legacy /root/.asoundrc for older Pis.
+cp /etc/asound.conf "$DIR/asoundrc" 2>/dev/null \
+    || cp /root/.asoundrc "$DIR/asoundrc" 2>/dev/null \
+    || true
 cp /etc/modules-load.d/snd-aloop.conf "$DIR/snd-aloop.conf" 2>/dev/null || true
 
 # unit files for cross-version diff

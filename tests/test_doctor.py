@@ -743,3 +743,184 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
     _patch_shairport_conf(monkeypatch, conf, tmp_path)
     r = doctor.check_shairport_sync_loopback_plughw()
     assert r.status == "ok"
+
+
+# ---- renderer ALSA device resolvable (PR #223 — the bug-class catch) ---
+
+# These tests mock the parse helpers + the systemd-user lookup + the
+# probe subprocess. They don't actually shell out — we're testing the
+# orchestration, not aplay. The integration angle (does aplay actually
+# open the device?) only meaningfully runs on the Pi via `jasper-doctor`.
+
+def test_renderer_resolvable_all_ok(monkeypatch):
+    """Happy path: every renderer has a discoverable device and the
+    probe succeeds for each."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: {
+                            "shairport-sync.service": "shairport-sync",
+                            "librespot.service": "pi",
+                            "bluealsa-aplay.service": None,  # root
+                        }[unit])
+    monkeypatch.setattr(doctor, "_probe_open_as_user",
+                        lambda dev, user: (True, ""))
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "shairport-sync(shairport-sync)→jasper_renderer_in" in r.detail
+    assert "librespot(pi)→jasper_renderer_in" in r.detail
+    assert "bluealsa-aplay(root)→jasper_renderer_in" in r.detail
+
+
+def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
+    """The exact bug PR #223 fixes: configs look right, services look
+    active, but shairport-sync's runtime user can't open the device.
+    Pre-#223 the doctor missed this entirely. This test pins that the
+    new check would have caught it."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: {
+                            "shairport-sync.service": "shairport-sync",
+                            "librespot.service": "pi",
+                            "bluealsa-aplay.service": None,
+                        }[unit])
+
+    # Simulate the bug: as shairport-sync user, the open fails with
+    # the canonical "Unknown PCM" pattern. Root + pi (somehow) succeed
+    # — only shairport-sync fails. Doctor must still fail-the-check.
+    def fake_probe(dev, user):
+        if user == "shairport-sync":
+            return (False, 'ALSA lib pcm.c:2722: Unknown PCM jasper_renderer_in')
+        return (True, "")
+    monkeypatch.setattr(doctor, "_probe_open_as_user", fake_probe)
+
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "shairport-sync" in r.detail
+    assert "Unknown PCM" in r.detail
+    # The actionable hint should mention the fix path.
+    assert "/etc/asound.conf" in r.detail
+
+
+def test_renderer_resolvable_fail_includes_user_in_detail(monkeypatch):
+    """Failure details must name the failing user — that's the key
+    diagnostic for any "device works as root, fails as non-root" bug
+    of which the PR #214 regression is the canonical example."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "weird-device")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: "shairport-sync")
+    monkeypatch.setattr(doctor, "_probe_open_as_user",
+                        lambda d, u: (False, "open failed"))
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "(shairport-sync)" in r.detail
+
+
+def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
+    """A stripped image without all renderers installed should
+    `ok` for what works, `warn` only if nothing was probeable."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "jasper_renderer_in")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: "shairport-sync")
+    monkeypatch.setattr(doctor, "_probe_open_as_user",
+                        lambda d, u: (True, ""))
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "shairport-sync" in r.detail
+    # Skipped renderers should be mentioned (informational).
+    assert "skipped" in r.detail.lower()
+
+
+def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
+    """If literally nothing is configured, no audio path exists —
+    surface as warn, not fail (could be a doctor-only image)."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "warn"
+
+
+# ---- renderer device parsers ----------------------------------------
+
+def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
+    """shairport-sync.conf uses libconfig syntax. Parser must handle
+    double quotes, leading whitespace, and ignore // comments."""
+    conf = tmp_path / "shairport-sync.conf"
+    conf.write_text(
+        "alsa = {\n"
+        '    // Pre-2026-05-23 this was plughw:Loopback,0,0\n'
+        '    output_device = "jasper_renderer_in";\n'
+        "};\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/shairport-sync.conf":
+            return conf
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor, "Path", fake_path)
+    assert doctor._renderer_device_shairport() == "jasper_renderer_in"
+
+
+def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
+    """librespot.service has a multi-line ExecStart= with backslash
+    continuations. Parser must handle line joining and grab --device."""
+    unit = tmp_path / "librespot.service"
+    unit.write_text(
+        "[Service]\n"
+        "ExecStart=/usr/bin/librespot \\\n"
+        "    --name JTS \\\n"
+        "    --backend alsa \\\n"
+        "    --device jasper_renderer_in \\\n"
+        "    --format S24_3\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/systemd/system/librespot.service":
+            return unit
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor, "Path", fake_path)
+    assert doctor._renderer_device_librespot() == "jasper_renderer_in"
+
+
+def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
+    """bluealsa-aplay's device is configured via a drop-in's --pcm= flag."""
+    dropin_dir = tmp_path / "bluealsa-aplay.service.d"
+    dropin_dir.mkdir()
+    dropin = dropin_dir / "jts-output.conf"
+    dropin.write_text(
+        "[Service]\n"
+        "ExecStart=\n"
+        "ExecStart=/usr/bin/bluealsa-aplay -S --pcm=jasper_renderer_in\n"
+    )
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/systemd/system/bluealsa-aplay.service.d/jts-output.conf":
+            return dropin
+        # The other candidate (override.conf) should not exist for this test.
+        if arg == "/etc/systemd/system/bluealsa-aplay.service.d/override.conf":
+            return tmp_path / "does-not-exist"
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor, "Path", fake_path)
+    assert doctor._renderer_device_bluealsa() == "jasper_renderer_in"
