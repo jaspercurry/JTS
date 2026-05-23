@@ -1,10 +1,19 @@
 # Wake-word telemetry — design, schema, and PR plan
 
+> **Update 2026-05-22 night:** the 2-leg design described in this
+> doc shipped in PR #191. The **next extension is 3-leg + planned
+> 4-leg (with custom wake model)** per
+> [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) "Triple-stream
+> architecture plan". Schema additions for that extension (see
+> "Planned schema extensions for triple-stream" below) are designed
+> to slot into the existing ALTER-migration pattern without
+> breaking changes.
+
 This document is the canonical reference for the wake-event
-telemetry subsystem: dual-stream wake-word detection (AEC ON + AEC
-OFF, OR-gated) plus per-event persistence to SQLite with audio
-capture and full funnel tracking through to LLM response / tool
-call.
+telemetry subsystem: multi-stream wake-word detection (today: AEC ON
++ AEC OFF, OR-gated; next: + DTLN-aec leg; future: + custom-trained
+wake model) plus per-event persistence to SQLite with audio capture
+and full funnel tracking through to LLM response / tool call.
 
 **Why this exists.** As of 2026-05-21, the 2026-05-20 wake-rate
 sweep showed 14 of 20 Jarvis utterances stayed at 0.001 confidence
@@ -177,6 +186,55 @@ CREATE INDEX idx_wake_events_label     ON wake_events(label);
 - `UPDATE` `outcome` + `outcome_detail` at terminal state.
 - All writes via prepared statements; SQLite handles per-row
   atomicity in WAL mode without explicit transactions.
+
+### Planned schema extensions for triple-stream (2026-05-22 night)
+
+The triple-stream architecture in
+[HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) extends the
+current 2-leg AEC ON/OFF setup to a 3-leg system (raw + BEST_A AEC3
++ DTLN-aec). Adds these columns via the existing `_MIGRATION_COLUMNS`
+ALTER-on-`open()` pattern:
+
+```sql
+-- Per-leg peak score (joins peak_score_aec_on / _aec_off)
+ALTER TABLE wake_events ADD COLUMN peak_score_dtln_aec REAL;
+
+-- Per-leg WAV path (joins audio_aec_on_path / _aec_off_path)
+-- Stored as absolute path; literal "rolled_off" once aged out of the ring.
+ALTER TABLE wake_events ADD COLUMN audio_dtln_path TEXT;
+
+-- Which leg(s) actually crossed threshold and triggered the event.
+-- CSV format, sorted alphabetically. Examples:
+--   "aec_off"             — raw mic only
+--   "aec_on,dtln"         — BEST_A + DTLN both fired
+--   "aec_off,aec_on,dtln" — all three fired (consensus)
+-- Critical column for the weekly review: answers "is engine X
+-- ever the lone trigger?"
+ALTER TABLE wake_events ADD COLUMN fired_legs TEXT;
+```
+
+Future extension for the custom-trained wake-word model (when that
+track ships):
+
+```sql
+-- Per-leg peak score for the custom model against each AEC stream.
+-- Naming: peak_score_<wake_model>_<aec_leg>. So if we add a
+-- custom-trained "jasper_v1" model with AEC OFF + AEC ON + DTLN
+-- legs, that's 3 more columns.
+ALTER TABLE wake_events ADD COLUMN peak_score_jasper_v1_aec_off REAL;
+ALTER TABLE wake_events ADD COLUMN peak_score_jasper_v1_aec_on  REAL;
+ALTER TABLE wake_events ADD COLUMN peak_score_jasper_v1_dtln    REAL;
+```
+
+The `fired_legs` column generalizes to include wake-model
+identification too — `"jasper_v1@aec_on,jarvis_v2@dtln"` etc. The
+shape isn't fixed yet; finalize when implementing.
+
+**Audio ring sizing**: today's 500 MB cap assumes 2 streams per event.
+With 3 streams per event we'd retain ~2-4 weeks instead of 3-6.
+**Bump to 1 GB** via `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`
+when the 3rd leg ships. Pi 5 has plenty of disk (39 GB free per
+CLAUDE.md debug dump).
 
 ---
 
