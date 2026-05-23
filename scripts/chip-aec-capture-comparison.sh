@@ -67,19 +67,65 @@ daemon_set_mode() {
   # is producing audio for arecord to capture, not interacting with
   # the assistant. The user's "Hey Jarvis. Testing one two three..."
   # in step 3 is a test phrase for the recording, not a wake trigger.
+  #
+  # Race avoidance: we wait for the OLD daemon to fully exit before
+  # starting the new one. Without this wait, the new daemon may try
+  # to open the chip's USB-IN PCM while the old one is still
+  # releasing it, getting -EBUSY. We also verify the new daemon
+  # opened its PCMs successfully by grepping for the "open failed"
+  # error pattern the daemon logs in that case — pgrep alone proves
+  # the process started, not that its threads are actually pumping.
   local mode="$1"
   local extra=""
   if [ "$mode" = "ref-only" ]; then extra="--ref-only"; fi
-  ssh "${PI_USER}@${PI_HOST}" "sudo pkill -f 'jasper.chip_aec_experiment' 2>/dev/null || true
-sleep 0.5
-sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
-sleep 2
-if ! pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
-  echo '    FAILED to restart daemon in ${mode} mode — last 10 log lines:'
-  sudo tail -10 /var/log/chip-aec-experiment.log
-  exit 1
-fi
-echo '    daemon now in ${mode} mode (PID '\$(pgrep -f jasper.chip_aec_experiment)')'"
+  ssh "${PI_USER}@${PI_HOST}" "set -e
+    # Mark the log boundary so we can scope grep to lines from the
+    # NEW daemon only (older 'open failed' lines from a previous
+    # run shouldn't false-positive us).
+    boundary=\$(wc -l < /var/log/chip-aec-experiment.log 2>/dev/null || echo 0)
+
+    sudo pkill -f 'jasper.chip_aec_experiment' 2>/dev/null || true
+
+    # Wait up to 4 s for the daemon to actually exit (10 × 0.4 s).
+    # SIGTERM → daemon's main loop wakes from sleep 0.5, joins
+    # threads with 3 s timeout. In practice exit happens within 1 s,
+    # but ALSA close can stall briefly if the USB endpoint is wedged.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      pgrep -f 'jasper.chip_aec_experiment' > /dev/null || break
+      sleep 0.4
+    done
+    if pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
+      echo '    old daemon did not exit after SIGTERM; sending SIGKILL'
+      sudo pkill -9 -f 'jasper.chip_aec_experiment' || true
+      sleep 0.5
+    fi
+
+    sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
+
+    # Give the new daemon 2 s to either get to its first log line or
+    # crash trying to open a PCM. 2 s is well past the chip's USB
+    # enumeration recovery window.
+    sleep 2
+
+    if ! pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
+      echo '    FAILED to restart daemon in ${mode} mode (process exited) — last 20 log lines:'
+      sudo tail -20 /var/log/chip-aec-experiment.log
+      exit 1
+    fi
+
+    # Process is alive — but did its PCMs open successfully? Scan
+    # lines APPENDED to the log since 'boundary' for the daemon's
+    # 'open failed' phrase (emitted by reference_feeder / udp_mic_pump
+    # on alsaaudio.ALSAAudioError at PCM construction).
+    new_lines=\$(sudo tail -n +\$((boundary + 1)) /var/log/chip-aec-experiment.log 2>/dev/null || true)
+    if echo \"\$new_lines\" | grep -qE '(ref feeder|mic pump) open failed'; then
+      echo '    daemon process alive but PCM open failed — log excerpt:'
+      echo \"\$new_lines\" | grep -E 'open failed' | head -5
+      exit 1
+    fi
+
+    echo \"    daemon now in ${mode} mode (PID \$(pgrep -f jasper.chip_aec_experiment))\"
+  "
 }
 
 capture_chip_ch() {
@@ -89,8 +135,23 @@ capture_chip_ch() {
   local label="$1" outfile="$2" ch="$3"
   echo "  capturing ${SECS}s: ${label}"
   local tmp="${OUTDIR}/${outfile}.6ch.tmp"
-  ssh "${PI_USER}@${PI_HOST}" \
-    "arecord -D hw:CARD=Array,DEV=0 -f S16_LE -r 16000 -c 6 -d ${SECS} -t wav 2>/dev/null" > "$tmp"
+  local stderr_file="${OUTDIR}/${outfile}.arecord.stderr"
+  # Capture stderr separately so we can surface arecord's actual
+  # error (EBUSY, device gone, etc.) instead of silently writing a
+  # 0-byte WAV that crashes the channel-extract python below.
+  if ! ssh "${PI_USER}@${PI_HOST}" \
+       "arecord -D hw:CARD=Array,DEV=0 -f S16_LE -r 16000 -c 6 -d ${SECS} -t wav" \
+       > "$tmp" 2> "$stderr_file"; then
+    echo "  arecord exited non-zero. stderr:"
+    sed 's/^/    /' "$stderr_file"
+    exit 1
+  fi
+  if [[ ! -s "$tmp" ]]; then
+    echo "  arecord produced 0-byte file (chip CAPTURE may still be held by the daemon, or device gone). stderr:"
+    sed 's/^/    /' "$stderr_file"
+    exit 1
+  fi
+  rm -f "$stderr_file"
   python3 - "$tmp" "${OUTDIR}/${outfile}" "$ch" <<'PYEOF'
 import sys, wave, numpy as np
 src, dst, ch = sys.argv[1], sys.argv[2], int(sys.argv[3])
@@ -109,10 +170,22 @@ PYEOF
 
 capture_ref() {
   echo "  capturing ${SECS}s: reference (plug:jasper_capture, 16k mono)"
-  ssh "${PI_USER}@${PI_HOST}" \
-    "arecord -D plug:jasper_capture -f S16_LE -r 16000 -c 1 -d ${SECS} -t wav 2>/dev/null" \
-    > "${OUTDIR}/01_reference.wav"
-  echo "    wrote ${OUTDIR}/01_reference.wav"
+  local out="${OUTDIR}/01_reference.wav"
+  local stderr_file="${OUTDIR}/01_reference.arecord.stderr"
+  if ! ssh "${PI_USER}@${PI_HOST}" \
+       "arecord -D plug:jasper_capture -f S16_LE -r 16000 -c 1 -d ${SECS} -t wav" \
+       > "$out" 2> "$stderr_file"; then
+    echo "  arecord exited non-zero. stderr:"
+    sed 's/^/    /' "$stderr_file"
+    exit 1
+  fi
+  if [[ ! -s "$out" ]]; then
+    echo "  arecord produced 0-byte reference (plug:jasper_capture missing or no music playing). stderr:"
+    sed 's/^/    /' "$stderr_file"
+    exit 1
+  fi
+  rm -f "$stderr_file"
+  echo "    wrote $out"
 }
 
 set_bypass() {

@@ -137,6 +137,37 @@ echo
 echo "==> Rsync (SKIP_INSTALL=1, no reconciler re-eval)"
 SKIP_INSTALL=1 PI_HOST="$PI_HOST" PI_USER="$PI_USER" bash "${SCRIPT_DIR}/deploy-to-pi.sh"
 
+# From here onward, every step mutates Pi state (masks services,
+# changes chip params, edits jasper.env, starts the daemon). If any
+# step fails midway, the Pi is left in a half-broken state that
+# requires manual intervention. Arm a trap that invokes the teardown
+# script to recover. The trap is intentionally NOT armed during
+# pre-flight or rsync — those are non-destructive, and triggering
+# teardown for a pre-flight failure would needlessly restart
+# services on an unmodified Pi.
+auto_teardown_on_failure() {
+  local exit_code=$?
+  # Disable the trap so a failure inside teardown doesn't recurse.
+  trap '' ERR
+  echo
+  echo "!!! chip-aec-setup failed (exit ${exit_code}) — attempting auto-teardown to restore production state"
+  echo
+  if bash "${SCRIPT_DIR}/chip-aec-teardown.sh"; then
+    echo
+    echo "  auto-teardown completed; Pi should be back on the WebRTC bridge."
+    echo "  re-run chip-aec-setup.sh after fixing the underlying issue."
+  else
+    echo
+    echo "!!! auto-teardown ALSO failed — manual recovery required."
+    echo "    SSH in and run:"
+    echo "      sudo systemctl unmask jasper-aec-bridge jasper-aec-reconcile jasper-aec-init jasper-dongle-recover"
+    echo "      sudo systemctl start jasper-aec-reconcile.service"
+    echo "      sudo /opt/jasper/.venv/bin/jasper-doctor"
+  fi
+  exit "${exit_code}"
+}
+trap auto_teardown_on_failure ERR
+
 echo
 echo "==> Stopping + masking the production AEC service chain"
 # We mask FOUR units, not one. Masking only the bridge leaves three

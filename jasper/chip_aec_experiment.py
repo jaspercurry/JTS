@@ -60,122 +60,169 @@ class _Stop:
 
 
 def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
-    """Pump music chain into chip USB-IN at 16 kHz stereo S16_LE."""
+    """Pump music chain into chip USB-IN at 16 kHz stereo S16_LE.
+
+    Trips ``stop`` on any failure so the main loop exits and the
+    operator sees the daemon die instead of hanging silently with
+    one thread dead and the other live.
+    """
+    src: alsaaudio.PCM | None = None
+    dst: alsaaudio.PCM | None = None
     try:
-        src = alsaaudio.PCM(
-            type=alsaaudio.PCM_CAPTURE,
-            mode=alsaaudio.PCM_NORMAL,
-            device=source,
-            rate=RATE,
-            channels=2,
-            format=alsaaudio.PCM_FORMAT_S16_LE,
-            periodsize=PERIODSIZE,
-        )
-        dst = alsaaudio.PCM(
-            type=alsaaudio.PCM_PLAYBACK,
-            mode=alsaaudio.PCM_NORMAL,
-            device=chip,
-            rate=RATE,
-            channels=2,
-            format=alsaaudio.PCM_FORMAT_S16_LE,
-            periodsize=PERIODSIZE,
-        )
-    except alsaaudio.ALSAAudioError as e:
-        LOG.error("ref feeder open failed: %s", e)
-        stop.trip()
-        return
-
-    LOG.info("ref feeder: %s -> %s @ 16k stereo S16_LE", source, chip)
-
-    frames = 0
-    underruns = 0
-    next_log = time.monotonic() + 5
-    while not stop.flag:
         try:
-            length, data = src.read()
-        except alsaaudio.ALSAAudioError as e:
-            LOG.warning("ref read error: %s", e)
-            time.sleep(0.01)
-            continue
-        if length <= 0:
-            continue
-        stereo = np.frombuffer(data, dtype=np.int16)
-        # Mix L+R to mono, then duplicate to both channels (chip uses L only,
-        # R duplicated matches the endpoint descriptor cleanly).
-        mixed = ((stereo[0::2].astype(np.int32) + stereo[1::2].astype(np.int32)) // 2).astype(np.int16)
-        out = np.empty(mixed.size * 2, dtype=np.int16)
-        out[0::2] = mixed
-        out[1::2] = mixed
-        try:
-            dst.write(out.tobytes())
-        except alsaaudio.ALSAAudioError as e:
-            underruns += 1
-            if underruns % 50 == 1:
-                LOG.warning("chip write error #%d: %s", underruns, e)
-
-        frames += mixed.size
-        if time.monotonic() >= next_log:
-            rms = float(np.sqrt(np.mean(mixed.astype(np.float32) ** 2)))
-            LOG.info(
-                "ref feeder: %d frames (%.0fs) RMS=%.0f underruns=%d",
-                frames, frames / RATE, rms, underruns,
+            src = alsaaudio.PCM(
+                type=alsaaudio.PCM_CAPTURE,
+                mode=alsaaudio.PCM_NORMAL,
+                device=source,
+                rate=RATE,
+                channels=2,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=PERIODSIZE,
             )
-            next_log = time.monotonic() + 5
+            dst = alsaaudio.PCM(
+                type=alsaaudio.PCM_PLAYBACK,
+                mode=alsaaudio.PCM_NORMAL,
+                device=chip,
+                rate=RATE,
+                channels=2,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=PERIODSIZE,
+            )
+        except alsaaudio.ALSAAudioError as e:
+            LOG.error("ref feeder open failed: %s", e)
+            stop.trip()
+            return
 
-    src.close()
-    dst.close()
-    LOG.info("ref feeder: stopped")
+        LOG.info("ref feeder: %s -> %s @ 16k stereo S16_LE", source, chip)
+
+        frames = 0
+        underruns = 0
+        next_log = time.monotonic() + 5
+        while not stop.flag:
+            try:
+                length, data = src.read()
+            except alsaaudio.ALSAAudioError as e:
+                LOG.warning("ref read error: %s", e)
+                time.sleep(0.01)
+                continue
+            if length <= 0:
+                continue
+            stereo = np.frombuffer(data, dtype=np.int16)
+            # Mix L+R to mono, then duplicate to both channels (chip uses
+            # L only, R duplicated matches the endpoint descriptor cleanly).
+            mixed = ((stereo[0::2].astype(np.int32) + stereo[1::2].astype(np.int32)) // 2).astype(np.int16)
+            out = np.empty(mixed.size * 2, dtype=np.int16)
+            out[0::2] = mixed
+            out[1::2] = mixed
+            try:
+                dst.write(out.tobytes())
+            except alsaaudio.ALSAAudioError as e:
+                underruns += 1
+                if underruns % 50 == 1:
+                    LOG.warning("chip write error #%d: %s", underruns, e)
+                # Avoid a tight error loop if the chip USB endpoint is
+                # wedged — back off 1 ms between failed writes.
+                time.sleep(0.001)
+
+            frames += mixed.size
+            if time.monotonic() >= next_log:
+                rms = float(np.sqrt(np.mean(mixed.astype(np.float32) ** 2)))
+                LOG.info(
+                    "ref feeder: %d frames (%.0fs) RMS=%.0f underruns=%d",
+                    frames, frames / RATE, rms, underruns,
+                )
+                next_log = time.monotonic() + 5
+    except Exception:
+        # Anything outside ALSAAudioError: numpy buffer-shape mismatch,
+        # MemoryError, etc. Without this the thread would die silently
+        # while the main loop kept spinning forever.
+        LOG.exception("ref feeder: unhandled exception, stopping daemon")
+        stop.trip()
+    finally:
+        # Always release PCM handles, even on exception. Without the
+        # finally, an uncaught exception leaks the file descriptors
+        # until process exit.
+        if src is not None:
+            try:
+                src.close()
+            except Exception:
+                LOG.exception("ref feeder: error closing src PCM")
+        if dst is not None:
+            try:
+                dst.close()
+            except Exception:
+                LOG.exception("ref feeder: error closing dst PCM")
+        LOG.info("ref feeder: stopped")
 
 
 def udp_mic_pump(stop: _Stop, chip: str) -> None:
-    """Pump chip ch1 to UDP 127.0.0.1:9876 as 16 kHz mono S16_LE."""
+    """Pump chip ch1 to UDP 127.0.0.1:9876 as 16 kHz mono S16_LE.
+
+    Trips ``stop`` on any failure so the main loop exits cleanly
+    instead of hanging with a dead thread.
+    """
+    cap: alsaaudio.PCM | None = None
+    sock: socket.socket | None = None
     try:
-        cap = alsaaudio.PCM(
-            type=alsaaudio.PCM_CAPTURE,
-            mode=alsaaudio.PCM_NORMAL,
-            device=chip,
-            rate=RATE,
-            channels=6,
-            format=alsaaudio.PCM_FORMAT_S16_LE,
-            periodsize=PERIODSIZE,
-        )
-    except alsaaudio.ALSAAudioError as e:
-        LOG.error("mic pump open failed: %s", e)
-        stop.trip()
-        return
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    LOG.info("mic pump: %s ch%d -> udp://%s:%d", chip, MIC_CHANNEL, *UDP_TARGET)
-
-    frames = 0
-    next_log = time.monotonic() + 5
-    while not stop.flag:
         try:
-            length, data = cap.read()
+            cap = alsaaudio.PCM(
+                type=alsaaudio.PCM_CAPTURE,
+                mode=alsaaudio.PCM_NORMAL,
+                device=chip,
+                rate=RATE,
+                channels=6,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=PERIODSIZE,
+            )
         except alsaaudio.ALSAAudioError as e:
-            LOG.warning("mic read error: %s", e)
-            time.sleep(0.01)
-            continue
-        if length <= 0:
-            continue
-        multi = np.frombuffer(data, dtype=np.int16)
-        # 6-channel interleaved → take channel MIC_CHANNEL
-        ch = multi[MIC_CHANNEL::6].tobytes()
-        try:
-            sock.sendto(ch, UDP_TARGET)
-        except OSError as e:
-            LOG.warning("UDP send error: %s", e)
+            LOG.error("mic pump open failed: %s", e)
+            stop.trip()
+            return
 
-        frames += length
-        if time.monotonic() >= next_log:
-            mono = np.frombuffer(ch, dtype=np.int16)
-            rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2))) if mono.size else 0.0
-            LOG.info("mic pump: %d frames (%.0fs) ch%d RMS=%.0f", frames, frames / RATE, MIC_CHANNEL, rms)
-            next_log = time.monotonic() + 5
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        LOG.info("mic pump: %s ch%d -> udp://%s:%d", chip, MIC_CHANNEL, *UDP_TARGET)
 
-    cap.close()
-    sock.close()
-    LOG.info("mic pump: stopped")
+        frames = 0
+        next_log = time.monotonic() + 5
+        while not stop.flag:
+            try:
+                length, data = cap.read()
+            except alsaaudio.ALSAAudioError as e:
+                LOG.warning("mic read error: %s", e)
+                time.sleep(0.01)
+                continue
+            if length <= 0:
+                continue
+            multi = np.frombuffer(data, dtype=np.int16)
+            # 6-channel interleaved → take channel MIC_CHANNEL.
+            ch = multi[MIC_CHANNEL::6].tobytes()
+            try:
+                sock.sendto(ch, UDP_TARGET)
+            except OSError as e:
+                LOG.warning("UDP send error: %s", e)
+
+            frames += length
+            if time.monotonic() >= next_log:
+                mono = np.frombuffer(ch, dtype=np.int16)
+                rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2))) if mono.size else 0.0
+                LOG.info("mic pump: %d frames (%.0fs) ch%d RMS=%.0f", frames, frames / RATE, MIC_CHANNEL, rms)
+                next_log = time.monotonic() + 5
+    except Exception:
+        # See reference_feeder for why we catch broad Exception here.
+        LOG.exception("mic pump: unhandled exception, stopping daemon")
+        stop.trip()
+    finally:
+        if cap is not None:
+            try:
+                cap.close()
+            except Exception:
+                LOG.exception("mic pump: error closing capture PCM")
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                LOG.exception("mic pump: error closing UDP socket")
+        LOG.info("mic pump: stopped")
 
 
 def main() -> int:
