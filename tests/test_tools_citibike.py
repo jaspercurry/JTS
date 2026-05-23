@@ -203,8 +203,11 @@ async def test_tool_multi_station_returns_per_station_dicts():
     ])
     [fn] = make_citibike_tools(fake)
     result = await fn()
+    # Labels are normalized for speech in the tool response: "9 Av"
+    # expands to "9th Avenue" so the LLM's TTS says "ninth avenue"
+    # rather than "nine av." See normalize_station_name docstring.
     labels = [s["label"] for s in result["stations"]]
-    assert labels == ["9 Av", "Atlantic"]
+    assert labels == ["9th Avenue", "Atlantic"]
     assert result["stations"][1]["ebikes"] == 4
     assert result["stations"][1]["classic_bikes"] == 1
 
@@ -219,7 +222,9 @@ async def test_tool_propagates_offline_and_missing_status():
     [fn] = make_citibike_tools(fake)
     result = await fn()
     statuses = {s["label"]: s["status"] for s in result["stations"]}
-    assert statuses == {"9 Av": "ok", "Off": "offline", "Ghost": "missing"}
+    # "9 Av" → "9th Avenue" via normalize_station_name; "Off" / "Ghost"
+    # have no abbreviations so they pass through unchanged.
+    assert statuses == {"9th Avenue": "ok", "Off": "offline", "Ghost": "missing"}
 
 
 # --- Error handling ---------------------------------------------------
