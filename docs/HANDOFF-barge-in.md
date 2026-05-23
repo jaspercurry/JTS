@@ -1,12 +1,38 @@
-# Robust barge-in — open architectural decision
+# Robust barge-in — design space + costing record
 
-**Status (2026-05-22):** Research only. No implementation in flight.
+**Status (2026-05-23):** Research only. No implementation in flight.
 This document captures the option space for upgrading JTS's
 barge-in story from "Silero VAD threshold filtering" (today) to
-"AEC cancellation of TTS in the mic" (canonical). It exists
-because the obvious-looking fix is structurally wrong, and the
-right paths involve real architectural choices that deserve
-documenting before any of them is picked.
+"AEC cancellation of TTS in the mic" (canonical).
+
+> ### ⚠️ Read this before reading the options below
+>
+> [`AGENTS.md`](../AGENTS.md) and
+> [`CONTRIBUTING.md`](../CONTRIBUTING.md) (both updated 2026-05-23)
+> establish a standing rule: **for the AEC subsystem,
+> architectural changes are not reviewable; engine swaps and
+> tuning are.** The named-rejected paths include "PipeWire
+> `module-echo-cancel`," "replacing snd-aloop with PipeWire
+> fanout," "dual-USB-sink hardware-AEC retry," and "custom XVF
+> firmware." Targeted single-knob OS-layer fixes (a specific
+> ALSA setting, a kernel module parameter) ARE acceptable when
+> measurement has localized the root cause to that layer.
+>
+> Options A and B below are **explicitly the kind of speculative
+> re-architecture that policy rejects.** This doc records the
+> reasoning so a future contributor (or future Claude session)
+> doesn't re-derive the costing from scratch and propose what's
+> already been declined. It is **not** a menu of live options.
+>
+> The operative recommendation is **Option C** — measure
+> first, then if measurement justifies it, address with
+> engine-internal tuning inside `jasper/cli/aec_bridge.py` or
+> the `jasper_aec3` binding. That path stays inside the policy.
+>
+> If barge-in measurement ever produces a case strong enough to
+> reconsider the policy, the costing in Options A/B is here.
+> Reopening that conversation is a deliberate move, not an
+> agent-side proposal.
 
 The trigger: a future feature request — make barge-in work
 reliably under loud music. The current implementation works for
@@ -14,8 +40,8 @@ reliably under loud music. The current implementation works for
 [Today's barge-in: what works](#todays-barge-in-what-works-and-what-doesnt)).
 The naive fix ("put TTS in the AEC reference") collides with
 the audio architecture in non-obvious ways. This doc explains
-why, surveys the legitimate paths forward, and recommends a
-measure-first approach before committing to either of them.
+why, costs the architectural options for the historical record,
+and recommends the measurement path that stays inside policy.
 
 ---
 
@@ -246,6 +272,12 @@ of the options below instead.
 
 ## Option A — Stay ALSA-only; add a software convergence sink
 
+> **Policy status: rejected as speculative re-architecture.** Per the
+> standing rule in [AGENTS.md](../AGENTS.md), changes that
+> restructure the snd-aloop / dmix topology around AEC are not
+> reviewable today. The costing below is preserved as decision-record
+> only.
+
 Restructure so music + TTS converge at a software mix point
 *before* the dongle. The minimal shape:
 
@@ -340,6 +372,16 @@ down the chain** — converging music + TTS *after* CamillaDSP.
 ---
 
 ## Option B — Migrate to PipeWire
+
+> **Policy status: rejected by name.** [AGENTS.md](../AGENTS.md)
+> "Architecture is fixed; swap the engine, not the topology"
+> explicitly names "PipeWire `module-echo-cancel`" and "replacing
+> snd-aloop with PipeWire fanout" as paths not to propose.
+> [CONTRIBUTING.md](../CONTRIBUTING.md) "Working on a sensitive
+> subsystem" repeats the constraint for external contributors.
+> The costing below is preserved as decision-record only — if
+> future evidence ever warrants reopening the conversation, the
+> trade-off table is here.
 
 PipeWire's `module-echo-cancel` does Option A out of the box,
 plus several second-order wins JTS would otherwise build
@@ -562,6 +604,11 @@ didn't survive scrutiny.
 
 ### Hardware AEC, revisited
 
+> **Policy status: rejected by name.** [AGENTS.md](../AGENTS.md)
+> names "dual-USB-sink hardware-AEC retry" and "custom XVF firmware"
+> as paths not to propose. The notes below remain as historical
+> record of why the trade was costed and declined.
+
 The XVF3800's on-chip AEC was disabled deliberately
 ([HANDOFF-aec.md](HANDOFF-aec.md): the chip's AEC assumed the
 chip drove the speaker via its own codec, which JTS doesn't —
@@ -681,25 +728,34 @@ Option B lands, these need answers:
 
 The renderer-side dmix from PR #214 already resolved the librespot
 ALSA contention that was the easiest piece of the picture. What
-remains is the barge-in question itself. In sequence:
+remains is the barge-in question itself. The path that stays inside
+the standing policy is:
 
-1. **Build Option C instrumentation.** ~1 day. Run for 2-4
-   weeks. Get data.
+1. **Build Option C instrumentation.** ~1 day. Extends the
+   mic-quality-v2 measurement substrate ([HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md))
+   rather than building parallel infrastructure. Run for 2-4
+   weeks. Get real data on how often VAD-only barge-in actually
+   fails under normal household use.
 2. **Based on the data**, choose:
-   - If VAD-only is adequate: declare barge-in done, archive
+   - **If VAD-only is adequate:** declare barge-in done, archive
      this doc with a "resolved 2026-XX: VAD-only met the bar"
-     note.
-   - If VAD-only is inadequate but the failure cluster is
-     narrow: try targeted VAD tuning before architectural
-     change.
-   - If VAD-only is genuinely insufficient: choose Option A or
-     Option B based on (a) appetite for a multi-week project,
-     (b) whether multi-mic-satellite work is also imminent (push
-     toward B), (c) measured PipeWire Pss vs available Pi RAM
-     headroom.
+     note. No architectural change needed.
+   - **If VAD-only is inadequate but the failure cluster is
+     narrow:** try targeted VAD tuning, engine-internal AEC3
+     knob changes ([AGENTS.md](../AGENTS.md) "AEC bridge —
+     reconciler toggle"), or single-knob OS-layer fixes that
+     measurement has localized to a specific layer. All in policy.
+   - **If VAD-only is genuinely insufficient and engine-internal
+     tuning hits a ceiling:** the policy question reopens. At that
+     point, the Option A / Option B costing in this doc is the
+     starting record for whether the trade has changed enough to
+     reconsider. **Reopening the policy is the user's call, not
+     an agent's.** Surface the data and the trade; don't propose
+     the architecture change.
 
 The decision is not urgent and shouldn't be made on speculation.
-The data-collection step is the highest-leverage move.
+The data-collection step is the highest-leverage move and the
+only one currently in-policy.
 
 ---
 
@@ -747,4 +803,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-23
+Last verified: 2026-05-23 (re-verified after the AGENTS.md / CONTRIBUTING.md "Architecture is fixed" policy landed)
