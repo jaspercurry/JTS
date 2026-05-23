@@ -93,9 +93,12 @@ This is the **only** supported deploy path. It does, in order:
 2. `rsync` to `pi@jts.local:/home/pi/jts/` (excludes `.git/`,
    `.venv/`, `*.egg-info`, etc.)
 3. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
-   set — `pip install -e`'s into `/opt/jasper/.venv` (the runtime),
-   writes `/var/lib/jasper/build.txt`, migrates units to socket
-   activation, conditionally enables AEC on 6-ch firmware
+   set — rsyncs the Python source from `/home/pi/jts/` into
+   `/opt/jasper/`, then `pip install -e`'s `/opt/jasper` into
+   `/opt/jasper/.venv` (the runtime). Also writes
+   `/var/lib/jasper/build.txt`, migrates units to socket
+   activation, conditionally enables AEC on 6-ch firmware. See
+   "Runtime Python lives in /opt/jasper" below.
 4. `systemctl restart jasper-control` + `systemctl start
    jasper-aec-reconcile` — picks up Python control code and lets the
    mic/AEC reconciler restart or park `jasper-voice` according to the
@@ -130,6 +133,29 @@ The one exception: a **fresh Pi** doing first-time setup runs
 `sudo bash deploy/install.sh` natively after `git clone` on the
 Pi itself (see [BRINGUP.md](BRINGUP.md)). The wrapper isn't
 applicable until there's a laptop checkout.
+
+### Runtime Python lives in `/opt/jasper`, not `/home/pi/jts`
+
+`install.sh` **copies** Python source into
+`/opt/jasper/jasper/...` (it doesn't `pip install -e` from
+`/home/pi/jts`). `/home/pi/jts` is the source tree that
+`deploy-to-pi.sh` rsyncs into; `/opt/jasper/.venv` is the runtime
+the daemons actually execute. Edits to `/home/pi/jts/` don't go
+live until install.sh re-copies — so a full deploy is the
+canonical path.
+
+For one-off hot-patch testing without a full deploy:
+
+```sh
+scp jasper/cli/foo.py pi@jts.local:/tmp/foo.py
+ssh pi@jts.local 'sudo install -m 644 /tmp/foo.py \
+    /opt/jasper/jasper/cli/foo.py && sudo systemctl restart jasper-voice'
+```
+
+(Substitute the affected daemon.) For systemd units, ALSA confs,
+nginx config, etc., the live location differs — check
+[`deploy/install.sh`](deploy/install.sh) for the canonical
+install target before patching.
 
 ---
 
@@ -882,6 +908,20 @@ canonical reference (firmware variants, mixer state, failure
 modes, diagnostic cookbook) is
 [`docs/HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md).
 
+**Architecture is fixed; swap the engine, not the topology.** When
+working on AEC, default to engine-internal changes inside
+[`jasper/cli/aec_bridge.py`](jasper/cli/aec_bridge.py) and the
+`jasper_aec3` binding. Do **not** propose PipeWire
+`module-echo-cancel`, replacing snd-aloop with PipeWire fanout,
+dual-USB-sink hardware-AEC retry, or custom XVF firmware — the
+current architecture (dsnoop tap → AEC3 → UDP → voice daemon) is
+the result of a deliberate decision rejecting those paths
+(rationale in [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md)).
+Targeted single-knob OS-layer fixes (a specific ALSA
+`rate_converter` setting, a kernel module parameter) ARE
+acceptable when measurement has localized the root cause to that
+layer — what's rejected is speculative re-architecture.
+
 **Three layered bridge bugs were fixed on 2026-05-19.** Together
 they had been silently corrupting AEC's reference signal since
 the bridge shipped: (1) ALSA's linear resampler dropping HF
@@ -1457,6 +1497,52 @@ specific project:
   why this default, recommended ranges if it's tunable). The
   template doubles as documentation — no separate "tuning knobs"
   page.
+- **Fix what you notice — tier the response.** When you spot
+  something broken or stale that pre-existed your change (typo,
+  dead link, comment contradicting the code), don't shrug "not
+  my problem." Apply the tier rule: **trivial + obvious** (typo,
+  dead link, 1–3 line fix) → fix inline. **Significant** (real
+  bug, design judgment, behavior change) → finish the original
+  task, then surface the issue at the end so the user can decide
+  whether to fix in-session or spawn parallel work. **When in
+  doubt, flag** — stale-looking prose sometimes carries signal
+  (a runbook marker, a load-bearing TODO).
+- **Verify at the user's surface, not at upstream config.** When
+  the user references what they observe (a wizard, dashboard,
+  HTTP response), verify by hitting that URL or reading the
+  rendering code. JTS systemd units chain multiple
+  `EnvironmentFile=` directives (`/var/lib/jasper/*.env`
+  overrides `/etc/jasper/jasper.env`), so the runtime answer
+  lives in whichever file is loaded last. For daemon state,
+  prefer the daemon's own surface (`/state`, MPRIS, websocket)
+  over `/etc/*` files when both exist.
+- **JTS is a production speaker — design for resilience.**
+  Reasonable physical actions (unplugging speakers, power
+  cycling, briefly losing WiFi, removing a satellite) must not
+  put the speaker in a state it can't self-recover from. When
+  touching systemd units, daemon startup paths, or any code near
+  hardware, ask: "if the underlying resource isn't there right
+  now, does this recover without operator intervention when it
+  comes back?" If not, flag it. No silent restart loops — either
+  the system recovers or someone hears about it (cue, log,
+  dashboard, dial LED).
+- **Scope fixes to the observed-broken path, not symmetric
+  ones.** When fixing a bug in one provider's adapter (e.g.
+  OpenAI session), don't preemptively mirror the change into
+  sibling adapters (Gemini, Grok) just because they share a
+  protocol. Shared interfaces don't mean shared bugs — wait for
+  the symptom to manifest in the other path before touching it.
+  Same applies to "while I'm here, might as well fix Y" — don't,
+  unless Y is a confirmed instance of the same defect.
+- **Mic capture is consumed by ML, not humans.** The downstream
+  consumers are openWakeWord (16 kHz ONNX) and the real-time
+  speech LLMs — never a human listener. Optimize for wake-word
+  reliability and ASR accuracy, not naturalness. Aggressive
+  band-limiting to ~100 Hz–7 kHz is a free win (anything outside
+  the speech band is noise to the consumers). "Human-perceptual"
+  tunings (loudness compensation, presence boost) often make ML
+  models *worse* because the training distribution doesn't
+  include them. See [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md).
 
 ---
 

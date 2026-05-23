@@ -80,6 +80,32 @@ The repo has ~30 markdown files in a layered structure:
 capture hardware-specific footguns that aren't obvious from the code.
 If you find something stale, fix it inline in the same PR.
 
+## Working on a sensitive subsystem
+
+A few subsystems have explicit design constraints that aren't
+obvious from the code alone. If you're proposing changes here,
+**read the HANDOFF first** — it captures decisions that have
+already been made and what's NOT a reviewable trade-off.
+
+- **AEC / mic pipeline.** Engine swaps and tuning parameters are
+  reviewable; architectural changes (PipeWire fanout, hardware
+  AEC retry, custom XVF firmware) are not. Mic capture is
+  consumed by ML (openWakeWord + speech LLMs), never humans —
+  optimize for ASR accuracy, not naturalness. See
+  [docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) and AGENTS.md
+  "AEC bridge — reconciler toggle."
+- **Voice provider abstraction.** New providers go through the
+  `LiveConnection` / `LiveTurn` protocol; don't add
+  provider-specific branches outside `jasper/voice/`. See
+  [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md).
+- **The XVF3800 mic chip.** **Never call `SAVE_CONFIGURATION`**
+  — documented brick hazard on certain firmware versions. See
+  [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md).
+- **Voice prompting.** `SYSTEM_INSTRUCTION` and tool docstrings
+  are sensitive to model-specific RLHF biases. Read
+  [docs/HANDOFF-prompting.md](docs/HANDOFF-prompting.md) before
+  rewording.
+
 ## Reporting bugs / suggesting features
 
 Use the templates in `.github/ISSUE_TEMPLATE/`. The bug template asks
