@@ -1256,6 +1256,98 @@ def check_aec_bridge_output_health() -> CheckResult:
     )
 
 
+def _assess_dtln_engine(journal_text: str) -> CheckResult:
+    """Pure-function parser for the bridge's DTLN-aec engine init
+    line. Split out from `check_aec_bridge_dtln_engine` so the
+    parsing logic is unit-testable without subprocess mocks.
+
+    Successful load line shape (jasper/cli/aec_bridge.py ~line 675):
+        DTLN-aec engine enabled: size=256, udp out=...
+    Failed load line shape:
+        JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: <reason>.
+        Continuing with AEC3 only.
+    """
+    # Search newest-first — we want the most recent engine init,
+    # not the first one in the window (which may predate a restart).
+    for line in reversed(journal_text.splitlines()):
+        if "DTLN-aec engine enabled" in line:
+            size = "?"
+            if "size=" in line:
+                size = line.split("size=", 1)[1].split(",", 1)[0].strip()
+            return CheckResult(
+                "DTLN-aec engine", "ok",
+                f"loaded (size={size}, triple-stream tertiary leg active)",
+            )
+        if "DTLN couldn't load" in line:
+            detail = line.split("couldn't load:", 1)[-1].strip()
+            return CheckResult(
+                "DTLN-aec engine", "fail",
+                f"JASPER_AEC_DTLN_ENABLED=1 but engine couldn't load: "
+                f"{detail}. Bridge degraded to AEC3-only — triple-stream "
+                f"is silently dual-stream. Check /var/lib/jasper/dtln/ "
+                f"and `journalctl -u jasper-aec-bridge -e`.",
+            )
+
+    # Neither marker found. Either the bridge has been running long
+    # enough that the init line aged out (we use a 10-min window) or
+    # JASPER_AEC_DTLN_ENABLED was set after the last bridge start.
+    return CheckResult(
+        "DTLN-aec engine", "warn",
+        "JASPER_AEC_DTLN_ENABLED=1 but no engine-init line in last "
+        "10 min — bridge may not have restarted since the env var was "
+        "set. Try: sudo systemctl restart jasper-aec-bridge",
+    )
+
+
+def check_aec_bridge_dtln_engine() -> CheckResult:
+    """Verify the DTLN-aec engine (triple-stream tertiary leg) is
+    actually running when `JASPER_AEC_DTLN_ENABLED=1`.
+
+    Without this check, a silent DTLN load failure would degrade
+    triple-stream to dual-stream invisibly. The wake_events DB
+    would just always have NULL DTLN scores, the analyzer would
+    show "DTLN never fires" (correctly — because it never ran),
+    and a week of data would lead to the wrong conclusion.
+
+    Skip cleanly when `JASPER_AEC_DTLN_ENABLED` is unset or 0 —
+    that's the legacy dual-stream / single-stream path, working
+    as intended. Journal parsing is delegated to
+    `_assess_dtln_engine` so it can be unit-tested in isolation."""
+    enabled = os.environ.get("JASPER_AEC_DTLN_ENABLED", "0").strip().lower()
+    if enabled not in ("1", "true", "yes", "on"):
+        return CheckResult(
+            "DTLN-aec engine", "ok",
+            "skipped — JASPER_AEC_DTLN_ENABLED not set (dual-stream mode)",
+        )
+
+    # Bridge must be running for the engine to mean anything.
+    is_active = _run(
+        ["systemctl", "is-active", "jasper-aec-bridge.service"]
+    ).stdout.strip()
+    if is_active != "active":
+        return CheckResult(
+            "DTLN-aec engine", "ok",
+            "(bridge not running — see AEC bridge service check above)",
+        )
+
+    # 10-minute window covers a recent install.sh deploy + any
+    # post-deploy restarts. The engine init line is logged once at
+    # bridge startup, so we just need to look back far enough to
+    # find the most recent startup.
+    proc = _run(
+        ["journalctl", "-u", "jasper-aec-bridge.service",
+         "--since", "10 min ago", "--no-pager", "--output", "cat"],
+        timeout=8.0,
+    )
+    if proc.returncode != 0:
+        return CheckResult(
+            "DTLN-aec engine", "warn",
+            f"could not read journal: {proc.stderr.strip() or 'unknown error'}",
+        )
+
+    return _assess_dtln_engine(proc.stdout)
+
+
 # Threshold for `probe_aec_ref_path`. A 5 s, -26 dBFS sine through dsnoop +
 # plug + the bridge's 125 Hz HPF + (default) 0 dB pre-gain lands in the low
 # thousands of RMS at the bridge's `ref`. We accept anything ≥200 as proof
@@ -1929,6 +2021,11 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
+        # Triple-stream tertiary leg health. Skips cleanly when
+        # JASPER_AEC_DTLN_ENABLED is unset (dual-stream / single-stream
+        # configs). Catches silent ONNX-load failures that would
+        # otherwise degrade triple-stream to dual-stream invisibly.
+        check_aec_bridge_dtln_engine,
         check_xvf_firmware_6ch,
         check_xvf_mixer_state,
         # USB sink (jasper-usbsink) — optional fourth source. The
