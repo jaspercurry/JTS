@@ -42,10 +42,16 @@ from typing import Any
 from ..peering.config import default_room as _default_room_from_hostname
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -182,7 +188,7 @@ _PEERS_EXTRA_CSS = """
 """
 
 
-def _render_page(*, state_path: str, status_msg: str = "") -> bytes:
+def _render_page(*, state_path: str, csrf_token: str, status_msg: str = "") -> bytes:
     state = _load_state(state_path)
     on = _is_on(state)
     room = _room(state)
@@ -262,6 +268,7 @@ def _render_page(*, state_path: str, status_msg: str = "") -> bytes:
     {discovered_section}
 
     <form method="POST" action="/save">
+      {csrf_field_html(csrf_token)}
       <div class="toggle-row checkbox-row">
         <label><input type="checkbox" name="enabled" value="1" {on_attr}>
           Enable peering on this speaker
@@ -300,8 +307,17 @@ def _render_page(*, state_path: str, status_msg: str = "") -> bytes:
 # ----------------------------------------------------------------------
 
 
-def _save(handler: BaseHTTPRequestHandler, state_path: str) -> None:
-    form = read_form(handler)
+def _save(
+    handler: BaseHTTPRequestHandler,
+    state_path: str,
+    *,
+    form: dict[str, str] | None = None,
+) -> None:
+    # Form is passed in pre-read by the POST handler so it can verify the
+    # CSRF token before we consume the request body. Falls back to
+    # read_form for any direct caller (none today; defensive).
+    if form is None:
+        form = read_form(handler)
     enabled = form.get("enabled") == "1"
     room = (form.get("room") or "").strip()[:32]
     primary = form.get("primary") == "1"
@@ -347,15 +363,17 @@ def _save(handler: BaseHTTPRequestHandler, state_path: str) -> None:
         )
     except OSError as e:
         logger.exception("peering save failed")
+        # The 500-with-body path reuses begin_request's CSRF token (set
+        # on the inbound POST cookie) so the rendered form keeps working.
+        ctx = begin_request(handler)
         body = _render_page(
             state_path=state_path,
+            csrf_token=ctx["csrf_token"],
             status_msg=f"Save failed: {e}",
         )
-        handler.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
-        handler.send_header("Content-Type", "text/html; charset=utf-8")
-        handler.send_header("Content-Length", str(len(body)))
-        handler.end_headers()
-        handler.wfile.write(body)
+        send_html_response(
+            handler, body, status=HTTPStatus.INTERNAL_SERVER_ERROR,
+        )
         return
 
     # Restart both daemons so they pick up the new config. jasper-voice
@@ -365,9 +383,10 @@ def _save(handler: BaseHTTPRequestHandler, state_path: str) -> None:
     restart_voice_daemon()
     _restart_jasper_control()
 
-    handler.send_response(HTTPStatus.SEE_OTHER)
-    handler.send_header("Location", "/?saved=1")
-    handler.end_headers()
+    send_see_other(
+        handler, "/",
+        flash="Saved. Speakers restarting; refresh in a few seconds.",
+    )
 
 
 def _restart_jasper_control() -> None:
@@ -399,27 +418,27 @@ def _make_handler(state_path: str):
 
         def do_GET(self):  # noqa: N802
             if self.path == "/" or self.path.startswith("/?"):
-                status_msg = ""
-                if "saved=1" in self.path:
-                    status_msg = "Saved. Speakers restarting; refresh in a few seconds."
+                ctx = begin_request(self)
                 body = _render_page(
-                    state_path=state_path, status_msg=status_msg,
+                    state_path=state_path,
+                    csrf_token=ctx["csrf_token"],
+                    status_msg=ctx["flash"],
                 )
-                self.send_response(HTTPStatus.OK)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
+                send_html_response(self, body)
                 return
             self.send_response(HTTPStatus.NOT_FOUND)
             self.end_headers()
 
         def do_POST(self):  # noqa: N802
-            if self.path == "/save":
-                _save(self, state_path)
+            if self.path != "/save":
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.end_headers()
                 return
-            self.send_response(HTTPStatus.NOT_FOUND)
-            self.end_headers()
+            form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
+            _save(self, state_path, form=form)
 
     return _Handler
 

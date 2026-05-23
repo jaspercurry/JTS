@@ -1,27 +1,99 @@
 """Shared helpers for the JTS web setup pages.
 
-The Spotify-account wizard at `/spotify/` and the voice-provider config
-at `/voice/` both run inside the same `jasper-web` daemon (separate
-ports, one per nginx route). They share the page CSS, the
-HTML-wrapping helper, the systemd-EnvironmentFile read/write atomics,
-and the `systemctl restart jasper-voice` shell-out — keeping all of
-that here means a styling tweak ripples through every settings page
-without two-place edits, and any future settings page (Wi-Fi setup,
-diagnostics) plugs in by importing from here.
+Every wizard under `jasper/web/` (Spotify, voice, transit, wake, …)
+shares the look, the systemd-style env-file atomics, the
+`systemctl restart jasper-voice` shell-out, and the request-response
+plumbing for navigation hygiene (flash cookies, CSRF tokens, no-store
+caching). What's NOT shared: per-wizard route handlers, page layouts,
+form bodies.
 
-What's NOT shared: route handlers, page layouts, form bodies. Each
-wizard owns its own UX.
+## Conventions for new wizards
+
+Every wizard's request handler should look like this:
+
+    def do_GET(self):
+        if path == "/":
+            ctx = begin_request(self)
+            send_html_response(self, render_page(
+                ctx["csrf_token"], status_msg=ctx["flash"],
+            ))
+
+    def do_POST(self):
+        # Route-check before CSRF-check: unknown paths return 404
+        # without revealing the CSRF state.
+        if path not in ("/save", "/clear", …):
+            self.send_error(HTTPStatus.NOT_FOUND); return
+        form = read_form(self)
+        if not verify_csrf(self, form):
+            reject_csrf(self); return
+        # ... handle ...
+        send_see_other(self, "./", flash="Saved.")
+
+Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
+inside it. Every page that uses fetch() for state changes includes
+`{csrf_meta_html(csrf_token)}` in the <body> and the JS sends the
+token as `X-CSRF-Token` on POST.
+
+DO NOT:
+* redirect to `./?msg=Saved…` — that pollutes browser history. Use
+  `send_see_other(self, "./", flash="Saved.")` instead.
+* roll your own `_redirect` or `_send_html` — call `send_see_other`
+  / `send_html_response` directly. They emit `Cache-Control: no-store`,
+  the CSRF cookie, and the flash-clear cookie consistently.
+* skip the CSRF check on a form-bodied POST because "it's LAN-only".
+  A cross-origin attacker page can still trigger a same-site POST via
+  `<form action="http://jts.local/...">`. SameSite=Strict on the CSRF
+  cookie + the double-submit check is what stops it.
+
+JSON-bodied POSTs (Content-Type: application/json) are CORS-preflighted
+by browsers, which already blocks cross-origin attackers — wifi /
+bluetooth / dial / correction skip CSRF on those endpoints because of
+this. If a wizard adds a form-bodied POST, it MUST add the CSRF check.
+
+See `tests/test_web_common.py` for the helpers' behavior contracts.
 """
 from __future__ import annotations
 
 import html
+import http
 import logging
 import os
+import secrets
 import subprocess
 import urllib.parse
 from http.server import BaseHTTPRequestHandler
+from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cookie + header constants.
+# ---------------------------------------------------------------------------
+
+# Flash messages (PRG status text) live in a short-lived cookie instead of a
+# `?msg=…` query param on the redirect target. The query-param pattern
+# poisoned browser history: the post-save URL `/voice/?msg=Saved` was a
+# distinct entry from `/voice/`, so clicking Back went to "the same page
+# without the message" rather than the previous page in the wizard flow.
+# Cookies disappear on the next render; URLs stay clean and shareable.
+FLASH_COOKIE_NAME = "jts_flash"
+
+# Double-submit CSRF token. Lives in a cookie set on any wizard GET and
+# echoed back as a hidden form field on every POST. Server compares the
+# two with `secrets.compare_digest`. Defends against a cross-origin
+# attacker getting the user's browser to POST to a write endpoint —
+# SameSite=Strict prevents the cookie from accompanying the cross-origin
+# request, so the token check fails and we 403.
+CSRF_COOKIE_NAME = "jts_csrf"
+CSRF_FORM_FIELD = "csrf_token"
+_CSRF_TOKEN_BYTES = 32  # 32 bytes → 43 base64-url-safe chars
+
+# Attribute name we stash request context on (flash text, csrf token,
+# csrf-cookie-needs-setting flag). Stashed on the handler instance so
+# the per-request begin_request → send_html_response flow can share state
+# without re-parsing cookies twice.
+_CTX_ATTR = "_jts_request_ctx"
 
 
 # Page CSS. Same look as the Spotify wizard so the speaker presents one
@@ -174,21 +246,31 @@ PAGE_STYLE = """
 """
 
 
-# Single source of truth for the back-link. Imported by every setup
+# Single source of truth for the home-link. Imported by every setup
 # page so the markup stays identical even though each page renders
 # its own HTML wrapper.
 #
-# Behaviour: clicking runs `history.back()` so the user returns to
-# whichever page they actually came from (often `/`, but sometimes
-# `/integrations` for the Spotify/Google wizards). When this tab has
-# no history — direct URL load, restored tab, etc. — the inline JS
-# returns undefined, the click's default kicks in, and the `href="/"`
-# fallback takes them home.
-NAV_BACK_HTML = (
-    '<a class="nav-back" href="/" '
-    'onclick="if (history.length > 1) { history.back(); return false; }">'
-    '← Back</a>'
-)
+# Behaviour: unconditional <a href="/"> to the dashboard. This link
+# is semantically an *Up* affordance (return to the speaker's home),
+# not a Back affordance (reverse-chronological browser history).
+# Android codifies this distinction explicitly; modern web design
+# (GitHub, GitLab, Reddit, Material) follows it: chrome links reflect
+# information hierarchy, the browser's Back button reflects history.
+#
+# The prior version did `history.back()` when `history.length > 1`,
+# which broke in two ways:
+#   1. After a save → ?msg=… redirect, history was
+#      [/, /voice/, /voice/?msg=Saved…]; clicking Back went to
+#      /voice/ without the message → the user perceived "back did
+#      nothing." (Bigger fix: flash cookies replace ?msg=, so the
+#      ghost entry no longer exists.)
+#   2. `history.length` counts the whole tab's session history,
+#      including cross-origin entries. Deep-link entries from
+#      a phone-launcher / email / Slack had length > 1, so the JS
+#      fired history.back() and exited JTS entirely.
+# Pages with a different natural parent (e.g. Spotify / Google live
+# under /integrations) can override the label per-wizard.
+NAV_BACK_HTML = '<a class="nav-back" href="/">← Home</a>'
 
 # CSS for `.nav-back` is included in `PAGE_STYLE` above. Re-exported
 # here as a string fragment for pages that build their own style
@@ -350,6 +432,268 @@ def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:
     return {
         k: v[0] for k, v in urllib.parse.parse_qs(raw, keep_blank_values=True).items()
     }
+
+
+# ---------------------------------------------------------------------------
+# Cookie parsing.
+# ---------------------------------------------------------------------------
+
+# Hand-rolled cookie parsing rather than http.cookies.SimpleCookie — that
+# class trips on dashes inside cookie values and is overkill for two named
+# cookies. parsed lazily per-request.
+def _read_request_cookies(handler: BaseHTTPRequestHandler) -> dict[str, str]:
+    raw = handler.headers.get("Cookie") or ""
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        name, _, value = part.partition("=")
+        name = name.strip()
+        if name:
+            out[name] = value.strip()
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Flash cookie (PRG status messages).
+# ---------------------------------------------------------------------------
+
+
+def _format_set_cookie(
+    name: str, value: str, *, max_age: int, http_only: bool = True,
+) -> str:
+    """Render a Set-Cookie header value. SameSite=Strict everywhere; Lax
+    isn't quite enough — a cross-origin POST to /save would still send
+    Lax cookies on top-level navigations, which a malicious page can
+    arrange via `<form target="_top">`."""
+    parts = [
+        f"{name}={value}",
+        "Path=/",
+        f"Max-Age={max_age}",
+        "SameSite=Strict",
+    ]
+    if http_only:
+        parts.append("HttpOnly")
+    return "; ".join(parts)
+
+
+def read_flash(handler: BaseHTTPRequestHandler) -> str:
+    """Read the flash cookie's text (urldecoded) off the request. Empty
+    string if not set. Caller is responsible for clearing the cookie on
+    the response — `send_html_response()` does this automatically when
+    `flash` is non-empty in the request context."""
+    cookies = _read_request_cookies(handler)
+    raw = cookies.get(FLASH_COOKIE_NAME, "")
+    if not raw:
+        return ""
+    try:
+        return urllib.parse.unquote(raw)
+    except (UnicodeDecodeError, ValueError):
+        return ""
+
+
+def _flash_set_cookie_header(message: str) -> str:
+    """A Set-Cookie value that establishes the flash. 15 s Max-Age covers
+    any reasonable POST → 303 → GET round-trip, including a slow LTE
+    phone, without lingering long enough to appear on a later visit."""
+    encoded = urllib.parse.quote(message, safe="")
+    return _format_set_cookie(FLASH_COOKIE_NAME, encoded, max_age=15)
+
+
+def _flash_clear_cookie_header() -> str:
+    """A Set-Cookie value that clears the flash on the same response that
+    renders it. Belt-and-suspenders with the 15 s expiry — guarantees the
+    message doesn't linger across an unrelated subsequent GET, even if
+    the browser clock is off."""
+    return _format_set_cookie(FLASH_COOKIE_NAME, "", max_age=0)
+
+
+# ---------------------------------------------------------------------------
+# CSRF (double-submit cookie pattern).
+# ---------------------------------------------------------------------------
+
+
+def _is_valid_token(value: str) -> bool:
+    # base64-url-safe alphabet only; correct length window. Strict to
+    # reject anything weird in the cookie (avoids time-leakage on
+    # compare_digest with weird inputs).
+    if not 32 <= len(value) <= 128:
+        return False
+    return all(
+        c.isalnum() or c in "-_" for c in value
+    )
+
+
+def _csrf_set_cookie_header(token: str) -> str:
+    """30-day Max-Age. Long-lived because the user might leave a wizard
+    tab open for hours between fetch and save; we don't want the CSRF
+    check to start failing because the cookie expired mid-session."""
+    return _format_set_cookie(
+        CSRF_COOKIE_NAME, token,
+        max_age=30 * 24 * 3600, http_only=False,
+    )
+
+
+def _read_or_mint_csrf(
+    handler: BaseHTTPRequestHandler,
+) -> tuple[str, bool]:
+    """Return (token, minted_new). `minted_new=True` means the caller must
+    arrange to send the Set-Cookie header on the response."""
+    cookies = _read_request_cookies(handler)
+    existing = cookies.get(CSRF_COOKIE_NAME, "")
+    if _is_valid_token(existing):
+        return existing, False
+    return secrets.token_urlsafe(_CSRF_TOKEN_BYTES), True
+
+
+def verify_csrf(
+    handler: BaseHTTPRequestHandler, form: dict[str, str] | None = None,
+) -> bool:
+    """Return True iff the request carries a CSRF token that matches the
+    cookie. `secrets.compare_digest` for constant-time comparison.
+
+    Accepts the token via either:
+      * `form[CSRF_FORM_FIELD]` — the form-rendered case
+      * `X-CSRF-Token` request header — for JS-driven POSTs (fetch() with
+        empty body, JSON bodies, etc.) where embedding a hidden input is
+        awkward. JS reads the token from a `<meta name="jts-csrf">` tag
+        the page renders and sends it as a header.
+
+    Use at the top of every state-changing POST handler. Pair with
+    `csrf_field_html()` on form-render sites and `csrf_meta_html()` on
+    pages whose JS calls fetch."""
+    cookies = _read_request_cookies(handler)
+    cookie_token = cookies.get(CSRF_COOKIE_NAME, "")
+    candidates: list[str] = []
+    if form is not None:
+        v = (form.get(CSRF_FORM_FIELD) or "").strip()
+        if v:
+            candidates.append(v)
+    header_token = (handler.headers.get("X-CSRF-Token") or "").strip()
+    if header_token:
+        candidates.append(header_token)
+    if not _is_valid_token(cookie_token):
+        return False
+    for token in candidates:
+        if _is_valid_token(token) and secrets.compare_digest(cookie_token, token):
+            return True
+    return False
+
+
+def csrf_field_html(token: str) -> str:
+    """Hidden <input> markup to include inside every <form method=post>.
+    The token comes from `begin_request()` / the request context."""
+    return (
+        f'<input type="hidden" name="{CSRF_FORM_FIELD}" '
+        f'value="{html.escape(token)}">'
+    )
+
+
+def csrf_meta_html(token: str) -> str:
+    """<meta> tag for pages whose JS calls fetch(). The script reads
+    `document.querySelector('meta[name=jts-csrf]').content` and sends
+    it as the `X-CSRF-Token` header on every state-changing POST."""
+    return f'<meta name="jts-csrf" content="{html.escape(token)}">'
+
+
+def reject_csrf(handler: BaseHTTPRequestHandler) -> None:
+    """Send a 403 with a tiny HTML body explaining the failure. The
+    wizards' POST handlers should call this and return on csrf-verify
+    failure. We don't redirect because that would mask a real attack as
+    "the page just glitched, try again." 403 is honest."""
+    body = (
+        b"<!doctype html><meta charset=utf-8>"
+        b"<title>Session expired</title>"
+        b"<h1>Session expired</h1>"
+        b"<p>This form was submitted with a stale or missing session "
+        b"token. Reload the page and try again.</p>"
+        b'<p><a href=".">Reload</a></p>'
+    )
+    handler.send_response(http.HTTPStatus.FORBIDDEN)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+# ---------------------------------------------------------------------------
+# Per-request context + unified response helpers.
+# ---------------------------------------------------------------------------
+
+
+def begin_request(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """Read flash + CSRF cookies once per request; stash on the handler.
+
+    Call at the top of every GET handler that renders a form (or just
+    every GET, no harm in extras). The returned dict has:
+      `flash`        — text to render as the page status banner (or "")
+      `csrf_token`   — value to feed `csrf_field_html(...)` from form code
+      `_csrf_mint`   — internal; tells send_html_response to set the
+                       CSRF cookie
+    """
+    flash = read_flash(handler)
+    csrf, minted = _read_or_mint_csrf(handler)
+    ctx: dict[str, Any] = {
+        "flash": flash,
+        "csrf_token": csrf,
+        "_csrf_mint": minted,
+        "_flash_set": bool(flash),
+    }
+    setattr(handler, _CTX_ATTR, ctx)
+    return ctx
+
+
+def _request_ctx(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    return getattr(handler, _CTX_ATTR, {}) or {}
+
+
+def send_html_response(
+    handler: BaseHTTPRequestHandler,
+    body: bytes,
+    *,
+    status: int = 200,
+) -> None:
+    """Send an HTML response with the JTS conventions baked in:
+      * `Cache-Control: no-store` so back-navigation never resurrects a
+        stale form snapshot (wizards render runtime state; staleness
+        leads to "I clicked Save but it kept the old value" reports).
+      * Sets the CSRF cookie if `begin_request()` minted a new one.
+      * Clears the flash cookie if a flash was read this request, so the
+        next render doesn't keep showing the success banner.
+    The handler's old per-wizard `_send_html` should delegate here."""
+    ctx = _request_ctx(handler)
+    handler.send_response(status)
+    handler.send_header("Content-Type", "text/html; charset=utf-8")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    if ctx.get("_csrf_mint"):
+        handler.send_header(
+            "Set-Cookie", _csrf_set_cookie_header(ctx["csrf_token"]),
+        )
+    if ctx.get("_flash_set"):
+        handler.send_header("Set-Cookie", _flash_clear_cookie_header())
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
+def send_see_other(
+    handler: BaseHTTPRequestHandler,
+    location: str,
+    *,
+    flash: str = "",
+) -> None:
+    """Send a 303 SEE_OTHER redirect. Optionally sets the flash cookie so
+    the GET target renders a status banner without a `?msg=...` query
+    param polluting browser history.
+
+    Replaces every wizard's per-class `_redirect(...)` plus the prior
+    `_redirect(f'./?msg={urllib.parse.quote(msg)}')` pattern."""
+    handler.send_response(http.HTTPStatus.SEE_OTHER)
+    handler.send_header("Location", location)
+    handler.send_header("Content-Length", "0")
+    handler.send_header("Cache-Control", "no-store")
+    if flash:
+        handler.send_header("Set-Cookie", _flash_set_cookie_header(flash))
+    handler.end_headers()
 
 
 def mask_secret(value: str) -> str:

@@ -58,8 +58,14 @@ from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     read_env_file,
+    reject_csrf,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     read_form,
     restart_voice_daemon,
     wrap_page,
@@ -450,9 +456,10 @@ def _wrap_transit_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     ).encode()
 
 
-def _address_section_html(state: dict[str, str]) -> str:
+def _address_section_html(state: dict[str, str], csrf_token: str) -> str:
     coords = _coords(state)
     display = _value_for(state, DISPLAY_NAME_ENV)
+    csrf = csrf_field_html(csrf_token)
 
     if coords is not None:
         lat, lon = coords
@@ -465,11 +472,13 @@ def _address_section_html(state: dict[str, str]) -> str:
     <span class="coords">{lat:.3f}, {lon:.3f} (~110&nbsp;m precision)</span>
   </div>
   <form method="post" action="geocode">
+    {csrf}
     <input type="hidden" name="_redo" value="1">
     <button type="button" onclick="document.getElementById('redo-form').style.display='block';this.parentElement.style.display='none';">Change…</button>
   </form>
 </div>
 <form method="post" action="geocode" id="redo-form" style="display:none">
+  {csrf}
   <label for="address-redo">New address</label>
   <input id="address-redo" name="address" type="text"
          placeholder="123 Main St, Brooklyn NY"
@@ -484,12 +493,13 @@ def _address_section_html(state: dict[str, str]) -> str:
 
     # Cold state — no coords yet. Big address input as the only thing
     # the user can do.
-    return """
+    return f"""
 <h2>Where you are</h2>
 <p class="transit-help">
   Enter your home address. We'll use it to find nearby transit stops.
 </p>
 <form method="post" action="geocode">
+  {csrf}
   <label for="address">Home address</label>
   <input id="address" name="address" type="text"
          placeholder="123 Main St, Brooklyn NY"
@@ -1009,7 +1019,7 @@ def _no_coverage_html() -> str:
 </section>"""
 
 
-def _advanced_section_html(state: dict[str, str]) -> str:
+def _advanced_section_html(state: dict[str, str], csrf_token: str) -> str:
     """Manual stop IDs / lat-lon. Sits behind a `<details>` so the
     median user never sees it; power users + recovery from a bad
     save path can use it without re-doing the address step."""
@@ -1026,6 +1036,7 @@ def _advanced_section_html(state: dict[str, str]) -> str:
   <div class="advanced-body">
     <p class="hint">If you'd rather not geocode an address, paste coordinates from any map app. Three-decimal precision (~110&nbsp;m) is plenty.</p>
     <form method="post" action="geocode" style="margin-bottom:1em">
+      {csrf_field_html(csrf_token)}
       <label for="manual_lat">Latitude</label>
       <input id="manual_lat" name="manual_lat" type="text"
              placeholder="40.646" value="{html.escape(lat)}">
@@ -1055,24 +1066,24 @@ def _advanced_section_html(state: dict[str, str]) -> str:
 </details>"""
 
 
-def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
+def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
     coords = _coords(state)
 
     if coords is None:
         # No coords yet — only the address section is interactive.
         body = f"""
 <p class="sub">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
-{_address_section_html(state)}
-{_advanced_section_html(state)}"""
+{_address_section_html(state, csrf_token)}
+{_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page("Transit", body, status_msg=status_msg)
 
     providers_covering = transit.covering(*coords)
     if not providers_covering:
         body = f"""
 <p class="sub">Configure transit settings.</p>
-{_address_section_html(state)}
+{_address_section_html(state, csrf_token)}
 {_no_coverage_html()}
-{_advanced_section_html(state)}"""
+{_advanced_section_html(state, csrf_token)}"""
         return _wrap_transit_page("Transit", body, status_msg=status_msg)
 
     # Per-provider card dispatch. Discovery (bbox + find_stops_near
@@ -1102,9 +1113,10 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
     body = f"""
 <p class="sub">Configure NYC subway and bus settings so you can ask "next train" / "next bus" from the speaker.</p>
 
-{_address_section_html(state)}
+{_address_section_html(state, csrf_token)}
 
 <form method="post" action="save" id="save-form">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
   <h2>Transit options near you</h2>
   {''.join(cards)}
 
@@ -1114,10 +1126,11 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
   </div>
 </form>
 
-{_advanced_section_html(state)}
+{_advanced_section_html(state, csrf_token)}
 
 <p class="hint" style="margin-top:2em">
   <form method="post" action="clear" style="display:inline" onsubmit="return confirm('Clear all saved transit settings? Subway and bus tools will stop responding until reconfigured.');">
+    {csrf_field_html(csrf_token) if csrf_token else ''}
     <button type="submit" class="danger">Clear all transit settings</button>
   </form>
 </p>"""
@@ -1137,35 +1150,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            # Content-Length:0 is load-bearing — see wake_setup.py for
-            # the rationale (nginx HTTP/1.0 upstream waits for body
-            # otherwise, adding ~5s latency to every redirect).
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 state = _load_state(cfg["state_path"])
+                ctx = begin_request(self)
                 # Wrap render in a top-level guard: an unexpected
                 # exception (corrupt CSV, malformed env file, etc.)
                 # should yield a useful page with a diagnostic banner
                 # rather than 500ing the whole route. The wizard's job
                 # is to tell the user what to do next.
                 try:
-                    body = _index_html(state, status_msg=qs.get("msg", [""])[0])
+                    body = _index_html(
+                        state, ctx["csrf_token"], status_msg=ctx["flash"],
+                    )
                 except Exception as e:  # noqa: BLE001
                     logger.exception("transit wizard render failed")
                     body = _wrap_transit_page(
@@ -1174,14 +1173,23 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         f'{html.escape(str(e))}. Check the daemon logs for '
                         f'the full traceback (<code>journalctl -u jasper-web</code>).</p>',
                     )
-                self._send_html(body)
+                send_html_response(self, body)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            # Route-check before CSRF-check: unknown paths return 404
+            # without consuming the request body or revealing the CSRF
+            # state. Matches what every test asserts.
+            if path not in ("/geocode", "/save", "/clear"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
             if path == "/geocode":
                 self._handle_geocode(form)
                 return
@@ -1191,30 +1199,27 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/clear":
                 self._handle_clear()
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
         def _handle_geocode(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             new, err = _apply_geocode(form, current)
             if err is not None:
-                self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                send_see_other(self, "./", flash=err)
                 return
             try:
                 write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
             except OSError as e:
                 logger.exception("could not write transit.env after geocode")
-                self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             display = new.get(DISPLAY_NAME_ENV, "")
-            self._redirect(
-                f"./?msg={urllib.parse.quote(f'Found location: {display}')}"
-            )
+            send_see_other(self, "./", flash=f"Found location: {display}")
 
         def _handle_save(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             new, err = _apply_save(form, current)
             if err is not None:
-                self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                send_see_other(self, "./", flash=err)
                 return
             try:
                 if new:
@@ -1223,12 +1228,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after save")
-                self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
-            self._redirect(
-                f"./?msg={urllib.parse.quote('Saved. Voice daemon restarting.')}"
-            )
+            send_see_other(self, "./", flash="Saved. Voice daemon restarting.")
 
         def _handle_clear(self) -> None:
             current = _load_state(cfg["state_path"])
@@ -1240,11 +1243,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write transit.env after clear")
-                self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
-            self._redirect(
-                f"./?msg={urllib.parse.quote('Cleared transit settings. Voice restarting.')}"
+            send_see_other(
+                self, "./",
+                flash="Cleared transit settings. Voice restarting.",
             )
 
     return Handler

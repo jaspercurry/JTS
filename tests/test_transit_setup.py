@@ -491,10 +491,36 @@ def wizard_server(tmp_path: Path, monkeypatch):
 
 
 def _post(url: str, form: dict) -> urllib.request.addinfourl:
-    body = urllib.parse.urlencode(form).encode()
+    """POST that handles the CSRF round-trip transparently.
+
+    Mints the csrf cookie via a GET to the wizard root, attaches it to
+    the POST, and includes the matching csrf_token form field. Falls
+    back to a no-cookie POST when the URL is to an unknown route on
+    the same host (e.g. /nope) — the GET to / still mints a token, but
+    the route check fires before CSRF and yields 404 instead of 403."""
+    import http.cookiejar
+    from ._web_test_helpers import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
+
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    opener.open(base + "/").read()
+    token = ""
+    for cookie in jar:
+        if cookie.name == CSRF_COOKIE_NAME:
+            token = cookie.value
+            break
+
+    payload = dict(form)
+    if token:
+        payload[CSRF_FORM_FIELD] = token
+    body = urllib.parse.urlencode(payload).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     try:
-        return urllib.request.urlopen(req)
+        return opener.open(req)
     except urllib.error.HTTPError as e:
         return e
 

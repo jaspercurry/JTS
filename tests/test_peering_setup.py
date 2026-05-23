@@ -18,6 +18,8 @@ import pytest
 
 from jasper.web import peering_setup
 
+from ._web_test_helpers import _NoRedirect, post_with_csrf
+
 
 @pytest.fixture
 def server_with_state(tmp_path, monkeypatch):
@@ -119,22 +121,10 @@ def test_get_root_renders_visible_peers(server_with_state, monkeypatch):
 
 
 def test_save_enables_peering(server_with_state):
-    data = urllib.parse.urlencode({
-        "enabled": "1",
-        "room": "kitchen",
-    }).encode()
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "kitchen"},
     )
-    # urllib follows redirects by default; we want to see the 303.
-    with pytest.raises(urllib.error.HTTPError):
-        # Disable redirect-following so we can check the 303.
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    # File written?
     content = open(server_with_state["state_path"]).read()
     assert "JASPER_PEERING=on" in content
     assert "JASPER_PEER_ROOM=kitchen" in content
@@ -144,39 +134,20 @@ def test_save_disables_peering(server_with_state):
     # Pre-populate as on.
     with open(server_with_state["state_path"], "w") as f:
         f.write("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\n")
-    data = urllib.parse.urlencode({"room": "kitchen"}).encode()
     # Note: no `enabled` key in form → checkbox unchecked → off
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"room": "kitchen"},
     )
-    try:
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 303
     content = open(server_with_state["state_path"]).read()
     assert "JASPER_PEERING=off" in content
 
 
 def test_save_sanitizes_room_name(server_with_state):
-    data = urllib.parse.urlencode({
-        "enabled": "1",
-        "room": "Living Room!!! @#$%",
-    }).encode()
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "Living Room!!! @#$%"},
     )
-    try:
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 303
     content = open(server_with_state["state_path"]).read()
     # Spaces become dashes; punctuation stripped.
     assert "JASPER_PEER_ROOM=Living-Room" in content
@@ -195,21 +166,10 @@ def test_save_preserves_operator_tuning_knobs(server_with_state):
             "JASPER_PEER_ARB_WINDOW_MS=200\n"
             "JASPER_PEER_BREAK_THRESHOLD=0.92\n"
         )
-    data = urllib.parse.urlencode({
-        "enabled": "1",
-        "room": "kitchen",
-        "primary": "1",
-    }).encode()
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "kitchen", "primary": "1"},
     )
-    with pytest.raises(urllib.error.HTTPError) as exc_info:
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    assert exc_info.value.code == 303
     content = open(server_with_state["state_path"]).read()
     # New values written
     assert "JASPER_PEERING=on" in content
@@ -225,39 +185,20 @@ def test_save_unchecking_primary_removes_it_from_file(server_with_state):
     env file — defaults take over (primary=False)."""
     with open(server_with_state["state_path"], "w") as f:
         f.write("JASPER_PEERING=on\nJASPER_PEER_ROOM=kitchen\nJASPER_PEER_PRIMARY=1\n")
-    data = urllib.parse.urlencode({"enabled": "1", "room": "kitchen"}).encode()
     # NOTE: no `primary` key in form → unchecked
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "kitchen"},
     )
-    with pytest.raises(urllib.error.HTTPError) as exc_info:
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    assert exc_info.value.code == 303
     content = open(server_with_state["state_path"]).read()
     assert "JASPER_PEER_PRIMARY" not in content
 
 
 def test_save_primary_flag(server_with_state):
-    data = urllib.parse.urlencode({
-        "enabled": "1",
-        "room": "kitchen",
-        "primary": "1",
-    }).encode()
-    req = urllib.request.Request(
-        server_with_state["url"] + "/save",
-        data=data,
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "kitchen", "primary": "1"},
     )
-    try:
-        opener = urllib.request.build_opener(_NoRedirect())
-        opener.open(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 303
     content = open(server_with_state["state_path"]).read()
     assert "JASPER_PEER_PRIMARY=1" in content
 
@@ -272,6 +213,20 @@ def test_save_triggers_both_daemon_restarts(server_with_state, monkeypatch):
     monkeypatch.setattr(peering_setup, "_restart_jasper_control",
                          lambda: control_called.append(1))
 
+    post_with_csrf(
+        server_with_state["url"], "/save",
+        {"enabled": "1", "room": "kitchen"},
+    )
+    assert voice_called == [1]
+    assert control_called == [1]
+
+
+def test_save_rejects_missing_csrf_token(server_with_state):
+    """Direct POST without the csrf cookie + form field must 403.
+    Defense against cross-origin attackers getting the browser to POST
+    to /save — they can't read the SameSite=Strict cookie, so they
+    can't craft the matching form field."""
+    import urllib.request
     data = urllib.parse.urlencode({"enabled": "1", "room": "kitchen"}).encode()
     req = urllib.request.Request(
         server_with_state["url"] + "/save",
@@ -279,22 +234,15 @@ def test_save_triggers_both_daemon_restarts(server_with_state, monkeypatch):
         method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    try:
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
         opener = urllib.request.build_opener(_NoRedirect())
         opener.open(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 303
-    assert voice_called == [1]
-    assert control_called == [1]
+    assert exc_info.value.code == 403
+    # No state file should have been written.
+    assert not os.path.exists(server_with_state["state_path"])
 
 
-# ---------- helpers ----------
-
-
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Block redirect following so we can assert on the 303."""
-    def http_error_303(self, req, fp, code, msg, headers):
-        raise urllib.error.HTTPError(req.full_url, code, msg, headers, fp)
+# `_NoRedirect` is provided by tests/_web_test_helpers (imported above).
 
 
 # Need urllib.error for HTTPError class

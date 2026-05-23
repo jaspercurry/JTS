@@ -42,8 +42,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from ._common import (
+    begin_request,
+    csrf_field_html,
     read_env_file,
     read_form,
+    reject_csrf,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -89,7 +95,7 @@ def _restart_shairport() -> None:
         logger.warning("shairport-sync restart failed: %s", e)
 
 
-def _index_html(mode: str, *, status_msg: str = "") -> bytes:
+def _index_html(mode: str, csrf_token: str, *, status_msg: str = "") -> bytes:
     """Render the toggle page. Two radio options with use-case copy."""
     fr_checked = "checked" if mode == "free-running" else ""
     sy_checked = "checked" if mode == "synced" else ""
@@ -99,6 +105,7 @@ sender (Mac, iPhone, iPad) and the speaker. The default works for
 everything — this toggle is here as a safety net.</p>
 
 <form method="post" action="./save">
+  {csrf_field_html(csrf_token)}
   <label style="font-weight: 400; display: block; padding: 0.6em 0;
                 border: 1px solid #e6e6e6; border-radius: 6px;
                 margin-bottom: 0.6em; padding-left: 0.8em;">
@@ -163,26 +170,15 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.end_headers()
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
-                self._send_html(_index_html(
+                ctx = begin_request(self)
+                send_html_response(self, _index_html(
                     _current_mode(cfg["state_path"]),
-                    status_msg=qs.get("msg", [""])[0],
+                    ctx["csrf_token"],
+                    status_msg=ctx["flash"],
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -190,11 +186,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            if path != "/save":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
             if path == "/save":
                 mode, err = _apply_save(form)
                 if err is not None:
-                    self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                    send_see_other(self, "./", flash=err)
                     return
                 value = "yes" if mode == "free-running" else "no"
                 try:
@@ -203,13 +205,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     )
                 except OSError as e:
                     logger.exception("could not write airplay mode env file")
-                    self._redirect(
-                        f"./?msg={urllib.parse.quote(f'Could not save: {e}')}"
-                    )
+                    send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
                 _restart_shairport()
-                self._redirect(
-                    f"./?msg={urllib.parse.quote(f'Saved. AirPlay now in {mode} mode (shairport-sync restarted).')}"
+                send_see_other(
+                    self, "./",
+                    flash=f"Saved. AirPlay now in {mode} mode (shairport-sync restarted).",
                 )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)

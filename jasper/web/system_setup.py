@@ -32,7 +32,16 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ._common import NAV_BACK_HTML, PAGE_STYLE, wrap_page
+from ._common import (
+    NAV_BACK_HTML,
+    PAGE_STYLE,
+    begin_request,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+    wrap_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -499,14 +508,22 @@ _SCRIPT = r"""
   poll();
   setInterval(poll, POLL_MS);
 
-  // Action buttons
+  // Action buttons. Each state-changing POST carries the CSRF token
+  // from the page's <meta name="jts-csrf"> so the server's double-
+  // submit check can confirm we're same-origin (a cross-origin
+  // attacker can't read the cookie or the meta and can't forge the
+  // X-CSRF-Token header on a no-CORS POST).
+  const CSRF = (document.querySelector('meta[name=jts-csrf]') || {}).content || '';
   async function postAction(path, btn) {
     if (!btn) return;
     btn.disabled = true;
     const original = btn.textContent;
     btn.textContent = 'Working…';
     try {
-      const r = await fetch(path, { method: 'POST' });
+      const r = await fetch(path, {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': CSRF },
+      });
       const body = await r.json();
       btn.textContent = r.ok ? 'Sent' : ('Failed: ' + (body.error || r.status));
     } catch (e) {
@@ -610,7 +627,10 @@ _SCRIPT = r"""
     btn.disabled = true;
     btn.textContent = 'Applying…';
     try {
-      const r = await fetch('aec/toggle', { method: 'POST' });
+      const r = await fetch('aec/toggle', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': CSRF },
+      });
       const body = await r.json();
       if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
     } catch (err) {
@@ -636,13 +656,19 @@ _SCRIPT = r"""
 """
 
 
-def _render_page() -> bytes:
+def _render_page(csrf_token: str = "") -> bytes:
     # wrap_page emits its own <h1>{title}</h1> right after NAV_BACK_HTML;
     # _PAGE_BODY picks up the rest. The dashboard-specific styles go in
     # a <style> tag at the top of body — valid HTML5 and avoids forking
     # wrap_page's signature for a one-off feature.
+    #
+    # The CSRF token rides in a <meta> tag inside the body — the JS
+    # picks it up via `document.querySelector('meta[name=jts-csrf]')`
+    # and sends it as `X-CSRF-Token` on every state-changing POST.
+    # See _common.csrf_meta_html / verify_csrf.
     body = (
         f"<style>{_EXTRA_STYLE}</style>\n"
+        + (csrf_meta_html(csrf_token) if csrf_token else "")
         + _PAGE_BODY
         + f"\n<script>{_SCRIPT}</script>\n"
     )
@@ -692,16 +718,13 @@ def _make_handler(
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         def _send_raw_json(self, body: bytes, *, status: int = 200) -> None:
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -711,7 +734,8 @@ def _make_handler(
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/":
-                self._send_html(_render_page())
+                ctx = begin_request(self)
+                self._send_html(_render_page(ctx["csrf_token"]))
                 return
             if path == "/data.json":
                 status, body = _proxy_get("/system/snapshot", control_base)
@@ -734,6 +758,18 @@ def _make_handler(
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            POST_ROUTES = (
+                "/restart/voice", "/restart/audio", "/reboot", "/aec/toggle",
+            )
+            if path not in POST_ROUTES:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            # CSRF token rides in X-CSRF-Token (these endpoints have no
+            # request body; the dashboard JS reads the meta tag and
+            # adds the header on every action click).
+            if not verify_csrf(self):
+                reject_csrf(self)
+                return
             if path in ("/restart/voice", "/restart/audio", "/reboot"):
                 status, body = _proxy_post(
                     "/system" + path, control_base,
@@ -746,7 +782,6 @@ def _make_handler(
                 )
                 self._send_raw_json(body, status=status)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
     return Handler
 

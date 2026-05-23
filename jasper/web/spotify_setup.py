@@ -94,10 +94,16 @@ from ..spotify_router import (
 from ..spotify_uri import parse_playlist_uri, playlist_id_from_uri
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -387,9 +393,10 @@ document.querySelectorAll('.mode-picker input[type=radio]').forEach(function(r) 
 """
 
 
-def _setup_wizard_html(*, status_msg: str = "") -> bytes:
+def _setup_wizard_html(csrf_token: str = "", *, status_msg: str = "") -> bytes:
     """State 1: no CLIENT_ID configured. Walk the user through creating
     a Spotify Developer App and pasting the credentials."""
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
 <p class="sub">Connect this speaker to Spotify. Takes about two minutes.</p>
 
@@ -410,6 +417,7 @@ def _setup_wizard_html(*, status_msg: str = "") -> bytes:
 {_mode_picker_html(selected="bounce")}
 
 <form method="post" action="setup-credentials" id="creds-form">
+  {csrf}
   <input type="hidden" name="mode" id="mode-input" value="bounce">
 
   <h2>Step 3: Paste the Client ID</h2>
@@ -493,10 +501,12 @@ async function copyRedirect() {{
 """
 
 
-def _add_account_form_html() -> str:
-    return """
+def _add_account_form_html(csrf_token: str = "") -> str:
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
+    return f"""
 <h2>Add an account</h2>
 <form method="post" action="start">
+  {csrf}
   <label for="name">Your name (label only)</label>
   <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
          placeholder="brittany" autocapitalize="off" autocorrect="off">
@@ -511,11 +521,13 @@ def _add_account_form_html() -> str:
 
 
 def _redirect_uri_page_html(
-    redirect_uri: str, client_id: str, mode: str, *, status_msg: str = "",
+    redirect_uri: str, client_id: str, mode: str,
+    csrf_token: str = "", *, status_msg: str = "",
 ) -> bytes:
     """State 2: creds saved, no accounts yet. Show the redirect-URI
     setup steps prominently, then the add-account form."""
     masked = client_id[:4] + "…" + client_id[-4:] if len(client_id) > 8 else "configured"
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
 <p class="sub">Credentials saved (Client ID:
    <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>,
@@ -524,24 +536,27 @@ def _redirect_uri_page_html(
 
 {_redirect_uri_section_html(redirect_uri, client_id, mode)}
 
-{_add_account_form_html()}
+{_add_account_form_html(csrf_token)}
 
 <form method="post" action="reset-credentials" style="margin-top:3em"
       onsubmit="return confirm('Clear the saved Client ID? You\\'ll need to paste it again.');">
+  {csrf}
   <button type="submit" class="danger">Reset Spotify credentials</button>
 </form>
 """
     return _wrap_page("Almost there — connect Spotify", body, status_msg=status_msg)
 
 
-def _manual_paste_form_html(*, hint: str | None = None) -> str:
+def _manual_paste_form_html(csrf_token: str = "", *, hint: str | None = None) -> str:
     """The textarea-and-submit form for pasting a callback URL. Lives on
     the manual-mode pre-warn page (primary path) and on the index as a
     fallback for bounce mode (when the auto-redirect couldn't reach
     the speaker, e.g. user is on cellular)."""
     extra = f'<p class="hint">{html.escape(hint)}</p>' if hint else ""
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     return f"""
 <form method="post" action="paste-callback">
+  {csrf}
   <label for="pasted">Paste the redirect URL Spotify sent you to</label>
   <textarea id="pasted" name="pasted" class="paste" required
             autocomplete="off" autocapitalize="off" autocorrect="off"
@@ -556,7 +571,8 @@ def _manual_paste_form_html(*, hint: str | None = None) -> str:
 
 
 def _manual_prewarn_page_html(
-    authorize_url: str, account_name: str, *, status_msg: str = "",
+    authorize_url: str, account_name: str,
+    csrf_token: str = "", *, status_msg: str = "",
 ) -> bytes:
     """Manual-mode: after /start, render this page instead of redirecting
     to Spotify. Pre-frames the "cannot connect" page so it doesn't look
@@ -582,7 +598,7 @@ def _manual_prewarn_page_html(
 
 <p><a class="btn" href="{auth_safe}" target="_blank" rel="noopener">Open Spotify Authorization ↗</a></p>
 
-{_manual_paste_form_html(
+{_manual_paste_form_html(csrf_token,
     hint=("Paste the entire URL — the speaker will pick out the code "
           "and state automatically.")
 )}
@@ -597,7 +613,8 @@ def _manual_prewarn_page_html(
     )
 
 
-def _account_playlists_section_html(account: Account) -> str:
+def _account_playlists_section_html(account: Account, csrf_token: str = "") -> str:
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     rows = []
     for uri, name in account.playlists.items():
         rows.append(f"""
@@ -605,6 +622,7 @@ def _account_playlists_section_html(account: Account) -> str:
             <span class="pl-name">{html.escape(name)}</span>
             <form method="post" action="playlist-remove"
                   onsubmit="return confirm('Remove {html.escape(name)}?');">
+              {csrf}
               <input type="hidden" name="account" value="{html.escape(account.name)}">
               <input type="hidden" name="uri" value="{html.escape(uri)}">
               <button class="pl-x" type="submit" aria-label="Remove playlist">×</button>
@@ -622,6 +640,7 @@ def _account_playlists_section_html(account: Account) -> str:
   <button type="button" class="add-playlist-btn secondary"
           data-target="pl-add-{acct}">+ Add Spotify playlist</button>
   <form method="post" action="playlist-add" class="pl-add" id="pl-add-{acct}" hidden>
+    {csrf}
     <input type="hidden" name="account" value="{acct}">
     <input type="text" class="pl-input" name="url_or_uri"
            placeholder="https://open.spotify.com/playlist/… or spotify:playlist:…"
@@ -667,7 +686,7 @@ def _health_badge_html(status: AccountStatus | None) -> str:
     )
 
 
-def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
+def _relink_notice_html(status: AccountStatus | None, name: str, csrf_token: str = "") -> str:
     """Banner + Re-link button inside the revoked card. The Re-link
     button POSTs to /start with the account name pre-filled; the OAuth
     callback overwrites the existing cache file at the same path.
@@ -686,6 +705,7 @@ def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
      This usually happens after a password change, signing out of all
      devices on Spotify, or a long stretch without using the app.</p>
   <form method="post" action="start">
+    {csrf_field_html(csrf_token) if csrf_token else ''}
     <input type="hidden" name="name" value="{safe_name}">
     <button class="primary" type="submit">Re-link {safe_name}</button>
   </form>
@@ -695,6 +715,7 @@ def _relink_notice_html(status: AccountStatus | None, name: str) -> str:
 def _account_card_html(
     account: Account, *, is_default: bool, is_open: bool,
     status: AccountStatus | None = None,
+    csrf_token: str = "",
 ) -> str:
     pl_count = len(account.playlists)
     if pl_count == 0:
@@ -720,6 +741,7 @@ def _account_card_html(
         if is_default else
         '<button class="secondary" type="submit">Set default</button>'
     )
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     return f"""
 <details class="account"{open_attr}>
   <summary>
@@ -728,19 +750,21 @@ def _account_card_html(
     <span class="pl-count">{count_label}</span>
   </summary>
   <div class="account-body">
-    {_relink_notice_html(status, name)}
+    {_relink_notice_html(status, name, csrf_token)}
     <div class="account-actions">
       <form method="post" action="default">
+        {csrf}
         <input type="hidden" name="name" value="{name}">
         {set_default_btn}
       </form>
       <form method="post" action="remove"
             onsubmit="return confirm('Remove {name}?');">
+        {csrf}
         <input type="hidden" name="name" value="{name}">
         <button class="danger" type="submit">Remove account</button>
       </form>
     </div>
-    {_account_playlists_section_html(account)}
+    {_account_playlists_section_html(account, csrf_token)}
   </div>
 </details>"""
 
@@ -853,7 +877,7 @@ def _claim_speaker_section_html() -> str:
 
 def _management_html(
     registry: Registry, redirect_uri: str, client_id: str, mode: str,
-    *, status_msg: str = "",
+    csrf_token: str = "", *, status_msg: str = "",
     health_result: BuildResult | None = None,
 ) -> bytes:
     """State 3: at least one account is OAuthed."""
@@ -867,8 +891,10 @@ def _management_html(
         )
         cards.append(_account_card_html(
             a, is_default=is_default, is_open=is_open, status=status,
+            csrf_token=csrf_token,
         ))
 
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
 <p class="sub">Each household member links their own Spotify account once.
    The speaker identifies the active listener by cross-referencing the
@@ -883,7 +909,7 @@ def _management_html(
    right-click → Share → Copy link.</p>
 {''.join(cards)}
 
-{_add_account_form_html()}
+{_add_account_form_html(csrf_token)}
 
 {_claim_speaker_section_html()}
 
@@ -899,10 +925,11 @@ def _management_html(
     <p>This happens on cellular or a different Wi-Fi. Paste the URL from
        the GitHub Pages bounce-page fallback (or from the address bar in
        manual mode) here:</p>
-    {_manual_paste_form_html()}
+    {_manual_paste_form_html(csrf_token)}
 
     <form method="post" action="reset-credentials" style="margin-top:2em"
           onsubmit="return confirm('Clear the saved Client ID? Existing OAuthed accounts will keep working until their tokens expire.');">
+      {csrf}
       <button type="submit" class="danger">Reset Spotify credentials</button>
     </form>
   </div>
@@ -1076,16 +1103,32 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _redirect(self, location: str) -> None:
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.end_headers()
+            # Compat shim: if `location` carries a `?msg=…` status
+            # message (the wizard's pre-flash-cookie redirect pattern),
+            # hoist it into a flash cookie and redirect to the clean
+            # URL. The browser ends up at e.g. `./` with the message in
+            # a cookie that the next GET renders — no `?msg=` query
+            # param polluting browser history, no migrating ~30
+            # callsites. New code SHOULD call send_see_other(...,
+            # flash=...) directly.
+            parsed = urllib.parse.urlparse(location)
+            if parsed.query:
+                qs = urllib.parse.parse_qs(
+                    parsed.query, keep_blank_values=True,
+                )
+                msgs = qs.pop("msg", None)
+                flash = (msgs[0] if msgs else "").strip()
+                if flash:
+                    clean_query = urllib.parse.urlencode(qs, doseq=True)
+                    clean = urllib.parse.urlunparse(
+                        parsed._replace(query=clean_query),
+                    )
+                    send_see_other(self, clean, flash=flash)
+                    return
+            send_see_other(self, location)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict, *, status: int = 200) -> None:
             import json as _json
@@ -1093,6 +1136,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
@@ -1104,14 +1148,20 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             qs = urllib.parse.parse_qs(url.query)
 
             if path == "/":
-                self._render_index(status_msg=qs.get("msg", [""])[0])
+                ctx = begin_request(self)
+                self._render_index(
+                    ctx["csrf_token"], status_msg=ctx["flash"],
+                )
                 return
 
             if path == "/playlist-preview":
+                # Read-only AJAX endpoint — no CSRF, no flash.
                 self._handle_playlist_preview(qs)
                 return
 
             if path == "/oauth-callback":
+                # OAuth callback from Spotify (or the bounce page) —
+                # protected by the OAuth `state` nonce, not by CSRF.
                 self._handle_oauth_callback_get(qs)
                 return
 
@@ -1120,7 +1170,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            # State-changing POST routes — all require CSRF.
+            CSRF_POST_ROUTES = (
+                "/setup-credentials", "/reset-credentials", "/start",
+                "/paste-callback", "/remove", "/default",
+                "/playlist-add", "/playlist-remove",
+            )
+            if path not in CSRF_POST_ROUTES:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = _read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
 
             if path == "/setup-credentials":
                 self._handle_setup_credentials(form)
@@ -1154,26 +1216,26 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._handle_playlist_remove(form)
                 return
 
-            self.send_error(HTTPStatus.NOT_FOUND)
-
         # --- route bodies ---
 
-        def _render_index(self, *, status_msg: str = "") -> None:
+        def _render_index(self, csrf_token: str = "", *, status_msg: str = "") -> None:
             if not cfg["client_id"]:
-                self._send_html(_setup_wizard_html(status_msg=status_msg))
+                self._send_html(_setup_wizard_html(
+                    csrf_token, status_msg=status_msg,
+                ))
                 return
             registry = Registry.load(cfg["registry_path"])
             redirect_uri = _redirect_uri_for_mode(cfg["mode"], cfg)
             if not registry.accounts:
                 self._send_html(_redirect_uri_page_html(
-                    redirect_uri, cfg["client_id"], cfg["mode"],
+                    redirect_uri, cfg["client_id"], cfg["mode"], csrf_token,
                     status_msg=status_msg,
                 ))
                 return
             health = _probe_all_health(cfg)
             self._send_html(_management_html(
                 registry, redirect_uri, cfg["client_id"], cfg["mode"],
-                status_msg=status_msg,
+                csrf_token, status_msg=status_msg,
                 health_result=health,
             ))
 

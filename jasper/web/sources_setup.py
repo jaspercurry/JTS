@@ -39,7 +39,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ._common import wrap_page
+from ._common import begin_request, send_html_response, wrap_page
 
 logger = logging.getLogger(__name__)
 
@@ -343,11 +343,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -370,6 +366,12 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
+                # Mint the CSRF cookie even though this page's POSTs are
+                # JSON-bodied and protected by Content-Type + SameSite=Strict
+                # rather than the form-token check — keeps cookie state
+                # consistent across wizards so a refresh from one page
+                # doesn't drop the token used by another.
+                begin_request(self)
                 self._send_html(_index_html())
                 return
             if path == "/state":

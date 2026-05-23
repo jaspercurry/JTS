@@ -48,7 +48,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE
+from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE, send_html_response
 
 logger = logging.getLogger(__name__)
 
@@ -1745,11 +1745,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         def _send_text(self, text: str, *, status: int = 200) -> None:
             body = text.encode("utf-8")

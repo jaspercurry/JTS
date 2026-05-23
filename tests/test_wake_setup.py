@@ -461,6 +461,7 @@ def test_http_get_returns_html(running_server):
 
 
 def test_http_post_save_persists_state(running_server, monkeypatch):
+    from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
     # Stub the systemctl shellout — we don't want a unit test to
     # actually try to restart jasper-voice.
@@ -469,20 +470,7 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
         wake_setup, "restart_voice_daemon",
         lambda: called.append("restart"),
     )
-    data = urllib.parse.urlencode({"model": "alexa"}).encode()
-    req = urllib.request.Request(
-        base + "/save", data=data, method="POST",
-    )
-    # 303 redirect after save — disable redirect handling so urllib
-    # doesn't follow to ./ (which would try to GET the redirect target).
-    opener = urllib.request.build_opener(urllib.request.HTTPRedirectHandler)
-    opener.open  # touch attribute to avoid unused-var lint
-    try:
-        urllib.request.urlopen(req)
-    except urllib.error.HTTPError as e:
-        # urllib raises on 3xx by default for non-GET-following clients;
-        # treat as success if it's the expected 303 See Other.
-        assert e.code == 303, f"unexpected status: {e.code}"
+    post_with_csrf(base, "/save", {"model": "alexa"})
     # Wizard wrote the env file at mode 0644 (path-only, no secret).
     assert os.path.exists(state_path)
     assert os.stat(state_path).st_mode & 0o777 == 0o644
@@ -495,20 +483,14 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
 def test_http_post_save_persists_threshold(running_server, monkeypatch):
     """Submitting both model and threshold writes both env vars to
     the same file in one save+restart cycle."""
+    from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
     called = []
     monkeypatch.setattr(
         wake_setup, "restart_voice_daemon",
         lambda: called.append("restart"),
     )
-    data = urllib.parse.urlencode({
-        "model": "alexa", "threshold": "0.65",
-    }).encode()
-    req = urllib.request.Request(base + "/save", data=data, method="POST")
-    try:
-        urllib.request.urlopen(req)
-    except urllib.error.HTTPError as e:
-        assert e.code == 303, f"unexpected status: {e.code}"
+    post_with_csrf(base, "/save", {"model": "alexa", "threshold": "0.65"})
     assert wake_setup._load_state(state_path) == {
         "JASPER_WAKE_MODEL": "alexa",
         "JASPER_WAKE_THRESHOLD": "0.65",
