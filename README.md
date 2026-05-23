@@ -188,7 +188,10 @@ when the configured AEC mic is present with 6-channel firmware — see
   <previous>` on non-zero exit). Hidden SSIDs + WPA-Enterprise
   deferred — home-network case only.
 - ✅ Persistent live session with sustained-speech VAD
-- ✅ Hardware AEC investigation completed and documented
+- ✅ Hardware AEC investigation: production approach decided (chip
+  AEC off in the dongle topology, software AEC3 instead); Option D
+  (chip AEC with USB-IN reference) is the one remaining open variant
+  — infrastructure shipped + shelved at [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
 - ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
@@ -512,6 +515,21 @@ in our topology. Measured ≤2 dB attenuation across every
 configuration we tried. See
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) for the full
 investigation including the smoking-gun XMOS docs quote.
+
+The rejection above was for the variants we tested — none of
+them fed music to the chip's USB-IN as the AEC reference. **One
+chip-AEC variant remains untested**: option D in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) — feed music back
+into the chip's USB-IN as the reference signal, then read its
+hardware-AEC'd mic stream. The chip's USB Adaptive Mode means
+mic and reference would share a clock, avoiding the cross-clock
+drift that's typically fatal for chip AEC in split-DAC topologies.
+We built [the infrastructure to test it](docs/CHIP-AEC-EXPERIMENT.md)
+but have **shelved** the experiment indefinitely — software AEC3
+is good enough today, and resolving Option D would take focused
+hours of speaker downtime that aren't currently justified. The
+infrastructure stays in the repo so we don't have to re-derive
+the question if AEC3 ever plateaus.
 
 The chip is still useful — its **beamforming, noise suppression,
 and AGC** all run on the conference channel (channel 0 of the
