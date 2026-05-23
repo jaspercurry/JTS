@@ -101,14 +101,14 @@ them; design **with** them.
 | Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ + min-phase FIR comfortable; mixed-phase / FDW need aggressive process pausing during filter design (we're already pausing librespot/shairport for measurement — extend through generation). |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
 | Pure ALSA: **snd-aloop + dmix**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `plughw:Loopback,0,0` — same point music enters. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on `hw:Loopback,1,0`), processes, writes to `pcm.jasper_out` (dmix on dongle). |
-| `master_gain` mixer **already exists** as identity | [deploy/camilladsp/v1.yml:55](../deploy/camilladsp/v1.yml:55) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
+| `master_gain` mixer **already exists** as identity | [deploy/camilladsp/v1.yml:73](../deploy/camilladsp/v1.yml:73) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md:281](../PLAN.md:281) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
-| `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py:156](../jasper/camilla.py:156) | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
-| Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf:21](../deploy/nginx-jasper.conf:21) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
+| `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py:266](../jasper/camilla.py:266) | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
+| Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf:32](../deploy/nginx-jasper.conf:32) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
 | `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. mkcert + iOS trust profile is the path. |
 | Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/dial_setup.py](../jasper/web/dial_setup.py) | We mirror this — no FastAPI / aiohttp. Stream progress via Server-Sent Events. |
-| Cross-daemon coordination is **UDS commands to voice_daemon** | [jasper/control/server.py:185](../jasper/control/server.py:185) `_voice_socket_command()` | We extend with `MEASURE_PAUSE` / `MEASURE_RESUME`, mirror the `/cue/play` shape. |
+| Cross-daemon coordination is **UDS commands to voice_daemon** | [jasper/control/server.py:333](../jasper/control/server.py:333) `_voice_socket_command()` | We extend with `MEASURE_PAUSE` / `MEASURE_RESUME`, mirror the `/cue/play` shape. |
 
 ## Architecture decisions
 
@@ -967,3 +967,7 @@ Internal:
   wizard pattern to mirror.
 - [jasper/control/server.py](../jasper/control/server.py) — UDS
   coordinator pattern to mirror.
+
+---
+
+Last verified: 2026-05-23
