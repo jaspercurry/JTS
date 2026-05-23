@@ -1182,6 +1182,27 @@ indicator). Pure-stdlib Python, ~instant.
 - Mute mic privacy preserved: when `JASPER_MIC_MUTED=1`, the
   wake-event capture rings stop filling — nothing recorded.
 
+### Reset the corpus to start a clean week of data
+
+Run before a fresh data-collection window (e.g. immediately after
+deploying a tuning change you want to evaluate against a clean
+baseline). The script archives the current corpus rather than
+deleting it, so nothing is lost:
+
+```sh
+bash scripts/reset-wake-events.sh             # archive + reset
+DRY_RUN=1 bash scripts/reset-wake-events.sh   # print the plan only
+```
+
+What it does on the Pi: stops `jasper-voice`, moves
+`/var/lib/jasper/wake-events/` to
+`/var/lib/jasper/wake-events-archive-<UTC-timestamp>/`, recreates
+the empty live dir with correct permissions, restarts
+`jasper-voice` (schema migration runs on `open()` → fresh DB),
+logs `event=wake_events.reset` to the journal for audit. Archives
+stay on the Pi — `fetch-wake-events.sh` only pulls the live
+corpus; to pull an archive, rsync explicitly from the archive path.
+
 ### Architecture in one paragraph
 
 The AEC bridge emits **up to three** UDP streams: the post-AEC mono
