@@ -536,8 +536,13 @@ def build_ha_client(cfg) -> HAClient | None:
 # per 15 s rather than one per 5.
 PROBE_CACHE_TTL_SEC = 15.0
 
-# (deadline_monotonic, url, token, result_dict). None = no cached value.
-_probe_cache: tuple[float, str, str, dict[str, Any]] | None = None
+# (deadline_monotonic, url, token, verify_ssl, result_dict). None = no
+# cached value. verify_ssl is in the key because toggling the wizard's
+# self-signed checkbox can change reachability without changing url or
+# token — without it in the key, a "broken with strict TLS" cache entry
+# would shadow a "working with relaxed TLS" probe for up to 15 s after
+# the user fixes the config.
+_probe_cache: tuple[float, str, str, bool, dict[str, Any]] | None = None
 
 # Last (configured, connected) tuple — used to log state transitions.
 # Module-global so a single jasper-control process sees the same
@@ -584,14 +589,19 @@ async def probe_status(
 
     now = time.monotonic()
     if not force and _probe_cache is not None:
-        deadline, cached_url, cached_token, cached_result = _probe_cache
-        if now < deadline and cached_url == url and cached_token == token:
+        deadline, cached_url, cached_token, cached_verify, cached_result = _probe_cache
+        if (
+            now < deadline
+            and cached_url == url
+            and cached_token == token
+            and cached_verify == verify_ssl
+        ):
             return cached_result
 
     result = await _probe_uncached(url, token, verify_ssl=verify_ssl)
 
     if not force:
-        _probe_cache = (now + PROBE_CACHE_TTL_SEC, url, token, result)
+        _probe_cache = (now + PROBE_CACHE_TTL_SEC, url, token, verify_ssl, result)
 
     # Emit one log line per (configured, connected) state transition.
     # Avoids per-poll noise — the dashboard polls every 5 s, doctor runs

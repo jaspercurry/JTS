@@ -869,3 +869,120 @@ def test_build_ha_client_returns_client_when_enabled():
     client = build_ha_client(_Cfg())
     assert client is not None
     assert client.url == "http://homeassistant.local:8123"
+
+
+# ---- read_ha_env_file -----------------------------------------------------
+#
+# Used by jasper-control to reflect wizard saves immediately (without
+# waiting for jasper-control to restart and re-source its EnvironmentFile).
+# Same systemd `KEY=VALUE` syntax as voice_provider.env etc. — but the
+# helper lives in jasper.home_assistant rather than jasper.web._common
+# so the control daemon doesn't take a transitive dependency on the
+# web module.
+
+def test_read_ha_env_file_missing_file_returns_empty(tmp_path):
+    from jasper.home_assistant import read_ha_env_file
+    assert read_ha_env_file(str(tmp_path / "absent.env")) == {}
+
+
+def test_read_ha_env_file_parses_standard_lines(tmp_path):
+    from jasper.home_assistant import read_ha_env_file
+    p = tmp_path / "ha.env"
+    p.write_text(
+        "JASPER_HA_URL=http://homeassistant.local:8123\n"
+        "JASPER_HA_TOKEN=eyJ0eXAi.test-token\n"
+        "JASPER_HA_AGENT_ID=conversation.home_assistant\n"
+    )
+    out = read_ha_env_file(str(p))
+    assert out == {
+        "JASPER_HA_URL": "http://homeassistant.local:8123",
+        "JASPER_HA_TOKEN": "eyJ0eXAi.test-token",
+        "JASPER_HA_AGENT_ID": "conversation.home_assistant",
+    }
+
+
+def test_read_ha_env_file_skips_comments_and_blanks(tmp_path):
+    from jasper.home_assistant import read_ha_env_file
+    p = tmp_path / "ha.env"
+    p.write_text(
+        "# This is a comment\n"
+        "\n"
+        "JASPER_HA_URL=http://x:8123\n"
+        "   \n"
+        "  # indented comment\n"
+        "JASPER_HA_TOKEN=tok\n"
+    )
+    out = read_ha_env_file(str(p))
+    assert out == {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"}
+
+
+def test_read_ha_env_file_strips_whitespace_around_value(tmp_path):
+    from jasper.home_assistant import read_ha_env_file
+    p = tmp_path / "ha.env"
+    p.write_text("JASPER_HA_URL=   http://x:8123   \n")
+    out = read_ha_env_file(str(p))
+    assert out == {"JASPER_HA_URL": "http://x:8123"}
+
+
+def test_read_ha_env_file_preserves_equals_in_value(tmp_path):
+    """JWT tokens are base64url which can include `=` padding. The
+    parser must split on the FIRST `=` only — anything after is part
+    of the value."""
+    from jasper.home_assistant import read_ha_env_file
+    p = tmp_path / "ha.env"
+    # Realistic JWT-shape with trailing `=` padding.
+    p.write_text("JASPER_HA_TOKEN=eyJ0eXAi.eyJpc3M9aWQ=.sig==\n")
+    out = read_ha_env_file(str(p))
+    assert out == {"JASPER_HA_TOKEN": "eyJ0eXAi.eyJpc3M9aWQ=.sig=="}
+
+
+def test_read_ha_env_file_skips_malformed_lines(tmp_path):
+    """Lines without `=` are skipped (not crash, not parsed weirdly).
+    A malformed env file shouldn't take down the daemon."""
+    from jasper.home_assistant import read_ha_env_file
+    p = tmp_path / "ha.env"
+    p.write_text(
+        "JASPER_HA_URL=http://x:8123\n"
+        "not_a_valid_line_no_equals_sign\n"
+        "JASPER_HA_TOKEN=tok\n"
+    )
+    out = read_ha_env_file(str(p))
+    assert out == {"JASPER_HA_URL": "http://x:8123", "JASPER_HA_TOKEN": "tok"}
+
+
+# ---- IPv6 bracketing -------------------------------------------------------
+#
+# Discovery returns IP addresses from python-zeroconf as ipaddress
+# objects; their str() form for v6 is "fe80::1" (no brackets). RFC 3986
+# requires brackets when v6 literals are embedded in URLs alongside
+# port — otherwise the colon in the address collides with the
+# host:port separator. Without this fix, IPv6-only HA installs (rare
+# but real) would have their discovery results render as malformed
+# URLs that downstream urlparse couldn't reconstruct.
+
+def test_bracket_ipv6_passes_ipv4_through():
+    from jasper.web.home_assistant_setup import _bracket_ipv6
+    assert _bracket_ipv6("192.168.1.42") == "192.168.1.42"
+
+
+def test_bracket_ipv6_passes_mdns_hostname_through():
+    from jasper.web.home_assistant_setup import _bracket_ipv6
+    assert _bracket_ipv6("homeassistant.local") == "homeassistant.local"
+    assert _bracket_ipv6("uuid.local.") == "uuid.local."
+
+
+def test_bracket_ipv6_wraps_v6_literal():
+    from jasper.web.home_assistant_setup import _bracket_ipv6
+    assert _bracket_ipv6("fe80::1") == "[fe80::1]"
+    assert _bracket_ipv6("::1") == "[::1]"
+    assert _bracket_ipv6("2001:db8::42") == "[2001:db8::42]"
+
+
+def test_bracket_ipv6_idempotent_when_already_bracketed():
+    from jasper.web.home_assistant_setup import _bracket_ipv6
+    assert _bracket_ipv6("[fe80::1]") == "[fe80::1]"
+
+
+def test_bracket_ipv6_empty_passes_through():
+    from jasper.web.home_assistant_setup import _bracket_ipv6
+    assert _bracket_ipv6("") == ""

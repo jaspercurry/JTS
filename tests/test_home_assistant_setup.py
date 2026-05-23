@@ -459,6 +459,44 @@ def test_verify_endpoint_uses_persisted_state(wizard_server):
     assert any(a["entity_id"] == "conversation.home_assistant" for a in data["agents"])
 
 
+def test_ready_endpoint_returns_yes_when_ha_reachable(wizard_server, monkeypatch):
+    """POST /ready is the cheap-poll variant used by the connected-state
+    JS during the post-save restart window. One HA call (GET /api/)
+    via HAClient.healthcheck, not three. Returns {ok: bool}."""
+    # Replace the HAClient inside ready_sync with a stub that has a
+    # successful healthcheck. (verify_sync uses its own httpx
+    # AsyncClient; ready_sync goes through HAClient — different mock
+    # surface.)
+    monkeypatch.setattr(
+        ha_setup, "ready_sync",
+        lambda url, token, *, verify_ssl=True: {"ok": True},
+    )
+    base_url, _, _ = wizard_server
+    # Save URL+token first so the state file has values
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local",
+        "token": "good-token",
+        "agent_id": "",
+    })
+    body = urllib.parse.urlencode({}).encode()
+    req = urllib.request.Request(f"{base_url}/ready", data=body, method="POST")
+    with urllib.request.urlopen(req) as r:
+        data = json.loads(r.read())
+    assert data == {"ok": True}
+
+
+def test_ready_endpoint_returns_no_when_unconfigured(wizard_server):
+    """When URL+token aren't saved, /ready short-circuits to ok=false
+    without trying to probe a missing HA. No mock needed — the real
+    ready_sync sees empty URL+token and returns ok=false."""
+    base_url, _, _ = wizard_server
+    body = urllib.parse.urlencode({}).encode()
+    req = urllib.request.Request(f"{base_url}/ready", data=body, method="POST")
+    with urllib.request.urlopen(req) as r:
+        data = json.loads(r.read())
+    assert data == {"ok": False}
+
+
 def test_state_connected_html_masks_token(wizard_server):
     """The connected-state UI must not leak the full token in the page
     body. mask_secret() shows prefix…suffix only."""
