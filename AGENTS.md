@@ -901,9 +901,11 @@ Software AEC is **built by default and managed by the reconciler**:
 it runs automatically only when `JASPER_AEC_MODE=auto` and the
 configured AEC mic is present with 6-channel firmware. README's
 "Acoustic echo cancellation" section covers the engine (WebRTC
-AEC3 via the `jasper_aec3` pybind11 binding, −15 to −18 dB on
-music with the production REF_GAIN/MIC_GAIN tunings) and the
-~110 MB RAM cost. The full investigation is in
+AEC3 via the `jasper_aec3` pybind11 binding; BEST_A tuning since
+2026-05, with prior REF_GAIN/MIC_GAIN measurements showing −15 to
+−18 dB on music). Resource cost is ~+85 MB Pss and ~+3% of one Pi
+5 core (per the resource table at the bottom of the README). The
+full investigation is in
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md); the chip-side
 canonical reference (firmware variants, mixer state, failure
 modes, diagnostic cookbook) is
@@ -922,6 +924,22 @@ Targeted single-knob OS-layer fixes (a specific ALSA
 `rate_converter` setting, a kernel module parameter) ARE
 acceptable when measurement has localized the root cause to that
 layer — what's rejected is speculative re-architecture.
+
+**One scoped carve-out: chip-AEC with USB-IN reference (Option D).**
+The "no chip AEC" rejection above was for the variants we
+*tested* — none of which fed music to the chip's USB-IN as the AEC
+reference. That specific variant (mono music → chip USB-IN → chip
+HW AEC → mic via chip USB-OUT, with mic and reference clocks
+sharing the chip's USB Adaptive Mode PLL) was never measured.
+Infrastructure to answer it lives at
+[`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) +
+`scripts/chip-aec-*.sh` + `jasper/chip_aec_experiment.py`, **shelved
+indefinitely** — no roadmap commitment, software AEC3 is good
+enough today. The carve-out is **narrow**: it does not re-open
+PipeWire, dual-USB-sink, or custom firmware; it does not license
+re-derivation of the same question outside that infrastructure.
+Agents should keep applying the "architecture is fixed" rule
+everywhere else.
 
 **Three layered bridge bugs were fixed on 2026-05-19.** Together
 they had been silently corrupting AEC's reference signal since

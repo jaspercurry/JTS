@@ -15,7 +15,10 @@ chip-side canonical reference — full parameter space, firmware
 variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
 for raw-mic-silence symptoms, and diagnostic cookbook. This doc
 (HANDOFF-aec.md) explains the *engine* and the *why* (why software
-AEC, why not chip AEC); HANDOFF-xvf3800.md explains the *chip*.
+AEC was chosen for the variants tested, plus Option D — the one
+chip-AEC variant that remains an open-but-shelved question, see
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
+HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
 
@@ -539,9 +542,23 @@ We rejected this on two grounds:
    than our hybrid.
 
 The recommendation is sound for the chip's intended geometry
-(chip-driven speaker). It's wrong for ours. Future sessions
-should not re-litigate this without first measuring under the
-new resampler-fix conditions.
+(chip-driven speaker). It's wrong for ours, **for the variants
+tested here.** Future sessions should not re-litigate this without
+first measuring under the new resampler-fix conditions.
+
+**What was NOT tested in either rejection:** Option D's variant —
+feed mono music to the chip's USB-IN as the AEC reference signal,
+then read its hardware-AEC'd mic stream. The 2025 dongle-topology
+test had no USB-IN reference. The 2026-05-19 wake-rate test ran
+with `SHF_BYPASS=0` but also without a USB-IN reference (chip was
+running its adaptive filter blind). Option D specifically supplies
+the reference signal the chip's AEC was designed to consume and
+uses the chip's USB Adaptive Mode PLL to share clock between mic
+and reference. That variant remains an **open question** with
+shipped, **shelved** infrastructure at
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). Reframe applied
+2026-05-23: the chip-AEC question is partially answered (no-USB-IN
+variants rejected), not fully closed.
 
 ---
 
