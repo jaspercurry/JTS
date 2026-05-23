@@ -1271,7 +1271,8 @@ def _make_handler(
 
             if self.path in ("/system/restart/voice",
                              "/system/restart/audio",
-                             "/system/reboot"):
+                             "/system/reboot",
+                             "/system/poweroff"):
                 # Action endpoints for the /system dashboard. All
                 # shell out to systemctl; jasper-control already runs
                 # as root so no sudo needed. Returns immediately —
@@ -1293,12 +1294,24 @@ def _make_handler(
                         "bluealsa-aplay.service",
                     ]
                     action = "restart-audio"
-                else:
+                elif self.path == "/system/reboot":
                     units = []  # systemctl reboot — no units
                     action = "reboot"
+                else:
+                    # poweroff is reboot's terminal sibling: the speaker
+                    # stays off until someone physically re-plugs power.
+                    # The "graceful" part matters more than usual here —
+                    # this endpoint exists *specifically* to give the
+                    # household a non-power-yank way to shut down before
+                    # hardware changes, after 2026-05-23's dirty-shutdown
+                    # incident wiped the NetworkManager keyfile.
+                    units = []  # systemctl poweroff — no units
+                    action = "poweroff"
                 try:
                     if action == "reboot":
                         subprocess.Popen(["systemctl", "reboot"])
+                    elif action == "poweroff":
+                        subprocess.Popen(["systemctl", "poweroff"])
                     else:
                         # Use start-after-stop semantics. Don't block
                         # on the systemctl call (jasper-aec-bridge +

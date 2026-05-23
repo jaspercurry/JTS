@@ -132,7 +132,7 @@ Then 12 navigation cards stacked equally:
 - Cloud activity (sessions today, 24h spend, MTD spend, per-provider table)
 - AEC3 (toggle + body explainer)
 - Network (RX / TX bytes since boot, throttle bits)
-- Actions (Restart voice / Restart audio / Reboot speaker)
+- Actions (Restart voice / Restart audio / Reboot speaker / Power off)
 - Diagnostics (collapsible — runs `jasper-doctor`)
 
 ### 3.3 Wizards under `jasper/web/`

@@ -220,7 +220,13 @@ _PAGE_BODY = """
     <button class="secondary" id="btn-restart-voice">Restart voice</button>
     <button class="secondary" id="btn-restart-audio">Restart audio</button>
     <button class="danger" id="btn-reboot">Reboot speaker</button>
+    <button class="danger" id="btn-poweroff">Power off</button>
   </div>
+  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;">
+    Power off before changing cables or swapping power. The speaker
+    stays off until you physically re-plug power — yanking the cord
+    mid-run can corrupt config files on the SD card.
+  </p>
 </div>
 
 <details class="disclosure">
@@ -586,6 +592,14 @@ _SCRIPT = r"""
     if (!confirm('Are you sure? You will lose audio for about a minute.')) return;
     postAction('reboot', e.target);
   });
+  document.getElementById('btn-poweroff').addEventListener('click', e => {
+    // Stronger double-confirm than reboot — power off leaves the
+    // Pi off until someone physically re-plugs the cord, which is a
+    // higher commitment than a 60-second auto-recovering reboot.
+    if (!confirm('Power off the speaker? It will stay off until you physically re-plug power.')) return;
+    if (!confirm('Are you absolutely sure? You will need physical access to turn the speaker back on.')) return;
+    postAction('poweroff', e.target);
+  });
 
   // Diagnostics
   document.getElementById('btn-diag').addEventListener('click', async e => {
@@ -797,7 +811,8 @@ def _make_handler(
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             POST_ROUTES = (
-                "/restart/voice", "/restart/audio", "/reboot", "/aec/toggle",
+                "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
+                "/aec/toggle",
             )
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -808,7 +823,8 @@ def _make_handler(
             if not verify_csrf(self):
                 reject_csrf(self)
                 return
-            if path in ("/restart/voice", "/restart/audio", "/reboot"):
+            if path in ("/restart/voice", "/restart/audio",
+                        "/reboot", "/poweroff"):
                 status, body = _proxy_post(
                     "/system" + path, control_base,
                 )
