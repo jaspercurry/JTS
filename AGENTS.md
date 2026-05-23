@@ -1262,6 +1262,17 @@ cat /run/jasper-usbsink/state.json | jq
 override capture/playback device or HTTP ports, set
 `JASPER_USBSINK_*` in `/etc/jasper/jasper.env`.
 
+**Escape hatch**: `JASPER_USBSINK_PREEMPT=disabled` in
+`/etc/jasper/jasper.env` (case-insensitive, exact literal `disabled`)
+turns off the mux's preempt-via-POST mechanism. USB then behaves like
+Bluetooth — when a new source starts, audio briefly mixes until the
+host stops on its own. Useful if the localhost HTTP POST is ever
+found to be causing unexpected disruption; lets an operator degrade
+to graceful-mix without a redeploy or daemon restart. Restart
+`jasper-control` after editing for the change to take effect.
+Mirrors `JASPER_AIRPLAY_METADATA_GATE` / `JASPER_MUX_SPOTIFY_PREEMPT_RESTART`
+/ `JASPER_SHAIRPORT_SUPERVISOR`.
+
 ---
 
 ## Satellite devices — opt-in hardware

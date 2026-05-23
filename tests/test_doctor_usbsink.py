@@ -200,3 +200,89 @@ def test_usbsink_card_active_missing_is_fail(monkeypatch, tmp_path):
         r = doctor.check_usbsink_card()
     assert r.status == "fail"
     assert "init" in r.detail.lower() or "missing" in r.detail.lower()
+
+
+# ----------------------------------------------------------------------
+# check_usbsink_active_libcomposite — the asymmetric mirror of the
+# "service inactive + libcomposite loaded" RAM-drift check.
+# ----------------------------------------------------------------------
+
+
+def test_active_libcomposite_disabled_skip(monkeypatch):
+    _patch_active(monkeypatch, False)
+    r = doctor.check_usbsink_active_libcomposite()
+    assert r.status == "ok"
+    assert "skipped" in r.detail.lower()
+
+
+def test_active_libcomposite_consistent(monkeypatch):
+    _patch_active(monkeypatch, True)
+    _patch_libcomp_loaded(monkeypatch, True)
+    r = doctor.check_usbsink_active_libcomposite()
+    assert r.status == "ok"
+    assert "consistent" in r.detail.lower()
+
+
+def test_active_libcomposite_unloaded_is_fail(monkeypatch):
+    """Daemon active but libcomposite missing → audio won't flow,
+    even though systemd thinks the unit is healthy. This is the
+    asymmetric drift the original RAM-drift check missed."""
+    _patch_active(monkeypatch, True)
+    _patch_libcomp_loaded(monkeypatch, False)
+    r = doctor.check_usbsink_active_libcomposite()
+    assert r.status == "fail"
+    assert "libcomposite" in r.detail.lower()
+    assert "restart" in r.detail.lower()
+
+
+# ----------------------------------------------------------------------
+# check_usbsink_preempt_port_reachable — catches drift between
+# mux.USBSINK_PREEMPT_PORT and preempt_listener.DEFAULT_PORT.
+# ----------------------------------------------------------------------
+
+
+def test_preempt_port_disabled_skip(monkeypatch):
+    _patch_active(monkeypatch, False)
+    r = doctor.check_usbsink_preempt_port_reachable()
+    assert r.status == "ok"
+    assert "skipped" in r.detail.lower()
+
+
+def test_preempt_port_invalid_env_returns_fail(monkeypatch):
+    _patch_active(monkeypatch, True)
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT_PORT", "not-a-number")
+    r = doctor.check_usbsink_preempt_port_reachable()
+    assert r.status == "fail"
+    assert "integer" in r.detail.lower()
+
+
+def test_preempt_port_unreachable_is_fail(monkeypatch):
+    """When the daemon claims to be up but nothing's listening on
+    the configured port, mux's preempt POSTs would fail silently —
+    catch it here."""
+    _patch_active(monkeypatch, True)
+    # Use a port that's overwhelmingly unlikely to be in use (and
+    # we'd rather a 500ms timeout once than a flaky test).
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT_PORT", "1")  # privileged port = ConnectionRefused
+    r = doctor.check_usbsink_preempt_port_reachable()
+    assert r.status == "fail"
+    assert "preempt" in r.detail.lower() or "reachable" in r.detail.lower()
+
+
+def test_preempt_port_reachable_is_ok(monkeypatch):
+    """When something IS listening (we bind our own socket for the
+    test), the check returns ok with the host:port in the detail."""
+    import socket
+    _patch_active(monkeypatch, True)
+    # Bind a transient socket on an ephemeral port.
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.bind(("127.0.0.1", 0))
+    s.listen(1)
+    _, port = s.getsockname()
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT_PORT", str(port))
+    try:
+        r = doctor.check_usbsink_preempt_port_reachable()
+    finally:
+        s.close()
+    assert r.status == "ok"
+    assert str(port) in r.detail

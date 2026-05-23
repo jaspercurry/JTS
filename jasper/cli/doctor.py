@@ -1613,6 +1613,82 @@ def check_usbsink_card() -> CheckResult:
     )
 
 
+def check_usbsink_active_libcomposite() -> CheckResult:
+    """The mirror of check_usbsink_state's RAM-drift check: when the
+    daemon IS active but libcomposite is NOT loaded, the daemon will
+    appear running to systemd but audio won't flow (no gadget = no
+    capture endpoint). This asymmetry can happen if a user manually
+    `rmmod libcomposite` while the daemon is up, or if init.service
+    succeeded its modprobe but a subsequent reload unloaded the
+    module. The init.service ↔ daemon PartOf= chain normally prevents
+    this, but a manual override breaks the invariant."""
+    if not _systemd_is_active("jasper-usbsink.service"):
+        return CheckResult(
+            "usbsink active+modules", "ok",
+            "service disabled — module check skipped",
+        )
+    if _module_loaded("libcomposite"):
+        return CheckResult(
+            "usbsink active+modules", "ok",
+            "service active, libcomposite loaded — consistent",
+        )
+    return CheckResult(
+        "usbsink active+modules", "fail",
+        "service active but libcomposite NOT loaded — audio won't "
+        "flow even though the daemon appears healthy to systemd. "
+        "Run `systemctl restart jasper-usbsink-init.service` to "
+        "re-load the kernel module and re-bind the gadget.",
+    )
+
+
+def check_usbsink_preempt_port_reachable() -> CheckResult:
+    """Verify the mux's `_usbsink_set_preempt` URL actually resolves
+    to a listening port on the daemon. Detects copy-paste drift
+    between mux.USBSINK_PREEMPT_PORT and
+    preempt_listener.DEFAULT_PORT — both have env-var defaults that
+    must agree at runtime. A silent mismatch means mux POSTs to
+    nowhere; preempt protocol degrades to brief mixing without any
+    surface error.
+
+    Skips when usbsink is disabled. When enabled, opens a short TCP
+    connect to the configured host:port and reports reachable / not.
+    """
+    if not _systemd_is_active("jasper-usbsink.service"):
+        return CheckResult(
+            "usbsink preempt port", "ok",
+            "service disabled — port reachability skipped",
+        )
+    host = os.environ.get("JASPER_USBSINK_PREEMPT_HOST", "127.0.0.1")
+    try:
+        port = int(os.environ.get("JASPER_USBSINK_PREEMPT_PORT", "8781"))
+    except ValueError:
+        return CheckResult(
+            "usbsink preempt port", "fail",
+            "JASPER_USBSINK_PREEMPT_PORT is not an integer",
+        )
+    # Short TCP connect — 500 ms is plenty on localhost; any longer
+    # and something else is wrong.
+    import socket
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(0.5)
+    try:
+        sock.connect((host, port))
+    except OSError as e:
+        return CheckResult(
+            "usbsink preempt port", "fail",
+            f"daemon active but {host}:{port} not reachable: {e}. "
+            "Mux's preempt POSTs will fail silently — check that "
+            "JASPER_USBSINK_PREEMPT_PORT matches between the daemon "
+            "and mux env files.",
+        )
+    finally:
+        sock.close()
+    return CheckResult(
+        "usbsink preempt port", "ok",
+        f"daemon listening on {host}:{port} (mux preempts will land)",
+    )
+
+
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
     capture endpoint. The bridge depends on this — it reads channel 2."""
@@ -1862,6 +1938,8 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_usbsink_dtoverlay,
         check_usbsink_state,
         check_usbsink_card,
+        check_usbsink_active_libcomposite,
+        check_usbsink_preempt_port_reachable,
         # WiFi: brcmfmac scan suppression is the most common
         # post-bringup foot-gun — silent except in dmesg, and
         # breaks the /wifi/ wizard's primary function.

@@ -228,3 +228,84 @@ def test_preempt_persist_corrupt_file_returns_false(tmp_path):
     p = tmp_path / "preempt.state"
     p.write_text("garbage")
     assert _read_persisted_preempt(p) is False
+
+
+# ----------------------------------------------------------------------
+# Bounded thread pool on the preempt HTTP listener. Defense-in-depth
+# against a buggy/hostile client tying up unbounded threads. Localhost
+# only with mux as the sole real caller, but the lock-out symptom would
+# be invisible until a port-scanner hit us.
+# ----------------------------------------------------------------------
+
+
+def test_bounded_threading_http_server_caps_workers():
+    """The wrapper server installs a bounded ThreadPoolExecutor and
+    a per-request socket timeout. Verify both are present and that
+    process_request hands off to the executor rather than spawning
+    a thread per request like ThreadingHTTPServer would."""
+    import concurrent.futures
+    from http.server import BaseHTTPRequestHandler
+    from jasper.usbsink.preempt_listener import (
+        _BoundedThreadingHTTPServer,
+        PREEMPT_MAX_WORKERS,
+        PREEMPT_REQUEST_TIMEOUT_SEC,
+    )
+
+    # No-op handler — we never actually serve in this test.
+    class _NoopHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+
+    # Bind to an ephemeral port so the test doesn't collide with the
+    # production 8781.
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", 0), _NoopHandler)
+    try:
+        assert isinstance(
+            server._executor, concurrent.futures.ThreadPoolExecutor,
+        )
+        # Internal attribute name is intentional — we wrote it. Pinning
+        # it as the cap.
+        assert server._executor._max_workers == PREEMPT_MAX_WORKERS
+        assert server._request_timeout_sec == PREEMPT_REQUEST_TIMEOUT_SEC
+    finally:
+        server.server_close()
+
+
+def test_bounded_server_process_request_applies_socket_timeout():
+    """When a request lands, the server sets a socket-read timeout on
+    the accepted connection so a half-open client can't tie up a
+    worker indefinitely (would otherwise wait until OS-side socket
+    death, minutes)."""
+    from http.server import BaseHTTPRequestHandler
+    from unittest.mock import MagicMock
+    from jasper.usbsink.preempt_listener import (
+        _BoundedThreadingHTTPServer,
+        PREEMPT_REQUEST_TIMEOUT_SEC,
+    )
+
+    class _NoopHandler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            self.send_response(200)
+            self.end_headers()
+
+    server = _BoundedThreadingHTTPServer(("127.0.0.1", 0), _NoopHandler)
+    try:
+        # Replace the executor with a sync stand-in so process_request
+        # is observable without thread scheduling races.
+        captured = []
+        server._executor = MagicMock()
+        server._executor.submit = lambda fn, req, addr: captured.append(req)
+
+        fake_request = MagicMock()
+        server.process_request(fake_request, ("127.0.0.1", 12345))
+
+        # Socket timeout applied BEFORE submission so the worker
+        # inherits the deadline.
+        fake_request.settimeout.assert_called_once_with(
+            PREEMPT_REQUEST_TIMEOUT_SEC,
+        )
+        # Request handed off to the executor (not handled inline).
+        assert captured == [fake_request]
+    finally:
+        server.server_close()

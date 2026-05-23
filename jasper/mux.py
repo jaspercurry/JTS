@@ -115,6 +115,25 @@ def _spotify_preempt_restart_disabled() -> bool:
     ).strip().lower() == "disabled"
 
 
+def _usbsink_preempt_disabled() -> bool:
+    """Env-var escape hatch for the USB-sink preempt mechanism.
+
+    Set JASPER_USBSINK_PREEMPT=disabled in /etc/jasper/jasper.env to
+    short-circuit `_usbsink_set_preempt` — mux no longer tells the
+    daemon to silence its output when another source wins. USB then
+    behaves like Bluetooth (no graceful pause API; audio briefly mixes
+    when a new source starts). Operator escape hatch for cases where
+    the localhost HTTP POST is causing unexpected disruption, without
+    requiring a redeploy or daemon restart. Default: enabled.
+
+    Mirrors JASPER_AIRPLAY_METADATA_GATE / JASPER_MUX_SPOTIFY_PREEMPT_RESTART
+    / JASPER_SHAIRPORT_SUPERVISOR.
+    """
+    return os.environ.get(
+        "JASPER_USBSINK_PREEMPT", "",
+    ).strip().lower() == "disabled"
+
+
 @dataclass
 class _State:
     """Per-source playing flag from the previous tick. The mux uses
@@ -314,6 +333,16 @@ class Mux:
         state to /run/jasper-usbsink/preempt.state, so a future
         daemon restart picks up where it left off."""
         if self._usbsink_preempted == silenced:
+            return
+        if _usbsink_preempt_disabled():
+            # Escape hatch active. Log once per state change so the
+            # operator sees the preempt being skipped without spam.
+            logger.info(
+                "event=usbsink.preempt_skipped silenced=%s reason=%s "
+                "via=JASPER_USBSINK_PREEMPT=disabled",
+                silenced, reason,
+            )
+            self._usbsink_preempted = silenced
             return
         try:
             resp = await self._http.post(

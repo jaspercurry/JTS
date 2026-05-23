@@ -195,43 +195,69 @@ class UsbSinkDaemon:
             interval_sec=2.0,
         )
 
-        # Bring the preempt listener up before the bridge so any
-        # persisted "silenced" state is applied to the bridge before
-        # its first audio block is produced.
-        self._preempt_listener.start()
-
+        # Startup uses a started-subsystems list so any partial-startup
+        # failure unwinds cleanly. Each subsystem registers its stop()
+        # in reverse-order on success; on exception we undo whatever
+        # got far enough to start. Without this, a heartbeat.start()
+        # exception (sdnotify import failure on a non-Pi host, e.g.)
+        # would leak the bridge and the preempt listener's port 8781
+        # binding — caught manually in field debugging once already.
+        cleanups: list[tuple[str, callable]] = []
         try:
+            # Preempt listener first so any persisted "silenced" state
+            # is applied to the bridge before its first audio block.
+            self._preempt_listener.start()
+            cleanups.append(("preempt_listener", self._preempt_listener.stop))
+
             self._bridge.start()
+            cleanups.append(("bridge", self._bridge.stop))
+
+            heartbeat.start()
+            cleanups.append(("heartbeat", heartbeat.stop))
+
+            publish_task = asyncio.create_task(self._state_publisher.run())
+            diag_task = asyncio.create_task(self._diagnostic_loop(heartbeat))
+            # Volume bridge runs in its own task — disabled-friendly:
+            # if the mixer controls aren't present, the bridge logs and
+            # returns, the rest of the daemon keeps going. So a botched
+            # gadget descriptor doesn't take down the audio bridge.
+            volume_task = asyncio.create_task(self._volume_bridge.run())
+            tasks = [publish_task, diag_task, volume_task]
         except Exception as e:  # noqa: BLE001
             logger.exception(
-                "event=usbsink.bridge_start_failed error=%s", e,
+                "event=usbsink.startup_failed error=%s stage=%s",
+                e, cleanups[-1][0] if cleanups else "before_first",
             )
-            self._preempt_listener.stop()
+            for name, stop in reversed(cleanups):
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "event=usbsink.cleanup_failed subsystem=%s", name,
+                    )
             return 1
 
-        heartbeat.start()
-
-        publish_task = asyncio.create_task(self._state_publisher.run())
-        diag_task = asyncio.create_task(self._diagnostic_loop(heartbeat))
-        # Volume bridge runs in its own task — disabled-friendly: if
-        # the mixer controls aren't present, the bridge logs and
-        # returns, the rest of the daemon keeps going. So a botched
-        # gadget descriptor doesn't take down the audio bridge.
-        volume_task = asyncio.create_task(self._volume_bridge.run())
         try:
             await self._stop.wait()
         finally:
             logger.info("event=usbsink.daemon_stopping")
-            for task in (diag_task, publish_task, volume_task):
+            for task in tasks:
                 task.cancel()
-            for task in (diag_task, publish_task, volume_task):
+            for task in tasks:
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-            self._bridge.stop()
-            self._preempt_listener.stop()
-            heartbeat.stop()
+            # Stop in reverse order of start (same contract as the
+            # startup-failure path above).
+            for name, stop in reversed(cleanups):
+                try:
+                    stop()
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "event=usbsink.cleanup_failed subsystem=%s "
+                        "phase=shutdown", name,
+                    )
             logger.info("event=usbsink.daemon_stopped")
         return 0
 
@@ -267,6 +293,27 @@ class UsbSinkDaemon:
                     "frames_captured=%d (watchdog will fire)",
                     now - self._last_progress_mono, stats.frames_captured,
                 )
+
+            # Surface non-zero PortAudio CallbackFlags stashed by the
+            # audio thread. The callback itself can't log (would risk
+            # wedging the realtime thread on a stuck handler); we
+            # consume the latched value here and reset to 0 so we
+            # don't re-log the same flag every diag tick. CallbackFlags
+            # bits: input_underflow (1), input_overflow (2),
+            # output_underflow (4), output_overflow (8), priming (16).
+            if stats.last_capture_status:
+                logger.warning(
+                    "event=usbsink.capture_status flags=0x%x count=%d",
+                    stats.last_capture_status, stats.capture_errors,
+                )
+                stats.last_capture_status = 0
+            if stats.last_playback_status:
+                logger.warning(
+                    "event=usbsink.playback_status flags=0x%x count=%d",
+                    stats.last_playback_status, stats.playback_errors,
+                )
+                stats.last_playback_status = 0
+
             if now - last_log_mono >= DIAG_INTERVAL_SEC:
                 logger.info(
                     "event=usbsink.diag rms_dbfs=%.1f "
