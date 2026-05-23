@@ -48,8 +48,44 @@ prompt() {
   read -r -p "Press Enter when ready... " _ < /dev/tty
 }
 
+daemon_set_mode() {
+  # Switch the experiment daemon between full mode (ref feeder + UDP
+  # mic pump) and --ref-only mode (just ref feeder).
+  #
+  # Why we need this: capture_chip_ch() opens hw:CARD=Array,DEV=0 in
+  # CAPTURE mode via arecord. UAC2 capture is a single-substream
+  # endpoint — concurrent opens fail with -EBUSY. The production AEC
+  # bridge documents this at jasper/cli/aec_bridge.py:492-495 ("the
+  # bridge already holds the Array card exclusively"). During Phase
+  # 4 we run the daemon in --ref-only so its udp_mic_pump thread
+  # releases the chip's capture side, letting arecord open it. The
+  # ref feeder keeps running so the chip's AEC adaptive filter
+  # doesn't lose convergence between captures.
+  #
+  # Side effect: jasper-voice gets no UDP frames during --ref-only,
+  # so wake detection is off. Phase 4 doesn't need wake — the user
+  # is producing audio for arecord to capture, not interacting with
+  # the assistant. The user's "Hey Jarvis. Testing one two three..."
+  # in step 3 is a test phrase for the recording, not a wake trigger.
+  local mode="$1"
+  local extra=""
+  if [ "$mode" = "ref-only" ]; then extra="--ref-only"; fi
+  ssh "${PI_USER}@${PI_HOST}" "sudo pkill -f 'jasper.chip_aec_experiment' 2>/dev/null || true
+sleep 0.5
+sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
+sleep 2
+if ! pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
+  echo '    FAILED to restart daemon in ${mode} mode — last 10 log lines:'
+  sudo tail -10 /var/log/chip-aec-experiment.log
+  exit 1
+fi
+echo '    daemon now in ${mode} mode (PID '\$(pgrep -f jasper.chip_aec_experiment)')'"
+}
+
 capture_chip_ch() {
   # $1 = label, $2 = output file, $3 = channel index (0-5)
+  # Pre-condition: daemon is in --ref-only mode (mic-pump released
+  # the chip's capture side). See daemon_set_mode() above.
   local label="$1" outfile="$2" ch="$3"
   echo "  capturing ${SECS}s: ${label}"
   local tmp="${OUTDIR}/${outfile}.6ch.tmp"
@@ -89,7 +125,16 @@ set_bypass() {
 prompt "STEP 1/3: Start music playing through the speaker at production volume.
 Use any source (AirPlay, Spotify, BT). Wait 30+ s for stable, full-level music.
 The script will then run two captures in series: reference (10 s into music),
-then the chip's mic ch1 with chip AEC ON."
+then the chip's mic ch1 with chip AEC ON.
+
+NOTE: switching daemon to --ref-only for the chip-mic captures (daemon's
+mic-pump would otherwise hold hw:CARD=Array,DEV=0 exclusively → arecord
+EBUSY). Wake detection in jasper-voice is suspended for the duration of
+Phase 4 as a side effect — this is fine; we're recording, not waking."
+
+echo
+echo "==> Switching daemon to --ref-only (releases chip capture for arecord)"
+daemon_set_mode ref-only
 
 set_bypass 0
 capture_ref
@@ -113,6 +158,11 @@ During the next ${SECS} s, speak a few sentences:
 This verifies chip AEC doesn't degrade your voice."
 
 capture_chip_ch "04_speech_only (chip ch1, AEC on, no music)" "04_speech_only.wav" 1
+
+# ---------- Restore daemon to full mode ----------
+echo
+echo "==> Switching daemon back to full mode (resumes UDP mic pump)"
+daemon_set_mode full
 
 # ---------- Summary ----------
 echo
