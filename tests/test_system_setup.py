@@ -75,6 +75,7 @@ def upstream_control():
         "/system/restart/voice": {"ok": True, "action": "restart-voice"},
         "/system/restart/audio": {"ok": True, "action": "restart-audio"},
         "/system/reboot": {"ok": True, "action": "reboot"},
+        "/system/poweroff": {"ok": True, "action": "poweroff"},
     }
 
     class _UpHandler(BaseHTTPRequestHandler):
@@ -183,6 +184,47 @@ def test_post_reboot_proxies(dashboard_server) -> None:
     status, _ = _http_post(f"{base}/reboot")
     assert status == 200
     assert ("POST", "/system/reboot") in received
+
+
+def test_post_poweroff_proxies(dashboard_server) -> None:
+    base, received, _ = dashboard_server
+    status, body = _http_post(f"{base}/poweroff")
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["action"] == "poweroff"
+    assert ("POST", "/system/poweroff") in received
+
+
+def test_poweroff_requires_csrf(dashboard_server) -> None:
+    """Power off is destructive (no auto-recovery — user must
+    physically re-plug). Same CSRF gate as the other action endpoints."""
+    base, received, _ = dashboard_server
+    # Plain POST with no X-CSRF-Token header should be rejected.
+    req = urllib.request.Request(f"{base}/poweroff", data=b"", method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            status = r.status
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 403
+    # And the upstream control was NOT contacted.
+    assert ("POST", "/system/poweroff") not in received
+
+
+def test_root_includes_poweroff_button(dashboard_server) -> None:
+    """The dashboard HTML carries a Power off button styled as a
+    danger action, sitting alongside Reboot."""
+    base, _, _ = dashboard_server
+    status, body = _http_get(f"{base}/")
+    assert status == 200
+    text = body.decode("utf-8")
+    assert 'id="btn-poweroff"' in text
+    # Double-confirm copy is load-bearing UX — the second prompt is
+    # what discourages mis-click on the most destructive action on
+    # the dashboard. Keep it in the test so a future "tidy the JS"
+    # PR doesn't silently drop it.
+    assert "physically re-plug power" in text
+    assert "absolutely sure" in text
 
 
 def test_unknown_route_404(dashboard_server) -> None:
