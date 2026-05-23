@@ -250,6 +250,16 @@ static bool tryConnectStored() {
 
     g_status = Status::CONNECTING;
     WiFi.mode(WIFI_STA);
+    // Disable WiFi modem-sleep: the dial is USB-powered, so the
+    // default WIFI_PS_MIN_MODEM's DTIM-bounded receive latency
+    // (100-400 ms typical, occasional >2 s spikes) buys us nothing
+    // and costs us the HTTP timeout window — measured 22-426 ms
+    // ping RTT to a sleeping dial vs 2-3 ms to the router. Standard
+    // practice for USB-powered ESP32 controllers (WLED, Tasmota's
+    // SetOption127, Apollo Automation, ESPHome users who hit the
+    // same symptom). Trade-off: ~30 mA continuous draw, irrelevant
+    // over USB.
+    WiFi.setSleep(false);
     WiFi.setHostname(MDNS_HOSTNAME);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
@@ -282,6 +292,7 @@ static bool improvConnect(const char *ssid, const char *password) {
     Serial.printf("[improv] connect attempt: ssid=%s, pass=<%d chars>\n",
                   ssid, (int)strlen(password));
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);  // see tryConnectStored() for rationale
     WiFi.setHostname(MDNS_HOSTNAME);
     WiFi.begin(ssid, password);
     unsigned long t0 = millis();
@@ -389,22 +400,34 @@ void loop() {
 
     // Encoder → volume. Snapshot the volatile counter, compute new
     // detents since last apply, send one POST per net detent change.
+    //
+    // lastApplied advances ONLY on POST success. A failed POST (or a
+    // WiFi-down moment) leaves the deltas in the residual
+    // (g_encoderRaw - lastApplied) so the next loop iteration retries
+    // automatically with the same+new detents. Without this, every
+    // failed POST silently dropped the user's spin — the symptom that
+    // motivated this change. delta_db is idempotent on retry because
+    // the server clamps to 0-100% and treats it as "add this"; the
+    // rare at-least-once duplication if a response is lost mid-flight
+    // is recoverable by spinning back, whereas a silent drop is not.
     static int32_t lastApplied = 0;
     int32_t snapshot = g_encoderRaw;
     int32_t deltaRaw = snapshot - lastApplied;
     int32_t detents = deltaRaw / ENCODER_PULSES_PER_DETENT;
     if (detents != 0) {
-        lastApplied += detents * ENCODER_PULSES_PER_DETENT;
         if (WiFi.status() == WL_CONNECTED) {
             bool ok = postVolumeAdjust((float)detents * VOLUME_STEP_DB);
-            if (ok && g_lastVolumePercent >= 0) {
-                scenes_show_volume(g_lastVolumePercent);
+            if (ok) {
+                lastApplied += detents * ENCODER_PULSES_PER_DETENT;
+                if (g_lastVolumePercent >= 0) {
+                    scenes_show_volume(g_lastVolumePercent);
+                }
             }
             dlog("[encoder] detent=%ld → POST %.2f dB %s (now %d%%)",
                  (long)detents, (float)detents * VOLUME_STEP_DB,
                  ok ? "OK" : "FAIL", g_lastVolumePercent);
         } else {
-            dlog("[encoder] detent=%ld dropped (WiFi disconnected)",
+            dlog("[encoder] detent=%ld held (WiFi disconnected, will retry)",
                  (long)detents);
         }
     }
