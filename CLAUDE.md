@@ -36,23 +36,25 @@ This is the **only** supported deploy path. It does, in order:
 3. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
    set — `pip install -e`'s into `/opt/jasper/.venv` (the runtime),
    writes `/var/lib/jasper/build.txt`, migrates units to socket
-   activation, conditionally enables AEC on 6-ch firmware
-4. `systemctl restart jasper-control` + `systemctl start
-   jasper-aec-reconcile` — picks up Python control code and lets the
-   mic/AEC reconciler restart or park `jasper-voice` according to the
-   hardware actually present. `jasper-camilla` is the Rust camilladsp
-   binary (not restarted).
+   activation, restarts every always-on Python daemon
+   (`jasper-mux`, `jasper-input`, `jasper-control`, plus the
+   renderers), and runs `jasper-aec-reconcile` which restarts or
+   parks `jasper-voice` according to the hardware actually present.
+   `jasper-camilla` is the Rust camilladsp binary (not restarted).
+
+`deploy-to-pi.sh` is intentionally a thin rsync wrapper —
+`install.sh` is the single source of truth for "what runs on every
+install." If you need a new daemon restarted after a deploy, add it
+to install.sh's restart block ([`deploy/install.sh:999`](deploy/install.sh:999)),
+NOT to the wrapper.
 
 **Do NOT hand-roll `rsync + sudo bash install.sh + systemctl restart`.**
-That flow exists historically but misses:
-- the laptop-side SHA capture (dashboard's "Software" card shows
-  "unknown")
-- the post-install daemon restart on subsequent deploys (install.sh
-  only conditionally restarts `jasper-voice` when the AEC default
-  flips — a one-time event)
+That flow misses the laptop-side SHA capture, so the /system
+dashboard's "Software" card shows "unknown" instead of the deployed
+short-SHA.
 
-**Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
-(install but don't restart/reconcile), `PI_HOST=...`, `PI_USER=...`.
+**Skip flag:** `SKIP_INSTALL=1` (rsync only, no install / no
+restarts), plus `PI_HOST=...`, `PI_USER=...` overrides.
 
 **Adding a wizard port to `jasper-web.socket`?** `install.sh`'s
 wizard-socket loop uses `systemctl restart` (not `start`) so a new

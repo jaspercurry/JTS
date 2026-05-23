@@ -999,6 +999,13 @@ Will retry on next boot."
     # jasper-input is always-on (HID accessory bridge) — restart so any
     # already-plugged-in knob picks up new code without waiting for boot.
     systemctl restart jasper-input.service 2>/dev/null || true
+    # jasper-control is always-on (HTTP API for dial / automation,
+    # /state aggregator) — restart so dial and automation clients pick
+    # up new code in this deploy. Was previously restarted by
+    # scripts/deploy-to-pi.sh after install.sh returned; moved here so
+    # the wrapper stays a pure rsync dispatcher and install.sh is the
+    # single source of truth for "what restarts on every install."
+    systemctl restart jasper-control.service 2>/dev/null || true
 
     # Reconcile software AEC against whatever mic hardware is actually
     # present right now. This replaces the old one-way "enable if

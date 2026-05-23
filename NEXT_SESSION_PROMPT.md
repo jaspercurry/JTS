@@ -65,7 +65,7 @@ Ask clarifying questions before writing code. Sweet spots to nail down before co
 ## Constraints (per user memory + feedback notes)
 
 - **PR flow required**: every change goes through a feature branch + PR. No direct push to main even for one-line fixes.
-- **Canonical deploy is `bash scripts/deploy-to-pi.sh`**: rsync + install.sh + restart, never hand-rolled.
+- **Canonical deploy is `bash scripts/deploy-to-pi.sh`**: rsync + install.sh (install.sh handles all daemon restarts). Never hand-rolled.
 - **JTS is a production speaker**: the dual-stream logic must not break wake-word recovery on failure (one stream stalling shouldn't deafen the other).
 - **No topology rearchitect**: AEC bridge stays, wake-word model stays. We're adding a stream, not changing the audio pipeline.
 - **Silent failure is unacceptable**: every new code path that could block wake detection MUST have an audible cue via `jasper/cues/registry.py`.

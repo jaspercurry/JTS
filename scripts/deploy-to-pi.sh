@@ -87,30 +87,4 @@ ssh "${PI_USER}@${PI_HOST}" \
 echo "==> Build manifest now on Pi:"
 ssh "${PI_USER}@${PI_HOST}" 'sudo cat /var/lib/jasper/build.txt 2>/dev/null || echo "(not present)"'
 
-# Restart/reconcile the Python daemons that run application code so a
-# code change in this deploy actually takes effect. install.sh already
-# restarts jasper-mux + jasper-input + the wizard sockets. Voice is
-# mic-hardware-dependent, so do not restart jasper-voice directly here:
-# `jasper-aec-reconcile` restarts it when a valid mic path exists and
-# parks it cleanly when no configured mic is present.
-#
-# Notable omissions:
-#   - jasper-camilla — runs the Rust camilladsp binary, no Python.
-#     No restart needed for Python code changes.
-#   - The wizard servers — socket-activated, naturally pick up new
-#     code on the next request.
-if [[ "${SKIP_RESTART:-}" == "1" ]]; then
-    echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
-    echo "==> Done."
-    exit 0
-fi
-
-echo "==> Restarting code daemon: jasper-control.service"
-ssh "${PI_USER}@${PI_HOST}" "sudo systemctl restart jasper-control.service" || \
-    echo "  (jasper-control restart returned non-zero — see scripts/fetch-pi-logs.sh)"
-
-echo "==> Reconciling mic/AEC/voice state"
-ssh "${PI_USER}@${PI_HOST}" "sudo systemctl start jasper-aec-reconcile.service" || \
-    echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
-
 echo "==> Done."

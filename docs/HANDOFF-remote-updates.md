@@ -37,8 +37,10 @@ developer laptop. The script:
    set
 4. `install.sh` writes `/var/lib/jasper/build.txt` with those vars
    plus `JASPER_INSTALL_AT` timestamp, then `pip install -e
-   /opt/jasper`, migrates units, restarts `jasper-voice` and
-   `jasper-control`
+   /opt/jasper`, migrates units, restarts every always-on Python
+   daemon (`jasper-mux`, `jasper-input`, `jasper-control`, plus
+   the renderers), and runs `jasper-aec-reconcile` which restarts
+   or parks `jasper-voice` based on mic hardware actually present
 
 What's missing:
 
@@ -142,8 +144,7 @@ of the battle.
 **What.** Button POSTs to a new `jasper-web` (or better,
 `jasper-control`) endpoint that shells out roughly to:
 `cd /home/pi/jts && git pull origin main && sudo bash
-deploy/install.sh && sudo systemctl restart jasper-voice
-jasper-control`.
+deploy/install.sh` (install.sh already restarts the daemons).
 
 **Versioning.** None — always whatever's at `main` right now.
 
@@ -325,14 +326,13 @@ to a new `jasper-control` endpoint.
    ```
    a. Snapshot current SHA → /var/lib/jasper/previous_build.txt
    b. cd /home/pi/jts && git fetch && git checkout <new-tag>
-   c. sudo bash deploy/install.sh (writes new build.txt)
-   d. systemctl restart jasper-voice jasper-control
-   e. sleep 15; run jasper-doctor --json
-   f. If doctor passes: success cue (or silent success); done.
-   g. If doctor fails:
+   c. sudo bash deploy/install.sh (writes new build.txt + restarts
+      every always-on daemon incl. jasper-voice via reconciler)
+   d. sleep 15; run jasper-doctor --json
+   e. If doctor passes: success cue (or silent success); done.
+   f. If doctor fails:
       - git checkout <previous SHA from snapshot>
       - sudo bash deploy/install.sh
-      - systemctl restart jasper-voice jasper-control
       - Play `update_failed_rolled_back` audio cue
       - Surface failure on dashboard
    ```

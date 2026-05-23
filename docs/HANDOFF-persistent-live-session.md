@@ -160,7 +160,8 @@ The Pi is the integration target. The development loop:
 1. Make code changes locally on the laptop in `/Users/jaspercurry/Code/JTS/`.
 2. Deploy: `bash scripts/deploy-to-pi.sh` — captures the local git SHA,
    rsyncs to `/home/pi/jts/`, runs `sudo install.sh` (which `pip install -e`'s
-   into `/opt/jasper/.venv`), then restarts `jasper-voice` + `jasper-control`.
+   into `/opt/jasper/.venv` and restarts the always-on Python daemons
+   including `jasper-voice` and `jasper-control`).
    The dashboard's "Software" card on `http://jts.local/system/` confirms
    the deployed SHA.
 3. Pull logs: `bash scripts/fetch-pi-logs.sh` (output lands in `./logs/*-latest.log`).
@@ -220,7 +221,7 @@ bash scripts/tail-pi-logs.sh
 bash scripts/switch-gemini-model.sh         # show current
 bash scripts/switch-gemini-model.sh 3.1     # → gemini-3.1-flash-live-preview
 bash scripts/switch-gemini-model.sh 2.5     # → gemini-2.5-flash-native-audio-preview-12-2025
-# sync laptop → Pi (rsync + install.sh + restart jasper-voice/jasper-control)
+# sync laptop → Pi (rsync + install.sh handles restarts)
 bash scripts/deploy-to-pi.sh
 # tests
 .venv/bin/pytest
