@@ -165,11 +165,21 @@ when the configured AEC mic is present with 6-channel firmware — see
   NYC bus requires a free MTA BusTime API key — that card is locked
   until the user pastes one.
 - ✅ Per-source on/off wizard at `http://jts.local/sources/` —
-  AirPlay / Bluetooth / Spotify Connect toggles. Bluetooth's off
-  toggle prompts for confirmation when a paired wireless remote
-  (e.g. the VK-01 volume knob) is present, since powering the
-  adapter off would silently disconnect it. Same prompt fires on
-  the Power switch at `http://jts.local/bluetooth/`.
+  AirPlay / Bluetooth / Spotify Connect / USB Audio Input toggles.
+  Bluetooth's off toggle prompts for confirmation when a paired
+  wireless remote (e.g. the VK-01 volume knob) is present, since
+  powering the adapter off would silently disconnect it. Same
+  prompt fires on the Power switch at `http://jts.local/bluetooth/`.
+- ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
+  Plug a computer into the Pi's USB-C port (via the 8086
+  Consultancy USB-C/PWR Splitter) and the host sees JTS as a USB
+  audio output device. Off by default; toggle at
+  `http://jts.local/sources/` enables it. The host's volume slider
+  drives JTS's canonical `listening_level` (feels like spinning the
+  dial). Joins the existing mux arbitration for latest-source-wins
+  preemption. Zero RAM cost when off, ~22 MB when on. See
+  [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md) for the full
+  design.
 - ✅ Wi-Fi network wizard at `http://jts.local/wifi/` — current
   network at top, scan + tap-to-connect for nearby networks,
   saved networks in a collapse section with Forget. Backed by
@@ -547,6 +557,8 @@ and openwakeword stub diet landed.
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
+| `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
+| `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
 | `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |

@@ -27,25 +27,34 @@ def mux(tmp_path):
 def patched_probes(monkeypatch):
     """Replaces the source_state probe references in jasper.mux's
     namespace with AsyncMocks. Tests mutate return_value via
-    `_stub_probes` to control what the next tick sees."""
+    `_stub_probes` to control what the next tick sees.
+
+    USB sink defaults to False so existing 3-source tests written
+    before the fourth source landed still exercise the same matrix
+    without needing to pass usbsink=False explicitly."""
     spotify = AsyncMock(return_value=False)
     airplay = AsyncMock(return_value=False)
     bluetooth = AsyncMock(return_value=False)
+    usbsink = AsyncMock(return_value=False)
     monkeypatch.setattr("jasper.mux.spotify_playing", spotify)
     monkeypatch.setattr("jasper.mux.airplay_playing", airplay)
     monkeypatch.setattr("jasper.mux.bluetooth_playing", bluetooth)
+    monkeypatch.setattr("jasper.mux.usbsink_playing", usbsink)
     return SimpleNamespace(
-        spotify=spotify, airplay=airplay, bluetooth=bluetooth,
+        spotify=spotify, airplay=airplay,
+        bluetooth=bluetooth, usbsink=usbsink,
     )
 
 
 def _stub_probes(
-    probes, *, spotify: bool, airplay: bool, bluetooth: bool,
+    probes, *, spotify: bool = False, airplay: bool = False,
+    bluetooth: bool = False, usbsink: bool = False,
 ):
     """Set the next return_value for each patched probe."""
     probes.spotify.return_value = spotify
     probes.airplay.return_value = airplay
     probes.bluetooth.return_value = bluetooth
+    probes.usbsink.return_value = usbsink
 
 
 def _stub_pauses(mux: Mux):
@@ -222,3 +231,121 @@ def test_ensure_spotify_router_consumes_build_result_correctly(tmp_path, monkeyp
     )
     assert isinstance(router.clients, dict)
     assert router.statuses[0].state == ACCOUNT_OK
+
+
+# ----------------------------------------------------------------------
+# USB sink arbitration — fourth source. Volume/preempt protocol uses
+# an HTTP POST to the daemon's localhost listener; tests stub the
+# wrapper method so they don't try to hit a real socket.
+# ----------------------------------------------------------------------
+
+
+def _stub_usbsink_preempt(mux: Mux):
+    """Replace the HTTP-POST helper so tests can assert the calls
+    without binding 127.0.0.1:8781. Returns the mock so callers can
+    inspect call args."""
+    mux._usbsink_set_preempt = AsyncMock(
+        side_effect=lambda silenced, *, reason: setattr(
+            mux, "_usbsink_preempted", bool(silenced),
+        ),
+    )
+    return mux._usbsink_set_preempt
+
+
+@pytest.mark.asyncio
+async def test_usbsink_starting_alone_takes_speaker(mux, patched_probes):
+    """User plugs in Mac and starts playing while nothing else
+    is active. USB wins the speaker, no other source to pause."""
+    _stub_probes(patched_probes, usbsink=True)
+    _stub_pauses(mux)
+    _stub_usbsink_preempt(mux)
+    await mux._tick()
+    mux._pause.assert_not_awaited()
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempts_usbsink_with_silenced_post(mux, patched_probes):
+    """USB playing. AirPlay starts. Mux POSTs silenced=true so the
+    daemon stops mixing its audio into the loopback."""
+    _stub_pauses(mux)
+    preempt = _stub_usbsink_preempt(mux)
+
+    _stub_probes(patched_probes, usbsink=True)
+    await mux._tick()  # USB wins
+    preempt.assert_not_awaited()
+
+    _stub_probes(patched_probes, usbsink=True, airplay=True)
+    await mux._tick()  # AirPlay newly-started → preempt USB
+    mux._pause.assert_awaited_once_with(Source.USBSINK)
+    assert mux._winner is Source.AIRPLAY
+
+
+@pytest.mark.asyncio
+async def test_usbsink_preempt_released_when_others_idle(mux, patched_probes):
+    """After AirPlay stops, mux clears USB's preempt so the user can
+    re-take the speaker just by playing on the host."""
+    _stub_pauses(mux)
+    preempt = _stub_usbsink_preempt(mux)
+    # Real _pause normally POSTs preempt; the stub doesn't, so flip
+    # the flag manually to simulate that side effect.
+    _stub_probes(patched_probes, usbsink=True, airplay=True)
+    await mux._tick()
+    mux._usbsink_preempted = True
+
+    # AirPlay stops. USB still RMS-active. Mux should release.
+    _stub_probes(patched_probes, usbsink=True, airplay=False)
+    await mux._tick()
+    # _usbsink_set_preempt called with silenced=False
+    assert preempt.await_count >= 1
+    last_call = preempt.await_args_list[-1]
+    assert last_call.args[0] is False
+
+
+@pytest.mark.asyncio
+async def test_usbsink_pause_then_play_clears_preempt(mux, patched_probes):
+    """Host paused (RMS dropped) while preempted, then user hits
+    play again (RMS rises). The daemon publishes a fresh
+    inactive→active edge → mux sees newly_started → preempt released
+    so audio flows again. Other sources get preempted as the new
+    winner."""
+    _stub_pauses(mux)
+    preempt = _stub_usbsink_preempt(mux)
+
+    # Initial: USB + AirPlay both playing, AirPlay wins, USB preempted.
+    _stub_probes(patched_probes, usbsink=True, airplay=True)
+    await mux._tick()
+    mux._usbsink_preempted = True
+
+    # Host paused → daemon publishes playing=false. AirPlay still on.
+    _stub_probes(patched_probes, usbsink=False, airplay=True)
+    await mux._tick()
+    # Preempt stays on; no edge to react to.
+
+    # Host plays again → daemon publishes playing=true → newly_started.
+    _stub_probes(patched_probes, usbsink=True, airplay=True)
+    await mux._tick()
+    # USB just became the new winner → preempt cleared, AirPlay paused.
+    last_call = preempt.await_args_list[-1]
+    assert last_call.args[0] is False
+    assert mux._winner is Source.USBSINK
+
+
+@pytest.mark.asyncio
+async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
+    """When already not preempted and all others go idle, mux
+    should NOT spam release POSTs. The set_preempt method is itself
+    a no-op when state matches, but mux's `if self._usbsink_preempted`
+    guard prevents the call entirely."""
+    _stub_pauses(mux)
+    preempt = _stub_usbsink_preempt(mux)
+
+    _stub_probes(patched_probes, usbsink=True)
+    await mux._tick()
+    # USB only, no preempt action.
+    preempt.assert_not_awaited()
+
+    # USB stops. No transitions, no preempt action.
+    _stub_probes(patched_probes, usbsink=False)
+    await mux._tick()
+    preempt.assert_not_awaited()

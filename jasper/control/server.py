@@ -560,13 +560,43 @@ async def _get_state(
         "session_active": bool(spotify_blob.get("session_active", False)),
     }
 
+    # USB sink — fourth renderer. Reads the state file the daemon
+    # publishes. Section reports None when the feature is disabled
+    # (no state file) so consumers can distinguish "off" from
+    # "on but idle".
+    usbsink_state: dict | None = None
+    try:
+        with open(
+            os.environ.get(
+                "JASPER_USBSINK_STATE_PATH",
+                "/run/jasper-usbsink/state.json",
+            ),
+        ) as f:
+            usbsink_blob = json.load(f)
+        usbsink_state = {
+            "playing": bool(usbsink_blob.get("playing", False)),
+            "preempted": bool(usbsink_blob.get("preempted", False)),
+            "host_connected": bool(
+                usbsink_blob.get("host_connected", False),
+            ),
+            "rms_dbfs": usbsink_blob.get("rms_dbfs"),
+            "updated_at": usbsink_blob.get("updated_at"),
+        }
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
+
     voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
+    # Active-source picks. USB sink takes precedence over idle but
+    # below the other named renderers — same priority chain as the
+    # volume coordinator's _active_source.
     if voice_session:
         active_source: str = "voice"
     elif spotify["playing"]:
         active_source = "spotify"
     elif airplay:
         active_source = "airplay"
+    elif usbsink_state is not None and usbsink_state.get("playing"):
+        active_source = "usbsink"
     else:
         active_source = "idle"
 
@@ -604,6 +634,10 @@ async def _get_state(
             "airplay": (
                 None if airplay is None else {"playing": airplay}
             ),
+            # null when the feature is disabled (no state file). The
+            # /system dashboard and any other consumer can show
+            # "off" vs "idle" based on this.
+            "usbsink": usbsink_state,
         },
         "active_source": active_source,
         "satellites": {
@@ -681,6 +715,36 @@ def _make_handler(
     async def _set_op(percent: int):
         async def _op(coord):
             return await coord.set_listening_level(percent)
+        return await _with_coordinator(
+            _op,
+            camilla_host=camilla_host, camilla_port=camilla_port,
+        )
+
+    async def _observe_op(source_name: str, percent: int) -> int:
+        """Route a source-observed volume change (e.g. host slider on
+        the USB gadget) through the coordinator's echo-prevented
+        observe path. Unknown source names fall back to the
+        authoritative set path so a future client that posts a fresh
+        source name doesn't silently no-op.
+
+        Returns the level the coordinator ended up at — equal to
+        `percent` on normal observe (no echo) or the prior value if
+        the observation was treated as an echo of our own write."""
+        # Lazy import to avoid pulling the full volume_coordinator
+        # graph into the import path of server.py's module load.
+        from ..volume_coordinator import Source
+        try:
+            source_enum = Source(source_name)
+        except ValueError:
+            # Unknown source — treat as authoritative.
+            return await _set_op(percent)
+
+        async def _op(coord):
+            await coord.observe_source_volume(source_enum, percent)
+            # The coordinator's level either took our value or stayed
+            # put (echo-suppressed). Return whatever's now canonical
+            # for the client to render.
+            return coord.get_listening_level()
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
@@ -968,15 +1032,29 @@ def _make_handler(
                         {"error": "missing db or percent"}, status=400,
                     )
                     return
+                # Optional `source` field marks the caller as an
+                # observed source-side change (e.g. host moved its
+                # volume slider on the USB gadget). Route through
+                # observe_source_volume so the coordinator's echo
+                # window and source-active gate apply. Without
+                # `source`, the caller is treated as authoritative
+                # (dial twist, voice "louder", etc.).
+                source_name = body.get("source")
                 try:
-                    new_pct = asyncio.run(_set_op(target_pct))
+                    if source_name:
+                        new_pct = asyncio.run(
+                            _observe_op(str(source_name), target_pct),
+                        )
+                    else:
+                        new_pct = asyncio.run(_set_op(target_pct))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("set volume failed")
                     self._send_json({"error": str(e)}, status=502)
                     return
                 logger.info(
-                    "event=volume.set new_pct=%d client=%s",
-                    new_pct, self.address_string(),
+                    "event=volume.set new_pct=%d source=%s client=%s",
+                    new_pct, source_name or "authoritative",
+                    self.address_string(),
                 )
                 self._send_json(self._volume_payload(new_pct))
                 return

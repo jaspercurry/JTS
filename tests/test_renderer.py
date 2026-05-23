@@ -62,6 +62,11 @@ async def test_active_renderers_all_inactive(renderer):
         "aplactive": False,
         "btactive": False,
         "spotactive": False,
+        # USB sink probe reads /run/jasper-usbsink/state.json — under
+        # the test harness there's no daemon publishing, so the
+        # FileNotFoundError path resolves to False (matching the
+        # fail-soft convention of the other probes).
+        "usbsinkactive": False,
     }
 
 

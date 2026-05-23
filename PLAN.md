@@ -68,7 +68,7 @@ Starting points:
 | **v5** | **Wireless stereo pair** via Snapcast (Pi Zero 2W slave) | Architecturally clean addition once v1–v3 stable |
 | **v6** | **Wireless subwoofer** node + crossover in master CamillaDSP | Strict superset of v5; biggest video story |
 | **v7** | Direct device-to-device **mesh** (master AP+STA, slave priority fallback) | Networking polish; only matters at v5+ scale |
-| **v8** | **USB gadget** (UAC2) inline DSP mode | Blocked on Pi linux #6289 / #6569 being fixed; lowest priority |
+| ~~**v8**~~ | ~~**USB gadget** (UAC2) inline DSP mode~~ | **Shipped 2026-05-23** as a fourth music source: host plugs into Pi USB-C, JTS exposes itself as a USB audio output via the 8086 splitter. ~22 MB RAM on, 0 off, disabled by default. Adapts the PiCorrect ConfigFS gadget stack into a fourth source under `jasper-mux`. The original "inline DSP mode" interpretation (Pi replacing PiCorrect's role entirely) is a deeper follow-up; same gadget descriptor, would require CamillaDSP topology changes. See [docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md). |
 | ~~**v9**~~ | ~~Home Assistant bridge tool (single proxy function)~~ | **Shipped in v1** (May 2026) via `home_assistant` voice tool wrapping HA's `/api/conversation/process`. JTS is first-of-kind for xAI Grok Voice + HA. Wizard at `http://jts.local/ha/`. Full architecture in [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md). |
 
 The v1 architecture decisions that protect this sequence:

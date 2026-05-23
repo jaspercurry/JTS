@@ -382,6 +382,57 @@ install_renderers() {
     bash "${REPO_DIR}/deploy/configure-bluez.sh"
 }
 
+set_usb_gadget_mode() {
+    # Add the dtoverlay that puts the Pi 5's BCM2712 OTG controller
+    # (the USB-C port) into peripheral mode so it can present as a USB
+    # gadget to a connected host. This is the precondition for the
+    # jasper-usbsink feature — a fourth music source where a computer
+    # plugged into the Pi via the 8086 splitter sees JTS as a USB audio
+    # output device.
+    #
+    # We only set the dtoverlay. We do NOT load libcomposite at boot,
+    # auto-create the gadget descriptor, or enable jasper-usbsink. All
+    # of that is gated behind the /sources/ wizard toggle so RAM stays
+    # at baseline (~50 KB dwc2 kernel module) when the feature is off.
+    #
+    # Requires a reboot to take effect — the dwc2 module is loaded by
+    # the kernel via the dtoverlay at boot. Subsequent runs of
+    # install.sh are no-ops once the line is present.
+    #
+    # Side effect to document: the Pi 5 USB-C port is no longer
+    # available for plugging USB host devices (e.g. flash drives).
+    # The four USB-A ports remain in host mode unchanged.
+    local cfg="/boot/firmware/config.txt"
+    if [[ ! -f "$cfg" ]]; then
+        echo "  $cfg not present; skipping USB gadget dtoverlay."
+        return 0
+    fi
+    if grep -qE '^[[:space:]]*dtoverlay=dwc2,dr_mode=peripheral' "$cfg"; then
+        echo "  USB gadget dtoverlay already present in $cfg."
+        return 0
+    fi
+    # Prefer to append under an existing [pi5] section so the override
+    # is cleanly scoped to Pi 5. If [pi5] isn't present, append a
+    # fresh tagged block at the end.
+    if grep -qE '^\[pi5\]' "$cfg"; then
+        # GNU sed: insert after the [pi5] line.
+        sed -i '/^\[pi5\]/a dtoverlay=dwc2,dr_mode=peripheral' "$cfg"
+    else
+        cat >> "$cfg" <<'EOF'
+
+# JTS install — required for jasper-usbsink (USB audio gadget source).
+# Puts the BCM2712 OTG controller into peripheral mode so a connected
+# host can see JTS as a USB audio output device. libcomposite is NOT
+# loaded at boot; the jasper-usbsink-init.service modprobes it on
+# demand, so RAM stays at baseline when the USB sink is disabled.
+# Reboot required to take effect. See docs/HANDOFF-usbsink.md.
+[pi5]
+dtoverlay=dwc2,dr_mode=peripheral
+EOF
+    fi
+    echo "  USB gadget dtoverlay added to $cfg (reboot required to apply)."
+}
+
 tune_wifi_for_airplay() {
     # Disable WiFi power-save on the active wlan0 connection.
     # Pi's brcmfmac driver defaults to power-save ON, which causes
@@ -926,6 +977,28 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
+
+    # jasper-usbsink: fourth music source (USB gadget audio in). The
+    # init unit owns the ConfigFS gadget descriptor lifecycle; the
+    # main service is the Python daemon that bridges gadget capture
+    # into hw:Loopback,0,0. Both ship DISABLED — the /sources/ wizard
+    # toggle owns enable/disable, and the dtoverlay must be set + Pi
+    # rebooted first (handled by set_usb_gadget_mode above).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink-init.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink-init.service"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-usbsink.service" \
+        "${SYSTEMD_DIR}/jasper-usbsink.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-up" \
+        /usr/local/sbin/jasper-usbsink-gadget-up
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-gadget-down" \
+        /usr/local/sbin/jasper-usbsink-gadget-down
+    install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbsink-wait-card" \
+        /usr/local/sbin/jasper-usbsink-wait-card
     # Triggered by the udev rule installed below when the Apple dongle
     # re-enumerates: reset-failed, restart Camilla, then run the
     # mic/AEC reconciler so a hardware reconnect recovers without
@@ -1455,6 +1528,7 @@ main() {
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp
     install_camilladsp
     install_renderers
+    set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
     install_systemd_units

@@ -699,3 +699,104 @@ async def test_volume_coordinator_proceeds_when_camilla_unreachable(tmp_path):
     await coord.set_listening_level(40)
     assert cam.set_calls and abs(cam.set_calls[-1] - (-30.0)) < 0.01
     assert coord.get_listening_level() == 40
+
+
+# ---------- USB sink (camilla-master, host-slider observed inbound) --------
+
+
+async def test_set_volume_usbsink_active_routes_to_camilla(tmp_path):
+    """USB sink behaves like AirPlay for outbound: dial/voice writes
+    land on CamillaDSP. The gadget mixer is NOT written back to (the
+    host's slider is observed-only)."""
+    coord, cam, _ = _coord(
+        tmp_path, active={"usbsinkactive": True}, db=0.0,
+    )
+    await coord.set_listening_level(60)
+    assert coord.camilla_writes == [60]
+    # 60% on the -50..0 dB scale = -20 dB
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-20.0)) < 0.01
+    # No spotify/BT path triggered.
+    assert coord.spotify_writes == []
+    assert coord.bt_writes == []
+
+
+async def test_observe_usbsink_updates_listening_level_when_active(tmp_path):
+    """Host slider moves while USB is the active source — listening
+    level follows."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 80
+    persistence.save_listening_level(80)
+
+    # Mac slider drops to 45%. Volume bridge POSTs that through.
+    await coord.observe_source_volume(Source.USBSINK, 45)
+    assert coord.get_listening_level() == 45
+    assert persistence.load().listening_level == 45
+
+
+async def test_observe_usbsink_when_inactive_is_ignored(tmp_path):
+    """Host slider chatter while AirPlay is playing should not steal
+    JTS volume from AirPlay."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"aplactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70)
+
+    await coord.observe_source_volume(Source.USBSINK, 20)
+    assert coord.get_listening_level() == 70
+
+
+async def test_observe_usbsink_clamps_out_of_range(tmp_path):
+    """Defensive: percent outside [0, 100] gets clamped before storage."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"usbsinkactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 50
+    persistence.save_listening_level(50)
+
+    await coord.observe_source_volume(Source.USBSINK, 150)
+    assert coord.get_listening_level() == 100
+
+    await coord.observe_source_volume(Source.USBSINK, -20)
+    assert coord.get_listening_level() == 0
+
+
+async def test_usbsink_priority_below_airplay(tmp_path):
+    """When AirPlay and USB both report active (transition window),
+    AirPlay wins. This matches mux's first-source-defined-wins behavior
+    and matches user expectations that a phone-controlled AirPlay
+    session shouldn't be silently overridden by a Mac plugged into the
+    USB port."""
+    coord, _, _ = _coord(
+        tmp_path,
+        active={"aplactive": True, "usbsinkactive": True},
+    )
+    await coord.set_listening_level(55)
+    # AirPlay path fired (which also writes camilla); USB-specific
+    # branch did not.
+    assert coord.airplay_writes == [55]
+
+
+async def test_usbsink_is_camilla_master(tmp_path):
+    """The _camilla_carries_level predicate determines whether camilla
+    keeps the user's perceived level or is pinned at 0 dB. USB sink
+    must be camilla-master to track listening_level through
+    speaker output."""
+    coord, _, _ = _coord(tmp_path, active={"usbsinkactive": True})
+    assert await coord._camilla_carries_level(Source.USBSINK) is True
+    # Inverse check — spotify is still push-mode.
+    assert await coord._camilla_carries_level(Source.SPOTIFY) is False

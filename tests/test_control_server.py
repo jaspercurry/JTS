@@ -83,6 +83,18 @@ class FakeCoordinator:
         self.calls.append(("unmute", target))
         return target
 
+    async def observe_source_volume(self, source, percent: int) -> None:
+        self._maybe_fail()
+        # The real coordinator gates this on whether `source` is the
+        # currently active one and on echo windows; the fake just
+        # records the call so /volume/set route tests can assert the
+        # right path was taken. The fake's `_level` mutation mirrors
+        # what would happen in the active-source case so the response
+        # body has a sensible value.
+        target = max(0, min(100, int(percent)))
+        self._level = target
+        self.calls.append(("observe", target))
+
     async def aclose(self) -> None:
         return None
 
@@ -296,6 +308,47 @@ def test_set_missing_field_400(server_with_coordinator):
     assert status == 400
 
 
+def test_volume_set_with_usbsink_source_routes_to_observe(server_with_coordinator):
+    """/volume/set with `source: usbsink` should go through
+    observe_source_volume so the coordinator's echo-prevention applies.
+    Without `source`, the request is authoritative (set path)."""
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {"percent": 42, "source": "usbsink"},
+    )
+    assert status == 200
+    assert body["percent"] == 42
+    # observe call recorded, not set.
+    assert ("observe", 42) in fake.calls
+    assert all(c[0] != "set" for c in fake.calls), \
+        f"unexpected set call in {fake.calls}"
+
+
+def test_volume_set_with_unknown_source_falls_back_to_set(server_with_coordinator):
+    """Unknown source names go through the authoritative set path so a
+    future client that posts a fresh source name doesn't silently
+    no-op. (Defensive: avoid 400ing on a typo.)"""
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/set",
+        {"percent": 55, "source": "rotary-future-source"},
+    )
+    assert status == 200
+    assert body["percent"] == 55
+    assert ("set", 55) in fake.calls
+
+
+def test_volume_set_without_source_is_authoritative(server_with_coordinator):
+    """Existing dial / voice clients post without `source`; they
+    continue to hit the authoritative set path."""
+    base, fake = server_with_coordinator
+    status, body = _post(f"{base}/volume/set", {"percent": 80})
+    assert status == 200
+    assert ("set", 80) in fake.calls
+    assert all(c[0] != "observe" for c in fake.calls)
+
+
 def test_volume_mute_toggles_off_then_on(server_with_coordinator):
     """First POST mutes (saves 60% pre-mute, returns 0). Second
     POST unmutes (restores 60%). Used by the VK-01 knob click."""
@@ -370,6 +423,83 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
+
+
+def test_state_usbsink_section_null_when_disabled(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """When jasper-usbsink isn't running, no /run/jasper-usbsink/
+    state.json exists — the section comes back as null so consumers
+    can distinguish "feature off" from "feature on but idle"."""
+    base, _ = server_with_coordinator
+    monkeypatch.setenv(
+        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["renderers"]["usbsink"] is None
+
+
+def test_state_usbsink_section_populated_when_enabled(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """When the daemon is publishing, /state surfaces playing,
+    preempted, host_connected, rms_dbfs."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "playing": True, "preempted": False, "host_connected": True,
+        "rms_dbfs": -12.3,
+        "updated_at": "2026-05-16T00:00:00+00:00",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    section = body["renderers"]["usbsink"]
+    assert section["playing"] is True
+    assert section["preempted"] is False
+    assert section["host_connected"] is True
+    assert section["rms_dbfs"] == -12.3
+
+
+def test_state_active_source_resolves_to_usbsink_when_only_usb_playing(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """active_source ranks usbsink above idle but below the named
+    renderers — when nothing else is playing and USB is, the field
+    surfaces as 'usbsink' so the dashboard renders correctly."""
+    base, _ = server_with_coordinator
+    usbsink_state = tmp_path / "usbsink_state.json"
+    usbsink_state.write_text(json.dumps({
+        "playing": True, "preempted": False, "host_connected": True,
+        "rms_dbfs": -10.0,
+        "updated_at": "2026-05-16T00:00:00+00:00",
+    }))
+    monkeypatch.setenv("JASPER_USBSINK_STATE_PATH", str(usbsink_state))
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "spot.json"),
+    )
+
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["active_source"] == "usbsink"
 
 
 def test_state_502_when_aggregator_raises(
