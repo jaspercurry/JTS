@@ -1,0 +1,123 @@
+name: Doc freshness check
+
+# Runs `scripts/doc-freshness.sh` on every PR (and on manual
+# `workflow_dispatch`). Posts/updates a sticky comment on the PR with
+# the current stale-doc list. Non-blocking: stale items don't fail
+# the workflow or block merge — this is a soft reminder, matching the
+# script's "informational, not enforcement" design.
+#
+# How to read the comment: the script flags any HANDOFF or top-level
+# doc whose `Last verified: YYYY-MM-DD` footer (or, when absent, its
+# last git commit) is older than the threshold (default 90 days). For
+# each flagged doc, either bump the footer after re-reading, or fix
+# what's stale. See AGENTS.md "Documentation paradigm" rule 3.
+#
+# Fork PRs note: the default GITHUB_TOKEN issued to a PR from a fork
+# can't write to the base repo, so the comment step will silently
+# no-op for fork PRs. The check itself still runs and the output
+# shows up in the Actions tab's step summary. Switch to a
+# pull_request_target-based comment workflow if/when external
+# contributors are a regular thing.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so doc-freshness.sh's `git log` fallback
+          # sees real commit dates per file, not just HEAD.
+          fetch-depth: 0
+
+      - name: Run doc-freshness check
+        id: check
+        run: |
+          set -euo pipefail
+          OUTPUT=$(bash scripts/doc-freshness.sh 90 --all)
+          echo "$OUTPUT"
+          # Mirror to the Actions run summary so manual runs show
+          # something visible without needing PR comments.
+          {
+            echo '## Doc freshness'
+            echo
+            echo '```'
+            echo "$OUTPUT"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          STALE_COUNT=$(echo "$OUTPUT" | sed -nE 's/^Summary: ([0-9]+) stale.*/\1/p')
+          echo "stale_count=${STALE_COUNT:-0}" >> "$GITHUB_OUTPUT"
+          {
+            echo 'output<<DOCFRESHNESS_EOF'
+            echo "$OUTPUT"
+            echo 'DOCFRESHNESS_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update PR sticky comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          STALE_COUNT: ${{ steps.check.outputs.stale_count }}
+          OUTPUT: ${{ steps.check.outputs.output }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- doc-freshness-bot -->'
+
+          # Find existing sticky comment by HTML-comment marker.
+          EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
+            | head -1 || true)
+
+          if [[ "$STALE_COUNT" == "0" ]]; then
+            if [[ -z "$EXISTING_ID" ]]; then
+              # Quiet on the happy path — no comment if nothing was
+              # ever stale on this PR.
+              echo "No stale items, no existing comment — nothing to do."
+              exit 0
+            fi
+            BODY=$(cat <<EOF
+${MARKER}
+## Doc freshness: all clear
+
+No HANDOFFs are overdue for re-verification (90-day threshold).
+
+_Posted by [\`scripts/doc-freshness.sh\`](scripts/doc-freshness.sh) via [\`.github/workflows/doc-freshness.yml\`](.github/workflows/doc-freshness.yml) — informational, non-blocking._
+EOF
+)
+          else
+            BODY=$(cat <<EOF
+${MARKER}
+## Doc freshness: ${STALE_COUNT} doc(s) overdue for re-verification
+
+\`\`\`
+${OUTPUT}
+\`\`\`
+
+For each stale doc, re-read it against the current code and either:
+- bump the \`Last verified:\` footer to today's date, or
+- update the content.
+
+See AGENTS.md "Documentation paradigm" rule 3. **Informational only — this PR can still merge.**
+
+_Posted by [\`scripts/doc-freshness.sh\`](scripts/doc-freshness.sh) via [\`.github/workflows/doc-freshness.yml\`](.github/workflows/doc-freshness.yml)._
+EOF
+)
+          fi
+
+          if [[ -n "$EXISTING_ID" ]]; then
+            echo "Updating existing sticky comment ${EXISTING_ID}"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
+              -f body="$BODY" > /dev/null
+          else
+            echo "Creating new sticky comment"
+            gh pr comment "$PR_NUMBER" --body "$BODY"
+          fi
