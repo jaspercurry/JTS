@@ -230,25 +230,24 @@ _out_total_samples = 0
 _ref_starved_frames = 0
 
 
+def _env_bool(name: str, default: str) -> bool:
+    return os.environ.get(name, default).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 class _Aec3Engine:
-    """WebRTC AEC3 via the jasper_aec3 pybind11 binding.
+    """WebRTC AEC3 via the jasper_aec3 v1.3-3 (legacy) pybind11 binding.
 
     Splits each FRAME_SAMPLES (20 ms) buffer into 2× 10 ms windows
     internally, calls ProcessReverseStream + ProcessStream per
-    window, returns the joined AEC'd capture. Includes a residual
-    echo suppressor and noise suppression at kModerate.
+    window, returns the joined AEC'd capture. Top-level
+    AudioProcessing::Config knobs only (no deep EchoCanceller3Config
+    access). Fallback engine when the v2 binding isn't built.
     """
 
     def __init__(self) -> None:
-        # Imported lazily so the bridge doesn't fail to import on
-        # systems where the binding isn't built (e.g. dev laptops
-        # running the test suite).
         from jasper_aec3 import Aec3
-
-        def _env_bool(name: str, default: str) -> bool:
-            return os.environ.get(name, default).strip().lower() in (
-                "1", "true", "yes", "on",
-            )
 
         ns_enabled = _env_bool("JASPER_AEC_NS_ENABLED", "1")
         ns_level = os.environ.get(
@@ -271,7 +270,7 @@ class _Aec3Engine:
             agc1_max_gain_db=agc1_max_gain_db,
         )
         logger.info(
-            "engine=aec3 ns=%s/%s agc1=%s(target=%d,max=%ddB) "
+            "engine=aec3_v1 ns=%s/%s agc1=%s(target=%d,max=%ddB) "
             "agc2=%s frame=%d rate=%d",
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
@@ -288,6 +287,139 @@ class _Aec3Engine:
         # is freed when the Python Aec3 instance is GC'd. No
         # explicit teardown needed.
         pass
+
+
+class _Aec3V2Engine:
+    """WebRTC AEC3 via the jasper_aec3 v2.1 vendored-static binding.
+
+    Exposes the deep EchoCanceller3Config knobs the v1 binding can't
+    reach — required for the BEST_A canonical config from the
+    2026-05-22 tuning campaign. Defaults to BEST_A; env vars override
+    each knob individually.
+
+    BEST_A config (the Aec3V2 constructor's pybind11 defaults already
+    match these — no override needed for default behavior):
+        filter_refined_length_blocks=30
+        ep_strength_bounded_erl=False
+        ep_strength_default_gain=0.3
+        erle_max_l=1.5, erle_max_h=1.0
+        erle_onset_detection=False
+        use_stationarity_properties=True
+        conservative_hf_suppression=True
+        normal_mask_hf_enr_transparent=0.3
+        normal_mask_hf_enr_suppress=0.4
+        normal_mask_hf_emr_transparent=0.3
+        normal_max_dec_factor_lf=0.05
+
+    Env-var overrides (all optional; default to BEST_A):
+        JASPER_AEC_FILTER_LENGTH        (int, default 30)
+        JASPER_AEC_BOUNDED_ERL          (bool, default false)
+        JASPER_AEC_DEFAULT_GAIN         (float, default 0.3)
+        JASPER_AEC_ERLE_MAX_L           (float, default 1.5)
+        JASPER_AEC_ERLE_MAX_H           (float, default 1.0)
+        JASPER_AEC_ERLE_ONSET           (bool, default false)
+        JASPER_AEC_USE_STATIONARITY     (bool, default true)
+        JASPER_AEC_CONSERVATIVE_HF      (bool, default true)
+        JASPER_AEC_MASK_HF_ENR_T        (float, default 0.3)
+        JASPER_AEC_MASK_HF_ENR_S        (float, default 0.4)
+        JASPER_AEC_MASK_HF_EMR_T        (float, default 0.3)
+        JASPER_AEC_MAX_DEC_LF           (float, default 0.05)
+    """
+
+    def __init__(self) -> None:
+        from jasper_aec3 import Aec3V2
+
+        # Top-level (shared with v1)
+        ns_enabled = _env_bool("JASPER_AEC_NS_ENABLED", "1")
+        ns_level = os.environ.get("JASPER_AEC_NS_LEVEL", "low").strip().lower()
+        agc1_enabled = _env_bool("JASPER_AEC_AGC1_ENABLED", "1")  # BEST_A default
+        agc1_target_dbfs = int(os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"))
+        agc1_max_gain_db = int(os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"))
+        enable_agc2 = _env_bool("JASPER_AEC_AGC2", "0")
+
+        # Deep EchoCanceller3Config — defaults from BEST_A
+        filter_length = int(os.environ.get("JASPER_AEC_FILTER_LENGTH", "30"))
+        bounded_erl = _env_bool("JASPER_AEC_BOUNDED_ERL", "0")
+        default_gain = float(os.environ.get("JASPER_AEC_DEFAULT_GAIN", "0.3"))
+        erle_max_l = float(os.environ.get("JASPER_AEC_ERLE_MAX_L", "1.5"))
+        erle_max_h = float(os.environ.get("JASPER_AEC_ERLE_MAX_H", "1.0"))
+        erle_onset = _env_bool("JASPER_AEC_ERLE_ONSET", "0")
+        use_stationarity = _env_bool("JASPER_AEC_USE_STATIONARITY", "1")
+        conservative_hf = _env_bool("JASPER_AEC_CONSERVATIVE_HF", "1")
+        mask_hf_enr_t = float(os.environ.get("JASPER_AEC_MASK_HF_ENR_T", "0.3"))
+        mask_hf_enr_s = float(os.environ.get("JASPER_AEC_MASK_HF_ENR_S", "0.4"))
+        mask_hf_emr_t = float(os.environ.get("JASPER_AEC_MASK_HF_EMR_T", "0.3"))
+        max_dec_lf = float(os.environ.get("JASPER_AEC_MAX_DEC_LF", "0.05"))
+
+        self._aec = Aec3V2(
+            stream_delay_ms=40,
+            enable_agc2=enable_agc2,
+            ns_enabled=ns_enabled,
+            ns_level=ns_level,
+            agc1_enabled=agc1_enabled,
+            agc1_target_dbfs=agc1_target_dbfs,
+            agc1_max_gain_db=agc1_max_gain_db,
+            filter_refined_length_blocks=filter_length,
+            ep_strength_bounded_erl=bounded_erl,
+            ep_strength_default_gain=default_gain,
+            erle_max_l=erle_max_l,
+            erle_max_h=erle_max_h,
+            erle_onset_detection=erle_onset,
+            use_stationarity_properties=use_stationarity,
+            conservative_hf_suppression=conservative_hf,
+            normal_mask_hf_enr_transparent=mask_hf_enr_t,
+            normal_mask_hf_enr_suppress=mask_hf_enr_s,
+            normal_mask_hf_emr_transparent=mask_hf_emr_t,
+            normal_max_dec_factor_lf=max_dec_lf,
+        )
+        logger.info(
+            "engine=aec3_v2(BEST_A) ns=%s/%s agc1=%s(target=%d,max=%ddB) "
+            "agc2=%s filter_len=%d bounded_erl=%s default_gain=%.2f "
+            "erle=%.2f/%.2f onset=%s stationarity=%s conservative_hf=%s "
+            "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f",
+            "on" if ns_enabled else "off", ns_level,
+            "on" if agc1_enabled else "off",
+            agc1_target_dbfs, agc1_max_gain_db,
+            "on" if enable_agc2 else "off",
+            filter_length, bounded_erl, default_gain,
+            erle_max_l, erle_max_h,
+            "on" if erle_onset else "off",
+            "on" if use_stationarity else "off",
+            "on" if conservative_hf else "off",
+            mask_hf_enr_t, mask_hf_enr_s, mask_hf_emr_t,
+            max_dec_lf,
+        )
+
+    def process(self, mic: bytes, ref: bytes) -> bytes:
+        return self._aec.process(mic, ref)
+
+    def close(self) -> None:
+        pass
+
+
+def _select_engine():
+    """Pick the AEC engine to use.
+
+    JASPER_AEC_BINDING=v2 forces v2; =v1 forces v1; default (=auto)
+    tries v2 first, falls back to v1 if the v2 module isn't built.
+    Returns an engine instance ready to call .process().
+    """
+    pref = os.environ.get("JASPER_AEC_BINDING", "auto").strip().lower()
+    if pref == "v1":
+        return _Aec3Engine()
+    if pref == "v2":
+        return _Aec3V2Engine()
+    # auto
+    try:
+        import jasper_aec3
+        if jasper_aec3.HAS_V2:
+            return _Aec3V2Engine()
+    except ImportError:
+        pass
+    logger.info(
+        "jasper_aec3._aec3_v2 not available — falling back to v1 binding"
+    )
+    return _Aec3Engine()
 
 
 def _validate_mic_device() -> None:
@@ -778,7 +910,7 @@ def main() -> int:
         logger.error("%s", e)
         return 1
 
-    engine = _Aec3Engine()
+    engine = _select_engine()
 
     # Signal handlers for clean shutdown
     def on_signal(signum, _frame):
