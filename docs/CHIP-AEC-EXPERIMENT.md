@@ -9,19 +9,20 @@ explicitly opts in via [`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.s
 [`scripts/chip-aec-teardown.sh`](../scripts/chip-aec-teardown.sh)
 fully reverts.
 
-**Why shelved.** The software AEC3 bridge (BEST_A tuning, ~−15 to
-−18 dB on music, ~110 MB RAM, runs on every shipped firmware
-variant) is the production-good-enough path today. Resolving the
-chip-AEC convergence question takes time and ties up the speaker
-for hours of focused work; the expected upside doesn't justify
-the cost while AEC3 is working. The "Architecture is fixed; swap
-the engine, not the topology" rule in [AGENTS.md](../AGENTS.md)
-reflects that priority order. If AEC3 ever plateaus and chip-AEC
-looks worth re-examining, the infrastructure is here — start by
-re-reading this doc, then the rest of HANDOFF-aec.md Option D,
-then run pre-flight via `bash scripts/chip-aec-setup.sh` (which
-fails loudly if the topology has drifted further). Until then:
-**don't run it.**
+**Why shelved.** The software AEC3 bridge (BEST_A engine, ~85 MB
+RAM, ~3% of one Pi 5 core, runs on **6-channel XVF firmware only**)
+is the production-good-enough path today — BEST_A specifically
+rescues wake-rate on hard cells like whisper-music that the
+prior tuning silently missed. Resolving the chip-AEC convergence
+question takes time and ties up the speaker for hours of focused
+work; the expected upside doesn't justify the cost while AEC3 is
+working. The "Architecture is fixed; swap the engine, not the
+topology" rule in [AGENTS.md](../AGENTS.md) reflects that priority
+order. If AEC3 ever plateaus and chip-AEC looks worth re-examining,
+the infrastructure is here — start by re-reading this doc, then
+the rest of HANDOFF-aec.md Option D, then run pre-flight via
+`bash scripts/chip-aec-setup.sh` (which fails loudly if the
+topology has drifted further). Until then: **don't run it.**
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,

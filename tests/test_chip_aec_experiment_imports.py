@@ -80,9 +80,11 @@ def test_chip_aec_experiment_module_constants_intact() -> None:
     )
 
     # ch1 is the AEC-processed ASR beam when SHF_BYPASS=0.
-    # See HANDOFF-xvf3800.md §1 for the channel map.
+    # See HANDOFF-xvf3800.md "Both 2-ch and 6-ch share channel 0 =
+    # Conference and channel 1 = ASR" for the canonical channel map.
     assert m.MIC_CHANNEL == 1, (
         f"MIC_CHANNEL changed: {m.MIC_CHANNEL}. "
-        "ch1 is the chip's ASR beam — ch0 is wakeword beam, "
-        "ch2-5 are raw mics. Verify against HANDOFF-xvf3800.md §1."
+        "ch1 is the chip's ASR beam (AEC-processed when SHF_BYPASS=0). "
+        "ch0 is the Conference beam; ch2-5 are raw mics on 6-ch firmware. "
+        "Verify against HANDOFF-xvf3800.md."
     )

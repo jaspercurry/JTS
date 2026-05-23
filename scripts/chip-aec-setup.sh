@@ -1,18 +1,35 @@
 #!/usr/bin/env bash
-# Phase 1 setup for the chip-aec-experiment branch.
+# Phase 1 setup for the chip-aec-experiment.
 # See docs/CHIP-AEC-EXPERIMENT.md for the full plan and revert procedure.
 #
-# What this does:
-#   1. Rsyncs the experimental code to the Pi (no install.sh — keeps the
-#      reconciler from re-enabling the bridge mid-experiment).
-#   2. Stops + masks jasper-aec-bridge (so the reconciler can't restart it).
-#   3. Sets chip params for chip-AEC: SHF_BYPASS=0, AUDIO_MGR_SYS_DELAY=12.
-#   4. Starts the experiment daemon (reference feeder + UDP mic pump).
+# What this does, in order:
+#   1. Pre-flight: read-only checks that the topology assumptions still
+#      hold (chip on 6-ch firmware, plug:jasper_capture resolves, daemon
+#      module imports, SHF_BYPASS=1 baseline, bridge active, all 4 units
+#      exist). Fails loudly BEFORE any destructive op if drift found.
+#   2. Rsyncs experimental code to the Pi (SKIP_INSTALL=1, so install.sh
+#      doesn't re-trigger the reconciler chain).
+#   3. Stops + masks the production AEC service chain — all four units:
+#      jasper-aec-{bridge,reconcile,init,dongle-recover}. Masking only
+#      the bridge is insufficient; see the comment block above the mask
+#      loop for why.
+#   4. Snapshots /etc/jasper/jasper.env and comments out
+#      JASPER_MIC_DEVICE_RAW + JASPER_MIC_DEVICE_DTLN (the dual/triple-
+#      stream wake telemetry env vars). Teardown restores from backup.
+#   5. Writes a UNIX-timestamp sentinel under /var/lib/jasper/wake-events/
+#      so teardown can print a SQL one-liner labelling experiment-window
+#      wake events.
+#   6. Sets chip params: SHF_BYPASS=0, AUDIO_MGR_SYS_DELAY=12.
+#   7. Starts the experiment daemon (reference feeder + UDP mic pump).
+#   8. Restarts jasper-voice to clear any prior state.
 #
-# jasper-voice continues reading udp://127.0.0.1:9876 — same input contract
-# as production with the WebRTC bridge. No voice-daemon changes.
+# jasper-voice continues reading udp://127.0.0.1:9876 — same input
+# contract as production with the WebRTC bridge. No voice-daemon
+# changes are made.
 #
-# Revert: bash scripts/chip-aec-teardown.sh
+# Revert: bash scripts/chip-aec-teardown.sh (unmasks the four units,
+# restores chip params + amixer, restores jasper.env, prints SQL for
+# wake-event labelling).
 
 set -euo pipefail
 
