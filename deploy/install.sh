@@ -410,6 +410,81 @@ tune_wifi_for_airplay() {
     echo "  WiFi power-save disabled on connection '$wlan_conn'."
 }
 
+# Rebuild a satellite firmware .bin from source if (a) it's missing,
+# or (b) any source file is newer than the staged .bin AND
+# PlatformIO is already installed on this Pi. We intentionally do NOT
+# auto-install PIO: a fresh install pulls ~300-500 MB of ESP32-S3
+# toolchain on first build, and most JTS households don't have any
+# satellite devices. The /dial/ wizard surfaces a copy-paste install
+# command for households that do.
+#
+# PIO can live in any of three places (mirrors build.sh's resolution
+# order): on PATH, at /opt/jasper/.venv/bin/pio (the wizard's install
+# target), or at /home/pi/.platformio/penv/bin/pio (PIO's own
+# installer-script default). We accept any of them.
+#
+# Build runs as the pi user when /home/pi/.platformio exists, so the
+# toolchain cache lands in one place and root doesn't end up with a
+# duplicate copy. Otherwise we run as whoever invoked install.sh.
+#
+# Soft-fails: a failed build prints a warning and lets install.sh
+# continue — the wizard surfaces the stale-bin state to the user.
+_build_firmware_if_stale() {
+    local fw_dir="$1"
+    local bin_name="$2"
+    local fw_root="${INSTALL_DIR}/firmware/${fw_dir}"
+    local bin_path="${fw_root}/${bin_name}"
+    local src_dir="${fw_root}/src"
+    local build_script="${fw_root}/build.sh"
+
+    [[ -f "$build_script" ]] || return 0
+    [[ -d "$src_dir" ]] || return 0
+
+    local need_build=0
+    if [[ ! -f "$bin_path" ]]; then
+        need_build=1
+    elif [[ -n "$(find "$src_dir" -type f -newer "$bin_path" 2>/dev/null | head -1)" ]]; then
+        need_build=1
+    fi
+    [[ $need_build -eq 1 ]] || return 0
+
+    # Detect PIO anywhere build.sh would find it.
+    local pio_found=0
+    if command -v pio >/dev/null 2>&1 \
+       || [[ -x "/opt/jasper/.venv/bin/pio" ]] \
+       || [[ -x "/home/pi/.platformio/penv/bin/pio" ]]; then
+        pio_found=1
+    fi
+
+    if [[ $pio_found -ne 1 ]]; then
+        echo "==> ${fw_dir} firmware: source newer than staged .bin, but"
+        echo "    PlatformIO is not installed on this Pi. The wizard will"
+        echo "    skip flashing for ${fw_dir} until PIO is available."
+        echo "    To enable, run once on the Pi:"
+        echo "      sudo /opt/jasper/.venv/bin/pip install platformio"
+        echo "    Then re-run deploy/install.sh."
+        return 0
+    fi
+
+    # Pick the build user. Prefer pi when pi has any PIO state, so a
+    # populated toolchain cache gets reused on each rebuild.
+    local build_user build_cmd
+    if [[ -d "/home/pi/.platformio" ]]; then
+        build_user="pi"
+        build_cmd="sudo -u pi -H bash ${build_script}"
+    else
+        build_user="$(id -un)"
+        build_cmd="bash ${build_script}"
+    fi
+
+    echo "==> ${fw_dir} firmware: building as ${build_user} (~30 s incremental, ~5 min first run)"
+    if eval "$build_cmd"; then
+        echo "    Staged ${bin_path}"
+    else
+        echo "==> ${fw_dir} firmware: build FAILED — wizard will skip flash until next deploy"
+    fi
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     install -d -m 0750 "${STATE_DIR}"
@@ -484,10 +559,22 @@ EOF
     # /opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin).
     # The .pio build dir is excluded — that's local to whoever ran the
     # per-firmware build.sh and contains absolute paths.
+    #
+    # NO --delete: build.sh writes each .bin INTO ${INSTALL_DIR}/firmware/
+    # (not into the source repo), so --delete would silently remove the
+    # staged .bin on every deploy. Verified failure mode: the /dial/
+    # wizard's "Force flash" silently skipped flashing after re-deploy
+    # because jasper-dial-onboard saw no bin and fell through to its
+    # creds-only path. Instead we (a) leave any locally-staged .bin in
+    # place, and (b) rebuild from source via _build_firmware_if_stale
+    # when the source is newer (PIO required; soft-fails without).
     if [[ -d "${REPO_DIR}/firmware" ]]; then
-        rsync -a --delete \
+        rsync -a \
             --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
             "${REPO_DIR}/firmware" "${INSTALL_DIR}/"
+
+        _build_firmware_if_stale "dial" "jasper-dial.bin"
+        _build_firmware_if_stale "satellite-amoled" "jasper-satellite-amoled.bin"
     fi
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then

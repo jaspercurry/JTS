@@ -546,6 +546,111 @@ def test_dial_status_reports_recent_heartbeat(server_with_coordinator):
     assert "encoder" in body["last_message"]
 
 
+# --- Dial reachability probe (powers /state.satellites.dial.online) ---
+
+
+def test_probe_dial_reachable_returns_true_on_refused():
+    """Real-network test: connecting to localhost on a port nothing is
+    listening on gets RST → ConnectionRefusedError. The probe treats
+    that as "online" because a host has to be alive to send RST."""
+    import asyncio
+    from jasper.control.server import _probe_dial_reachable
+
+    # Port 1 is privileged and effectively guaranteed unbound on a
+    # normal system; ECONNREFUSED is immediate.
+    result = asyncio.run(_probe_dial_reachable("127.0.0.1", timeout=1.0))
+    assert result is True
+
+
+def test_probe_dial_reachable_returns_false_on_timeout():
+    """Black-hole IP (RFC 5737 TEST-NET-1, not routable) → timeout →
+    online=False. Uses a tight timeout so the test stays fast."""
+    import asyncio
+    from jasper.control.server import _probe_dial_reachable
+
+    result = asyncio.run(_probe_dial_reachable("192.0.2.1", timeout=0.2))
+    assert result is False
+
+
+def test_state_dial_online_true_when_probe_succeeds(
+    server_with_coordinator, monkeypatch,
+):
+    """/state.satellites.dial.online reflects TCP reachability, not
+    UDP-dlog freshness. With a recorded last_seen_ip and the probe
+    monkeypatched to succeed, the dial is correctly reported online
+    even when the last dlog was hours ago."""
+    import time
+    import jasper.control.server as srv_mod
+
+    # Ancient dlog activity (would have failed the old 30 s threshold).
+    srv_mod._dial_heartbeat["last_seen_at"] = time.time() - 3600.0
+    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
+
+    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
+        return True
+    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    dial = body["satellites"]["dial"]
+    assert dial["online"] is True
+    # age_seconds still reflects the last dlog — useful for "has the
+    # user touched the dial lately?" UX, separate from liveness.
+    assert dial["age_seconds"] >= 3600.0
+
+
+def test_state_dial_online_false_when_probe_fails(
+    server_with_coordinator, monkeypatch,
+):
+    """Reachable IP recorded but probe times out (dial powered off /
+    out of range) → online=False. last_seen_at still surfaces so the
+    dashboard can show "last seen ago" even when unreachable."""
+    import time
+    import jasper.control.server as srv_mod
+
+    srv_mod._dial_heartbeat["last_seen_at"] = time.time() - 10.0
+    srv_mod._dial_heartbeat["last_seen_ip"] = "192.168.1.89"
+    srv_mod._dial_heartbeat["last_message"] = "[encoder] detent=1 → POST OK"
+
+    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
+        return False
+    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    dial = body["satellites"]["dial"]
+    assert dial["online"] is False
+    assert dial["age_seconds"] is not None
+
+
+def test_state_dial_online_false_when_no_last_seen_ip(
+    server_with_coordinator, monkeypatch,
+):
+    """No dlog yet → no IP to probe → online=False without ever
+    calling the probe. Asserts the probe isn't called so a fresh
+    daemon doesn't add probe latency to /state."""
+    import jasper.control.server as srv_mod
+
+    srv_mod._dial_heartbeat["last_seen_at"] = None
+    srv_mod._dial_heartbeat["last_seen_ip"] = None
+    srv_mod._dial_heartbeat["last_message"] = None
+
+    called = []
+    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
+        called.append(ip)
+        return True
+    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["satellites"]["dial"]["online"] is False
+    assert called == []
+
+
 # --- Regression tests for the BuildResult return-shape change ---
 
 

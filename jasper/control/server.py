@@ -354,6 +354,37 @@ async def _voice_socket_command(
     return json.loads(line.decode("utf-8"))
 
 
+async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
+    """Fast TCP probe for dial liveness. The dial firmware doesn't run
+    a server on any TCP port, so any connect attempt resolves to:
+
+    - ConnectionRefusedError (RST from a live host): online
+    - asyncio.TimeoutError / OSError: unreachable
+
+    Port 80 is arbitrary — closed-port RST behaviour is identical on
+    any port. Replaces the prior activity-based `online` check, which
+    flagged an idle-but-healthy dial offline because the dial only
+    emits UDP dlogs on encoder/button events. The probe takes
+    ~3-10 ms on a dial running the WiFi-sleep-disabled firmware (see
+    firmware/dial/src/main.cpp `WiFi.setSleep(false)`); the 500 ms
+    cap is the worst-case envelope for a still-sleeping dial."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(ip, 80),
+            timeout=timeout,
+        )
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+        return True
+    except ConnectionRefusedError:
+        return True
+    except (asyncio.TimeoutError, OSError):
+        return False
+
+
 async def _get_state(
     *,
     camilla_host: str,
@@ -440,11 +471,24 @@ async def _get_state(
         from .. import home_assistant
         return await home_assistant.probe_status_from_env()
 
-    cam_db, airplay, voice_st, ha_status = await asyncio.gather(
+    # Snapshot dial heartbeat early so the parallel reachability probe
+    # has a stable IP target even if the UDP listener mutates the dict
+    # mid-call. last_seen_ip is None until the dial has dlogged at
+    # least once — without an IP we can't probe, so online stays false.
+    dial_snapshot = dict(_dial_heartbeat)
+    dial_ip = dial_snapshot.get("last_seen_ip")
+
+    async def _dial_online() -> bool:
+        if not dial_ip:
+            return False
+        return await _probe_dial_reachable(dial_ip)
+
+    cam_db, airplay, voice_st, ha_status, dial_online = await asyncio.gather(
         _camilla_volume(),
         _airplay_playing(),
         _voice_status(),
         _ha_status(),
+        _dial_online(),
     )
 
     spotify_blob = librespot_state.read(
@@ -467,14 +511,17 @@ async def _get_state(
     else:
         active_source = "idle"
 
-    dial = dict(_dial_heartbeat)
-    if dial["last_seen_at"] is not None:
-        age = round(time.time() - dial["last_seen_at"], 1)
-        dial["age_seconds"] = age
-        dial["online"] = age < 30.0
+    # Build the dial section from the snapshot taken before the gather
+    # so age_seconds is consistent with whatever IP the probe targeted.
+    # `online` reflects real TCP reachability (see _probe_dial_reachable),
+    # not UDP-dlog freshness — an idle dial is now correctly online
+    # rather than mislabelled offline after 30 s of no encoder activity.
+    dial = dial_snapshot
+    if dial.get("last_seen_at") is not None:
+        dial["age_seconds"] = round(time.time() - dial["last_seen_at"], 1)
     else:
         dial["age_seconds"] = None
-        dial["online"] = False
+    dial["online"] = dial_online
 
     return {
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),

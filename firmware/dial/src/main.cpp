@@ -243,6 +243,27 @@ static bool postSessionEnd() {
     return postJson("/session/end", "{}");
 }
 
+// Disable WiFi modem-sleep. **Must be called AFTER WiFi.begin()
+// returns WL_CONNECTED** — calling it before begin is a no-op because
+// `esp_wifi_start()` (inside WiFi.begin) resets PS mode to the
+// Arduino-ESP32 default of WIFI_PS_MIN_MODEM. With sleep on, inbound
+// RTT swings 22-426 ms (DTIM-bounded receive) and HTTP POSTs to
+// jasper-control routinely exceed the 2 s timeout — symptom: dial
+// volume is temperamental, side LED blinks red.
+//
+// The dial is USB-powered, so the ~30 mA continuous draw is a non-
+// issue. Standard practice for USB-powered ESP32 controllers (WLED,
+// Tasmota's SetOption127, Apollo Automation, ESPHome users hitting
+// the same symptom at the LIGHT default).
+//
+// Serial print is intentional: gives a single observable signal that
+// the call ran. If you see this in the boot log, modem-sleep is off.
+static void disableWifiSleep() {
+    bool ok = WiFi.setSleep(false);
+    Serial.printf("[boot] WiFi modem-sleep disabled (setSleep=%s)\n",
+                  ok ? "OK" : "FAIL");
+}
+
 static bool tryConnectStored() {
     String ssid = g_prefs.getString("ssid", "");
     String pass = g_prefs.getString("pass", "");
@@ -258,7 +279,11 @@ static bool tryConnectStored() {
         renderStatus();
         delay(100);
     }
-    return WiFi.status() == WL_CONNECTED;
+    if (WiFi.status() == WL_CONNECTED) {
+        disableWifiSleep();
+        return true;
+    }
+    return false;
 }
 
 // Improv: callback fired when the host (improv-wifi.com or
@@ -298,6 +323,7 @@ static bool improvConnect(const char *ssid, const char *password) {
     bool ok = (WiFi.status() == WL_CONNECTED);
     Serial.printf("[improv] connect %s after %lums (final status=%d)\n",
                   ok ? "OK" : "FAIL", millis() - t0, (int)WiFi.status());
+    if (ok) disableWifiSleep();
     return ok;
 }
 
@@ -389,22 +415,34 @@ void loop() {
 
     // Encoder → volume. Snapshot the volatile counter, compute new
     // detents since last apply, send one POST per net detent change.
+    //
+    // lastApplied advances ONLY on POST success. A failed POST (or a
+    // WiFi-down moment) leaves the deltas in the residual
+    // (g_encoderRaw - lastApplied) so the next loop iteration retries
+    // automatically with the same+new detents. Without this, every
+    // failed POST silently dropped the user's spin — the symptom that
+    // motivated this change. delta_db is idempotent on retry because
+    // the server clamps to 0-100% and treats it as "add this"; the
+    // rare at-least-once duplication if a response is lost mid-flight
+    // is recoverable by spinning back, whereas a silent drop is not.
     static int32_t lastApplied = 0;
     int32_t snapshot = g_encoderRaw;
     int32_t deltaRaw = snapshot - lastApplied;
     int32_t detents = deltaRaw / ENCODER_PULSES_PER_DETENT;
     if (detents != 0) {
-        lastApplied += detents * ENCODER_PULSES_PER_DETENT;
         if (WiFi.status() == WL_CONNECTED) {
             bool ok = postVolumeAdjust((float)detents * VOLUME_STEP_DB);
-            if (ok && g_lastVolumePercent >= 0) {
-                scenes_show_volume(g_lastVolumePercent);
+            if (ok) {
+                lastApplied += detents * ENCODER_PULSES_PER_DETENT;
+                if (g_lastVolumePercent >= 0) {
+                    scenes_show_volume(g_lastVolumePercent);
+                }
             }
             dlog("[encoder] detent=%ld → POST %.2f dB %s (now %d%%)",
                  (long)detents, (float)detents * VOLUME_STEP_DB,
                  ok ? "OK" : "FAIL", g_lastVolumePercent);
         } else {
-            dlog("[encoder] detent=%ld dropped (WiFi disconnected)",
+            dlog("[encoder] detent=%ld held (WiFi disconnected, will retry)",
                  (long)detents);
         }
     }
