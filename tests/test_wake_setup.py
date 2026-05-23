@@ -251,82 +251,35 @@ def test_apply_save_rejects_unavailable_model(tmp_path: Path, monkeypatch):
 
 
 # ---------- Threshold logic -----------------------------------------------
+# _parse_threshold + the threshold codepath in _apply_save were
+# removed when the sensitivity slider moved to /system/'s Wake
+# detection card (jasper/web/system_setup.py + jasper/control/server.py
+# POST /aec/threshold). _active_threshold stays — it's a clean
+# "read what the daemon will load" helper independent of the UI
+# location.
+#
+# Threshold-preservation across a /wake/ model save is now covered
+# by test_apply_save_preserves_threshold_in_state below; the daemon-
+# facing JASPER_WAKE_THRESHOLD validation is in jasper/config.py and
+# in jasper.control.server._write_wake_threshold.
 
 
-def test_parse_threshold_blank_returns_none():
-    """No `threshold` field in the form is fine — it means "don't
-    change the threshold", not "set threshold to 0"."""
-    val, err = wake_setup._parse_threshold("")
-    assert val is None and err is None
-
-
-def test_parse_threshold_valid_midpoint():
-    val, err = wake_setup._parse_threshold("0.5")
-    assert err is None
-    assert val == 0.5
-
-
-def test_parse_threshold_rejects_non_numeric():
-    val, err = wake_setup._parse_threshold("very sensitive")
-    assert err is not None and "number" in err.lower()
-    assert val is None
-
-
-def test_parse_threshold_rejects_out_of_range():
-    """Daemon validator only accepts 0.0..1.0; the wizard must reject
-    the same range with a friendly message instead of silently
-    persisting a value that crashes jasper-voice on its next restart."""
-    for raw in ("-0.1", "1.1", "5", "-1"):
-        val, err = wake_setup._parse_threshold(raw)
-        assert err is not None, f"expected error for {raw!r}, got val={val}"
-        assert "between 0.0 and 1.0" in err
-        assert val is None
-
-
-def test_apply_save_persists_threshold_alongside_model():
-    new, err = wake_setup._apply_save(
-        {"model": "hey_jarvis", "threshold": "0.35"}, current={},
-    )
-    assert err is None
-    assert new == {
+def test_apply_save_preserves_threshold_in_state():
+    """The sensitivity slider lives on /system/ but writes the same
+    wake_model.env file. A save from /wake/ (model-only form) must
+    preserve any JASPER_WAKE_THRESHOLD already in the state dict —
+    otherwise saving a new model would silently zap the slider's
+    value."""
+    current = {
         "JASPER_WAKE_MODEL": "hey_jarvis",
         "JASPER_WAKE_THRESHOLD": "0.35",
     }
-
-
-def test_apply_save_threshold_only_keeps_existing_custom_model():
-    """User has a hand-rolled custom .onnx active and wants to tune
-    sensitivity without giving it up. The custom row's radio is
-    `disabled` so no `model` value is submitted; the save must keep
-    the existing JASPER_WAKE_MODEL untouched."""
-    current = {"JASPER_WAKE_MODEL": "/home/pi/hand-rolled/custom.onnx"}
-    new, err = wake_setup._apply_save({"threshold": "0.25"}, current=current)
+    new, err = wake_setup._apply_save({"model": "alexa"}, current=current)
     assert err is None
     assert new == {
-        "JASPER_WAKE_MODEL": "/home/pi/hand-rolled/custom.onnx",
-        "JASPER_WAKE_THRESHOLD": "0.25",
+        "JASPER_WAKE_MODEL": "alexa",
+        "JASPER_WAKE_THRESHOLD": "0.35",
     }
-
-
-def test_apply_save_rejects_invalid_threshold_before_touching_model():
-    """Threshold validation runs first, so a bad threshold doesn't
-    half-apply a model change."""
-    new, err = wake_setup._apply_save(
-        {"model": "hey_jarvis", "threshold": "2.0"}, current={"existing": "x"},
-    )
-    assert err is not None
-    assert new == {"existing": "x"}
-
-
-def test_apply_save_normalises_threshold_to_two_decimal_places():
-    """Browsers can ship `value="0.5000000001"` after float-roundtrip;
-    we normalise to the same 0.05 step granularity the slider uses so
-    the env file stays clean and diffable."""
-    new, err = wake_setup._apply_save(
-        {"model": "hey_jarvis", "threshold": "0.5000000001"}, current={},
-    )
-    assert err is None
-    assert new["JASPER_WAKE_THRESHOLD"] == "0.50"
 
 
 def test_active_threshold_falls_back_to_default(monkeypatch):
@@ -407,29 +360,23 @@ def test_index_html_renders_custom_row_for_unknown_active(monkeypatch):
     assert custom_path in html
 
 
-def test_index_html_renders_sensitivity_card_at_default(monkeypatch):
-    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
+def test_index_html_omits_sensitivity_slider():
+    """The slider moved to /system/'s Wake detection card. The /wake/
+    page should no longer render a `type="range"` input — it carries
+    a moved-link panel instead so users discover where it went."""
     html = wake_setup._index_html({}).decode()
-    assert "Wake word sensitivity" in html
-    assert 'name="threshold"' in html
-    assert 'type="range"' in html
-    # Slider's current value matches the compiled default.
-    assert f'value="{wake_setup.DEFAULT_WAKE_THRESHOLD:.2f}"' in html
-    # Readout pre-fills with the same number so the page is consistent
-    # before any user input lands.
-    assert (
-        f'id="threshold-readout">{wake_setup.DEFAULT_WAKE_THRESHOLD:.2f}'
-        in html
-    )
+    assert 'type="range"' not in html
+    assert 'name="threshold"' not in html
+    assert "Wake word sensitivity" not in html
 
 
-def test_index_html_renders_sensitivity_card_at_persisted_value(monkeypatch):
-    monkeypatch.delenv("JASPER_WAKE_THRESHOLD", raising=False)
-    html = wake_setup._index_html(
-        {"JASPER_WAKE_THRESHOLD": "0.30"},
-    ).decode()
-    assert 'value="0.30"' in html
-    assert 'id="threshold-readout">0.30' in html
+def test_index_html_links_to_system_for_sensitivity():
+    """The /wake/ page surfaces a small panel pointing at /system/'s
+    Wake detection card so users tuning sensitivity find the new
+    home rather than wondering where the slider went."""
+    html = wake_setup._index_html({}).decode()
+    assert '/system/' in html
+    assert 'sensitivity' in html.lower()
 
 
 # ---------- End-to-end HTTP exercise ---------------------------------------
@@ -480,9 +427,11 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
     assert called == ["restart"]
 
 
-def test_http_post_save_persists_threshold(running_server, monkeypatch):
-    """Submitting both model and threshold writes both env vars to
-    the same file in one save+restart cycle."""
+def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch):
+    """The slider moved to /system/, but it writes the same file. A
+    /wake/ model-save must preserve any JASPER_WAKE_THRESHOLD the
+    slider previously wrote — otherwise picking a new model would
+    silently zap the user's sensitivity setting."""
     from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
     called = []
@@ -490,9 +439,12 @@ def test_http_post_save_persists_threshold(running_server, monkeypatch):
         wake_setup, "restart_voice_daemon",
         lambda: called.append("restart"),
     )
-    post_with_csrf(base, "/save", {"model": "alexa", "threshold": "0.65"})
-    assert wake_setup._load_state(state_path) == {
-        "JASPER_WAKE_MODEL": "alexa",
-        "JASPER_WAKE_THRESHOLD": "0.65",
-    }
+    # Seed wake_model.env with a hand-set threshold (as if /system/
+    # had previously written it).
+    with open(state_path, "w") as f:
+        f.write("JASPER_WAKE_THRESHOLD=0.42\nJASPER_WAKE_MODEL=jarvis_v2\n")
+    post_with_csrf(base, "/save", {"model": "alexa"})
+    state = wake_setup._load_state(state_path)
+    assert state["JASPER_WAKE_MODEL"] == "alexa"
+    assert state["JASPER_WAKE_THRESHOLD"] == "0.42"
     assert called == ["restart"]

@@ -9,18 +9,20 @@ appear with a "not downloaded" hint when their `.onnx` file is missing
 on disk — install.sh fetches them on every deploy, so this state is
 usually transient (offline install / partial mirror).
 
-A sensitivity slider underneath the picker tunes the openWakeWord
-detection threshold (`JASPER_WAKE_THRESHOLD`), persisted in the same
-file. Households can save just the threshold by leaving the radio
-alone — the active row's value re-submits, so the model stays put.
+The sensitivity slider that used to live here moved to /system/'s
+Wake detection card — it shares a restart cycle with the AEC + per-
+layer toggles and reads/writes the same wake_model.env file (so the
+two surfaces stay in sync; saving the model from /wake/ preserves
+any JASPER_WAKE_THRESHOLD value already in the file).
 
 Persistence: writes /var/lib/jasper/wake_model.env at mode 0644 with
-the picked `JASPER_WAKE_MODEL=...` and (when changed) the picked
-`JASPER_WAKE_THRESHOLD=...`. The jasper-voice systemd unit sources
-this file AFTER /etc/jasper/jasper.env, so wizard-written values win
-over operator-managed defaults — same pattern as
-/var/lib/jasper/voice_provider.env and spotify_credentials.env. Mode
-0644 because the file holds a path + a number, not a secret.
+the picked `JASPER_WAKE_MODEL=...`. JASPER_WAKE_THRESHOLD is owned
+by /system/'s slider but lives in the same file. The jasper-voice
+systemd unit sources this file AFTER /etc/jasper/jasper.env, so
+wizard-written values win over operator-managed defaults — same
+pattern as /var/lib/jasper/voice_provider.env and
+spotify_credentials.env. Mode 0644 because the file holds a path
++ a number, not a secret.
 
 Restart: every successful save kicks `systemctl restart jasper-voice`.
 The wake loop is back about 3-4 s later with the new model loaded.
@@ -62,14 +64,11 @@ logger = logging.getLogger(__name__)
 
 WAKE_MODEL_FILE = wake_models.WAKE_MODEL_FILE
 
-# Mirrors the compiled-in default at jasper/config.py:_validate. Range
-# bounds match the daemon's validator (0.0..1.0) but the slider clamps
-# to a sane interior band — 0.0 fires on any audio frame, 1.0 never
-# fires, and neither is a setting the household would actually want.
+# Compiled-in default mirrored from jasper/config.py:_validate.
+# Kept here only because _active_threshold and the tests still
+# reference it. The slider's min/max/step constants moved into
+# jasper/web/system_setup.py with the slider itself.
 DEFAULT_WAKE_THRESHOLD = 0.5
-WAKE_THRESHOLD_MIN = 0.05
-WAKE_THRESHOLD_MAX = 0.95
-WAKE_THRESHOLD_STEP = 0.05
 
 
 # ----------------------------------------------------------------------
@@ -181,43 +180,15 @@ _WAKE_PAGE_STYLE = PAGE_STYLE + """
   }
   .wake-row .stats a:hover { color: #1db954; }
 
-  /* Sensitivity card — shares the .wake-row card look so the
-     "Wake words" page reads as one stack of cards. */
-  .sensitivity-card {
-    background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
-    padding: 1em 1.2em; margin-top: 1.4em;
+  /* Cross-link panel — the sensitivity slider moved to /system/'s
+     Wake detection card, where it sits next to the AEC + leg
+     toggles it shares the same restart cycle with. */
+  .moved-panel {
+    background: #fff; border: 1px solid #e6e6e6; border-radius: 6px;
+    padding: 0.7em 1em; margin-top: 1.4em; color: #555;
+    font-size: 0.88em; line-height: 1.5;
   }
-  .sensitivity-card h2 {
-    margin: 0 0 0.35em; font-size: 1.05em; color: #222;
-  }
-  .sensitivity-card .blurb {
-    color: #555; font-size: 0.9em; line-height: 1.5;
-    margin: 0 0 1em;
-  }
-  .sensitivity-slider-row {
-    display: flex; align-items: center; gap: 0.8em;
-    margin: 0.6em 0 0.4em;
-  }
-  .sensitivity-slider-row input[type=range] {
-    flex: 1; margin: 0; padding: 0; accent-color: #1db954;
-  }
-  .sensitivity-end {
-    color: #666; font-size: 0.85em; white-space: nowrap;
-  }
-  .sensitivity-readout {
-    text-align: center; font-variant-numeric: tabular-nums;
-    color: #444; font-size: 0.92em; margin: 0.2em 0 1em;
-  }
-  .sensitivity-readout strong {
-    font-size: 1.15em; color: #1db954;
-    margin: 0 0.25em;
-  }
-  .sensitivity-tradeoff {
-    color: #555; font-size: 0.88em; line-height: 1.55;
-    background: #fff; border: 1px solid #e6e6e6;
-    border-radius: 6px; padding: 0.6em 0.8em; margin: 0;
-  }
-  .sensitivity-tradeoff strong { color: #222; }
+  .moved-panel a { color: #1db954; }
 """
 
 
@@ -321,37 +292,12 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
             is_active=(active_entry is entry),
             available=_is_available(entry),
         ))
-    threshold = _active_threshold(state)
-    sensitivity_card = f"""
-<div class="sensitivity-card">
-  <h2>Wake word sensitivity</h2>
-  <p class="blurb">
-    How confident the wake-word model needs to be before the speaker
-    starts listening. The slider is the openWakeWord detection
-    threshold ({WAKE_THRESHOLD_MIN:.2f}–{WAKE_THRESHOLD_MAX:.2f}); the
-    default is {DEFAULT_WAKE_THRESHOLD:.2f}.
-  </p>
-  <div class="sensitivity-slider-row">
-    <span class="sensitivity-end">More sensitive</span>
-    <input type="range" id="threshold" name="threshold"
-           min="{WAKE_THRESHOLD_MIN}" max="{WAKE_THRESHOLD_MAX}"
-           step="{WAKE_THRESHOLD_STEP}" value="{threshold:.2f}">
-    <span class="sensitivity-end">More precise</span>
-  </div>
-  <p class="sensitivity-readout">
-    Threshold: <strong id="threshold-readout">{threshold:.2f}</strong>
-    <span style="color:#888">(default {DEFAULT_WAKE_THRESHOLD:.2f})</span>
-  </p>
-  <p class="sensitivity-tradeoff">
-    <strong>Lower</strong> (toward {WAKE_THRESHOLD_MIN:.2f}): the
-    speaker wakes more easily on partial or softly-spoken phrases.
-    Better for quiet rooms, but more likely to false-fire on music
-    vocals, TV chatter, or words that rhyme with the wake phrase.<br>
-    <strong>Higher</strong> (toward {WAKE_THRESHOLD_MAX:.2f}): the
-    speaker only wakes on clear, confident pronunciations. Almost no
-    false fires, but you may need to repeat yourself in a noisy room
-    or after a strong duck.
-  </p>
+    moved_panel = """
+<div class="moved-panel">
+  The wake-word sensitivity slider lives on the
+  <a href="/system/">/system/</a> dashboard now, in the Wake
+  detection card. It sits next to the AEC and per-layer toggles
+  it shares the same restart cycle with.
 </div>"""
     body = f"""
 <p class="wake-help">
@@ -365,23 +311,12 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 <form method="post" action="save" id="wake-form">
   {csrf_field_html(csrf_token) if csrf_token else ''}
   {''.join(rows)}
-  {sensitivity_card}
   <p style="margin-top:1.4em">
     <button type="submit" id="wake-save">Save and restart voice</button>
   </p>
 </form>
+{moved_panel}
 <script>
-  // Live-update the threshold readout as the user drags the slider so
-  // the picked value is obvious before they hit Save.
-  (function() {{
-    var slider = document.getElementById('threshold');
-    var readout = document.getElementById('threshold-readout');
-    if (slider && readout) {{
-      slider.addEventListener('input', function() {{
-        readout.textContent = parseFloat(slider.value).toFixed(2);
-      }});
-    }}
-  }})();
   // Disable the Save button + change its label the instant the form
   // submits so the household sees something happen before the page
   // reloads. Without this, the redirect (which fires before the
@@ -403,69 +338,43 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
 # ----------------------------------------------------------------------
 
 
-def _parse_threshold(raw: str) -> tuple[float | None, str | None]:
-    """Validate a submitted threshold string. Returns `(value, error)`.
-
-    The HTML `type="range"` input clamps client-side to the min/max,
-    but a hand-crafted POST can still ship anything; the daemon's
-    validator only accepts 0.0..1.0, so we reject the same range here
-    with a UI-friendly message instead of letting the save land and
-    then crashing jasper-voice on its next restart."""
-    raw = (raw or "").strip()
-    if not raw:
-        return None, None
-    try:
-        val = float(raw)
-    except ValueError:
-        return None, f"Sensitivity must be a number (got {raw!r})."
-    if not 0.0 <= val <= 1.0:
-        return None, "Sensitivity must be between 0.0 and 1.0."
-    return val, None
-
-
 def _apply_save(
     form: dict[str, str],
     current: dict[str, str],
 ) -> tuple[dict[str, str], str | None]:
     """Validate the form selection and produce the new wake_model.env
     state. Returns `(state, error)`; the caller writes the file iff
-    error is None."""
-    threshold, err = _parse_threshold(form.get("threshold", ""))
-    if err is not None:
-        return current, err
+    error is None.
 
+    The sensitivity slider moved to /system/ in the Wake detection
+    card refactor. The slider's POST handler writes
+    JASPER_WAKE_THRESHOLD directly into the same wake_model.env;
+    here we preserve whatever value is already there by starting
+    from `dict(current)` (write_env_file overwrites the whole file
+    with whatever dict we pass)."""
     key = (form.get("model") or "").strip()
     new = dict(current)
     if not key:
-        # No `model` field submitted — happens when a Custom wake model
-        # is active (the radio is rendered with `disabled`, so the
-        # browser skips it). In that case let the user adjust just the
-        # threshold without picking one of the registered alternatives.
-        # If there's also no model in state, we have nothing to save.
-        if not current.get("JASPER_WAKE_MODEL", "").strip():
-            return current, "No model selected."
-    elif key == "__custom__":
-        # Defensive — the input is disabled in the rendered form, but a
-        # crafted POST could submit it. Reject so we never persist a
-        # nonsense token to the env file.
+        # No `model` field submitted — happens when a Custom wake
+        # model is active (the radio is rendered with `disabled`,
+        # so the browser skips it). With the slider gone from this
+        # form, there's nothing else to save in this case.
+        return current, "No model selected."
+    if key == "__custom__":
+        # Defensive — the input is disabled in the rendered form,
+        # but a crafted POST could submit it. Reject so we never
+        # persist a nonsense token to the env file.
         return current, "The custom row is read-only — pick a registered model."
-    else:
-        entry = wake_models.by_key(key)
-        if entry is None:
-            return current, f"Unknown model: {key!r}."
-        if not _is_available(entry):
-            return current, (
-                f"{entry.label} isn't downloaded yet on this speaker. "
-                "Re-run `bash scripts/deploy-to-pi.sh` to fetch it, then "
-                "try again."
-            )
-        new["JASPER_WAKE_MODEL"] = entry.model
-
-    if threshold is not None:
-        # Round-trip through the same step granularity the slider uses
-        # so the env file shows e.g. "0.50" instead of "0.5000000001"
-        # from a browser that submits float-roundtripped values.
-        new["JASPER_WAKE_THRESHOLD"] = f"{threshold:.2f}"
+    entry = wake_models.by_key(key)
+    if entry is None:
+        return current, f"Unknown model: {key!r}."
+    if not _is_available(entry):
+        return current, (
+            f"{entry.label} isn't downloaded yet on this speaker. "
+            "Re-run `bash scripts/deploy-to-pi.sh` to fetch it, then "
+            "try again."
+        )
+    new["JASPER_WAKE_MODEL"] = entry.model
     return new, None
 
 

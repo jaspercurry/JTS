@@ -989,7 +989,82 @@ actually bites.
 
 Software AEC is **built by default and managed by the reconciler**:
 it runs automatically only when `JASPER_AEC_MODE=auto` and the
-configured AEC mic is present with 6-channel firmware. README's
+configured AEC mic is present with 6-channel firmware.
+
+### Wake-detection legs — per-layer sub-toggles
+
+The bridge fans out up to three parallel mic streams the voice
+daemon OR-gates for wake detection: AEC3 (the bridge's primary
+output on `:9876`), raw chip-direct (`:9877`), and DTLN neural
+AEC (`:9878`). Two **additive** sub-toggles live in the same
+`/var/lib/jasper/aec_mode.env` file as the AEC master mode, owned
+by the **/system Wake detection card**:
+
+```
+JASPER_AEC_MODE=auto            # master — bridge on/off
+JASPER_WAKE_LEG_RAW=1           # additive raw leg (~5 MB / negligible)
+JASPER_WAKE_LEG_DTLN=0          # additive DTLN leg (~75 MB / 25% one core)
+```
+
+Defaults (universal — no RAM-conditional logic):
+
+- **`JASPER_WAKE_LEG_RAW=1`** on fresh installs. Dual-stream is
+  the OSS baseline — cheap and gives OR-fusion wake-rate recovery.
+- **`JASPER_WAKE_LEG_DTLN=0`** on fresh installs. Opt-in for 2 GB
+  Pis where the user has a wake-event corpus to evaluate.
+
+The reconciler ([`deploy/bin/jasper-aec-reconcile`](deploy/bin/jasper-aec-reconcile))
+is the single writer of the underlying env vars the daemons read.
+It maps booleans → `JASPER_MIC_DEVICE_RAW=udp:9877`,
+`JASPER_MIC_DEVICE_DTLN=udp:9878`, `JASPER_AEC_DTLN_ENABLED=1`
+(empty/`0` when the boolean is off), then restarts the bridge and
+voice. Sub-toggles are only meaningful when the bridge is running;
+the reconciler clears the underlying vars when AEC is disabled so
+a stale leg config doesn't leave voice listening on a port nobody
+talks to.
+
+**Wake-word sensitivity slider** — moved 2026-05-23 from /wake/
+into the same /system Wake detection card. The slider writes
+`JASPER_WAKE_THRESHOLD` into `/var/lib/jasper/wake_model.env` (same
+file as the wake-word model picker on /wake/, which preserves the
+threshold on model save). Edit point is `_write_wake_threshold` in
+[`jasper/control/server.py`](jasper/control/server.py).
+
+**HTTP API** ([`jasper/control/server.py`](jasper/control/server.py)):
+- `GET /aec` → `{mode, bridge_active, legs:{raw:{configured}, dtln:{configured}}, threshold}`
+- `POST /aec/toggle` → existing AEC master flip
+- `POST /aec/leg` body `{leg: "raw"|"dtln", enabled: bool}` → flip one leg
+- `POST /aec/threshold` body `{threshold: float}` (0.0..1.0) → set sensitivity
+
+**Migration on upgrade**: `migrate_wake_legs_config` in
+[`deploy/install.sh`](deploy/install.sh) moves any hand-set
+`JASPER_MIC_DEVICE_RAW` / `_DTLN` / `JASPER_AEC_DTLN_ENABLED` from
+`/etc/jasper/jasper.env` into `aec_mode.env` as booleans, then
+strips the underlying vars. A user previously running triple-stream
+via AGENTS.md's old "echo into jasper.env" instructions keeps
+their setup. A user previously running single-stream (no opt-in
+vars set) gets bumped to dual-stream (RAW=1) on next deploy — a
+documented OSS-default change; toggle RAW off via /system if on a
+1 GB Pi and need the ~5 MB back.
+
+**Restart blast radius** per toggle:
+- AEC master flip → bridge + voice restart (existing behavior)
+- DTLN flip → bridge + voice restart (DTLN model loads at startup
+  in the bridge; voice opens `:9878` socket at startup)
+- RAW flip → voice restart only (bridge already emits to `:9877`
+  unconditionally — see [`aec_bridge.py`](jasper/cli/aec_bridge.py)
+  around `OUT_PORT_RAW`)
+- Sensitivity slider → voice restart only (openWakeWord reads
+  threshold at startup; bridge unaffected)
+
+In all cases the reconciler is the synchronization point — the
+HTTP endpoints write the config file and kick
+`jasper-aec-reconcile.service`. Restart latency: ~3-5 s bridge,
+~10-15 s voice, run in parallel.
+
+### Engine architecture — do not re-architect
+
+ README's
 "Acoustic echo cancellation" section covers the engine (WebRTC
 AEC3 via the `jasper_aec3` pybind11 binding; BEST_A tuning since
 2026-05, with prior REF_GAIN/MIC_GAIN measurements showing −15 to

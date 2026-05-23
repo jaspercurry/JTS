@@ -941,6 +941,85 @@ PY
     migrate_voice_provider
     migrate_transit_config
     migrate_wifi_guardian
+    migrate_wake_legs_config
+}
+
+# Migrate hand-set wake-detection leg env vars from
+# /etc/jasper/jasper.env into the wizard-owned
+# /var/lib/jasper/aec_mode.env. The /system "Wake detection" card
+# owns these as booleans (JASPER_WAKE_LEG_RAW, _DTLN); the
+# reconciler maps them back to the underlying device/enable vars
+# the bridge + voice each read at startup.
+#
+# Previously AGENTS.md instructed operators to paste raw lines into
+# /etc/jasper/jasper.env for opt-in legs:
+#   JASPER_MIC_DEVICE_RAW=udp:9877        (dual-stream)
+#   JASPER_MIC_DEVICE_DTLN=udp:9878       (triple-stream extras)
+#   JASPER_AEC_DTLN_ENABLED=1
+# This function preserves an operator's prior intent on upgrade by
+# translating those values into the new boolean form, then strips
+# the underlying vars so the reconciler is the only writer going
+# forward. Fresh installs (no underlying vars set) are a no-op here
+# — the new defaults seeded in reconcile_aec_state take effect
+# (RAW=1, DTLN=0).
+#
+# Idempotent — already-translated installs find nothing to migrate.
+migrate_wake_legs_config() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local wizard_env="${STATE_DIR}/aec_mode.env"
+
+    [[ -f "${jasper_env}" ]] || return 0
+
+    local raw_line dtln_line dtln_enabled_line
+    raw_line=$(grep -E '^JASPER_MIC_DEVICE_RAW=' "${jasper_env}" || true)
+    dtln_line=$(grep -E '^JASPER_MIC_DEVICE_DTLN=' "${jasper_env}" || true)
+    dtln_enabled_line=$(grep -E '^JASPER_AEC_DTLN_ENABLED=' "${jasper_env}" || true)
+
+    if [[ -z "${raw_line}${dtln_line}${dtln_enabled_line}" ]]; then
+        return 0
+    fi
+
+    install -d -m 0755 "${STATE_DIR}"
+
+    local raw_value dtln_value dtln_enabled_value
+    raw_value="${raw_line#JASPER_MIC_DEVICE_RAW=}"
+    raw_value="${raw_value%[$'\r\n ']*}"
+    dtln_value="${dtln_line#JASPER_MIC_DEVICE_DTLN=}"
+    dtln_value="${dtln_value%[$'\r\n ']*}"
+    dtln_enabled_value="${dtln_enabled_line#JASPER_AEC_DTLN_ENABLED=}"
+    dtln_enabled_value="${dtln_enabled_value%[$'\r\n ']*}"
+
+    # An operator running the dual-stream setup had RAW set to a
+    # udp:* device. Empty value means they had explicitly cleared
+    # it — treat as off so we don't silently turn things on.
+    local want_raw="0"
+    [[ -n "${raw_value}" ]] && want_raw="1"
+
+    # An operator running DTLN had both MIC_DEVICE_DTLN and
+    # AEC_DTLN_ENABLED=1. Either alone is enough signal to preserve.
+    local want_dtln="0"
+    if [[ -n "${dtln_value}" || "${dtln_enabled_value}" == "1" ]]; then
+        want_dtln="1"
+    fi
+
+    touch "${wizard_env}"
+    chmod 0644 "${wizard_env}"
+
+    if ! grep -qE '^JASPER_WAKE_LEG_RAW=' "${wizard_env}"; then
+        echo "JASPER_WAKE_LEG_RAW=${want_raw}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_RAW=${want_raw}"
+        echo "    from prior JASPER_MIC_DEVICE_RAW=${raw_value:-<unset>}"
+    fi
+    if ! grep -qE '^JASPER_WAKE_LEG_DTLN=' "${wizard_env}"; then
+        echo "JASPER_WAKE_LEG_DTLN=${want_dtln}" >> "${wizard_env}"
+        echo "  migrate_wake_legs_config: set JASPER_WAKE_LEG_DTLN=${want_dtln}"
+        echo "    from prior JASPER_MIC_DEVICE_DTLN=${dtln_value:-<unset>}, JASPER_AEC_DTLN_ENABLED=${dtln_enabled_value:-<unset>}"
+    fi
+
+    sed -i.bak '/^JASPER_MIC_DEVICE_RAW=/d' "${jasper_env}"
+    sed -i.bak '/^JASPER_MIC_DEVICE_DTLN=/d' "${jasper_env}"
+    sed -i.bak '/^JASPER_AEC_DTLN_ENABLED=/d' "${jasper_env}"
+    rm -f "${jasper_env}.bak"
 }
 
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
@@ -1458,8 +1537,24 @@ install_journald_persistent_storage() {
 
 reconcile_aec_state() {
     install -d -m 0755 "${STATE_DIR}"
+    # Three keys live in aec_mode.env, all owned by the /system
+    # wake-detection card after the per-leg-toggle refactor:
+    #   - JASPER_AEC_MODE             master AEC bridge toggle
+    #   - JASPER_WAKE_LEG_RAW         additive raw chip-direct leg (~5 MB)
+    #   - JASPER_WAKE_LEG_DTLN        additive DTLN neural leg (~75 MB)
+    # Defaults: AEC on, raw on (dual-stream is the OSS baseline —
+    # cheap wake-rate win), DTLN off (heavy, opt-in for 2 GB Pis with
+    # a wake-event corpus). See the /system card and AGENTS.md
+    # "AEC bridge — reconciler toggle" for the lever set.
+    #
+    # On upgrade, the reconciler's ensure_mode_file appends any
+    # missing keys with these same defaults — preserving an
+    # operator's hand-set JASPER_AEC_MODE while picking up the new
+    # leg fields. Migration from hand-set underlying env vars in
+    # /etc/jasper/jasper.env runs separately in migrate_wake_legs_config.
     if [[ ! -f "${STATE_DIR}/aec_mode.env" ]]; then
-        printf 'JASPER_AEC_MODE=auto\n' > "${STATE_DIR}/aec_mode.env"
+        printf 'JASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\n' \
+            > "${STATE_DIR}/aec_mode.env"
         chmod 0644 "${STATE_DIR}/aec_mode.env"
     fi
     systemctl enable jasper-aec-reconcile.service

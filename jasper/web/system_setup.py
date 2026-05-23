@@ -108,6 +108,31 @@ _EXTRA_STYLE = """
 .muted { color: #888; }
 .stale { opacity: 0.55; }
 .ago { color: #666; font-size: 0.85em; }
+
+.leg-table { width: 100%; border-collapse: collapse; font-size: 0.88em; }
+.leg-table th, .leg-table td {
+  text-align: left; padding: 0.45em 0.5em; border-bottom: 1px solid #eee;
+  vertical-align: top;
+}
+.leg-table th { color: #666; font-weight: 600; font-size: 0.82em; }
+.leg-table td.num, .leg-table th.num { text-align: right; white-space: nowrap; }
+.leg-table tr.disabled td { color: #aaa; }
+.leg-table tr.disabled .muted { color: #bbb; }
+
+/* The AEC master toggle is a button (binary state shown in
+   text), the additive legs are checkboxes. Two visuals so users
+   feel the asymmetry — master gates the bridge entirely, legs
+   are sub-features layered on top. */
+.leg-btn {
+  background: #1db954; color: white; border: 0; padding: 0.3em 0.7em;
+  border-radius: 4px; font-weight: 600; cursor: pointer; font-size: 0.85em;
+  min-width: 4.5em;
+}
+.leg-btn.off { background: #4a4a4a; }
+.leg-btn:disabled { background: #b8b8b8; cursor: wait; }
+
+#wake-threshold { accent-color: #1db954; }
+#wake-threshold:disabled { opacity: 0.4; }
 """
 
 _PAGE_BODY = """
@@ -184,20 +209,83 @@ _PAGE_BODY = """
 </div>
 
 <div class="card" id="aec-card">
-  <h2>AEC3 echo cancellation</h2>
-  <p class="muted" style="margin: 0 0 0.6em; font-size: 0.85em;">
-    Software AEC sits between the music chain and the chip's
-    voice-assistant mic. Flip it off to A/B-test wake detection with
-    chip-direct mic instead. The reconciler restarts the bridge and
-    jasper-voice on each toggle — expect ~10-15 s before wake-word
-    works again.
+  <h2>Wake detection</h2>
+  <p class="muted" style="margin: 0 0 0.8em; font-size: 0.85em;">
+    Each layer scores the same wake word independently and OR-gates
+    its fires with the others. Add layers to catch wakes the AEC
+    sometimes misses; remove them to save RAM on 1 GB Pis. The
+    sensitivity slider applies to every active layer. Toggling
+    anything restarts jasper-voice (~15 s of dead wake).
   </p>
-  <div class="kv">
-    <div class="k">Mode</div><div class="v" id="aec-mode">—</div>
-    <div class="k">Bridge</div><div class="v" id="aec-active">—</div>
-  </div>
-  <div class="actions" style="margin-top: 0.7em;">
-    <button class="secondary" id="btn-aec-toggle">Toggle AEC3</button>
+  <table class="leg-table">
+    <thead>
+      <tr>
+        <th></th>
+        <th>Layer</th>
+        <th class="num">Cost</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr id="row-aec">
+        <td><button class="leg-btn" id="btn-aec-toggle" type="button">…</button></td>
+        <td>
+          <strong>AEC3 echo cancellation</strong><br>
+          <span class="muted" style="font-size: 0.82em;">
+            Cancels the speaker's own music + TTS from the mic.
+            Required for waking while music plays.
+          </span>
+        </td>
+        <td class="num muted">~85 MB · ~22% core</td>
+        <td id="aec-status">—</td>
+      </tr>
+      <tr id="row-raw">
+        <td>
+          <input type="checkbox" id="leg-raw" disabled>
+        </td>
+        <td>
+          <strong>Chip-direct mic (raw)</strong><br>
+          <span class="muted" style="font-size: 0.82em;">
+            Pre-AEC chip mic as a parallel wake layer. Catches
+            wakes when AEC over-suppresses. Default on.
+          </span>
+        </td>
+        <td class="num muted">~5 MB · negligible</td>
+        <td id="raw-status">—</td>
+      </tr>
+      <tr id="row-dtln">
+        <td>
+          <input type="checkbox" id="leg-dtln" disabled>
+        </td>
+        <td>
+          <strong>DTLN neural AEC</strong><br>
+          <span class="muted" style="font-size: 0.82em;">
+            Neural echo cancellation as a third wake layer.
+            Best wake-rate boost; heaviest cost. Recommended
+            only on 2 GB Pi.
+          </span>
+        </td>
+        <td class="num muted">~75 MB · ~25% core</td>
+        <td id="dtln-status">—</td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="leg-threshold" style="margin-top: 1em;">
+    <label for="wake-threshold" style="display: block; margin-bottom: 0.3em;">
+      <strong>Sensitivity</strong>
+      <span class="muted" style="font-size: 0.82em;">
+        — lower = wake fires more easily (more false positives);
+        higher = needs a more confident match (more missed wakes).
+      </span>
+    </label>
+    <div style="display: flex; gap: 0.6em; align-items: center;">
+      <input type="range" id="wake-threshold" min="0.05" max="0.95"
+             step="0.05" value="0.5" style="flex: 1;" disabled>
+      <span id="wake-threshold-value" class="num"
+            style="min-width: 3em; text-align: right;">—</span>
+      <button class="secondary" id="btn-threshold-save"
+              type="button" disabled>Save</button>
+    </div>
   </div>
 </div>
 
@@ -634,50 +722,126 @@ _SCRIPT = r"""
     btn.disabled = false;
   });
 
-  // AEC3 toggle — polls /aec.json every 3 s, flips via POST /aec/toggle.
+  // Wake detection card — polls /aec.json every 3 s. Drives:
+  //  - AEC3 master button (POST /aec/toggle)
+  //  - Two leg checkboxes — raw + DTLN (POST /aec/leg)
+  //  - Sensitivity slider (POST /aec/threshold)
+  //
   // Mode (auto/disabled) reflects what the operator asked for;
-  // bridge_active is the observed truth. They diverge briefly during
-  // the reconciler-driven transition.
+  // bridge_active is the observed truth from systemd. They diverge
+  // briefly during reconciler-driven transitions (~10-15 s).
+  //
+  // The two leg checkboxes are greyed out when AEC mode is
+  // disabled — without the bridge there's no UDP stream for them
+  // to consume, and silently letting the checkbox flip would be
+  // misleading. The user has to enable AEC first.
+  const aecBtn = document.getElementById('btn-aec-toggle');
+  const rawCb = document.getElementById('leg-raw');
+  const dtlnCb = document.getElementById('leg-dtln');
+  const aecStatus = document.getElementById('aec-status');
+  const rawStatus = document.getElementById('raw-status');
+  const dtlnStatus = document.getElementById('dtln-status');
+  const rowAec = document.getElementById('row-aec');
+  const rowRaw = document.getElementById('row-raw');
+  const rowDtln = document.getElementById('row-dtln');
+  const thrInput = document.getElementById('wake-threshold');
+  const thrValue = document.getElementById('wake-threshold-value');
+  const thrSave = document.getElementById('btn-threshold-save');
+  let lastServerThreshold = null;  // tracks remote truth for dirty-state
+
+  function statusForLeg(active, legOn) {
+    if (!legOn) return '— off';
+    if (active) return '✓ active';
+    return '⏳ starting…';
+  }
+
   async function pollAec() {
-    const modeEl = document.getElementById('aec-mode');
-    const activeEl = document.getElementById('aec-active');
-    const btn = document.getElementById('btn-aec-toggle');
     try {
       const r = await fetch('aec.json', { cache: 'no-store' });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       const s = await r.json();
       const mode = s.mode;
-      const active = !!s.bridge_active;
-      modeEl.textContent =
-        mode === 'auto' ? 'Enabled (auto)' :
-        mode === 'disabled' ? 'Disabled (chip direct mic)' :
-        String(mode);
-      let activeText;
-      if (active) {
-        activeText = 'Running';
-      } else if (mode === 'auto') {
-        activeText = 'Off — starting up, or chip not on 6-ch firmware';
+      const bridgeOn = !!s.bridge_active;
+      const legs = s.legs || {};
+      const rawOn = !!(legs.raw && legs.raw.configured);
+      const dtlnOn = !!(legs.dtln && legs.dtln.configured);
+
+      // AEC master.
+      if (mode === 'auto') {
+        aecStatus.textContent = bridgeOn ? '✓ active' :
+          '⏳ starting (or chip not on 6-ch firmware)';
+        rowAec.classList.remove('disabled');
+        if (!aecBtn.disabled) {
+          aecBtn.textContent = 'On';
+          aecBtn.classList.remove('off');
+        }
       } else {
-        activeText = 'Stopped (intentional)';
+        aecStatus.textContent = '— disabled';
+        rowAec.classList.add('disabled');
+        if (!aecBtn.disabled) {
+          aecBtn.textContent = 'Off';
+          aecBtn.classList.add('off');
+        }
       }
-      activeEl.textContent = activeText;
-      // Only relabel the button when not mid-toggle (caller sets
-      // "Applying…" and we shouldn't stomp it until reconciler lands).
-      if (btn && !btn.disabled) {
-        btn.textContent = (mode === 'auto') ? 'Disable AEC3' : 'Enable AEC3';
+
+      // Legs only meaningful when bridge is running. Disable
+      // their checkboxes when AEC is off — the only path to
+      // re-enable them is "turn on AEC first".
+      const legsAllowed = (mode === 'auto');
+      if (!rawCb.matches(':active')) {
+        rawCb.checked = rawOn;
+        rawCb.disabled = !legsAllowed;
       }
+      if (!dtlnCb.matches(':active')) {
+        dtlnCb.checked = dtlnOn;
+        dtlnCb.disabled = !legsAllowed;
+      }
+      rawStatus.textContent = legsAllowed
+        ? statusForLeg(bridgeOn, rawOn)
+        : '— requires AEC on';
+      dtlnStatus.textContent = legsAllowed
+        ? statusForLeg(bridgeOn, dtlnOn)
+        : '— requires AEC on';
+      if (legsAllowed) {
+        rowRaw.classList.remove('disabled');
+        rowDtln.classList.remove('disabled');
+      } else {
+        rowRaw.classList.add('disabled');
+        rowDtln.classList.add('disabled');
+      }
+
+      // Sensitivity slider — only overwrite from server when the
+      // user isn't actively dragging (avoid clobbering mid-drag).
+      const serverThr = (typeof s.threshold === 'number')
+        ? s.threshold : 0.5;
+      thrInput.disabled = false;
+      if (lastServerThreshold === null ||
+          (Math.abs(parseFloat(thrInput.value) - lastServerThreshold) < 0.001
+           && !thrSave.classList.contains('dirty'))) {
+        thrInput.value = serverThr.toFixed(2);
+        thrValue.textContent = serverThr.toFixed(2);
+        thrSave.disabled = true;
+        thrSave.classList.remove('dirty');
+      }
+      lastServerThreshold = serverThr;
     } catch (e) {
-      modeEl.textContent = 'Disconnected';
-      activeEl.textContent = '—';
+      aecStatus.textContent = 'Disconnected';
+      rawStatus.textContent = '—';
+      dtlnStatus.textContent = '—';
     }
   }
-  document.getElementById('btn-aec-toggle').addEventListener('click', async e => {
-    const btn = e.target;
-    const current = document.getElementById('aec-mode').textContent;
-    const verb = current.indexOf('Enabled') === 0 ? 'Disable' : 'Enable';
-    if (!confirm(verb + ' AEC3? jasper-voice will restart (wake-word unavailable for ~15 s).')) return;
-    btn.disabled = true;
-    btn.textContent = 'Applying…';
+
+  aecBtn.addEventListener('click', async e => {
+    const wasOn = !e.target.classList.contains('off');
+    const verb = wasOn ? 'Disable' : 'Enable';
+    if (!confirm(verb + ' AEC echo cancellation?\\n\\n' +
+        'jasper-voice will restart — wake unavailable ~15 s. ' +
+        'Turning AEC off also pauses the raw + DTLN layers (they ' +
+        'need the bridge running).')) {
+      return;
+    }
+    e.target.disabled = true;
+    e.target.textContent = '…';
     try {
       const r = await fetch('aec/toggle', {
         method: 'POST',
@@ -688,14 +852,79 @@ _SCRIPT = r"""
     } catch (err) {
       alert('Toggle failed: ' + err.message);
     }
-    btn.disabled = false;
-    // Next pollAec tick (≤3 s) will overwrite the button label with
-    // the new state. Belt-and-suspenders in case polling is broken:
-    setTimeout(() => {
-      if (btn.textContent === 'Applying…') btn.textContent = 'Toggle AEC3';
-    }, 4000);
+    e.target.disabled = false;
+    setTimeout(() => { if (e.target.textContent === '…') e.target.textContent = '?'; }, 4000);
     pollAec();
   });
+
+  async function toggleLeg(leg, wanted) {
+    const cb = leg === 'raw' ? rawCb : dtlnCb;
+    cb.disabled = true;
+    try {
+      const r = await fetch('aec/leg', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': CSRF,
+        },
+        body: JSON.stringify({ leg: leg, enabled: wanted }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+    } catch (err) {
+      alert('Toggle failed: ' + err.message);
+      cb.checked = !wanted;  // roll back optimistic flip
+    }
+    cb.disabled = false;
+    pollAec();
+  }
+  rawCb.addEventListener('change', () => toggleLeg('raw', rawCb.checked));
+  dtlnCb.addEventListener('change', () => {
+    if (dtlnCb.checked && !confirm(
+        'Enable DTLN neural AEC?\\n\\n' +
+        '+~75 MB RAM, +~25% one core. Recommended for 2 GB Pis.\\n' +
+        'jasper-voice + bridge will restart (~15 s).')) {
+      dtlnCb.checked = false;
+      return;
+    }
+    toggleLeg('dtln', dtlnCb.checked);
+  });
+
+  thrInput.addEventListener('input', () => {
+    const v = parseFloat(thrInput.value);
+    thrValue.textContent = v.toFixed(2);
+    if (lastServerThreshold === null ||
+        Math.abs(v - lastServerThreshold) > 0.001) {
+      thrSave.disabled = false;
+      thrSave.classList.add('dirty');
+    } else {
+      thrSave.disabled = true;
+      thrSave.classList.remove('dirty');
+    }
+  });
+  thrSave.addEventListener('click', async () => {
+    const v = parseFloat(thrInput.value);
+    thrSave.disabled = true;
+    thrSave.textContent = '…';
+    try {
+      const r = await fetch('aec/threshold', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': CSRF,
+        },
+        body: JSON.stringify({ threshold: v }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+      thrSave.classList.remove('dirty');
+    } catch (err) {
+      alert('Save failed: ' + err.message);
+    }
+    thrSave.textContent = 'Save';
+    setTimeout(pollAec, 500);
+  });
+
   pollAec();
   setInterval(pollAec, 3000);
 
@@ -743,13 +972,19 @@ def _proxy_get(path: str, control_base: str = DEFAULT_CONTROL_BASE,
 
 
 def _proxy_post(path: str, control_base: str = DEFAULT_CONTROL_BASE,
-                timeout: float = 5.0) -> tuple[int, bytes]:
-    """Same as _proxy_get but POST (with empty body — actions don't
-    take parameters)."""
+                timeout: float = 5.0,
+                body: bytes | None = None) -> tuple[int, bytes]:
+    """Proxy a POST to jasper-control. `body` defaults to empty (for
+    parameterless action endpoints like /aec/toggle); pass JSON bytes
+    for endpoints that take parameters (/aec/leg, /aec/threshold)."""
     url = control_base.rstrip("/") + path
+    data = body if body is not None else b""
     req = urllib.request.Request(
-        url, data=b"", method="POST",
-        headers={"Content-Type": "application/json", "Content-Length": "0"},
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(data)),
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -757,8 +992,10 @@ def _proxy_post(path: str, control_base: str = DEFAULT_CONTROL_BASE,
     except urllib.error.HTTPError as e:
         return e.code, e.read() or b'{"error":"upstream HTTP error"}'
     except (urllib.error.URLError, OSError, TimeoutError) as e:
-        body = json.dumps({"error": f"jasper-control unreachable: {e}"}).encode()
-        return 502, body
+        err_body = json.dumps(
+            {"error": f"jasper-control unreachable: {e}"},
+        ).encode()
+        return 502, err_body
 
 
 def _make_handler(
@@ -812,14 +1049,14 @@ def _make_handler(
             path = url.path.rstrip("/") or "/"
             POST_ROUTES = (
                 "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
-                "/aec/toggle",
+                "/aec/toggle", "/aec/leg", "/aec/threshold",
             )
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
-            # CSRF token rides in X-CSRF-Token (these endpoints have no
-            # request body; the dashboard JS reads the meta tag and
-            # adds the header on every action click).
+            # CSRF token rides in X-CSRF-Token. Action endpoints
+            # (/restart/*, /reboot, /aec/toggle) carry no body; the
+            # leg + threshold endpoints carry a JSON body.
             if not verify_csrf(self):
                 reject_csrf(self)
                 return
@@ -833,6 +1070,23 @@ def _make_handler(
             if path == "/aec/toggle":
                 status, body = _proxy_post(
                     "/aec/toggle", control_base, timeout=5.0,
+                )
+                self._send_raw_json(body, status=status)
+                return
+            if path in ("/aec/leg", "/aec/threshold"):
+                # Forward the JSON body to jasper-control. Cap at
+                # 4 KiB — payloads are tiny ({leg, enabled} or
+                # {threshold}), anything bigger is malformed/abusive
+                # and rejected without proxying.
+                length = int(self.headers.get("Content-Length", "0") or "0")
+                if length < 0 or length > 4096:
+                    self._send_raw_json(
+                        b'{"error":"invalid body length"}', status=400,
+                    )
+                    return
+                raw_body = self.rfile.read(length) if length else b""
+                status, body = _proxy_post(
+                    path, control_base, timeout=5.0, body=raw_body,
                 )
                 self._send_raw_json(body, status=status)
                 return
