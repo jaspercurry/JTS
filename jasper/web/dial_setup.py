@@ -54,6 +54,34 @@ ESP32_S3_PIDS = {0x1001, 0x1002, 0x4001}
 # wizard runs out of the same /opt/jasper venv.
 ONBOARD_BIN = "/opt/jasper/.venv/bin/jasper-dial-onboard"
 
+# Where build.sh stages the dial firmware. Matches the default in
+# jasper.cli.dial_onboard (--bin). The wizard reports the staged
+# .bin's mtime/size on the setup page so the user can see whether
+# Force Flash will actually flash something — without this surface,
+# a missing or stale .bin caused the silent "auto mode short-circuit"
+# UX that hid firmware fixes from new dials.
+FIRMWARE_BIN = "/opt/jasper/firmware/dial/jasper-dial.bin"
+
+
+def _read_firmware_status(bin_path: str = FIRMWARE_BIN) -> dict[str, Any]:
+    """Return {present, path, size_bytes, mtime_iso} for the dial
+    firmware .bin. Always returns a dict — fields are None when the
+    file is missing. The wizard surfaces this so users know whether
+    Force Flash will actually flash an up-to-date binary."""
+    import datetime
+    try:
+        st = os.stat(bin_path)
+    except OSError:
+        return {"present": False, "path": bin_path, "size_bytes": None, "mtime_iso": None}
+    return {
+        "present": True,
+        "path": bin_path,
+        "size_bytes": st.st_size,
+        "mtime_iso": datetime.datetime.fromtimestamp(
+            st.st_mtime, tz=datetime.timezone.utc,
+        ).strftime("%Y-%m-%d %H:%M UTC"),
+    }
+
 
 def _list_esp32_s3_ports() -> list[dict[str, Any]]:
     """Enumerate plugged-in ESP32-S3 devices on USB CDC. Returns a
@@ -125,6 +153,14 @@ _PAGE_STYLE = """
   }
   .device-card .port { font-weight: 600; color: #1a6; }
   .device-card .meta { color: #666; font-size: 0.85em; margin-top: 0.3em; }
+  .fw-banner { padding: 0.6em 0.8em; border-radius: 6px; margin: 1em 0;
+               font-size: 0.92em; }
+  .fw-banner.ok { background: #e8ffec; border: 1px solid #9c9; color: #2a5a2a; }
+  .fw-banner.warn { background: #fff6e0; border: 1px solid #d9b97a; color: #6a4a14; }
+  .fw-banner code { background: rgba(0,0,0,0.06); padding: 0 0.25em;
+                    border-radius: 3px; font-size: 0.95em; }
+  .fw-banner pre { background: #1e1e1e; color: #ddd; padding: 0.6em;
+                   border-radius: 4px; font-size: 0.85em; margin: 0.5em 0 0 0; }
   .spinner {
     display: inline-block; width: 1em; height: 1em;
     border: 2px solid #ddd; border-top-color: #1db954;
@@ -183,12 +219,36 @@ prefer.</p>
     return _wrap_page("Accessories", body)
 
 
-def _setup_html(*, ssid: str) -> bytes:
+def _setup_html(*, ssid: str, firmware: dict[str, Any]) -> bytes:
     ssid_disp = html.escape(ssid) if ssid else "(unknown — check Pi WiFi)"
+    if firmware["present"]:
+        size_kb = (firmware["size_bytes"] or 0) // 1024
+        fw_banner = (
+            f'<div class="fw-banner ok">'
+            f'<strong>Firmware ready to flash:</strong> '
+            f'<code>{html.escape(firmware["path"])}</code> '
+            f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])})'
+            f'</div>'
+        )
+    else:
+        fw_banner = (
+            '<div class="fw-banner warn">'
+            '<strong>No firmware staged.</strong> '
+            'Force Flash will not flash anything until <code>jasper-dial.bin</code> '
+            'is built. Run once on the Pi:'
+            '<pre>/opt/jasper/.venv/bin/pip install platformio &amp;&amp; \\\n'
+            'bash /opt/jasper/firmware/dial/build.sh</pre>'
+            'then reload this page. (PlatformIO pulls a ~9 GB toolchain on '
+            'first run, so we only install it when you ask.)'
+            '</div>'
+        )
+
     body = f"""
 <p class="sub">Plug a rotary dial into the Pi's USB-C port. As soon as
 it's detected we'll show you the option to provision it onto the Pi's
 WiFi network ({ssid_disp}).</p>
+
+{fw_banner}
 
 <div id="status"><span class="spinner"></span>Scanning for a device…</div>
 <div id="devices"></div>
@@ -408,7 +468,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/setup":
                 ssid = _read_pi_ssid()
-                self._send_html(_setup_html(ssid=ssid))
+                firmware = _read_firmware_status()
+                self._send_html(_setup_html(ssid=ssid, firmware=firmware))
                 return
             if path == "/scan":
                 self._send_json({"devices": _list_esp32_s3_ports()})
