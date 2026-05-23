@@ -1065,6 +1065,8 @@ class WakeLoop:
         heartbeat: "Heartbeat | None" = None,
         mic_off: "UdpMicCapture | None" = None,
         detector_off: WakeWordDetector | None = None,
+        mic_dtln: "UdpMicCapture | None" = None,
+        detector_dtln: WakeWordDetector | None = None,
         wake_event_store: WakeEventStore | None = None,
     ) -> None:
         self._cfg = cfg
@@ -1077,21 +1079,31 @@ class WakeLoop:
         # operator notices).
         self._mic_off = mic_off
         self._detector_off = detector_off
+        # Tertiary wake-detection leg (DTLN-aec, Phase 1.3 of the
+        # triple-stream rollout). Same shape as the secondary leg: both
+        # must be present to be active; if only one is set we treat as
+        # misconfigured and ignore the tertiary path. See
+        # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture
+        # plan" + HANDOFF-wake-telemetry.md schema-extension section.
+        self._mic_dtln = mic_dtln
+        self._detector_dtln = detector_dtln
         # Per-leg recent wake scores (raw, 0.0-1.0). Updated every frame
         # the corresponding leg scores (regardless of threshold). Read
-        # at fire time so the wake event payload carries BOTH legs'
+        # at fire time so the wake event payload carries ALL legs'
         # most-recent peaks — even when only one leg crossed threshold,
-        # the other leg's score gives signal on whether AEC helped or
-        # hurt for this specific utterance.
+        # the other legs' scores give signal on whether each engine
+        # would have caught this specific utterance.
         self._recent_score_on: float = 0.0
         self._recent_score_off: float = 0.0
+        self._recent_score_dtln: float = 0.0
         # Wall-clock (asyncio loop time) at which each leg's recent
-        # score was set. Used at fire time to confirm the other leg's
-        # score is from the same time window (not a stale score from
+        # score was set. Used at fire time to confirm the other legs'
+        # scores are from the same time window (not a stale score from
         # 3 seconds ago when, say, AEC OFF hasn't been scored recently
         # because frames stopped arriving on 9877).
         self._recent_score_on_at: float = 0.0
         self._recent_score_off_at: float = 0.0
+        self._recent_score_dtln_at: float = 0.0
         # Shared OR-gate lock across the two leg loops. Held only for
         # the critical section that sets refractory_until + reads the
         # other leg's recent score. Without this, both legs could race
@@ -1223,6 +1235,11 @@ class WakeLoop:
         # references it via getattr-tolerant code so this PR is
         # independent of the merge order.
         self._capture_ring_off: deque = deque(maxlen=_capture_ring_frames)
+        # Triple-stream extension (2026-05-23): DTLN-aec leg's audio
+        # ring. Same shape as on/off; populated by _wake_tertiary_loop
+        # when the DTLN leg is configured. Empty (and safely no-op'd
+        # by getattr-tolerant code) on single- or dual-stream installs.
+        self._capture_ring_dtln: deque = deque(maxlen=_capture_ring_frames)
         # The wake event currently in flight, or None when in WAKE
         # state with no pending event. Set in `_handle_wake_frame` on
         # fire; cleared in `_end_turn` after the final outcome write.
@@ -1399,6 +1416,22 @@ class WakeLoop:
                 "(both must be set; staying single-stream)",
                 self._mic_off, self._detector_off,
             )
+        # Tertiary (DTLN-aec) leg — same shape as secondary.
+        tertiary_task: asyncio.Task | None = None
+        if self._mic_dtln is not None and self._detector_dtln is not None:
+            tertiary_task = asyncio.create_task(
+                self._wake_tertiary_loop(),
+                name="wake-tertiary-dtln",
+            )
+            logger.info(
+                "triple-stream wake enabled: AEC ON + AEC OFF + DTLN-aec"
+            )
+        elif (self._mic_dtln is None) ^ (self._detector_dtln is None):
+            logger.warning(
+                "triple-stream wake misconfigured: mic_dtln=%s detector_dtln=%s "
+                "(both must be set; staying dual-stream)",
+                self._mic_dtln, self._detector_dtln,
+            )
         try:
             async for frame in self._mic.frames():
                 if self._heartbeat is not None:
@@ -1463,6 +1496,12 @@ class WakeLoop:
                     await secondary_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
+            if tertiary_task is not None:
+                tertiary_task.cancel()
+                try:
+                    await tertiary_task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
 
     async def _wake_secondary_loop(self) -> None:
         """Parallel wake-only consumer of the secondary (AEC OFF) mic.
@@ -1518,6 +1557,36 @@ class WakeLoop:
                 # back to False.
                 continue
             await self._handle_wake_frame(frame, leg="off")
+
+    async def _wake_tertiary_loop(self) -> None:
+        """Parallel wake-only consumer of the DTLN-aec mic (UDP :9878).
+
+        Triple-stream extension to the dual-stream OR-gate pattern from
+        PR #191. Same shape as `_wake_secondary_loop`: scores every
+        frame, dispatches to `_handle_wake_frame(frame, leg='dtln')`,
+        shares the refractory + OR-gate lock so one user attempt fires
+        at most one wake event no matter which leg(s) cross threshold.
+
+        Wake-detection-only (like the secondary leg): DTLN frames are
+        NOT routed to live sessions; the primary AEC ON stream
+        remains the canonical session audio source.
+        """
+        assert self._mic_dtln is not None
+        capture_ring_dtln: deque | None = getattr(self, "_capture_ring_dtln", None)
+        async for frame in self._mic_dtln.frames():
+            if self._stop_event.is_set():
+                return
+            if self._measurement_active.is_set():
+                continue
+            if self._mic_muted:
+                continue
+            if capture_ring_dtln is not None:
+                capture_ring_dtln.append(frame)
+            if self._acquiring:
+                continue
+            if self._state is not State.WAKE:
+                continue
+            await self._handle_wake_frame(frame, leg="dtln")
 
     async def measurement_pause(self) -> str:
         """Open a measurement window. Set the gate event, pause the
@@ -1714,15 +1783,20 @@ class WakeLoop:
         return "ok"
 
     async def _handle_wake_frame(self, frame, *, leg: str = "on") -> None:
-        """Score one frame on the named leg ('on' = post-AEC primary,
-        'off' = chip-direct secondary). Always tracks the leg's
-        recent peak. If the threshold is crossed AND we win the
-        OR-gate race against the other leg, fires a single wake event
-        with BOTH legs' recent scores attached.
+        """Score one frame on the named leg. Legs:
+          - 'on'   → post-AEC3 BEST_A (primary, the session audio source)
+          - 'off'  → chip-direct raw mic (no AEC; the original dual-stream
+                     fallback)
+          - 'dtln' → DTLN-aec output (the triple-stream tertiary leg
+                     added 2026-05-23 per the triple-stream plan)
+
+        Always tracks the leg's recent peak. If the threshold is crossed
+        AND we win the OR-gate race against the other legs, fires a
+        single wake event with ALL legs' recent scores attached.
 
         Refractory + acquiring checks ensure one user attempt = one
         wake event, regardless of which leg(s) fire first."""
-        # Quick refractory check — both legs early-out without scoring
+        # Quick refractory check — all legs early-out without scoring
         # while the previous wake's TTS may still be bleeding into the
         # mic. Cheap to do per-leg per-frame.
         now_loop = asyncio.get_event_loop().time()
@@ -1730,20 +1804,30 @@ class WakeLoop:
             return
 
         # Score the frame on this leg's detector. Always track the raw
-        # score (regardless of threshold) so the OTHER leg, when it
-        # fires, can pull our most-recent peak into the wake-event
+        # score (regardless of threshold) so the OTHER legs, when they
+        # fire, can pull our most-recent peak into the wake-event
         # payload — even if we never crossed threshold for this
         # utterance.
-        detector = self._detector if leg == "on" else self._detector_off
+        if leg == "on":
+            detector = self._detector
+        elif leg == "off":
+            detector = self._detector_off
+        elif leg == "dtln":
+            detector = self._detector_dtln
+        else:
+            return  # unknown leg
         if detector is None:
             return
         score = detector.score_frame(frame)
         if leg == "on":
             self._recent_score_on = score
             self._recent_score_on_at = now_loop
-        else:
+        elif leg == "off":
             self._recent_score_off = score
             self._recent_score_off_at = now_loop
+        else:  # "dtln"
+            self._recent_score_dtln = score
+            self._recent_score_dtln_at = now_loop
 
         if score < detector.threshold:
             return
@@ -1764,27 +1848,52 @@ class WakeLoop:
             self._refractory_until = now_loop + WAKE_REFRACTORY_SEC
             peak_on = self._recent_score_on
             peak_off = self._recent_score_off
+            # `getattr` so this stays safe for the dual-stream wake-handler
+            # tests that build WakeLoop via __new__ without invoking
+            # __init__ (and thus never set the tertiary-leg attributes).
+            peak_dtln = getattr(self, "_recent_score_dtln", 0.0)
             # If a leg's most-recent score is older than the per-frame
             # cadence × a small safety factor, treat it as "no recent
-            # frame from that leg" — surfaces an AEC OFF stream that
-            # stopped feeding (bridge crash / PR 1 not yet deployed)
-            # without lying about a stale score in the wake event.
+            # frame from that leg" — surfaces a stream that stopped
+            # feeding without lying about a stale score in the wake event.
             STALE_SEC = 0.32  # 4× MicCapture's 80 ms frame period
             if leg != "on" and (now_loop - self._recent_score_on_at) > STALE_SEC:
                 peak_on = None  # type: ignore[assignment]
             if leg != "off" and (now_loop - self._recent_score_off_at) > STALE_SEC:
                 peak_off = None  # type: ignore[assignment]
+            recent_dtln_at = getattr(self, "_recent_score_dtln_at", 0.0)
+            if leg != "dtln" and (now_loop - recent_dtln_at) > STALE_SEC:
+                peak_dtln = None  # type: ignore[assignment]
+            # Compute `fired_legs` — which leg(s) crossed threshold at
+            # fire time. The firing leg is always in the set; other legs
+            # are included if their most-recent score is fresh AND
+            # above their detector's threshold.
+            fired_set = {leg}
+            if peak_on is not None and self._detector is not None \
+                    and peak_on >= self._detector.threshold:
+                fired_set.add("on")
+            if peak_off is not None and self._detector_off is not None \
+                    and peak_off >= self._detector_off.threshold:
+                fired_set.add("off")
+            detector_dtln = getattr(self, "_detector_dtln", None)
+            if peak_dtln is not None and detector_dtln is not None \
+                    and peak_dtln >= detector_dtln.threshold:
+                fired_set.add("dtln")
+            fired_legs = ",".join(sorted(fired_set))
 
-        # Reset BOTH detectors after a wake fires. openWakeWord's
+        # Reset ALL detectors after a wake fires. openWakeWord's
         # prediction smoothing keeps recent-activation state across
         # calls; without resetting, the post-fire baseline stays
         # elevated and music vocals or TTS-tail bleed can false-fire
-        # on the next listening window. Reset the loser as well as
-        # the winner because the loser's score was also elevated by
-        # the user's wake utterance.
+        # on the next listening window. Reset every leg because each
+        # leg's score was elevated by the same user utterance.
         self._detector.reset()
         if self._detector_off is not None:
             self._detector_off.reset()
+        # getattr-tolerant for tests that build WakeLoop via __new__
+        _det_dtln = getattr(self, "_detector_dtln", None)
+        if _det_dtln is not None:
+            _det_dtln.reset()
 
         import time as _time
         self._wake_event_at_monotonic = _time.monotonic()
@@ -1943,6 +2052,10 @@ class WakeLoop:
                     mic_muted=getattr(self, "_mic_muted", None),
                     mic_rms_dbfs_on=mic_rms_on,
                     mic_rms_dbfs_off=mic_rms_off,
+                    # Triple-stream extension — None on dual-stream
+                    # installs (DTLN leg not configured).
+                    peak_score_dtln_aec=peak_dtln,
+                    fired_legs=fired_legs,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -2000,10 +2113,14 @@ class WakeLoop:
             )
             audio_on = self._snapshot_ring(self._capture_ring_on, n_frames)
             audio_off = self._snapshot_ring(self._capture_ring_off, n_frames)
+            audio_dtln = self._snapshot_ring(
+                getattr(self, "_capture_ring_dtln", None), n_frames,
+            ) if getattr(self, "_capture_ring_dtln", None) else None
             await self._wake_event_store.attach_audio(
                 event_id=event_id,
                 audio_on=audio_on,
                 audio_off=audio_off,
+                audio_dtln=audio_dtln,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning(
@@ -3145,11 +3262,22 @@ async def run() -> None:
             )
             if cfg.mic_device_raw else _nullcontext_async(None)
         )
+        # Triple-stream extension (Phase 1.3): optional 3rd mic source.
+        # Set JASPER_MIC_DEVICE_DTLN=udp:9878 alongside the bridge's
+        # JASPER_AEC_DTLN_ENABLED=1 to enable. Empty → dual-stream only.
+        mic_dtln_cm = (
+            make_mic_capture(
+                cfg.mic_device_dtln,
+                capture_rate=cfg.mic_capture_rate,
+                capture_channels=cfg.mic_capture_channels,
+            )
+            if cfg.mic_device_dtln else _nullcontext_async(None)
+        )
         async with make_mic_capture(
             cfg.mic_device,
             capture_rate=cfg.mic_capture_rate,
             capture_channels=cfg.mic_capture_channels,
-        ) as mic, mic_off_cm as mic_off, TtsPlayout(
+        ) as mic, mic_off_cm as mic_off, mic_dtln_cm as mic_dtln, TtsPlayout(
             cfg.tts_device,
             output_rate=cfg.tts_output_rate,
             # Constructor gain doesn't matter at runtime — TtsPlayout
@@ -3201,6 +3329,12 @@ async def run() -> None:
                 WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
                 if mic_off is not None else None
             )
+            # Tertiary leg detector (DTLN-aec). Same model + threshold
+            # as the other legs; only the input stream differs.
+            detector_dtln = (
+                WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
+                if mic_dtln is not None else None
+            )
             # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
             # Opens the SQLite DB synchronously at startup so the daemon
             # is "ready" only after the schema migration is applied —
@@ -3231,6 +3365,8 @@ async def run() -> None:
                 heartbeat=heartbeat,
                 mic_off=mic_off,
                 detector_off=detector_off,
+                mic_dtln=mic_dtln,
+                detector_dtln=detector_dtln,
                 wake_event_store=wake_event_store,
             )
             # Wire the supervisor's tight-retry-loop escalation cue to
