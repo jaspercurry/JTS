@@ -522,6 +522,11 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         user what's wrong (no account configured, Spotify Connect
         not linked, query didn't match).
 
+        Skip the preamble before calling this tool. The `confirm`
+        field IS the spoken answer — a pre-tool status sentence
+        ("Playing X now…") restates it. The music starting is its
+        own immediate confirmation.
+
         Returns an error asking the user to specify when nothing
         matches confidently. The user must re-issue the wake word
         + command — the mic does not stay open for follow-ups.
@@ -629,6 +634,12 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         Returns the `confirm` field — speak it verbatim so the user
         hears which release was actually selected. On error, speak the
         `error` field verbatim.
+
+        Skip the preamble before calling this tool. The `confirm`
+        field IS the spoken answer — a status sentence beforehand
+        ("Sure, playing the latest by X…") restates it word-for-
+        word. The music starting is its own immediate confirmation;
+        a preamble only adds latency.
         """
         resolved = await _resolve_for_play()
         if resolved is None:
