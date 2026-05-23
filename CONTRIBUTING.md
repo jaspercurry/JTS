@@ -14,10 +14,25 @@ first PR."
 
 ## Quick start (laptop, no hardware required)
 
+Recommended path is [uv](https://docs.astral.sh/uv/) — it reads
+`requires-python` from `pyproject.toml` and refuses to build a venv
+on the wrong Python. (Plain `python -m venv` silently accepts
+whatever python you invoked it with, which on macOS defaults to
+Apple's 3.9 — produces a broken venv that fails with confusing
+errors deep in `jasper/peering/`.)
+
 ```sh
 git clone https://github.com/jaspercurry/JTS.git
 cd JTS
-python3.11 -m venv .venv
+uv sync
+.venv/bin/pytest
+```
+
+If you'd rather not install a new tool, stock pip + venv works too —
+just make sure your python is 3.11+:
+
+```sh
+python3.11 -m venv .venv     # NOT `python3 -m venv` on macOS — Apple's default is 3.9
 source .venv/bin/activate
 pip install -e '.[dev]'
 pytest
