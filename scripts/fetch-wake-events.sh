@@ -134,7 +134,7 @@ sudo rm -rf /tmp/wake-events-fetch
 
 echo "" >&2
 echo "Done. ${OUT}/ contains:" >&2
-echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (one .aec-on + one .aec-off per dual-stream event)" >&2
+echo "  - $(ls "$OUT/" | grep -c '\.wav$') WAVs (.aec-on + .aec-off + .aec-dtln per triple-stream event; legacy events have .aec-on + .aec-off only)" >&2
 echo "  - index.csv (spreadsheet) + index.tsv (grep)" >&2
 echo "  - wake-events.sqlite3 (full DB snapshot)" >&2
 echo "" >&2

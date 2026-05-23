@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# Weekly review of the triple-stream wake-event corpus — which legs
+# (AEC ON, AEC OFF, DTLN-aec) are actually firing, where they
+# disagree, and which events are worth listening to.
+#
+# Usage:
+#   bash scripts/analyze-three-leg.sh                          # analyzes wake-events/latest
+#   bash scripts/analyze-three-leg.sh wake-events/20260523T125330Z
+#   bash scripts/analyze-three-leg.sh --top 10                 # 10 events per category
+#
+# Run after `bash scripts/fetch-wake-events.sh` (which lands the
+# corpus under wake-events/<UTC-timestamp>/ + updates the
+# `wake-events/latest` symlink). Reports:
+#   - Venn-style fire breakdown (which legs crossed threshold)
+#   - Per-leg score distribution
+#   - "Solo save" events (one leg only) per leg
+#   - Listening playlist with afplay commands
+#   - Funnel: fired → turn → speech → tool, broken down by pattern
+
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+# Pass --top through; treat any non-flag arg as the corpus dir.
+ARGS=()
+CORPUS=""
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --top) ARGS+=("$1" "$2"); shift 2 ;;
+        --top=*) ARGS+=("$1"); shift ;;
+        -*) ARGS+=("$1"); shift ;;
+        *) CORPUS="$1"; shift ;;
+    esac
+done
+CORPUS="${CORPUS:-${REPO_ROOT}/wake-events/latest}"
+
+# Find a Python — same probe as audit-wake-events.sh.
+CANDIDATES=(
+    "${REPO_ROOT}/.venv/bin/python"
+    "$(git -C "$REPO_ROOT" rev-parse --git-common-dir 2>/dev/null | xargs -I {} dirname {} 2>/dev/null)/.venv/bin/python"
+)
+PY=""
+for c in "${CANDIDATES[@]}"; do
+    if [[ -n "$c" && -x "$c" ]]; then
+        PY="$c"
+        break
+    fi
+done
+if [[ -z "$PY" ]]; then
+    PY="python3"
+fi
+
+exec "$PY" "${REPO_ROOT}/scripts/_analyze_three_leg.py" "$CORPUS" ${ARGS[@]+"${ARGS[@]}"}
