@@ -233,6 +233,35 @@ async def test_cache_keyed_on_url_and_token(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cache_keyed_on_verify_ssl_too(monkeypatch):
+    """Toggling verify_ssl invalidates the cache. Without this, a
+    'broken with strict TLS' cache entry would shadow a 'working with
+    relaxed TLS' probe for up to 15 s after the user ticks the
+    self-signed-cert checkbox in the wizard. Same url + token, but a
+    different verify_ssl means semantically different reachability."""
+    calls = {"n": 0}
+
+    async def fake_uncached(url, token, *, verify_ssl=True):
+        calls["n"] += 1
+        return {
+            "configured": True, "connected": True, "url": url,
+            "instance_name": "Home", "version": "2026.5.1", "error": None,
+        }
+    monkeypatch.setattr(ha_mod, "_probe_uncached", fake_uncached)
+
+    await probe_status("https://ha:8123", "tok", verify_ssl=True)
+    await probe_status("https://ha:8123", "tok", verify_ssl=True)
+    # First call probed, second hit cache.
+    assert calls["n"] == 1
+    # Now flip verify_ssl — cache key changes, fresh probe runs.
+    await probe_status("https://ha:8123", "tok", verify_ssl=False)
+    assert calls["n"] == 2
+    # And a repeat of the new verify_ssl value hits the new cache entry.
+    await probe_status("https://ha:8123", "tok", verify_ssl=False)
+    assert calls["n"] == 2
+
+
+@pytest.mark.asyncio
 async def test_force_bypasses_cache(monkeypatch):
     """jasper-doctor passes force=True so its output reflects ground
     truth at invocation time, not whatever was last cached."""

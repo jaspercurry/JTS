@@ -38,7 +38,13 @@ device-flow ships. See docs/HANDOFF-homeassistant.md.
 URL surface (after nginx strips /ha/):
   GET  /              page render (one of three states)
   POST /discover      mDNS browse, JSON list of found instances
-  POST /verify        validate URL+token combo against GET /api/, JSON
+  POST /ready         lightweight readiness probe (1 HA call) — used
+                       by the connected-state JS during the post-save
+                       restart-poll window so we don't hammer HA with
+                       3 calls per second for 15 seconds
+  POST /verify        full validation (3 HA calls: /api/, /api/config,
+                       /api/states) — used by Test Connection + the
+                       agent-picker populate-on-load
   POST /save          write env file, restart jasper-voice
   POST /disconnect    delete env file, restart jasper-voice
 """
@@ -105,6 +111,25 @@ ENV_RECENT_URLS = _ha_mod.ENV_RECENT_URLS
 
 
 # ---- URL normalization ------------------------------------------------------
+
+def _bracket_ipv6(host: str) -> str:
+    """Wrap an IPv6 literal in brackets for RFC 3986 URL embedding.
+
+    `http://fe80::1:8123` is not a valid URL — the colons in the v6
+    literal collide with the host:port separator. The bracketed form
+    `http://[fe80::1]:8123` is unambiguous. Pass IPv4 or mDNS hostnames
+    through unchanged. Pass already-bracketed literals through too
+    (idempotent).
+    """
+    s = str(host)
+    if not s or s.startswith("["):
+        return s
+    # IPv6 literals always contain `:`; v4 dotted-quads never do; mDNS
+    # hostnames ("uuid.local.") never do. So a colon in `s` means v6.
+    if ":" in s:
+        return f"[{s}]"
+    return s
+
 
 def _normalize_url(raw: str) -> str:
     """Accept any of: 'homeassistant.local', 'homeassistant.local:8123',
@@ -219,7 +244,12 @@ async def _discover_async(timeout: float) -> list[dict[str, str]]:
         host = (info.server or "").rstrip(".") if info.server else ""
         port = info.port or 8123
         # Prefer an IPv4 address if available; falls back to mDNS host.
-        target_host = addrs[0] if addrs else host
+        # python-zeroconf returns IPv4 addrs first when both are present,
+        # so addrs[0] biases toward v4 — important because some HA
+        # installs advertise both and v4 is the LAN-default-friendly
+        # path. If only v6 is available we use it AND bracket it per
+        # RFC 3986 — `http://fe80::1:8123` is not a valid URL.
+        target_host = _bracket_ipv6(addrs[0]) if addrs else host
         if not target_host:
             return
         url = _normalize_url(f"http://{target_host}:{port}")
@@ -398,6 +428,35 @@ def verify_sync(
     except Exception as e:  # noqa: BLE001
         logger.exception("ha verify: unexpected error")
         return {"ok": False, "error": f"Internal error during validation: {e}"}
+
+
+def ready_sync(
+    url: str, token: str, *, verify_ssl: bool = True,
+) -> dict[str, Any]:
+    """Lightweight readiness probe — one HTTP call to GET /api/.
+
+    Used by the connected-state JS during the post-save restart-poll
+    window (up to 15 polls, 1 per second). Compared to verify_sync
+    which makes 3 calls per invocation, this drops the worst-case HA
+    request rate during the restart-poll from ~45 calls to ~15.
+
+    Returns {ok: bool} — no rich data. The caller does one /verify
+    at the end to populate the agent picker + instance name."""
+    if not url or not token.strip():
+        return {"ok": False}
+
+    async def _probe() -> bool:
+        client = _ha_mod.HAClient(url=url, token=token, verify_ssl=verify_ssl)
+        try:
+            return await client.healthcheck()
+        finally:
+            await client.aclose()
+
+    try:
+        return {"ok": asyncio.run(_probe())}
+    except Exception:  # noqa: BLE001
+        logger.debug("ha ready: probe failed", exc_info=True)
+        return {"ok": False}
 
 
 # ---- Page rendering ---------------------------------------------------------
@@ -750,11 +809,22 @@ to this Home Assistant instance.</p>
   const urlParams = new URLSearchParams(window.location.search);
   const isRestarting = urlParams.get('restarting') === '1';
 
-  // Populate the agent picker by re-verifying on page load. Cheap (one
-  // GET /api/states call to HA) and gives the user the live list. When
-  // we're in the post-save restart window, this same fetch doubles as
-  // the readiness probe.
-  async function pollOnce() {{
+  // Two endpoints, two purposes:
+  //   /ready  — one HA HTTP call (GET /api/). Used for the
+  //             restart-poll loop where we just need a yes/no.
+  //   /verify — three HA HTTP calls (/api/, /api/config,
+  //             /api/states). Used for the initial agent-picker
+  //             populate AND the final post-readiness enrichment.
+  async function pollReady() {{
+    try {{
+      const r = await fetch('./ready', {{method: 'POST'}});
+      const data = await r.json();
+      return Boolean(data && data.ok);
+    }} catch (e) {{
+      return false;
+    }}
+  }}
+  async function fullVerify() {{
     try {{
       const r = await fetch('./verify', {{method: 'POST'}});
       return await r.json();
@@ -784,13 +854,17 @@ to this Home Assistant instance.</p>
 
   (async () => {{
     if (!isRestarting) {{
-      populateAgents(await pollOnce());
+      // Regular page load: one /verify call to populate agents +
+      // instance metadata.
+      populateAgents(await fullVerify());
       return;
     }}
     // Restart-window UX: insert a chip near the test button and poll
-    // /verify every 1 s for up to 15 s. The 15 s ceiling covers
+    // /ready every 1 s for up to 15 s. The 15 s ceiling covers
     // Type=notify boot for jasper-voice (model load + cue regen +
-    // realtime backend handshake on a Pi 5).
+    // realtime backend handshake on a Pi 5). One HA call per second
+    // instead of three — easier on HA when the household has an
+    // LLM-backed conversation agent that doesn't like burst traffic.
     const chip = document.createElement('div');
     chip.style.cssText = 'padding: 0.6em 0.9em; background: #fff4e0;' +
       'border: 1px solid #f0c060; border-radius: 6px; margin: 1em 0;' +
@@ -801,16 +875,16 @@ to this Home Assistant instance.</p>
     document.querySelector('.status-grid').insertAdjacentElement('afterend', chip);
 
     const deadline = Date.now() + 15000;
-    let last = null;
     while (Date.now() < deadline) {{
-      last = await pollOnce();
-      if (last && last.ok) {{
+      if (await pollReady()) {{
+        // Daemon is back. One full /verify to pull the agent list +
+        // instance name + version for the success chip.
+        const data = await fullVerify();
         chip.style.background = '#e6f9ec';
         chip.style.borderColor = '#1db954';
         chip.innerHTML = '<span style="color: #14542a; font-weight: 600;">' +
           '✓ Ready.</span> Smart-home commands work now.';
-        populateAgents(last);
-        // Clean URL so a refresh doesn't re-run the restart UX.
+        populateAgents(data);
         history.replaceState(null, '', window.location.pathname);
         return;
       }}
@@ -826,7 +900,7 @@ to this Home Assistant instance.</p>
       'padding: 0.2em 0.5em; border-radius: 4px; margin: 0 0.2em;">Test connection</button> ' +
       'in a moment.';
     document.getElementById('late-test').addEventListener('click', async () => {{
-      populateAgents(await pollOnce());
+      populateAgents(await fullVerify());
     }});
     history.replaceState(null, '', window.location.pathname);
   }})();
@@ -925,6 +999,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path == "/discover":
                 instances = discover_sync(cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC))
                 self._send_json({"instances": instances})
+                return
+            if path == "/ready":
+                # Lightweight readiness — one HA call. Used by the
+                # connected-state JS to poll for "is the daemon back
+                # up + HA still reachable" without re-fetching the
+                # agent list on every iteration.
+                state = read_env_file(cfg["state_path"])
+                self._send_json(ready_sync(
+                    state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
+                    verify_ssl=_verify_ssl_from_state(state),
+                ))
                 return
             if path == "/verify":
                 # /verify uses whatever URL+token are saved (no form
