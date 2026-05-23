@@ -31,7 +31,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
 from ..config import Config
 
@@ -1720,6 +1720,16 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # Catch deployment drift on the shairport-sync.conf alsa block —
         # raw `hw:Loopback` silently breaks AirPlay (the d6c946c bug).
         check_shairport_sync_loopback_plughw,
+        # Catch the bug class that broke us 2026-05-23: PR #214 wired
+        # renderers to a user-space ALSA PCM (`jasper_renderer_in`)
+        # defined in an asoundrc that the renderer users couldn't read.
+        # `check_shairport_sync_loopback_plughw` above passed on the
+        # string match, but the *runtime* open failed and crashed
+        # shairport-sync on every connection. This probe runs the
+        # actual open AS each renderer's User=. Catches both this
+        # bug class and the broader "deploy looked fine, services
+        # active, but devices unreachable" failure mode.
+        check_renderer_device_resolvable,
     ]
     results = [c() for c in sync_checks]
     results.append(await check_camilla_websocket(cfg))
@@ -1805,6 +1815,214 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
         label, "warn",
         f"output_device value not recognized: {line!r}",
     )
+
+
+# Renderer registry: (label_suffix, runtime_user, parse_function).
+# parse_function returns the configured device name, or None if not
+# discoverable. Centralising the registry here keeps the probe loop
+# below uniform across renderers; adding a fourth renderer is one
+# entry.
+def _read_first_line_matching(path: Path, predicate) -> Optional[str]:
+    """Scan a config file for the first line where `predicate(line)`
+    returns truthy. Returns the line stripped, or None."""
+    try:
+        for ln in path.read_text().splitlines():
+            if predicate(ln):
+                return ln.strip()
+    except OSError:
+        return None
+    return None
+
+
+def _renderer_device_shairport() -> Optional[str]:
+    """shairport-sync: parse /etc/shairport-sync.conf for output_device.
+    Format: `output_device = "jasper_renderer_in";` (libconfig syntax)."""
+    ln = _read_first_line_matching(
+        Path("/etc/shairport-sync.conf"),
+        lambda l: (
+            l.lstrip().startswith("output_device")
+            and "=" in l
+            and not l.lstrip().startswith("//")
+        ),
+    )
+    if not ln:
+        return None
+    # output_device = "DEVNAME"; — pull the quoted string.
+    m = re.search(r'"([^"]+)"', ln) or re.search(r"'([^']+)'", ln)
+    return m.group(1) if m else None
+
+
+def _renderer_device_librespot() -> Optional[str]:
+    """librespot: parse the ExecStart= line(s) in librespot.service for
+    --device. systemd allows ExecStart to span multiple lines via
+    backslash continuation."""
+    p = Path("/etc/systemd/system/librespot.service")
+    try:
+        text = p.read_text()
+    except OSError:
+        return None
+    # Collapse line continuations so we can scan the full ExecStart.
+    flat = text.replace("\\\n", " ")
+    for ln in flat.splitlines():
+        s = ln.strip()
+        if not s.startswith("ExecStart=") or "--device" not in s:
+            continue
+        # --device <DEVNAME>  (may be quoted)
+        m = re.search(r"--device\s+(?:'([^']+)'|\"([^\"]+)\"|(\S+))", s)
+        if m:
+            return m.group(1) or m.group(2) or m.group(3)
+    return None
+
+
+def _renderer_device_bluealsa() -> Optional[str]:
+    """bluealsa-aplay: parse the drop-in ExecStart= for --pcm=DEVNAME."""
+    # The drop-in is mode-0644 readable; doctor runs as root anyway.
+    for path in (
+        Path("/etc/systemd/system/bluealsa-aplay.service.d/jts-output.conf"),
+        Path("/etc/systemd/system/bluealsa-aplay.service.d/override.conf"),
+    ):
+        try:
+            text = path.read_text()
+        except OSError:
+            continue
+        for ln in text.splitlines():
+            s = ln.strip()
+            if s.startswith("ExecStart=") and "--pcm=" in s:
+                m = re.search(r"--pcm=(\S+)", s)
+                if m:
+                    return m.group(1)
+    return None
+
+
+def _systemd_user_for(unit: str) -> Optional[str]:
+    """Return the User= field of a systemd unit, or None if missing /
+    empty (systemd default = root in that case, which the caller
+    handles)."""
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", unit, "-p", "User", "--value"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    u = r.stdout.strip()
+    return u or None
+
+
+def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
+    """Attempt to open `device` for ~0.1 s of silence playback AS `user`.
+    Returns (success, detail). success=True means snd_pcm_open and a
+    short write both succeeded; detail is the underlying aplay stderr
+    for diagnostics (best-effort short).
+
+    Why aplay + /dev/zero: it exercises the same code path the renderer
+    uses (alsalib's snd_pcm_open through the user-space plugin chain)
+    while writing only silence — sample-wise additive into any mix,
+    so safe to run while music is playing.
+    """
+    cmd = [
+        "timeout", "0.3",
+        "aplay", "-q",
+        "-D", device,
+        "-c", "2", "-r", "48000", "-f", "S16_LE",
+        "/dev/zero",
+    ]
+    if user:
+        cmd = ["sudo", "-n", "-u", user, *cmd]
+    try:
+        r = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=3,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired) as e:
+        return False, f"probe subprocess failed: {e}"
+    # Exit code 124 = timeout fired = aplay was happily writing
+    # silence for the full 0.3 s, which means open + write succeeded.
+    # Exit code 0 = aplay exited cleanly before timeout (rare; means
+    # /dev/zero was fully consumed, which won't happen at 0.3 s but
+    # still success).
+    # Any other code = failure; stderr should explain.
+    stderr_tail = (r.stderr or "").strip().splitlines()[-2:]
+    detail = " | ".join(stderr_tail)[:200]
+    if r.returncode in (0, 124):
+        return True, detail
+    return False, detail or f"exit={r.returncode}"
+
+
+def check_renderer_device_resolvable() -> CheckResult:
+    """Verify each music renderer can actually open the ALSA device
+    it's configured to write to, AS its runtime systemd User=.
+
+    The bug this catches (PR #223, 2026-05-23): PR #214 wired the
+    renderers to a user-space ALSA PCM (`jasper_renderer_in`)
+    defined in /root/.asoundrc (mode 0600). Renderer users
+    (shairport-sync, pi) couldn't read /root/.asoundrc, so
+    snd_pcm_open() returned "Unknown PCM" and shairport-sync
+    crashed with output_device_error_2 on every AirPlay connection.
+    String-matching the conf files (check_shairport_sync_loopback_plughw
+    above) passed because the strings looked right; what failed was
+    the runtime resolution of those strings under the renderer's user
+    identity. Only a real open attempt catches that.
+
+    Method: for each known renderer:
+      1. Look up its systemd User=.
+      2. Parse its config to find the configured ALSA device.
+      3. `sudo -u <user> aplay -D <device> /dev/zero` for a short
+         duration. Success = device opens and a write goes through.
+
+    Probe is safe to run anytime — writes only silence, sample-wise
+    additive into the dmix, no audible impact even during music
+    playback.
+
+    Returns:
+      ok    — all configured renderers can open their device as their user
+      fail  — any renderer can't open its device (this is the bug class)
+      warn  — partial info: some renderer's device or user wasn't
+              discoverable (likely the renderer isn't installed; treat
+              as informational)
+    """
+    label = "renderer ALSA device resolvable"
+    renderers = [
+        ("shairport-sync", "shairport-sync.service",
+         _renderer_device_shairport),
+        ("librespot",      "librespot.service",
+         _renderer_device_librespot),
+        ("bluealsa-aplay", "bluealsa-aplay.service",
+         _renderer_device_bluealsa),
+    ]
+    failures: list[str] = []
+    incomplete: list[str] = []
+    successes: list[str] = []
+    for name, unit, parse_dev in renderers:
+        device = parse_dev()
+        if device is None:
+            incomplete.append(f"{name}: config not found (not installed?)")
+            continue
+        user = _systemd_user_for(unit)
+        ok, detail = _probe_open_as_user(device, user)
+        who = user or "root"
+        if ok:
+            successes.append(f"{name}({who})→{device}")
+        else:
+            failures.append(f"{name}({who})→{device}: {detail}")
+    if failures:
+        return CheckResult(
+            label, "fail",
+            "; ".join(failures) + ". This is the bug class PR #223 "
+            "addressed — verify /etc/asound.conf exists and is mode "
+            "0644 so non-root renderer users can resolve user-space "
+            "ALSA PCM names.",
+        )
+    if not successes:
+        # All renderers were unknown — probably a stripped image.
+        return CheckResult(
+            label, "warn",
+            "; ".join(incomplete) if incomplete
+            else "no renderers configured",
+        )
+    detail = "; ".join(successes)
+    if incomplete:
+        detail += " (skipped: " + "; ".join(incomplete) + ")"
+    return CheckResult(label, "ok", detail)
 
 
 def check_peering_mode() -> CheckResult:

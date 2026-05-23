@@ -192,21 +192,34 @@ install_alsa() {
     echo "  Apple dongle: CARD=${DONGLE_CARD}"
     export DONGLE_CARD
 
-    # /root/.asoundrc provides jasper_out (dmix on the dongle).
-    # CamillaDSP captures plughw:Loopback,1,0 directly (no dsnoop
-    # fan-out until AEC bridge is reintroduced); both CamillaDSP
-    # music and jasper-voice TTS write to jasper_out so dmix sums
-    # them before the speakers.
+    # /etc/asound.conf provides the system-wide ALSA PCM definitions
+    # (jasper_out, jasper_capture, jasper_renderer_in, etc.).
+    #
+    # Location matters: this file MUST be world-readable so that
+    # renderer processes running as non-root users (shairport-sync as
+    # `shairport-sync`, librespot as `pi`) can resolve the user-space
+    # PCM names declared in it. The pre-2026-05-23 location
+    # (/root/.asoundrc, mode 0600) was visible only to root, which
+    # was fine while renderers wrote to plughw:Loopback,0,0 (a
+    # kernel-built-in name needing no asoundrc to resolve) but broke
+    # AirPlay and Spotify Connect after PR #214 switched them to
+    # user-space PCM names. /etc/asound.conf at mode 0644 is the
+    # canonical Linux pattern for "ALSA config visible to all users."
+    #
+    # Migration: any existing /root/.asoundrc gets backed up
+    # (.pre-jasper.<unix-ts>) and removed so it can't silently
+    # shadow /etc/asound.conf for root processes (ALSA evaluates
+    # ~/.asoundrc before /etc/asound.conf).
     if [[ -f /root/.asoundrc && ! -L /root/.asoundrc ]]; then
-        if ! grep -q "jasper_out" /root/.asoundrc; then
-            cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
-        fi
+        cp /root/.asoundrc "/root/.asoundrc.pre-jasper.$(date +%s)"
+        rm -f /root/.asoundrc
+        echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
     fi
     sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
-        > /root/.asoundrc
-    chmod 0600 /root/.asoundrc
-    echo "  Wrote /root/.asoundrc with jasper_out"
+        > /etc/asound.conf
+    chmod 0644 /etc/asound.conf
+    echo "  Wrote /etc/asound.conf with jasper_renderer_in + jasper_out"
 }
 
 # Source-build / fetch librespot, nqptp, shairport-sync (AirPlay 2).
