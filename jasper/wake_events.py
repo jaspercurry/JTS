@@ -529,7 +529,14 @@ class WakeEventStore:
         """Bulk-UPDATE audio_*_path → sentinel for events whose WAVs
         were just pruned. The sentinel preserves the historical fact
         that audio existed (vs NULL, which would mean "no audio was
-        ever captured")."""
+        ever captured").
+
+        All three per-leg path columns are updated so downstream
+        readers can use the canonical `audio_*_path != 'rolled_off'
+        AND IS NOT NULL` filter against any of them. Dropping the
+        DTLN column from this list (as the original implementation
+        did) would leave audio_dtln_path pointing at a deleted file
+        — a pre-merge bug spotted in the 2026-05-23 review."""
         self._require_open()
         async with self._lock():
             self._conn.executemany(  # type: ignore[union-attr]
@@ -538,11 +545,18 @@ class WakeEventStore:
                 SET audio_on_path  = CASE WHEN audio_on_path  IS NOT NULL
                                           THEN ? ELSE NULL END,
                     audio_off_path = CASE WHEN audio_off_path IS NOT NULL
-                                          THEN ? ELSE NULL END
+                                          THEN ? ELSE NULL END,
+                    audio_dtln_path = CASE WHEN audio_dtln_path IS NOT NULL
+                                           THEN ? ELSE NULL END
                 WHERE event_id = ?
                 """,
                 [
-                    (ROLLED_OFF_SENTINEL, ROLLED_OFF_SENTINEL, eid)
+                    (
+                        ROLLED_OFF_SENTINEL,
+                        ROLLED_OFF_SENTINEL,
+                        ROLLED_OFF_SENTINEL,
+                        eid,
+                    )
                     for eid in event_ids
                 ],
             )

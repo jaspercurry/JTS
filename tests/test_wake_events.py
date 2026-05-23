@@ -583,3 +583,49 @@ async def test_retention_only_writes_sentinel_for_legs_that_had_audio(
         assert row["audio_off_path"] is None
     finally:
         s.close()
+
+
+async def test_retention_marks_dtln_path_as_rolled_off(tmp_path: Path):
+    """Triple-stream regression — `_mark_audio_rolled_off` originally
+    only updated audio_on_path + audio_off_path. After retention
+    pruned a DTLN WAV, audio_dtln_path stayed pointing at the
+    deleted file, and any query filtering
+    `audio_*_path != 'rolled_off' AND IS NOT NULL` would try to
+    load missing files. Fixed in the 2026-05-23 pre-merge review."""
+    s = WakeEventStore(tmp_path, max_audio_bytes=100_000)
+    s.open()
+    try:
+        # Two triple-stream events at 1 s each (3 WAVs × ~32 KB
+        # = ~96 KB per event). After event 2 attaches, total is
+        # ~192 KB > 100 KB cap → event 1's WAVs are deleted to
+        # make room.
+        for i in (1, 2):
+            eid = f"evt-{i}"
+            await s.begin_event(
+                event_id=eid, trigger_kind="fire_dtln",
+                peak_score_aec_on=0.0, peak_score_aec_off=0.0,
+                peak_score_dtln_aec=0.9,
+                threshold=0.5, wake_model="jarvis_v2.onnx",
+                fired_legs="dtln",
+            )
+            await s.attach_audio(
+                event_id=eid,
+                audio_on=_pcm(1.0),
+                audio_off=_pcm(1.0),
+                audio_dtln=_pcm(1.0),
+            )
+        # First event's audio was pruned. ALL three audio path
+        # columns should now be the sentinel — not just on / off.
+        row = await s.get_event("evt-1")
+        assert row["audio_on_path"] == ROLLED_OFF_SENTINEL
+        assert row["audio_off_path"] == ROLLED_OFF_SENTINEL
+        assert row["audio_dtln_path"] == ROLLED_OFF_SENTINEL, (
+            "audio_dtln_path still points at the deleted file; the "
+            "sentinel update missed the third leg. Check "
+            "_mark_audio_rolled_off in jasper/wake_events.py."
+        )
+        # Second event keeps its real paths
+        row2 = await s.get_event("evt-2")
+        assert row2["audio_dtln_path"] == "evt-2.aec-dtln.wav"
+    finally:
+        s.close()
