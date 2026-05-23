@@ -618,16 +618,17 @@ chip AEC and solve barge-in cleanly. But the dongle was chosen
 for DAC quality; the chip's AIC3104 is meaningfully worse. Hard
 to imagine this trade landing as positive.
 
-There is a local `chip-aec-experiment` branch (commit `5e63dca`,
-"chip-AEC convergence test, Phase 1-4 infrastructure") that
-explored whether chip AEC could converge in the *current*
-topology rather than requiring the codec swap. The branch
-predates several rounds of main work and is currently dormant.
-If chip AEC ever gets re-examined, that branch is the starting
-point — read its commit message and infrastructure additions
-before re-deriving the question. The branch's existence does
-not change the dismissal above; it documents that the question
-has been picked up and put down at least once.
+The convergence question (does chip AEC actually adapt in the
+*current* dongle topology when fed a USB-IN reference signal?)
+has its own user-authorized carve-out: see
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the four
+`scripts/chip-aec-*.sh` scripts. They live in `main` as inert
+exploratory infrastructure — production state is untouched
+until `bash scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh`
+reverts. **That carve-out is scoped to the convergence test
+only**; it does not re-open the codec-swap dismissal above, nor
+PipeWire `module-echo-cancel`, dual-USB-sink, or custom firmware.
+Agents proposing those remain bound by the policy.
 
 ### Different AEC engine
 

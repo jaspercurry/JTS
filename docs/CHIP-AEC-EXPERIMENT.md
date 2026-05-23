@@ -1,7 +1,24 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Branch:** `chip-aec-experiment` (not for merge to main as-is — this is
-exploratory infrastructure).
+**Status:** shipped to `main` as inert exploratory infrastructure.
+Production state is untouched until [`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.sh)
+runs; [`scripts/chip-aec-teardown.sh`](../scripts/chip-aec-teardown.sh)
+reverts. The doc and scripts sit dormant in the repo otherwise.
+
+> ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
+> reconciler toggle" says *"Architecture is fixed; swap the engine,
+> not the topology"* and names "dual-USB-sink hardware-AEC retry"
+> and "custom XVF firmware" as paths agents must not propose.
+> [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Hardware AEC, revisited"
+> repeats this as `Policy status: rejected by name`. **This doc and
+> the four `scripts/chip-aec-*.sh` scripts are the user-authorized
+> exception** — narrow, scoped to empirical resolution of
+> [HANDOFF-aec.md](HANDOFF-aec.md) Option D ("Chip-AEC with USB-in
+> reference topology"). The carve-out does not re-open the rejected
+> paths elsewhere (PipeWire `module-echo-cancel`, dual-USB-sink,
+> custom firmware) and does not license re-derivation of the
+> question outside this infrastructure. Agents working on AEC
+> remain bound by the policy for everything else.
 
 **Goal:** Definitively answer whether the XVF3800's hardware AEC can
 produce useful echo cancellation in JTS's external-DAC topology when we
@@ -24,14 +41,19 @@ question is closed.
 ## Topology
 
 ```
-renderers (shairport-sync, librespot, bluealsa-aplay)
+renderers (shairport-sync, librespot, bluealsa-aplay, jasper-usbsink)
     │
-    │ each writes to hw:Loopback,0,0
+    │ each writes to pcm.jasper_renderer_in   ← PR #214: dmix in front
+    ▼                                            of hw:Loopback,0,0
+pcm.jasper_renderer_mix (dmix, 48 kHz S16_LE, ipc_key 7779)
+    │
     ▼
+hw:Loopback,0,0
+    │
 snd-aloop kernel    hw:Loopback,0,sub0 ─cross-wired→ hw:Loopback,1,sub0
                                                           │
                                                           ▼
-                                                  pcm.jasper_capture (dsnoop)
+                                                  pcm.jasper_capture (dsnoop, 48 k)
                                                           │
                                             ┌─────────────┼────────────────────┐
                                             ▼             ▼                    ▼
@@ -53,18 +75,40 @@ snd-aloop kernel    hw:Loopback,0,sub0 ─cross-wired→ hw:Loopback,1,sub0
                                                     jasper-voice
 ```
 
+Topology shifts since the 2026-05-21 branch base, all transparent
+to the experiment but worth noting:
+- **PR #214** inserted a userspace dmix (`pcm.jasper_renderer_mix`,
+  ipc_key 7779) between renderers and `hw:Loopback,0,0`. Renderers
+  now write to `pcm.jasper_renderer_in` (a plug wrapper). Rate is
+  deterministically 48 kHz instead of first-renderer-wins. The
+  experiment's `plug:jasper_capture` tap is downstream of all of
+  this and unaffected.
+- **PR #223** moved ALSA config from `/root/.asoundrc` (mode 0600,
+  root-only) to `/etc/asound.conf` (mode 0644, world-readable).
+  This is what lets `chip-aec-capture-comparison.sh`'s `arecord
+  -D plug:jasper_capture` work as the `pi` user.
+- The bridge now emits *three* UDP streams in production
+  (`:9876` AEC'd, `:9877` raw chip mic, `:9878` DTLN). The
+  experiment's daemon still only feeds `:9876`. See limitation 6.
+
 Key differences from production:
-- WebRTC AEC bridge is stopped + masked
+- WebRTC AEC bridge **and its full lifecycle chain** are stopped +
+  masked: `jasper-aec-bridge`, `jasper-aec-reconcile`,
+  `jasper-aec-init`, `jasper-dongle-recover`. Masking only the
+  bridge is insufficient — the reconciler can fire from udev
+  (dongle replug), `install.sh`, or dongle-recover, and re-runs
+  `jasper-aec-init` which unconditionally writes `SHF_BYPASS=1`.
+  See limitation 4 for the full picture.
 - `SHF_BYPASS = 0` (chip AEC engaged on ch0/ch1)
 - New daemon `jasper.chip_aec_experiment` does two things in parallel:
   - **Reference feeder**: reads `plug:jasper_capture` (pre-CamillaDSP
     music tap), mixes L+R to mono, duplicates to stereo, writes to
     `hw:CARD=Array,DEV=0` at 16 kHz S16_LE (the only rate/format the
     chip's USB-IN endpoint advertises — verified empirically and via
-    XMOS docs, see HANDOFF-xvf3800.md §1)
+    XMOS docs, see [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §1)
   - **UDP mic pump**: reads chip's 6-ch mic capture, extracts ch1,
     sends to `udp://127.0.0.1:9876` (same UDP port the WebRTC bridge
-    normally writes to → no `jasper-voice` changes)
+    normally writes to → no `jasper-voice` changes for the AEC ON leg)
 
 ---
 
@@ -207,6 +251,29 @@ AEC_AECCONVERGED flips to 1?
    favorable, we'd run wake-rate as a separate pass using the existing
    methodology from `project_aec_wake_rate_forensic_methodology.md`.
 
+6. **Dual / triple-stream wake will be silently degraded.**
+   `JASPER_MIC_DEVICE_RAW=udp:9877` (PR #191 dual-stream OR-gate)
+   and `JASPER_MIC_DEVICE_DTLN=udp:9878` (triple-stream OR-gate)
+   are default-off, but if the household has enabled them in
+   `/etc/jasper/jasper.env`, the experiment's daemon only feeds
+   `:9876` — the OFF/DTLN legs starve. Wake still works on the AEC
+   leg, but every wake-event row gets `score_off=none` /
+   `score_dtln=none`. **`chip-aec-setup.sh` defensively comments
+   these env lines out for the experiment duration and `chip-aec-
+   teardown.sh` restores from `.chip-aec.bak`** — but worth knowing
+   if you're sanity-checking voice behavior mid-experiment.
+
+7. **Wake-event corpus contamination.** `WakeEventStore`
+   (`jasper/wake_events.py`) writes every wake to
+   `/var/lib/jasper/wake-events/wake-events.sqlite3` + a 1 GB WAV
+   ring, with no env knob to disable. During the experiment, fires
+   land in the same corpus as production WebRTC-AEC data — bad for
+   future wake-rate analysis. The setup script drops a timestamp
+   sentinel at `.chip-aec-experiment-start.ts`; the teardown reads
+   it and prints SQL one-liners to either label experiment-window
+   events as `chip-aec-experiment` (recommended; preserves
+   forensics) or delete them (cleans corpus). Operator's choice.
+
 ---
 
 ## Empirical facts confirmed before the experiment (2026-05-21)
@@ -235,16 +302,36 @@ against XMOS docs + `docs/HANDOFF-xvf3800.md`:
 
 ## Source citations
 
-- HANDOFF-aec.md "D — Chip-AEC with USB-in reference topology" (lines
-  1015–1177) — the 2026-05-21 docs-review writeup. *Note:* the rate
-  claim is wrong; the rest is correct.
-- HANDOFF-aec.md "What we found about chip-side AEC in our topology"
-  (lines 1603–1729) — original 2025 investigation, dongle topology
-- HANDOFF-aec.md "Chip-pipeline-only alternative considered + rejected"
-  (lines 505–534) — May 2026 wake-rate test, no USB-IN reference, not
-  applicable to this experiment
-- HANDOFF-xvf3800.md §1 (lines 60–62) — canonical USB endpoint table
-- HANDOFF-xvf3800.md §5.2 (lines 771–779) — "No 48 kHz USB capture rate"
-- `jasper/mics/xvf3800.py:50–59` — firmware variant table
+References are by section header / identifier, not line number, so
+they survive future doc edits (per [AGENTS.md](../AGENTS.md)
+"Documentation paradigm" rule 5).
+
+- [HANDOFF-aec.md](HANDOFF-aec.md) "D — Chip-AEC with USB-in reference
+  topology" — the 2026-05-21 docs-review writeup. *Note:* the
+  pre-correction rate claim ("48 kHz to USB-in is fine") was wrong;
+  this branch's commit corrected it in-place.
+- [HANDOFF-aec.md](HANDOFF-aec.md) "What we found about chip-side
+  AEC in our topology" — original 2025 investigation, dongle
+  topology, no USB-IN reference. Conclusion does not apply here.
+- [HANDOFF-aec.md](HANDOFF-aec.md) "Chip-pipeline-only alternative
+  considered + rejected" — May 2026 wake-rate test, no USB-IN
+  reference. Conclusion does not apply here.
+- [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §1 "Hardware identity"
+  — canonical USB endpoint table (16 kHz S16_LE fixed at build time).
+- [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §5.2 "No 48 kHz USB
+  capture rate" — explicit confirmation no shipped firmware
+  exposes 48 kHz USB.
+- [`jasper/mics/xvf3800.py`](../jasper/mics/xvf3800.py) —
+  `VARIANT_2CH`, `VARIANT_6CH`, `RECOMMENDED_FIRMWARE` constants
+  carrying the firmware variant table.
 - [XMOS XVF3800 Datasheet §"USB Audio Interface"](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/datasheet/03_audio_pipeline.html#usb-audio-interface)
 - [XMOS lib_sw_pll](https://github.com/xmos/lib_sw_pll) — the SW PLL used for USB→mic clock sync
+
+---
+
+Last verified: 2026-05-23 (rebased onto current `main`; drift fixes
+landed for masking the full AEC service chain, capture-comparison
+EBUSY collision, dual/triple-stream env handling, and the wake-event
+corpus marker. Re-verify when: XMOS publishes a 48 kHz USB firmware
+variant; another round of AEC subsystem refactor lands; or when
+running the experiment for the first time after a >3-month gap.)

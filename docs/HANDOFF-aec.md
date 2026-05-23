@@ -1024,6 +1024,16 @@ worst-case FP cost.
 
 ### D — Chip-AEC with USB-in reference topology
 
+> **Empirical infrastructure**:
+> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) +
+> `scripts/chip-aec-{setup,teardown,poll-convergence,capture-comparison}.sh`
+> + `jasper/chip_aec_experiment.py` exist on `main` as inert
+> exploratory infrastructure for resolving this option's open
+> question (does the chip's adaptive filter converge?). User-
+> authorized carve-out from the "Architecture is fixed" policy in
+> [AGENTS.md](../AGENTS.md). **Read CHIP-AEC-EXPERIMENT.md before
+> running anything**; teardown fully reverts to production state.
+
 **What:** Re-architect to feed mono music to the XVF3800's USB-in
 left channel as the AEC reference signal, then read the chip's
 hardware-AEC'd mic stream from its USB-out (instead of running
