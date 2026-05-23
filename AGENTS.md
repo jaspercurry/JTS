@@ -1,5 +1,11 @@
 # AI agent operational guide for JTS
 
+> **This file is canonical.** Edit operational rules and
+> per-subsystem guidance here, not in CLAUDE.md. CLAUDE.md is a
+> thin Claude-Code-specific shim that imports this file via
+> `@AGENTS.md`. Any operational content added to CLAUDE.md will
+> be lost or ignored — make changes here instead.
+
 **Read [README.md](README.md) first** — it has the project context
 (architecture, hardware, repo layout, subsystem overview,
 deployment, debugging entry points). This file adds AI-specific
@@ -11,10 +17,64 @@ What goes here:
   brick hazards)
 - Operational shortcuts (specific scripts, env-var formats)
 - AI behavioral rules specific to this codebase
+- How docs are organized (see "Documentation paradigm" below)
 
-Twin file: `CLAUDE.md` mirrors this for Claude Code (which
-supports an `@README.md` import directive at the top of its
-agent file). Keep both in sync when editing.
+---
+
+## Documentation paradigm
+
+How docs in this repo are structured, so additions land in the
+right place. Read this before adding or restructuring docs.
+
+1. **Single source of truth.** Each concept (hardware, voice-provider
+   switching, AEC tuning, etc.) lives in exactly one file. Others
+   link to it; they don't restate it. Drift between files is a bug.
+
+2. **HANDOFF shape: current state first, history below.** Every
+   `docs/HANDOFF-*.md` opens with the current operational truth —
+   what works today, what to touch, what not to touch — in <400
+   lines. Investigation narrative (dated entries, decision
+   archaeology, "how we got here") sits below as an appendix.
+
+3. **Date every load-bearing claim. `Last verified:` footer.**
+   Every HANDOFF ends with `Last verified: YYYY-MM-DD`. Bump it
+   when you re-verify (re-read the doc against the current code
+   and confirm claims still hold), not just on edit.
+   `scripts/doc-freshness.sh` reads this footer and reports docs
+   overdue for re-verification.
+
+4. **Memory = user-private. Repo = everyone.** Rules that apply to
+   every contributor go in [CONTRIBUTING.md](CONTRIBUTING.md) or
+   this file. Memory (Claude Code's `~/.claude/.../memory/`) stays
+   user-private — personal preferences, household composition,
+   in-progress hunches. If a memory entry should apply to anyone
+   touching this repo, externalize it.
+
+5. **Code references use function names, not line numbers.** A
+   reference like `jasper/voice_daemon.py` + `build_cue_tts_backend`
+   survives refactors; `:172` doesn't. Use line numbers only when
+   the line itself is the point (a magic number, a specific bug
+   location). When a line number is the right call, treat the
+   number as load-bearing — a verification pass on
+   `HANDOFF-correction.md` (2026-05-23) found four stale `:N`
+   refs that misled readers.
+
+6. **Touched-subsystem rule.** If your PR touches `jasper/voice/*`,
+   scan `docs/HANDOFF-voice-providers.md` (and similarly for other
+   subsystems). The PR template has an "I scanned the related
+   HANDOFF" checkbox — that's the enforcement hook. If you found
+   anything stale while scanning, fix it inline in the same PR.
+
+7. **README is the doc atlas.** Every shipped doc gets listed in
+   README's documentation map, or is explicitly tagged elsewhere
+   (session-artifact / archived / research). No orphan docs.
+
+8. **One canonical file per agent convention.** AGENTS.md (this
+   file) is canonical. CLAUDE.md is `@AGENTS.md` (Claude Code's
+   `@`-import directive) plus the canonical-file banner. No
+   operational content lives in CLAUDE.md. This follows the
+   [agents.md](https://agents.md) cross-tool convention adopted
+   by Codex, Cursor, GitHub Copilot, Gemini, Aider, and others.
 
 ---
 
@@ -226,36 +286,53 @@ supervisor helpers (backoff, fingerprint, escalation cue) live at
 
 ---
 
-## Voice system prompt — read the provider's guide before editing
+## Voice prompting — read HANDOFF-prompting.md first
 
-`SYSTEM_INSTRUCTION` in [`jasper/voice_daemon.py`](jasper/voice_daemon.py)
-is what the realtime LLM sees on every turn. **Don't tune it by
-intuition.** Each provider publishes a prompting guide whose
-structure mirrors how their model was RLHF-trained; aligning with
-that structure makes instructions stick. Fighting it (e.g. absolute
-prohibitions where the model expects conditional rules) gets partial
-compliance at best.
+Before editing `SYSTEM_INSTRUCTION` in
+[`jasper/voice_daemon.py`](jasper/voice_daemon.py), any tool
+description in [`jasper/tools/`](jasper/tools/), or any LLM-facing
+prompt surface, read
+[`docs/HANDOFF-prompting.md`](docs/HANDOFF-prompting.md). It's the
+canonical playbook — cross-provider principles, provider deltas,
+the JTS `SYSTEM_INSTRUCTION` walk-through, a tool-prompt cookbook,
+and a pitfalls catalog. Refreshed against the provider docs
+2026-05-23.
 
-Canonical references:
+The rules most often violated without it:
+
+- **Conditional over absolute.** OpenAI's docs say "remove
+  `always`/`never`/`only`/`must` rules unless truly required."
+  Absolute preamble bans get ~33% compliance on gpt-realtime
+  per a public community thread. Phrase rules as "When X, do
+  Y" and enumerate X — the model doesn't generalize unstated
+  scopes. The Gemini story is muddier (forum evidence of 3.1
+  audio ignoring conditionals 2.5 honored) — documented in the
+  playbook.
+- **POSITIVE framing for tool calls.** "Call X when Y," not
+  "Don't guess." A negative-heavy version of our prompt made
+  gpt-realtime-2 skip tools across five voice-eval scenarios —
+  rationale in the comment block above `SYSTEM_INSTRUCTION` in
+  [voice_daemon.py](jasper/voice_daemon.py).
+- **Preamble suppression is a conditional skip-list, never a
+  ban.** Live version in the `Tools — preambles` section of
+  `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
+- **Per-tool conditional rules belong in the tool's docstring,
+  not `SYSTEM_INSTRUCTION`.** `build_tool()` at
+  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
+  the full cleaned docstring to the LLM. When-to-call,
+  voice-answer style, and response-shape handling live in each
+  tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
+  meta-rules (`error` / `confirm` field handling, preamble
+  policy, verbosity, unclear-audio handling, the small set of
+  cross-tool routing rules where two similar tools need
+  disambiguation).
+
+Canonical provider sources (full list in HANDOFF-prompting.md):
 - OpenAI Realtime — [Realtime Prompting Guide](https://cookbook.openai.com/examples/realtime_prompting_guide)
-  + [Using realtime models](https://developers.openai.com/api/docs/guides/realtime-models-prompting).
-  Defines the recommended skeleton (Role, Personality, Preambles,
-  Verbosity, Tools, …) and concrete language for common patterns.
-- Gemini Live — [Models guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
-  + [prompt design](https://ai.google.dev/gemini-api/docs/prompting-strategies).
-- xAI Grok Voice — [Voice agent guide](https://docs.x.ai/docs/guides/voice/agent).
-
-**Preamble pitfall (worth knowing).** `gpt-realtime-2` emits short
-preamble audio before tool calls by default ("checking the live
-arrivals now…"). It's intentional UX, but for our sub-2-second
-tools it takes longer than the tool itself. OpenAI's official
-suppression pattern is **conditional, not absolute**: tell the
-model the cases in which preambles should NOT appear, including
-"the tool call is lightweight and the user would not benefit from
-an update." Absolute bans ("never preamble") get partially ignored
-because they conflict with the conditional rules the model was
-trained on. See the `Preambles` block in `SYSTEM_INSTRUCTION` for
-the live version.
+  + [Using realtime models](https://developers.openai.com/api/docs/guides/realtime-models-prompting)
+- Gemini Live — [3.1 Flash Live Preview docs](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
+  + [Live API best practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices)
+- xAI Grok Voice — [Voice agent guide](https://docs.x.ai/docs/guides/voice/agent)
 
 ---
 
@@ -556,7 +633,7 @@ that makes household-specific phrases work. Full architecture in
 
 ### Configure
 
-Wizard at `http://jts.local/homeassistant/`. Three states (mirrors
+Wizard at `http://jts.local/ha/`. Three states (mirrors
 `/spotify/`'s shape):
 
 1. No URL → "Find Home Assistant" mDNS scan or manual URL entry
@@ -579,7 +656,7 @@ JASPER_HA_VERIFY_SSL=0      # optional, only written when user accepts
 Both URL and token must be set for `home_assistant` to register as a
 voice tool. When either is missing, the tool isn't visible to the
 model and smart-home requests get answered conversationally
-("smart-home isn't set up — visit jts.local/homeassistant").
+("smart-home isn't set up — visit jts.local/ha").
 
 ### Why the REST conversation API, not MCP
 

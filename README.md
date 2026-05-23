@@ -301,8 +301,11 @@ tests/                          Hardware-free pytest suite
 | File | Audience | Purpose |
 |---|---|---|
 | [README.md](README.md) | Anyone landing on the repo | What this is, where to look |
-| [CLAUDE.md](CLAUDE.md) | AI assistants (Claude Code, etc.) | Operational rules + per-task guidance for AI sessions |
-| [AGENTS.md](AGENTS.md) | OpenAI Codex agents | Same content as CLAUDE.md, separate for tooling reasons |
+| [AGENTS.md](AGENTS.md) | All AI agents (canonical) | Operational rules + per-subsystem guidance + documentation paradigm. Edit here. |
+| [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@README.md` + `@AGENTS.md`). Don't edit; AGENTS.md is canonical. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
+| [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
+| [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle and which volume knob attenuates which path |
