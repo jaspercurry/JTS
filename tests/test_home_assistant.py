@@ -257,7 +257,15 @@ async def test_process_reads_ssml_when_plain_missing():
 # ---- Error paths from HA --------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_process_no_intent_match_is_intent_miss():
+async def test_process_no_intent_match_is_speakable_but_logged_as_intent_miss():
+    """HA returns response_type=error + a useful speech string ("Sorry,
+    I am not aware of …"). The outcome bucket flags it as intent_miss
+    for log forensics, but `success=True` because we have text worth
+    speaking. The model speaks HA's exact wording rather than a
+    generic paraphrase — HA knows which device the user named, we
+    don't, and "Sorry, I am not aware of any device called bedroom xyz"
+    is strictly more helpful than "Home Assistant couldn't find that."
+    """
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
             speech="Sorry, I am not aware of any device or area called bedroom xyz.",
@@ -271,19 +279,27 @@ async def test_process_no_intent_match_is_intent_miss():
     finally:
         await client.aclose()
 
-    assert result.success is False
+    # success reflects "did HA give us text to speak" — orthogonal to
+    # the outcome bucket which is for log slicing.
+    assert result.success is True
     assert result.outcome == OUTCOME_INTENT_MISS
     assert result.response_type == "error"
     assert result.error_code == "no_intent_match"
-    # The HA-provided speech is still on the response (the tool surfaces
-    # it so the model can speak HA's wording verbatim if it chooses).
     assert "bedroom xyz" in result.speech
+    # as_tool_result returns empty error_detail on success — the model
+    # speaks `spoken_response` directly, no paraphrase fallback needed.
+    tool_result = result.as_tool_result()
+    assert tool_result["success"] is True
+    assert tool_result["spoken_response"].startswith("Sorry, I am not aware")
+    assert tool_result["error_detail"] == ""
 
 
 @pytest.mark.asyncio
 async def test_process_no_valid_targets_with_speech_is_intent_miss_but_speakable():
     """no_valid_targets is documented as benign in multi-satellite homes —
-    HA's speech text is still useful to surface."""
+    HA's speech text is still useful to surface, and `success` reflects
+    "is the speech speakable" not "did the intent succeed". The model
+    speaks HA's text verbatim."""
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
             speech="I couldn't find a device matching that.",
@@ -298,12 +314,14 @@ async def test_process_no_valid_targets_with_speech_is_intent_miss_but_speakable
         await client.aclose()
 
     assert result.outcome == OUTCOME_INTENT_MISS
-    assert result.success is False  # response_type=error → not success
+    # Bug-fix: response_type=error with usable speech is success=True
+    # so the model speaks HA's text verbatim rather than substituting a
+    # generic paraphrase. See HAResponse docstring.
+    assert result.success is True
     assert result.speech == "I couldn't find a device matching that."
-    # The tool-result shape still carries the speech so the model can
-    # decide what to speak.
     tool_result = result.as_tool_result()
     assert tool_result["spoken_response"] == "I couldn't find a device matching that."
+    assert tool_result["success"] is True
 
 
 @pytest.mark.asyncio
@@ -341,6 +359,28 @@ async def test_process_action_done_with_no_speech_is_parse_error():
 
     assert result.outcome == OUTCOME_PARSE_ERROR
     assert result.success is False
+
+
+@pytest.mark.asyncio
+async def test_process_error_with_no_speech_is_not_success():
+    """response_type=error AND empty speech → success=False because
+    there's no text to speak. The model falls back to error_detail
+    via as_tool_result() and paraphrases."""
+    def handler(request):
+        return httpx.Response(200, json=_conversation_response(
+            speech="", response_type="error", error_code="failed_to_handle",
+        ))
+
+    client = _client_with(handler)
+    try:
+        result = await client.process("do something")
+    finally:
+        await client.aclose()
+
+    assert result.outcome == OUTCOME_INTENT_MISS  # still tagged by response_type
+    assert result.success is False                # nothing to speak
+    tool_result = result.as_tool_result()
+    assert tool_result["error_detail"]            # non-empty fallback
 
 
 # ---- HTTP-status error paths -----------------------------------------------

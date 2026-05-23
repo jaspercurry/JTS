@@ -175,10 +175,12 @@ SYSTEM_INSTRUCTION = (
     "has its own language understanding; pass the literal phrase. "
     "This includes household-configured custom phrases the user "
     "has wired to automations ('bedroom medium', 'good night', "
-    "'movie time', 'I'm leaving') — pass them through unchanged. "
-    "If the home_assistant tool isn't available, smart-home "
-    "control isn't set up on this speaker — tell the user "
-    "briefly to visit the setup page and stop.\n"
+    "'movie time', 'I'm leaving') — pass them through unchanged.\n"
+    # The "tool isn't available → say so + don't misroute" guard
+    # lives in _build_system_instruction's HA addendum (only added
+    # when ha_configured=False) with the hostname-aware URL. Keeping
+    # the guidance there rather than here keeps the static prompt
+    # the same length whether HA is configured or not.
     "  - Music control ('play', 'pause', 'skip', 'previous', "
     "'resume', 'volume up', 'mute', etc.) → call the matching tool. "
     "Do not ask for confirmation.\n"

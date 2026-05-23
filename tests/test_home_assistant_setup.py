@@ -256,32 +256,54 @@ def test_verify_ssl_env_var_constant_matches_module():
     assert ha_setup.ENV_RECENT_URLS == ha_mod.ENV_RECENT_URLS == "JASPER_HA_RECENT_URLS"
 
 
-def test_save_persists_verify_ssl_off_when_checkbox_unchecked(wizard_server):
-    """Submitting the connected/partial form with verify_ssl_present=1
-    AND no verify_ssl field (= checkbox unchecked = user opted into
-    self-signed) writes JASPER_HA_VERIFY_SSL=0 to the env file."""
+def test_save_persists_verify_ssl_off_when_user_accepts_self_signed(wizard_server):
+    """The 'Accept a self-signed certificate' checkbox in state 2 is
+    named `accept_self_signed`, NOT `verify_ssl`, so its checked state
+    matches the user's intent.
+
+    CHECKED = 'yes, I accept a self-signed cert' = relax TLS
+    verification = JASPER_HA_VERIFY_SSL=0 in the env file.
+
+    Form sends `accept_self_signed=on` + the hidden marker
+    `accept_self_signed_present=1`."""
     base_url, state_path, _ = wizard_server
     _post(f"{base_url}/save", {
         "url": "https://homeassistant.local:8123",
         "token": "test-token",
         "agent_id": "",
-        "verify_ssl_present": "1",
-        # verify_ssl field omitted — checkbox unchecked
+        "accept_self_signed_present": "1",
+        "accept_self_signed": "on",  # CHECKED
     })
     saved = _read_env(state_path)
     assert saved[ha_setup.ENV_VERIFY_SSL] == "0"
 
 
+def test_save_keeps_verify_ssl_strict_when_user_rejects_self_signed(wizard_server):
+    """Checkbox UNCHECKED = user did NOT opt into self-signed = strict
+    TLS verification (the safe default). The env file should NOT have
+    JASPER_HA_VERIFY_SSL=0 — absence = default safe."""
+    base_url, state_path, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "https://homeassistant.local:8123",
+        "token": "test-token",
+        "agent_id": "",
+        "accept_self_signed_present": "1",
+        # `accept_self_signed` field absent — checkbox UNCHECKED
+    })
+    saved = _read_env(state_path)
+    assert ha_setup.ENV_VERIFY_SSL not in saved
+
+
 def test_save_omits_verify_ssl_when_default_safe(wizard_server):
-    """When verify_ssl_present is absent (state-1 URL-only form) AND
-    no prior verify_ssl was saved, the env file should NOT contain
-    the verify_ssl key — absent = default safe (verify enabled)."""
+    """When `accept_self_signed_present` is absent (state-1 URL-only
+    form) AND no prior verify_ssl was saved, the env file should NOT
+    contain the verify_ssl key — absent = default safe (verify enabled)."""
     base_url, state_path, _ = wizard_server
     _post(f"{base_url}/save", {
         "url": "homeassistant.local",
         "token": "test-token",
         "agent_id": "",
-        # no verify_ssl_present, no verify_ssl
+        # no accept_self_signed_present, no accept_self_signed
     })
     saved = _read_env(state_path)
     assert ha_setup.ENV_VERIFY_SSL not in saved
@@ -299,7 +321,10 @@ def test_state_partial_renders_checkbox_for_https_url(wizard_server):
     })
     _, body = _get(f"{base_url}/")
     assert "Accept a self-signed certificate" in body
-    assert "verify_ssl" in body
+    # The form field is named `accept_self_signed`, not `verify_ssl`,
+    # so a CHECKED box posts the user's stated intent (accept).
+    assert "accept_self_signed" in body
+    assert "accept_self_signed_present" in body
 
 
 def test_state_partial_omits_checkbox_for_http_url(wizard_server):
