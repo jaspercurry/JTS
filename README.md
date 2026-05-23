@@ -350,6 +350,15 @@ reference. Currently:
   HANDOFF-aec.md (engine internals) + HANDOFF-wake-telemetry.md
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
+- [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — Open
+  architectural decision for upgrading barge-in from VAD-only
+  filtering to AEC-cancellation-of-TTS. Research-only doc;
+  surveys why the obvious "put TTS in the AEC reference" fix is
+  structurally wrong (single-reference AEC3, delay mismatch),
+  and lays out the legitimate paths (ALSA convergence sink vs
+  PipeWire migration vs measure-first VAD instrumentation) with
+  costs, trade-offs, and a sequenced recommendation. Read before
+  any code touches the music↔TTS↔AEC topology.
 - [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
   Dual-stream wake-word detection (AEC ON + AEC OFF, OR-gated)
   plus SQLite-backed per-event telemetry with audio capture and
