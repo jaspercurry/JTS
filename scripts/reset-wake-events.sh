@@ -63,8 +63,10 @@ echo "Resetting wake-event corpus on ${PI_USER}@${PI_HOST}" >&2
 echo "  Archive target: ${ARCHIVE_DIR}" >&2
 
 ssh "${PI_USER}@${PI_HOST}" "set -euo pipefail
-# Sanity-check before we touch anything destructive
-if [[ ! -d '${LIVE_DIR}' ]]; then
+# Sanity-check before we touch anything destructive. Needs sudo
+# because /var/lib/jasper is 0750 root:root — pi user can't even
+# stat the wake-events subdir without it.
+if ! sudo test -d '${LIVE_DIR}'; then
     echo 'wake-events dir does not exist; nothing to reset' >&2
     exit 1
 fi
