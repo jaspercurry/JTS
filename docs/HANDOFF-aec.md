@@ -2300,11 +2300,23 @@ top of this section.)
    so a divergence-fix is moving the dsnoop to a post-camilla
    slave. ~1-2 days each.
 3. **Vendor v2.1 + custom `EchoCanceller3Config`** (per "Clean
-   path" above). ~1-3 days. Bounded upside (a few extra dB).
-   Suggested config to start from per the cross-reference research:
-   `filter.refined.length_blocks=30`, `ep_strength.bounded_erl=true`,
-   `suppressor.use_subband_nearend_detection=true`,
-   `suppressor.dominant_nearend_detection.snr_threshold=20`.
+   path" above). ~1-3 days. **DONE 2026-05-22 night (offline laptop
+   spike); BEST_A config identified.** The cross-reference research's
+   suggested starting config had a critical bug
+   (`ep_strength.bounded_erl=true` silently disables WebRTC
+   Transparent Mode) AND was insufficient on its own — the real
+   winning knobs were `erle.max_l=1.5, erle.max_h=1.0`,
+   `filter.refined.length_blocks=30`, `use_stationarity_properties=true`,
+   plus reverting `bounded_erl` to `false`. Full BEST_A config
+   + sweep methodology preserved at
+   `experiments/aec3-v2-deep-tune-spike/`. Results: rescues whisper-
+   music silent miss (peak 0.76 vs stock 0.28), beats AEC3-stock on
+   every failing music cell, competitive with DTLN-aec (BEST_A 27
+   events on music cells vs D256 31, AEC3-stock 23).
+   **Next move:** the triple-stream architecture in
+   [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) ships
+   BEST_A alongside raw mic and DTLN-aec as a 3-leg OR-fused
+   wake-word system.
 4. **Neural residual stage.** `breizhn/DTLN-aec` (Interspeech 2021,
    MIT-licensed, TFLite, <4 ms/frame on Pi 3B+) is the most-cited
    option; `SaneBow/PiDTLN` and `rolyantrauts/PiDTLN2` are working

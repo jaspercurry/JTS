@@ -18,48 +18,47 @@ whatever USB mic the user owns, not specifically the XVF3800.
 
 ---
 
-## TL;DR for the impatient
+## TL;DR for the impatient (revised 2026-05-22 night)
 
-**Three concrete things we know from production data on 2026-05-22:**
+**Where we landed after a full day of offline experiments:**
 
-1. **Wake-word model is the biggest bottleneck.** 100 % of dual-stream
-   wake fires came in via the AEC OFF leg; the AEC ON leg's
-   `jarvis_v2.onnx` scored 0.001 (silent miss) on every utterance.
-   The OR-gate is currently doing all the heavy lifting; without it
-   the wake rate would collapse.
-2. **AEC3's residual suppressor is gating HF speech bins frame-by-frame.**
-   `hf_CV` is +0.286 higher on AEC ON vs AEC OFF for identical static
-   spectra — the bins are flickering, not broadly attenuated. This is
-   the "tearing / raggedy upper edge" the user reports hearing on
-   sibilants. RS knobs that would soften this are present in Trixie's
-   `libwebrtc-audio-processing-dev 1.3-3` but **not exposed** through
-   our `jasper_aec3` pybind11 binding's public constructor.
-3. **TTS is not in the AEC reference path** (architectural). The bridge's
-   `pcm.jasper_capture` dsnoop taps the music snd-aloop chain; TTS goes
-   straight to the dongle's dmix and bypasses the loopback. AEC has no
-   reference for the TTS signal, so when the speaker is talking the mic
-   picks it up and AEC passes it through.
+1. **DTLN-aec works.** Converted TFLite → ONNX, ran offline on the
+   10-condition baseline. Rescues every AEC3 failure cell: whisper-music
+   (silent miss → 2 events), fast-music (3 → 6 events), yell-music (6 → 7).
+   No regressions on quiet cells. See "DTLN-aec offline result" below.
+2. **AEC3 deep tuning also works — better than expected.** Vendored
+   webrtc-audio-processing v2.1 as a static subproject; wrote a
+   custom `EchoControlFactory` that exposes the deep
+   `EchoCanceller3Config` knobs. After a single-variable sweep
+   campaign, **`BEST_A`** (AEC3 v2.1 with hand-tuned config) crosses
+   the wake threshold on whisper-music (peak 0.76 vs stock's 0.28)
+   and beats AEC3-stock on every failing music cell. It's
+   *competitive* with DTLN-256 (BEST_A 27 events on music cells vs
+   D256 31, AEC3-stock 23). Full config + sweep methodology preserved
+   at [`experiments/aec3-v2-deep-tune-spike/`](../experiments/aec3-v2-deep-tune-spike/).
+3. **Different engines catch different utterances.** 3-way Venn analysis
+   on the music cells: raw, BEST_A, D256 together catch 42 distinct
+   utterances; the best single engine catches 31. The engines are
+   complementary, not redundant. This motivates the next phase.
 
-**The proposed plan:**
+**The plan we're shipping next (the "triple-stream architecture"):**
 
-- **Phase 1** (next session): wire **DTLN-aec** into the bridge as a
-  parallel UDP output on `:9878`, alongside AEC3 on `:9876`. Wake loop
-  scores all three streams (AEC3, DTLN-aec, raw chip). DB schema gets
-  a 3rd score column. Listen + measure to decide which engine to
-  default to.
-- **Phase 2**: depending on Phase 1, either commit to DTLN-aec
-  (architecturally clean — no RS tearing) or do the C++ binding work
-  to expose AEC3's residual suppressor knobs.
-- **Phase 3**: wake-word personalization (livekit-wakeword Tier 1
-  on-Pi verifier — 5-8 utterances of the user saying "Jarvis" / "Jasper").
-- **Phase 4**: TTS reference routing fix (ALSA `multi` plugin so the
-  TTS path also feeds the loopback that AEC reads).
-- **Phase 5+**: calibration wizard, cloud retrain, speaker ID (per the
-  research report — see "Research synthesis" below).
+Extend the production WakeLoop from today's **2-leg OR-gate**
+(`aec-on` + `aec-off` per PR #191) to **3-leg OR-gate**
+(raw + BEST_A + DTLN-256). Capture full per-event telemetry into
+the existing `wake_events` SQLite + audio-clip ring. Let the system
+run for ~a week. Review the data: which engine fired alone, which
+engines correlated, where false positives came from. Use the real
+production data to decide whether any engine is redundant.
 
-The user's instinct that **DTLN-aec is the highest-information first
-move** is correct. If it materially beats AEC3 on Jasper's actual
-audio, much of the AEC3 RS-knob work becomes moot.
+In parallel (independent track): explore **custom wake-word training**
+on actual JTS pipeline audio — train a Jarvis model on the corpus
+the wake-event capture is already collecting. Add it as a 4th leg
+later. Eventually: 3 AEC engines × 2 wake models = 6 detectors,
+all firing into the same telemetry + OR-gate.
+
+See "Triple-stream architecture plan" below for the implementation
+details + per-component effort.
 
 ---
 
@@ -252,7 +251,18 @@ Phase 1 framing predates the strength of this offline data).
   block). AEC3 added <10 ms. May feel slower for snappy wake →
   response sequencing; measure end-to-end before assuming.
 
-### AEC3 deep-tune spike — vendor v2.1, infrastructure works but tuning doesn't rescue (2026-05-22 night)
+### AEC3 deep-tune spike — vendor v2.1 + BEST_A config rescues most failure cells (2026-05-22 night, UPDATED)
+
+> **Note:** an earlier version of this section concluded "tuning doesn't
+> rescue" based on the first config tried (V2tune with the research-
+> recommended starting values). That was wrong — V2tune had a bug
+> (`bounded_erl=True` silently disables Transparent Mode) and missed
+> several relevant knobs. After fixing the bug and running a proper
+> single-variable sweep, **BEST_A is a real and usable AEC3 config**
+> that beats AEC3-stock on every failing cell. Section below kept for
+> the full story.
+
+
 
 After the DTLN-aec offline result above, ran the parallel
 experiment from `docs/HANDOFF-aec.md` section E: vendor
@@ -307,17 +317,263 @@ V2tune config = research-report-recommended starting values
   This finding combined with V2tune's failure means the offline data
   is unambiguous: DTLN-256 should be the production AEC engine.
 
-**Implications:**
+**Implications of the V2tune first-pass result (later overturned):**
 
-- Don't pursue AEC3 deep tuning further without a specific
-  hypothesis about what knob combination would help. Open-ended
-  knob search has been deprioritized.
-- A future tuning wizard (the user's "wizard around it" idea)
-  remains feasible — the infrastructure is preserved. But the
-  search-space difficulty + the v1.3→v2.1 behavior delta mean
-  it's a multi-week project, not a few days.
-- Tonight's data is enough to commit to DTLN-256 as the
-  production AEC.
+The above section is preserved for context. After the V2tune failure
+we ran a proper single-variable sweep campaign which discovered that
+V2tune had a real configuration bug (`bounded_erl=True` silently
+disables WebRTC Transparent Mode) and several research-recommended
+knobs needed to be REVERTED, not added. Once corrected, the tuned
+config (BEST_A, below) is a clear win.
+
+### AEC3 tuning campaign — BEST_A config (2026-05-22 night, FINAL)
+
+A single-variable sweep was run against `V2FIXED` (the post-bug-fix
+V2tune) baseline, varying one knob at a time across ~27 configs,
+scoring against the 4 music cells. Methodology:
+[`experiments/aec3-v2-deep-tune-spike/sweep.py`](../experiments/aec3-v2-deep-tune-spike/sweep.py).
+
+**The winning config — `BEST_A`** — is V2FIXED plus a single change:
+**`erle.max_l=1.5, erle.max_h=1.0`** (lower NLP-depth caps than
+V2FIXED's 2.0/1.2 or defaults 4.0/1.5). This is the only single-
+variable change from V2FIXED that crossed the wake threshold on
+whisper-music.
+
+Final BEST_A canonical config (also documented in the spike's README):
+
+```python
+BEST_A = dict(
+    stream_delay_ms=40,
+    ns_enabled=True, ns_level="low",
+    agc1_enabled=True, agc1_target_dbfs=9, agc1_max_gain_db=18,
+    filter_refined_length_blocks=30,     # was 13 default
+    ep_strength_bounded_erl=False,        # FIX from V2tune
+    ep_strength_default_gain=0.3,         # was 1.0 default
+    erle_max_l=1.5,                       # BEST_A discovery
+    erle_max_h=1.0,                       # BEST_A discovery
+    erle_onset_detection=False,
+    use_stationarity_properties=True,
+    conservative_hf_suppression=True,
+    normal_mask_hf_enr_transparent=0.3,   # LF parity (was 0.07)
+    normal_mask_hf_enr_suppress=0.4,      # LF parity (was 0.1)
+    normal_mask_hf_emr_transparent=0.3,
+    normal_max_dec_factor_lf=0.05,        # 5× slower attack
+)
+```
+
+**BEST_A results against the 10-condition baseline:**
+
+```
+condition      |  raw  AEC3stock  BEST_A  D256  | improvement vs AEC3-stock
+normal-quiet   |  11      11        11     11   | tied
+normal-music   |   5       7         7      9   | tied (D256 +2)
+whisper-quiet  |   9       8         8      6   | tied
+whisper-music  |   1     0/0.28    1/0.76  2/0.98 | ✓ FIRES whisper-music (was silent miss)
+yell-quiet     |  10      10        10     10   | tied
+yell-music     |  11       6         9      7   | ✓ +3 events
+fast-quiet     |  11      11        11     11   | tied
+fast-music     |   8       3         4      6   | ✓ +1 event
+slow-quiet     |   7       7         7      6   | tied
+slow-music     |   7       7         6      7   | -1 event
+```
+
+Music-cells totals: AEC3-stock 23, BEST_A 27 (+17%), D256 31 (+35%).
+
+**Knobs that were tuned in the campaign (full list in
+[`sweep.py`](../experiments/aec3-v2-deep-tune-spike/sweep.py)):**
+
+Helped (kept in BEST_A):
+- `filter.refined.length_blocks=30` (vs default 13)
+- `erle.max_l=1.5, max_h=1.0` (vs defaults 4.0, 1.5) — the headline knob
+- `use_stationarity_properties=True`
+- `normal_max_dec_factor_lf=0.05` (vs default 0.25)
+- `ep_strength_bounded_erl=False` (bug-fix; was silently True)
+
+Mixed (kept but worth revisiting):
+- `default_gain=0.3` — helps most cells, hurts whisper-music peak
+- `conservative_hf_suppression=True` — hurts fast-music slightly
+- `normal_mask_hf` LF parity — hurts whisper-music peak
+
+Tested and rejected (do not retry without new hypothesis):
+- Maximally loosened residual suppressor — pumping unchanged
+- Disabling AGC1 — pumping unchanged
+- `high_bands_suppression.max_gain_during_echo > 1.0` — silently clamped
+- Combining the two whisper-music winners (erle lower + nearend mask_hf
+  parity) — cancels out
+
+**Knobs NOT yet tuned (potential follow-up after triple-stream ships):**
+
+1. `nearend_tuning.max_dec_factor_lf` paired with normal=0.05
+2. `echo_audibility.audibility_threshold_hf` (values 50, 200, 1000)
+3. `comfort_noise.noise_floor_dbfs` (sound quality, not detection)
+4. `subband_nearend_detection` with proper bin ranges (default `{1,1}` is no-op)
+5. `ep_strength.default_len`, `nearend_len` (reverb tail priors)
+6. **WebRTC field-trial mechanism** (`field_trial::InitFieldTrialsFromString()`)
+   — ~50 AEC3 trials including whole-config overrides via string
+7. Per-cell custom configs (whisper-music wants opposite settings from
+   fast-music; could plumb a config selector based on detected signal type)
+
+Diminishing returns. The triple-stream OR-fusion captures most of the
+value these would provide. Revisit only if production telemetry says
+BEST_A specifically is letting things through that more tuning could
+catch.
+
+---
+
+## Triple-stream architecture plan (2026-05-22, IN PROGRESS)
+
+This is the canonical next sprint. **Goal:** ship a 3-leg OR-gated
+wake-word architecture (raw + BEST_A + DTLN-256) with full per-leg
+telemetry capture into the existing `wake_events` SQLite + audio-clip
+ring. Run for ~a week. Use the data to inform the final architecture
+(drop redundant engines, tune thresholds, add custom-trained wake
+models).
+
+### Motivation
+
+Per the cluster analysis on the 10-condition baseline:
+
+| cell | raw | BEST_A | D256 | union (best possible) |
+|---|---|---|---|---|
+| whisper-music | 1 @ 21.5s | 1 @ 26.2s | 2 @ both | 2 |
+| normal-music | 5 | 7 | 9 | 9 |
+| yell-music | 11 | 9 | 7 | 11 |
+| fast-music | 8 | 4 | 6 | 11 |
+| slow-music | 7 | 6 | 7 | 9 |
+| **total** | **32** | **27** | **31** | **42** |
+
+The three engines catch *different* utterances. Single-engine ceiling
+is 31; OR-fusion ceiling is 42 (+35%). No single engine wins all
+cells. Justifying parallel deployment is straightforward — the data
+says so directly.
+
+### Architecture
+
+Extension of the existing 2-leg pattern from PR #191:
+
+```
+                       ┌──── jasper-aec-bridge (v2.1 + BEST_A)   ─── UDP :9876 ──┐
+chip mic (XVF3800) ────┼──── jasper-aec-bridge-dtln (DTLN-256)   ─── UDP :9878 ──┤
+                       │                                                          │
+                       └──── chip-direct (raw)                    ─── UDP :9877 ──┘
+                                                                                  │
+                                                                                  ▼
+                                                              jasper-voice WakeLoop
+                                                              ── 3-leg OR-gate
+                                                              ── 0.7s shared refractory
+                                                              ── per-leg wake-event capture
+                                                              ── per-leg audio ring
+                                                                                  │
+                                                                                  ▼
+                                                              SQLite + WAVs
+                                                              (review weekly)
+```
+
+### Telemetry — what we capture per wake event
+
+Schema additions to `jasper.wake_events.WakeEvent` (ALTER-migrated
+on next `open()` per existing pattern at module top):
+
+| new column | type | purpose |
+|---|---|---|
+| `peak_score_dtln_aec` | REAL | DTLN-256 leg peak score during event window |
+| `audio_dtln_path` | TEXT | absolute path to per-event 6-s WAV from DTLN leg (or `"rolled_off"` when audio aged out) |
+| `fired_legs` | TEXT | bitmap/CSV: which leg(s) crossed threshold to trigger event (e.g. `"aec_on,dtln"`) |
+
+Per-event capture (extends the existing dual-leg pattern):
+- 6 s WAV per leg per event (4 s pre + 2 s post wake fire) for ALL
+  3 legs simultaneously — we keep the full set even when only one
+  leg fired (so we can listen to what the other 2 heard at the
+  same moment)
+- Per-leg peak scores during the event window
+- Standard outcome tracking (`completed`, `no_speech`, `late_cancel`)
+  per existing schema
+- Music context, mic mute, bridge config snapshot
+
+Audio ring sizing: today's 500 MB ring at 2 streams ≈ 3-6 weeks
+retention. With 3 streams per event we'd hit ~2-4 weeks. **Bump to
+1 GB cap** via `JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824` —
+plenty of free disk on the Pi 5 (39 GB available per CLAUDE.md
+debug output).
+
+### Implementation effort (5 days, conservative)
+
+| step | effort | what |
+|---|---|---|
+| 1. Productionize BEST_A binding | 1.5 d | Vendor v2.1 statically in `jasper_aec3/`; promote `binding.cpp` from the spike. Setup.py builds v2.1 via meson as a subdirectory build. Apt deps in install.sh (meson, ninja). Env vars for all the new knobs. Cross-build for Pi 5 aarch64 (budget half day of build-env troubleshooting). |
+| 2. DTLN-aec bridge | 1.5 d | New `jasper-aec-bridge-dtln.service` mirroring the AEC3 bridge's supervision pattern (watchdog, restart, sd_notify). Reads from the same `pcm.jasper_capture` dsnoop + chip mic, runs onnxruntime inference on `dtln_aec_256_{1,2}.onnx`, emits on UDP `:9878`. Models hosted on a GitHub release attached to `jaspercurry/JTS`; install.sh fetches at deploy time (same pattern as `jarvis_v2.onnx`). |
+| 3. WakeLoop 3rd leg | 0.5 d | Extend `jasper/voice_daemon.py`'s existing dual-stream pattern to triple-stream. OR-gate across all 3 legs with shared 0.7 s refractory. Each leg has its own openWakeWord Model instance on the shared (16, 96) embedding — incremental cost is ~5 MB + ~0.5 ms of CPU per leg. |
+| 4. Schema + ring + capture | 0.5 d | ALTER migration for new columns. `_capture_ring_dtln` filled by the new bridge. `fired_legs` populated at fire time. `fetch-wake-events.sh` + audit scripts updated to handle 3 legs. |
+| 5. Deploy + validation | 0.5 d | Production deploy. Watch for ~1 hour to confirm wake-event capture works for all 3 legs, no crashes, telemetry rows looking sane. |
+| 6. Analysis tooling (parallel) | 1 d | Scripts for Venn analysis of which legs fired together, score distributions over time, per-engine threshold sweep simulation, anomaly flagging for manual review. Iterate on these as the first day's real data comes in. |
+
+### Per-leg thresholds — start conservative
+
+Initial deploy: `JASPER_WAKE_THRESHOLD=0.5` for all 3 legs (production
+default). FP rate goes up due to OR-gating; mitigated by:
+- BEST_A and DTLN-256 are both reasonably conservative engines
+- User reviewing telemetry weekly and noting FP times for analysis
+- Tuning thresholds from real data after the first review pass
+
+**Open question for later:** should we move to a consensus gate (any
+leg ≥ 0.7 fires alone; <0.7 requires ≥2 legs in agreement)? Deferred
+until we see the real FP rate distribution.
+
+### What the weekly review looks like
+
+User runs the speaker normally for ~a week (or until ≥100 wake events
+accumulated in the DB). Then:
+
+1. `bash scripts/fetch-wake-events.sh` pulls the week's corpus.
+2. New analysis script (`scripts/_analyze_three_leg.py` — to be built
+   in Phase 1 step 6) produces:
+   - Per-leg fire counts + Venn
+   - "Disagreement" report (1 leg fires alone)
+   - Per-leg score distributions
+   - Audio playlist of N most-interesting events for listening
+3. User listens, labels events in the SQLite (the existing
+   `label` + `label_notes` columns per HANDOFF-wake-telemetry.md).
+4. From the labels: false-positive timestamps → cross-ref user's
+   notes → identify common patterns. Bug-fix or tuning iteration.
+
+**No upfront decision criteria.** User explicitly wants to NOT
+pre-commit to "drop X if Y." Let the cost/benefit emerge from the
+real data.
+
+### Custom wake-word training (independent track)
+
+Orthogonal to the triple-stream rollout. Whenever started:
+
+1. Use the wake-events corpus as training data (it already captures
+   per-leg AEC outputs alongside raw mic — the personalization-ready
+   distribution).
+2. Train via openWakeWord's `train_custom_verifier()` (sklearn LogReg
+   on the shared (16, 96) embedding) for Tier 1 — fast, on-Pi,
+   personalized to user voice + room + mic.
+3. Or train a fresh head via livekit-wakeword's pipeline for Tier 2
+   — cloud GPU, fuller model, more capacity.
+4. Deploy as 4th leg of the OR-gate. Same fire/capture/telemetry
+   path. Just another wake instance on the shared embedding.
+
+Long-term vision: 3 AEC engines × 2 wake models = 6 detectors.
+The architecture supports it natively at minimal extra cost (each
+extra wake head is ~5 MB + ~0.5 ms of CPU on the shared embedding).
+Whether all 6 ever ship in production is a function of the data
+we collect from the 3-leg system + the personalized model's
+real-world quality.
+
+### What to do FIRST on the next session
+
+1. Read this section + the [`experiments/aec3-v2-deep-tune-spike/README.md`](../experiments/aec3-v2-deep-tune-spike/README.md) for the BEST_A canonical config.
+2. Start Step 1 (productionize BEST_A binding). The hard part is the
+   Meson-as-subproject build inside setup.py.
+3. While Step 1 builds, draft the DTLN-aec bridge service unit + Python
+   inference loop (Step 2 can start in parallel since it doesn't depend
+   on BEST_A).
+4. Don't start the 3rd leg WakeLoop work until both bridges are
+   building cleanly on the Pi.
+
+---
 
 ### Shallow AEC3 knob tuning — already swept, no win (2026-05-22)
 
@@ -769,37 +1025,65 @@ listed here so a fresh session doesn't waste a round arguing about them:
 
 ---
 
-## What to do first when picking this up
+## What to do first when picking this up (UPDATED 2026-05-22 night)
 
-1. **Read the three companion docs** (HANDOFF-wake-telemetry, HANDOFF-aec,
-   CLAUDE.md "Wake-event telemetry" section). Don't restate what's already
-   documented.
-2. **Fetch the latest corpus** + run audit + run distortion + tearing
-   analyzers to confirm the current state matches this doc:
-   ```sh
-   bash scripts/fetch-wake-events.sh
-   bash scripts/audit-wake-events.sh
-   /Users/jaspercurry/Code/JTS/.venv/bin/python /tmp/analyze_tearing.py wake-events/latest 2>&1 | tail -25
-   ```
-3. **Resolve the Phase 1 open questions** with the user (DTLN source,
-   leg architecture, session audio source).
-4. **Build the reference-conditions capture flow** (whisper / yell /
-   music / fast / slow) before any engine change — these are the
-   baseline against which everything is measured.
-5. **Then start Phase 1.**
+1. **Read the new TL;DR** + "Triple-stream architecture plan" section above.
+2. **Skim the spike's README**:
+   [`experiments/aec3-v2-deep-tune-spike/README.md`](../experiments/aec3-v2-deep-tune-spike/README.md)
+   for the BEST_A canonical config + sweep methodology. The binding +
+   sweep + forensic scripts in that directory all work today on the
+   laptop.
+3. **The 10-condition `reference-conditions/` corpus** is on the user's
+   laptop (gitignored). All experiments from tonight ran offline against
+   it. WAV outputs per engine are still there if you want to listen.
+4. **Begin Triple-stream Phase 1, Step 1: productionize BEST_A binding.**
+   - Vendor `webrtc-audio-processing` v2.1 statically inside `jasper_aec3/`
+   - Promote the binding from `experiments/aec3-v2-deep-tune-spike/binding.cpp`
+   - Apt deps in install.sh: `meson`, `ninja`
+   - Cross-build risk: ~half a day for ARM64 build-env. macOS laptop
+     build worked clean tonight; Linux/Pi 5 may surface a CFLAGS quirk.
+5. **In parallel: draft DTLN-aec bridge service unit + Python inference
+   loop** (Step 2). The DTLN ONNX files (`dtln_aec_256_{1,2}.onnx`)
+   are at `~/Code/JTS/dtln-aec-onnx/` on the laptop. For production
+   they need a hosting solution (GitHub release attached to
+   `jaspercurry/JTS`, same pattern as `jarvis_v2.onnx`).
+6. **Don't start WakeLoop 3rd-leg work until both bridges are
+   building cleanly** on the Pi.
 
 ---
 
-## Bottom line
+## Bottom line (updated 2026-05-22 night)
 
-The mic chain is one knob away from being good (wake-word model) and one
-architectural fix away from being great (AEC engine). DTLN-aec is the
-fastest way to find out whether the AEC architecture is actually limiting
-us — and if it is, we know what to do; if it isn't, we've saved 2 weeks of
-binding work. Pair that with wake-word personalization once we have
-labeled data, and the system fits the user's stated requirements
-(whisper to yell, fast to slow, music to silence).
+Two real wins from tonight's work:
 
-The calibration wizard is the right product surface for shipping this to
-others, but for Jasper's single install it's the *last* phase, not the
-first. Get the underlying engines right, then automate.
+1. **DTLN-aec** runs cleanly offline on Jasper's audio, rescues every
+   AEC3 failure cell, no regressions. Conversion path (TFLite → ONNX
+   via tf2onnx) is reproducible.
+2. **BEST_A** — a hand-tuned AEC3 v2.1 config — also rescues most
+   failure cells (different ones than DTLN, with different trade-offs).
+   The vendor-static path is buildable and the deep `EchoCanceller3Config`
+   knobs are now accessible through our own factory.
+
+The two engines catch *different utterances*, validated via 3-way
+timestamp clustering on the music cells. Single-engine ceiling is
+31 events on music cells; OR-fusion ceiling is 42 (+35%).
+
+**The next sprint is the triple-stream architecture** — raw + BEST_A
++ DTLN-256 OR-fused, full per-event telemetry into the existing
+`wake_events` infrastructure, ~1 week of real-use data, then a
+data-driven decision on which engines to keep.
+
+**The custom wake-word training track** runs independently. The
+wake-events corpus collected during the triple-stream rollout IS
+the training dataset for the personalized Jarvis model. Tier 1
+(on-Pi sklearn LogReg verifier) is the cheapest first move;
+Tier 2 (cloud retrain via livekit-wakeword) is the marquee
+feature. Both slot into the triple-stream as additional legs at
+near-zero marginal compute cost.
+
+The calibration wizard from the original research report is no
+longer the front-and-center deliverable. The triple-stream + weekly
+review IS the calibration. The wizard becomes valuable when we
+distribute JTS to other operators (different rooms, mics, voices)
+and want to automate the per-environment configuration that we're
+doing manually here.
