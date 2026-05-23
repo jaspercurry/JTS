@@ -237,7 +237,7 @@ def test_apply_clear_unknown_provider_errors():
 
 def test_index_renders_active_radio_checked_for_active_provider():
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # The openai radio is checked.
     idx = page.index('value="openai"')
     nearby = page[idx - 200: idx + 200]
@@ -249,7 +249,7 @@ def test_index_renders_active_radio_checked_for_active_provider():
 def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
     monkeypatch.delenv("XAI_API_KEY", raising=False)
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     idx = page.index('value="grok"')
     nearby = page[idx - 200: idx + 200]
     assert "disabled" in nearby
@@ -257,7 +257,7 @@ def test_index_disables_radio_for_unconfigured_provider(monkeypatch):
 
 def test_index_masks_existing_key_in_card():
     state = {"OPENAI_API_KEY": "sk-proj-abcdef-tail9999"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # Full key should never appear in the rendered HTML.
     assert "sk-proj-abcdef-tail9999" not in page
     # Masked prefix should.
@@ -269,7 +269,7 @@ def test_index_active_card_starts_open():
     """The active provider's card opens by default so the user lands
     on what's in flight without an extra click."""
     state = {"JASPER_VOICE_PROVIDER": "openai", "OPENAI_API_KEY": "sk-x"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # Find the openai card by its input name (only appears inside the
     # details body — distinct from the description's label text).
     idx = page.index('name="openai_key"')
@@ -289,7 +289,7 @@ def test_index_save_form_does_not_enclose_cards():
     bottom was no longer associated with anything, so pressing it did
     literally nothing. Pin the structural invariant here."""
     state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     save_form_open = page.index('id="save-form"')
     save_form_close = page.index("</form>", save_form_open)
     first_card = page.index("<details", save_form_close)
@@ -308,7 +308,7 @@ def test_index_card_inputs_associate_with_save_form_via_attribute():
     field absent — a silent no-op that gave us "Save doesn't do
     anything" in the live deploy."""
     state = {"JASPER_VOICE_PROVIDER": "gemini", "GEMINI_API_KEY": "AIza-x"}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     # Every key input must opt into the save form.
     for pid in ("gemini", "openai", "grok"):
         anchor = f'name="{pid}_key"'
@@ -339,7 +339,7 @@ def test_index_save_button_associates_with_save_form_via_attribute():
     <form>...</form> tags (so the outer form can close before the
     cards). It must carry form="save-form" to actually submit."""
     state = {}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     idx = page.index("Save and restart voice")
     # Find the enclosing <button> tag.
     btn_start = page.rfind("<button", 0, idx)
@@ -359,7 +359,7 @@ def test_index_unconfigured_card_starts_open_to_invite_paste(monkeypatch):
     for k in ("GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     state = {}
-    page = voice_setup._index_html(state).decode()
+    page = voice_setup._index_html(state, "csrf-token-for-test-" + "x" * 32).decode()
     idx = page.index('name="gemini_key"')
     head = page.rfind('<details', 0, idx)
     assert head != -1
@@ -395,9 +395,35 @@ def _start_server(tmp_path: Path) -> tuple[ThreadingHTTPServer, str, threading.T
 
 def _post(url: str, form: dict[str, str]) -> tuple[int, str, str]:
     """POST a urlencoded form. Don't follow redirects — the wizard's
-    303-on-success carries the status banner in `?msg=` and we want
-    to assert against it. Returns (status, location_header, body)."""
-    data = urllib.parse.urlencode(form).encode()
+    303-on-success now carries the flash text in a cookie (was `?msg=`
+    on the redirect URL before T1.1) so the Location header itself is
+    clean; assertions on this helper's return now treat `location` as
+    just the redirect target. Returns (status, location_header, body).
+
+    Mints the CSRF cookie via a GET to the wizard root first so the
+    POST passes verify_csrf."""
+    import http.cookiejar
+    from ._web_test_helpers import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
+
+    # Strip the path back to "/" on the same host to find the wizard root
+    # (e.g. base/save → base/). Mint the CSRF cookie via GET.
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    cookie_opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    cookie_opener.open(base + "/").read()
+    token = ""
+    for cookie in jar:
+        if cookie.name == CSRF_COOKIE_NAME:
+            token = cookie.value
+            break
+    assert token, "wizard GET / did not set csrf cookie"
+
+    payload = dict(form)
+    payload[CSRF_FORM_FIELD] = token
+    data = urllib.parse.urlencode(payload).encode()
     req = urllib.request.Request(
         url, data=data, method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"},
@@ -408,13 +434,37 @@ def _post(url: str, form: dict[str, str]) -> tuple[int, str, str]:
             return response
         https_response = http_response
 
-    opener = urllib.request.build_opener(_NoRedirect())
+    opener = urllib.request.build_opener(
+        _NoRedirect(),
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+
+    def _extract_flash(jar: http.cookiejar.CookieJar) -> str:
+        # `Set-Cookie: jts_flash=…` lands in the jar; decode and combine
+        # into the location string so tests that did
+        # `"Saved" in location` keep working without per-test edits.
+        for cookie in jar:
+            if cookie.name == "jts_flash":
+                return urllib.parse.unquote(cookie.value or "")
+        return ""
+
     try:
         resp = opener.open(req)
         body = resp.read().decode("utf-8", errors="replace")
-        return resp.status, resp.headers.get("Location", ""), body
+        flash = _extract_flash(jar)
+        loc = resp.headers.get("Location", "")
+        # Preserve the old "Saved in location" contract: append the flash
+        # text to the location string so legacy tests stay readable.
+        if flash:
+            loc = f"{loc}#{flash}"
+        return resp.status, loc, body
     except urllib.error.HTTPError as e:
-        return e.status, e.headers.get("Location", ""), e.read().decode(errors="replace")
+        body = e.read().decode(errors="replace")
+        flash = _extract_flash(jar)
+        loc = e.headers.get("Location", "")
+        if flash:
+            loc = f"{loc}#{flash}"
+        return e.status, loc, body
 
 
 def test_e2e_save_writes_file_and_redirects(

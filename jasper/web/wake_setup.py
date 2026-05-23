@@ -43,10 +43,16 @@ from typing import Any
 from .. import wake_models
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -301,7 +307,7 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
 </label>"""
 
 
-def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
+def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
     active = _active_model(state)
     active_entry = wake_models.by_model(active)
     rows: list[str] = []
@@ -357,6 +363,7 @@ def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
 </p>
 
 <form method="post" action="save" id="wake-form">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
   {''.join(rows)}
   {sensitivity_card}
   <p style="margin-top:1.4em">
@@ -472,36 +479,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            # Content-Length: 0 is load-bearing despite the empty body.
-            # BaseHTTPRequestHandler defaults to HTTP/1.0 and doesn't
-            # signal end-of-response on a body-less reply, so nginx
-            # (which proxies us over HTTP/1.0 too) keeps the upstream
-            # connection open waiting for either a body or a close —
-            # adding ~5 s of latency to every redirect. Observed on
-            # PR #117 when the Save button felt unresponsive. With
-            # Content-Length: 0, nginx releases the connection
-            # immediately and the browser sees the redirect in ms.
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 state = _load_state(cfg["state_path"])
-                self._send_html(_index_html(
-                    state, status_msg=qs.get("msg", [""])[0],
+                ctx = begin_request(self)
+                send_html_response(self, _index_html(
+                    state, ctx["csrf_token"], status_msg=ctx["flash"],
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -509,17 +494,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            if path != "/save":
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
             if path == "/save":
                 self._handle_save(form)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
         def _handle_save(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             new, err = _apply_save(form, current)
             if err is not None:
-                self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                send_see_other(self, "./", flash=err)
                 return
             try:
                 if new:
@@ -528,9 +518,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write wake-model env file")
-                self._redirect(
-                    f"./?msg={urllib.parse.quote(f'Could not save: {e}')}"
-                )
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
             picked = new.get("JASPER_WAKE_MODEL", "")
@@ -541,8 +529,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 f" (sensitivity {threshold_str})"
                 if threshold_str else ""
             )
-            self._redirect(
-                f"./?msg={urllib.parse.quote(f'Saved. Voice daemon restarting on {label}{extra}.')}"
+            send_see_other(
+                self, "./",
+                flash=f"Saved. Voice daemon restarting on {label}{extra}.",
             )
 
     return Handler

@@ -37,11 +37,17 @@ from typing import Any
 
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     mask_secret,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -432,7 +438,7 @@ def _provider_extras_html(provider: dict, state: dict[str, str]) -> str:
 
 
 def _provider_card_html(
-    provider: dict, state: dict[str, str], *, is_active: bool,
+    provider: dict, state: dict[str, str], csrf_token: str, *, is_active: bool,
 ) -> str:
     """One <details> card per provider. Open by default for the active
     provider so the user lands on what's currently in flight."""
@@ -494,6 +500,7 @@ def _provider_card_html(
     <div class="actions">
       <form method="post" action="clear-credentials"
             onsubmit="return confirm('Clear the saved {html.escape(provider["label"])} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.');">
+        {csrf_field_html(csrf_token)}
         <input type="hidden" name="provider" value="{provider['id']}">
         <button class="danger" type="submit">Clear key</button>
       </form>
@@ -503,22 +510,22 @@ def _provider_card_html(
 </details>"""
 
 
-def _index_html(state: dict[str, str], *, status_msg: str = "") -> bytes:
+def _index_html(state: dict[str, str], csrf_token: str, *, status_msg: str = "") -> bytes:
     active_id = _active_provider_id(state)
     cards = "".join(
-        _provider_card_html(p, state, is_active=(p["id"] == active_id))
+        _provider_card_html(p, state, csrf_token, is_active=(p["id"] == active_id))
         for p in PROVIDERS
     )
     # Page structure note: HTML forbids nested forms, so the outer
     # "save" form CANNOT enclose the per-card "Clear key" forms. Layout:
-    #   <form id="save-form">  ← active radios
+    #   <form id="save-form">  ← active radios + csrf
     #     ...
     #   </form>                ← form closes BEFORE the cards
     #   <h2>Provider keys</h2>
     #   {cards}                ← card inputs use form="save-form"
     #                            attribute to associate with the outer
     #                            form by ID. Clear-key forms inside
-    #                            cards stand alone with no nesting.
+    #                            cards stand alone with their own csrf field.
     #   <button form="save-form">  ← submit explicitly attaches
     body = f"""
 <p class="sub">Configure the real-time voice backend for this speaker.
@@ -527,6 +534,7 @@ active, and save — the voice daemon picks up the change on its next
 restart (about 5 seconds).</p>
 
 <form method="post" action="save" id="save-form">
+{csrf_field_html(csrf_token)}
 {_active_radio_html(state)}
 </form>
 
@@ -666,28 +674,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def log_message(self, fmt: str, *args: Any) -> None:  # noqa: A003
             logger.info("%s - %s", self.address_string(), fmt % args)
 
-        def _redirect(self, location: str) -> None:
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.end_headers()
-
-        def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
-
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 state = _load_state(cfg["state_path"])
-                self._send_html(_index_html(
-                    state, status_msg=qs.get("msg", [""])[0],
+                ctx = begin_request(self)
+                send_html_response(self, _index_html(
+                    state, ctx["csrf_token"], status_msg=ctx["flash"],
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -695,14 +691,19 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            if path not in ("/save", "/clear-credentials"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
             if path == "/save":
                 self._handle_save(form)
                 return
             if path == "/clear-credentials":
                 self._handle_clear(form)
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
         # --- route bodies ---
 
@@ -710,7 +711,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             current = _load_state(cfg["state_path"])
             new, err = _apply_save(form, current)
             if err is not None:
-                self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                send_see_other(self, "./", flash=err)
                 return
             try:
                 if new:
@@ -719,9 +720,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write voice provider env file")
-                self._redirect(
-                    f"./?msg={urllib.parse.quote(f'Could not save: {e}')}"
-                )
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
             active = new.get("JASPER_VOICE_PROVIDER", "")
@@ -729,15 +728,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 (p["label"] for p in PROVIDERS if p["id"] == active),
                 active,
             )
-            self._redirect(
-                f"./?msg={urllib.parse.quote(f'Saved. Voice daemon restarting on {label}.')}"
+            send_see_other(
+                self, "./",
+                flash=f"Saved. Voice daemon restarting on {label}.",
             )
 
         def _handle_clear(self, form: dict[str, str]) -> None:
             current = _load_state(cfg["state_path"])
             new, err = _apply_clear(form, current)
             if err is not None:
-                self._redirect(f"./?msg={urllib.parse.quote(err)}")
+                send_see_other(self, "./", flash=err)
                 return
             try:
                 if new:
@@ -746,9 +746,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
                 logger.exception("could not write voice provider env file")
-                self._redirect(
-                    f"./?msg={urllib.parse.quote(f'Could not save: {e}')}"
-                )
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
             restart_voice_daemon()
             pid = (form.get("provider") or "").strip()
@@ -756,9 +754,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 (p["label"] for p in PROVIDERS if p["id"] == pid),
                 pid,
             )
-            self._redirect(
-                f"./?msg={urllib.parse.quote(f'Cleared {label} credentials.')}"
-            )
+            send_see_other(self, "./", flash=f"Cleared {label} credentials.")
 
     return Handler
 

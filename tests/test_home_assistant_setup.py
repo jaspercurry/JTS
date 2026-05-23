@@ -173,14 +173,56 @@ def _get(url: str) -> tuple[int, str]:
 
 
 def _post(url: str, form: dict) -> tuple[int, str, str | None]:
-    """Returns (status, body, location_header)."""
-    body = urllib.parse.urlencode(form).encode()
-    req = urllib.request.Request(url, data=body, method="POST")
+    """Returns (status, body, location_header).
+
+    Mints the CSRF cookie via a GET to the wizard root, attaches it to
+    the POST, and adds the csrf_token form field. Unknown POST routes
+    still 404 (route check fires before CSRF check)."""
+    import http.cookiejar
+    from ._web_test_helpers import CSRF_COOKIE_NAME, CSRF_FORM_FIELD
+
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    cookie_opener = urllib.request.build_opener(
+        _NoRedirect(), urllib.request.HTTPCookieProcessor(jar),
+    )
     try:
-        with _opener.open(req) as r:
-            return r.status, r.read().decode(), r.headers.get("Location")
+        cookie_opener.open(base + "/").read()
+    except urllib.error.HTTPError:
+        pass
+    token = ""
+    for cookie in jar:
+        if cookie.name == CSRF_COOKIE_NAME:
+            token = cookie.value
+            break
+
+    payload = dict(form)
+    if token:
+        payload[CSRF_FORM_FIELD] = token
+    body = urllib.parse.urlencode(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST")
+
+    def _maybe_append_flash(loc: str | None) -> str | None:
+        # Tests previously asserted that the flash message appeared in
+        # the Location header (because the wizard redirected to
+        # ./?msg=…). The flash now travels in jts_flash cookie; surface
+        # it after the location's `#` so the same string-contains
+        # assertions keep working.
+        for cookie in jar:
+            if cookie.name == "jts_flash":
+                flash = urllib.parse.unquote(cookie.value or "")
+                if not loc:
+                    return f"#{flash}"
+                return f"{loc}#{flash}"
+        return loc
+
+    try:
+        with cookie_opener.open(req) as r:
+            return r.status, r.read().decode(), _maybe_append_flash(r.headers.get("Location"))
     except urllib.error.HTTPError as e:
         loc = e.headers.get("Location") if e.headers else None
+        loc = _maybe_append_flash(loc)
         return e.code, e.read().decode() if hasattr(e, "read") else "", loc
 
 

@@ -28,9 +28,28 @@ def _http_get(url: str) -> tuple[int, bytes]:
 
 
 def _http_post(url: str) -> tuple[int, bytes]:
-    req = urllib.request.Request(url, data=b"", method="POST")
+    """POST with CSRF round-trip. Mints the cookie via GET /, reads the
+    csrf token from the rendered <meta name=jts-csrf>, sends both on
+    the actual POST as X-CSRF-Token."""
+    import http.cookiejar
+    import re
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    page = opener.open(base + "/", timeout=5).read().decode()
+    m = re.search(
+        r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page,
+    )
+    token = m.group(1) if m else ""
+    req = urllib.request.Request(
+        url, data=b"", method="POST",
+        headers={"X-CSRF-Token": token},
+    )
     try:
-        with urllib.request.urlopen(req, timeout=2) as r:
+        with opener.open(req, timeout=5) as r:
             return r.status, r.read()
     except urllib.error.HTTPError as e:
         return e.code, e.read()

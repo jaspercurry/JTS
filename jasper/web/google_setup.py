@@ -47,10 +47,16 @@ from ..google_creds import (
 )
 from ._common import (
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     wrap_page,
     write_env_file,
 )
@@ -357,18 +363,18 @@ async function copyStep4Redirect() {
 """
 
 
-def _setup_wizard_html(redirect_uri: str, *, status_msg: str = "") -> bytes:
+def _setup_wizard_html(redirect_uri: str, csrf_token: str = "", *, status_msg: str = "") -> bytes:
     """State 1: no CLIENT_ID/SECRET configured. Wraps `_setup_wizard_body`
     with the page chrome. The body itself is also rendered, in
     read-only mode, inside the state-3 management page as a
     "View setup guide" disclosure — see `_setup_wizard_body`."""
-    body = _setup_wizard_body(redirect_uri, read_only=False)
+    body = _setup_wizard_body(redirect_uri, csrf_token, read_only=False)
     return _wrap_page(
         "Set up Google on this speaker", body, status_msg=status_msg,
     )
 
 
-def _setup_wizard_body(redirect_uri: str, *, read_only: bool = False) -> str:
+def _setup_wizard_body(redirect_uri: str, csrf_token: str = "", *, read_only: bool = False) -> str:
     """The 4-step setup walkthrough body. In active mode (read_only=False)
     rendered as the State 1 wizard with localStorage progress tracking
     + the paste-creds form at step 4. In read-only mode (rendered
@@ -411,8 +417,9 @@ def _setup_wizard_body(redirect_uri: str, *, read_only: bool = False) -> str:
               <button type="button" onclick="copyStep4Redirect()">Copy</button>
               <span id="step4-redirect-fb" class="copy-feedback">Copied!</span>
             </div>"""
-        creds_form = """<div class="creds-form-wrap">
+        creds_form = f"""<div class="creds-form-wrap">
           <form method="post" action="setup-credentials">
+            {csrf_field_html(csrf_token) if csrf_token else ''}
             <label for="client_id">Client ID</label>
             <input id="client_id" name="client_id" type="text" required
                    autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
@@ -680,10 +687,12 @@ function revealClientId() {{
 """
 
 
-def _add_account_form_html() -> str:
-    return """
+def _add_account_form_html(csrf_token: str = "") -> str:
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
+    return f"""
 <h2>Add a Google account</h2>
 <form method="post" action="start">
+  {csrf}
   <label for="name">Your name (label only)</label>
   <input id="name" name="name" type="text" required pattern="[a-zA-Z0-9_-]+"
          placeholder="brittany" autocapitalize="off" autocorrect="off">
@@ -697,7 +706,10 @@ def _add_account_form_html() -> str:
 """
 
 
-def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: str = "") -> bytes:
+def _redirect_uri_page_html(
+    redirect_uri: str, client_id: str, csrf_token: str = "",
+    *, status_msg: str = "",
+) -> bytes:
     """State 2: credentials saved, no accounts linked yet. The user
     already added the redirect URI during the wizard's step 4, so the
     primary action here is "link a household member's account". The
@@ -707,10 +719,11 @@ def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: st
         client_id[:8] + "…" + client_id[-30:]
         if len(client_id) > 38 else "configured"
     )
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     body = f"""
 <p class="sub">Credentials saved (Client ID: <span class="credbox" style="display:inline-block; padding:0.05em 0.4em">{html.escape(masked)}</span>). One step left — link your first Google account.</p>
 
-{_add_account_form_html()}
+{_add_account_form_html(csrf_token)}
 
 {_connection_details_html(client_id)}
 
@@ -721,6 +734,7 @@ def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: st
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
           onsubmit="return confirm('Clear the saved Client ID and Secret? You\\'ll need to paste them again.');">
+      {csrf}
       <button type="submit" class="danger">Reset Google credentials</button>
     </form>
   </div>
@@ -731,7 +745,7 @@ def _redirect_uri_page_html(redirect_uri: str, client_id: str, *, status_msg: st
     )
 
 
-def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
+def _account_li_html(account: GoogleAccount, *, is_default: bool, csrf_token: str = "") -> str:
     name = html.escape(account.name)
     email = html.escape(account.email or "(unknown email)")
     badge = '<span class="badge">default</span>' if is_default else ""
@@ -740,6 +754,7 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
         if is_default
         else '<button class="secondary" type="submit">Set default</button>'
     )
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     return f"""
 <li>
   <span class="name">{name}</span>
@@ -747,11 +762,13 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
   {badge}
   <span class="actions">
     <form method="post" action="default">
+      {csrf}
       <input type="hidden" name="name" value="{name}">
       {set_default}
     </form>
     <form method="post" action="remove"
           onsubmit="return confirm('Remove {name}? The refresh token will be deleted from this speaker.');">
+      {csrf}
       <input type="hidden" name="name" value="{name}">
       <button class="danger" type="submit">Remove</button>
     </form>
@@ -761,12 +778,16 @@ def _account_li_html(account: GoogleAccount, *, is_default: bool) -> str:
 
 def _management_html(
     registry: GoogleRegistry, redirect_uri: str, client_id: str,
-    *, status_msg: str = "",
+    csrf_token: str = "", *, status_msg: str = "",
 ) -> bytes:
     items = [
-        _account_li_html(a, is_default=(a.name == registry.default_name))
+        _account_li_html(
+            a, is_default=(a.name == registry.default_name),
+            csrf_token=csrf_token,
+        )
         for a in registry.accounts
     ]
+    csrf = csrf_field_html(csrf_token) if csrf_token else ""
     # Clarification copy above the Add account form — only meaningful
     # when at least one account is already linked (state 3). State 2
     # uses _redirect_uri_page_html, which has its own intro framing.
@@ -786,14 +807,14 @@ def _management_html(
 </ul>
 
 {add_account_clarification}
-{_add_account_form_html()}
+{_add_account_form_html(csrf_token)}
 
 {_connection_details_html(client_id)}
 
 <details class="disclosure">
   <summary>View setup guide (re-read the original 4-step instructions)</summary>
   <div class="disclosure-body">
-    {_setup_wizard_body(redirect_uri, read_only=True)}
+    {_setup_wizard_body(redirect_uri, csrf_token, read_only=True)}
   </div>
 </details>
 
@@ -803,6 +824,7 @@ def _management_html(
     {_redirect_uri_section_html(redirect_uri)}
     <form method="post" action="reset-credentials" style="margin-top:2em"
           onsubmit="return confirm('Clear the saved Client ID and Secret? Existing OAuthed accounts will keep working until their refresh tokens are revoked.');">
+      {csrf}
       <button type="submit" class="danger">Reset Google credentials</button>
     </form>
   </div>
@@ -875,16 +897,28 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _redirect(self, location: str) -> None:
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            self.end_headers()
+            # Compat shim: hoists ?msg=… into a flash cookie so the
+            # browser lands on a clean URL without query pollution.
+            # Same pattern as spotify_setup; lets the ~25 existing
+            # `?msg=...` redirects work without per-callsite edits.
+            parsed = urllib.parse.urlparse(location)
+            if parsed.query:
+                qs = urllib.parse.parse_qs(
+                    parsed.query, keep_blank_values=True,
+                )
+                msgs = qs.pop("msg", None)
+                flash = (msgs[0] if msgs else "").strip()
+                if flash:
+                    clean_query = urllib.parse.urlencode(qs, doseq=True)
+                    clean = urllib.parse.urlunparse(
+                        parsed._replace(query=clean_query),
+                    )
+                    send_see_other(self, clean, flash=flash)
+                    return
+            send_see_other(self, location)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         # --- routes ---
 
@@ -894,7 +928,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             qs = urllib.parse.parse_qs(url.query)
 
             if path == "/":
-                self._render_index(status_msg=qs.get("msg", [""])[0])
+                ctx = begin_request(self)
+                self._render_index(
+                    ctx["csrf_token"], status_msg=ctx["flash"],
+                )
                 return
 
             if path == "/callback":
@@ -933,7 +970,17 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
+            CSRF_POST_ROUTES = (
+                "/setup-credentials", "/reset-credentials",
+                "/start", "/remove", "/default",
+            )
+            if path not in CSRF_POST_ROUTES:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
             form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
 
             if path == "/setup-credentials":
                 self._handle_setup_credentials(form)
@@ -951,26 +998,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 self._handle_default(form)
                 return
 
-            self.send_error(HTTPStatus.NOT_FOUND)
-
         # --- route bodies ---
 
-        def _render_index(self, *, status_msg: str = "") -> None:
+        def _render_index(self, csrf_token: str = "", *, status_msg: str = "") -> None:
             has_creds = bool(cfg["client_id"] and cfg["client_secret"])
             if not has_creds:
                 self._send_html(_setup_wizard_html(
-                    cfg["redirect_uri"], status_msg=status_msg,
+                    cfg["redirect_uri"], csrf_token, status_msg=status_msg,
                 ))
                 return
             registry = GoogleRegistry.load(cfg["registry_path"])
             if not registry.accounts:
                 self._send_html(_redirect_uri_page_html(
-                    cfg["redirect_uri"], cfg["client_id"],
+                    cfg["redirect_uri"], cfg["client_id"], csrf_token,
                     status_msg=status_msg,
                 ))
                 return
             self._send_html(_management_html(
-                registry, cfg["redirect_uri"], cfg["client_id"],
+                registry, cfg["redirect_uri"], cfg["client_id"], csrf_token,
                 status_msg=status_msg,
             ))
 

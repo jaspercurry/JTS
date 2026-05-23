@@ -67,11 +67,17 @@ from .. import home_assistant as _ha_mod
 from ._common import (
     NAV_BACK_HTML,
     PAGE_STYLE,
+    begin_request,
+    csrf_field_html,
     delete_env_file,
     mask_secret,
     read_env_file,
     read_form,
+    reject_csrf,
     restart_voice_daemon,
+    send_html_response,
+    send_see_other,
+    verify_csrf,
     write_env_file,
 )
 
@@ -483,14 +489,14 @@ def _state_machine(state: dict[str, str]) -> str:
     return "none"
 
 
-def _render_index(state: dict[str, str], *, status_msg: str = "") -> bytes:
+def _render_index(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
     machine = _state_machine(state)
     if machine == "connected":
-        body = _state_connected_html(state)
+        body = _state_connected_html(state, csrf_token)
     elif machine == "partial":
-        body = _state_partial_html(state)
+        body = _state_partial_html(state, csrf_token)
     else:
-        body = _state_none_html(state)
+        body = _state_none_html(state, csrf_token)
     return _wrap("Home Assistant", body, status_msg=status_msg)
 
 
@@ -565,7 +571,7 @@ def _wrap(title: str, body: str, *, status_msg: str = "") -> bytes:
 </html>""".encode()
 
 
-def _state_none_html(state: dict[str, str]) -> str:
+def _state_none_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 1: no URL set. Discover + manual entry side-by-side
     plus any recent URLs the user previously connected to."""
     recent = _recent_urls(state)
@@ -595,6 +601,7 @@ scenes, scripts, automations).</p>
 
 <h2 style="margin-top: 1.4em;">Or enter the URL manually</h2>
 <form id="manual-form" method="post" action="./save">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
   <label for="url">Home Assistant URL</label>
   <input type="text" name="url" id="url" placeholder="http://homeassistant.local:8123"
          autocomplete="off" autocapitalize="off" spellcheck="false">
@@ -662,7 +669,7 @@ scenes, scripts, automations).</p>
 """
 
 
-def _state_partial_html(state: dict[str, str]) -> str:
+def _state_partial_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 2: URL set, token missing or invalid. Paste field
     with deep link to HA's profile page."""
     url = state.get(ENV_URL, "")
@@ -707,6 +714,7 @@ Home Assistant.</p>
 </div>
 
 <form method="post" action="./save">
+  {csrf_field_html(csrf_token) if csrf_token else ''}
   <input type="hidden" name="url" value="{html.escape(url)}">
 
   <label for="token">Long-Lived Access Token</label>
@@ -730,7 +738,7 @@ Home Assistant.</p>
 """
 
 
-def _state_connected_html(state: dict[str, str]) -> str:
+def _state_connected_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 3: URL + token both set. We optimistically display
     the connection as healthy; the user can hit "Test connection" to
     verify against the live HA. Includes an advanced agent picker
@@ -767,6 +775,7 @@ to this Home Assistant instance.</p>
     for the dashboard).</p>
 
     <form method="post" action="./save">
+      {csrf_field_html(csrf_token) if csrf_token else ''}
       <input type="hidden" name="url" value="{html.escape(url)}">
       <!-- Token deliberately omitted. The save handler keeps the
            existing token when the form's token field is empty. -->
@@ -790,6 +799,7 @@ to this Home Assistant instance.</p>
   Doesn't change anything in Home Assistant itself.</p>
   <form method="post" action="./disconnect"
         onsubmit="return confirm('Disconnect this speaker from Home Assistant?');">
+    {csrf_field_html(csrf_token) if csrf_token else ''}
     <button type="submit" class="danger">Disconnect</button>
   </form>
 </div>
@@ -939,36 +949,31 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             logger.info("%s - %s", self.address_string(), fmt % args)
 
         def _redirect(self, location: str) -> None:
-            self.send_response(HTTPStatus.SEE_OTHER)
-            self.send_header("Location", location)
-            # Per wake_setup.py / wifi_setup.py: nginx hangs on 303 without
-            # an explicit Content-Length:0. Load-bearing.
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+            # Kept as a thin compat layer for callsites that don't carry
+            # a flash message. New code paths use send_see_other from
+            # _common with `flash=` instead.
+            send_see_other(self, location)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self.send_response(status)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: Any, *, status: int = 200) -> None:
             body = json.dumps(payload).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
         def do_GET(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            qs = urllib.parse.parse_qs(url.query)
             if path == "/":
                 state = read_env_file(cfg["state_path"])
+                ctx = begin_request(self)
                 self._send_html(_render_index(
-                    state, status_msg=qs.get("msg", [""])[0],
+                    state, ctx["csrf_token"], status_msg=ctx["flash"],
                 ))
                 return
             if path == "/reset":
@@ -983,13 +988,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     try:
                         write_env_file(cfg["state_path"], values, mode=0o600)
                     except OSError as e:
-                        self._redirect(
-                            f"./?msg={urllib.parse.quote(f'Could not reset: {e}')}",
-                        )
+                        send_see_other(self, "./", flash=f"Could not reset: {e}")
                         return
                 else:
                     delete_env_file(cfg["state_path"])
-                self._redirect("./")
+                send_see_other(self, "./")
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -997,6 +1000,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
             if path == "/discover":
+                # Read-only network probe — no state change, no CSRF.
                 instances = discover_sync(cfg.get("discovery_timeout", DISCOVERY_TIMEOUT_SEC))
                 self._send_json({"instances": instances})
                 return
@@ -1015,9 +1019,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 # /verify uses whatever URL+token are saved (no form
                 # body) — the "Test connection" button and the agent
                 # picker's on-load fetch both call this against the
-                # persisted state. For new-token validation we don't
-                # need a separate endpoint; /save runs validation
-                # implicitly via the connected-state on-load check.
+                # persisted state. Read-only; no CSRF needed.
                 state = read_env_file(cfg["state_path"])
                 result = verify_sync(
                     state.get(ENV_URL, ""), state.get(ENV_TOKEN, ""),
@@ -1025,16 +1027,24 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 self._send_json(result)
                 return
+            if path not in ("/save", "/disconnect"):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            form = read_form(self)
+            if not verify_csrf(self, form):
+                reject_csrf(self)
+                return
             if path == "/save":
-                self._handle_save()
+                self._handle_save(form)
                 return
             if path == "/disconnect":
                 self._handle_disconnect()
                 return
-            self.send_error(HTTPStatus.NOT_FOUND)
 
-        def _handle_save(self) -> None:
-            form = read_form(self)
+        def _handle_save(self, form: dict[str, str]) -> None:
+            # form is pre-read by the POST router so it can verify CSRF
+            # before we consume the body. All previous control flow
+            # remains the same below.
             raw_url = (form.get("url") or "").strip()
             raw_token = (form.get("token") or "").strip()
             agent_id = (form.get("agent_id") or "").strip()
@@ -1060,10 +1070,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
             normalized_url = _normalize_url(raw_url)
             if not normalized_url:
-                self._redirect(
-                    "./?msg=" + urllib.parse.quote(
-                        "Couldn't parse that URL. Try 'http://homeassistant.local:8123' "
-                        "or 'http://192.168.1.42:8123'.",
+                send_see_other(
+                    self, "./",
+                    flash=(
+                        "Couldn't parse that URL. Try "
+                        "'http://homeassistant.local:8123' or "
+                        "'http://192.168.1.42:8123'."
                     ),
                 )
                 return
@@ -1080,9 +1092,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 try:
                     write_env_file(cfg["state_path"], values, mode=0o600)
                 except OSError as e:
-                    self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                    send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
-                self._redirect("./")
+                send_see_other(self, "./")
                 return
 
             # When the user submitted state-1's form (URL only, token field
@@ -1096,9 +1108,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 try:
                     write_env_file(cfg["state_path"], values, mode=0o600)
                 except OSError as e:
-                    self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                    send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
-                self._redirect("./")
+                send_see_other(self, "./")
                 return
 
             token = raw_token or existing_token
@@ -1120,10 +1132,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 try:
                     write_env_file(cfg["state_path"], values, mode=0o600)
                 except OSError as e:
-                    self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                    send_see_other(self, "./", flash=f"Could not save: {e}")
                     return
-                self._redirect(
-                    "./?msg=" + urllib.parse.quote(result.get("error", "Connection failed.")),
+                send_see_other(
+                    self, "./",
+                    flash=result.get("error", "Connection failed."),
                 )
                 return
 
@@ -1143,19 +1156,22 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 write_env_file(cfg["state_path"], values, mode=0o600)
             except OSError as e:
-                self._redirect(f"./?msg={urllib.parse.quote(f'Could not save: {e}')}")
+                send_see_other(self, "./", flash=f"Could not save: {e}")
                 return
 
             restart_voice_daemon()
             instance = result.get("instance_name") or "Home Assistant"
             version = result.get("version")
             label = f"{instance}" + (f" ({version})" if version else "")
-            # restarting=1 tells the connected-state page to show a
-            # "Configuring…" banner that auto-clears once /verify
-            # returns OK (daemon back up + HA still reachable).
-            self._redirect(
-                "./?restarting=1&msg=" + urllib.parse.quote(
-                    f"Connected to {label}. The speaker is restarting to pick up the change.",
+            # restarting=1 is read by the connected-state page's JS — it
+            # shows a "Configuring…" banner that auto-clears once /verify
+            # returns OK (daemon back up + HA still reachable). The flash
+            # text travels in the cookie now, not the URL.
+            send_see_other(
+                self, "./?restarting=1",
+                flash=(
+                    f"Connected to {label}. The speaker is restarting "
+                    f"to pick up the change."
                 ),
             )
 
@@ -1172,15 +1188,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         mode=0o600,
                     )
                 except OSError as e:
-                    self._redirect(f"./?msg={urllib.parse.quote(f'Could not disconnect: {e}')}")
+                    send_see_other(self, "./", flash=f"Could not disconnect: {e}")
                     return
             else:
                 delete_env_file(cfg["state_path"])
             restart_voice_daemon()
-            self._redirect(
-                "./?msg=" + urllib.parse.quote(
-                    "Disconnected. The speaker is restarting.",
-                ),
+            send_see_other(
+                self, "./",
+                flash="Disconnected. The speaker is restarting.",
             )
 
     return Handler
