@@ -1196,6 +1196,36 @@ class of trigger:
   correction window (outcome=`late_cancel`). Not a quality
   signal, just a session-flow artefact.
 
+**Voice-flagged** (the user said "flag that" mid-use):
+- `voice_flagged` — written by the `flag_recent_issue` voice
+  tool. The user's complaint is in `label_notes` as
+  `{iso_ts}|{reason}`. These are the events to triage first
+  during weekly review — they're labeled by the household member
+  who actually noticed the misbehavior in real time, so they
+  cover failure modes that pure-corpus mining might miss.
+- `flag_action` — the wake event of the "flag that" utterance
+  itself (the one whose tool call wrote the `voice_flagged`
+  label on the prior event). Always filter these out of
+  "real interaction" rollups: `WHERE label != 'flag_action'`
+  or equivalent. The tool keeps these distinct from real
+  interactions on purpose.
+
+Find voice-flagged events to review:
+
+```sh
+sqlite3 wake-events/latest/wake-events.sqlite3 "
+SELECT event_id, ts_utc, label_notes, audio_on_path
+FROM wake_events WHERE label='voice_flagged'
+ORDER BY ts_utc DESC"
+```
+
+The flag-tool surface lives at [`jasper/tools/diagnostic.py`](jasper/tools/diagnostic.py);
+the SQLite layer is `WakeEventStore.record_flag` in
+[`jasper/wake_events.py`](jasper/wake_events.py). Trigger phrases
+the LLM is taught to act on (in the tool's docstring): "flag that",
+"you cut me off", "you fired incorrectly", "didn't let me finish",
+"that was wrong", and close paraphrases.
+
 ### Quick funnel query
 
 ```sh

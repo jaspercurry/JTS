@@ -47,6 +47,7 @@ from .timers import Timer, TimerScheduler, announcement_text
 from .tools import ToolRegistry
 from .tools.audio import make_audio_tools
 from .tools.calendar import make_calendar_tools
+from .tools.diagnostic import make_diagnostic_tools
 from .tools.gmail import make_gmail_tools
 from .tools.spotify import make_spotify_tools
 from .tools.bus import make_bus_tools
@@ -939,6 +940,10 @@ def _build_registry(
             registry.register(fn)
         for fn in make_gmail_tools(google_clients):
             registry.register(fn)
+    # Diagnostic tools (flag_recent_issue) need the WakeEventStore,
+    # which isn't opened until the inner async block of `run()`. They
+    # get registered there via a separate call to make_diagnostic_tools
+    # against the same `registry` instance, after the store is up.
     return registry
 
 
@@ -3426,6 +3431,14 @@ async def run() -> None:
                     cfg.wake_events_dir, e,
                 )
                 wake_event_store = None
+            # Register diagnostic tools now that the store is open.
+            # `_build_registry` couldn't do this because the store
+            # isn't created until inside this async-with-mic block.
+            # make_diagnostic_tools returns [] when the store is None,
+            # so the model never sees a tool whose every call would
+            # fail to persist.
+            for fn in make_diagnostic_tools(wake_event_store):
+                registry.register(fn)
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
