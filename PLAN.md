@@ -232,6 +232,17 @@ The current production config (set 2026-05-08): `JASPER_AEC_AGC2=0`,
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) "Tuning findings" for
 the full sweep matrix and reasoning.
 
+**Related (but distinct): robust barge-in.** Cleanly interrupting
+the assistant mid-utterance during loud music is a separate
+concern from wake-word reliability. Today's barge-in is VAD-only;
+the design space (including why the obvious "put TTS in the AEC
+reference" fix is structurally wrong) is documented in
+[`docs/HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md). Per the
+[AGENTS.md](AGENTS.md) "Architecture is fixed; swap the engine,
+not the topology" rule, barge-in improvements must come through
+engine-internal tuning + measurement — the architectural options
+in that HANDOFF are explicitly a costing record, not a roadmap.
+
 ### Tier 1 — cheap experiments (≤30 min each)
 
 - **Chip's beamformed ASR channel as bridge input.** We currently
