@@ -243,6 +243,27 @@ static bool postSessionEnd() {
     return postJson("/session/end", "{}");
 }
 
+// Disable WiFi modem-sleep. **Must be called AFTER WiFi.begin()
+// returns WL_CONNECTED** — calling it before begin is a no-op because
+// `esp_wifi_start()` (inside WiFi.begin) resets PS mode to the
+// Arduino-ESP32 default of WIFI_PS_MIN_MODEM. With sleep on, inbound
+// RTT swings 22-426 ms (DTIM-bounded receive) and HTTP POSTs to
+// jasper-control routinely exceed the 2 s timeout — symptom: dial
+// volume is temperamental, side LED blinks red.
+//
+// The dial is USB-powered, so the ~30 mA continuous draw is a non-
+// issue. Standard practice for USB-powered ESP32 controllers (WLED,
+// Tasmota's SetOption127, Apollo Automation, ESPHome users hitting
+// the same symptom at the LIGHT default).
+//
+// Serial print is intentional: gives a single observable signal that
+// the call ran. If you see this in the boot log, modem-sleep is off.
+static void disableWifiSleep() {
+    bool ok = WiFi.setSleep(false);
+    Serial.printf("[boot] WiFi modem-sleep disabled (setSleep=%s)\n",
+                  ok ? "OK" : "FAIL");
+}
+
 static bool tryConnectStored() {
     String ssid = g_prefs.getString("ssid", "");
     String pass = g_prefs.getString("pass", "");
@@ -250,16 +271,6 @@ static bool tryConnectStored() {
 
     g_status = Status::CONNECTING;
     WiFi.mode(WIFI_STA);
-    // Disable WiFi modem-sleep: the dial is USB-powered, so the
-    // default WIFI_PS_MIN_MODEM's DTIM-bounded receive latency
-    // (100-400 ms typical, occasional >2 s spikes) buys us nothing
-    // and costs us the HTTP timeout window — measured 22-426 ms
-    // ping RTT to a sleeping dial vs 2-3 ms to the router. Standard
-    // practice for USB-powered ESP32 controllers (WLED, Tasmota's
-    // SetOption127, Apollo Automation, ESPHome users who hit the
-    // same symptom). Trade-off: ~30 mA continuous draw, irrelevant
-    // over USB.
-    WiFi.setSleep(false);
     WiFi.setHostname(MDNS_HOSTNAME);
     WiFi.begin(ssid.c_str(), pass.c_str());
 
@@ -268,7 +279,11 @@ static bool tryConnectStored() {
         renderStatus();
         delay(100);
     }
-    return WiFi.status() == WL_CONNECTED;
+    if (WiFi.status() == WL_CONNECTED) {
+        disableWifiSleep();
+        return true;
+    }
+    return false;
 }
 
 // Improv: callback fired when the host (improv-wifi.com or
@@ -292,7 +307,6 @@ static bool improvConnect(const char *ssid, const char *password) {
     Serial.printf("[improv] connect attempt: ssid=%s, pass=<%d chars>\n",
                   ssid, (int)strlen(password));
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);  // see tryConnectStored() for rationale
     WiFi.setHostname(MDNS_HOSTNAME);
     WiFi.begin(ssid, password);
     unsigned long t0 = millis();
@@ -309,6 +323,7 @@ static bool improvConnect(const char *ssid, const char *password) {
     bool ok = (WiFi.status() == WL_CONNECTED);
     Serial.printf("[improv] connect %s after %lums (final status=%d)\n",
                   ok ? "OK" : "FAIL", millis() - t0, (int)WiFi.status());
+    if (ok) disableWifiSleep();
     return ok;
 }
 
