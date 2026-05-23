@@ -107,12 +107,18 @@ Settings the dashboard should expose — without SSHing in:
   both `current_user_playlists` and catalog search owner-filter — see
   [docs/HANDOFF-spotify-personal-playlists.md](docs/HANDOFF-spotify-personal-playlists.md)
   if it ever gets written. First piece of this web-view work to ship.
-- **Location** for weather (`JASPER_DEFAULT_LOCATION`, e.g. "Sunset
-  Park, Brooklyn" — needs to be specific enough that the geocoder
-  doesn't land in the wrong "Sunset Park" in another state)
-- **Weather units** (`JASPER_WEATHER_UNITS`: celsius/fahrenheit)
-- **Subway** (NYC-specific): `JASPER_SUBWAY_STATION_ID` (GTFS stop
-  ID), `JASPER_SUBWAY_LINES`, `JASPER_SUBWAY_DEFAULT_DIRECTION`
+- **Location + subway + bus + Citi Bike** ✅ landed via the
+  [Transit wizard](http://jts.local/transit/) at
+  [jasper/web/transit_setup.py](jasper/web/transit_setup.py) —
+  address-geocoded (OSM Nominatim → 3-decimal coords), picks nearest
+  stops, modular over `jasper/transit/REGISTRY` so new cities are a
+  single new provider module. Replaces the manual env-var TODOs
+  (`JASPER_TRANSIT_LAT/LON`, `JASPER_SUBWAY_STATION_ID`,
+  `JASPER_BUS_STOPS`, `JASPER_CITIBIKE_STATIONS`) that were
+  originally listed here. The wizard owns all of these via
+  `/var/lib/jasper/transit.env`.
+- **Weather units** (`JASPER_WEATHER_UNITS`: celsius/fahrenheit) —
+  still env-only; the Transit wizard doesn't expose this yet.
 - **Mic device** (`JASPER_MIC_DEVICE` — default `Array` for
   XVF3800; would need to be different for other USB mics)
 - **Spotify Connect device name** (cosmetic — what shows in the
