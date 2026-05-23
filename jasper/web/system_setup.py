@@ -82,12 +82,13 @@ _EXTRA_STYLE = """
 .card .kv .k { color: #666; }
 .card .kv .v { color: #222; font-variant-numeric: tabular-nums; }
 
-.cloud-table, .nx-table { width: 100%; border-collapse: collapse; font-size: 0.88em; margin-top: 0.4em; }
-.cloud-table th, .cloud-table td, .nx-table th, .nx-table td {
+.cloud-table, .nx-table, .svc-table { width: 100%; border-collapse: collapse; font-size: 0.88em; margin-top: 0.4em; }
+.cloud-table th, .cloud-table td, .nx-table th, .nx-table td, .svc-table th, .svc-table td {
   text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid #eee;
   font-variant-numeric: tabular-nums;
 }
-.cloud-table th, .nx-table th { color: #666; font-weight: 600; font-size: 0.82em; }
+.cloud-table th, .nx-table th, .svc-table th { color: #666; font-weight: 600; font-size: 0.82em; }
+.svc-table td.num, .svc-table th.num { text-align: right; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.5em; margin-top: 0.5em; }
 .actions button { background: #1db954; color: white; border: 0; padding: 0.55em 1em;
@@ -230,6 +231,20 @@ _PAGE_BODY = """
     <div id="diag-output" style="display:none"></div>
   </div>
 </details>
+
+<div class="card" id="services-card">
+  <h2>Per-service usage</h2>
+  <p class="muted" style="margin: 0 0 0.4em; font-size: 0.85em;">
+    Cgroup-reported CPU and resident memory for each running
+    <code>jasper-*</code> unit. CPU is per-core (100% = one fully
+    saturated core; 400% = all four). New services show "—" for CPU
+    until the next 5 s sample provides a delta. Sorted by CPU descending.
+  </p>
+  <table class="svc-table">
+    <thead><tr><th>Service</th><th class="num">CPU</th><th class="num">RSS</th></tr></thead>
+    <tbody id="svc-rows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
+  </table>
+</div>
 """
 
 _SCRIPT = r"""
@@ -488,6 +503,29 @@ _SCRIPT = r"""
         ? ('0x' + (throttledNow || 0).toString(16) +
            ' (since-boot 0x' + (throttledHist || 0).toString(16) + ')')
         : '0x0 (healthy)';
+
+    // Per-service usage. Sort CPU% desc with null/unknown last so the
+    // heavy hitters surface at the top — useful during experimental-
+    // branch shakedowns where you want to know which daemon spiked.
+    const services = m.services || [];
+    const svcRows = document.getElementById('svc-rows');
+    if (services.length) {
+      const sorted = services.slice().sort((a, b) => {
+        const ac = a.cpu_pct == null ? -1 : a.cpu_pct;
+        const bc = b.cpu_pct == null ? -1 : b.cpu_pct;
+        return bc - ac;
+      });
+      svcRows.innerHTML = sorted.map(s => {
+        const cpu = s.cpu_pct == null ? '—' : s.cpu_pct.toFixed(1) + '%';
+        const rss = s.rss_mb == null ? '—' : Math.round(s.rss_mb) + ' MB';
+        return '<tr><td>' + s.name + '</td>' +
+               '<td class="num">' + cpu + '</td>' +
+               '<td class="num">' + rss + '</td></tr>';
+      }).join('');
+    } else {
+      svcRows.innerHTML =
+        '<tr><td colspan="3" class="muted">No jasper-* cgroups visible (cgroup-v2 unavailable, or dev env).</td></tr>';
+    }
   }
 
   async function poll() {

@@ -52,6 +52,8 @@ def test_snapshot_shape_with_no_samples_yet() -> None:
     assert cur["fan_rpm"] is None
     assert cur["fan_pwm"] is None
     assert cur["fan_pwm_max"] == 255
+    # Per-service cgroup list: present but empty until first tick.
+    assert snap["services"] == []
 
 
 def test_append_rotates_after_history_points() -> None:
@@ -290,6 +292,212 @@ def test_tick_without_fan_keeps_history_aligned() -> None:
     assert len(snap["history"]["t"]) == 2
     assert len(snap["history"]["fan_rpm"]) == 2
     assert len(snap["history"]["fan_pwm"]) == 2
+
+
+# ---------- per-service cgroup sampler ----------------------------------
+
+
+def _make_fake_slice(root, services: dict[str, dict]) -> str:
+    """Build a fake /sys/fs/cgroup/system.slice tree. `services` maps
+    service-dir name → {"cpu.stat": "...", "memory.current": "..."}.
+    Returns the path to use as slice_dir."""
+    slice_dir = os.path.join(root, "system.slice")
+    os.makedirs(slice_dir)
+    for name, files in services.items():
+        sub = os.path.join(slice_dir, name)
+        os.makedirs(sub)
+        for fname, contents in files.items():
+            with open(os.path.join(sub, fname), "w") as f:
+                f.write(contents)
+    return slice_dir
+
+
+def test_list_jasper_cgroups_filters_by_prefix(tmp_path) -> None:
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {},
+        "jasper-camilla.service": {},
+        # Non-jasper unit: must be excluded.
+        "shairport-sync.service": {},
+        # Wrong suffix: must be excluded.
+        "jasper-not-a-service": {},
+        # Slices, scopes, mount units: not relevant.
+        "system-getty.slice": {},
+    })
+    assert SystemSampler._list_jasper_cgroups(slice_dir) == [
+        "jasper-camilla.service", "jasper-voice.service",
+    ]
+
+
+def test_list_jasper_cgroups_returns_empty_when_slice_missing(tmp_path) -> None:
+    # macOS dev box, or cgroup-v1 system — slice dir simply isn't there.
+    assert SystemSampler._list_jasper_cgroups(
+        str(tmp_path / "no-such-slice"),
+    ) == []
+
+
+def test_read_cgroup_cpu_usec_parses_usage_line(tmp_path) -> None:
+    # cgroup-v2 cpu.stat shape, copied from a live Pi 5 service:
+    cpu_stat = (
+        "usage_usec 1234567890\n"
+        "user_usec 1000000000\n"
+        "system_usec 234567890\n"
+        "nr_periods 0\n"
+        "nr_throttled 0\n"
+        "throttled_usec 0\n"
+    )
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {"cpu.stat": cpu_stat},
+    })
+    assert SystemSampler._read_cgroup_cpu_usec(
+        slice_dir, "jasper-voice.service",
+    ) == 1234567890
+
+
+def test_read_cgroup_cpu_usec_returns_none_when_missing(tmp_path) -> None:
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {},  # no cpu.stat
+    })
+    assert SystemSampler._read_cgroup_cpu_usec(
+        slice_dir, "jasper-voice.service",
+    ) is None
+
+
+def test_read_cgroup_memory_bytes_parses(tmp_path) -> None:
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {"memory.current": "157286400\n"},
+    })
+    assert SystemSampler._read_cgroup_memory_bytes(
+        slice_dir, "jasper-voice.service",
+    ) == 157286400
+
+
+def test_read_cgroup_memory_bytes_returns_none_on_missing(tmp_path) -> None:
+    slice_dir = _make_fake_slice(str(tmp_path), {"jasper-voice.service": {}})
+    assert SystemSampler._read_cgroup_memory_bytes(
+        slice_dir, "jasper-voice.service",
+    ) is None
+
+
+def test_tick_services_first_sample_has_no_cpu_pct(tmp_path) -> None:
+    """First call after a service appears yields cpu_pct=None — delta
+    math needs two samples. RSS works on the first tick."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {
+            "cpu.stat": "usage_usec 1000000\n",
+            "memory.current": "104857600\n",  # 100 MB
+        },
+    })
+    s = SystemSampler()
+    out = s._tick_services(slice_dir)
+    assert len(out) == 1
+    assert out[0]["name"] == "jasper-voice"
+    assert out[0]["cpu_pct"] is None
+    assert out[0]["rss_mb"] == 100.0
+
+
+def test_tick_services_second_sample_computes_cpu_pct(
+    tmp_path, monkeypatch,
+) -> None:
+    """Two ticks 1 wall-second apart with 500 ms CPU consumed should
+    yield ~50% (half of one core)."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {
+            "cpu.stat": "usage_usec 1000000\n",
+            "memory.current": "104857600\n",
+        },
+    })
+    # Fake monotonic clock so we control the wall delta exactly.
+    fake_time = [100.0]
+    monkeypatch.setattr(
+        system_metrics.time, "monotonic", lambda: fake_time[0],
+    )
+    s = SystemSampler()
+    s._tick_services(slice_dir)  # baseline, cpu_pct=None
+
+    # 1 second later, the service has consumed an additional 500_000 µs
+    # of CPU time — half a core.
+    fake_time[0] = 101.0
+    with open(os.path.join(
+        slice_dir, "jasper-voice.service", "cpu.stat",
+    ), "w") as f:
+        f.write("usage_usec 1500000\n")
+    out = s._tick_services(slice_dir)
+    assert len(out) == 1
+    assert out[0]["cpu_pct"] == 50.0
+
+
+def test_tick_services_drops_disappeared_services(tmp_path) -> None:
+    """A service that vanishes between ticks (one-shot exited, manual
+    stop) must not linger in the snapshot or the internal samples dict."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {
+            "cpu.stat": "usage_usec 1000000\n", "memory.current": "104857600\n",
+        },
+        "jasper-dac-init.service": {  # one-shot
+            "cpu.stat": "usage_usec 500\n", "memory.current": "1048576\n",
+        },
+    })
+    s = SystemSampler()
+    s._tick_services(slice_dir)
+    assert "jasper-dac-init.service" in s._service_samples
+
+    # One-shot exits — systemd removes the cgroup dir.
+    import shutil
+    shutil.rmtree(os.path.join(slice_dir, "jasper-dac-init.service"))
+
+    out = s._tick_services(slice_dir)
+    names = [s["name"] for s in out]
+    assert "jasper-voice" in names
+    assert "jasper-dac-init" not in names
+    assert "jasper-dac-init.service" not in s._service_samples
+
+
+def test_tick_services_handles_negative_delta(tmp_path, monkeypatch) -> None:
+    """If usage_usec ever appears to decrease (clock skew, counter
+    reset, or cgroup recreate with same name), floor cpu_pct at 0
+    rather than rendering a nonsense negative on the dashboard."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        "jasper-voice.service": {
+            "cpu.stat": "usage_usec 5000000\n", "memory.current": "0\n",
+        },
+    })
+    fake_time = [100.0]
+    monkeypatch.setattr(
+        system_metrics.time, "monotonic", lambda: fake_time[0],
+    )
+    s = SystemSampler()
+    s._tick_services(slice_dir)  # baseline @ usage=5_000_000
+
+    fake_time[0] = 101.0
+    with open(os.path.join(
+        slice_dir, "jasper-voice.service", "cpu.stat",
+    ), "w") as f:
+        f.write("usage_usec 1000000\n")  # went backwards
+    out = s._tick_services(slice_dir)
+    assert out[0]["cpu_pct"] == 0.0
+
+
+def test_tick_services_handles_missing_slice_dir(tmp_path) -> None:
+    s = SystemSampler()
+    assert s._tick_services(str(tmp_path / "no-such-dir")) == []
+
+
+def test_tick_services_partial_read_skipped(tmp_path) -> None:
+    """A cgroup whose cpu.stat AND memory.current are both unreadable
+    (race with teardown) should be silently skipped. A cgroup with one
+    of the two readable still surfaces (partial visibility is better
+    than dropping the row)."""
+    slice_dir = _make_fake_slice(str(tmp_path), {
+        # Empty dir — listdir sees it, but both reads fail.
+        "jasper-empty.service": {},
+        # Only memory readable; cpu.stat absent.
+        "jasper-partial.service": {"memory.current": "1048576\n"},
+    })
+    s = SystemSampler()
+    out = s._tick_services(slice_dir)
+    names = [s["name"] for s in out]
+    assert "jasper-empty" not in names
+    assert "jasper-partial" in names
 
 
 # ---------- build manifest ----------------------------------------------
