@@ -1262,6 +1262,21 @@ cat /run/jasper-usbsink/state.json | jq
 override capture/playback device or HTTP ports, set
 `JASPER_USBSINK_*` in `/etc/jasper/jasper.env`.
 
+**The ALSA card has two names**, and we need both:
+- `JASPER_USBSINK_CAPTURE_DEVICE` (default `UAC2_Gadget`) — what
+  sounddevice/PortAudio substring-matches against
+  `sd.query_devices()`. PortAudio formats the gadget as
+  `"UAC2_Gadget: PCM (hw:N,0)"` — note the **underscore**.
+- `JASPER_USBSINK_MIXER_CARD` (default `UAC2Gadget`) — the kernel
+  "short" name used by `amixer -c <name>` and
+  `/proc/asound/<name>/`. **No underscore.**
+
+They look like the same card, but the u_audio kernel driver
+registers itself with the underscore form (PortAudio sees that)
+while the ConfigFS gadget descriptor sets the short name without
+the underscore (the kernel uses that everywhere else). Don't set
+them to the same value — the tools will both break.
+
 **Escape hatch**: `JASPER_USBSINK_PREEMPT=disabled` in
 `/etc/jasper/jasper.env` (case-insensitive, exact literal `disabled`)
 turns off the mux's preempt-via-POST mechanism. USB then behaves like

@@ -111,7 +111,14 @@ class AudioBridge:
     def __init__(
         self,
         *,
-        capture_device: str = "UAC2Gadget",
+        # PortAudio device-string for the gadget capture endpoint.
+        # Sounddevice substring-matches against `sd.query_devices()`,
+        # which formats the gadget as "UAC2_Gadget: PCM (hw:N,0)" —
+        # note the UNDERSCORE. The kernel "short" name (used by
+        # amixer / /proc/asound/<name>) is "UAC2Gadget" without the
+        # underscore. See DaemonConfig docstring for the full
+        # dual-naming explanation.
+        capture_device: str = "UAC2_Gadget",
         playback_device: str = "jasper_renderer_in",
         sample_rate: int = SAMPLE_RATE,
         channels: int = CHANNELS,

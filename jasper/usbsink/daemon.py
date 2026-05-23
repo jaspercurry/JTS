@@ -69,14 +69,44 @@ class DaemonConfig:
     """Environment-driven configuration, all overridable via env vars
     that begin with JASPER_USBSINK_*. Sensible defaults align with the
     UAC2 gadget descriptor in deploy/usbsink/jasper-usbsink-gadget-up.
+
+    The same ALSA card has TWO names that tools disagree about:
+
+      kernel "short" name (in brackets in /proc/asound/cards, used by
+        amixer -c <name>, used as the /proc/asound/<name> directory):
+          "UAC2Gadget"          ← MIXER_CARD
+
+      kernel "long" / driver name (used by PortAudio for substring
+        matching against `sd.query_devices()` output, which formats
+        the device as "UAC2_Gadget: PCM (hw:4,0)"):
+          "UAC2_Gadget"         ← CAPTURE_DEVICE
+
+    They differ because the u_audio driver registers itself as
+    "UAC2_Gadget" (the underscore is the driver's convention) while
+    our ConfigFS descriptor's short-name attribute is "UAC2Gadget"
+    (no underscore, set in deploy/usbsink/jasper-usbsink-gadget-up).
+    sounddevice/PortAudio doesn't honor the short name when matching
+    device strings against the enumerated list, so we have to pass
+    it the underscore form. amixer wants the short name.
+
+    Keep these two as separate settings so each tool gets the form
+    it can resolve. Hardcoding either in one place breaks the other.
     """
-    capture_device: str = "UAC2Gadget"
+    # PortAudio device string for the gadget capture endpoint —
+    # matched as a substring against sd.query_devices(). The display
+    # name format is "UAC2_Gadget: PCM (hw:4,0)" so the underscore
+    # form is what matches.
+    capture_device: str = "UAC2_Gadget"
     # Renderer-side dmix: jasper_renderer_in is the `plug:` front-end
     # of pcm.jasper_renderer_mix (ipc_key 7779), the multi-writer mixer
     # in front of hw:Loopback,0,0 that all renderers (librespot,
     # shairport-sync, bluealsa-aplay, jasper-usbsink) write into. See
     # deploy/alsa/asoundrc.jasper + PR #214.
     playback_device: str = "jasper_renderer_in"
+    # ALSA "short" name (no underscore) — what amixer -c and
+    # /proc/asound/<name> use. Volume bridge polls this; state
+    # publisher reads /proc/asound/<this>/ to detect host-connected.
+    mixer_card: str = "UAC2Gadget"
     sample_rate: int = 48000
     channels: int = 2
     log_level: str = "INFO"
@@ -89,10 +119,13 @@ class DaemonConfig:
     def from_env(cls) -> "DaemonConfig":
         return cls(
             capture_device=os.environ.get(
-                "JASPER_USBSINK_CAPTURE_DEVICE", "UAC2Gadget",
+                "JASPER_USBSINK_CAPTURE_DEVICE", "UAC2_Gadget",
             ),
             playback_device=os.environ.get(
                 "JASPER_USBSINK_PLAYBACK_DEVICE", "jasper_renderer_in",
+            ),
+            mixer_card=os.environ.get(
+                "JASPER_USBSINK_MIXER_CARD", "UAC2Gadget",
             ),
             sample_rate=int(os.environ.get(
                 "JASPER_USBSINK_SAMPLE_RATE", "48000",
@@ -150,9 +183,10 @@ class UsbSinkDaemon:
         self._state_publisher = StatePublisher(
             self._bridge,
             state_path=config.state_path,
+            host_card_path=f"/proc/asound/{config.mixer_card}",
         )
         self._volume_bridge = VolumeBridge(
-            card_name=config.capture_device,
+            card_name=config.mixer_card,
             control_url=config.control_url,
         )
         self._stop = asyncio.Event()
