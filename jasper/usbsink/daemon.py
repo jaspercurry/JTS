@@ -71,7 +71,12 @@ class DaemonConfig:
     UAC2 gadget descriptor in deploy/usbsink/jasper-usbsink-gadget-up.
     """
     capture_device: str = "UAC2Gadget"
-    playback_device: str = "hw:CARD=Loopback,DEV=0"
+    # Renderer-side dmix: jasper_renderer_in is the `plug:` front-end
+    # of pcm.jasper_renderer_mix (ipc_key 7779), the multi-writer mixer
+    # in front of hw:Loopback,0,0 that all renderers (librespot,
+    # shairport-sync, bluealsa-aplay, jasper-usbsink) write into. See
+    # deploy/alsa/asoundrc.jasper + PR #214.
+    playback_device: str = "jasper_renderer_in"
     sample_rate: int = 48000
     channels: int = 2
     log_level: str = "INFO"
@@ -87,7 +92,7 @@ class DaemonConfig:
                 "JASPER_USBSINK_CAPTURE_DEVICE", "UAC2Gadget",
             ),
             playback_device=os.environ.get(
-                "JASPER_USBSINK_PLAYBACK_DEVICE", "hw:CARD=Loopback,DEV=0",
+                "JASPER_USBSINK_PLAYBACK_DEVICE", "jasper_renderer_in",
             ),
             sample_rate=int(os.environ.get(
                 "JASPER_USBSINK_SAMPLE_RATE", "48000",

@@ -1,10 +1,40 @@
 # USB Gadget Audio Source (`jasper-usbsink`) — Design & Plan
 
-**Status**: design-complete, pre-implementation (2026-05-16)
-**Branch**: `feat/usb-gadget-source`
+**Status**: shipped 2026-05-23 (rebased onto main with Tier 1 fixes)
+**Branch**: `feat/usb-gadget-source` → merged via `claude/usbsink-rebase-tier1`
 **Owner**: Jasper
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
+
+> ### Post-merge rebase note (2026-05-23)
+>
+> This document describes the daemon as designed on 2026-05-16. Between
+> design and merge, **PR #214 (2026-05-22)** introduced a multi-writer
+> dmix (`pcm.jasper_renderer_mix`, ipc_key 7779) in front of
+> `hw:Loopback,0,0`. All renderers — librespot, shairport-sync,
+> bluealsa-aplay, and now **jasper-usbsink** — write to
+> `pcm.jasper_renderer_in` (the `plug:` front-end), which dmix-sums
+> into the loopback. The audio-path diagrams in §3 below show direct
+> writes to `hw:Loopback,0,0`; the current code writes to
+> `jasper_renderer_in` (default of `JASPER_USBSINK_PLAYBACK_DEVICE`).
+> Functionally identical from the user's perspective; architecturally
+> usbsink is now a peer renderer rather than a special case. See
+> `deploy/alsa/asoundrc.jasper` for the dmix definition.
+>
+> Two other Tier 1 fixes applied at rebase time:
+>
+> 1. **RMS scratch buffer pre-allocated.** The capture callback in
+>    [`audio_bridge.py`](../jasper/usbsink/audio_bridge.py) no longer
+>    allocates a float64 array per 10 ms block — it uses a scratch
+>    buffer sized once in `__init__` and reuses it. The S32→S16
+>    conversion is now a stride view (`arr.view(np.int16)[1::2]`)
+>    rather than an allocation. Eliminates the realtime-thread malloc
+>    risk that the original §6 RAM-budget table did not account for.
+> 2. **Asoundrc path migration.** The codebase moved
+>    `/root/.asoundrc` → `/etc/asound.conf` (mode 0644, world-readable)
+>    in PR #223. usbsink doesn't reference asoundrc by path; the
+>    `pcm.jasper_renderer_in` name resolves through whichever location
+>    `install.sh` writes.
 
 ## Status & scope
 
@@ -1577,5 +1607,8 @@ Rejected: violates ducker semantics.
 
 ---
 
-**End of plan. Ready to implement against this when the user gives
-the go-ahead.**
+**End of plan.** Implementation shipped 2026-05-23; this doc has been
+updated with the rebase note above, but the §3 body still describes
+the as-designed architecture for historical reference.
+
+Last verified: 2026-05-23

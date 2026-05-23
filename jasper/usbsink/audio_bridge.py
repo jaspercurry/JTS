@@ -1,4 +1,4 @@
-"""Audio bridge: UAC2Gadget capture → Loopback playback.
+"""Audio bridge: UAC2Gadget capture → renderer dmix playback.
 
 Two sounddevice streams connected by a bounded queue:
 
@@ -8,15 +8,24 @@ Two sounddevice streams connected by a bounded queue:
     queue.Queue(maxsize=N)
         │
         ▼
-    sd.OutputStream(Loopback,0,0, 48k S16 stereo)
+    sd.OutputStream(jasper_renderer_in, 48k S16 stereo)
         │  playback callback: dequeue (or silence on underrun), gate
         │  on `preempted` (write zeros instead of audio)
 
 Two separate streams (not one duplex `sd.Stream`) because PortAudio's
 duplex mode requires both ends use the same underlying ALSA device
-context; UAC2Gadget and Loopback are different cards. Two streams
-share a Python queue between their PortAudio threads; both threads
-run lock-free except for the queue.
+context; UAC2Gadget and the renderer dmix are different cards. Two
+streams share a Python queue between their PortAudio threads; both
+threads run lock-free except for the queue.
+
+The playback target is `pcm.jasper_renderer_in` — the `plug:` front-end
+to the multi-writer dmix (`pcm.jasper_renderer_mix`, ipc_key 7779) that
+all four renderers (librespot, shairport-sync, bluealsa-aplay, and now
+us) write into. The dmix sums their streams sample-wise and writes a
+single stream to `hw:Loopback,0,0`. Writing direct to
+`hw:Loopback,0,0` would EBUSY-race the dmix (single-writer kernel
+device) — the dmix is the established multi-writer mediator, see
+deploy/alsa/asoundrc.jasper and PR #214 for the rationale.
 
 The bridge exposes minimal external surface:
   - `start()` / `stop()` for lifecycle
@@ -38,14 +47,16 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
 
-# Stream parameters. Both ends are stereo @ 48 kHz to match snd-aloop
-# and the dongle dmix. Different sample sizes:
+# Stream parameters. Both ends are stereo @ 48 kHz to match the
+# renderer dmix and the dongle dmix. Different sample sizes:
 #   - capture: S32_LE (the UAC2 gadget descriptor's c_ssize=4)
-#   - playback: S16_LE (what shairport/librespot/bluez-alsa write into
-#     hw:Loopback,0,0, so CamillaDSP captures it at S32_LE via plug
-#     wrapping like the rest of the music chain)
+#   - playback: S16_LE (the fixed format of `pcm.jasper_renderer_mix`;
+#     the `plug:` front-end `pcm.jasper_renderer_in` would resample
+#     anything else, but we already match so plug becomes a no-op)
 SAMPLE_RATE = 48000
 CHANNELS = 2
 # Block size = 10 ms. Small enough that preempt + host pause/resume
@@ -74,8 +85,9 @@ class BridgeStats:
 
 class AudioBridge:
     """Captures the host's audio from the UAC2Gadget ALSA card and
-    replays it into hw:Loopback,0,0 where the rest of the music chain
-    picks it up.
+    replays it into `pcm.jasper_renderer_in` (the plug-wrapped
+    multi-writer dmix in front of `hw:Loopback,0,0`) where the rest of
+    the music chain picks it up.
 
     Lifecycle:
         bridge = AudioBridge(capture_device="UAC2Gadget", ...)
@@ -93,7 +105,7 @@ class AudioBridge:
         self,
         *,
         capture_device: str = "UAC2Gadget",
-        playback_device: str = "hw:CARD=Loopback,DEV=0",
+        playback_device: str = "jasper_renderer_in",
         sample_rate: int = SAMPLE_RATE,
         channels: int = CHANNELS,
         block_frames: int = BLOCK_FRAMES,
@@ -111,6 +123,19 @@ class AudioBridge:
         self._preempted = False
         self._last_rms_dbfs: float = float("-inf")
         self.stats = BridgeStats()
+
+        # Pre-allocated scratch buffer for in-place RMS computation in
+        # the capture callback. The callback runs on PortAudio's
+        # realtime audio thread at ~100 Hz — any per-call malloc here
+        # risks contending with the rest of the Pi for memory and
+        # producing audible dropouts (especially on a 1 GB Pi under
+        # load). Squaring is done into this buffer via np.square(out=)
+        # with zero allocation. Sized to match one full block; if the
+        # callback ever sees a smaller block (unusual but legal) we
+        # only use the prefix.
+        self._rms_scratch = np.zeros(
+            channels * block_frames, dtype=np.float64,
+        )
 
         # Streams populated by start().
         self._in_stream = None  # type: Optional["sd.RawInputStream"]
@@ -235,33 +260,44 @@ class AudioBridge:
             # in daemon.py logs the counter delta on a low cadence.
             self.stats.capture_errors += 1
 
-        # RMS in S32 land. Each sample is signed int32; full-scale is
-        # ±2^31. Use S32_MAX as 0 dBFS reference.
-        import numpy as np  # lazy: avoid module-load cost outside Pi
         # `indata` is a bytes-like buffer from sd.RawInputStream
         # (CFFI cdata exposing the underlying ringbuffer). numpy
         # frombuffer creates a view, no copy.
         arr = np.frombuffer(indata, dtype=np.int32)
-        # arr is interleaved L,R,L,R,... — RMS over both channels is
-        # fine for "is the user playing audio" detection.
-        if arr.size:
-            # Use float64 sum to avoid intermediate int overflow on
-            # large blocks; division by 2^62 maps S32^2 → unit interval.
-            sq = arr.astype(np.float64) ** 2
-            ms = float(sq.mean()) / (2.0 ** 62)
+
+        # RMS computation, allocation-free. Each S32 sample is in
+        # ±2^31; sum-of-squares is bounded by N · 2^62. We copy the
+        # int32 view into the pre-allocated float64 scratch (sized
+        # for the expected block), square in place, and take the
+        # mean. Division by 2^62 maps S32² → unit interval.
+        # arr is interleaved L,R,L,R,... — RMS over both channels
+        # is fine for "is the user playing audio" detection.
+        n = arr.size
+        if n and n <= self._rms_scratch.size:
+            scratch = self._rms_scratch[:n]
+            np.copyto(scratch, arr)
+            np.square(scratch, out=scratch)
+            ms = float(scratch.mean()) / (2.0 ** 62)
             self._last_rms_dbfs = (
                 10.0 * math.log10(ms) if ms > 0.0 else float("-inf")
             )
 
-        # S32 → S16 by truncating the low 16 bits. Equivalent to
-        # right-shift 16 with sign extension. Acceptable quality loss
-        # for the speaker-bound path (dongle is 24-bit anyway and
-        # CamillaDSP captures S32 via plug wrapping).
-        s16 = (arr >> 16).astype(np.int16)
+        # S32 → S16 by taking the high 16 bits. On little-endian
+        # (Pi 5), reinterpreting an int32 array as int16 and taking
+        # every odd-indexed sample selects the high half of each
+        # int32 — equivalent to `arr >> 16` but a stride view rather
+        # than an allocation. Acceptable quality loss for the
+        # speaker-bound path (dongle is 24-bit anyway and CamillaDSP
+        # captures S32 via plug wrapping).
+        s16_view = arr.view(np.int16)[1::2]
         self.stats.frames_captured += frames
 
         try:
-            self._queue.put_nowait(bytes(s16))
+            # bytes() copies the view into a fresh bytes object for
+            # the queue — this is the only unavoidable per-callback
+            # allocation, since the underlying PortAudio buffer is
+            # reused before the playback callback consumes it.
+            self._queue.put_nowait(bytes(s16_view))
         except queue.Full:
             # Output side is too slow or stalled. Drop this block — the
             # alternative (blocking the PortAudio thread) would
