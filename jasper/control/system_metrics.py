@@ -54,6 +54,15 @@ PWMFAN_HWMON_NAME = "pwmfan"
 # attribute to read, so hardcode the well-known max.
 PWMFAN_DUTY_MAX = 255
 
+# cgroup-v2 unified hierarchy. systemd places .service units under
+# /sys/fs/cgroup/system.slice/<unit>.service/. We sample only our own
+# (jasper-* prefix) to keep the table focused on what the user can
+# act on — the audio renderers (shairport-sync, librespot, etc.) have
+# their own units that don't share this prefix and aren't included.
+SYS_SLICE_CGROUP = "/sys/fs/cgroup/system.slice"
+SERVICE_PREFIX = "jasper-"
+SERVICE_SUFFIX = ".service"
+
 
 class SystemSampler:
     """Background thread that snapshots /proc + vcgencmd into ring
@@ -90,6 +99,14 @@ class SystemSampler:
         self._net_tx_bytes = 0
         self._uptime_sec = 0.0
         self._fan_present = False
+        # Per-service cgroup state.
+        #   _service_samples — internal: name -> (usage_usec, mono_ts)
+        #     used to compute the CPU% delta on the next tick. First
+        #     tick after a service appears yields cpu_pct=None because
+        #     we have no baseline.
+        #   _services_snapshot — public: list of dicts for snapshot().
+        self._service_samples: dict[str, tuple[int, float]] = {}
+        self._services_snapshot: list[dict[str, Any]] = []
         self._last_sample_at: float | None = None
         self._stopped = False
         self._thread = threading.Thread(
@@ -146,6 +163,13 @@ class SystemSampler:
                     ),
                     "fan_pwm_max": PWMFAN_DUTY_MAX,
                 },
+                # Per-service cgroup stats. List of
+                #   {"name": "jasper-voice", "cpu_pct": 43.5, "rss_mb": 256.0}
+                # cpu_pct is None on the first tick a service appears
+                # (delta math needs two samples). rss_mb is None only
+                # if memory.current was unreadable (race with cgroup
+                # teardown). 100% = 1 core saturated (top convention).
+                "services": list(self._services_snapshot),
             }
 
     def _run(self) -> None:
@@ -179,6 +203,7 @@ class SystemSampler:
         # _read_fan returns None when no pwm-fan hwmon device exists
         # (dev machines, Pi without an Active Cooler attached).
         fan = self._read_fan()
+        services = self._tick_services()
         with self._lock:
             self._append(self._t, time.time())
             self._append(self._mem_available_mb, mem["available_mb"])
@@ -202,6 +227,7 @@ class SystemSampler:
             self._disk_used_pct = disk_used_pct
             self._disk_total_gb = disk_total_gb
             self._uptime_sec = uptime
+            self._services_snapshot = services
             self._last_sample_at = time.time()
 
     def _tick_vcgencmd(self) -> None:
@@ -331,6 +357,96 @@ class SystemSampler:
             return float(out.stdout.split("=")[1].split("'")[0])
         except (IndexError, ValueError):
             return 0.0
+
+    def _tick_services(
+        self, slice_dir: str = SYS_SLICE_CGROUP,
+    ) -> list[dict[str, Any]]:
+        """Sample per-service CPU + memory from cgroup-v2.
+
+        CPU% is computed as a delta of cpu.stat's usage_usec between
+        the previous tick and this one. Per-core convention — 100% is
+        one fully-saturated core, 400% the full Pi 5. New services
+        yield cpu_pct=None on the first sample (no baseline).
+
+        Services that disappeared since the last tick (one-shot
+        finished, manual stop) fall out automatically — listdir gives
+        the live set, prev-sample entries we no longer see get dropped
+        when we rebuild the dict below."""
+        now_mono = time.monotonic()
+        names = self._list_jasper_cgroups(slice_dir)
+        prev = self._service_samples
+        new_samples: dict[str, tuple[int, float]] = {}
+        out: list[dict[str, Any]] = []
+        for name in names:
+            usec = self._read_cgroup_cpu_usec(slice_dir, name)
+            rss_bytes = self._read_cgroup_memory_bytes(slice_dir, name)
+            if usec is None and rss_bytes is None:
+                # Cgroup vanished between listdir and read — race
+                # with service teardown. Skip silently.
+                continue
+            rss_mb = (
+                round(rss_bytes / (1024 * 1024), 1)
+                if rss_bytes is not None else None
+            )
+            cpu_pct: float | None = None
+            if usec is not None and name in prev:
+                prev_usec, prev_mono = prev[name]
+                wall_delta = now_mono - prev_mono
+                if wall_delta > 0:
+                    pct = (usec - prev_usec) / (wall_delta * 1e6) * 100.0
+                    # Clock skew or cgroup counter reset can yield
+                    # tiny negatives. Floor at 0 so the dashboard
+                    # never shows a nonsense value.
+                    cpu_pct = round(max(0.0, pct), 1)
+            if usec is not None:
+                new_samples[name] = (usec, now_mono)
+            out.append({
+                "name": name.removesuffix(SERVICE_SUFFIX),
+                "cpu_pct": cpu_pct,
+                "rss_mb": rss_mb,
+            })
+        self._service_samples = new_samples
+        return out
+
+    @staticmethod
+    def _list_jasper_cgroups(slice_dir: str = SYS_SLICE_CGROUP) -> list[str]:
+        """Return jasper-*.service cgroup directory names. Empty list
+        when /sys/fs/cgroup/system.slice is absent (dev box on macOS,
+        or cgroup-v1 system — Trixie uses v2 by default)."""
+        try:
+            entries = os.listdir(slice_dir)
+        except OSError:
+            return []
+        return sorted(
+            e for e in entries
+            if e.startswith(SERVICE_PREFIX) and e.endswith(SERVICE_SUFFIX)
+        )
+
+    @staticmethod
+    def _read_cgroup_cpu_usec(slice_dir: str, name: str) -> int | None:
+        """Total CPU time consumed by the cgroup, in microseconds, or
+        None if cpu.stat is unreadable. Cumulative since cgroup
+        creation — the delta over wall time is what's meaningful."""
+        path = os.path.join(slice_dir, name, "cpu.stat")
+        try:
+            with open(path) as f:
+                for line in f:
+                    if line.startswith("usage_usec"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            return None
+        return None
+
+    @staticmethod
+    def _read_cgroup_memory_bytes(slice_dir: str, name: str) -> int | None:
+        """Resident memory of the cgroup in bytes (memory.current).
+        None if unreadable (race with cgroup teardown)."""
+        path = os.path.join(slice_dir, name, "memory.current")
+        try:
+            with open(path) as f:
+                return int(f.read().strip())
+        except (OSError, ValueError):
+            return None
 
     @staticmethod
     def _read_throttled() -> tuple[int, int]:
