@@ -114,3 +114,71 @@ async def test_run_cleanup_continues_when_one_stop_raises():
     assert exit_code == 1
     mocks["bridge"].stop.assert_called_once()
     mocks["listener"].stop.assert_called_once()
+
+
+# ----------------------------------------------------------------------
+# DaemonConfig: capture_device and mixer_card MUST be distinct.
+# The same ALSA card is referenced by two different names depending
+# on which tool is talking to it (PortAudio wants the long name with
+# underscore, amixer wants the short name without). If they ever
+# collapse to one value, one of the two tools breaks silently —
+# this happened in production on 2026-05-23 when the daemon passed
+# its capture_device to VolumeBridge as the amixer card name.
+# ----------------------------------------------------------------------
+
+
+def test_daemon_config_default_capture_device_is_portaudio_long_name():
+    """sounddevice/PortAudio substring-matches against
+    `sd.query_devices()` which shows "UAC2_Gadget: PCM (hw:N,0)" — the
+    underscore form. The bare short name "UAC2Gadget" (no underscore)
+    fails the match."""
+    cfg = DaemonConfig()
+    assert cfg.capture_device == "UAC2_Gadget"
+    assert cfg.capture_device != "UAC2Gadget"
+
+
+def test_daemon_config_default_mixer_card_is_alsa_short_name():
+    """amixer -c <name> and /proc/asound/<name>/ both use the kernel
+    "short" name — set by the ConfigFS descriptor in
+    deploy/usbsink/jasper-usbsink-gadget-up, no underscore."""
+    cfg = DaemonConfig()
+    assert cfg.mixer_card == "UAC2Gadget"
+    assert cfg.mixer_card != "UAC2_Gadget"
+
+
+def test_daemon_config_capture_and_mixer_are_different():
+    """Belt-and-suspenders pin against a future refactor that
+    consolidates them by mistake. They reference the same card but
+    by different names; collapsing them breaks one tool or the
+    other depending on which name wins."""
+    cfg = DaemonConfig()
+    assert cfg.capture_device != cfg.mixer_card
+
+
+def test_daemon_config_from_env_supports_independent_overrides(monkeypatch):
+    """Each setting is independently overridable. Used by operators
+    setting a custom gadget descriptor name."""
+    monkeypatch.setenv("JASPER_USBSINK_CAPTURE_DEVICE", "my-pa-name")
+    monkeypatch.setenv("JASPER_USBSINK_MIXER_CARD", "my-short")
+    cfg = DaemonConfig.from_env()
+    assert cfg.capture_device == "my-pa-name"
+    assert cfg.mixer_card == "my-short"
+
+
+def test_daemon_wires_mixer_card_to_volume_bridge_and_state_publisher():
+    """Regression test for the production bug on 2026-05-23: the
+    daemon was passing capture_device to VolumeBridge as the card
+    name for amixer, which broke when capture_device flipped to the
+    PortAudio long form (`UAC2_Gadget` with underscore). amixer
+    rejected it with `Invalid card number 'UAC2_Gadget'`.
+
+    Both volume_bridge AND state_publisher's host-card check must
+    use mixer_card (the ALSA short name), never capture_device."""
+    cfg = DaemonConfig(
+        capture_device="long-form",
+        mixer_card="short-form",
+    )
+    daemon = UsbSinkDaemon(cfg)
+    assert daemon._volume_bridge._card_name == "short-form"
+    # StatePublisher checks /proc/asound/<short>/ for host-connected.
+    assert str(daemon._state_publisher._host_card_path) == "/proc/asound/short-form"
