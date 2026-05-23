@@ -215,6 +215,19 @@ install_alsa() {
         rm -f /root/.asoundrc
         echo "  Migrated old /root/.asoundrc to backup (.pre-jasper.*); see PR #223 for why."
     fi
+    # Same backup discipline at the new location. Hand-edited or
+    # apt-installed /etc/asound.conf files (rare on JTS, but possible)
+    # shouldn't be silently overwritten. The grep guard makes this
+    # idempotent — once our content is in place, subsequent deploys
+    # see `jasper_renderer_in` and skip the backup (no .pre-jasper
+    # spam). Symlinks are skipped (some setups symlink /etc/asound.conf
+    # to /etc/alsa/asound.conf; back-up-then-overwrite would still
+    # mutate the target).
+    if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
+            && ! grep -q "jasper_renderer_in" /etc/asound.conf 2>/dev/null; then
+        cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
+        echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*); see PR #223."
+    fi
     sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         > /etc/asound.conf

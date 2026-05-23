@@ -156,3 +156,40 @@ def test_install_writes_asound_conf_to_system_wide_location():
             "broke non-root renderer ALSA resolution (PR #223). "
             "Write to /etc/asound.conf instead."
         )
+
+
+def test_install_backs_up_pre_existing_etc_asound_conf():
+    """Symmetric with the /root/.asoundrc migration: install.sh must
+    back up any hand-edited or apt-installed `/etc/asound.conf` before
+    overwriting. The grep guard makes the backup idempotent on
+    re-deploys (skipped when our content is already in place).
+
+    Without this, an operator's customised file would be silently
+    replaced on first deploy of PR #223. Documented in CLAUDE.md's
+    "Surgical changes — file ownership" rule.
+    """
+    install = (REPO / "deploy" / "install.sh").read_text()
+    # The grep guard sentinel must reference jasper_renderer_in
+    # specifically — that string is unique to our PR-#214+ wiring and
+    # won't false-positive on any pre-JTS /etc/asound.conf.
+    assert 'grep -q "jasper_renderer_in" /etc/asound.conf' in install, (
+        "install.sh must grep for `jasper_renderer_in` as the "
+        "sentinel for 'is this our /etc/asound.conf already?' to "
+        "avoid backup spam on re-deploys."
+    )
+    # The backup itself must use the .pre-jasper.<unix-ts> naming
+    # convention used elsewhere in install.sh so operators have one
+    # rule to remember when cleaning up.
+    assert '"/etc/asound.conf.pre-jasper.$(date +%s)"' in install, (
+        "install.sh must back up /etc/asound.conf to "
+        "/etc/asound.conf.pre-jasper.<unix-ts> matching the "
+        "/root/.asoundrc migration pattern."
+    )
+    # Symlinks must be skipped — backing up a symlinked file and
+    # then overwriting still mutates the target the symlink points
+    # at. The /root/.asoundrc block uses `! -L` for the same reason;
+    # we mirror it here.
+    assert "! -L /etc/asound.conf" in install, (
+        "install.sh must skip symlinked /etc/asound.conf in the "
+        "backup branch (matches the /root/.asoundrc `! -L` guard)."
+    )
