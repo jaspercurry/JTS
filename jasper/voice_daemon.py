@@ -171,6 +171,12 @@ SYSTEM_INSTRUCTION = (
     "  - Email follow-up after a summary ('read me the first one' / "
     "'open that email') → call gmail_read_thread with the "
     "thread_id from the prior gmail_unread_summary response.\n"
+    "  - Changing an existing timer's duration ('make it 2 minutes "
+    "instead', 'change the pasta timer to 10 minutes', 'actually, "
+    "make that an hour') → call update_timer in ONE call. Do NOT "
+    "call cancel_timer followed by set_timer — the two-step "
+    "sequence prompts a spoken preamble between calls that "
+    "describes the wrong action.\n"
 
     # ---- Tools — preambles -----------------------------------------------
     # CONDITIONAL framing per OpenAI's documented pattern. List when

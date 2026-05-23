@@ -54,6 +54,18 @@ def _cancel_confirm(timer: "Timer") -> str:
     return f"Cancelled the timer for {duration}."
 
 
+def _update_confirm(new_timer: "Timer") -> str:
+    """Spoken confirmation for an updated timer.
+
+    Single-sentence form mirrors how a human would describe an
+    in-place change ("Updated the pasta timer to 2 minutes.") —
+    one action, one sentence, no cancel+set sequence."""
+    duration = human_duration(new_timer.total_seconds)
+    if new_timer.label:
+        return f"Updated the {new_timer.label} timer to {duration}."
+    return f"Updated the timer to {duration}."
+
+
 def make_timer_tools(scheduler: "TimerScheduler"):
     """Build the timer CRUD tools. Returns a list of decorated
     coroutines suitable for `ToolRegistry.register(...)`.
@@ -76,6 +88,13 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         empty, the announcement uses the duration ("Your timer for
         5 minutes is up"). Multiple timers can run concurrently —
         a new one does not cancel existing ones.
+
+        Do NOT call set_timer when the user is referring to an
+        existing timer with a new duration ("make it 2 minutes
+        instead", "change the pasta timer to 10 minutes",
+        "actually, make that an hour") — call update_timer
+        instead. set_timer adds a NEW timer; the user wanting to
+        update expects ONE timer at the end, not two.
 
         Voice answer style: speak the response's `confirm` field
         verbatim ("Set a pasta timer for 5 minutes."). The speaker
@@ -126,6 +145,12 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         id returned from set_timer; the user's spoken phrase
         usually maps to the label.
 
+        Do NOT call cancel_timer followed by set_timer to change a
+        timer's duration — call update_timer instead. That's one
+        atomic action with one spoken sentence; the cancel+set
+        sequence produces two spoken sentences and risks describing
+        the wrong action mid-sequence.
+
         Voice answer style: speak the response's `confirm` field
         verbatim ("Cancelled the pasta timer.").
 
@@ -164,7 +189,70 @@ def make_timer_tools(scheduler: "TimerScheduler"):
             ),
         }
 
-    return [set_timer, list_timers, cancel_timer]
+    @tool()
+    async def update_timer(timer: str, seconds: int) -> dict:
+        """Change an existing timer's duration in one atomic step.
+
+        Use for "make it 2 minutes instead", "change the pasta
+        timer to 10 minutes", "update the timer to half an hour",
+        "actually, make that an hour". `timer` is the label
+        ('pasta') or id returned from set_timer; the user's spoken
+        phrase usually maps to the label. `seconds` is the NEW
+        duration in seconds, measured from now: "2 minutes" → 120,
+        "half an hour" → 1800.
+
+        Prefer update_timer over the cancel_timer + set_timer
+        sequence whenever the user references an existing timer
+        and asks for a different duration. One atomic call avoids
+        the cross-call window where the model can describe the
+        wrong action.
+
+        Voice answer style: speak the response's `confirm` field
+        verbatim ("Updated the pasta timer to 2 minutes.").
+
+        If `reason='ambiguous'` (multiple timers match the label),
+        read the candidates from `matches` and ask which to update
+        — "I have two pasta timers, one for 5 minutes and one for
+        10 minutes. Which one?" If `reason='not_found'`, the user
+        is asking to update a timer that doesn't exist — speak the
+        `error` field verbatim ("No timer matches 'pasta'."), and
+        do NOT silently fall through to set_timer.
+
+        Skip the preamble before calling this tool. The `confirm`
+        field IS the spoken answer — a status sentence beforehand
+        ("Sure, updating your pasta timer to 2 minutes…") restates
+        it word-for-word.
+        """
+        try:
+            updated, matches, new_timer = scheduler.update(
+                timer, int(seconds),
+            )
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        if updated and new_timer is not None:
+            return {
+                "ok": True,
+                "confirm": _update_confirm(new_timer),
+                "previous": _serialise(matches[0]),
+                **_serialise(new_timer),
+            }
+        if not matches:
+            return {
+                "ok": False,
+                "reason": "not_found",
+                "error": f"No timer matches {timer!r}.",
+            }
+        return {
+            "ok": False,
+            "reason": "ambiguous",
+            "matches": [_serialise(t) for t in matches],
+            "error": (
+                f"{len(matches)} timers match {timer!r} — ask the "
+                f"user which one (offer their durations to disambiguate)."
+            ),
+        }
+
+    return [set_timer, list_timers, cancel_timer, update_timer]
 
 
 __all__ = ["make_timer_tools", "announcement_text"]

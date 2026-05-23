@@ -149,6 +149,28 @@ def test_cancel_confirm_unlabelled_uses_duration():
     assert _cancel_confirm(t) == "Cancelled the timer for 1 minute."
 
 
+def test_update_confirm_labelled_names_new_duration():
+    """Single-sentence form — atomic update reads as one action,
+    not the cancel+set sequence it replaces."""
+    from jasper.tools.timer import _update_confirm
+    new = Timer(
+        id="new", label="pasta", fire_at=time.time() + 120,
+        total_seconds=120, created_at=time.time(),
+    )
+    assert _update_confirm(new) == (
+        "Updated the pasta timer to 2 minutes."
+    )
+
+
+def test_update_confirm_unlabelled():
+    from jasper.tools.timer import _update_confirm
+    new = Timer(
+        id="new", label=None, fire_at=time.time() + 60,
+        total_seconds=60, created_at=time.time(),
+    )
+    assert _update_confirm(new) == "Updated the timer to 1 minute."
+
+
 def test_timer_remaining_seconds_floors_at_zero():
     t = Timer(
         id="abc", label=None, fire_at=time.time() - 10,
@@ -344,6 +366,162 @@ async def test_scheduler_cancel_not_found():
         cancelled, matches = sched.cancel("nonexistent")
         assert cancelled is False
         assert matches == []
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_swaps_duration_and_preserves_label():
+    """Happy path — `update('pasta', 120)` cancels the old 300s pasta
+    timer and creates a new 120s one with the same label. The id
+    changes (new timer) but the user references by label, so this is
+    invisible upstream. Persistence row swaps too."""
+    path = _tmp_db_path()
+    try:
+        sched = TimerScheduler(db_path=path)
+        old = sched.add(300, label="pasta")
+        updated, matches, new_timer = sched.update("pasta", 120)
+        assert updated is True
+        assert len(matches) == 1
+        assert matches[0].id == old.id
+        assert new_timer is not None
+        assert new_timer.label == "pasta"
+        assert new_timer.total_seconds == 120
+        assert new_timer.id != old.id  # fresh id
+        # Only the new timer is active.
+        active = sched.list_active()
+        assert len(active) == 1
+        assert active[0].id == new_timer.id
+        # And the store reflects the swap — old row gone, new row present.
+        s2 = TimerStore(path)
+        rows = s2.all()
+        assert len(rows) == 1
+        assert rows[0].id == new_timer.id
+        s2.close()
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_not_found_returns_no_match():
+    path = _tmp_db_path()
+    try:
+        sched = TimerScheduler(db_path=path)
+        sched.add(300, label="pasta")
+        updated, matches, new_timer = sched.update("laundry", 120)
+        assert updated is False
+        assert matches == []
+        assert new_timer is None
+        # Original timer is untouched.
+        active = sched.list_active()
+        assert len(active) == 1
+        assert active[0].label == "pasta"
+        assert active[0].total_seconds == 300
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_ambiguous_returns_matches_without_mutating():
+    """Two timers labelled 'pasta' — update('pasta', 120) must NOT
+    mutate either. Caller (the tool) needs to disambiguate first."""
+    path = _tmp_db_path()
+    try:
+        sched = TimerScheduler(db_path=path)
+        sched.add(60, label="pasta")
+        sched.add(300, label="pasta")
+        updated, matches, new_timer = sched.update("pasta", 120)
+        assert updated is False
+        assert len(matches) == 2
+        assert new_timer is None
+        # Both timers still active, both untouched.
+        active = sched.list_active()
+        assert len(active) == 2
+        assert {t.total_seconds for t in active} == {60, 300}
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_rejects_non_positive_seconds_atomically():
+    """Validation MUST happen before the cancel step — a bad
+    duration must leave the original timer untouched. Otherwise an
+    LLM that asks for `update_timer('pasta', 0)` would silently
+    destroy the existing pasta timer with nothing to replace it."""
+    path = _tmp_db_path()
+    try:
+        sched = TimerScheduler(db_path=path)
+        original = sched.add(300, label="pasta")
+        with pytest.raises(ValueError):
+            sched.update("pasta", 0)
+        with pytest.raises(ValueError):
+            sched.update("pasta", -30)
+        # The original timer must still be intact after the failed
+        # update attempts — same id, same duration, still active.
+        active = sched.list_active()
+        assert len(active) == 1
+        assert active[0].id == original.id
+        assert active[0].total_seconds == 300
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_preserves_null_label():
+    """Unlabelled timer → updated unlabelled timer. The label is
+    None throughout; the user references by id."""
+    path = _tmp_db_path()
+    try:
+        sched = TimerScheduler(db_path=path)
+        old = sched.add(300)  # no label
+        updated, _, new_timer = sched.update(old.id, 120)
+        assert updated is True
+        assert new_timer is not None
+        assert new_timer.label is None
+        assert new_timer.total_seconds == 120
+        await sched.stop()
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+@pytest.mark.asyncio
+async def test_scheduler_update_old_task_does_not_fire():
+    """The old timer's asyncio task must be cancelled — otherwise
+    a short-duration update would fire the OLD on_fire callback
+    after the new timer has already replaced it."""
+    path = _tmp_db_path()
+    fired: list[Timer] = []
+
+    async def on_fire(t: Timer) -> None:
+        fired.append(t)
+
+    try:
+        sched = TimerScheduler(on_fire=on_fire, db_path=path)
+        old = sched.add(1, label="quick")
+        # Update to a longer duration before the original fires.
+        updated, _, new_timer = sched.update("quick", 60)
+        assert updated is True
+        # Wait past the OLD timer's original fire_at.
+        await asyncio.sleep(1.3)
+        # The old task must NOT have fired.
+        assert fired == [], (
+            f"old timer fired despite being updated: {fired}"
+        )
+        # New timer is still active.
+        active = sched.list_active()
+        assert len(active) == 1
+        assert active[0].id == new_timer.id
         await sched.stop()
     finally:
         if os.path.exists(path):
