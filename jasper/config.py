@@ -105,6 +105,7 @@ class Config:
     wake_threshold: float
     mic_device: str
     mic_device_raw: str
+    mic_device_dtln: str
     mic_capture_rate: int
     mic_capture_channels: int
     wake_events_dir: str
@@ -387,6 +388,15 @@ class Config:
             # See docs/HANDOFF-wake-telemetry.md for the architecture
             # and the empirical case for OR-gating.
             mic_device_raw=_env("JASPER_MIC_DEVICE_RAW", ""),
+            # JASPER_MIC_DEVICE_DTLN: optional third mic source for
+            # triple-stream wake detection (raw + AEC3-BEST_A + DTLN).
+            # When set (typically `udp:9878` paired with the bridge's
+            # DTLN-aec parallel output added in Phase 1.2 of the
+            # triple-stream rollout), the WakeLoop spawns a third
+            # WakeWordDetector and OR-gates fires across all three legs.
+            # See docs/HANDOFF-mic-quality-v2.md "Triple-stream
+            # architecture plan" for context.
+            mic_device_dtln=_env("JASPER_MIC_DEVICE_DTLN", ""),
             # The XVF3800 supports 16 kHz mono natively, so 16000/1 is the
             # default. Mics that only do 44.1 / 48 kHz (UMIK-2 et al.) need
             # JASPER_MIC_CAPTURE_RATE=48000 and JASPER_MIC_CAPTURE_CHANNELS=2;

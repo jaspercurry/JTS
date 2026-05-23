@@ -171,6 +171,18 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     ("mic_muted", "INTEGER"),
     ("mic_rms_dbfs_on", "REAL"),
     ("mic_rms_dbfs_off", "REAL"),
+    # Triple-stream extension (2026-05-23): DTLN-aec leg added
+    # alongside AEC ON / AEC OFF. See docs/HANDOFF-mic-quality-v2.md
+    # "Triple-stream architecture plan" + HANDOFF-wake-telemetry.md
+    # "Planned schema extensions for triple-stream".
+    ("peak_score_dtln_aec", "REAL"),
+    ("peak_offset_ms_dtln", "INTEGER"),
+    ("mic_rms_dbfs_dtln", "REAL"),
+    ("audio_dtln_path", "TEXT"),
+    # CSV of leg names that crossed threshold to fire the event
+    # (e.g. "aec_on,dtln" or "aec_off"). Lets the weekly review
+    # answer "which engines are pulling weight?" directly.
+    ("fired_legs", "TEXT"),
 ]
 
 
@@ -305,6 +317,13 @@ class WakeEventStore:
         mic_muted: bool | None = None,
         mic_rms_dbfs_on: float | None = None,
         mic_rms_dbfs_off: float | None = None,
+        # Triple-stream extension (2026-05-23). All optional — kwargs
+        # remain backward-compatible for single-stream / dual-stream
+        # callers that don't pass DTLN values.
+        peak_score_dtln_aec: float | None = None,
+        peak_offset_ms_dtln: int | None = None,
+        mic_rms_dbfs_dtln: float | None = None,
+        fired_legs: str | None = None,
     ) -> None:
         """INSERT a new wake event row. Audio is attached separately
         via `attach_audio` after the post-fire capture window closes —
@@ -326,10 +345,13 @@ class WakeEventStore:
                   wake_model,
                   music_active, music_renderer, music_volume_db,
                   voice_provider, bridge_config_json,
-                  mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off
+                  mic_muted, mic_rms_dbfs_on, mic_rms_dbfs_off,
+                  peak_score_dtln_aec, peak_offset_ms_dtln,
+                  mic_rms_dbfs_dtln, fired_legs
                 ) VALUES (
                   ?, ?, ?, ?, ?, ?, ?, ?, 'in_progress', ?,
-                  ?, ?, ?, ?, ?, ?, ?, ?
+                  ?, ?, ?, ?, ?, ?, ?, ?,
+                  ?, ?, ?, ?
                 )
                 """,
                 (
@@ -343,6 +365,8 @@ class WakeEventStore:
                     voice_provider, bridge_config_json,
                     None if mic_muted is None else (1 if mic_muted else 0),
                     mic_rms_dbfs_on, mic_rms_dbfs_off,
+                    peak_score_dtln_aec, peak_offset_ms_dtln,
+                    mic_rms_dbfs_dtln, fired_legs,
                 ),
             )
 
@@ -352,31 +376,36 @@ class WakeEventStore:
         event_id: str,
         audio_on: bytes | None,
         audio_off: bytes | None,
+        audio_dtln: bytes | None = None,
     ) -> None:
         """Write the per-leg WAVs to disk and UPDATE the row with
         their filenames. Triggers a retention sweep if the total
         directory size exceeds the cap.
 
-        Either or both legs may be None — the audio path remains NULL
-        for any leg that produced no audio (rare; bridge stalled, or
-        single-stream mode where there's no AEC OFF leg)."""
+        Any leg may be None — the audio path remains NULL for any
+        leg that produced no audio (rare; bridge stalled, or
+        single-/dual-stream mode where the third leg isn't present)."""
         self._require_open()
         on_filename: str | None = None
         off_filename: str | None = None
+        dtln_filename: str | None = None
         if audio_on is not None:
             on_filename = f"{event_id}.aec-on.wav"
             _write_wav(self._base_dir / on_filename, audio_on)
         if audio_off is not None:
             off_filename = f"{event_id}.aec-off.wav"
             _write_wav(self._base_dir / off_filename, audio_off)
+        if audio_dtln is not None:
+            dtln_filename = f"{event_id}.aec-dtln.wav"
+            _write_wav(self._base_dir / dtln_filename, audio_dtln)
         async with self._lock():
             self._conn.execute(  # type: ignore[union-attr]
                 """
                 UPDATE wake_events
-                SET audio_on_path = ?, audio_off_path = ?
+                SET audio_on_path = ?, audio_off_path = ?, audio_dtln_path = ?
                 WHERE event_id = ?
                 """,
-                (on_filename, off_filename, event_id),
+                (on_filename, off_filename, dtln_filename, event_id),
             )
         # Retention sweep AFTER the new files are written, so the
         # newly-written WAVs are eligible to survive the sweep (the
