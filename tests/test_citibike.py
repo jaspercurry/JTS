@@ -256,6 +256,94 @@ def test_as_dict_label_is_normalized():
     assert s.label == "9 Ave & 41 St"
 
 
+# --- is_full and is_stale derived fields ------------------------------
+
+
+def test_is_full_true_when_status_ok_and_zero_docks():
+    s = StationStatus(
+        station_id="abc", label="9 Av",
+        classic_bikes=8, ebikes=0, docks=0,
+        status="ok", last_reported_age_seconds=20,
+    )
+    assert s.is_full is True
+    assert s.as_dict()["is_full"] is True
+
+
+def test_is_full_false_with_open_docks():
+    s = StationStatus(
+        station_id="abc", label="9 Av",
+        classic_bikes=8, ebikes=0, docks=11,
+        status="ok", last_reported_age_seconds=20,
+    )
+    assert s.is_full is False
+    assert s.as_dict()["is_full"] is False
+
+
+def test_is_full_false_for_offline_with_zero_docks():
+    """Offline + 0 docks isn't 'full' — it's offline. Different
+    state, different voice phrasing. Keeps the LLM from
+    saying 'station X is full' when really the station's down."""
+    s = StationStatus(
+        station_id="abc", label="9 Av",
+        classic_bikes=0, ebikes=0, docks=0,
+        status="offline", last_reported_age_seconds=20,
+    )
+    assert s.is_full is False
+
+
+def test_is_full_false_for_missing_station():
+    s = StationStatus(
+        station_id="abc", label="9 Av",
+        classic_bikes=0, ebikes=0, docks=0,
+        status="missing", last_reported_age_seconds=0,
+    )
+    assert s.is_full is False
+
+
+def test_is_stale_false_for_fresh_data():
+    """Routine 60-180 s age is NOT stale — normal GBFS publish
+    cadence + our cache hop. The previous prompt threshold of 120 s
+    fired this preface every single live query."""
+    for age in (0, 30, 60, 120, 180, 300, 599):
+        s = StationStatus(
+            station_id="abc", label="9 Av",
+            classic_bikes=5, ebikes=2, docks=10,
+            status="ok", last_reported_age_seconds=age,
+        )
+        assert s.is_stale is False, f"age={age} should not be stale"
+
+
+def test_is_stale_true_above_threshold():
+    """Past 10 min the cache is being served via stale-on-error
+    fallback (upstream GBFS hiccup) — that's actually stale."""
+    for age in (601, 900, 1800, 3600):
+        s = StationStatus(
+            station_id="abc", label="9 Av",
+            classic_bikes=5, ebikes=2, docks=10,
+            status="ok", last_reported_age_seconds=age,
+        )
+        assert s.is_stale is True, f"age={age} should be stale"
+        assert s.as_dict()["is_stale"] is True
+
+
+def test_as_dict_always_includes_is_full_and_is_stale():
+    """Both bool fields are required surface — the system prompt
+    keys off them by name. Regression guard against accidental
+    removal."""
+    s = StationStatus(
+        station_id="abc", label="9 Av",
+        classic_bikes=5, ebikes=2, docks=10,
+        status="ok", last_reported_age_seconds=20,
+    )
+    d = s.as_dict()
+    assert "is_full" in d
+    assert "is_stale" in d
+    # And present even when classic is suppressed.
+    d2 = s.as_dict(include_classic=False)
+    assert "is_full" in d2
+    assert "is_stale" in d2
+
+
 # --- fetch_feed: caching + stale-on-error -----------------------------
 
 

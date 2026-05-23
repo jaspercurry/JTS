@@ -52,6 +52,17 @@ USER_AGENT = "jts-jasper/1.0"
 INFO_TTL_SECONDS = 3600.0
 STATUS_TTL_SECONDS = 30.0
 
+# `last_reported_age_seconds` above this gets `is_stale=True` in the
+# tool response, which the system prompt uses to gate the "as of a
+# few minutes ago" preface. Normal GBFS publishes every ~60 s and our
+# cache hop adds another ~30 s, so freshly-served data is often
+# 60-180 s old without anything being wrong. Only set is_stale when
+# we suspect the upstream feed has actually fallen behind — 10 min is
+# the empirical breakpoint where the cache is clearly being served
+# stale via our fetch-error fallback path rather than via normal
+# publish cadence.
+STALE_AGE_SECONDS = 600.0
+
 
 # --- GBFS fetch with TTL cache + stale-on-error -----------------------
 
@@ -334,6 +345,28 @@ class StationStatus:
     status: str
     last_reported_age_seconds: int
 
+    @property
+    def is_full(self) -> bool:
+        """Station has no open docks (can't return a bike here).
+
+        Only meaningful when status='ok'; offline / missing stations
+        with docks=0 should be described as offline / missing, not
+        full. Derived rather than persisted so a future change to the
+        full-detection rule (e.g. include num_docks_disabled) only
+        touches one place."""
+        return self.status == "ok" and self.docks == 0
+
+    @property
+    def is_stale(self) -> bool:
+        """Last GBFS-reported timestamp is older than STALE_AGE_SECONDS.
+
+        Drives the "as of a few minutes ago" preface in voice answers.
+        Routine publish-cadence age (60-180 s) is NOT stale; this
+        flag fires only when the cache is clearly being served past
+        the upstream's normal heartbeat — usually means the fetch
+        layer is using its stale-on-error fallback."""
+        return self.last_reported_age_seconds > STALE_AGE_SECONDS
+
     def as_dict(self, *, include_classic: bool = True) -> dict:
         """Serialize for the voice tool's LLM-visible response.
 
@@ -343,6 +376,12 @@ class StationStatus:
         learn NYC street-name conventions. The dataclass field stays
         raw (matches what the user picked in the wizard, which itself
         matches the Citi Bike app / website).
+
+        `is_full` and `is_stale` are explicit booleans the system
+        prompt keys off — better than asking the model to compare
+        `docks` against a threshold or `last_reported_age_seconds`
+        against another (LLMs follow named booleans more reliably
+        than mental arithmetic).
 
         When the household is in `ebike_only` mode the caller passes
         `include_classic=False` and the classic count is omitted from
@@ -355,6 +394,8 @@ class StationStatus:
             "ebikes": self.ebikes,
             "docks": self.docks,
             "status": self.status,
+            "is_full": self.is_full,
+            "is_stale": self.is_stale,
             "last_reported_age_seconds": self.last_reported_age_seconds,
         }
         if include_classic:
