@@ -74,9 +74,20 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 EnvironmentFile=-/var/lib/jasper/home_assistant.env
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
-# `on-watchdog` covers BOTH clean failure (non-zero exit, segfault)
-# AND watchdog timeouts. Strictly broader than `on-failure`.
-Restart=on-watchdog
+# `on-failure` restarts on non-zero exit, signal-termination, an
+# operation timeout, OR a watchdog timeout — strictly broader than
+# `on-watchdog`, which covers only the watchdog. The prior comment
+# in this file got the semantics inverted (claimed `on-watchdog`
+# covered non-zero exits); under `on-watchdog`, a daemon that exits
+# non-zero from its initial-connect path was NOT restarted. That
+# directly caused the 2026-05-23 silent-dead outage where the
+# voice loop's OpenAI initial-connect retry budget exhausted
+# during a WiFi-recovery window. The initial-connect path now
+# uses a 10-minute time budget (see jasper/voice/openai_session.py:
+# ``DEFAULT_INITIAL_CONNECT_BUDGET_SEC``) and exits non-zero on
+# exhaustion so systemd's outer loop (this `Restart=on-failure` +
+# the StartLimitBurst above) grants another full budget.
+Restart=on-failure
 # 5 s backoff (was 2 s). Audio-device transients (dongle enumerate
 # blip, ALSA card reorder) typically settle within a few seconds; a
 # longer backoff means fewer wasted restart cycles before the device
