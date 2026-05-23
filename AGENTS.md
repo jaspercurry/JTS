@@ -1133,9 +1133,50 @@ sqlite3 wake-events/latest/wake-events.sqlite3 \
   "UPDATE wake_events SET label='real_attempt' WHERE event_id='...'"
 ```
 
-Suggested labels: `real_attempt`, `music`, `tv`, `ambient`,
-free-form. Empty by default — fill as you listen. `label_notes`
-column for longer commentary.
+The `label` column is free-text — these are conventions, not an
+enforced enum. Empty by default; fill in as you listen during the
+weekly review. `label_notes` for longer free-form commentary.
+
+**Real attempts** (the wake was correct):
+- `real_attempt` — clear "Jarvis" / "Hey Jarvis" utterance
+- `unclear_attempt` — utterance present but quiet / mumbled /
+  partially obscured by music or background noise. Wake firing
+  was still arguably correct, but worth a separate bucket so
+  threshold-tuning analysis doesn't treat marginal hits as
+  unambiguous positives.
+
+**False positives** (the wake fired but no real attempt) —
+these are the ones worth categorizing so we can tell what's
+actually triggering them and whether we can suppress that
+class of trigger:
+- `tts_bleed` — JTS's own TTS output bled into the mic and
+  fired wake. Most common when AEC OFF leg is on and TTS is
+  loud. Mitigation lever: keep AEC ON leg dominant via
+  threshold differential.
+- `music_vocals` — singing in music sounded like "Jarvis" /
+  "Hey Jarvis". The classic openWakeWord music false-fire
+  mode. Mitigation lever: music-aware threshold, or custom
+  wake-word model trained against this household's music
+  taste.
+- `music_other` — non-vocal music transient (drum hit, hi-hat,
+  vinyl pop) crossed threshold. Rarer than music_vocals.
+  Mitigation lever: deeper AEC tuning or DTLN-leg-only on
+  music context.
+- `tv` — TV / podcast / streamed-show audio triggered wake.
+  Distinguish from music_* because TV usually has speech
+  energy (whereas music_vocals are sung). Different mitigation
+  paths.
+- `ambient` — environmental noise / conversation in the room /
+  appliances. Often the hardest to suppress because it's
+  unpredictable.
+
+**Other**:
+- `unclear` — listened twice, still can't tell what fired it.
+  Keep separately so it doesn't pollute the real_attempt vs
+  FP ratio.
+- `mute_or_correction` — wake fired during mic-mute or
+  correction window (outcome=`late_cancel`). Not a quality
+  signal, just a session-flow artefact.
 
 ### Quick funnel query
 

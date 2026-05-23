@@ -435,35 +435,88 @@ GROUP BY day
 ORDER BY day DESC;
 ```
 
-**Which leg is doing most of the triggering:**
+**Which leg is doing most of the triggering** (triple-stream):
 ```sql
 SELECT trigger_kind,
        COUNT(*) fires,
-       AVG(peak_score_aec_on)                          avg_on,
-       AVG(peak_score_aec_off)                         avg_off,
-       AVG(peak_score_aec_off - peak_score_aec_on)     avg_off_advantage
+       AVG(peak_score_aec_on)   avg_on,
+       AVG(peak_score_aec_off)  avg_off,
+       AVG(peak_score_dtln_aec) avg_dtln
 FROM wake_events
 WHERE trigger_kind LIKE 'fire%'
-GROUP BY trigger_kind;
+GROUP BY trigger_kind
+ORDER BY fires DESC;
 ```
 
-**AEC OFF saved a wake AEC ON would have missed:**
+Possible `trigger_kind` values: `'fire_aec_on'`, `'fire_aec_off'`,
+`'fire_dtln'`. The triple-stream OR-gate awards exactly one leg per
+event (the one that crossed threshold first); other legs that were
+also above threshold at fire time are recorded in `fired_legs`.
+
+**Which combinations actually fired** (fired_legs Venn breakdown):
 ```sql
-SELECT event_id, ts_utc, peak_score_aec_on, peak_score_aec_off,
-       audio_on_path, audio_off_path
+SELECT fired_legs,
+       COUNT(*) fires,
+       AVG(peak_score_aec_on)   avg_on,
+       AVG(peak_score_aec_off)  avg_off,
+       AVG(peak_score_dtln_aec) avg_dtln
 FROM wake_events
-WHERE trigger_kind = 'fire_aec_off'
+WHERE fired_legs IS NOT NULL
+GROUP BY fired_legs
+ORDER BY fires DESC;
+```
+
+The headline question of the triple-stream experiment lives here:
+events with `fired_legs = 'dtln'` are DTLN's solo-saves — wakes
+caught only because the third leg was added. Run after a week and
+check the count.
+
+**AEC OFF saved a wake the OTHER two legs would have missed:**
+```sql
+SELECT event_id, ts_utc, fired_legs,
+       peak_score_aec_on, peak_score_aec_off, peak_score_dtln_aec,
+       audio_off_path
+FROM wake_events
+WHERE fired_legs = 'off'
   AND peak_score_aec_on < 0.10
+  AND (peak_score_dtln_aec IS NULL OR peak_score_dtln_aec < 0.10)
 ORDER BY ts_utc DESC;
 ```
 
-**Suspected false positives per leg (the FP cost of OR-gating):**
+**DTLN saved a wake the AEC legs would have missed:**
+```sql
+SELECT event_id, ts_utc, fired_legs,
+       peak_score_aec_on, peak_score_aec_off, peak_score_dtln_aec,
+       audio_dtln_path
+FROM wake_events
+WHERE fired_legs = 'dtln'
+  AND peak_score_aec_on  < 0.10
+  AND peak_score_aec_off < 0.10
+ORDER BY ts_utc DESC;
+```
+
+**Suspected false positives per leg** (the FP cost of OR-gating —
+events that opened a turn but never saw sustained speech):
 ```sql
 SELECT trigger_kind, COUNT(*) suspected_fp
 FROM wake_events
-WHERE ts_turn_opened IS NOT NULL
+WHERE ts_turn_opened     IS NOT NULL
   AND ts_speech_detected IS NULL
-GROUP BY trigger_kind;
+GROUP BY trigger_kind
+ORDER BY suspected_fp DESC;
+```
+
+**Suspected false positives broken down by which legs fired
+together** (catches "OR-gate FPs concentrate when DTLN agrees with
+nothing" patterns):
+```sql
+SELECT fired_legs, COUNT(*) suspected_fp
+FROM wake_events
+WHERE ts_turn_opened     IS NOT NULL
+  AND ts_speech_detected IS NULL
+  AND fired_legs IS NOT NULL
+GROUP BY fired_legs
+ORDER BY suspected_fp DESC;
 ```
 
 **Tool-call completion rate per provider:**

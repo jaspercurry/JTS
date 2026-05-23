@@ -240,9 +240,52 @@ def main() -> int:
         speech = sum(1 for r in evs if r["ts_speech_detected"])
         tool = sum(1 for r in evs if r["ts_tool_called"])
         print(f"  {pat:<24} {n:>6} {turn:>6} {speech:>7} {tool:>6}")
+    print()
+
+    # ---------- [6] Threshold-tuning hints ----------
+    # For each solo-leg pattern, look at the OTHER legs' peak scores
+    # — these are the scores legs HAD at fire time but didn't act on
+    # because they were sub-threshold. If the distribution clusters
+    # just below threshold (e.g., 0.40-0.49 on a 0.50 threshold), a
+    # small threshold reduction on that leg would have brought it
+    # into the solo-save population. If the distribution is uniformly
+    # near zero, that leg is genuinely silent on these events and no
+    # threshold change would help.
+    #
+    # Operates on existing peak_score_* columns — no near-miss event
+    # capture needed. "Sub-threshold" here means "the leg didn't
+    # fire, but it still scored something during the fire window."
+    print("[6] Sub-threshold scores on non-firing legs — would lowering")
+    print("    a threshold catch more wakes? Per solo-fire pattern, the")
+    print("    distribution of the OTHER legs' peak scores. A cluster")
+    print("    in 0.40-0.49 (just under 0.50) suggests threshold tuning;")
+    print("    a distribution near zero means the leg is genuinely silent.")
+    print()
+    for solo_leg in LEGS:
+        solo_evs = by_pattern.get(solo_leg, [])
+        if not solo_evs:
+            continue
+        print(f"  When {LEG_LABELS[solo_leg]} fired ALONE ({len(solo_evs)} events):")
+        for other_leg in LEGS:
+            if other_leg == solo_leg:
+                continue
+            other_scores = [
+                _score(r, other_leg) for r in solo_evs
+                if _score(r, other_leg) is not None
+            ]
+            if not other_scores:
+                print(f"    {LEG_LABELS[other_leg]:<10} (no scores recorded)")
+                continue
+            pcs = percentiles(other_scores, (10, 50, 90, 100))
+            # Highlight the "just under threshold" zone — assume
+            # threshold ~0.5; flag P90 if it's 0.30-0.49.
+            tunable = "← tunable" if 0.30 <= pcs[90] < 0.50 else ""
+            print(f"    {LEG_LABELS[other_leg]:<10} P10={pcs[10]:.3f} "
+                  f"P50={pcs[50]:.3f} P90={pcs[90]:.3f} Max={pcs[100]:.3f}  "
+                  f"{tunable}")
+        print()
 
     # ---------- end ----------
-    print()
     print("=" * 72)
     return 0
 
