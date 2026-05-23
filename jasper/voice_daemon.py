@@ -1950,17 +1950,28 @@ class WakeLoop:
             event_id = make_event_id()
             self._current_event_id = event_id
             # Pull whichever leg's recent peak is current (PR 2 dual-
-            # stream populates both; PR 3 alone only the firing leg).
+            # stream populates both; PR 3 alone only the firing leg;
+            # triple-stream all three).
             peak_on = getattr(self, "_recent_score_on", None)
             peak_off = getattr(self, "_recent_score_off", None)
+            peak_dtln = getattr(self, "_recent_score_dtln", None)
             recent_on_at = getattr(self, "_recent_score_on_at", 0.0)
             recent_off_at = getattr(self, "_recent_score_off_at", 0.0)
+            recent_dtln_at = getattr(self, "_recent_score_dtln_at", 0.0)
+            # `trigger_kind` is the SINGLE leg whose score crossed
+            # threshold and won the OR-gate race for this user attempt.
+            # Other legs whose scores ALSO crossed threshold at fire
+            # time are recorded in `fired_legs` (computed above);
+            # `trigger_kind` is "who got there first."
             if leg == "on":
                 trigger_kind = "fire_aec_on"
                 peak_on = score
-            else:  # leg == "off"
+            elif leg == "off":
                 trigger_kind = "fire_aec_off"
                 peak_off = score
+            else:  # leg == "dtln"
+                trigger_kind = "fire_dtln"
+                peak_dtln = score
             # Compute per-leg peak offset relative to wake-fire time.
             # Use the SAME `now_loop` that `_handle_wake_frame`
             # captured at the top — that's the canonical fire-time
@@ -1985,6 +1996,10 @@ class WakeLoop:
                 int((recent_on_at - wake_fire_time) * 1000)
                 if recent_on_at else None
             )
+            peak_dtln_ms = (
+                int((recent_dtln_at - wake_fire_time) * 1000)
+                if recent_dtln_at else None
+            )
             # Per-leg instantaneous mic RMS at fire-time, in dBFS.
             # Sampled from the last frame in each capture ring so we
             # get "what was the mic seeing right now" without an
@@ -1995,6 +2010,9 @@ class WakeLoop:
             )
             mic_rms_off = self._tail_frame_rms_dbfs(
                 getattr(self, "_capture_ring_off", None)
+            )
+            mic_rms_dtln = self._tail_frame_rms_dbfs(
+                getattr(self, "_capture_ring_dtln", None)
             )
             # Bridge config snapshot — env-var-driven knobs as seen
             # by the bridge at startup. Useful when post-hoc analysis
@@ -2052,9 +2070,11 @@ class WakeLoop:
                     mic_muted=getattr(self, "_mic_muted", None),
                     mic_rms_dbfs_on=mic_rms_on,
                     mic_rms_dbfs_off=mic_rms_off,
-                    # Triple-stream extension — None on dual-stream
-                    # installs (DTLN leg not configured).
+                    # Triple-stream extension — all four None on
+                    # dual-stream installs (DTLN leg not configured).
                     peak_score_dtln_aec=peak_dtln,
+                    peak_offset_ms_dtln=peak_dtln_ms,
+                    mic_rms_dbfs_dtln=mic_rms_dtln,
                     fired_legs=fired_legs,
                 )
             except Exception as e:  # noqa: BLE001
