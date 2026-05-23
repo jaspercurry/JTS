@@ -49,6 +49,7 @@ we'll know.
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,6 +68,10 @@ ENV_TOKEN = "JASPER_HA_TOKEN"
 ENV_AGENT_ID = "JASPER_HA_AGENT_ID"
 ENV_VERIFY_SSL = "JASPER_HA_VERIFY_SSL"
 ENV_RECENT_URLS = "JASPER_HA_RECENT_URLS"
+
+# State-file path the wizard writes and the daemons source via systemd
+# EnvironmentFile=. Used directly by read_ha_env_file() + the wizard.
+HA_ENV_FILE = "/var/lib/jasper/home_assistant.env"
 
 # Endpoint paths. Joined with the configured base URL.
 CONVERSATION_PATH = "/api/conversation/process"
@@ -343,20 +348,20 @@ class HAClient:
             self._conv_id = None
             self._conv_id_until = 0.0
 
-        # Outcome classification:
-        #   - non-error response_type with speech → ok
-        #   - response_type=error → intent_miss (even no_valid_targets, which
-        #     is benign in multi-satellite setups)
-        #   - non-error response_type but empty speech → parse_error
+        # Outcome bucket (for log slicing) is orthogonal to `success`
+        # (for the model's behaviour). HA may return response_type=error
+        # WITH a useful speech string ("I couldn't find a device called
+        # 'living room TV' in the bedroom") — that text is worth speaking
+        # verbatim, and `success` reflects "did HA give us text to
+        # speak". The outcome bucket still flags intent_miss vs ok so
+        # `jasper-trace.sh | grep ha\\.call` can slice for forensics.
         if rtype == "error":
             outcome = OUTCOME_INTENT_MISS
-            success = False
         elif speech_text:
             outcome = OUTCOME_OK
-            success = True
         else:
             outcome = OUTCOME_PARSE_ERROR
-            success = False
+        success = bool(speech_text)
 
         logger.info(
             "event=ha.call outcome=%s response_type=%s error_code=%s "
@@ -630,6 +635,59 @@ async def probe_status(
     _last_state = new_state
 
     return result
+
+
+def read_ha_env_file(path: str = HA_ENV_FILE) -> dict[str, str]:
+    """Parse the wizard-written env file into a dict. Returns {} if the
+    file is missing or unreadable.
+
+    The wizard writes this file (mode 0600) on every save/disconnect.
+    Systemd-managed daemons that source it via `EnvironmentFile=` only
+    see updates across process restarts — so any consumer that needs
+    to reflect wizard changes immediately (jasper-control's /state
+    aggregator and /system/snapshot endpoints) must read this file
+    directly rather than `os.environ`. See `probe_status_from_env`.
+    """
+    out: dict[str, str] = {}
+    try:
+        with open(path) as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                out[k.strip()] = v.strip()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        logger.debug("ha: read_ha_env_file(%s): %r", path, e)
+    return out
+
+
+async def probe_status_from_env(
+    *, env_file_path: str = HA_ENV_FILE, force: bool = False,
+) -> dict[str, Any]:
+    """Probe HA reachability using the URL/token/verify_ssl values from
+    the wizard-written env file directly (not `os.environ`).
+
+    Used by jasper-control's `/state` aggregator and `/system/snapshot`
+    section. Critical that this reads the file fresh on each call —
+    jasper-control's `os.environ` is a snapshot from process start, so
+    it wouldn't reflect a wizard save until jasper-control restarts.
+    The wizard only restarts jasper-voice (the consumer that owns the
+    HAClient), not jasper-control. Reading the file every call is the
+    cheap fix.
+
+    Cache TTL still applies (jasper-control polls every 5 s, cache
+    holds for 15 s) so this stays sub-millisecond on the hot path.
+    """
+    state = read_ha_env_file(env_file_path)
+    return await probe_status(
+        state.get(ENV_URL, "").strip(),
+        state.get(ENV_TOKEN, "").strip(),
+        force=force,
+        verify_ssl=state.get(ENV_VERIFY_SSL, "1").strip() not in ("0", "false", "no"),
+    )
 
 
 async def _probe_uncached(

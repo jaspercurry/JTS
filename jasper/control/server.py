@@ -432,15 +432,13 @@ async def _get_state(
     async def _ha_status() -> dict:
         """Probe the configured HA instance for /state. Fails soft —
         unconfigured returns {configured: false}; unreachable returns
-        {connected: false, error: ...}. See jasper.home_assistant.probe_status."""
+        {connected: false, error: ...}. Reads /var/lib/jasper/home_assistant.env
+        directly (not os.environ) so wizard saves are reflected
+        immediately rather than waiting for jasper-control to restart —
+        the wizard only restarts jasper-voice. See
+        `jasper.home_assistant.probe_status_from_env`."""
         from .. import home_assistant
-        return await home_assistant.probe_status(
-            os.environ.get(home_assistant.ENV_URL, "").strip(),
-            os.environ.get(home_assistant.ENV_TOKEN, "").strip(),
-            verify_ssl=os.environ.get(
-                home_assistant.ENV_VERIFY_SSL, "1",
-            ).strip() not in ("0", "false", "no"),
-        )
+        return await home_assistant.probe_status_from_env()
 
     cam_db, airplay, voice_st, ha_status = await asyncio.gather(
         _camilla_volume(),
@@ -734,15 +732,10 @@ def _make_handler(
                 # via asyncio.run so the rest of /system/snapshot stays
                 # synchronous like the existing handler.
                 try:
-                    ha_status = asyncio.run(
-                        _ha_mod.probe_status(
-                            os.environ.get(_ha_mod.ENV_URL, "").strip(),
-                            os.environ.get(_ha_mod.ENV_TOKEN, "").strip(),
-                            verify_ssl=os.environ.get(
-                                _ha_mod.ENV_VERIFY_SSL, "1",
-                            ).strip() not in ("0", "false", "no"),
-                        ),
-                    )
+                    # Same env-file-direct read as /state.home_assistant
+                    # above — wizard saves must reflect immediately in the
+                    # dashboard without restarting jasper-control.
+                    ha_status = asyncio.run(_ha_mod.probe_status_from_env())
                 except Exception:  # noqa: BLE001
                     # Fail-soft per the existing aggregator convention —
                     # never break /system/snapshot because HA is wedged.

@@ -72,7 +72,7 @@ from ._common import (
 logger = logging.getLogger(__name__)
 
 
-HA_ENV_FILE = "/var/lib/jasper/home_assistant.env"
+HA_ENV_FILE = _ha_mod.HA_ENV_FILE
 
 # mDNS service the official HA zeroconf integration advertises. Always
 # fully-qualified with the trailing `.local.` per the python-zeroconf
@@ -610,15 +610,23 @@ def _state_partial_html(state: dict[str, str]) -> str:
     profile_url = _profile_link(url)
     is_https = url.startswith("https://")
     verify_ssl = _verify_ssl_from_state(state)
-    # Show the self-signed-cert checkbox only when the URL is https.
-    # plain-http connections have no TLS to verify.
+    # HTTPS-only: show the self-signed-cert opt-in checkbox. Plain HTTP
+    # has no TLS to verify. The form field is named `accept_self_signed`
+    # to match the label semantics — checked means "yes, accept a
+    # self-signed cert" (i.e. relax verify_ssl). Naming the field
+    # `verify_ssl` would be backwards: a checked box would post the
+    # opposite of what the user intends. See the _handle_save parser.
     ssl_block = ""
     if is_https:
+        # Default state: checkbox UNCHECKED (verify_ssl=True is safe).
+        # Pre-checked when the env file says verify_ssl is off so a
+        # state-2 re-render preserves the user's prior choice.
+        checked_attr = "checked" if not verify_ssl else ""
         ssl_block = f"""
   <label style="display: flex; align-items: center; gap: 0.5em;
                 font-weight: 400; margin-top: 1em;">
-    <input type="checkbox" name="verify_ssl" value="on"
-           {'' if verify_ssl else 'checked'}
+    <input type="checkbox" name="accept_self_signed" value="on"
+           {checked_attr}
            style="width: auto; margin: 0;">
     <span><strong>Accept a self-signed certificate.</strong>
     <span class="hint" style="display: block; margin-top: 0.2em;">
@@ -628,7 +636,7 @@ def _state_partial_html(state: dict[str, str]) -> str:
       any other valid TLS.
     </span></span>
   </label>
-  <input type="hidden" name="verify_ssl_present" value="1">"""
+  <input type="hidden" name="accept_self_signed_present" value="1">"""
     return f"""
 <p class="sub">Step 2 of 2 — paste a token so the speaker can talk to
 Home Assistant.</p>
@@ -945,22 +953,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             raw_url = (form.get("url") or "").strip()
             raw_token = (form.get("token") or "").strip()
             agent_id = (form.get("agent_id") or "").strip()
-            # The "Accept self-signed certificate" checkbox renders only
-            # in state 3 (and only when the URL is https://). Browser
-            # convention: absent = unchecked, "on" or any non-empty
-            # value = checked. False (verify=True) is the safe default.
-            # When the form omits the field entirely (e.g. state 1's
-            # bare URL submit), preserve whatever the env file already
-            # says — don't silently re-enable verification.
-            existing_for_ssl = read_env_file(cfg["state_path"])
-            if "verify_ssl_present" in form:
-                # Hidden marker — present in any form that knows about
-                # the checkbox. Lets us distinguish "user unchecked it"
-                # (verify_ssl absent) from "form doesn't have the field
-                # at all" (preserve existing).
-                verify_ssl = bool(form.get("verify_ssl"))
+            # Read existing state once, reuse below for both the
+            # ssl-flag-preservation case and the token-preservation
+            # case.
+            existing = read_env_file(cfg["state_path"])
+            # The "Accept self-signed certificate" checkbox renders in
+            # state 2 (the token-paste page) when the URL is https://.
+            # Browser convention: absent = unchecked, "on" or any
+            # non-empty value = checked. Semantics: checked means the
+            # user opted into accepting a self-signed cert (i.e.
+            # relax TLS verification → verify_ssl=False). Inverted
+            # because the field is named after the user's action, not
+            # the resulting verify_ssl value. When the form omits the
+            # marker entirely (e.g. state 1's URL-only submit),
+            # preserve whatever the env file already says — don't
+            # silently re-enable verification.
+            if "accept_self_signed_present" in form:
+                verify_ssl = not bool(form.get("accept_self_signed"))
             else:
-                verify_ssl = _verify_ssl_from_state(existing_for_ssl)
+                verify_ssl = _verify_ssl_from_state(existing)
 
             normalized_url = _normalize_url(raw_url)
             if not normalized_url:
@@ -972,7 +983,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 return
 
-            existing = read_env_file(cfg["state_path"])
             existing_token = existing.get(ENV_TOKEN, "").strip()
             # When the URL changes, drop the prior token — it belongs to a
             # different HA instance. The user has to re-paste.
