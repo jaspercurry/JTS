@@ -349,3 +349,101 @@ async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
     _stub_probes(patched_probes, usbsink=False)
     await mux._tick()
     preempt.assert_not_awaited()
+
+
+# ----------------------------------------------------------------------
+# Escape-hatch env var. JASPER_USBSINK_PREEMPT=disabled short-circuits
+# the preempt POST so mux still tracks state but never asks the daemon
+# to silence — degrades to Bluetooth-style "brief mixing on preempt"
+# behaviour without requiring a redeploy.
+# ----------------------------------------------------------------------
+
+
+def _make_real_mux_http_stubbed(tmp_path):
+    """Build a real Mux with httpx stubbed, for tests that exercise
+    `_usbsink_set_preempt`'s real implementation directly (vs. going
+    through _pause which the existing tests stub out)."""
+    from unittest.mock import AsyncMock as _AsyncMock
+    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    fake_http = _AsyncMock()
+    # Default to a 200 OK so the POST path completes normally.
+    fake_http.post.return_value.status_code = 200
+    m._http = fake_http
+    return m, fake_http
+
+
+@pytest.mark.asyncio
+async def test_usbsink_set_preempt_skips_post_when_env_disabled(
+    monkeypatch, tmp_path,
+):
+    """With the escape hatch set, _usbsink_set_preempt updates the
+    tracked flag but does NOT POST to the daemon. Exercises the
+    method directly — bypasses _pause which the other tests stub."""
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
+    m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+
+    await m._usbsink_set_preempt(True, reason="test_escape_hatch")
+
+    # State updated optimistically — mux's view of the world matches
+    # what it would have been if the POST had succeeded.
+    assert m._usbsink_preempted is True
+    # But no HTTP POST happened.
+    fake_http.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
+    monkeypatch, tmp_path,
+):
+    """The escape hatch covers both directions — silence AND unsilence
+    skip the POST. Otherwise an operator enabling the escape hatch
+    mid-flight (with USB already silenced) would never get unsilenced."""
+    monkeypatch.setenv("JASPER_USBSINK_PREEMPT", "disabled")
+    m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+    m._usbsink_preempted = True  # Pretend we were preempted before
+
+    await m._usbsink_set_preempt(False, reason="test_release")
+
+    assert m._usbsink_preempted is False
+    fake_http.post.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_usbsink_set_preempt_disabled_value_must_be_literal(
+    monkeypatch, tmp_path,
+):
+    """The escape hatch is a string-match on the literal "disabled".
+    Other truthy strings (1, true, off, yes) do NOT activate it,
+    matching the sibling escape hatches' contract — avoids accidental
+    activation when an operator sets the var to a generic truthy value
+    expecting an enable. Mirrors the explicit `"disabled"` contract
+    in jasper.source_state._airplay_metadata_gate_disabled."""
+    for val in ("1", "true", "off", "yes", "enabled", ""):
+        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
+        m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+
+        await m._usbsink_set_preempt(True, reason=f"val_{val}")
+
+        assert fake_http.post.await_count == 1, (
+            f"JASPER_USBSINK_PREEMPT={val!r} should NOT trigger the "
+            "escape hatch; only the literal 'disabled' (case-insensitive)."
+        )
+
+
+@pytest.mark.asyncio
+async def test_usbsink_set_preempt_disabled_case_insensitive(
+    monkeypatch, tmp_path,
+):
+    """Operators may set the value as "Disabled" or "DISABLED" by
+    convention; the gate is case-insensitive per the sibling
+    escape hatches."""
+    for val in ("disabled", "DISABLED", "Disabled", "  disabled  "):
+        monkeypatch.setenv("JASPER_USBSINK_PREEMPT", val)
+        m, fake_http = _make_real_mux_http_stubbed(tmp_path)
+
+        await m._usbsink_set_preempt(True, reason=f"val_{val!r}")
+
+        assert fake_http.post.await_count == 0, (
+            f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
+            "escape hatch (case-insensitive, whitespace-stripped)."
+        )

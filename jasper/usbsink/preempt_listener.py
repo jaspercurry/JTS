@@ -22,13 +22,14 @@ is thread-safe.
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import os
 import tempfile
 import threading
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Optional
 
@@ -37,6 +38,74 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PORT = 8781
 DEFAULT_STATE_PATH = "/run/jasper-usbsink/preempt.state"
+
+# Bounded concurrency for the preempt HTTP endpoint. The only known
+# client is jasper-mux on the same host (one POST per source-state
+# transition, well under 1 Hz). Stdlib ThreadingHTTPServer spawns a
+# thread per request with no upper bound; a buggy or hostile client
+# (or just a port-scanner) could exhaust the daemon's fd / thread
+# budget. Four workers is generous defense in depth without adding
+# meaningful RAM.
+PREEMPT_MAX_WORKERS = 4
+
+# Per-request socket timeout. A client that connects but never finishes
+# sending a request body would otherwise tie up a worker until the OS
+# closed the half-open socket (minutes). 2 s is far longer than mux's
+# httpx call needs (it has its own 2 s timeout) but short enough to
+# free up workers under attack/bug pressure.
+PREEMPT_REQUEST_TIMEOUT_SEC = 2.0
+
+
+class _BoundedThreadingHTTPServer(HTTPServer):
+    """HTTP server with a bounded thread pool for request handling.
+
+    Drop-in replacement for `ThreadingHTTPServer` that caps in-flight
+    handlers at `max_workers` and applies a read timeout to each
+    accepted socket. Excess concurrent connections queue on accept()
+    until a worker is free.
+    """
+
+    daemon_threads = True
+
+    def __init__(
+        self,
+        *args: Any,
+        max_workers: int = PREEMPT_MAX_WORKERS,
+        request_timeout_sec: float = PREEMPT_REQUEST_TIMEOUT_SEC,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(*args, **kwargs)
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=max_workers,
+            thread_name_prefix="usbsink-preempt",
+        )
+        self._request_timeout_sec = request_timeout_sec
+
+    def process_request(self, request: Any, client_address: Any) -> None:
+        # Apply read timeout BEFORE submitting to the pool so a slow
+        # client can't tie up its worker on the initial recv.
+        try:
+            request.settimeout(self._request_timeout_sec)
+        except OSError:
+            # Socket already closed between accept() and here. The
+            # executor will hit the same error and shutdown_request
+            # will clean up.
+            pass
+        self._executor.submit(self._handle_in_pool, request, client_address)
+
+    def _handle_in_pool(self, request: Any, client_address: Any) -> None:
+        try:
+            self.finish_request(request, client_address)
+        except Exception:  # noqa: BLE001
+            self.handle_error(request, client_address)
+        finally:
+            self.shutdown_request(request)
+
+    def server_close(self) -> None:
+        super().server_close()
+        # Don't wait — daemon threads exit when the process does; we
+        # don't want stop() to block on a slow client.
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _read_persisted_preempt(state_path: Path) -> bool:
@@ -96,7 +165,7 @@ class PreemptListener:
         self._host = host
         self._port = port
         self._state_path = Path(state_path)
-        self._server: Optional[ThreadingHTTPServer] = None
+        self._server: Optional[_BoundedThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -164,7 +233,9 @@ class PreemptListener:
                 )
                 self._send_json({"silenced": want, "applied": True})
 
-        self._server = ThreadingHTTPServer((self._host, self._port), Handler)
+        self._server = _BoundedThreadingHTTPServer(
+            (self._host, self._port), Handler,
+        )
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             name="usbsink-preempt-http",
