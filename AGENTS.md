@@ -290,7 +290,8 @@ and is independent of cross-provider switching.
 dynamic-content cues like timer fire announcements) are baked from
 the **active provider's TTS endpoint** — Gemini 3.1 Flash TTS,
 OpenAI gpt-4o-mini-tts, or xAI Grok TTS — picked by the factory at
-[`jasper/voice_daemon.py:_build_cue_tts_backend`](jasper/voice_daemon.py).
+[`build_cue_tts_backend`](jasper/cues/factory.py) (re-exported
+through `jasper.cues` and called from `jasper/voice_daemon.py`).
 Cues sound in the same voice the assistant uses for live replies.
 Switching providers (env or web wizard) auto-invalidates baked
 WAVs via the cache key (model + voice change → new hash).

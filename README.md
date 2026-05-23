@@ -430,6 +430,22 @@ reference. Currently:
   scenarios. Patterns currently fixed: CamillaDSP rate_adjust +
   AsyncSinc oscillation (PR #75), shairport `resync_threshold`
   misfire on snd-aloop fill (PR #83).
+- [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
+  Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
+  how to add a new reactive or proactive cue. Start here when a
+  failure path needs to "say something" rather than fall silent.
+- [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
+  correction v2 at `/correction/`: iPhone-mic measurement flow,
+  PEQ generation, CamillaDSP hot-swap. Active workstream — read
+  the Status section first to see which phase is in flight.
+- [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
+  Proposal (created 2026-05-22, not yet implemented) for
+  restructuring the `jts.local` management surface into a tighter
+  layout with a first-run setup wizard.
+- [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
+  — **Superseded** (2026-05-14) — historical record of why AirPlay
+  receiver-originated volume reflection didn't work. Keep for
+  the next person who's tempted to retry that path.
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — Per-household-
   member Spotify account routing
 
@@ -531,21 +547,22 @@ and openwakeword stub diet landed.
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
+| `jasper-system-web` (system dashboard at `/system/`) | **Socket-activated** | ~0 idle, ~12 MB when open | n/a idle |
 | Single-card snd-aloop (Loopback) | Loaded at boot | ~0 | ~0 |
 | dsnoop tap on music chain | Always present | ~0 | ~0 |
 
-The four web-wizard daemons are socket-activated — systemd holds
+The five web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts nine URL surfaces (Spotify, voice,
-Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit) on nine loopback
-ports; the other three daemons each host one. All four exit after 10
-min of no requests, so the resident cost is zero between admin sessions.
-First request after idle takes ~500-800 ms (Python startup); invisible
-during the OAuth round-trip or BT pair flow.
+its pages. `jasper-web` alone hosts ten URL surfaces (Spotify, voice,
+Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home Assistant)
+on ten loopback ports; the other four daemons each host one. All five
+exit after 10 min of no requests, so the resident cost is zero between
+admin sessions. First request after idle takes ~500-800 ms (Python
+startup); invisible during the OAuth round-trip or BT pair flow.
 
 **Total Pss baseline with AEC on**: ~330 MB jasper-* daemons +
 ~80 MB system/OS plumbing + page cache → typically ~770 MB used
