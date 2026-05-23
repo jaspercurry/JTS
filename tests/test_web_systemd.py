@@ -41,36 +41,27 @@ def test_adopt_returns_sockets_for_matching_pid(
 ) -> None:
     """When LISTEN_PID matches and LISTEN_FDS is set, fds at
     SD_LISTEN_FDS_START get wrapped as socket objects."""
-    # Build a real listening socket so we have a real fd to hand off.
     listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     listener.bind(("127.0.0.1", 0))
     listener.listen(8)
-    real_fd = listener.fileno()
-
-    # Dup it to fd 3 (SD_LISTEN_FDS_START) to mimic what systemd does.
-    target_fd = _systemd.SD_LISTEN_FDS_START
-    saved = None
     try:
-        if os.path.exists(f"/proc/self/fd/{target_fd}"):
-            saved = os.dup(target_fd)
-            os.close(target_fd)
-        os.dup2(real_fd, target_fd)
+        # Point SD_LISTEN_FDS_START at the listener's actual fd instead of
+        # dup2'ing onto the hardcoded fd 3. fd 3 is held + guarded by some
+        # parent processes (e.g. Claude Desktop's IPC pipe on macOS), and
+        # any dup2 onto a guarded fd trips EXC_GUARD and kills the test.
+        # socket.fromfd() inside adopt_systemd_sockets() dups the fd, so
+        # the listener stays valid throughout.
+        monkeypatch.setattr(
+            _systemd, "SD_LISTEN_FDS_START", listener.fileno(),
+        )
         monkeypatch.setenv("LISTEN_PID", str(os.getpid()))
         monkeypatch.setenv("LISTEN_FDS", "1")
         adopted = _systemd.adopt_systemd_sockets()
         assert len(adopted) == 1
         assert adopted[0].getsockname()[0] == "127.0.0.1"
-        # Port matches the listener.
         assert adopted[0].getsockname()[1] == listener.getsockname()[1]
         adopted[0].close()
     finally:
-        try:
-            os.close(target_fd)
-        except OSError:
-            pass
-        if saved is not None:
-            os.dup2(saved, target_fd)
-            os.close(saved)
         listener.close()
 
 
