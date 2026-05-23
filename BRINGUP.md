@@ -331,6 +331,174 @@ server), the failure-mode taxonomy, and the v1.1+ upgrade path.
 
 ---
 
+## Phase 3.8 — Enable USB audio input (one-time, 10 min, optional)
+
+Plug a computer (Mac, Windows, Linux) into the Pi's USB-C port and
+JTS appears as a USB audio output device on the host. Music plays
+through the speakers, the Mac volume slider drives JTS's volume, the
+mux preempts/restores it just like AirPlay or Spotify. Disabled by
+default; ~22 MB RAM when on, 0 when off.
+
+Skip this phase if you only ever stream from phones (AirPlay/Spotify
+Connect/Bluetooth cover that). Come back when you want to use JTS as
+the audio output for a laptop.
+
+Full design + RAM analysis + failure-mode matrix:
+[docs/HANDOFF-usbsink.md](docs/HANDOFF-usbsink.md).
+
+### Hardware prerequisite
+
+The Pi 5's USB-C port serves both power and data. To use it as a
+USB-gadget data port to a host computer while keeping the Pi powered,
+you need a **USB-C/PWR splitter**: it provides the data leg to the
+host and a separate power leg to the wall PSU.
+
+- **8086 Consultancy USB-C/PWR Splitter** (~$30,
+  [8086.net/products/usb-c-pwr-splitter](https://www.8086.net/products/usb-c-pwr-splitter))
+  — the only tested option. Sidesteps the Pi 5
+  USB-C-to-USB-C kernel issue
+  [raspberrypi/linux#6289](https://github.com/raspberrypi/linux/issues/6289)
+  because the host-side leg terminates in USB-A.
+- USB-A-to-USB-C cable (~$10) for the data leg.
+- Your existing Pi 5 USB-C PSU stays in use — connect it to the
+  splitter's power leg instead of directly to the Pi.
+
+Physical topology:
+
+```
+Wall outlet
+   │
+   ▼
+27W USB-C PSU ───► 8086 Splitter ◄─── USB-A cable ◄─── Host computer
+                       │
+                       ▼ (combined power + data over USB-C)
+                  Pi 5 USB-C port
+```
+
+When no host is connected, JTS still powers up normally — nothing
+about standalone behavior changes.
+
+### Side effect to be aware of
+
+After this phase, the Pi 5's USB-C port is **no longer usable for
+plugging USB host devices** (flash drives, etc.) because it's
+permanently in peripheral mode. The four USB-A ports remain in host
+mode unchanged.
+
+### Steps
+
+#### 1. Set the dtoverlay (one-time, requires reboot)
+
+`install.sh`'s `set_usb_gadget_mode` step ran during Phase 2 and added
+`dtoverlay=dwc2,dr_mode=peripheral` to `/boot/firmware/config.txt`. The
+flag is set, but takes effect on the next reboot. Verify and reboot:
+
+```sh
+ssh pi@jts.local 'grep dwc2,dr_mode=peripheral /boot/firmware/config.txt'
+# Expect: dtoverlay=dwc2,dr_mode=peripheral
+
+# Reboot. Pi will boot with the BCM2712's DWC2 controller in
+# peripheral mode (no gadget loaded yet — descriptor only loads when
+# the wizard toggle is on).
+ssh pi@jts.local 'sudo reboot'
+
+# Wait ~30 s, then verify:
+ssh pi@jts.local 'lsmod | grep dwc2'
+# Expect: dwc2 ... (loaded)
+ssh pi@jts.local 'lsmod | grep libcomposite'
+# Expect: (empty — libcomposite stays UNloaded until the toggle is on)
+```
+
+#### 2. Wire up the splitter
+
+```
+Pi USB-C port ◄─── splitter ◄─── PSU (power leg)
+                       ◄─── USB-A-to-C ─── (no host connected yet)
+```
+
+The Pi should power up normally. SSH still works (Wi-Fi unchanged).
+
+#### 3. Enable the USB toggle in `/sources/`
+
+Open `http://jts.local/sources/` on any device on the LAN. Find the
+**USB Audio Input** row, flip the toggle on. Within ~3 s:
+- `jasper-usbsink-init.service` loads `libcomposite` + writes the
+  ConfigFS gadget descriptor
+- `jasper-usbsink.service` opens the gadget capture endpoint and
+  starts the audio bridge
+
+Verify on the Pi:
+
+```sh
+ssh pi@jts.local 'ls /proc/asound/UAC2Gadget/'
+# Expect: a directory (the gadget's ALSA card)
+
+ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbsink-init'
+# Expect: active / active
+```
+
+#### 4. Plug a host computer in
+
+Plug your Mac/Windows/Linux laptop into the splitter's USB-A leg.
+
+- **macOS**: Open System Settings → Sound → Output. **JTS USB Audio**
+  appears. Select it. (Note: macOS may label the device "Playback
+  Inactive" — that's a cosmetic kernel bug in `f_uac2.c`, audio still
+  works. Don't chase.)
+- **Windows**: Open Sound settings, choose JTS USB Audio as output.
+- **Linux**: Should auto-route via PulseAudio/PipeWire, or `pactl
+  set-default-sink alsa_output.usb-Linux_Foundation_*`.
+
+#### 5. Play music from the host
+
+Open any media player on the host. Audio should come out of the JTS
+speakers within a few hundred milliseconds.
+
+- **Volume**: move the host's volume slider. JTS volume follows
+  within ~250 ms (the same slider experience as AirPlay sender
+  volume).
+- **Source switching**: start AirPlay from your phone. The mux
+  preempts USB; phone audio takes over. Stop AirPlay, hit play on
+  the host again — USB takes back over.
+
+#### 6. Run the doctor
+
+```sh
+ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
+# Expect three OK lines:
+#   usbsink dtoverlay: ok
+#   usbsink state: ok playing=... host_connected=...
+#   usbsink card: ok UAC2Gadget present
+```
+
+### Common failure modes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
+| Host doesn't see JTS in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
+| Mac says "Playback Inactive" | Cosmetic kernel bug — audio still plays | Ignore |
+| Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
+| Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
+
+### Disable later
+
+Flip the toggle off in `/sources/`. The daemon stops, the init
+service unloads `libcomposite`, the gadget descriptor disappears,
+and the host loses JTS from its audio device list within ~3 s. The
+dtoverlay stays in place (harmless — DWC2 in peripheral mode with
+no gadget descriptor is a no-op from the host's perspective).
+
+To roll back the dtoverlay too (USB-C port becomes a host port
+again):
+
+```sh
+ssh pi@jts.local 'sudo sed -i "/^dtoverlay=dwc2,dr_mode=peripheral$/d" /boot/firmware/config.txt'
+ssh pi@jts.local 'sudo reboot'
+```
+
+---
+
 ## Phase 4 — Initial volume calibration (2 min)
 
 The Apple dongle's `Headphone` control is the **fixed analog
