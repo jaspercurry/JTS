@@ -305,7 +305,29 @@ async def _resolve_query(
         items = ((results or {}).get("tracks") or {}).get("items") or []
         if not items or not items[0]:
             return None
-        return items[0]["uri"], "track", items[0].get("name") or query
+        name = items[0].get("name") or ""
+        # Defense in depth: gate the unqualified track search on the
+        # same fuzz threshold kind='auto' applies. Spotify's catalog
+        # ranks by text relevance + popularity, so a low-overlap
+        # query ("new song by Rainbow Kitten Surprise" — the LLM mis-
+        # routes a recency request) returns whatever popular track
+        # happens to score best, with no semantic relation to the
+        # user's words. Without this gate, that wrong track plays.
+        # With the gate, the tool refuses; the SYSTEM_INSTRUCTION
+        # cross-tool routing rule and spotify_play_latest_by_artist's
+        # docstring are the primary defenses, but model adherence
+        # isn't 100% on voice (see HANDOFF-prompting.md "Voice
+        # modality penalty"). This stops a misroute from becoming a
+        # wrong-song outcome.
+        score = int(fuzz.WRatio(query.lower(), name.lower()))
+        if score < _PLAY_THRESHOLD:
+            logger.info(
+                "spotify_play: track search returned %r for query %r at "
+                "score=%d (below threshold %d) — rejecting",
+                name, query, score, _PLAY_THRESHOLD,
+            )
+            return None
+        return items[0]["uri"], "track", name or query
 
     # kind == "auto" or anything unrecognized — unified resolution.
     artist_q = f'artist:"{safe_q}"'
@@ -503,6 +525,15 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
             toward any other playlist whose name happens to contain
             that word. The server will fuzzy-match X against the user's
             saved playlists, tolerant of voice-to-text mishears.
+
+        Do NOT use spotify_play when the user includes a recency word
+        ("new", "newest", "latest", "just dropped", "just released")
+        followed by an artist name — route to
+        `spotify_play_latest_by_artist` with `artist=<the artist name>`
+        instead. spotify_play runs catalog text search with no concept
+        of release date; passing recency words through it returns
+        whatever ranks highest by relevance + popularity, not the
+        user's actual request.
 
         Set `shuffle=true` when the user explicitly asks for shuffled
         playback — "shuffle X", "play X shuffled", "play X on shuffle".

@@ -74,6 +74,20 @@ tool-round watchdog contract
 7. **Voice-eval is paid.** Iterating prompts via repeated full
    scenario runs burns money fast (~$0.075/scenario on Gemini,
    ~$0.60 on OpenAI). Investigate transcripts, don't loop.
+8. **Surface prompt edits aren't bulletproof — gate at the tool
+   layer too.** Voice models lag their text siblings by ~5–8
+   points on tool-selection benchmarks
+   ([Daily.co voice-agent bench](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/);
+   [Confetti / text-to-voice, arXiv:2605.15104](https://arxiv.org/html/2605.15104)).
+   Prompt-only mitigations of tool-preference bias show "limited
+   effectiveness" in published evaluations
+   ([BiasBusters, arXiv:2510.00307](https://arxiv.org/abs/2510.00307)).
+   When a misroute means "wrong action taken" vs "couldn't find
+   that", add a server-side validation gate alongside the prompt
+   rule. Worked example: `spotify_play(kind='track')` applies the
+   same `fuzz.WRatio >= 75` threshold `kind='auto'` uses, so a
+   misroute degrades to refusal instead of playing the wrong
+   song. See "Architectural alternatives considered" below.
 
 ---
 
@@ -398,6 +412,109 @@ After Path B (2026-05-23):
 
 ---
 
+## Architectural alternatives considered
+
+When two tools overlap enough that the LLM mis-routes between
+them, the default fix is *disambiguation via prompt*. The
+alternative — *consolidate into one tool with a discriminator
+parameter* — is what every production voice assistant uses, and
+is what Anthropic's published tool-design guide recommends. The
+choices made in JTS are documented here so the trade-off is
+visible to the next maintainer.
+
+### Spotify: two tools vs one tool with a sort-order slot
+
+**Status quo (chosen, 2026-05-23):** two tools, prompt
+disambiguation + downstream validation.
+- `spotify_play(query, kind, shuffle)` — catalog text search.
+- `spotify_play_latest_by_artist(artist)` — `artist_albums` +
+  sort by release date.
+- Cross-tool routing rule in
+  [SYSTEM_INSTRUCTION](../jasper/voice_daemon.py) enumerates
+  recency triggers ("new", "newest", "latest", "just dropped",
+  "just released") that route to the specialized tool.
+- `spotify_play(kind='track')` applies a `fuzz.WRatio >= 75`
+  threshold so a mis-route (e.g. the LLM passing "new song by
+  X" to the generic tool anyway) degrades to refusal, not a
+  wrong-song outcome.
+
+**Road not taken:** consolidate to one tool with a sort slot.
+
+```python
+spotify_play(
+    query: str,
+    kind: str = "auto",
+    sort_order: Literal["relevance", "recency"] = "relevance",
+    shuffle: bool = False,
+)
+```
+
+When `sort_order="recency"` and the query names an artist,
+route internally to the `artist_albums` path. Otherwise, catalog
+search.
+
+**Why the slot-based design is the production-standard pattern:**
+
+- Apple SiriKit `INPlayMediaIntent` has
+  `INMediaSortOrder.newest` ([WWDC19 Session 207](https://asciiwwdc.com/2019/sessions/207),
+  exact example used: *"Play the new Stuff You Should Know
+  podcast"* → `INMediaSortOrder newest`).
+- Alexa Music Skill API: single `GetPlayableContent` with
+  `SortType=RECENCY` ([docs](https://developer.amazon.com/en-US/docs/alexa/music-skills/api-components-reference.html)).
+- Google App Actions: single
+  `actions.intent.PLAY_MEDIA` BII; temporal disambiguation
+  falls through to search.
+- Sonos Voice Control: single Play intent + slots
+  ([Sonos tech blog](https://tech-blog.sonos.com/posts/on-device-voice-control-on-sonos-speakers/)).
+- Home Assistant Music Assistant (LLM-piped): single
+  `play_music` tool with free-text query, no recency slot
+  ([MA voice script blueprint](https://github.com/music-assistant/voice-support/blob/main/llm-script-blueprint/llm_voice_script.yaml)).
+- Anthropic's [Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents):
+  *"Consolidate related operations into fewer tools… Fewer,
+  more capable tools reduce selection ambiguity."*
+- Classical NLU literature (joint intent detection + slot
+  filling): "play X by Y" with a temporal modifier is the
+  canonical example, and the modifier is always a *slot*, not
+  a separate intent
+  ([Louvan & Magnini, arXiv:2011.00564](https://arxiv.org/pdf/2011.00564)).
+
+**Why we didn't go this way (yet):**
+
+- Effort: ~2-3 hours refactor + new + migrated voice-eval
+  scenarios (paid runs) + co-deploying the consolidated handler.
+- The current two-tool design has a clean specialization
+  boundary in the implementation — `artist_albums` paginated +
+  date-sorted is meaningfully different from catalog `search`,
+  so collapsing them at the API layer would mostly move the
+  branch from "which tool" to "which sort_order".
+- Disambiguation works in OpenAI's documented Realtime guidance
+  (cell 73 of the [Realtime Prompting Guide](https://cookbook.openai.com/examples/realtime_prompting_guide)
+  uses a near-identical pattern). Pre-PR-#230 the
+  [`build_tool()` truncation](../jasper/tools/__init__.py:139)
+  was actively defeating the rule's text — once that was fixed
+  (Path B), the bug class may stop recurring on its own.
+- The threshold gate (above) makes the failure mode soft: a
+  misroute returns `_NOT_UNDERSTOOD` rather than playing the
+  wrong song.
+
+**When to revisit:**
+
+- If the voice-eval regression scenario
+  [`test_play_new_artist_song_routes_to_latest_by_artist`](../tests/voice_eval/regression/test_spotify.py)
+  starts flaking across providers (this is the canary —
+  consolidation eliminates the routing decision entirely).
+- If a third recency-flavored variant is requested ("most
+  popular X by Y", "the slow X by Y"). At that point a third
+  tool is worse than a `sort_order` slot.
+- If a new provider lands whose tool-selection scores
+  significantly worse on the multi-tool benchmark (e.g. an
+  open-source local model running on-device).
+
+The same trade-off applies to any future overlap. Document the
+choice when you make it.
+
+---
+
 ## Recommended edits to current code
 
 History of the audit's punch list. Items 1-4 landed in the same
@@ -526,6 +643,74 @@ edit (~quarterly, or whenever a model version bumps).
 - [Function calling](https://docs.x.ai/docs/guides/function-calling)
   — tool schema, 200-tool-per-request limit
 - [Models](https://docs.x.ai/docs/models) — pricing
+
+**Empirical tool-selection research** — the published evaluation
+literature on what works (and what doesn't) for tool selection
+in LLMs. Use these to justify defense-in-depth beyond prompt
+edits; cite when arguing for / against architectural changes.
+
+- [Berkeley Function Calling Leaderboard (BFCL) — Patil et al., PMLR 2025](https://proceedings.mlr.press/v267/patil25a.html)
+  — canonical multi-tool benchmark. `multiple` category (one
+  correct tool + distractors) is the shape JTS hits. Provides
+  per-model accuracy numbers; Gemini empirically among the
+  weaker tool-selectors on adversarial sets.
+- [MetaTool — Huang et al., ICLR 2024, arXiv:2310.03128](https://arxiv.org/abs/2310.03128)
+  — when LLMs pick the wrong tool, ~50% land on the *most
+  similar* wrong tool. Names our exact failure mode
+  ("`spotify_play` wrongly chosen when
+  `spotify_play_latest_by_artist` was correct").
+- [Tool Preferences in Agentic LLMs are Unreliable — arXiv:2505.18135](https://arxiv.org/abs/2505.18135)
+  — names three biases: *position bias* (earlier tools
+  preferred), *description bias* (wording dominates capability),
+  *edit-vs-edit bias* (trivial rewording flips preference).
+  Mitigation suggestions: detailed balanced descriptions,
+  consistent formatting, reorder-and-repeat.
+- [BiasBusters — arXiv:2510.00307, 2025](https://arxiv.org/abs/2510.00307)
+  — tests bias-mitigation across Claude/GPT/Gemini/DeepSeek.
+  Finds "surface-level prompt modifications have limited
+  effectiveness"; LoRA fine-tuning was needed for robust
+  mitigation. **This is the reason we don't rely on prompt
+  edits alone.**
+- [Confetti / text-to-voice gap — arXiv:2605.15104](https://arxiv.org/html/2605.15104)
+  — quantifies the modality penalty. Documents a 4.8-point
+  regression for GPT-Realtime-1.5 vs its text sibling on the
+  same tool-calling benchmark. Categorizes failures: argument
+  errors 54-57%, decision errors 26-37%, tool-selection errors
+  6-12%.
+- [Daily.co voice-agent benchmarks](https://www.daily.co/blog/benchmarking-llms-for-voice-agent-use-cases/)
+  — GPT Realtime 86.7% vs GPT-4.1 94.9% pass-rate (8.2-point
+  gap on the same task in voice vs text). Direct evidence we
+  operate in a harder regime than the provider docs assume.
+- [Anthropic — Writing tools for agents](https://www.anthropic.com/engineering/writing-tools-for-agents)
+  — directly relevant prior-art for tool design even though we
+  don't run Claude in production for this. Specifically:
+  consolidate related operations; namespace by service;
+  "Detailed descriptions are by far the most important factor
+  in tool performance."
+- [OpenAI cookbook — Realtime Prompting Guide, cell 72-73](https://cookbook.openai.com/examples/realtime_prompting_guide)
+  — the documented `Use when: / Do NOT use when: / route to X
+  instead` pattern for tool docstrings. The pattern JTS now
+  uses in [home_assistant.py](../jasper/tools/home_assistant.py)
+  and [spotify.py](../jasper/tools/spotify.py) (the
+  spotify_play / spotify_play_latest_by_artist pair).
+
+**Voice-assistant prior art** — how the production assistants
+solve "play X by Y" with a temporal modifier. The "single intent
++ recency slot" pattern is the architectural alternative
+documented above ("Architectural alternatives considered").
+
+- [Alexa Music Skill API Components Reference](https://developer.amazon.com/en-US/docs/alexa/music-skills/api-components-reference.html)
+  — `SortType=RECENCY` slot on a single `GetPlayableContent`
+  intent.
+- [Apple WWDC19 Session 207 — SiriKit Media Intents](https://asciiwwdc.com/2019/sessions/207)
+  — `INMediaSortOrder.newest` on a single `INPlayMediaIntent`.
+- [Sonos tech blog — on-device voice control](https://tech-blog.sonos.com/posts/on-device-voice-control-on-sonos-speakers/)
+  — joint intent + slot extraction.
+- [Music Assistant voice script blueprint](https://github.com/music-assistant/voice-support/blob/main/llm-script-blueprint/llm_voice_script.yaml)
+  — LLM-piped: one `play_music` tool, free-text query.
+- [Louvan & Magnini — Slot Filling and Intent Classification Survey, arXiv:2011.00564](https://arxiv.org/pdf/2011.00564)
+  — pre-LLM NLU literature; "play X by Y" is the canonical
+  joint-intent-and-slot-filling example.
 
 ---
 

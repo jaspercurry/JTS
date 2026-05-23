@@ -380,6 +380,78 @@ def test_track_search_passes_query_through_unqualified():
     assert sp.last_search_q == "Daylight by Matt and Kim"
 
 
+def test_track_search_rejects_low_relevance_match():
+    """Defense-in-depth pin for the 2026-05-23 'wrong song' bug.
+
+    Reproduces the production failure: the LLM mis-routes a recency
+    request ('play the new song by Rainbow Kitten Surprise') to
+    spotify_play(kind='track') instead of spotify_play_latest_by_artist.
+    Spotify's catalog search ranks by text relevance + popularity, so
+    the literal unqualified query returns whatever popular track scores
+    highest — in production, 'Headshots (4r da Locals)' by Isaiah
+    Rashad, which has zero overlap with the user's words.
+
+    Without the fuzz threshold in `_resolve_query` for kind='track',
+    the tool happily plays the unrelated track. With it, the tool
+    returns _NOT_UNDERSTOOD and the user re-issues with the correct
+    phrasing. The primary defenses are upstream (SYSTEM_INSTRUCTION's
+    cross-tool routing rule + spotify_play_latest_by_artist's
+    docstring), but model adherence is empirically <100% on voice
+    (see docs/HANDOFF-prompting.md "Voice modality penalty"); this
+    is the downstream safety net."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        # The exact production failure: Spotify returns an unrelated
+        # track for the literal mis-routed query.
+        search_results={"track": (
+            "spotify:track:headshots",
+            "Headshots (4r da Locals)",
+        )},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(tools["spotify_play"](
+        query="new song by Rainbow Kitten Surprise", kind="track",
+    ))
+
+    # Tool refused — the wrong song did NOT play.
+    assert "error" in result, (
+        "Expected the relevance gate to reject the unrelated track; "
+        f"got result={result!r}. The bug is: low-overlap track "
+        "matches should not play."
+    )
+    sp.start_playback.assert_not_called()
+
+
+def test_track_search_accepts_high_relevance_match():
+    """Companion to the above: the gate must NOT reject legitimate
+    'X by Y' queries where X is a real song.
+
+    'Daylight by Matt and Kim' against a returned track named
+    'Daylight' has high partial-ratio overlap (Daylight is a clean
+    substring) and clears _PLAY_THRESHOLD. Verify the gate doesn't
+    over-reject this case."""
+    sp = FakeSpotify(
+        devices={"devices": [{"id": "renderer-id", "name": "JTS jasper"}]},
+        search_results={"track": ("spotify:track:daylight", "Daylight")},
+    )
+    active = FakeAccountClient("jasper", sp)
+    router = FakeRouter(active_account=active)
+    renderer = FakeRenderer(renderers={}, currentsong={})
+
+    tools = _by_name(make_spotify_tools(router, renderer, "JTS"))
+    result = asyncio.run(tools["spotify_play"](
+        query="Daylight by Matt and Kim", kind="track",
+    ))
+
+    assert result.get("ok") is True
+    assert result.get("playing") == "Daylight"
+    sp.start_playback.assert_called_once()
+
+
 def test_artist_search_strips_stray_quotes():
     """Defensive: a stray double-quote breaks the field syntax. Strip them."""
     sp = FakeSpotify(
