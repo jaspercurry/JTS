@@ -394,6 +394,7 @@ After Path B (2026-05-23):
 | Tool docstring "Voice answer style" sections seem ignored by the LLM (pre-2026-05-23) | `build_tool()` truncated to first paragraph | Lifted 2026-05-23; full docstring now sent. See cookbook. |
 | Conditional rule violated in spoken response (e.g. ZERO-COUNT, STATUS, STALENESS) | Conflicting rule between SYSTEM_INSTRUCTION and tool docstring | After Path B, per-tool rules live ONLY in the tool docstring; system prompt has cross-tool meta-rules only |
 | Model says preamble + tool result *and* also says result verbatim with no preamble (inconsistent across turns) | Conditional preamble rule too vague; missing "the tool call is lightweight" clause | Tighten the skip-list trigger; reference an existing precise version (current preamble block at voice_daemon.py:226-240) |
+| Model preambles AND speaks the tool's verbose `confirm` field on every call ("talks twice" — consistent across turns) | Cross-tool SYSTEM_INSTRUCTION skip-list applies in theory but the model isn't honoring it for this tool family (~33% compliance per OpenAI community thread) | Add a per-tool "Skip the preamble" sentence in the tool's docstring (Path B). Worked first try on `spotify_play` / `spotify_play_latest_by_artist` (PR #265, 2026-05-23). Don't escalate to absolute language in SYSTEM_INSTRUCTION — that's the regression path that produced "zero tool calls across five scenarios" in May 2026. |
 | Mic mishear gets confidently answered as if user said something else | No Unclear Audio rule | Add one — OpenAI's documented pattern: *"If the user's audio is not clear, ask once: 'Sorry, could you repeat that?'"* |
 
 ---
@@ -547,3 +548,7 @@ edit (~quarterly, or whenever a model version bumps).
   the short pointer that lives alongside daily-driver rules
 - [PLAN.md](../PLAN.md) "Risks worth re-flagging" —
   ~500-token Gemini ceiling, sequential tool calls
+
+---
+
+Last verified: 2026-05-23

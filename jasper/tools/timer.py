@@ -81,6 +81,11 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         verbatim ("Set a pasta timer for 5 minutes."). The speaker
         plays the fire-time announcement automatically — DON'T
         promise to remind the user; the timer does it itself.
+
+        Skip the preamble before calling this tool. The `confirm`
+        field IS the spoken answer — a status sentence beforehand
+        ("Sure, setting a 5 minute pasta timer…") restates it
+        word-for-word.
         """
         try:
             timer = scheduler.add(int(seconds), label or None)
@@ -129,6 +134,11 @@ def make_timer_tools(scheduler: "TimerScheduler"):
         — "I have two pasta timers, one for 5 minutes and one for
         10 minutes. Which one?" If `reason='not_found'`, speak the
         `error` field verbatim ("No timer matches 'pasta'.").
+
+        Skip the preamble before calling this tool. The `confirm`
+        field IS the spoken answer — a status sentence beforehand
+        ("Sure, cancelling your pasta timer…") restates it
+        word-for-word.
         """
         cancelled, matches = scheduler.cancel(timer)
         if cancelled:
