@@ -236,6 +236,133 @@ async def test_drain_with_vad_requires_consecutive_frames():
 
 
 @pytest.mark.asyncio
+async def test_drain_with_peak_min_rejects_wake_tail_residual():
+    """Regression for the 2026-05-23 broken-event bug.
+
+    The live VAD's duration gate (200 ms continuous at silero ≥
+    0.15) was tripped by wake-word tail residual peaking at silero
+    ≈ 0.52 — high enough to look "speech-like" to Silero VAD, low
+    enough to NOT be real user speech (real speech reliably peaks
+    above 0.7). The 800 ms silence detector then fired and ended
+    the turn before the user started their actual question. Adding
+    a peak-confidence requirement (max silero in the arming run
+    must be ≥ ``peak_min``) discriminates real speech from
+    wake-tail residual cleanly.
+
+    Scenario here mirrors the broken event's cold-replay scores:
+    3 consecutive frames at silero 0.43 / 0.52 / 0.38. Duration
+    alone clears 3 frames at threshold 0.15, but max in run is
+    0.52 — below ``peak_min=0.60``. Must stay unarmed."""
+
+    buf: deque = deque()
+    for i in range(3):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # The broken event's actual silero scores from cold-replay.
+    scores = {0: 0.43, 1: 0.52, 2: 0.38}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn,
+        vad_predict=predict,
+        speech_threshold=0.15,
+        peak_min=0.60,
+    )
+
+    assert count == 3
+    assert speech_seen is False  # peak (0.52) < peak_min (0.60)
+
+
+@pytest.mark.asyncio
+async def test_drain_with_peak_min_passes_real_speech():
+    """Counterpart to the wake-tail rejection test: real user
+    speech reliably peaks well above 0.6 within the first few
+    frames. The gate must still arm on those, otherwise we've
+    traded one silent-failure mode for another (gate never arms →
+    5 s no-speech abort).
+
+    Scenario: 3 consecutive frames at silero 0.30 / 0.85 / 0.92.
+    Sustained ≥ 3 frames AND peak (0.92) >= peak_min (0.60)."""
+
+    buf: deque = deque()
+    for i in range(3):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    scores = {0: 0.30, 1: 0.85, 2: 0.92}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn,
+        vad_predict=predict,
+        speech_threshold=0.15,
+        peak_min=0.60,
+    )
+
+    assert count == 3
+    assert speech_seen is True
+
+
+@pytest.mark.asyncio
+async def test_drain_with_peak_min_resets_across_silence_gap():
+    """Peak tracker must reset on a sub-threshold frame, not
+    accumulate across silence gaps. Otherwise a sequence like
+    [0.91 silence 0.91 silence 0.91 0.20 0.20] could falsely
+    "remember" the 0.91 peak from the earlier broken runs and arm
+    on the new run.
+
+    Scenario: high-peak run, then silence, then a low-peak run
+    that's long enough sustained-wise but doesn't reach
+    ``peak_min``. Must NOT arm."""
+
+    buf: deque = deque()
+    for i in range(7):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # Frame 0: high peak but isolated (no sustain). Frames 1-2:
+    # silence. Frames 3-5: 3-frame run, but all low silero (max
+    # 0.30, below peak_min=0.60). Frame 6: silence.
+    scores = {
+        0: 0.91, 1: 0.04, 2: 0.04,
+        3: 0.20, 4: 0.30, 5: 0.18,
+        6: 0.04,
+    }
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn,
+        vad_predict=predict,
+        speech_threshold=0.15,
+        peak_min=0.60,
+    )
+
+    assert count == 7
+    assert speech_seen is False  # peak in 2nd run (0.30) < peak_min
+
+
+@pytest.mark.asyncio
+async def test_drain_peak_min_default_is_off():
+    """``peak_min`` defaults to 0.0 (off) — backward-compatible.
+    Existing tests using the duration-only gate continue to pass."""
+
+    buf: deque = deque()
+    for i in range(3):
+        buf.append(_FakeFrame(i))
+    turn = _FakeTurn()
+    # All three frames clear threshold but max is only 0.30 (below
+    # the typical peak_min=0.6 a strict caller would pass). With
+    # peak_min defaulting to 0.0, the gate arms purely on duration.
+    scores = {0: 0.20, 1: 0.25, 2: 0.30}
+    predict = lambda f: scores[f.tag]
+
+    count, speech_seen = await drain_acquire_buffer(
+        buf, turn, vad_predict=predict, speech_threshold=0.15,
+    )
+
+    assert count == 3
+    assert speech_seen is True
+
+
+@pytest.mark.asyncio
 async def test_drain_with_two_consecutive_speech_frames_stays_unarmed():
     """Regression: 2 consecutive speech frames (~160 ms) must NOT
     arm. That length is the natural signature of the wake-word
