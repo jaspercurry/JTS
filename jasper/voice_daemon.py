@@ -890,6 +890,7 @@ def _build_registry(
     bus: BusClient | None = None,
     ha: HAClient | None = None,
     citibike: CitiBikeClient | None = None,
+    wake_event_store: "WakeEventStore | None" = None,
 ) -> ToolRegistry:
     registry = ToolRegistry()
     for fn in make_audio_tools(volume_coordinator):
@@ -940,10 +941,17 @@ def _build_registry(
             registry.register(fn)
         for fn in make_gmail_tools(google_clients):
             registry.register(fn)
-    # Diagnostic tools (flag_recent_issue) need the WakeEventStore,
-    # which isn't opened until the inner async block of `run()`. They
-    # get registered there via a separate call to make_diagnostic_tools
-    # against the same `registry` instance, after the store is up.
+    # Diagnostic tools (flag_recent_issue). Gated on the wake-event
+    # store being open — when telemetry is disabled the flag tool
+    # can't actually persist anything, so the model never sees it.
+    # See jasper/tools/diagnostic.py + jasper/wake_events.py
+    # `record_flag` for the storage semantics. Registered HERE (not
+    # later) because the LLM session sends `session.update` with the
+    # tool list immediately after WS handshake; tools registered
+    # after that point are invisible to the live session until the
+    # next reconnect.
+    for fn in make_diagnostic_tools(wake_event_store):
+        registry.register(fn)
     return registry
 
 
@@ -3228,6 +3236,35 @@ async def run() -> None:
     # the playout is up. Pre-render and regen don't need playback.
     cues_manager = _build_cues_manager(cfg, tts=None)
 
+    # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
+    # Opens the SQLite DB synchronously at startup so the daemon
+    # is "ready" only after the schema migration is applied —
+    # avoids racy "begin_event before CREATE TABLE" failures on
+    # first-ever boot. Failure to open is logged + the daemon
+    # continues with telemetry disabled (the wake / session path
+    # is unaffected; only the flag_recent_issue tool is silently
+    # withheld from the model in that mode).
+    #
+    # Created BEFORE `_build_registry` because make_diagnostic_tools
+    # gates on the store and the LLM `session.update` is sent once
+    # at WS handshake time — tools added to the registry after the
+    # connection opens are invisible to the live session until the
+    # next reconnect. Close lives in the outer finally below.
+    wake_event_store: WakeEventStore | None = None
+    try:
+        wake_event_store = WakeEventStore(
+            cfg.wake_events_dir,
+            max_audio_bytes=cfg.wake_events_max_audio_bytes,
+        )
+        wake_event_store.open()
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "wake_events: failed to open store at %s: %s "
+            "(continuing with telemetry disabled)",
+            cfg.wake_events_dir, e,
+        )
+        wake_event_store = None
+
     registry = _build_registry(
         cfg, camilla, renderer, weather, subway,
         volume_coordinator=volume_coordinator,
@@ -3239,6 +3276,7 @@ async def run() -> None:
         bus=bus,
         ha=ha,
         citibike=citibike,
+        wake_event_store=wake_event_store,
     )
 
     # Wire the timer pre-render hook so set_timer (and start-time
@@ -3410,35 +3448,9 @@ async def run() -> None:
                 WakeWordDetector(cfg.wake_model, threshold=cfg.wake_threshold)
                 if mic_dtln is not None else None
             )
-            # Wake-event telemetry store (HANDOFF-wake-telemetry.md PR 3).
-            # Opens the SQLite DB synchronously at startup so the daemon
-            # is "ready" only after the schema migration is applied —
-            # avoids racy "begin_event before CREATE TABLE" failures on
-            # first-ever boot. Failure to open is logged + the daemon
-            # continues with telemetry disabled (the wake / session
-            # path is unaffected).
-            wake_event_store: WakeEventStore | None = None
-            try:
-                wake_event_store = WakeEventStore(
-                    cfg.wake_events_dir,
-                    max_audio_bytes=cfg.wake_events_max_audio_bytes,
-                )
-                wake_event_store.open()
-            except Exception as e:  # noqa: BLE001
-                logger.warning(
-                    "wake_events: failed to open store at %s: %s "
-                    "(continuing with telemetry disabled)",
-                    cfg.wake_events_dir, e,
-                )
-                wake_event_store = None
-            # Register diagnostic tools now that the store is open.
-            # `_build_registry` couldn't do this because the store
-            # isn't created until inside this async-with-mic block.
-            # make_diagnostic_tools returns [] when the store is None,
-            # so the model never sees a tool whose every call would
-            # fail to persist.
-            for fn in make_diagnostic_tools(wake_event_store):
-                registry.register(fn)
+            # `wake_event_store` was opened at the top of run() —
+            # see the comment block above `_build_registry` for the
+            # timing rationale. We just hand it to WakeLoop here.
             wake_loop = WakeLoop(
                 cfg, mic, tts, detector, connection, ducker,
                 tts_volume_tracker, usage_store, spend_cap, stop_event,
@@ -3482,16 +3494,19 @@ async def run() -> None:
                     await control_socket.wait_closed()
                 except Exception:  # noqa: BLE001
                     pass
-                if wake_event_store is not None:
-                    try:
-                        wake_event_store.close()
-                    except Exception as e:  # noqa: BLE001
-                        logger.warning("wake_events store close: %s", e)
     finally:
         # Stop the scheduler FIRST so any in-flight `_run` tasks that
         # were about to fire get cancelled before we tear down the
         # cue manager / TtsPlayout they'd be calling into.
         await timer_scheduler.stop()
+        # Wake-event store close — moved out of the inner async-with
+        # block when the open was hoisted up so the diagnostic tools
+        # could land in the registry before the LLM session opened.
+        if wake_event_store is not None:
+            try:
+                wake_event_store.close()
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wake_events store close: %s", e)
         if tts_volume_tracker is not None:
             await tts_volume_tracker.stop()
         if volume_observer is not None:
