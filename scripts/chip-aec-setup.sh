@@ -24,6 +24,99 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 echo "=== chip-aec-experiment: Phase 1 setup ==="
 echo
 
+# Pre-flight runs first, before the rsync, because a failure here
+# means we should NOT touch the Pi at all. Every check is read-only;
+# nothing destructive happens until "Stopping + masking the production
+# AEC service chain" below.
+#
+# Tripwire philosophy: this experiment is shelved infrastructure that
+# may sit unused for months. When someone revives it, the most likely
+# failure mode is "the topology drifted under it." Each check
+# corresponds to an assumption the rest of the script makes; if any
+# of them is wrong, the rest of the script will leave the Pi in a
+# confusing half-broken state. Fail loudly here instead.
+preflight_check() {
+  echo "==> Pre-flight: verifying topology assumptions"
+  ssh "${PI_USER}@${PI_HOST}" '
+    set -eu
+    fail() { echo "  FAIL: $1"; echo; echo "Aborting before any destructive operation. Fix the issue above, then re-run."; exit 1; }
+    pass() { echo "  ok: $1"; }
+
+    # 1. ALSA can see the chip.
+    if [[ ! -d /proc/asound/Array ]]; then
+      fail "XVF3800 not present as ALSA card \"Array\" (is the chip plugged in? lsusb)"
+    fi
+    pass "XVF3800 enumerated as ALSA card Array"
+
+    # 2. Chip on 6-channel firmware. The experiment needs the 6-ch
+    # capture endpoint for ch1 = ASR beam. The 2-ch firmware only
+    # exposes the chip-processed beam — no raw mics, no ch1 separation.
+    ch=$(awk "/^Capture:/{c=1} c && /Channels:/{print \$2; exit}" /proc/asound/Array/stream0 2>/dev/null || echo "")
+    if [[ "$ch" != "6" ]]; then
+      fail "Chip on ${ch}-channel firmware, but experiment needs 6-channel (ua-io16-6ch-sqr v2.0.8 or newer). See BRINGUP.md Phase 2A.5 for DFU flash."
+    fi
+    pass "chip on 6-channel firmware"
+
+    # 3. plug:jasper_capture resolves as the pi user. PR #223 moved
+    # asoundrc to /etc/asound.conf at mode 0644 specifically so non-
+    # root processes can resolve user-space PCM names. The capture-
+    # comparison script needs this; verify it works before relying
+    # on it.
+    if ! timeout 3 arecord -D plug:jasper_capture --dump-hw-params -d 0 /dev/null > /dev/null 2>&1; then
+      fail "plug:jasper_capture does not resolve as pi user. Is /etc/asound.conf in place? (Run: sudo bash deploy/install.sh on a regular branch.)"
+    fi
+    pass "plug:jasper_capture resolves"
+
+    # 4. Daemon module imports from the runtime venv. The experiment
+    # invokes the daemon as `python -m jasper.chip_aec_experiment`
+    # using /opt/jasper/.venv/bin/python — which only sees the
+    # source after install.sh has run (this setup script uses
+    # SKIP_INSTALL=1 to avoid re-triggering the reconciler, so the
+    # daemon file is NOT updated by this script). First-time setup
+    # requires a regular deploy of THIS branch first.
+    if ! sudo /opt/jasper/.venv/bin/python -c "import jasper.chip_aec_experiment" 2>/dev/null; then
+      fail "jasper.chip_aec_experiment module does not import from /opt/jasper/.venv. First-time setup on this Pi? Run a full deploy of this branch first (without SKIP_INSTALL): bash scripts/deploy-to-pi.sh"
+    fi
+    pass "jasper.chip_aec_experiment module imports"
+
+    # 5. SHF_BYPASS currently 1 (production baseline). If it is
+    # already 0, either a previous chip-aec experiment didn'\''t
+    # teardown cleanly, or something else is mutating chip state.
+    # Either way we should not silently overwrite — operator
+    # investigates first.
+    shf=$(sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 2>/dev/null | grep -oE "\[[0-9]+\]" | tr -d "[]" || echo "")
+    if [[ "$shf" != "1" ]]; then
+      fail "SHF_BYPASS=${shf}, expected 1 (production baseline). Chip is in unexpected state — either a prior teardown failed or something else is mutating params. Investigate manually before re-running."
+    fi
+    pass "SHF_BYPASS=1 (production baseline)"
+
+    # 6. jasper-aec-bridge currently active. Otherwise we are not
+    # masking anything real — either AEC mode is disabled or the
+    # bridge has crashed, both of which the experiment'\''s setup
+    # script does not handle.
+    if ! systemctl is-active jasper-aec-bridge > /dev/null 2>&1; then
+      fail "jasper-aec-bridge.service is not active. Check: systemctl status jasper-aec-bridge. Either JASPER_AEC_MODE=disabled, or the bridge crashed."
+    fi
+    pass "jasper-aec-bridge is active"
+
+    # 7. All four units exist as systemd units. If any have been
+    # renamed in main, the mask block below would log noise but
+    # silently fail to mask the right thing.
+    for unit in jasper-aec-bridge jasper-aec-reconcile jasper-aec-init jasper-dongle-recover; do
+      if ! systemctl list-unit-files "${unit}.service" --no-legend 2>/dev/null | grep -q "^${unit}\.service"; then
+        fail "${unit}.service not found as a systemd unit. Has it been renamed or removed? Check deploy/systemd/ on main."
+      fi
+    done
+    pass "all four service units present (bridge, reconcile, init, dongle-recover)"
+
+    echo
+    echo "  pre-flight passed; safe to proceed."
+  '
+}
+
+preflight_check
+echo
+
 echo "==> Rsync (SKIP_INSTALL=1, no reconciler re-eval)"
 SKIP_INSTALL=1 PI_HOST="$PI_HOST" PI_USER="$PI_USER" bash "${SCRIPT_DIR}/deploy-to-pi.sh"
 
