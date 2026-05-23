@@ -321,27 +321,57 @@ def make_transport_tools(renderer, router):
 
     @tool()
     async def next_track() -> dict:
-        """Skip to the next song."""
+        """Skip to the next song.
+
+        Voice answer style: 'Skipping.' One word. No preamble.
+        On error speak the `error` field verbatim.
+        """
         return await _dispatch("next")
 
     @tool()
     async def previous_track() -> dict:
-        """Go back to the previous song."""
+        """Go back to the previous song.
+
+        Voice answer style: 'Going back.' Two words. No preamble.
+        On error speak the `error` field verbatim.
+        """
         return await _dispatch("previous")
 
     @tool()
     async def pause() -> dict:
-        """Pause / stop the currently playing music. Use for 'pause', 'stop', or any 'make it stop' phrasing."""
+        """Pause / stop the currently playing music. Use for 'pause',
+        'stop', or any 'make it stop' phrasing.
+
+        Voice answer style: 'Paused.' One word. No preamble.
+        On error speak the `error` field verbatim.
+        """
         return await _dispatch("pause")
 
     @tool()
     async def resume() -> dict:
-        """Resume music that was paused. Only call on bare 'play' / 'resume' / 'keep playing' — do NOT call to start a new song or artist; for that, call spotify_play."""
+        """Resume music that was paused. Only call on bare 'play' /
+        'resume' / 'keep playing' — do NOT call to start a new song
+        or artist; for that, call spotify_play.
+
+        Voice answer style: 'Resuming.' One word. No preamble.
+        On error speak the `error` field verbatim.
+        """
         return await _dispatch("play")
 
     @tool()
     async def get_now_playing() -> dict:
-        """Return metadata about the currently playing track (title, artist, album, source)."""
+        """Return metadata about the currently playing track (title,
+        artist, album, source).
+
+        Use for "what's playing?", "who is this?", "what song is
+        this?". DO NOT call as a chaser after spotify_play —
+        Spotify's current_playback lags by several seconds and may
+        report the previous track.
+
+        Voice answer style: '<title> by <artist>.' or '<title> by
+        <artist> from <album>' for richer queries. If `title` is
+        empty, say "Nothing is playing right now."
+        """
         source = await _detect_source(renderer)
         try:
             if source == "airplay":

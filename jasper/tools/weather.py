@@ -11,11 +11,14 @@ def make_weather_tools(weather):
 
     @tool()
     async def get_weather(location: str = "") -> dict:
-        """Return current conditions, today/tomorrow forecasts, hourly
-        slots for the next 7 days, daily summaries for the next 14
-        days, plus daily sunrise/sunset for any day in that range.
-        location is optional — if empty, uses the speaker's default
-        location.
+        """Return current conditions, today/tomorrow forecasts,
+        hourly slots for the next 7 days, daily summaries for the
+        next 14 days, plus daily sunrise/sunset for any day in
+        that range.
+
+        Use for any weather, temperature, rain, sunrise, or sunset
+        question. `location` is optional — empty string uses the
+        speaker's default location.
 
         Response shape:
           location, current_local_time, units ('°C' or '°F')
@@ -76,15 +79,24 @@ def make_weather_tools(weather):
                                             follow-ups drill into
                                             hourly_forecast for that date
 
-        For rain questions, lead with the precipitation_probability
-        percentage (e.g. 'There's a 70% chance of rain tonight').
-        When quoting a rain window, give both endpoints — 'Rain
-        starts around 7 PM and clears by 11 PM' — not just the start.
+        For "will it rain?" questions, lead with the
+        precipitation_probability percentage (e.g. 'There's a 70%
+        chance of rain tonight'). If precipitation_probability is
+        null, fall back to the boolean `will_rain` ('Yes, rain is
+        expected tonight' / 'No rain expected tonight').
 
-        Week-scope answers should be brief: lead with high/low ranges
-        and call out any rainy days. Example: 'Highs in the low 70s,
-        lows around 55. Mostly sunny except Thursday with a 60%
-        chance of rain.'
+        When the user asks about rain TIMING (when will it start /
+        stop / how long), use `next_rain_window` and quote BOTH
+        endpoints — 'Rain starts around noon and clears by Monday
+        morning.' When `next_rain_window.ends_after_forecast` is
+        true, say "continues past <last hour>" instead of an end
+        time. When `next_rain_window` is null, say no rain is
+        expected in the forecast window.
+
+        Week-scope answers should be brief: lead with high/low
+        ranges and call out any rainy days. Example: 'Highs in the
+        low 70s, lows around 55. Mostly sunny except Thursday with
+        a 60% chance of rain.'
         """
         return await weather.get_weather(location)
 

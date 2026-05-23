@@ -171,13 +171,28 @@ def make_calendar_tools(clients: "GoogleClients | None"):
     @tool()
     async def calendar_today_summary(account: str = "") -> dict:
         """Return today's calendar events for a household member's
-        Google account. `account` is the member's name as configured
-        at jts.local/google (e.g. 'jasper', 'brittany'); empty string
-        uses the default account. Responses include start/end clock
-        times in the speaker's local timezone, location, and an
-        all_day flag. Use this for 'what's on my calendar today',
-        'what's Brittany doing today', 'do I have anything this
-        afternoon'."""
+        Google account.
+
+        Use this for "what's on my calendar today", "what's Brittany
+        doing today", "do I have anything this afternoon".
+
+        `account` is the member's name as configured at
+        jts.local/google (e.g. 'jasper', 'brittany'); empty string
+        uses the default account. When the user names a household
+        member ("Brittany's calendar"), pass that name; otherwise
+        omit and the default is used.
+
+        Responses include start/end clock times in the speaker's
+        local timezone, location, and an all_day flag.
+
+        Voice answer style: 'You have N things today: <summary> at
+        <time>, <summary> at <time>…' — keep it scannable, no
+        preamble. For all-day events, "all day <summary>" reads
+        better than "<summary> at all day".
+
+        On error returns {ok: false, error: ...}; speak the error
+        verbatim — it tells the user how to fix the access issue.
+        """
         canonical = clients.resolve_account(account)
         if canonical is None:
             return _no_account_error(clients, account)
@@ -211,11 +226,24 @@ def make_calendar_tools(clients: "GoogleClients | None"):
     @tool()
     async def calendar_upcoming(hours: int = 24, account: str = "") -> dict:
         """Return calendar events starting within the next `hours`
-        hours. `hours` defaults to 24 (the next day); pass 4 for
-        'what's coming up this afternoon', 168 for 'what's on this
-        week'. `account` is the member's name; empty string uses the
-        default. Use for 'what's next', 'what's coming up', 'do I
-        have anything in the next two hours'."""
+        hours.
+
+        Use for "what's next", "what's coming up", "do I have
+        anything in the next two hours", "what's on this week".
+
+        `hours` defaults to 24 (next day). Pass 4 for "this
+        afternoon", 6 for "this evening", 48 for "tomorrow and the
+        next day", 168 for "this week". `account` is the household
+        member's name; empty string uses the default account.
+
+        Voice answer style: 'You have N things coming up: <summary>
+        <time>, <summary> <time>…' — keep it scannable, no
+        preamble. Use natural relative time ("tomorrow at 9", "Friday
+        afternoon") rather than ISO timestamps.
+
+        On error returns {ok: false, error: ...}; speak the error
+        verbatim — it tells the user how to fix the access issue.
+        """
         canonical = clients.resolve_account(account)
         if canonical is None:
             return _no_account_error(clients, account)

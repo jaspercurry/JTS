@@ -34,18 +34,20 @@ def make_citibike_tools(client: CitiBikeClient | None):
 
     @tool()
     async def get_citibike_status(station_label: str = "") -> dict:
-        """Return live Citi Bike availability for the speaker's saved stations.
+        """Return live Citi Bike availability for the speaker's
+        saved stations.
 
         Citi Bike is NYC + Jersey City + Hoboken's docked bikeshare.
         Each saved station's response carries separate counts for
         classic (pedal-only) bikes and e-bikes (battery-assisted),
-        plus open docks. Call this for any question about Citi
-        Bike, bike share, available bikes, e-bikes, or docks — both
-        general ('what's the Citi Bike situation?') and station-
-        specific ('any bikes at 9 Av?').
+        plus open docks. Call for any question about Citi Bike, bike
+        share, available bikes, e-bikes, or docks — both general
+        ("what's the Citi Bike situation?") and station-specific
+        ("any bikes at 9 Av?"). Call fresh every time — counts
+        change minute-to-minute.
 
         Args:
-          station_label (optional): a substring matching one of the
+          station_label (optional): substring matching one of the
             speaker's saved station labels (case-insensitive). Empty
             string => report every saved station. Pass the user's
             spoken phrase verbatim — '9 Av', 'Atlantic', 'the corner
@@ -54,49 +56,70 @@ def make_citibike_tools(client: CitiBikeClient | None):
         Response shape:
           {
             stations: [
-              {label, station_id, ebikes, docks,
-               classic_bikes,  # OMITTED when ebike_only_mode=true
+              {label, station_id, ebikes, docks, is_full, is_stale,
+               classic_bikes,        # OMITTED when ebike_only_mode=true
                status: "ok" | "offline" | "missing",
-               last_reported_age_seconds},
+               last_reported_age_seconds, no_match},
               ...
             ],
             ebike_only_mode: bool,    # household-wide preference
             filter: str,              # echoed back
             no_match: bool,           # true when filter excluded all
           }
-          When `ebike_only_mode` is true, the household only rides
-          e-bikes — `classic_bikes` is omitted from each station and
-          you should speak ONLY the e-bike count for that station.
 
-        Voice answer style:
-          # General query, multiple saved stations:
-          '9 Av has 3 e-bikes and 5 classic; Atlantic has 2 e-bikes
-            and 4 classic.'
-          # Single-station query:
-          '9 Av: 3 e-bikes, 5 classic.'
-          # Station offline:
-          'Atlantic is offline right now.'
-          # E-bike-only mode (classic_bikes omitted from response):
-          '9 Av has 3 e-bikes; Atlantic has 2.'
-          # Stale data (last_reported_age_seconds > 120):
-          'As of two minutes ago, 9 Av had 3 e-bikes and 5 classic.'
-          # No-match filter:
-          'I don't have a saved station matching "9 Av and 41 St".'
+        Voice answer style. Keep responses TIGHT and telegraphic.
+        No preamble ("here's the status…"), no closer ("let me know
+        if…"), no transitions ("also", "meanwhile"). Just the
+        per-station data, comma-separated. The `label` field is
+        already speech-friendly (abbreviations expanded, ordinals
+        applied); read it verbatim. Use a colon between label and
+        counts.
 
-        Always mention BOTH e-bike and classic counts when both are
-        present (unless `ebike_only_mode` is true). When one is zero
-        it's fine to name only the non-zero kind ('5 classic bikes'
-        rather than '5 classic bikes and no e-bikes'). For docks,
-        report one number ('8 open docks') — the e-bike/classic
-        split doesn't apply to docks. Mention docks only when the
-        user asked about them OR when one of the saved stations has
-        3 or fewer docks ('running low on docks at 9 Av').
+          Format:  '<label>: <ebike phrase>, <classic phrase>'
+          Example: '9th Avenue: 3 e-bikes, 5 classic.'
+          Multi-station: separate stations with periods.
+                   '9th Avenue: 3 e-bikes, 5 classic. Atlantic
+                    Avenue: 2 e-bikes, 4 classic.'
 
-        ALWAYS call this tool fresh on every Citi Bike question —
-        counts change minute-to-minute.
+        ZERO-COUNT RULE: write "no" not "zero" and not "0". If
+        `ebikes` is 0 say "no e-bikes" (not "zero e-bikes" / "0
+        e-bikes"). Same for `classic_bikes`. If BOTH are 0, the
+        station has no bikes at all → say "<label> has no bikes."
+
+        EBIKE_ONLY_MODE RULE: when `ebike_only_mode` is TRUE the
+        `classic_bikes` field is omitted — speak ONLY e-bike counts:
+        "9th Avenue: 3 e-bikes. Atlantic: 2." If `ebikes` is 0 in
+        this mode, say "<label> has no e-bikes."
+
+        STATUS RULE: when `status` is 'offline' or 'missing', say
+        "<label> is offline" / "<label> is gone" and don't read its
+        counts.
+
+        DOCKS RULE: don't mention docks unless EITHER (a) the user
+        explicitly asked about docks, OR (b) `is_full` is TRUE, OR
+        (c) `docks` is 1, 2, or 3. Use these phrases literally:
+          is_full=TRUE          → "<label> is full"
+          docks=1               → "only 1 dock open at <label>"
+          docks=2 or 3          → "only <N> docks open at <label>"
+          docks≥4 (not asked)   → don't mention docks
+        DO NOT use "running low", "low on docks", "almost full",
+        "tight", "limited", or any subjective qualifier. DO NOT say
+        "only zero docks" — that's what `is_full` is for.
+
+        STALENESS RULE: ONLY when a station has `is_stale` TRUE,
+        preface that station's portion with "as of a few minutes
+        ago". When every station has `is_stale` FALSE, do NOT
+        mention freshness at all — silence is correct because the
+        data is current. The `last_reported_age_seconds` field is
+        informational; ignore it for narration unless `is_stale` is
+        TRUE.
+
+        NO-MATCH RULE: when `no_match` is true, say "I don't have a
+        saved station matching <filter>."
 
         On error returns {error: ...}; speak the error verbatim so
-        the user knows what to clarify."""
+        the user knows what to clarify.
+        """
         try:
             stations = await asyncio.to_thread(
                 client.get_status, station_filter=station_label,
