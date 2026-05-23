@@ -344,6 +344,107 @@ the same reconciler can select it as the direct fallback. If the future
 mic needs its own AEC path, that should be a deliberate second policy
 branch rather than baking more assumptions into the Array path.
 
+### WiFi profile recovery — sidebar to the ladder
+
+Same shape as the dongle-recover case above, with the missing
+dependency being a **file on the local filesystem** instead of a
+USB device. Lives in this sidebar rather than as a new tier because
+it's declarative reconciliation of state-vs-config drift, not
+liveness recovery.
+
+The 2026-05-23 sequence:
+
+1. USB-C power yanked during a power-splitter swap. The Pi's root
+   ext4 partition had an in-flight write to
+   `/etc/NetworkManager/system-connections/<SSID>.nmconnection`.
+2. On reboot, ext4 journal recovery on the dirty mount discarded
+   the partially-written file entirely.
+3. The Pi came up with NO WiFi profile at all. NetworkManager
+   probed for known networks, found none, and stayed in a
+   disconnected state.
+4. Speaker unreachable on the LAN. Recovery required HDMI +
+   USB-keyboard console (~1 hour) to type `nmcli connect ssid
+   password ...` by hand.
+
+The behavioural fix — graceful shutdown via the `/system/` Power
+Off button — is being adopted separately. The WiFi profile
+guardian is the software floor under it: even with graceful
+shutdown adopted, filesystem corruption / accidental `rm` /
+botched migrations can still erase the keyfile, and the Pi
+should self-heal rather than brick.
+
+Fix shape mirrors `jasper-aec-reconcile` exactly:
+
+- **Wizard-owned stash** at `/var/lib/jasper/wifi_guardian.env`
+  (mode 0600, env-var format with `JASPER_WIFI_SSID` /
+  `JASPER_WIFI_PSK` / `JASPER_WIFI_KEY_MGMT`).
+- **Pure-bash policy script** at
+  `/usr/local/sbin/jasper-wifi-guardian` (from
+  `deploy/bin/jasper-wifi-guardian`), driven by
+  `jasper-wifi-guardian.service` (`Type=oneshot`, after
+  `NetworkManager-wait-online`, gated by `ConditionPathExists=`
+  on the stash).
+- **Write hooks** in the `/wifi/` wizard
+  ([`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py)) —
+  `connect_new` writes from the PSK on the wire, `connect_saved`
+  reads via `nmcli -s`, `forget` clears when the SSID matches.
+- **Install-time seed** in `install.sh`'s `migrate_wifi_guardian`
+  so SSH-driven setup paths arm recovery on the first deploy
+  rather than waiting for the user to open the wizard.
+
+What the script does at boot:
+
+- Active WiFi SSID matches stash → no-op (`steady_state`).
+- Active WiFi SSID differs from stash → no-op (`stash_stale`,
+  operator switched networks via SSH; we don't know which is
+  "right", don't stomp the working network).
+- No active WiFi, but a profile for the stashed SSID exists →
+  `nmcli connection up SSID` (`activate`).
+- No active WiFi and no profile → THE INCIDENT CASE.
+  `nmcli dev wifi connect SSID password $PSK` (`recreate_attempt`).
+  On failure, delete the broken half-profile and exit non-zero so
+  the operator notices.
+
+Why a custom guardian rather than NM-native restoration? There
+isn't one. NetworkManager has no documented "restore profile from
+backup" path; the standard pattern people roll themselves is a
+dispatcher script on `up` events plus a sidecar config store —
+which is exactly the shape of this guardian.
+
+PSK redaction is enforced in three layers:
+- **Bash script:** never includes `$PSK` in `emit` / `log` calls;
+  scrubs literal-PSK and `password \S+` patterns from nmcli
+  stderr before re-emitting on `recreate_fail`.
+- **Python wizard hooks:** logs only SSID + `key_mgmt`; the PSK
+  travels through `_run_nmcli_secret`'s existing scrubber.
+- **`/state` snapshot + doctor:** read the stash for SSID but
+  never include the PSK in any output. `/state` is
+  unauthenticated on the LAN; doctor output ends up in install
+  transcripts and bug reports.
+
+Diagnostic surfaces:
+
+```sh
+# Per-event structured lines (one per guardian run):
+journalctl -u jasper-wifi-guardian | grep event=wifi_guardian
+
+# Live state from jasper-control:
+curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
+
+# Doctor (warns on stash absence + drift; informational only):
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep "WiFi profile guardian"
+
+# Manual trigger (after a known-bad boot to retry now):
+sudo /usr/local/sbin/jasper-wifi-guardian --reason manual
+```
+
+Out of scope (deferred, see PR #266 description):
+- **NM dispatcher script** on `up` events. Adds complexity for an
+  asymmetry the wizard hooks already cover.
+- **Multi-network stash.** The speaker doesn't travel.
+- **WPA-Enterprise.** Wizard rejects it at write-time; script
+  defends in depth (`event=wifi_guardian.skip reason=enterprise`).
+
 ---
 
 ## Implementation map
@@ -518,3 +619,7 @@ sudo journalctl -fu jasper-dongle-recover
 - [sound/drivers/aloop.c on torvalds/linux](https://github.com/torvalds/linux/blob/master/sound/drivers/aloop.c) — the `loopback_cable` state machine that wedges on SIGKILL.
 - [ALSA C library — PCM Interface (snd_pcm_recover, states)](https://www.alsa-project.org/alsa-doc/alsa-lib/group___p_c_m.html) — why `DISCONNECTED` is unrecoverable.
 - PRs that shipped this design: [JTS#77](https://github.com/jaspercurry/JTS/pull/77) (Tier 1+2 watchdog), [JTS#93](https://github.com/jaspercurry/JTS/pull/93) (UDP transport + LoopbackAEC retirement).
+
+---
+
+Last verified: 2026-05-23

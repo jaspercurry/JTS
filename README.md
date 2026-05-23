@@ -584,6 +584,7 @@ and openwakeword stub diet landed.
 | `jasper-voice` (wake + LLM + tools) | Active | ~140-150 MB | ~12% of one core during a session |
 | `jasper-aec-bridge` (software AEC) | **Active** on 6-ch firmware, **disabled** on 2-ch | +85 MB | +3% of one core |
 | `jasper-aec-init` (boot-time chip init) | follows aec-bridge | one-shot, ~0 | ~0 |
+| `jasper-wifi-guardian` (boot-time NM keyfile self-heal) | Active (oneshot) | one-shot, ~0 | ~3-5 ms |
 | `jasper-camilla` (always-on CamillaDSP, ducking) | Active | ~12 MB | <1% |
 | `jasper-control` (HTTP API + dial routing) | Active | ~35 MB | ~0.1% idle |
 | `jasper-input` (HID accessory bridge) | Active | ~28 MB | ~0% idle |

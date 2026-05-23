@@ -57,9 +57,17 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
+from .. import wifi_guardian_persistence
 from ._common import NAV_BACK_CSS, NAV_BACK_HTML
 
 logger = logging.getLogger(__name__)
+
+
+# Stash file path: wizard owns this on every successful save. Match the
+# guardian script's default. Override for tests via env var.
+_STASH_PATH = os.environ.get(
+    "JASPER_WIFI_STASH_FILE", wifi_guardian_persistence.DEFAULT_PATH,
+)
 
 
 # Most nmcli reads are sub-second. Scans block until results are ready;
@@ -466,6 +474,167 @@ def _profile_exists(name: str) -> bool:
     return False
 
 
+def _resolve_key_mgmt(profile_name: str) -> str:
+    """Look up `802-11-wireless-security.key-mgmt` for an existing
+    NM connection profile. Returns one of:
+      - ``wpa-psk`` / ``sae`` / ``wpa-eap`` — exact NM value, lower-case
+      - ``none`` — open network OR the field is missing/empty
+
+    Used to populate the guardian stash's ``key_mgmt`` field after a
+    successful connect so the boot-time recreate knows whether to pass
+    ``password ARG`` to nmcli. ``wpa-eap`` triggers the wizard to
+    skip the stash entirely (enterprise is out of scope per
+    ``docs/HANDOFF-resilience.md``)."""
+    proc = _run_nmcli(
+        ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt",
+         "connection", "show", profile_name],
+        timeout=5, log_argv=False,
+    )
+    if proc.returncode != 0:
+        return "none"
+    for line in proc.stdout.splitlines():
+        fields = _parse_terse(line)
+        if (len(fields) >= 2
+                and fields[0] == "802-11-wireless-security.key-mgmt"
+                and fields[1]):
+            return fields[1].lower()
+    return "none"
+
+
+def _read_profile_secrets(profile_name: str) -> tuple[str, str, str] | None:
+    """Pull ``(ssid, psk, key_mgmt)`` for a saved NM profile by name.
+
+    Uses ``nmcli -s`` (show secrets — requires root) to read the PSK
+    out of NetworkManager's own keyfile. The caller (``_stash_after_saved``)
+    only invokes this after a successful ``connection up``, so the
+    profile is known to exist.
+
+    Returns None on any nmcli failure — the stash refresh skips
+    silently rather than the connect failing."""
+    proc = _run_nmcli(
+        ["nmcli", "-s", "-t", "-f",
+         "802-11-wireless.ssid,"
+         "802-11-wireless-security.psk,"
+         "802-11-wireless-security.key-mgmt",
+         "connection", "show", profile_name],
+        timeout=5, log_argv=False,
+    )
+    if proc.returncode != 0:
+        return None
+    ssid = ""
+    psk = ""
+    key_mgmt = "none"
+    for line in proc.stdout.splitlines():
+        fields = _parse_terse(line)
+        if len(fields) < 2:
+            continue
+        key, val = fields[0], fields[1]
+        if key == "802-11-wireless.ssid":
+            ssid = val
+        elif key == "802-11-wireless-security.psk":
+            psk = val
+        elif key == "802-11-wireless-security.key-mgmt":
+            key_mgmt = (val or "none").lower()
+    if not ssid:
+        return None
+    return ssid, psk, key_mgmt
+
+
+def _stash_after_saved(profile_name: str) -> None:
+    """Refresh the stash from an existing NM profile after a successful
+    ``connection up <name>``. Symmetric with ``_stash_after_connect`` but
+    pulls the PSK out of NM's own keyfile rather than from the wizard
+    request body (the saved-network flow never sees the user's PSK on
+    the wire)."""
+    try:
+        secrets = _read_profile_secrets(profile_name)
+        if secrets is None:
+            logger.info(
+                "event=wifi_guardian.stash_skip profile=%s reason=secrets_unavailable",
+                profile_name,
+            )
+            return
+        ssid, psk, key_mgmt = secrets
+        if key_mgmt == "wpa-eap":
+            logger.info(
+                "event=wifi_guardian.stash_skip ssid=%s reason=enterprise",
+                ssid,
+            )
+            return
+        wifi_guardian_persistence.write_stash(
+            _STASH_PATH, ssid, psk, key_mgmt,
+        )
+        logger.info(
+            "event=wifi_guardian.stash_written ssid=%s key_mgmt=%s",
+            ssid, key_mgmt,
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "event=wifi_guardian.stash_write_failed profile=%s err=%r",
+            profile_name, e,
+        )
+
+
+def _stash_after_connect(ssid: str, password: str | None) -> None:
+    """Update the guardian stash to reflect a just-successful connect.
+
+    Best-effort: failure here MUST NOT fail the connect (the user's WiFi
+    just came up; the stash is a recovery aid, not a blocker). We log a
+    warning and rely on doctor to surface the drift on the next check.
+
+    Skips silently for WPA-Enterprise — the wizard doesn't support it,
+    the guardian can't recreate it (no cert/identity in our stash),
+    and writing a stash we'd refuse to act on is just confusing."""
+    try:
+        key_mgmt = _resolve_key_mgmt(ssid)
+        if key_mgmt == "wpa-eap":
+            logger.info(
+                "event=wifi_guardian.stash_skip ssid=%s reason=enterprise",
+                ssid,
+            )
+            return
+        wifi_guardian_persistence.write_stash(
+            _STASH_PATH, ssid, password or "", key_mgmt,
+        )
+        # PSK never appears in the log line — only the SSID and key_mgmt.
+        logger.info(
+            "event=wifi_guardian.stash_written ssid=%s key_mgmt=%s",
+            ssid, key_mgmt,
+        )
+    except Exception as e:  # noqa: BLE001
+        # Wrap-all because this is a recovery aid path. Anything that
+        # raises here (full disk, permission flip, nmcli timeout in
+        # _resolve_key_mgmt) should not block the user's successful
+        # connect from returning.
+        logger.warning(
+            "event=wifi_guardian.stash_write_failed ssid=%s err=%r",
+            ssid, e,
+        )
+
+
+def _stash_clear_if_matches(ssid: str) -> None:
+    """If the stash currently points at ``ssid``, clear it. Used on
+    Forget — the operator is explicitly telling us the network is gone;
+    we shouldn't try to recreate it at next boot.
+
+    A Forget on a DIFFERENT SSID than the stashed one leaves the stash
+    alone — the operator might be forgetting a guest-network profile
+    while their home network (which the stash points at) stays valid."""
+    try:
+        existing = wifi_guardian_persistence.read_stash(_STASH_PATH)
+        if existing is None:
+            return
+        if existing.ssid != ssid:
+            return
+        wifi_guardian_persistence.clear_stash(_STASH_PATH)
+        logger.info("event=wifi_guardian.stash_cleared ssid=%s", ssid)
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            "event=wifi_guardian.stash_clear_failed ssid=%s err=%r",
+            ssid, e,
+        )
+
+
 def connect_new(ssid: str, password: str | None) -> tuple[bool, str]:
     """Connect to an SSID. If `password` is given the network is
     treated as secured; otherwise as open.
@@ -487,6 +656,11 @@ def connect_new(ssid: str, password: str | None) -> tuple[bool, str]:
     proc = _run_nmcli_secret(cmd, timeout=_CONNECT_TIMEOUT)
 
     if proc.returncode == 0:
+        # Guardian stash refresh — best-effort, never blocks the
+        # connect success. Sees the PSK on the wire here; this is
+        # the canonical point to capture it. See `_stash_after_connect`
+        # for the failure-mode contract.
+        _stash_after_connect(ssid, password)
         return True, f"Connected to {ssid}"
 
     err = (proc.stderr or proc.stdout or "").strip() or "Connection failed"
@@ -531,20 +705,60 @@ def connect_saved(name: str) -> tuple[bool, str]:
         timeout=_CONNECT_TIMEOUT,
     )
     if proc.returncode == 0:
+        # Refresh the stash so the guardian's saved intent matches what
+        # the operator just activated. The PSK comes out of NM's own
+        # keyfile via `nmcli -s` (we don't see it on the wire here).
+        _stash_after_saved(name)
         return True, f"Connected to {name}"
     err = (proc.stderr or proc.stdout or "").strip() or "Activation failed"
     err = re.sub(r"^Error:\s*", "", err).splitlines()[0]
     return False, err
 
 
+def _ssid_for_profile(profile_name: str) -> str | None:
+    """Look up a profile's 802-11-wireless.ssid. Returns None if the
+    profile is missing, can't be queried, or has no SSID field set.
+
+    Distinct from `_read_profile_secrets` — no `nmcli -s`, no PSK touch.
+    Used by `forget` to decide whether the guardian stash should be
+    cleared, without leaking the PSK through a doomed code path."""
+    proc = _run_nmcli(
+        ["nmcli", "-t", "-f", "802-11-wireless.ssid",
+         "connection", "show", profile_name],
+        timeout=5, log_argv=False,
+    )
+    if proc.returncode != 0:
+        return None
+    for line in proc.stdout.splitlines():
+        fields = _parse_terse(line)
+        if (len(fields) >= 2
+                and fields[0] == "802-11-wireless.ssid"
+                and fields[1]):
+            return fields[1]
+    return None
+
+
 def forget(name: str) -> tuple[bool, str]:
     """Delete a saved connection profile. If it's currently active,
     nmcli takes the device down with it."""
+    # Resolve the SSID before the delete so we still have it to compare
+    # against the guardian stash after the profile is gone. We DO NOT
+    # touch the stash on a failed forget — only the user-visible "yes,
+    # this is gone" path clears the recovery intent.
+    ssid_to_forget = _ssid_for_profile(name)
+
     proc = _run_nmcli(
         ["nmcli", "connection", "delete", name],
         timeout=10,
     )
     if proc.returncode == 0:
+        # Clear the stash ONLY if it points at the same SSID the user
+        # just forgot. Forgetting a different profile (e.g. a stale
+        # guest network) must not invalidate the recovery intent for
+        # the household network. The profile NAME and SSID may differ
+        # (netplan-seeded profiles); we always compare on SSID.
+        if ssid_to_forget:
+            _stash_clear_if_matches(ssid_to_forget)
         return True, f"Forgot {name}"
     err = (proc.stderr or proc.stdout or "").strip() or "Delete failed"
     return False, err

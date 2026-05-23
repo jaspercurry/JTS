@@ -507,6 +507,96 @@ scan-list filter shows "WPA-Enterprise" as the security label so the
 user knows why connecting won't work, but the Connect panel doesn't
 expose cert/identity fields.
 
+### Profile guardian — self-heal after filesystem loss
+
+The 2026-05-23 incident: a USB-C power yank during a power-splitter
+swap left the Pi's root ext4 partition with an in-flight write to
+`/etc/NetworkManager/system-connections/<SSID>.nmconnection`. Journal
+recovery discarded the file. The Pi rebooted with no WiFi profile,
+was unreachable on the LAN, and required HDMI + USB-keyboard recovery.
+
+The behavioural fix (graceful shutdown via the `/system/` Power Off
+button) is being adopted separately. The **WiFi profile guardian** is
+the software floor under it: if the NM keyfile ever disappears for
+any reason — this incident, filesystem corruption, an accidental
+`rm`, a botched migration — the Pi self-heals on next boot rather
+than bricking.
+
+**Architecture** mirrors `jasper-aec-reconcile`. Wizard-owned env
+file at `/var/lib/jasper/wifi_guardian.env` (mode 0600, three keys:
+`JASPER_WIFI_SSID` / `JASPER_WIFI_PSK` / `JASPER_WIFI_KEY_MGMT`).
+Pure-bash policy script at
+[`deploy/bin/jasper-wifi-guardian`](deploy/bin/jasper-wifi-guardian)
+run by `jasper-wifi-guardian.service` (`Type=oneshot`, after
+`NetworkManager-wait-online.service`, gated by
+`ConditionPathExists=`).
+
+Zero resident RAM. ~3-5 ms at boot in the steady-state path. Full
+design in [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
+"WiFi profile recovery" section.
+
+**Lifecycle.** The wizard writes the stash on every successful
+`/wifi/` connect (`connect_new` sees the PSK on the wire; `connect_saved`
+re-reads it from NM via `nmcli -s`). `install.sh`'s
+`migrate_wifi_guardian` seeds the stash from the currently-active
+profile on every deploy so SSH-driven setups also arm the recovery.
+`forget` clears the stash only when the forgotten SSID matches the
+stashed one — forgetting a guest network doesn't invalidate recovery
+for the household network.
+
+**What the guardian does at boot:**
+
+```
+if active WiFi matches stash SSID    -> no-op (steady_state)
+if active WiFi differs from stash    -> no-op (stash_stale)
+                                        (operator manually switched
+                                         via SSH; don't disconnect them)
+if no WiFi, profile EXISTS in NM     -> `nmcli connection up SSID`
+if no WiFi, profile MISSING          -> THE INCIDENT: recreate via
+                                        `nmcli dev wifi connect`
+```
+
+The stash-stale path is the most important defensive behaviour: a
+wrong action here would disconnect a working network mid-operator-
+session. Mirrors AEC reconciler's "custom JASPER_MIC_DEVICE → leave
+voice config untouched" idiom.
+
+**Observability:**
+
+```sh
+# Per-event structured lines (one per guardian run):
+journalctl -u jasper-wifi-guardian | grep event=wifi_guardian
+
+# Live state from jasper-control:
+curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
+
+# Doctor surface (warn on stash absence + drift):
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep "WiFi profile guardian"
+
+# Manual trigger (operator decided to retry after a known-bad boot):
+sudo /usr/local/sbin/jasper-wifi-guardian --reason manual
+```
+
+**PSK redaction.** The PSK lives in the stash file (mode 0600, root
+only — mirrors NM's own `/etc/NetworkManager/system-connections/`
+posture). It does NOT appear in any log line: the bash script scrubs
+both literal-PSK and `password \S+` patterns from nmcli stderr
+before re-emission; the Python wizard hook logs only SSID +
+key_mgmt; the doctor + `/state` blocks read the stash for SSID but
+never expose the PSK in any output.
+
+**Out of scope (deferred unless observed need):**
+- **NM dispatcher script** on the `up` event. The wizard hook
+  covers the canonical path; SSH-driven changes get caught by
+  `install.sh`'s migration on the next deploy. A dispatcher would
+  race the wizard's own connect and add debugging-during-incident
+  confusion.
+- **Multi-network stash.** Household speaker doesn't travel. If
+  someone takes their JTS on the road, revisit.
+- **WPA-Enterprise.** Same scope as the wizard itself — the
+  guardian skips with `event=wifi_guardian.skip reason=enterprise`
+  if it encounters one.
+
 ---
 
 ## Transit configuration — read first

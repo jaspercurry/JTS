@@ -1,0 +1,27 @@
+[Unit]
+Description=Recreate lost Wi-Fi profile from /var/lib/jasper/wifi_guardian.env
+Documentation=file:/opt/jasper/docs/HANDOFF-resilience.md
+# Run after NetworkManager finishes its own connect attempt. If NM
+# successfully restored the profile from /etc/NetworkManager/system-
+# connections/ on its own, the guardian no-ops (Case 1: steady_state).
+# We only act when NM failed to bring up WiFi after wait-online's grace.
+After=NetworkManager.service NetworkManager-wait-online.service
+Wants=NetworkManager.service
+# Silently skip on fresh installs where the wizard hasn't saved yet —
+# no stash to recover from. The wizard creates the file on its first
+# successful connect; from then on the guardian arms itself.
+ConditionPathExists=/var/lib/jasper/wifi_guardian.env
+
+[Service]
+Type=oneshot
+# The env-file is sourced by the script itself (set -a / source), not
+# by systemd, so we don't need EnvironmentFile= here. Sourcing in-shell
+# keeps the parsing identical to the local-testing path and lets us
+# enforce read precedence (stash always wins) without systemd-level
+# config drift.
+ExecStart=/usr/local/sbin/jasper-wifi-guardian --reason systemd
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

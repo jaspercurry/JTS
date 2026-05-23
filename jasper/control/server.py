@@ -40,7 +40,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import shairport_supervisor
+from . import shairport_supervisor, wifi_guardian_state
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -645,6 +645,12 @@ async def _get_state(
         },
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
+            # WiFi profile guardian: self-heal of the NM keyfile after
+            # dirty shutdown. Synthesised from the on-disk stash + the
+            # most recent `event=wifi_guardian.*` journal line — there's
+            # no resident daemon to ask (the guardian is Type=oneshot).
+            # Fail-soft inside the snapshot itself; never raises.
+            "wifi_guardian": wifi_guardian_state.snapshot(),
         },
         "home_assistant": ha_status,
     }
