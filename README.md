@@ -317,6 +317,17 @@ reference. Currently:
   `LiveTurn` abstract Gemini Live, OpenAI Realtime, and Grok Voice
   Agent behind one switch, plus the per-provider trade-offs and the
   steps for adding a fourth backend
+- [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — The voice
+  prompting playbook. Cross-provider principles (conditional over
+  absolute, positive framing for tool calls, brevity vs. structure),
+  provider deltas (OpenAI gpt-realtime-2 / Gemini 3.1 Flash Live /
+  Grok think-fast-1.0), a section-by-section walk-through of the
+  current `SYSTEM_INSTRUCTION`, a tool-prompt cookbook including
+  the `build_tool()` first-paragraph truncation, a pitfalls
+  catalog with symptoms, and a "Recommended edits to current code"
+  punch list. **Start here for any edit to `SYSTEM_INSTRUCTION` in
+  `jasper/voice_daemon.py` or any tool description in
+  `jasper/tools/`.** Refreshed against provider docs 2026-05-23.
 - [`satellites.md`](docs/satellites.md) — The home base for the
   satellite-device family. Existing dial + planned AMOLED mic
   satellite, shared protocols (Improv / mDNS-SD / control HTTP / UDP

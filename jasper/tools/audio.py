@@ -59,32 +59,62 @@ def make_audio_tools(coordinator: "VolumeCoordinator"):
     @tool()
     async def get_volume() -> dict:
         """Return the current speaker volume as a percentage 0-100.
-        This tracks the user-perceived level — for music coming via
-        AirPlay/Spotify/BT, that's the source slider's position;
-        otherwise, CamillaDSP's main fader."""
+
+        Call this for any "what's the volume?" / "how loud is it?"
+        question; don't change the volume on a query. This tracks
+        the user-perceived level — for music via AirPlay/Spotify/BT,
+        that's the source slider's position; otherwise CamillaDSP's
+        main fader.
+
+        Voice answer style: 'Volume is at 70%.' Just the number,
+        no preamble.
+        """
         return {"percent": coordinator.get_listening_level()}
 
     @tool()
     async def set_volume(percent: int) -> dict:
-        """Set speaker volume to an absolute percentage 0-100."""
+        """Set speaker volume to an absolute percentage 0-100.
+
+        Call when the user names a specific level ('set volume to
+        sixty', 'volume eighty').
+
+        Voice answer style: speak the new `percent` from the result
+        ('Volume sixty.'). No preamble; no confirmation question.
+        """
         applied = await coordinator.set_listening_level(percent)
         return {"ok": True, "percent": applied}
 
     @tool()
     async def adjust_volume(delta_percent: int) -> dict:
-        """Adjust speaker volume by a relative delta in percent (positive louder, negative softer). Use +10 / -10 for 'volume up' / 'volume down'."""
+        """Adjust speaker volume by a relative delta in percent
+        (positive louder, negative softer).
+
+        Default step for bare 'volume up' / 'volume down' is +10 /
+        -10. For 'a lot louder' / 'a lot quieter' use ±20 to ±30.
+        For 'a little' use ±5.
+
+        Voice answer style: speak the new `percent` from the result
+        ('Volume seventy.'). No preamble; no confirmation question.
+        """
         applied = await coordinator.adjust_listening_level(int(delta_percent))
         return {"ok": True, "percent": applied}
 
     @tool()
     async def mute() -> dict:
-        """Mute the speaker. Unmute restores the prior level."""
+        """Mute the speaker. Unmute restores the prior level.
+
+        Voice answer style: 'Muted.' One word.
+        """
         await coordinator.mute()
         return {"ok": True, "muted": True}
 
     @tool()
     async def unmute() -> dict:
-        """Restore speaker to its pre-mute level (50% if nothing saved)."""
+        """Restore speaker to its pre-mute level (50% if nothing
+        saved).
+
+        Voice answer style: 'Unmuted.' One word.
+        """
         applied = await coordinator.unmute(fallback_level=50)
         return {"ok": True, "percent": applied}
 

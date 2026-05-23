@@ -227,36 +227,53 @@ supervisor helpers (backoff, fingerprint, escalation cue) live at
 
 ---
 
-## Voice system prompt — read the provider's guide before editing
+## Voice prompting — read HANDOFF-prompting.md first
 
-`SYSTEM_INSTRUCTION` in [`jasper/voice_daemon.py`](jasper/voice_daemon.py)
-is what the realtime LLM sees on every turn. **Don't tune it by
-intuition.** Each provider publishes a prompting guide whose
-structure mirrors how their model was RLHF-trained; aligning with
-that structure makes instructions stick. Fighting it (e.g. absolute
-prohibitions where the model expects conditional rules) gets partial
-compliance at best.
+Before editing `SYSTEM_INSTRUCTION` in
+[`jasper/voice_daemon.py`](jasper/voice_daemon.py), any tool
+description in [`jasper/tools/`](jasper/tools/), or any LLM-facing
+prompt surface, read
+[`docs/HANDOFF-prompting.md`](docs/HANDOFF-prompting.md). It's the
+canonical playbook — cross-provider principles, provider deltas,
+the JTS `SYSTEM_INSTRUCTION` walk-through, a tool-prompt cookbook,
+and a pitfalls catalog. Refreshed against the provider docs
+2026-05-23.
 
-Canonical references:
+The rules most often violated without it:
+
+- **Conditional over absolute.** OpenAI's docs say "remove
+  `always`/`never`/`only`/`must` rules unless truly required."
+  Absolute preamble bans get ~33% compliance on gpt-realtime
+  per a public community thread. Phrase rules as "When X, do
+  Y" and enumerate X — the model doesn't generalize unstated
+  scopes. The Gemini story is muddier (forum evidence of 3.1
+  audio ignoring conditionals 2.5 honored) — documented in the
+  playbook.
+- **POSITIVE framing for tool calls.** "Call X when Y," not
+  "Don't guess." A negative-heavy version of our prompt made
+  gpt-realtime-2 skip tools across five voice-eval scenarios —
+  rationale in the comment block above `SYSTEM_INSTRUCTION` in
+  [voice_daemon.py](jasper/voice_daemon.py).
+- **Preamble suppression is a conditional skip-list, never a
+  ban.** Live version in the `Tools — preambles` section of
+  `SYSTEM_INSTRUCTION`; mirrors OpenAI's documented pattern.
+- **Per-tool conditional rules belong in the tool's docstring,
+  not `SYSTEM_INSTRUCTION`.** `build_tool()` at
+  [jasper/tools/__init__.py](jasper/tools/__init__.py) sends
+  the full cleaned docstring to the LLM. When-to-call,
+  voice-answer style, and response-shape handling live in each
+  tool's docstring. `SYSTEM_INSTRUCTION` keeps only cross-tool
+  meta-rules (`error` / `confirm` field handling, preamble
+  policy, verbosity, unclear-audio handling, the small set of
+  cross-tool routing rules where two similar tools need
+  disambiguation).
+
+Canonical provider sources (full list in HANDOFF-prompting.md):
 - OpenAI Realtime — [Realtime Prompting Guide](https://cookbook.openai.com/examples/realtime_prompting_guide)
-  + [Using realtime models](https://developers.openai.com/api/docs/guides/realtime-models-prompting).
-  Defines the recommended skeleton (Role, Personality, Preambles,
-  Verbosity, Tools, …) and concrete language for common patterns.
-- Gemini Live — [Models guide](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
-  + [prompt design](https://ai.google.dev/gemini-api/docs/prompting-strategies).
-- xAI Grok Voice — [Voice agent guide](https://docs.x.ai/docs/guides/voice/agent).
-
-**Preamble pitfall (worth knowing).** `gpt-realtime-2` emits short
-preamble audio before tool calls by default ("checking the live
-arrivals now…"). It's intentional UX, but for our sub-2-second
-tools it takes longer than the tool itself. OpenAI's official
-suppression pattern is **conditional, not absolute**: tell the
-model the cases in which preambles should NOT appear, including
-"the tool call is lightweight and the user would not benefit from
-an update." Absolute bans ("never preamble") get partially ignored
-because they conflict with the conditional rules the model was
-trained on. See the `Preambles` block in `SYSTEM_INSTRUCTION` for
-the live version.
+  + [Using realtime models](https://developers.openai.com/api/docs/guides/realtime-models-prompting)
+- Gemini Live — [3.1 Flash Live Preview docs](https://ai.google.dev/gemini-api/docs/models/gemini-3.1-flash-live-preview)
+  + [Live API best practices](https://ai.google.dev/gemini-api/docs/live-api/best-practices)
+- xAI Grok Voice — [Voice agent guide](https://docs.x.ai/docs/guides/voice/agent)
 
 ---
 

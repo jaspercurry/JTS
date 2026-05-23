@@ -1,3 +1,27 @@
+"""Voice-tool registry + per-provider schema serializers.
+
+Tool factories under ``jasper.tools.*`` register callables via
+``@tool(...)`` and ``ToolRegistry.register(fn)``; the registry then
+serializes them to the provider-specific shape:
+
+- ``function_declarations()`` — Gemini's ``Tool(function_declarations=[...])``
+- ``openai_tools()`` — OpenAI Realtime's flat
+  ``{type: "function", name, description, parameters}``. Grok's
+  voice agent inherits this shape unchanged.
+
+The LLM-facing description for each tool is the function's full
+cleaned docstring (``build_tool`` sends ``inspect.getdoc(fn).strip()``
+verbatim). Per-tool conditional rules — when to call, when NOT to
+call, response shape, voice-answer style — live in the docstring
+and are sent to the model with the tool. Engineer-only notes
+(implementation details, TODOs) belong in ``#`` comments or this
+module docstring, NOT in tool function docstrings.
+
+When adding or editing a tool, read ``docs/HANDOFF-prompting.md``
+first — it covers tool description style, where conditional rules
+should live (here, not in ``SYSTEM_INSTRUCTION``), and the
+cross-provider principles that hold for any prompt edit.
+"""
 from __future__ import annotations
 
 import inspect
@@ -124,8 +148,16 @@ def tool(
 
 
 def build_tool(fn: Callable[..., Any], *, name: str | None = None) -> Tool:
+    """Build a `Tool` from a decorated function. The full cleaned
+    docstring becomes the LLM-facing description — when-to-call
+    guidance, response shape, voice-answer style, and conditional
+    output rules all live in the docstring and are sent to the
+    model verbatim (see docs/HANDOFF-prompting.md for the
+    rationale). Engineer-only notes (dev TODOs, implementation
+    details) belong in `#` comments or the module docstring, not
+    in the tool's function docstring."""
     declared = name or getattr(fn, "__jasper_tool_name__", None) or fn.__name__
-    desc = (inspect.getdoc(fn) or "").strip().split("\n\n")[0] or declared
+    desc = (inspect.getdoc(fn) or "").strip() or declared
     params = _params_schema(fn)
     decl_providers = getattr(fn, "__jasper_tool_providers__", None)
     return Tool(

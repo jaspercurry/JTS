@@ -268,11 +268,26 @@ def make_gmail_tools(clients: "GoogleClients | None"):
     async def gmail_unread_summary(limit: int = _DEFAULT_UNREAD, account: str = "") -> dict:
         """Return the top-N unread inbox messages for a household
         member's Gmail account, filtered to skip Gmail's promotions
-        and social categories. Each entry has from, subject, date
-        (formatted relative to now: 'today at 9:30 AM' etc.), and
-        a snippet. `limit` defaults to 5 (max 20); `account`
-        defaults to the primary registered account. Use for 'any
-        new emails', 'what's in my inbox', 'did Brittany email me'."""
+        and social categories.
+
+        Use for "any new emails?", "what's in my inbox?", "did
+        Brittany email me?". When the user names a household member,
+        pass that name as `account`; otherwise omit.
+
+        Each entry has from, subject, date (formatted relative to
+        now: 'today at 9:30 AM', 'yesterday at 3 PM', 'Monday at
+        2:14 PM'), and a snippet. `limit` defaults to 5 (max 20);
+        `account` defaults to the primary registered account.
+
+        Voice answer style: 'You have N unread: <sender> about
+        <subject>, <sender> about <subject>…' — scannable; the user
+        can follow up for details. Use the formatted `date` field
+        verbatim; don't reformat ISO timestamps. If `count` is 0:
+        'No new emails.'
+
+        On error returns {ok: false, error: ...}; speak the error
+        verbatim — it tells the user how to fix the access issue.
+        """
         canonical = clients.resolve_account(account)
         if canonical is None:
             return _no_account_error(clients, account)
@@ -348,13 +363,27 @@ def make_gmail_tools(clients: "GoogleClients | None"):
     @tool()
     async def gmail_read_thread(thread_id: str, account: str = "") -> dict:
         """Return the full body text of a Gmail thread, with one
-        entry per message (oldest first). `thread_id` is the value
-        from a prior gmail_unread_summary response. `account`
-        defaults to the primary registered account. Use when the
-        user says 'read me the first one', 'open that email', 'what
-        does it say' after a summary. Returns subject and a list of
-        messages each with from, date, and body (text/plain when
-        available, otherwise HTML stripped to text)."""
+        entry per message (oldest first).
+
+        Use when the user says "read me the first one", "open that
+        email", "what does it say" after a summary. `thread_id` is
+        the value from a prior `gmail_unread_summary` response;
+        don't fabricate one. `account` defaults to the primary
+        registered account.
+
+        Returns subject and a list of messages each with from, date,
+        and body (text/plain when available, otherwise HTML stripped
+        to text).
+
+        Voice answer style: lead with the subject and sender ('From
+        <sender>, subject <subject>:'), then read the body. For
+        multi-message threads (oldest first), name the sender for
+        each. Body is already cleaned of HTML; read it as-is, but
+        skip signature blocks if the message ends with one.
+
+        On error returns {ok: false, error: ...}; speak the error
+        verbatim.
+        """
         canonical = clients.resolve_account(account)
         if canonical is None:
             return _no_account_error(clients, account)

@@ -64,12 +64,24 @@ def make_timer_tools(scheduler: "TimerScheduler"):
 
     @tool()
     async def set_timer(seconds: int, label: str = "") -> dict:
-        """Schedule a timer that announces when it fires. `seconds`
-        is the timer duration (300 for 5 minutes, 3600 for 1 hour).
-        `label` is optional — when set ('pasta', 'laundry'), the
-        announcement names it ('Your pasta timer is up'); when
-        empty, the announcement uses the duration ('Your timer for
-        5 minutes is up'). Multiple timers can run concurrently."""
+        """Schedule a timer that announces when it fires.
+
+        Use for "set a timer for X minutes", "remind me in an hour",
+        "ten minute timer", "X-minute pasta timer".
+
+        `seconds` is the timer duration in seconds: "5 minutes" →
+        300, "an hour" → 3600, "90 seconds" → 90. `label` is
+        optional — when set ('pasta', 'laundry'), the fire-time
+        announcement names it ("Your pasta timer is up"); when
+        empty, the announcement uses the duration ("Your timer for
+        5 minutes is up"). Multiple timers can run concurrently —
+        a new one does not cancel existing ones.
+
+        Voice answer style: speak the response's `confirm` field
+        verbatim ("Set a pasta timer for 5 minutes."). The speaker
+        plays the fire-time announcement automatically — DON'T
+        promise to remind the user; the timer does it itself.
+        """
         try:
             timer = scheduler.add(int(seconds), label or None)
         except ValueError as e:
@@ -82,8 +94,18 @@ def make_timer_tools(scheduler: "TimerScheduler"):
 
     @tool()
     async def list_timers() -> dict:
-        """Return all active timers with remaining time. Each timer
-        has id, label (may be null), duration, and remaining."""
+        """Return all active timers with remaining time.
+
+        Use for "how much time left?", "what timers do I have?",
+        "list my timers".
+
+        Each timer has id, label (may be null), duration, and
+        remaining (both as ISO durations and seconds).
+
+        Voice answer style: brief summary, one phrase per timer.
+        "Pasta timer has 3 minutes left, laundry timer has 25
+        minutes." If `count` is 0: "No timers running."
+        """
         timers = scheduler.list_active()
         return {
             "count": len(timers),
@@ -92,11 +114,22 @@ def make_timer_tools(scheduler: "TimerScheduler"):
 
     @tool()
     async def cancel_timer(timer: str) -> dict:
-        """Cancel a timer by label or id. `timer` is the label
-        ('pasta') or the id returned from set_timer. If multiple
-        timers match the label, the response includes them all
-        under `matches` and you should ask the user which one.
-        If no timer matches, returns ok=false with reason='not_found'."""
+        """Cancel a timer by label or id.
+
+        Use for "cancel the pasta timer", "stop the timer", "cancel
+        the 10-minute timer". `timer` is the label ('pasta') or the
+        id returned from set_timer; the user's spoken phrase
+        usually maps to the label.
+
+        Voice answer style: speak the response's `confirm` field
+        verbatim ("Cancelled the pasta timer.").
+
+        If `reason='ambiguous'` (multiple timers match), read the
+        candidate durations from `matches` and ask which to cancel
+        — "I have two pasta timers, one for 5 minutes and one for
+        10 minutes. Which one?" If `reason='not_found'`, speak the
+        `error` field verbatim ("No timer matches 'pasta'.").
+        """
         cancelled, matches = scheduler.cancel(timer)
         if cancelled:
             t = matches[0]

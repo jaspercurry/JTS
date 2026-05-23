@@ -85,18 +85,20 @@ def make_home_assistant_tools(ha: HAClient | None):
                                   (empty when success=true)
 
         Voice answer style:
-          On success, speak `spoken_response` exactly — Home Assistant
-          phrased its own response. Don't add 'OK' or 'Done' on top of
-          it; if HA said 'Turned on the bedroom lights' that's the
-          full answer.
-          On failure (success=false), speak the response briefly in
-          your own words ('Home Assistant couldn't find that' /
-          'I can't reach Home Assistant right now'). Don't apologize
-          at length.
+          On success, speak `spoken_response` exactly — Home
+          Assistant phrased its own response. Don't add 'OK' or
+          'Done' on top of it; if HA said 'Turned on the bedroom
+          lights' that's the full answer.
+          On failure (success=false), speak the `error_detail`
+          briefly in your own words ('Home Assistant couldn't find
+          that' / 'I can't reach Home Assistant right now'). Don't
+          apologize at length and don't offer to try again unless
+          the user asks.
 
-        Skip the preamble — Home Assistant typically responds in well
-        under a second on the rule-based path, and the user gains
-        nothing from a status update."""
+        Skip the preamble — Home Assistant typically responds in
+        well under a second on the rule-based path, and the user
+        gains nothing from a status update.
+        """
         result = await ha.process(query)
         return result.as_tool_result()
 

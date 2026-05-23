@@ -30,12 +30,12 @@ def make_time_tools():
     async def get_current_time() -> dict:
         """Return the current local date, time, and day-of-week.
 
-        Call this for ANY question about the current time, day, or
-        date — "what time is it", "what day is it", "what's today's
-        date", "is it morning yet", etc. The realtime model's
-        internal clock is the session-open timestamp from the system
-        prompt; it goes stale within hours. Always prefer this tool
-        over the session-open hint.
+        Call for ANY question about the current time, day, or date
+        — "what time is it", "what day is it", "what's today's
+        date", "is it morning yet". The realtime model's internal
+        clock is the session-open timestamp from the system prompt;
+        it goes stale within hours. Always prefer this tool over
+        the session-open hint.
 
         Response shape:
           local_time: ISO 8601 local time, minute-resolution
@@ -46,10 +46,10 @@ def make_time_tools():
                     reports it (e.g. "EDT", "PST", "UTC").
           day_of_week: full name (e.g. "Thursday").
 
-        Voice answer style:
-          'It's 3:47 PM.'
-          'It's Thursday, May 21.'
-          'It's a quarter past 7.'  (round if natural)
+        Voice answer style: speak naturally — "It's 3:47 PM" or
+        "It's Thursday, May 21" or "It's a quarter past 7" (round
+        when the user asks casually). Don't read out the timezone
+        abbreviation unless the user explicitly asked for it.
         """
         now = datetime.now().astimezone()
         return {

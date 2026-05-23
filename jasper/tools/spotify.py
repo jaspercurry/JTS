@@ -512,16 +512,20 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
         playback; for artists/albums/tracks the flag is accepted but
         has no effect.
 
-        On success the response includes a `confirm` field — speak that
-        sentence verbatim to the user so they hear which artist / song /
-        playlist was actually selected. This is especially important for
-        playlists, where voice-to-text mishears coined names ("Jaspany
-        Jamz" → "Jazz Knee Jams") and the user needs to know whether
-        the right thing is now playing.
+        Voice answer style: when the result has a `confirm` field,
+        speak that sentence verbatim — DO NOT substitute "Done." or
+        "OK." The confirm sentence names what was actually selected,
+        which matters most for playlists where voice-to-text
+        mishears coined names ("Jaspany Jamz" → "Jazz Knee Jams")
+        and the user needs to hear whether the right thing started.
+        On error, speak the `error` field verbatim — it tells the
+        user what's wrong (no account configured, Spotify Connect
+        not linked, query didn't match).
 
-        Returns an error asking the user to specify when nothing matches
-        confidently. The user must re-issue the wake word + command — the
-        mic does not stay open for follow-ups."""
+        Returns an error asking the user to specify when nothing
+        matches confidently. The user must re-issue the wake word
+        + command — the mic does not stay open for follow-ups.
+        """
         resolved = await _resolve_for_play()
         if resolved is None:
             return {"error": _no_account_msg()}
@@ -743,7 +747,17 @@ def make_spotify_tools(router, renderer, librespot_name: str, setup_url: str = "
 
     @tool()
     async def spotify_queue(query: str) -> dict:
-        """Search Spotify for a track and add it to the playback queue."""
+        """Search Spotify for a track and add it to the playback
+        queue.
+
+        Use when the user wants to add a song to play AFTER the
+        current one — "queue up X", "play X next", "add X to the
+        queue". For "play X now", call `spotify_play` instead.
+
+        Voice answer style: brief confirmation naming what was
+        queued — 'Queued <track>.' On error speak the `error` field
+        verbatim.
+        """
         resolved = await _resolve_for_play()
         if resolved is None:
             return {"error": _no_account_msg()}
