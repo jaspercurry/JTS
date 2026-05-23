@@ -111,13 +111,21 @@ The bridge taps `pcm.jasper_capture`, a dsnoop on `hw:Loopback,1,0` —
 the music chain reference, BEFORE CamillaDSP processing. So:
 
 - TTS bleed through the mic isn't in the AEC reference; the bridge
-  cancels music bleed only.
+  cancels music bleed only. This is **intentional** today — the
+  in-session Silero VAD gate at threshold 0.15 handles TTS bleed
+  without needing AEC to cancel it. If robust barge-in (cleanly
+  interrupting the assistant during loud music) becomes a goal,
+  the architecture has to change — see
+  [HANDOFF-barge-in.md](HANDOFF-barge-in.md) for the option space
+  (ALSA convergence sink vs PipeWire migration vs measure-first).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
   move the dsnoop tap downstream of CamillaDSP.
 
 ## Related
 
+- [HANDOFF-barge-in.md](HANDOFF-barge-in.md) — open architectural
+  decision for upgrading barge-in beyond VAD-only filtering.
 - [HANDOFF-volume.md](HANDOFF-volume.md) — VolumeCoordinator and
   source-aware dispatch.
 - [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md) —
