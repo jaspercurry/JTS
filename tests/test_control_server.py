@@ -651,6 +651,159 @@ def test_state_dial_online_false_when_no_last_seen_ip(
     assert called == []
 
 
+# --- Dial heartbeat persistence (survives jasper-control restart) ---
+
+
+def test_load_dial_heartbeat_missing_file_returns_defaults(tmp_path, monkeypatch):
+    """No persisted file → the loader returns the empty defaults.
+    Daemon startup must not block on a missing heartbeat file."""
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(
+        srv_mod, "DIAL_HEARTBEAT_PATH", str(tmp_path / "missing.json"),
+    )
+    out = srv_mod._load_dial_heartbeat()
+    assert out == {"last_seen_at": None, "last_seen_ip": None, "last_message": None}
+
+
+def test_load_dial_heartbeat_malformed_file_returns_defaults(tmp_path, monkeypatch):
+    """A corrupted persisted file (truncated, garbled, hand-edited
+    into invalid JSON) must not block startup — fall back to defaults
+    and let the next dlog refresh the state."""
+    import jasper.control.server as srv_mod
+
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not valid json, last_seen_ip: ...")
+    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(bad))
+    out = srv_mod._load_dial_heartbeat()
+    assert out["last_seen_ip"] is None
+
+
+def test_load_dial_heartbeat_wrong_types_returns_defaults_per_field(
+    tmp_path, monkeypatch,
+):
+    """Defensive: if someone hand-edits the file and sets last_seen_at
+    to a string or last_seen_ip to a number, drop the bad value rather
+    than propagating it into /state.satellites.dial.
+
+    Other fields with valid types still come through — partial-bad
+    files aren't completely thrown away."""
+    import json
+    import jasper.control.server as srv_mod
+
+    path = tmp_path / "mixed.json"
+    path.write_text(json.dumps({
+        "last_seen_at": "not-a-float",   # wrong type
+        "last_seen_ip": "192.168.1.89",  # valid
+        "last_message": 42,              # wrong type
+    }))
+    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    out = srv_mod._load_dial_heartbeat()
+    assert out["last_seen_at"] is None
+    assert out["last_seen_ip"] == "192.168.1.89"
+    assert out["last_message"] is None
+
+
+def test_persist_then_load_roundtrip(tmp_path, monkeypatch):
+    """Write a heartbeat, read it back. The path must survive across
+    `jasper-control` lifetime — this is the actual gap-closer."""
+    import jasper.control.server as srv_mod
+
+    path = tmp_path / "round.json"
+    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    snapshot = {
+        "last_seen_at": 1779550000.0,
+        "last_seen_ip": "192.168.1.89",
+        "last_message": "[encoder] detent=1 → POST OK",
+    }
+    srv_mod._persist_dial_heartbeat(snapshot)
+    assert path.exists()
+    loaded = srv_mod._load_dial_heartbeat()
+    assert loaded == snapshot
+
+
+def test_persist_dial_heartbeat_is_atomic_via_tempfile(tmp_path, monkeypatch):
+    """Writes go through a `.tmp` file then `os.replace` — guarantees
+    a reader never sees a half-written file even if the daemon crashes
+    mid-write. We check the temp file is cleaned up after a normal
+    write (replace removes it)."""
+    import jasper.control.server as srv_mod
+
+    path = tmp_path / "atomic.json"
+    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+    srv_mod._persist_dial_heartbeat({
+        "last_seen_at": 1.0, "last_seen_ip": "1.2.3.4", "last_message": "x",
+    })
+    assert path.exists()
+    # tempfile sibling shouldn't linger after a successful write.
+    assert not (tmp_path / "atomic.json.tmp").exists()
+
+
+def test_persist_dial_heartbeat_fails_soft_on_io_error(tmp_path, monkeypatch, caplog):
+    """An unwritable directory (e.g. read-only fs) must not crash the
+    UDP listener — log a warning and continue. Heartbeat is best-effort."""
+    import logging
+    import jasper.control.server as srv_mod
+
+    # Point at a path under a regular file (definitely can't mkdir
+    # there) so the makedirs call raises.
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("")
+    monkeypatch.setattr(
+        srv_mod, "DIAL_HEARTBEAT_PATH", str(blocker / "child" / "hb.json"),
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.dial"):
+        srv_mod._persist_dial_heartbeat({
+            "last_seen_at": 1.0, "last_seen_ip": "1.2.3.4", "last_message": "x",
+        })
+    # Did not raise; warning was logged.
+    assert any(
+        "dial heartbeat persistence" in rec.message for rec in caplog.records
+    )
+
+
+def test_state_dial_online_uses_persisted_ip_after_restart_simulation(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """End-to-end of the gap-closer: simulate a daemon restart by
+    writing a heartbeat file, clearing the in-memory dict, then
+    reloading. /state should then probe the persisted IP and return
+    online=true without anyone touching the dial.
+
+    This is the only scenario the persistence work exists to fix —
+    everything else is plumbing."""
+    import json
+    import jasper.control.server as srv_mod
+
+    # Simulate a previous daemon's persisted state.
+    path = tmp_path / "hb.json"
+    path.write_text(json.dumps({
+        "last_seen_at": 1779550000.0,
+        "last_seen_ip": "192.168.1.89",
+        "last_message": "[encoder] detent=1 → POST OK",
+    }))
+    monkeypatch.setattr(srv_mod, "DIAL_HEARTBEAT_PATH", str(path))
+
+    # Simulate fresh-process startup: reload the heartbeat into the
+    # module-level dict.
+    fresh = srv_mod._load_dial_heartbeat()
+    for k, v in fresh.items():
+        srv_mod._dial_heartbeat[k] = v
+
+    # Stub the TCP probe so the test doesn't touch the network.
+    probed = []
+    async def fake_probe(ip, *, timeout=0.5):  # noqa: ARG001
+        probed.append(ip)
+        return True
+    monkeypatch.setattr(srv_mod, "_probe_dial_reachable", fake_probe)
+
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/state")
+    assert status == 200
+    assert body["satellites"]["dial"]["online"] is True
+    assert probed == ["192.168.1.89"]
+
+
 # --- Regression tests for the BuildResult return-shape change ---
 
 

@@ -51,11 +51,70 @@ dial_log = logging.getLogger("jasper.dial")
 # so jasper-doctor can ask "is a dial actually talking to us?" without
 # parsing the journal. Lock isn't needed — Python dict assignment is
 # atomic and a stale read is harmless for a heartbeat.
-_dial_heartbeat: dict[str, Any] = {
-    "last_seen_at": None,    # float epoch seconds, or None
-    "last_seen_ip": None,    # str IPv4, or None
-    "last_message": None,    # str (last UDP payload), or None
-}
+#
+# Persisted to disk so `last_seen_ip` survives a jasper-control
+# restart. Without this, every restart (typically a deploy) leaves
+# the in-memory dict empty until the next user-initiated dlog —
+# encoder turn or button press — which makes /state.satellites.dial.online
+# briefly inaccurate for any external consumer. The file is tiny
+# (~150 B) and writes happen at dlog rate (a few per second under
+# heavy dial use), well within SD-card tolerance.
+DIAL_HEARTBEAT_PATH = os.environ.get(
+    "JASPER_DIAL_HEARTBEAT_PATH",
+    "/var/lib/jasper/dial_heartbeat.json",
+)
+
+
+def _load_dial_heartbeat() -> dict[str, Any]:
+    """Read the persisted heartbeat dict. Returns the empty default
+    on any error (missing file, malformed JSON, wrong types) — a
+    corrupted persisted file should never block the daemon from
+    starting. Field-level type checks prevent a stale or
+    hand-edited file from injecting odd values into /state.
+    """
+    default: dict[str, Any] = {
+        "last_seen_at": None,
+        "last_seen_ip": None,
+        "last_message": None,
+    }
+    try:
+        with open(DIAL_HEARTBEAT_PATH) as f:
+            blob = json.load(f)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return default
+    if not isinstance(blob, dict):
+        return default
+    ts = blob.get("last_seen_at")
+    ip = blob.get("last_seen_ip")
+    msg = blob.get("last_message")
+    return {
+        "last_seen_at": ts if isinstance(ts, (int, float)) else None,
+        "last_seen_ip": ip if isinstance(ip, str) else None,
+        "last_message": msg if isinstance(msg, str) else None,
+    }
+
+
+def _persist_dial_heartbeat(snapshot: dict[str, Any]) -> None:
+    """Atomically write the heartbeat snapshot. Fail-soft — a write
+    error logs at WARN but never raises into the UDP listener's
+    receive loop. tempfile+rename guarantees readers never see a
+    half-written file."""
+    try:
+        directory = os.path.dirname(DIAL_HEARTBEAT_PATH)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        tmp = DIAL_HEARTBEAT_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(snapshot, f)
+        os.replace(tmp, DIAL_HEARTBEAT_PATH)
+    except OSError as e:
+        dial_log.warning(
+            "dial heartbeat persistence: write to %s failed: %s",
+            DIAL_HEARTBEAT_PATH, e,
+        )
+
+
+_dial_heartbeat: dict[str, Any] = _load_dial_heartbeat()
 
 
 # Same range jasper.tools.audio uses for the voice-driven volume tools.
@@ -1234,6 +1293,10 @@ def run_dial_log_listener(host: str, port: int) -> threading.Thread:
             _dial_heartbeat["last_seen_at"] = time.time()
             _dial_heartbeat["last_seen_ip"] = addr[0]
             _dial_heartbeat["last_message"] = msg
+            # Persist so the next jasper-control restart inherits the
+            # last-known IP instead of starting empty (which would leave
+            # /state.satellites.dial.online as false until the next dlog).
+            _persist_dial_heartbeat(dict(_dial_heartbeat))
 
     t = threading.Thread(target=_loop, name="dial-log-listener", daemon=True)
     t.start()
