@@ -8,6 +8,10 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    # Default provider for tests that load jasper.config (the config
+    # loader hard-fails without this set). Individual tests can override.
+    env:
+      JASPER_VOICE_PROVIDER: gemini
     steps:
       - uses: actions/checkout@v4
 
@@ -32,8 +36,14 @@ jobs:
       - name: Install JTS with dev extras
         run: pip install -e '.[dev]'
 
-      - name: Test (hardware-free; voice_eval auto-skips without keys)
-        run: pytest -q --tb=short
+      - name: Test (hardware-free; voice_eval explicitly excluded)
+        # voice_eval is the paid LLM suite — never CI material. Auto-skip
+        # is unreliable here because tests/test_doctor.py leaks
+        # OPENAI_API_KEY=wiz-key into os.environ (via load_env_files) and
+        # the voice_eval conftest's skip check then sees a non-empty key
+        # and tries to use it. --ignore is the durable fix; the env-leak
+        # in test_doctor is a separate bug worth tracking.
+        run: pytest -q --tb=short --ignore=tests/voice_eval
 
       # Lint deferred: `ruff check .` reports ~185 pre-existing
       # violations (mostly in tests/voice_eval/). Adding lint to CI
