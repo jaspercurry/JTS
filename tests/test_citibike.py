@@ -22,6 +22,7 @@ from jasper.citibike import (
     clear_cache,
     fetch_feed,
     format_saved_stations,
+    normalize_station_name,
     parse_saved_stations,
 )
 from jasper.transit.base import TransitError, TransitProvider
@@ -125,6 +126,134 @@ def test_parse_empty_label_falls_back_to_id():
 def test_format_round_trip():
     saved = [("abc", "9 Av"), ("def", "Atlantic & Smith")]
     assert parse_saved_stations(format_saved_stations(saved)) == saved
+
+
+# --- normalize_station_name: speech-friendly label expansion ----------
+
+
+@pytest.mark.parametrize("raw,expected", [
+    # Basic suffix expansion + ordinalize.
+    ("9 Ave & 41 St", "9th Avenue and 41st Street"),
+    ("9 Av & 41 St", "9th Avenue and 41st Street"),
+    ("Broadway & W 41 St", "Broadway and West 41st Street"),
+    ("62 Dr & 110 St", "62nd Drive and 110th Street"),
+    ("4 Ave & E 12 St", "4th Avenue and East 12th Street"),
+    # Compass directions both sides.
+    ("W 35 St & 8 Ave", "West 35th Street and 8th Avenue"),
+    ("E 22 St & Broadway", "East 22nd Street and Broadway"),
+    # "St" → "Saint" when followed by a capitalized proper name.
+    ("St James Pl", "Saint James Place"),
+    ("St Marks Ave", "Saint Marks Avenue"),
+    ("St Nicholas Ave", "Saint Nicholas Avenue"),
+    # Names already containing "Saint" stay sensible.
+    ("Saint Nicholas Ave", "Saint Nicholas Avenue"),
+    # Avenues lettered A-Z (not directions) stay as letters.
+    ("Avenue A", "Avenue A"),
+    ("Av X & E 5 St", "Avenue X and East 5th Street"),
+    ("Av W & Brighton", "Avenue W and Brighton"),  # Brooklyn's actual "Av W"
+    # Ordinal edge cases.
+    ("1 Ave", "1st Avenue"),
+    ("2 Ave", "2nd Avenue"),
+    ("3 Ave", "3rd Avenue"),
+    ("11 St", "11th Street"),
+    ("12 St", "12th Street"),
+    ("13 St", "13th Street"),
+    ("21 St", "21st Street"),
+    ("22 Ave", "22nd Avenue"),
+    ("101 St", "101st Street"),
+    ("111 St", "111th Street"),
+    ("127 St", "127th Street"),
+    # Other abbreviations.
+    ("Eastern Pkwy & Franklin Ave", "Eastern Parkway and Franklin Avenue"),
+    ("Atlantic Ave & Smith St", "Atlantic Avenue and Smith Street"),
+    ("Union Sq W & 14 St", "Union Square West and 14th Street"),
+    ("Linden St & Knickerbocker Ave", "Linden Street and Knickerbocker Avenue"),
+    # Trailing periods (operator-typed) tolerated.
+    ("9 Av. & 41 St.", "9th Avenue and 41st Street"),
+    # No abbreviations → passthrough (modulo double-space cleanup).
+    ("Broadway", "Broadway"),
+    ("Empire Stores", "Empire Stores"),
+    # Empty / whitespace.
+    ("", ""),
+    ("   ", ""),
+])
+def test_normalize_station_name(raw: str, expected: str):
+    assert normalize_station_name(raw) == expected
+
+
+def test_normalize_idempotent_on_already_normalized():
+    """A second pass through the normalizer shouldn't change anything.
+    Catches regressions where e.g. ordinalize matches '41st Street'
+    and turns it into '41stst Street' or similar."""
+    samples = [
+        "9th Avenue and 41st Street",
+        "West 35th Street and 8th Avenue",
+        "Saint James Place",
+        "Avenue A",
+        "Broadway",
+    ]
+    for s in samples:
+        assert normalize_station_name(s) == s, f"changed: {s!r}"
+
+
+# --- Filter matching against normalized + raw labels ------------------
+
+
+def test_get_status_filter_matches_normalized_form(monkeypatch):
+    """User says 'the 41st Street one' — filter is 'the 41st Street'
+    and we should match against the normalized label even though the
+    saved label is raw '9 Ave & 41 St'."""
+    monkeypatch.setattr(
+        "jasper.citibike.fetch_feed",
+        lambda url, ttl, **kw: _gbfs_envelope(
+            _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
+        ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
+    )
+    c = CitiBikeClient(saved_stations=[("abc", "9 Ave & 41 St")])
+    out = c.get_status(station_filter="41st Street")
+    assert len(out) == 1
+    assert out[0].station_id == "abc"
+
+
+def test_get_status_filter_matches_raw_form(monkeypatch):
+    """User (or LLM passing the spoken phrase verbatim) says '9 Ave' —
+    raw substring matches the saved label even though normalization
+    would turn it into '9th Avenue'."""
+    monkeypatch.setattr(
+        "jasper.citibike.fetch_feed",
+        lambda url, ttl, **kw: _gbfs_envelope(
+            _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
+        ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
+    )
+    c = CitiBikeClient(saved_stations=[("abc", "9 Ave & 41 St")])
+    assert len(c.get_status(station_filter="9 Ave")) == 1
+
+
+def test_get_status_filter_matches_ordinal_only(monkeypatch):
+    """User says '41st' alone — must match. Normalization doesn't
+    add or remove '41st' from either side, so substring works."""
+    monkeypatch.setattr(
+        "jasper.citibike.fetch_feed",
+        lambda url, ttl, **kw: _gbfs_envelope(
+            _station_info("abc", "9 Ave & 41 St", 40.65, -74.01),
+        ) if url == STATION_INFO_URL else _gbfs_envelope(_station_status("abc")),
+    )
+    c = CitiBikeClient(saved_stations=[("abc", "9 Ave & 41 St")])
+    assert len(c.get_status(station_filter="41st")) == 1
+
+
+def test_as_dict_label_is_normalized():
+    """Verify the dict (what the LLM sees) uses normalized labels even
+    though the dataclass field is raw."""
+    s = StationStatus(
+        station_id="abc", label="9 Ave & 41 St",
+        classic_bikes=5, ebikes=2, docks=10,
+        status="ok", last_reported_age_seconds=20,
+    )
+    d = s.as_dict()
+    assert d["label"] == "9th Avenue and 41st Street"
+    # Raw still accessible on the dataclass for non-speech consumers.
+    assert s.label == "9 Ave & 41 St"
 
 
 # --- fetch_feed: caching + stale-on-error -----------------------------

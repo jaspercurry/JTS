@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -193,6 +194,122 @@ def format_saved_stations(saved: list[tuple[str, str]]) -> str:
     return ",".join(f"{sid}|{label}" for sid, label in saved)
 
 
+# --- Speech-friendly station name normalization ----------------------
+
+# GBFS returns raw station names with USPS-style abbreviations:
+#   "9 Av & 41 St"           — MTA convention, Citi Bike sometimes
+#   "Broadway & W 41 St"     — Lyft mixed convention
+#   "4 Ave & E 12 St"        — Citi Bike's usual "Ave" spelling
+#   "St James Pl"            — "St" here means "Saint"
+#
+# The realtime LLM emits these verbatim and its TTS reads them
+# letter-by-letter: "St" becomes "Street" (correct) but "41" stays
+# cardinal — produces "41 Street" instead of "41st Street." Same
+# issue for compass directions ("W" → "W" instead of "West") and
+# Avenue/Drive/etc. This normalizer expands abbreviations and
+# ordinalizes numbered streets before the label reaches the LLM.
+# Applied at as_dict() time only — the wizard-saved label and
+# the StationStatus dataclass field stay raw so they match what
+# the user sees on the Citi Bike website / app.
+
+# Street-suffix abbreviations. Word-bounded so "Avenue" doesn't
+# match inside "Avalanche" or similar. Optional trailing period for
+# operator-typed labels ("Av.").
+_SUFFIX_MAP = [
+    (re.compile(r"\bAv\b\.?"), "Avenue"),
+    (re.compile(r"\bAve\b\.?"), "Avenue"),
+    (re.compile(r"\bBlvd\b\.?"), "Boulevard"),
+    (re.compile(r"\bBr\b\.?"), "Bridge"),
+    (re.compile(r"\bCt\b\.?"), "Court"),
+    (re.compile(r"\bDr\b\.?"), "Drive"),
+    (re.compile(r"\bExt\b\.?"), "Extension"),
+    (re.compile(r"\bHts\b\.?"), "Heights"),
+    (re.compile(r"\bLn\b\.?"), "Lane"),
+    (re.compile(r"\bPkwy\b\.?"), "Parkway"),
+    (re.compile(r"\bPl\b\.?"), "Place"),
+    (re.compile(r"\bPlz\b\.?"), "Plaza"),
+    (re.compile(r"\bRd\b\.?"), "Road"),
+    (re.compile(r"\bSq\b\.?"), "Square"),
+    (re.compile(r"\bTer\b\.?"), "Terrace"),
+    (re.compile(r"\bTpke\b\.?"), "Turnpike"),
+]
+
+# Compass-direction expansion. Any standalone W/E/N/S word EXCEPT
+# when it's a Brooklyn lettered-avenue identifier ("Avenue W",
+# "Ave W", "Av W" — Brooklyn really does have an Avenue W). Negative
+# lookbehinds for the three Avenue-prefix forms cover that case.
+# Otherwise W in "Union Sq W & 14 St" (Union Square West), in "W 35 St"
+# (at start of string), and in "& W 4 St" (after an intersection
+# separator) all expand correctly.
+_DIR_MAP = {"W": "West", "E": "East", "N": "North", "S": "South"}
+_DIR_PAT = re.compile(r"(?<!Avenue )(?<!Ave )(?<!Av )\b([WENS])\b\.?")
+
+# "St" → "Saint" when followed by a capitalized proper name (St James,
+# St Marks, St Nicholas). When NOT followed by a capital (after a
+# number or lowercase word), it means "Street" and gets the suffix
+# expansion below. Saint substitution must run BEFORE the Street
+# suffix expansion, otherwise "St James Pl" gets corrupted into
+# "Street James Place".
+_SAINT_PAT = re.compile(r"\bSt\b\.?(?=\s+[A-Z])")
+_STREET_PAT = re.compile(r"\bSt\b\.?")
+
+# Street-suffix words that mean "this number should be ordinal".
+# "127 Street" → "127th Street"; "5 Avenue" → "5th Avenue".
+_ORDINAL_PAT = re.compile(
+    r"\b(\d+)( (?:Avenue|Street|Place|Boulevard|Parkway|Square|Court|"
+    r"Heights|Drive|Plaza|Turnpike|Road|Lane|Terrace|Bridge|Extension))",
+)
+
+
+def _ordinal(n: int) -> str:
+    """Convert an integer to its English ordinal form.
+
+    1 → '1st', 2 → '2nd', 11 → '11th', 21 → '21st', 101 → '101st'.
+    Standard rules: 11–13 always take 'th'; otherwise the last digit
+    picks st/nd/rd/th.
+    """
+    if 10 <= (n % 100) <= 20:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def normalize_station_name(name: str) -> str:
+    """Expand GBFS station-name abbreviations for speech.
+
+    Designed for the realtime LLM's TTS, which reads short
+    abbreviations literally ("41 St" → "41 Street" not "41st Street").
+    Order matters:
+
+      1. Compass directions at start / after "& " (W → West)
+      2. "&" → "and"
+      3. "St" → "Saint" when followed by a capitalized name
+      4. Street/Avenue/etc. suffix expansion
+      5. Ordinalize numbers preceding a street-type word
+
+    Examples::
+
+        "9 Ave & 41 St"            → "9th Avenue and 41st Street"
+        "Broadway & W 41 St"       → "Broadway and West 41st Street"
+        "62 Dr & 110 St"           → "62nd Drive and 110th Street"
+        "St James Pl"              → "Saint James Place"
+        "Avenue W & E 6 St"        → "Avenue W and East 6th Street"
+        "Linden St & Knickerbocker Ave"
+            → "Linden Street and Knickerbocker Avenue"
+    """
+    s = _DIR_PAT.sub(lambda m: _DIR_MAP[m.group(1)], name)
+    s = s.replace("&", "and")
+    s = _SAINT_PAT.sub("Saint", s)
+    for pat, repl in _SUFFIX_MAP:
+        s = pat.sub(repl, s)
+    s = _STREET_PAT.sub("Street", s)
+    s = _ORDINAL_PAT.sub(
+        lambda m: f"{_ordinal(int(m.group(1)))}{m.group(2)}", s,
+    )
+    return re.sub(r"\s+", " ", s).strip()
+
+
 # --- Status query + runtime client ------------------------------------
 
 @dataclass(frozen=True)
@@ -220,13 +337,20 @@ class StationStatus:
     def as_dict(self, *, include_classic: bool = True) -> dict:
         """Serialize for the voice tool's LLM-visible response.
 
+        `label` is normalized for speech via `normalize_station_name`
+        — the realtime LLM's TTS reads abbreviations literally, so we
+        expand them server-side rather than relying on the model to
+        learn NYC street-name conventions. The dataclass field stays
+        raw (matches what the user picked in the wizard, which itself
+        matches the Citi Bike app / website).
+
         When the household is in `ebike_only` mode the caller passes
         `include_classic=False` and the classic count is omitted from
         the dict — better than zeroing it, since the LLM might
         otherwise verbalise "zero classic bikes" instead of just
         speaking the e-bike count."""
         d: dict[str, object] = {
-            "label": self.label,
+            "label": normalize_station_name(self.label),
             "station_id": self.station_id,
             "ebikes": self.ebikes,
             "docks": self.docks,
@@ -319,10 +443,22 @@ class CitiBikeClient:
     ) -> list[StationStatus]:
         """Return live status for saved stations.
 
-        `station_filter` is a case-insensitive substring match against
-        each saved label. Empty filter returns every saved station,
-        in insertion order. No-match filter returns an empty list —
-        the tool then surfaces an LLM-visible "no match" message.
+        `station_filter` is a case-insensitive substring match. Both
+        the filter and each saved label are normalized via
+        `normalize_station_name` before comparison — that lets the
+        user (and the LLM) say either form and still match:
+
+            saved "9 Ave & 41 St"      filter "9th avenue"      → match
+            saved "9 Ave & 41 St"      filter "9 Ave"           → match
+            saved "St James Pl"        filter "saint james"     → match
+
+        We also fall back to raw-substring match so single-token
+        filters like "9" or "41" still hit (those tokens survive
+        normalization unchanged).
+
+        Empty filter returns every saved station, in insertion order.
+        No-match filter returns an empty list — the tool then
+        surfaces an LLM-visible "no match" message.
 
         Per-station `status='missing'` (station retired from GBFS) is
         logged at WARN so the doctor / operator can spot stale config.
@@ -340,11 +476,18 @@ class CitiBikeClient:
             if isinstance(s, dict) and "station_id" in s
         }
         now = time.time()
-        needle = station_filter.strip().casefold()
+        needle_raw = station_filter.strip().casefold()
+        needle_norm = normalize_station_name(station_filter).casefold()
         out: list[StationStatus] = []
         for station_id, label in self._saved:
-            if needle and needle not in label.casefold():
-                continue
+            if needle_raw:
+                candidate_raw = label.casefold()
+                candidate_norm = normalize_station_name(label).casefold()
+                if (
+                    needle_raw not in candidate_raw
+                    and needle_norm not in candidate_norm
+                ):
+                    continue
             ss = _station_status_from_feeds(
                 station_id, label, info_by_id, status_by_id, now_epoch=now,
             )
