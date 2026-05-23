@@ -620,15 +620,17 @@ to imagine this trade landing as positive.
 
 The convergence question (does chip AEC actually adapt in the
 *current* dongle topology when fed a USB-IN reference signal?)
-has its own user-authorized carve-out: see
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the four
-`scripts/chip-aec-*.sh` scripts. They live in `main` as inert
-exploratory infrastructure — production state is untouched
-until `bash scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh`
-reverts. **That carve-out is scoped to the convergence test
-only**; it does not re-open the codec-swap dismissal above, nor
-PipeWire `module-echo-cancel`, dual-USB-sink, or custom firmware.
-Agents proposing those remain bound by the policy.
+has its own user-authorized carve-out, **also currently shelved**:
+see [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the four
+`scripts/chip-aec-*.sh` scripts. They live on `main` as dormant
+infrastructure — production state is untouched until `bash
+scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh` reverts.
+Not on the roadmap; preserved so we don't have to re-derive the
+question if AEC3 ever plateaus. **That carve-out is scoped to the
+convergence test only**: it does not re-open the codec-swap
+dismissal above, nor PipeWire `module-echo-cancel`, dual-USB-sink,
+or custom firmware. Agents proposing those remain bound by the
+policy.
 
 ### Different AEC engine
 

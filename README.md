@@ -357,15 +357,17 @@ reference. Currently:
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
-  **Exploratory infrastructure, inert by default.** User-authorized
-  carve-out from the AGENTS.md "Architecture is fixed; swap the
-  engine, not the topology" rule: a one-shot test for
-  [HANDOFF-aec.md](docs/HANDOFF-aec.md) Option D (chip-AEC with
-  USB-IN reference). The four `scripts/chip-aec-*.sh` scripts and
-  `jasper/chip_aec_experiment.py` sit dormant unless a human opts
+  **Shelved indefinitely.** Not on the roadmap, no active work.
+  Infrastructure preserved on `main` as a user-authorized carve-out
+  from the AGENTS.md "Architecture is fixed; swap the engine, not
+  the topology" rule, in case we ever revive the chip-AEC
+  convergence question ([HANDOFF-aec.md](docs/HANDOFF-aec.md)
+  Option D). The four `scripts/chip-aec-*.sh` scripts +
+  `jasper/chip_aec_experiment.py` are dormant until a human opts
   in via `bash scripts/chip-aec-setup.sh`; `chip-aec-teardown.sh`
-  fully reverts. **Read the doc before running.** Does not
-  re-open the rejected topology paths elsewhere.
+  fully reverts. **Read the doc before running.** The carve-out
+  is scoped narrowly — does not re-open PipeWire `module-echo-
+  cancel`, dual-USB-sink, or custom firmware elsewhere.
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /

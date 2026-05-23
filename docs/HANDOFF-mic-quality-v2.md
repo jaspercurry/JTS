@@ -739,7 +739,7 @@ fighting Trixie's libwebrtc surface area.
 | 7 | **NS / AGC tuning sweep** | NS=low, AGC1 on (target=9, max=18) | hours per knob | **Low-medium** — likely diminishing returns vs Phase 1/2 | Already swept extensively (HANDOFF-aec.md "2026-05-20 findings") |
 | 8 | **Speaker ID** (Picovoice Eagle, household member attribution) | None | 1 day to wire | **Low** for mic quality; **medium** for downstream UX | Unblocks per-user routing, doesn't fix mic |
 | 9 | **MIC_GAIN_DB** | 0 (set today, distortion gone) | minutes | **Already done** | Closed |
-| 10 | **Chip-side AEC** (XVF3800 hardware AEC) | Off; tried, doesn't work in our split-DAC topology | Multi-week re-architecture | **Probably negative** | Investigated + rejected in HANDOFF-aec.md "Chip-AEC delay tolerance" |
+| 10 | **Chip-side AEC** (XVF3800 hardware AEC) | Off; tried, doesn't work in our split-DAC topology | Multi-week re-architecture | **Probably negative** | Investigated + rejected in HANDOFF-aec.md "Chip-AEC delay tolerance". Convergence-test infrastructure shipped + **shelved** at [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) — not on roadmap, opt-in via `scripts/chip-aec-setup.sh` if ever revived. |
 
 **Highest-leverage sequence:** Lever 2 (DTLN-aec spike) → Lever 1 (wake-word
 personalization), in parallel with Lever 3 (TTS routing). Lever 4 (AEC3 RS

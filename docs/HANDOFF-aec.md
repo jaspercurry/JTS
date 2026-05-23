@@ -1024,15 +1024,17 @@ worst-case FP cost.
 
 ### D — Chip-AEC with USB-in reference topology
 
-> **Empirical infrastructure**:
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) +
-> `scripts/chip-aec-{setup,teardown,poll-convergence,capture-comparison}.sh`
-> + `jasper/chip_aec_experiment.py` exist on `main` as inert
-> exploratory infrastructure for resolving this option's open
-> question (does the chip's adaptive filter converge?). User-
-> authorized carve-out from the "Architecture is fixed" policy in
-> [AGENTS.md](../AGENTS.md). **Read CHIP-AEC-EXPERIMENT.md before
-> running anything**; teardown fully reverts to production state.
+> **Status: shelved indefinitely.** Not on the roadmap, no active
+> work. Software AEC3 (BEST_A) is the production-good-enough path,
+> and the cost of resolving Option D's convergence question doesn't
+> justify itself today. Infrastructure preserved on `main` in case
+> we ever revive it: [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)
+> + `scripts/chip-aec-{setup,teardown,poll-convergence,capture-comparison}.sh`
+> + `jasper/chip_aec_experiment.py`. Read the experiment doc
+> first; the setup script is the only opt-in entry point and runs
+> a pre-flight that fails loudly if the topology has drifted further.
+> Teardown fully reverts. User-authorized carve-out from the
+> "Architecture is fixed" policy in [AGENTS.md](../AGENTS.md).
 
 **What:** Re-architect to feed mono music to the XVF3800's USB-in
 left channel as the AEC reference signal, then read the chip's
