@@ -271,6 +271,66 @@ owned; the systemd unit's `EnvironmentFile=` sources it).
 
 ---
 
+## Phase 3.7 — Connect Home Assistant (one-time, 2 min, optional)
+
+Skip if you don't run Home Assistant. Smart-home requests without
+configuration get a polite "smart-home isn't set up yet — visit
+`jts.local/ha` to enable it" with no model misroute.
+
+From any browser on the LAN:
+
+```
+http://jts.local/ha/
+```
+
+The wizard walks three states:
+
+1. **Find Home Assistant.** Click the discovery button to mDNS-browse
+   the LAN for `_home-assistant._tcp` — usually finds your HA in
+   ~4 seconds. Cross-subnet setups (HA on a different VLAN) get a
+   manual URL field; paste whatever address you use to open HA in
+   your browser (e.g. `http://homeassistant.local:8123` or
+   `http://192.168.1.42:8123`).
+2. **Paste a Long-Lived Access Token.** In Home Assistant, open
+   the link the wizard provides (`<HA URL>/profile/security`),
+   scroll to the bottom, click **Create Token**, name it
+   "JTS Speaker", and paste the token into the wizard. The wizard
+   validates against `GET /api/` before saving — invalid tokens
+   bounce back to this step with the error.
+   - **HTTPS with self-signed cert?** The wizard renders an "Accept
+     a self-signed certificate" checkbox for `https://` URLs. Check
+     it only for your own LAN-internal HA installs (Nabu Casa /
+     Let's Encrypt / any publicly-trusted cert: leave unchecked).
+3. **Connected.** Status card shows your HA's name + version. The
+   advanced disclosure lets you override which HA conversation
+   agent JTS routes to — leave empty to use whatever HA's default
+   is (lowest friction).
+
+The household's existing setup carries over with zero extra work:
+sentence triggers (`bedroom medium` → custom automation), exposed
+scripts, scenes, areas, aliases, and any LLM-backed conversation
+agent the user has configured inside HA. JTS is a relay through
+HA's own conversation pipeline.
+
+Configuration lives in `/var/lib/jasper/home_assistant.env`
+(wizard-owned, mode 0600 — token is a secret). The systemd unit's
+`EnvironmentFile=` sources it. Headless installs (CI / imaging
+pipelines) can write the file directly:
+
+```sh
+sudo install -m 0600 /dev/stdin /var/lib/jasper/home_assistant.env <<EOF
+JASPER_HA_URL=http://homeassistant.local:8123
+JASPER_HA_TOKEN=eyJ0eXAi...
+EOF
+sudo systemctl restart jasper-voice
+```
+
+See [docs/HANDOFF-homeassistant.md](docs/HANDOFF-homeassistant.md)
+for the architecture (why HA's conversation API rather than its MCP
+server), the failure-mode taxonomy, and the v1.1+ upgrade path.
+
+---
+
 ## Phase 4 — Initial volume calibration (2 min)
 
 The Apple dongle's `Headphone` control is the **fixed analog
