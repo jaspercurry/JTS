@@ -88,7 +88,12 @@ def os_environ_get(name: str) -> str | None:
 
 
 def _fresh_cfg(monkeypatch, **vars_) -> Config:
-    """Build a Config with only the requested env vars set."""
+    """Build a Config with only the requested env vars set.
+
+    Defaults JASPER_VOICE_PROVIDER=gemini so callers that only care
+    about a single provider's key can omit it. Pass the var explicitly
+    to override (e.g. testing the openai or grok path).
+    """
     drop = [
         "GEMINI_API_KEY", "OPENAI_API_KEY", "XAI_API_KEY",
         "JASPER_VOICE_PROVIDER", "JASPER_GEMINI_MODEL",
@@ -96,7 +101,8 @@ def _fresh_cfg(monkeypatch, **vars_) -> Config:
     ]
     for v in drop:
         monkeypatch.delenv(v, raising=False)
-    for k, v in vars_.items():
+    defaults = {"JASPER_VOICE_PROVIDER": "gemini"}
+    for k, v in {**defaults, **vars_}.items():
         monkeypatch.setenv(k, v)
     return Config.from_env()
 
