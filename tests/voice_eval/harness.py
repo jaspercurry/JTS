@@ -64,6 +64,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import tempfile
 import time
 import uuid
 import wave
@@ -76,11 +77,13 @@ from jasper.config import Config
 from jasper.renderer import RendererClient
 from jasper.bus import BusClient
 from jasper.subway import SubwayClient
+from jasper.timers import TimerScheduler
 from jasper.tools import ToolRegistry
 from jasper.tools.spotify import make_spotify_tools
 from jasper.tools.bus import make_bus_tools
 from jasper.tools.subway import make_subway_tools
 from jasper.tools.time import make_time_tools
+from jasper.tools.timer import make_timer_tools
 from jasper.tools.transport import make_transport_tools
 from jasper.tools.weather import make_weather_tools
 from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
@@ -176,11 +179,21 @@ class TurnResult:
 
 # ---- registry construction -----------------------------------------
 
-def _build_test_registry(cfg: Config) -> ToolRegistry:
+def _build_test_registry(
+    cfg: Config,
+    *,
+    test_state: "dict[str, object] | None" = None,
+) -> ToolRegistry:
     """Construct the tool registry the eval harness exposes to the
     LLM. Mirrors the daemon's `_build_registry` but skips backends
-    that require live audio hardware (volume coordinator, timer
-    scheduler, calendar/gmail).
+    that require live audio hardware (volume coordinator,
+    calendar/gmail).
+
+    `test_state` is an optional dict the builder populates with
+    side-channel references for test assertions — e.g. the timer
+    scheduler so a scenario can `list_active()` after a turn to
+    verify final state without making another paid LLM call. Tests
+    that don't need side-channel access pass None.
 
     **Side-effect warning**: registering `spotify_play` and the
     transport tools means a scenario that exercises them WILL
@@ -200,6 +213,19 @@ def _build_test_registry(cfg: Config) -> ToolRegistry:
     # Time — pure datetime.now(). No backend, no failure modes.
     for fn in make_time_tools():
         registry.register(fn)
+
+    # Timers — SQLite-backed scheduler in a tmp DB. No on_fire /
+    # pre_render hooks; the eval suite tests CRUD shape, not the
+    # fire pipeline. Scheduler is exposed via `test_state` so
+    # scenarios can `list_active()` post-turn.
+    timer_db = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    timer_db.close()
+    timer_scheduler = TimerScheduler(db_path=timer_db.name)
+    for fn in make_timer_tools(timer_scheduler):
+        registry.register(fn)
+    if test_state is not None:
+        test_state["timer_scheduler"] = timer_scheduler
+        test_state["timer_db_path"] = timer_db.name
 
     # Subway — stateless HTTP client. Read-only.
     if cfg.subway_enabled:
@@ -464,6 +490,11 @@ class VoiceEvalHarness:
         self._connection = None
         self._session_id = uuid.uuid4().hex
         self._connection_lock = asyncio.Lock()
+        # Side-channel handles into the registry the harness builds —
+        # populated on first connection. Scenarios that need to assert
+        # post-turn state (timers active, etc.) read from here instead
+        # of making another paid LLM call.
+        self.test_state: dict[str, object] = {}
 
     async def _ensure_connection(self):
         if self._connection is not None:
@@ -477,7 +508,9 @@ class VoiceEvalHarness:
                 _build_system_instruction,
                 _make_connection,
             )
-            registry = _build_test_registry(self.cfg)
+            registry = _build_test_registry(
+                self.cfg, test_state=self.test_state,
+            )
             wrapped = traced_registry(registry)
             connection = _make_connection(self.cfg)
             await connection.start(
@@ -498,6 +531,20 @@ class VoiceEvalHarness:
             except Exception:  # noqa: BLE001
                 logger.warning("voice-eval: connection.stop() raised", exc_info=True)
             self._connection = None
+        sched = self.test_state.get("timer_scheduler")
+        if sched is not None:
+            try:
+                await sched.stop()  # type: ignore[union-attr]
+            except Exception:  # noqa: BLE001
+                logger.warning("voice-eval: timer scheduler stop raised",
+                               exc_info=True)
+        db_path = self.test_state.get("timer_db_path")
+        if isinstance(db_path, str):
+            import os
+            try:
+                os.unlink(db_path)
+            except OSError:
+                pass
 
     async def ask(
         self,

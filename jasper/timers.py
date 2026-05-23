@@ -343,6 +343,43 @@ class TimerScheduler:
             "timer: cancelled id=%s label=%r", timer.id, timer.label,
         )
 
+    def update(
+        self, query: str, new_seconds: int,
+    ) -> "tuple[bool, list[Timer], Timer | None]":
+        """Atomically change an existing timer's duration.
+
+        Same match precedence as `cancel`. Returns
+        ``(updated, matches, new_timer)``:
+          - exactly-one match → cancels the old task, removes the old
+            row, adds a new Timer for `new_seconds` from now preserving
+            the label. `updated=True`, `matches=[old_timer]`,
+            `new_timer=new`.
+          - ambiguous match → no mutation. `updated=False`,
+            `matches=[all candidates]`, `new_timer=None`.
+          - not found → `updated=False`, `matches=[]`, `new_timer=None`.
+
+        Raises ValueError if `new_seconds` is not positive — validated
+        BEFORE any mutation, so a bad duration leaves the original
+        timer untouched.
+
+        The new timer gets a fresh id and `created_at`. The user-
+        observable handle is the label, which is preserved; the id
+        change is invisible to voice flows that reference timers by
+        label."""
+        new_seconds = int(new_seconds)
+        if new_seconds <= 0:
+            raise ValueError(
+                f"timer duration must be positive, got {new_seconds}"
+            )
+        cancelled, matches = self.cancel(query)
+        if not cancelled:
+            return False, matches, None
+        # cancel() returns the one timer that was cancelled in matches[0].
+        # Re-use it for the label; add() will create a new id.
+        old = matches[0]
+        new_timer = self.add(new_seconds, label=old.label)
+        return True, [old], new_timer
+
     async def _run(self, timer: Timer) -> None:
         try:
             remaining = max(0.0, timer.fire_at - time.time())
