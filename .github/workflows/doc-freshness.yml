@@ -15,9 +15,7 @@ name: Doc freshness check
 # Fork PRs note: the default GITHUB_TOKEN issued to a PR from a fork
 # can't write to the base repo, so the comment step will silently
 # no-op for fork PRs. The check itself still runs and the output
-# shows up in the Actions tab's step summary. Switch to a
-# pull_request_target-based comment workflow if/when external
-# contributors are a regular thing.
+# shows up in the Actions tab's step summary.
 
 on:
   pull_request:
@@ -71,53 +69,48 @@ jobs:
         run: |
           set -euo pipefail
           MARKER='<!-- doc-freshness-bot -->'
-
           # Find existing sticky comment by HTML-comment marker.
           EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
             --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
             | head -1 || true)
-
+          # Build the comment body in a file (avoids YAML heredoc
+          # indentation issues — keeps every bash line at the YAML
+          # block-scalar indent).
+          BODY_FILE="$(mktemp)"
           if [[ "$STALE_COUNT" == "0" ]]; then
             if [[ -z "$EXISTING_ID" ]]; then
-              # Quiet on the happy path — no comment if nothing was
-              # ever stale on this PR.
               echo "No stale items, no existing comment — nothing to do."
               exit 0
             fi
-            BODY=$(cat <<EOF
-${MARKER}
-## Doc freshness: all clear
-
-No HANDOFFs are overdue for re-verification (90-day threshold).
-
-_Posted by [\`scripts/doc-freshness.sh\`](scripts/doc-freshness.sh) via [\`.github/workflows/doc-freshness.yml\`](.github/workflows/doc-freshness.yml) — informational, non-blocking._
-EOF
-)
+            {
+              echo "$MARKER"
+              echo "## Doc freshness: all clear"
+              echo
+              echo "No HANDOFFs are overdue for re-verification (90-day threshold)."
+              echo
+              echo "_Posted by \`scripts/doc-freshness.sh\` via \`.github/workflows/doc-freshness.yml\` — informational, non-blocking._"
+            } > "$BODY_FILE"
           else
-            BODY=$(cat <<EOF
-${MARKER}
-## Doc freshness: ${STALE_COUNT} doc(s) overdue for re-verification
-
-\`\`\`
-${OUTPUT}
-\`\`\`
-
-For each stale doc, re-read it against the current code and either:
-- bump the \`Last verified:\` footer to today's date, or
-- update the content.
-
-See AGENTS.md "Documentation paradigm" rule 3. **Informational only — this PR can still merge.**
-
-_Posted by [\`scripts/doc-freshness.sh\`](scripts/doc-freshness.sh) via [\`.github/workflows/doc-freshness.yml\`](.github/workflows/doc-freshness.yml)._
-EOF
-)
+            {
+              echo "$MARKER"
+              echo "## Doc freshness: ${STALE_COUNT} doc(s) overdue for re-verification"
+              echo
+              echo '```'
+              echo "$OUTPUT"
+              echo '```'
+              echo
+              echo "For each stale doc, re-read it against the current code and either:"
+              echo "- bump the \`Last verified:\` footer to today's date, or"
+              echo "- update the content."
+              echo
+              echo 'See AGENTS.md "Documentation paradigm" rule 3. **Informational only — this PR can still merge.**'
+            } > "$BODY_FILE"
           fi
-
           if [[ -n "$EXISTING_ID" ]]; then
             echo "Updating existing sticky comment ${EXISTING_ID}"
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
-              -f body="$BODY" > /dev/null
+              -F "body=@${BODY_FILE}" > /dev/null
           else
             echo "Creating new sticky comment"
-            gh pr comment "$PR_NUMBER" --body "$BODY"
+            gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
           fi
