@@ -104,9 +104,10 @@ Each cue's audio is content-addressed. The file path is:
 /var/lib/jasper/sounds/<slug>-<8charhash>.wav
 ```
 
-The hash is `sha256(rendered_text + voice + model + format)[:8]`.
-"Rendered text" is the template after `{hostname}` substitution
-(from `JASPER_MANAGEMENT_URL`).
+The hash is `sha256(GENERATOR_VERSION + model + voice + WAV format + rendered_text)[:8]` —
+see `cue_hash()` in `jasper/cues/generator.py` for the exact input
+ordering. "Rendered text" is the template after `{hostname}`
+substitution (from `JASPER_MANAGEMENT_URL`).
 
 **Auto-invalidation**: change anything that affects the hash, the
 expected filename changes, the manager looks for the new name,
@@ -266,3 +267,7 @@ speaker without cues is still better than a dead speaker with
 cues. If TTS regen fails (no network at boot, bad API key, quota),
 the daemon comes up anyway and degrades gracefully — silent
 failures on the affected paths, but every other path works.
+
+---
+
+Last verified: 2026-05-23

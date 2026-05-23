@@ -24,6 +24,17 @@ If you came here trying to understand AEC, **read this first then
 you already know the channel layout and parameter space documented
 below.
 
+## Quick lookup
+
+| If you're trying to… | Read |
+|---|---|
+| Identify the chip / board | §1 Hardware identity |
+| Flash a different firmware (DFU) | §2 Firmware variants |
+| Understand the 6-channel USB capture layout | §3 Channel layout |
+| Set a vendor parameter (gain, NS, AEC) | §4 Parameter space, §6 reference tables |
+| Debug a "no audio" / "channel silent" symptom | §5 Failure modes → §7 (ch2-5 silence: resolved root cause at top) → §8 Diagnostic cookbook |
+| Control the chip from Python | §9 The library we use |
+
 ---
 
 ## 1. Hardware identity
@@ -1414,3 +1425,7 @@ In rough order of how often we reach for each:
   - [APPENDIX – Control Commands HTML](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/AA_control_command_appendix.html) — natively-supported commands.
 - **Other**:
   - [DeepWiki summary of respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY](https://deepwiki.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY) — used as a cross-check, less authoritative than the upstream docs.
+
+---
+
+Last verified: 2026-05-23
