@@ -41,15 +41,20 @@ whatever USB mic the user owns, not specifically the XVF3800.
    utterances; the best single engine catches 31. The engines are
    complementary, not redundant. This motivates the next phase.
 
-**The plan we're shipping next (the "triple-stream architecture"):**
+**Triple-stream architecture shipped 2026-05-23.** Extended the
+production WakeLoop from the **2-leg OR-gate**
+(`aec-on` + `aec-off` per PR #191) to the **3-leg OR-gate**
+(raw + BEST_A + DTLN-256). Per-event telemetry captures all three
+legs into the existing `wake_events` SQLite + audio-clip ring (the
+ring grew 500 MB → 1 GB to keep ~5-7 weeks retention at 3 WAVs per
+event). Resource cost is bridge 47% + voice 39% of one Pi 5 core
+sustained at idle (~21% of total CPU); decision was to keep as-is
+through the first week-of-data review before considering any
+mitigations.
 
-Extend the production WakeLoop from today's **2-leg OR-gate**
-(`aec-on` + `aec-off` per PR #191) to **3-leg OR-gate**
-(raw + BEST_A + DTLN-256). Capture full per-event telemetry into
-the existing `wake_events` SQLite + audio-clip ring. Let the system
-run for ~a week. Review the data: which engine fired alone, which
-engines correlated, where false positives came from. Use the real
-production data to decide whether any engine is redundant.
+**Next move:** ~a week of real-use data, then
+`bash scripts/analyze-three-leg.sh` informs a data-driven decision
+on which engines to keep + per-leg threshold tuning.
 
 In parallel (independent track): explore **custom wake-word training**
 on actual JTS pipeline audio — train a Jarvis model on the corpus
@@ -57,20 +62,27 @@ the wake-event capture is already collecting. Add it as a 4th leg
 later. Eventually: 3 AEC engines × 2 wake models = 6 detectors,
 all firing into the same telemetry + OR-gate.
 
-See "Triple-stream architecture plan" below for the implementation
-details + per-component effort.
+See "Triple-stream architecture (Phase 1 — DONE 2026-05-23)" below
+for the operational details (commits, rollback ladder, first-day
+data, resource cost breakdown). The original 2026-05-22 plan is
+preserved further down for the predicted-vs-actual audit trail.
 
 ---
 
-## Current state — what's actually deployed
+## Current state — what's actually deployed (2026-05-23)
 
-**Pi:** `jts.local`, commit `4457d00` (merge commit on `main`).
+**Pi:** `jts.local`, tip of `claude/aec3-best-a-prod` (PR not yet
+opened; will be merged into main after the first-week review of
+triple-stream data lands). `/var/lib/jasper/build.txt` is the live
+truth — `ssh pi@jts.local 'sudo cat /var/lib/jasper/build.txt'`.
 
 **Active config** (`/etc/jasper/jasper.env`):
 
 ```
-JASPER_MIC_DEVICE=udp:9876        # post-AEC stream from bridge
+JASPER_MIC_DEVICE=udp:9876        # post-AEC (BEST_A) stream from bridge
 JASPER_MIC_DEVICE_RAW=udp:9877    # chip-direct stream from bridge (PR #191)
+JASPER_MIC_DEVICE_DTLN=udp:9878   # DTLN-aec stream from bridge (Phase 1, 2026-05-23)
+JASPER_AEC_DTLN_ENABLED=1         # toggle DTLN inference; 0 falls back to dual-stream
 JASPER_AEC_MIC_GAIN_DB=0          # was 6; changed 2026-05-22 to fix tanh distortion
 JASPER_AEC_NS_ENABLED=1           # noise suppression on
 JASPER_AEC_NS_LEVEL=low           # gentle
@@ -82,19 +94,25 @@ JASPER_AEC_CHIP_HPF_HZ=125
 JASPER_AEC_REF_HPF_HZ=125
 ```
 
+The full BEST_A AEC3 knob set has env-var overrides too — see the
+"BEST_A canonical config" section of `HANDOFF-NEXT-SESSION.md` for
+the knob → env mapping. Defaults are baked into
+`_Aec3V2Engine.__init__` in `jasper/cli/aec_bridge.py`.
+
 **What's running:**
 
 | Component | Status | Notes |
 |---|---|---|
-| `jasper-aec-bridge` | Active | Emits AEC ON on `:9876` + chip-direct on `:9877`; AEC3 via `jasper_aec3` pybind11 binding |
-| `jasper-voice` | Active | Dual-stream WakeLoop, OR-gates AEC ON + AEC OFF via `_handle_wake_frame(leg=…)` |
+| `jasper-aec-bridge` | Active | Runs BEST_A AEC3 + DTLN-aec in parallel on each frame; emits AEC ON on `:9876`, raw on `:9877`, DTLN on `:9878` |
+| `jasper-voice` | Active | **Triple-stream** WakeLoop, OR-gates AEC ON + AEC OFF + DTLN via `_handle_wake_frame(leg=…)` with shared 0.7 s refractory |
 | `jasper-aec-reconcile` | Active | Auto-enables AEC bridge on 6-ch firmware |
-| `wake_events` SQLite | Active at `/var/lib/jasper/wake-events/wake-events.sqlite3` | 17 columns; ALTER-migrated; 6 s WAV per leg per event |
+| `wake_events` SQLite | Active at `/var/lib/jasper/wake-events/wake-events.sqlite3` | 38 columns; ALTER-migrated for DTLN at startup; 3 × 6 s WAV per event |
 
 **Telemetry that's already capturing:**
 
-- Every wake event (fire or near-miss) → DB row + 2 WAVs
-- Per-leg peak scores + peak offsets
+- Every wake event (fire or near-miss) → DB row + 3 WAVs (one per leg)
+- Per-leg peak scores + peak offsets across all 3 legs
+- `fired_legs` CSV at fire time (`'off'`, `'dtln,off'`, `'dtln,off,on'`, ...)
 - Funnel timestamps: `ts_turn_opened`, `ts_speech_detected`, `ts_turn_complete`
 - Outcomes: `completed`, `no_speech` (FP proxy), `late_cancel`, `peer_lost`, `gate_blocked`, `session_failed`
 - Context: bridge config snapshot, music volume from CamillaDSP anchor,
@@ -106,6 +124,7 @@ JASPER_AEC_REF_HPF_HZ=125
 |---|---|
 | `scripts/fetch-wake-events.sh` | Pulls DB + WAVs, generates `index.csv` + `index.tsv`, opens Finder |
 | `scripts/audit-wake-events.sh` | Forensic audit — WAV integrity, cross-leg parity (xcorr), DB column populated counts |
+| `scripts/analyze-three-leg.sh` | Weekly review — fire breakdown by leg pattern, per-leg score distribution, "solo save" counts, listening playlist with `afplay` paths, fired→turn→speech→tool funnel by pattern |
 | `/tmp/analyze_aec_distortion.py` | Per-clip peak/RMS/crest/tanh-zone analysis (NOT in repo — promote when stable) |
 | `/tmp/analyze_tearing.py` | NS / RS / AGC-pump / frame-boundary / alias detectors (NOT in repo) |
 
@@ -420,7 +439,112 @@ catch.
 
 ---
 
-## Triple-stream architecture plan (2026-05-22, IN PROGRESS)
+## Triple-stream architecture (Phase 1 — DONE 2026-05-23)
+
+3-leg OR-gated wake-word architecture (raw + BEST_A + DTLN-256)
+with full per-leg telemetry capture **shipped 2026-05-23**. Running
+on the Pi at the tip of `claude/aec3-best-a-prod`; PR-merging
+deferred while the week-of-data review accumulates.
+
+The original plan + per-step effort estimates from 2026-05-22 are
+preserved below as the historical record. The "What shipped" block
+right under this header is the current operational truth.
+
+### What shipped (2026-05-23)
+
+Eight commits on `claude/aec3-best-a-prod`:
+
+| commit | what |
+|---|---|
+| `e84a2ba` | aec3_v2: productionize the BEST_A binding (vendored v2.1 static) |
+| `dd5efe3` | aec3_v2: setup.py handles system absl + install.sh force-reinstall |
+| `4abcf7d` | aec_bridge: prefer Aec3V2 (BEST_A) engine via `_select_engine()` |
+| `f585eaf` | aec_bridge: add DTLN-aec parallel UDP output (`:9878`) |
+| `32f2666` | wake-loop: triple-stream (raw + AEC + DTLN) OR-gate + telemetry |
+| `0818d9e` | wake_events: audio ring 500 MB → 1 GB for triple-stream |
+| `03574eb` | scripts: add analyze-three-leg.sh for weekly triple-stream review |
+| `14bd6de` | dtln_models: registry + install.sh fetch from dtln-models-v1 release |
+
+### Resource cost — the headline finding
+
+Bridge + voice at idle (no music, no AirPlay) on Pi 5:
+
+| process | CPU (sustained, % of one core) | RSS |
+|---|---|---|
+| `jasper-aec-bridge` (BEST_A AEC3 + DTLN-aec) | 45-47% | 178 MB |
+| `jasper-voice` (3 parallel WakeWordDetector instances) | 38-39% | 350 MB |
+| **combined** | **~84% of one core** | **528 MB** |
+
+System: load avg 1.03 sustained; 779 MB / 2010 MB RAM used; ~21%
+of total Pi 5 CPU (4 cores) at all times. AirPlay would add
+shairport-sync (~5-10% of one core) but doesn't change the bridge/voice baseline — both are input-independent (ONNX inference is
+constant-time per frame).
+
+**Where the cost goes:**
+- Bridge ~25% is DTLN-aec (`onnxruntime` on two LSTM stages at 50
+  fps); the other ~22% is BEST_A AEC3.
+- Voice ~25% on top of the pre-triple-stream baseline is the third
+  `openwakeword.model.Model` instance. The "shared embedding"
+  wording in the original plan was aspirational — each leg has
+  different input audio (AEC ON, AEC OFF, DTLN), so the
+  melspectrogram + embedding compute genuinely cannot be shared.
+
+**Decision (2026-05-23): keep as-is.** 21% of total CPU is elevated
+but not crisis-level; Pi 5 has 3 cores of headroom. We'll continue
+to Phase 1.4-1.8 verification before deciding whether to mitigate
+(gate DTLN on render-active is the cheapest first mitigation if the
+real-world cost ever bites).
+
+### First-day data (2026-05-23)
+
+After the initial deploy, the wake_events DB has captured one
+triple-stream event end-to-end with all three legs scored:
+
+```
+evt=20260523T161206Z  legs=off  on=0.002 off=0.996 dtln=0.002
+```
+
+The AEC OFF leg dominance (55 of 63 historical fires) confirms the
+documented `jarvis_v2.onnx` AEC-ON failure mode. DTLN solo-fires
+haven't been observed yet — those are the rare cases where AEC OFF
+misses but DTLN catches; the weekly review will surface them as
+they accumulate.
+
+Verify the data populated correctly: `bash
+scripts/audit-wake-events.sh` (integrity check) and `bash
+scripts/analyze-three-leg.sh` (per-pattern fire breakdown +
+listening playlist). The analyzer's [3] section flags "Only DTLN
+fired" with a ★ — that's the headline metric for evaluating
+whether the third leg is pulling weight.
+
+### Operational env vars (must be set on the Pi)
+
+```
+JASPER_AEC_DTLN_ENABLED=1              # enable DTLN-aec in the bridge
+JASPER_MIC_DEVICE_DTLN=udp:9878        # voice's tertiary leg UDP source
+```
+
+Both live in `/etc/jasper/jasper.env`. The 1 GB audio-ring cap is
+the `config.py` default; no env var needed unless overriding.
+
+### Rollback ladder
+
+| level | what | command |
+|---|---|---|
+| 1. Disable DTLN only (keep BEST_A) | drops to dual-stream PR #191 architecture | `sed -i s/JASPER_AEC_DTLN_ENABLED=1/JASPER_AEC_DTLN_ENABLED=0/ /etc/jasper/jasper.env && systemctl restart jasper-aec-bridge` |
+| 2. Disable BEST_A (revert to AEC3 v1.3) | bridge falls back to the legacy `Aec3` binding | append `JASPER_AEC_BINDING=v1` to `/etc/jasper/jasper.env` + restart bridge |
+| 3. Both | dual-stream + legacy AEC | combine 1 + 2 |
+
+The bridge's `_select_engine()` in `jasper/cli/aec_bridge.py` is
+the actual switch.
+
+---
+
+## Triple-stream architecture plan (2026-05-22, original — for reference)
+
+The plan as written before Phase 1 shipped. Preserved here so the
+delta between predicted-effort and what-actually-happened is
+auditable when later phases plan similarly.
 
 This is the canonical next sprint. **Goal:** ship a 3-leg OR-gated
 wake-word architecture (raw + BEST_A + DTLN-256) with full per-leg
@@ -1068,10 +1192,14 @@ The two engines catch *different utterances*, validated via 3-way
 timestamp clustering on the music cells. Single-engine ceiling is
 31 events on music cells; OR-fusion ceiling is 42 (+35%).
 
-**The next sprint is the triple-stream architecture** — raw + BEST_A
-+ DTLN-256 OR-fused, full per-event telemetry into the existing
-`wake_events` infrastructure, ~1 week of real-use data, then a
-data-driven decision on which engines to keep.
+**Triple-stream architecture shipped 2026-05-23** — raw + BEST_A +
+DTLN-256 OR-fused, full per-event telemetry into the existing
+`wake_events` infrastructure. **Next move:** ~1 week of real-use
+data, then `scripts/analyze-three-leg.sh` informs a data-driven
+decision on which engines to keep + per-leg threshold tuning.
+Resource cost (bridge 47% + voice 39% of one Pi 5 core sustained
+at idle, ~21% of total CPU) is documented under "Triple-stream
+architecture (Phase 1 — DONE 2026-05-23) → Resource cost" above.
 
 **The custom wake-word training track** runs independently. The
 wake-events corpus collected during the triple-stream rollout IS
