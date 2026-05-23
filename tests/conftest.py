@@ -1,8 +1,24 @@
-"""Pytest configuration. The version guard fires before collection so a
-wrong-version venv errors with a clear fix message instead of a TypeError
-deep in jasper/peering/ (which uses 3.10+ dataclass slots=).
+"""Pytest configuration.
+
+Two pieces here, both load-bearing:
+
+- A Python version guard (module-level) that fires before any collection
+  so a wrong-version venv errors with a clear fix message instead of a
+  TypeError deep in jasper/peering/ (which uses 3.10+ dataclass slots=).
+
+- An autouse os.environ snapshot/restore fixture so any test (or any
+  production code under test) that writes to os.environ directly gets
+  cleaned up at teardown. pytest's monkeypatch only rolls back changes
+  *it* made via setenv/delenv; direct os.environ[...] = ... mutations
+  (e.g. by jasper.env_load.load_env_files, which is what production
+  ships) silently leak across tests. The leak's most-visible victim
+  was tests/voice_eval/ running with OPENAI_API_KEY=wiz-key dragged in
+  from a test_doctor case — see #254 / #255 for context.
 """
+import os
 import sys
+
+import pytest
 
 if sys.version_info < (3, 11):
     have = ".".join(str(n) for n in sys.version_info[:3])
@@ -18,3 +34,26 @@ if sys.version_info < (3, 11):
         f"  rm -rf .venv && python3.13 -m venv .venv && \\\n"
         f"    .venv/bin/pip install -e '.[dev]'\n"
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_environ():
+    """Snapshot os.environ before each test, restore after.
+
+    Covers the gap that monkeypatch leaves: production code under test
+    can mutate os.environ directly (load_env_files is the canonical
+    example — its job is exactly that), and monkeypatch only undoes
+    its own setenv/delenv calls. Without this, mutations leak forward
+    and break later tests' assumptions about a clean environment.
+    """
+    saved = os.environ.copy()
+    try:
+        yield
+    finally:
+        # Drop anything added during the test.
+        for k in set(os.environ.keys()) - set(saved.keys()):
+            del os.environ[k]
+        # Restore anything modified or removed.
+        for k, v in saved.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
