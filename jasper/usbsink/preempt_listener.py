@@ -233,9 +233,40 @@ class PreemptListener:
                 )
                 self._send_json({"silenced": want, "applied": True})
 
-        self._server = _BoundedThreadingHTTPServer(
-            (self._host, self._port), Handler,
-        )
+        # Bind with SO_REUSEADDR set so a previous crashed instance's
+        # socket in TIME_WAIT doesn't keep us out for ~60 s after a
+        # restart. Without this, systemd's Restart=on-failure loop
+        # hits StartLimitBurst and parks the daemon as failed —
+        # operator has to `systemctl reset-failed jasper-usbsink`.
+        # _BoundedThreadingHTTPServer inherits `allow_reuse_address`
+        # from HTTPServer, which sets SO_REUSEADDR in the parent's
+        # server_bind. We just need to enable it (default is True on
+        # http.server.HTTPServer since 3.x, but make it explicit so
+        # future maintainers know we depend on it).
+        _BoundedThreadingHTTPServer.allow_reuse_address = True
+
+        try:
+            self._server = _BoundedThreadingHTTPServer(
+                (self._host, self._port), Handler,
+            )
+        except OSError as e:
+            # Port still in use even with REUSEADDR (e.g. an actual
+            # other process owns it). Log loudly so the operator sees
+            # the diagnostic in `journalctl -u jasper-usbsink`, and
+            # re-raise so the daemon's startup cleanups unwind. The
+            # cleanups list pattern means the already-restored preempt
+            # state via `_read_persisted_preempt` is harmless; nothing
+            # else is leaked.
+            logger.error(
+                "event=usbsink.preempt_listener_bind_failed "
+                "host=%s port=%d error=%s — "
+                "another process holds the port; check with "
+                "`ss -tlnp sport = :%d` then "
+                "`systemctl reset-failed jasper-usbsink` after freeing it",
+                self._host, self._port, e, self._port,
+            )
+            raise
+
         self._thread = threading.Thread(
             target=self._server.serve_forever,
             name="usbsink-preempt-http",

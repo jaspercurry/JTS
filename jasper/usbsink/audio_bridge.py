@@ -80,6 +80,13 @@ class BridgeStats:
     frames_underrun: int = 0
     capture_errors: int = 0
     playback_errors: int = 0
+    # Most recent non-zero PortAudio CallbackFlags value, one per
+    # stream. Stashed (not logged) on the audio thread; the daemon's
+    # diagnostic loop logs deltas at WARN cadence. We keep the most
+    # recent rather than a bitwise union so the operator sees the
+    # exact last-fault flags. Reset to 0 after the diag loop reports.
+    last_capture_status: int = 0
+    last_playback_status: int = 0
     started_at_mono: float = field(default_factory=time.monotonic)
 
 
@@ -188,6 +195,29 @@ class AudioBridge:
                 blocksize=self._block_frames,
                 callback=self._playback_callback,
             )
+            # Validate that PortAudio actually opened both streams at
+            # the requested rate. UAC2 sample-rate negotiation is
+            # legally allowed to honor a different rate than requested
+            # (rare but possible on some host configurations); a
+            # mismatch would produce buffer-size confusion in the
+            # callbacks (the defensive truncation in _playback_callback
+            # absorbs it but the user hears clicks/pops). Fail-fast
+            # here is better than silent audio glitches — systemd's
+            # Restart=on-failure will try again, and the doctor will
+            # surface the issue on the next pass.
+            for label, stream in (
+                ("capture", self._in_stream),
+                ("playback", self._out_stream),
+            ):
+                actual = float(stream.samplerate)
+                if abs(actual - float(self._sample_rate)) > 0.5:
+                    raise RuntimeError(
+                        f"usbsink: {label} stream opened at "
+                        f"{actual:.0f} Hz; expected {self._sample_rate} Hz "
+                        f"(host negotiated a mismatched rate — likely a "
+                        f"gadget descriptor / host-driver issue)"
+                    )
+
             # Start playback first so the loopback subdevice is open
             # for write before the gadget side starts producing —
             # avoids an immediate underrun spike at boot.
@@ -265,9 +295,18 @@ class AudioBridge:
     def _capture_callback(self, indata, frames, time_info, status) -> None:
         if status:
             # ALSA underruns / overflows on the gadget side. Counted,
-            # not logged per-frame — too chatty. The diagnostic thread
-            # in daemon.py logs the counter delta on a low cadence.
+            # not logged per-frame — too chatty AND the audio thread
+            # MUST NOT call logger (a wedged logger.handler would freeze
+            # the realtime thread). Stash the most-recent CallbackFlags
+            # integer for the diagnostic loop to surface at WARN.
             self.stats.capture_errors += 1
+            try:
+                self.stats.last_capture_status = int(status)
+            except (TypeError, ValueError):
+                # status is normally a CallbackFlags enum (int-coerces)
+                # but be defensive; we'd rather lose the flag than
+                # raise on the audio thread.
+                pass
 
         # `indata` is a bytes-like buffer from sd.RawInputStream
         # (CFFI cdata exposing the underlying ringbuffer). numpy
@@ -317,6 +356,10 @@ class AudioBridge:
     def _playback_callback(self, outdata, frames, time_info, status) -> None:
         if status:
             self.stats.playback_errors += 1
+            try:
+                self.stats.last_playback_status = int(status)
+            except (TypeError, ValueError):
+                pass
 
         # Cast both lvalue (outdata, CFFI buffer from sounddevice) and
         # rvalues (bytes objects with format "B") to format "b" so

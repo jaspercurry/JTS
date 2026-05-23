@@ -293,6 +293,27 @@ class UsbSinkDaemon:
                     "frames_captured=%d (watchdog will fire)",
                     now - self._last_progress_mono, stats.frames_captured,
                 )
+
+            # Surface non-zero PortAudio CallbackFlags stashed by the
+            # audio thread. The callback itself can't log (would risk
+            # wedging the realtime thread on a stuck handler); we
+            # consume the latched value here and reset to 0 so we
+            # don't re-log the same flag every diag tick. CallbackFlags
+            # bits: input_underflow (1), input_overflow (2),
+            # output_underflow (4), output_overflow (8), priming (16).
+            if stats.last_capture_status:
+                logger.warning(
+                    "event=usbsink.capture_status flags=0x%x count=%d",
+                    stats.last_capture_status, stats.capture_errors,
+                )
+                stats.last_capture_status = 0
+            if stats.last_playback_status:
+                logger.warning(
+                    "event=usbsink.playback_status flags=0x%x count=%d",
+                    stats.last_playback_status, stats.playback_errors,
+                )
+                stats.last_playback_status = 0
+
             if now - last_log_mono >= DIAG_INTERVAL_SEC:
                 logger.info(
                     "event=usbsink.diag rms_dbfs=%.1f "
