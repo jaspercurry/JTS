@@ -19,6 +19,16 @@ AEC, why not chip AEC); HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
 
+**Open architectural question**: [HANDOFF-barge-in.md](HANDOFF-barge-in.md)
+surveys the option space for upgrading barge-in from today's
+VAD-only filtering to AEC-cancellation-of-TTS. **Read it before
+any change that touches the music↔TTS↔AEC topology** —
+particularly the "trap" section, which preserves the analysis of
+why several obvious-looking fixes (route TTS through CamillaDSP,
+second dsnoop tap + software-sum, ALSA `multi` plugin, UDP-tee)
+are all wrong for the same underlying single-reference /
+delay-alignment reason.
+
 The goal is to make this enough context that a future session can
 pick up the work without re-doing the investigation.
 

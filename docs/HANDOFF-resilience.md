@@ -484,7 +484,10 @@ sudo journalctl -fu jasper-dongle-recover
 - **PipeWire migration.** Out of scope per project policy. The
   resilience win comes from removing snd-aloop from the
   bridge↔voice path entirely, not from replacing the userspace
-  audio stack.
+  audio stack. (Note: the exclusion was scoped to this resilience
+  question. [HANDOFF-barge-in.md](HANDOFF-barge-in.md) re-opens
+  it honestly as a costed Option B when robust barge-in is the
+  motivation — different question, different trade.)
 - **In-process AEC** (embed `jasper_aec3` directly in
   `jasper-voice`). Simpler but expands voice's blast radius — a
   crash in AEC3 today takes down only the bridge; in-process it
