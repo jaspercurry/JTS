@@ -547,3 +547,20 @@ def test_wmo_descriptions_complete():
     from jasper.weather import RAINY_CODES
     for code in RAINY_CODES:
         assert code in WMO_DESCRIPTIONS, f"code {code} missing from descriptions"
+
+
+def test_system_instruction_routes_rain_timing_to_next_rain_window():
+    """Regression for the bug where the model would answer 'when will
+    it rain' with only the start time. PR #182 added the precomputed
+    next_rain_window field + tool docstring guidance, but missed
+    updating SYSTEM_INSTRUCTION's get_weather block, which still only
+    mentioned precipitation_probability + will_rain. The model
+    followed the system instruction (which wins over the tool
+    docstring per OpenAI/Gemini/Grok prompting guides) and skipped
+    the end time. This test pins the system-instruction guidance in
+    place so the same regression can't slip back in."""
+    from jasper.voice_daemon import _build_system_instruction
+    prompt = _build_system_instruction(location="")
+    assert "next_rain_window" in prompt
+    assert "BOTH endpoints" in prompt
+    assert "ends_after_forecast" in prompt
