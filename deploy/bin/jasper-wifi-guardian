@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+# Self-heal a lost NetworkManager WiFi profile from the wizard-owned stash.
+#
+# The 2026-05-23 incident: a dirty shutdown left
+# /etc/NetworkManager/system-connections/<SSID>.nmconnection empty after
+# ext4 journal recovery. The Pi rebooted with NO WiFi profile at all and
+# was unreachable on the LAN — required HDMI + USB-keyboard recovery.
+#
+# This script reads the stash that the /wifi/ wizard writes on every
+# successful connect (/var/lib/jasper/wifi_guardian.env) and reconciles
+# four cases:
+#
+#   1. WiFi is up on the stashed SSID    -> steady state, no-op
+#   2. WiFi is up on a DIFFERENT SSID    -> stash is stale, no-op
+#      (don't stomp a working network the operator manually connected
+#       to via SSH after stash was written)
+#   3. WiFi is down, profile EXISTS      -> activate it
+#   4. WiFi is down, profile MISSING     -> THE INCIDENT CASE:
+#      recreate via `nmcli dev wifi connect`
+#
+# Run by systemd at boot via jasper-wifi-guardian.service (Type=oneshot,
+# after NetworkManager-wait-online). Pure bash, mirrors
+# jasper-aec-reconcile's shape and test seams.
+#
+# PSK redaction: $PSK never appears in any `log` / `emit` call. nmcli
+# stderr is captured and scrubbed of `password \S+` before re-emission.
+
+set -uo pipefail
+
+STASH_FILE="${JASPER_WIFI_STASH_FILE:-/var/lib/jasper/wifi_guardian.env}"
+NMCLI="${JASPER_NMCLI:-nmcli}"
+REASON="manual"
+
+usage() {
+    cat <<'EOF'
+Usage: jasper-wifi-guardian [--reason TEXT]
+
+Reconcile the WiFi profile from the wizard-owned stash. Reads
+/var/lib/jasper/wifi_guardian.env (override via JASPER_WIFI_STASH_FILE)
+and acts based on what NetworkManager currently sees:
+
+  - Active WiFi matches stash       -> no-op (steady_state)
+  - Active WiFi differs from stash  -> no-op (stash_stale)
+  - No active WiFi, profile present -> activate (activate)
+  - No active WiFi, profile missing -> recreate (recreate_attempt)
+
+Emits structured `event=wifi_guardian.<outcome>` lines on stderr.
+PSK is never logged.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --reason)
+            REASON="${2:-manual}"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "unknown argument: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+done
+
+log() {
+    echo "jasper-wifi-guardian[$REASON]: $*" >&2
+}
+
+emit() {
+    # Single-line structured event for journal grep. `$1` is the outcome
+    # name (suffix on `event=wifi_guardian.`); `$2` is the kv-tail.
+    # Kept tiny — same shape as `event=shairport.*`, `event=wifi_guardian.*`
+    # consumers should be filterable with `grep event=wifi_guardian`.
+    if [[ -n "${2:-}" ]]; then
+        printf 'event=wifi_guardian.%s %s\n' "$1" "$2" >&2
+    else
+        printf 'event=wifi_guardian.%s\n' "$1" >&2
+    fi
+}
+
+# Scrub PSK occurrences from a string. Used to clean nmcli stderr
+# before logging it on a recreate failure. Mirrors
+# jasper.web.wifi_setup._scrub_argv's intent for log lines.
+#
+# Two passes:
+#   1. Replace any literal occurrence of $PSK with `***` (defends
+#      against nmcli quoting the PSK as 'PSK' in echo-back errors).
+#   2. Replace `password <non-whitespace>` with `password ***`
+#      (defends against argv echo, --password variants).
+# We do (1) only when PSK is non-empty (open networks have no PSK to
+# scrub, and an empty-string s/// would replace every char boundary).
+scrub_psk() {
+    local sed_args=()
+    if [[ -n "$PSK" ]]; then
+        # `:` is the sed-script separator we use because PSKs can
+        # contain `/`. PSKs may also contain `:`; in that case sed
+        # would itself error out. Real-world WPA PSKs typically don't
+        # use these, but if we hit one we degrade to pattern (2) only.
+        if [[ "$PSK" != *":"* ]]; then
+            sed_args+=("-e" "s:${PSK}:***:g")
+        fi
+    fi
+    sed_args+=("-e" "s/password[[:space:]]+[^[:space:]]+/password ***/g")
+    sed -E "${sed_args[@]}"
+}
+
+if [[ ! -f "$STASH_FILE" ]]; then
+    # No stash configured. Pre-PR-state of the world; we have nothing
+    # to recover from. This is the fresh-install case and the deliberately-
+    # disabled case (operator removed the file). Either way, no-op.
+    emit absent ""
+    exit 0
+fi
+
+# Load the stash with `set -a` so the file's exports populate our env.
+# We never re-export to anything we spawn (the only spawn is nmcli, which
+# doesn't read JASPER_*).
+set -a
+# shellcheck disable=SC1090
+source "$STASH_FILE"
+set +a
+
+SSID="${JASPER_WIFI_SSID:-}"
+PSK="${JASPER_WIFI_PSK:-}"
+KEY_MGMT="${JASPER_WIFI_KEY_MGMT:-none}"
+
+if [[ -z "$SSID" ]]; then
+    emit absent "reason=stash_empty"
+    exit 0
+fi
+
+if [[ "$KEY_MGMT" == "wpa-eap" ]]; then
+    # The wizard rejects enterprise at write-time; defend in depth in
+    # case the file was hand-edited. `nmcli dev wifi connect` would
+    # require certificate/identity args we don't stash.
+    emit skip "reason=enterprise"
+    exit 0
+fi
+
+# Probe NM state. We need: the SSID of the currently-active WiFi
+# connection (if any), and whether a connection profile with the
+# stashed SSID's NAME exists.
+#
+# `nmcli -t -f NAME,TYPE connection show --active` is the canonical
+# active-connection query. We pick the first wifi/802-11-wireless row.
+ACTIVE_LINE="$("$NMCLI" -t -f NAME,TYPE connection show --active 2>/dev/null \
+    | awk -F: '$2 ~ /wifi|wireless/ { print $1; exit }')"
+ACTIVE_NAME="$ACTIVE_LINE"
+
+# Resolve the active connection's actual SSID (not just the profile
+# name — netplan-seeded profiles have a NAME like `netplan-wlan0-foo`
+# but the SSID lives in 802-11-wireless.ssid). We compare against the
+# stashed SSID, not the profile name.
+ACTIVE_SSID=""
+if [[ -n "$ACTIVE_NAME" ]]; then
+    ACTIVE_SSID="$("$NMCLI" -t -s -f 802-11-wireless.ssid connection show \
+        "$ACTIVE_NAME" 2>/dev/null \
+        | awk -F: '$1 == "802-11-wireless.ssid" { print $2; exit }')"
+    # Fallback to profile name if the SSID field is empty for some reason.
+    [[ -z "$ACTIVE_SSID" ]] && ACTIVE_SSID="$ACTIVE_NAME"
+fi
+
+# Does a connection profile with NAME == stash SSID exist? We match
+# exactly on NAME because that's how nmcli's `dev wifi connect <ssid>`
+# names new profiles (the SSID *is* the profile name for wizard-created
+# entries — see `wifi_setup.connect_new`).
+PROFILE_EXISTS=0
+while IFS= read -r line; do
+    name="$(echo "$line" | awk -F: '{print $1}')"
+    if [[ "$name" == "$SSID" ]]; then
+        PROFILE_EXISTS=1
+        break
+    fi
+done < <("$NMCLI" -t -f NAME connection show 2>/dev/null)
+
+log "stash_ssid=$SSID active_ssid=${ACTIVE_SSID:-<none>} profile_exists=$PROFILE_EXISTS key_mgmt=$KEY_MGMT"
+
+# Case 1: WiFi is already up on the stashed SSID. Nothing to do.
+if [[ -n "$ACTIVE_SSID" && "$ACTIVE_SSID" == "$SSID" ]]; then
+    emit steady_state "ssid=$SSID"
+    exit 0
+fi
+
+# Case 2: WiFi is up but on a different SSID. This means either:
+#   - operator moved networks via SSH `nmcli` and didn't re-save in the
+#     wizard, so the stash is stale; OR
+#   - operator is mid-migration and connected manually first
+# Either way, we don't know which is "correct". Stomping the working
+# network would be worse than doing nothing. Log it; doctor surfaces
+# this as a warn so the operator can re-save in the wizard.
+if [[ -n "$ACTIVE_SSID" ]]; then
+    emit stash_stale "active=$ACTIVE_SSID stash=$SSID"
+    exit 0
+fi
+
+# Case 3: WiFi is down but a profile for the stashed SSID exists.
+# Try to activate it. This is the "NM didn't auto-connect" case — could
+# be a transient signal issue or `connection.autoconnect=no`. `connection
+# up` is cheap and the right action.
+if [[ "$PROFILE_EXISTS" == "1" ]]; then
+    emit activate "ssid=$SSID"
+    if "$NMCLI" --wait 20 connection up "$SSID" >/dev/null 2>&1; then
+        emit activate_ok "ssid=$SSID"
+        exit 0
+    fi
+    emit activate_fail "ssid=$SSID"
+    # Don't fall through to recreate — the profile exists and we couldn't
+    # bring it up. Recreate would also stash-stomp a possibly-fine profile
+    # whose PSK we'd be overwriting. Operator's job from here.
+    exit 1
+fi
+
+# Case 4: THE INCIDENT CASE. No active WiFi, no profile, but we have a
+# stash. Recreate.
+emit recreate_attempt "ssid=$SSID"
+
+# nmcli's connect path: pass `password ARG` for keyed networks, omit it
+# for open networks. nmcli reads the security mode from the beacon at
+# connect time (WPA2 vs WPA3/SAE), so the stashed `key_mgmt` only gates
+# whether we pass the password arg at all.
+if [[ -z "$PSK" || "$KEY_MGMT" == "none" ]]; then
+    "$NMCLI" --wait 30 device wifi connect "$SSID" 2>/tmp/wifi-guardian.stderr.$$
+    rc=$?
+else
+    "$NMCLI" --wait 30 device wifi connect "$SSID" password "$PSK" 2>/tmp/wifi-guardian.stderr.$$
+    rc=$?
+fi
+
+if [[ $rc -eq 0 ]]; then
+    emit recreate_ok "ssid=$SSID"
+    rm -f /tmp/wifi-guardian.stderr.$$
+    exit 0
+fi
+
+# Failed: nmcli left behind a broken profile (it creates the profile
+# before activating, then fails activation). Mirror wifi_setup.connect_new's
+# cleanup: delete the broken profile so the saved list doesn't accumulate
+# garbage. Best-effort.
+"$NMCLI" connection delete "$SSID" >/dev/null 2>&1 || true
+
+# Log the nmcli stderr with PSK scrubbed. The stderr file path includes
+# our PID so concurrent runs (which shouldn't happen — oneshot — but
+# defense in depth) don't collide.
+err_line=""
+if [[ -s /tmp/wifi-guardian.stderr.$$ ]]; then
+    err_line="$(scrub_psk < /tmp/wifi-guardian.stderr.$$ | head -1 | tr -d '\n')"
+fi
+rm -f /tmp/wifi-guardian.stderr.$$
+
+emit recreate_fail "ssid=$SSID rc=$rc err=\"${err_line}\""
+exit "$rc"

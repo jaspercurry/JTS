@@ -1009,3 +1009,158 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
 
     monkeypatch.setattr(doctor, "Path", fake_path)
     assert doctor._renderer_device_bluealsa() == "jasper_renderer_in"
+
+
+# ---------------------------------------------------- check_wifi_guardian
+#
+# The check has four happy/warn paths to cover (matches the design
+# doc §3.7 (F)):
+#   - ok: stash present, active SSID matches
+#   - ok: no stash and no active WiFi (Ethernet-only Pi)
+#   - warn: WiFi up, no stash → wizard never saved
+#   - warn: stash present, active WiFi on a different SSID → drift
+#   - warn: stash present, no active WiFi → last guardian failed
+# Skip path:
+#   - ok with detail "skipped" when nmcli isn't on PATH
+
+def _mock_nmcli_proc(stdout: str = "", returncode: int = 0):
+    """Synthesize a CompletedProcess for `_run` to return."""
+    import subprocess
+    return subprocess.CompletedProcess(
+        args=["nmcli"], returncode=returncode,
+        stdout=stdout, stderr="",
+    )
+
+
+def _patch_doctor_nmcli(monkeypatch, response_stack):
+    """Patch shutil.which to return a path and doctor._run to return
+    the next CompletedProcess in response_stack for each call.
+
+    Each entry can be either a string (treated as stdout, rc=0) or
+    a CompletedProcess. The check makes 0-2 _run() calls depending
+    on the path; over-long stacks are fine, under-long stacks fail
+    the call with returncode=1.
+    """
+    monkeypatch.setattr(
+        doctor.shutil, "which",
+        lambda name: "/usr/bin/nmcli" if name == "nmcli" else None,
+    )
+    responses = iter(response_stack)
+
+    def fake_run(cmd, timeout=5.0):
+        try:
+            r = next(responses)
+        except StopIteration:
+            return _mock_nmcli_proc(returncode=1)
+        if isinstance(r, str):
+            return _mock_nmcli_proc(stdout=r)
+        return r
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+
+def test_check_wifi_guardian_ok_when_stash_matches_active(
+    monkeypatch, tmp_path,
+):
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [
+        # connection show --active
+        "Home:802-11-wireless\n",
+        # connection show Home (ssid lookup)
+        "802-11-wireless.ssid:Home\n",
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "ok"
+    assert "matches" in r.detail.lower() or "home" in r.detail.lower()
+
+
+def test_check_wifi_guardian_ok_ethernet_only(monkeypatch, tmp_path):
+    """No stash and no active WiFi → ethernet-only or never-configured
+    Pi. Don't warn — there's nothing to recover and nothing to drift."""
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
+    _patch_doctor_nmcli(monkeypatch, [
+        # connection show --active → no wifi line
+        "eth0:802-3-ethernet\n",
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "ok"
+
+
+def test_check_wifi_guardian_warns_when_stash_missing_but_active(
+    monkeypatch, tmp_path,
+):
+    """WiFi works but the stash hasn't been seeded — operator brought
+    up wifi via raspi-config or installed before our migration shipped.
+    Warn so the dashboard / system check surfaces the recovery gap."""
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(tmp_path / "missing.env"))
+    _patch_doctor_nmcli(monkeypatch, [
+        "Home:802-11-wireless\n",
+        "802-11-wireless.ssid:Home\n",
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "warn"
+    assert "stash" in r.detail.lower()
+    assert "/wifi/" in r.detail  # actionable: tells operator where to go
+
+
+def test_check_wifi_guardian_warns_on_ssid_drift(monkeypatch, tmp_path):
+    """Stash says Home, NM is on Cafe — operator switched via SSH and
+    didn't re-save in the wizard. Warn so the next dirty shutdown
+    doesn't recreate the wrong network."""
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [
+        "Cafe:802-11-wireless\n",
+        "802-11-wireless.ssid:Cafe\n",
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "warn"
+    assert "Home" in r.detail and "Cafe" in r.detail
+
+
+def test_check_wifi_guardian_warns_when_active_wifi_missing(
+    monkeypatch, tmp_path,
+):
+    """Stash is configured but no WiFi is currently up. Either the
+    guardian's last run failed, or NM was unable to bring up the
+    network. Either way the operator should investigate."""
+    stash = tmp_path / "wifi_guardian.env"
+    stash.write_text(
+        "JASPER_WIFI_SSID=Home\nJASPER_WIFI_PSK=p\nJASPER_WIFI_KEY_MGMT=wpa-psk\n",
+    )
+    monkeypatch.setenv("JASPER_WIFI_STASH_FILE", str(stash))
+    _patch_doctor_nmcli(monkeypatch, [
+        "",  # no active wifi
+    ])
+    r = doctor.check_wifi_guardian()
+    assert r.status == "warn"
+    assert "Home" in r.detail
+    assert "guardian" in r.detail.lower()
+
+
+def test_check_wifi_guardian_skipped_without_nmcli(monkeypatch):
+    """Pis without NetworkManager (or running this check in CI) →
+    skip cleanly. The guardian itself is no-op on those machines."""
+    monkeypatch.setattr(
+        doctor.shutil, "which",
+        lambda name: None if name == "nmcli" else f"/usr/bin/{name}",
+    )
+    r = doctor.check_wifi_guardian()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def test_check_wifi_guardian_registered_in_sync_checks():
+    """Make sure the check is actually called from `run_async`'s
+    sync_checks list, not just defined. Mirrors the spirit of the
+    `check_wifi_regdom` registration this check sits next to."""
+    import inspect
+    src = inspect.getsource(doctor.run_async)
+    assert "check_wifi_guardian" in src

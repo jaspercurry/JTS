@@ -1922,6 +1922,121 @@ def check_wifi_regdom() -> CheckResult:
     )
 
 
+def check_wifi_guardian() -> CheckResult:
+    """Verify the WiFi profile guardian stash matches the active
+    NetworkManager profile.
+
+    The guardian (deploy/bin/jasper-wifi-guardian, run at boot via
+    jasper-wifi-guardian.service) recreates a lost
+    /etc/NetworkManager/system-connections/*.nmconnection from the
+    wizard-owned stash at /var/lib/jasper/wifi_guardian.env. If the
+    stash is missing or stale, the recovery contract is broken — even
+    though WiFi is currently working. This check surfaces that drift.
+
+    States:
+      ok    — stash exists, SSID matches what NM is currently on
+      warn  — stash absent while WiFi is up (open the /wifi/ wizard and
+              save once to seed); OR stash present but SSID drifted from
+              the active profile (operator likely connected via SSH); OR
+              stash present and no WiFi is up (last guardian run failed
+              to recreate, or NM also failed)
+      (the check is informational — guardian status is never fail-
+       blocking. The Pi is currently online or not regardless of the
+       stash state; the stash exists to help the *next* boot.)
+
+    Skipped silently when nmcli is missing — the guardian is no-op on
+    those machines anyway (no NM, nothing to recover)."""
+    label = "WiFi profile guardian"
+    nmcli = shutil.which("nmcli")
+    if nmcli is None:
+        # No NetworkManager → guardian isn't applicable. Don't warn;
+        # this is the headless-Ethernet-only Pi case.
+        return CheckResult(label, "ok", "skipped — no nmcli on PATH")
+
+    # Read the stash via the same module the wizard + tests use. We
+    # never log the PSK from doctor; the SSID + key_mgmt are fine.
+    from ..wifi_guardian_persistence import (
+        DEFAULT_PATH as _STASH_DEFAULT,
+        read_stash,
+    )
+    stash_path = os.environ.get("JASPER_WIFI_STASH_FILE", _STASH_DEFAULT)
+    stash = read_stash(stash_path)
+
+    # Probe active SSID via nmcli (same idiom as the guardian itself).
+    proc = _run(
+        [nmcli, "-t", "-f", "NAME,TYPE", "connection", "show", "--active"],
+        timeout=5,
+    )
+    active_name: str | None = None
+    if proc.returncode == 0:
+        for raw in proc.stdout.splitlines():
+            # Naive split: NM doesn't quote single colons in NAME often,
+            # but bssid-style fields are filtered out by the field list.
+            parts = raw.split(":", 1)
+            if len(parts) == 2 and parts[1] in ("802-11-wireless", "wifi"):
+                active_name = parts[0]
+                break
+
+    active_ssid: str | None = None
+    if active_name:
+        ssid_proc = _run(
+            [nmcli, "-t", "-f", "802-11-wireless.ssid",
+             "connection", "show", active_name],
+            timeout=5,
+        )
+        if ssid_proc.returncode == 0:
+            for raw in ssid_proc.stdout.splitlines():
+                if raw.startswith("802-11-wireless.ssid:"):
+                    val = raw.split(":", 1)[1]
+                    if val:
+                        active_ssid = val
+                    break
+        if active_ssid is None:
+            active_ssid = active_name  # fallback
+
+    if stash is None and active_ssid is None:
+        # Both absent: fresh install on Ethernet, or WiFi off / never
+        # configured. Nothing to recover from; nothing to warn about.
+        return CheckResult(label, "ok", "no stash and no active WiFi (Ethernet-only?)")
+
+    if stash is None and active_ssid is not None:
+        return CheckResult(
+            label, "warn",
+            f"WiFi is up on {active_ssid!r} but no recovery stash exists. "
+            f"Open http://jts.local/wifi/ and Connect once to seed "
+            f"{stash_path} — until then, a dirty-shutdown filesystem loss "
+            f"of /etc/NetworkManager/system-connections/ would brick "
+            f"network access.",
+        )
+
+    if stash is not None and active_ssid is None:
+        return CheckResult(
+            label, "warn",
+            f"stash points at {stash.ssid!r} but no WiFi is currently up. "
+            f"Run `sudo /usr/local/sbin/jasper-wifi-guardian --reason manual` "
+            f"to retry, or check `journalctl -u jasper-wifi-guardian` for "
+            f"the most recent recreate attempt.",
+        )
+
+    # Both present: compare. Stash SSID drift from active SSID means the
+    # operator likely switched networks via SSH (`nmcli dev wifi connect`)
+    # and didn't re-save in the wizard. WiFi works today; recovery is
+    # pointed at a network that may not be in range when needed.
+    assert stash is not None and active_ssid is not None
+    if stash.ssid == active_ssid:
+        return CheckResult(
+            label, "ok",
+            f"stash matches active SSID ({active_ssid})",
+        )
+    return CheckResult(
+        label, "warn",
+        f"stash points at {stash.ssid!r} but WiFi is on {active_ssid!r}. "
+        f"Re-save at http://jts.local/wifi/ to update the recovery stash; "
+        f"otherwise a future dirty shutdown would recreate the wrong "
+        f"network.",
+    )
+
+
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ..usage import SpendCap, UsageStore
@@ -2041,6 +2156,11 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # post-bringup foot-gun — silent except in dmesg, and
         # breaks the /wifi/ wizard's primary function.
         check_wifi_regdom,
+        # WiFi profile recovery: the guardian's stash must match the
+        # active profile, otherwise a dirty-shutdown filesystem loss
+        # of /etc/NetworkManager/system-connections/ would either fail
+        # to recreate (no stash) or recreate the wrong network (drift).
+        check_wifi_guardian,
         # Rotary dial: avahi advertising the control service so the
         # dial finds us via mDNS-SD, plus a heartbeat from any dial
         # currently on the network.

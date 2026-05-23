@@ -940,6 +940,7 @@ PY
     fi
     migrate_voice_provider
     migrate_transit_config
+    migrate_wifi_guardian
 }
 
 # Migrate stale transit env vars from /etc/jasper/jasper.env into the
@@ -1055,6 +1056,97 @@ migrate_voice_provider() {
     rm -f "${jasper_env}.bak"
 }
 
+# Seed /var/lib/jasper/wifi_guardian.env from the currently-active WiFi
+# profile if no stash exists yet. This is the migration hook for the
+# WiFi profile guardian (docs/HANDOFF-resilience.md "Hardware-event
+# recovery" sidebar) — it covers the SSH-driven setup case where the
+# operator brought up WiFi via raspi-config / nmcli before ever
+# opening the /wifi/ wizard.
+#
+# Idempotent:
+#   - stash already exists       -> no-op
+#   - nmcli missing              -> no-op (no NM, nothing to recover)
+#   - no active WiFi connection  -> no-op (Ethernet-only Pi)
+#   - active profile is WPA-EAP  -> no-op (enterprise out of scope)
+#
+# PSK redaction: the stash file is mode 0600 (root-only). The PSK lands
+# in it because NM's own keyfile is also plaintext at 0600 — encrypting
+# our copy while NM's stays plaintext is theatre against a root-equiv
+# attacker. The PSK does NOT appear in any `echo` from this function.
+migrate_wifi_guardian() {
+    local stash="${STATE_DIR}/wifi_guardian.env"
+
+    # Stash already exists — wizard or a previous migrate seeded it.
+    # Nothing to do.
+    [[ -f "${stash}" ]] && return 0
+
+    # No nmcli means no NetworkManager; the guardian is a no-op on this
+    # host. Don't bother seeding.
+    command -v nmcli >/dev/null 2>&1 || return 0
+
+    # Find the active wifi profile NAME. `nmcli` field "TYPE" reports
+    # `802-11-wireless` for wifi connections.
+    local active
+    active=$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+             | awk -F: '$2 ~ /wifi|wireless/ { print $1; exit }')
+    [[ -z "${active}" ]] && return 0
+
+    # Pull SSID + PSK + key-mgmt for the active profile. `-s` is
+    # "show secrets" — requires root, which install.sh always has.
+    # We parse with awk to keep the PSK off any intermediate
+    # variable trace (this whole helper runs without `set -x`).
+    local ssid="" psk="" key_mgmt=""
+    while IFS=: read -r key value; do
+        case "${key}" in
+            "802-11-wireless.ssid")              ssid="${value}" ;;
+            "802-11-wireless-security.psk")      psk="${value}" ;;
+            "802-11-wireless-security.key-mgmt") key_mgmt="${value}" ;;
+        esac
+    done < <(
+        nmcli -s -t -f \
+            802-11-wireless.ssid,\
+802-11-wireless-security.psk,\
+802-11-wireless-security.key-mgmt \
+            connection show "${active}" 2>/dev/null
+    )
+
+    [[ -z "${ssid}" ]] && return 0
+
+    # Enterprise auth is out of scope — the guardian can't recreate it
+    # (no cert/identity in our stash). Skip silently rather than write
+    # a stash that the guardian itself would refuse.
+    [[ "${key_mgmt}" == "wpa-eap" ]] && return 0
+
+    # Default key-mgmt to `none` when nmcli reported nothing (open
+    # network). Matches the wizard's behavior.
+    [[ -z "${key_mgmt}" ]] && key_mgmt="none"
+
+    # Write atomically: tempfile in same dir, chmod 0600, mv. We're
+    # in bash, not Python, so no fsync — the wizard does fsync on
+    # its own writes, and seeding from install.sh is a one-time event
+    # whose durability matters less than its idempotency.
+    install -d -m 0750 "${STATE_DIR}"
+    local tmp
+    tmp=$(mktemp "${STATE_DIR}/.wifi_guardian.XXXXXX")
+    # umask + mode dance: write the file with the PSK never visible to
+    # other processes via `ls`. The `chmod 0600` after write is the
+    # belt; `umask 077` on the tempfile creation is the suspenders.
+    (
+        umask 077
+        cat > "${tmp}" <<EOF
+JASPER_WIFI_SSID=${ssid}
+JASPER_WIFI_PSK=${psk}
+JASPER_WIFI_KEY_MGMT=${key_mgmt}
+EOF
+    )
+    chmod 0600 "${tmp}"
+    mv "${tmp}" "${stash}"
+
+    # PSK redaction: the SSID is fine to log (visible in every nmcli
+    # output) but the PSK never appears in this echo or any other.
+    echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
+}
+
 install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
@@ -1134,6 +1226,18 @@ install_systemd_units() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
+
+    # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
+    # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
+    # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. See
+    # docs/HANDOFF-resilience.md "WiFi profile recovery" for the
+    # design and the 2026-05-23 incident this defends against.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-wifi-guardian.service" \
+        "${SYSTEMD_DIR}/jasper-wifi-guardian.service"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-wifi-guardian" \
+        /usr/local/sbin/jasper-wifi-guardian
 
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
@@ -1324,6 +1428,12 @@ Will retry on next boot."
     # clears that stale state and parks voice instead of letting it
     # watchdog-loop on an unfed UDP socket.
     reconcile_aec_state
+    # WiFi profile guardian: oneshot at boot, gated by
+    # ConditionPathExists= on the wizard's stash file. Enabling is safe
+    # on fresh installs because the unit silently no-ops until the
+    # wizard saves once. See migrate_wifi_guardian (called from
+    # ensure_env_file above) for the SSH-driven-setup seed path.
+    systemctl enable jasper-wifi-guardian.service
     echo
     echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
 }
