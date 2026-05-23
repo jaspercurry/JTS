@@ -735,8 +735,15 @@ EOF
         # Build vendored v2.1 first (cached after first run); exports
         # WEBRTC_AEC3_V2_PREFIX into the env that setup.py reads.
         build_webrtc_v2_for_aec3
+        # --force-reinstall: pip wheel cache only keys on source hash +
+        # setuptools metadata, not on env vars. Without --force-reinstall,
+        # a previously-cached wheel built without WEBRTC_AEC3_V2_PREFIX
+        # (i.e. with only the v1 extension) would be reused even after
+        # the vendored v2 build completes. Forcing a rebuild is the
+        # simplest way to guarantee setup.py sees the env var and builds
+        # both extensions. The binding compiles in ~10s on Pi 5.
         WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
-            "${INSTALL_DIR}/.venv/bin/pip" install \
+            "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
             "${INSTALL_DIR}/jasper_aec3"
     fi
 

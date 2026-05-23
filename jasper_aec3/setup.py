@@ -68,6 +68,53 @@ def _build_v1_extension() -> Pybind11Extension:
     )
 
 
+_ABSL_MODULES = [
+    # Top-level absl modules webrtc-audio-processing-2 depends on.
+    # pkg-config will expand each to its transitive subpackages.
+    "absl_base", "absl_strings", "absl_synchronization",
+    "absl_time", "absl_hash", "absl_log", "absl_flags",
+    "absl_container", "absl_debugging", "absl_status",
+    "absl_numeric", "absl_random",
+]
+
+
+def _absl_via_pkgconfig() -> tuple[list[str], list[str]]:
+    """Discover system abseil link flags via pkg-config.
+
+    Returns (library_dirs, library_names) — both already stripped of
+    the leading -L / -l prefixes so they fit setuptools' parameters.
+    On Pi (Debian Trixie), abseil-cpp is shipped as libabsl-dev and
+    meson detects it via pkg-config, so its subproject build isn't
+    triggered → no static archives to link directly. We discover the
+    flags ourselves and rely on the system shared libs at runtime.
+    """
+    lib_dirs: list[str] = []
+    libs: list[str] = []
+    extra_link: list[str] = []
+    for module in _ABSL_MODULES:
+        try:
+            out = subprocess.check_output(
+                ["pkg-config", "--libs", module],
+                text=True, stderr=subprocess.DEVNULL,
+            ).strip()
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+        for tok in shlex.split(out):
+            if tok.startswith("-L"):
+                d = tok[2:]
+                if d and d not in lib_dirs:
+                    lib_dirs.append(d)
+            elif tok.startswith("-l"):
+                name = tok[2:]
+                if name and name not in libs:
+                    libs.append(name)
+            else:
+                # E.g. -Wl,--push-state, -latomic comes through cleanly above.
+                if tok not in extra_link:
+                    extra_link.append(tok)
+    return lib_dirs, libs, extra_link
+
+
 def _build_v2_extension(prefix: Path) -> Pybind11Extension:
     """BEST_A binding linking statically against vendored v2.1.
 
@@ -76,6 +123,14 @@ def _build_v2_extension(prefix: Path) -> Pybind11Extension:
     builds it; we just compile the binding against the static archive
     + source-tree headers (internal EchoCanceller3 header is NOT
     installed by meson, so we read it directly from the source tree).
+
+    Abseil handling — two cases:
+      - meson built abseil as a subproject (laptop case, when no system
+        absl is available) → static archives at
+        `${bld}/subprojects/abseil-cpp-*/libabsl_*.a`. Link those.
+      - system absl is available via pkg-config (Pi case via apt
+        libabsl-dev) → meson skipped the subproject build. Link via
+        `-labsl_*` flags.
 
     Layout assumed:
       ${prefix}/src/                  — webrtc-audio-processing v2.1 source clone
@@ -91,24 +146,45 @@ def _build_v2_extension(prefix: Path) -> Pybind11Extension:
             "install.sh's vendored build step should have produced this."
         )
 
-    # Absl static archives (subproject of the webrtc-audio-processing build).
-    # Globbed at build time so an absl version bump doesn't break us.
-    absl_dir = bld / "subprojects" / "abseil-cpp-20240722.0"
-    absl_libs = sorted(str(p) for p in absl_dir.glob("libabsl_*.a"))
-    if not absl_libs:
-        raise RuntimeError(
-            f"absl static archives missing under {absl_dir} — "
-            "v2.1 build looks incomplete"
-        )
+    # Did meson build abseil as a subproject? Glob for any version.
+    absl_subprojects = sorted(bld.glob("subprojects/abseil-cpp-*"))
+    static_absl_libs: list[str] = []
+    extra_include: list[str] = []
+    extra_link_args: list[str] = ["-lpthread"]
+    library_dirs: list[str] = []
+    library_names: list[str] = []
+
+    if absl_subprojects:
+        # Laptop case — link static archives.
+        absl_dir = absl_subprojects[0]
+        static_absl_libs = sorted(str(p) for p in absl_dir.glob("libabsl_*.a"))
+        if not static_absl_libs:
+            raise RuntimeError(
+                f"absl subproject dir exists at {absl_dir} but no static "
+                "archives inside — meson build looks incomplete"
+            )
+        # Include paths for absl headers (subproject)
+        extra_include += [str(absl_dir), str(src / "subprojects" / absl_dir.name)]
+    else:
+        # Pi case — system absl via pkg-config.
+        lib_dirs, libs, pc_extra = _absl_via_pkgconfig()
+        if not libs:
+            raise RuntimeError(
+                "no abseil static archives under "
+                f"{bld}/subprojects/abseil-cpp-* and pkg-config has no "
+                "system absl either — meson v2.1 build looks incomplete "
+                "(or libabsl-dev is missing)"
+            )
+        library_dirs.extend(lib_dirs)
+        library_names.extend(libs)
+        extra_link_args.extend(pc_extra)
 
     include_dirs = [
         str(bld),
         str(src),
         str(bld / "webrtc"),
         str(src / "webrtc"),
-        str(bld / "subprojects" / "abseil-cpp-20240722.0"),
-        str(src / "subprojects" / "abseil-cpp-20240722.0"),
-    ]
+    ] + extra_include
 
     extra_compile_args = [
         "-O3",
@@ -124,11 +200,12 @@ def _build_v2_extension(prefix: Path) -> Pybind11Extension:
         "jasper_aec3._aec3_v2",
         sources=["src/aec3_binding_v2.cpp"],
         include_dirs=include_dirs,
+        library_dirs=library_dirs,
+        libraries=library_names,
         extra_compile_args=extra_compile_args,
-        # Static archive paths go in extra_objects (libraries=[...] expects
-        # -lname format and a library search path).
-        extra_objects=[str(static_lib), *absl_libs],
-        extra_link_args=["-lpthread"],
+        # Static archives (webrtc + optionally subproject absl)
+        extra_objects=[str(static_lib), *static_absl_libs],
+        extra_link_args=extra_link_args,
         cxx_std=17,
     )
 
