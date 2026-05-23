@@ -405,16 +405,22 @@ class Config:
             mic_capture_channels=_env_int("JASPER_MIC_CAPTURE_CHANNELS", 1),
             # Wake-event telemetry (HANDOFF-wake-telemetry.md PR 3).
             # Directory holds wake-events.sqlite3 + per-event WAV
-            # files (one per leg, 6 s window). 500 MB cap on audio;
-            # DB rows kept forever. install.sh creates this dir at
-            # mode 0755 owned by pi:pi.
+            # files (one per leg, 6 s window). DB rows kept forever;
+            # audio ring rolls oldest-first when the byte cap is hit.
+            # install.sh creates this dir at mode 0755 owned by pi:pi.
             wake_events_dir=_env(
                 "JASPER_WAKE_EVENTS_DIR",
                 "/var/lib/jasper/wake-events",
             ),
+            # 1 GB default. Each event captures 3 WAVs (one per leg:
+            # AEC ON, AEC OFF, DTLN) at ~192 KB each = ~576 KB/event.
+            # 1 GB ≈ 1740 events; at ~30-50 events/day that's ~5-7
+            # weeks of retention. Was 500 MB pre-triple-stream (one
+            # WAV per event); bumped to 1 GB on 2026-05-23 with the
+            # third-leg capture so retention stays in the same ballpark.
             wake_events_max_audio_bytes=_env_int(
                 "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
-                500 * 1024 * 1024,
+                1024 * 1024 * 1024,
             ),
             # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
             # name from /root/.asoundrc — `plug:` aliases aren't
