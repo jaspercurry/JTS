@@ -413,15 +413,22 @@ tune_wifi_for_airplay() {
 # Rebuild a satellite firmware .bin from source if (a) it's missing,
 # or (b) any source file is newer than the staged .bin AND
 # PlatformIO is already installed on this Pi. We intentionally do NOT
-# auto-install PIO: it pulls a ~9 GB ESP32 toolchain cache, and most
-# JTS households don't have any satellite devices. The /dial/ wizard
-# surfaces a copy-paste install command for households that do.
+# auto-install PIO: a fresh install pulls ~300-500 MB of ESP32-S3
+# toolchain on first build, and most JTS households don't have any
+# satellite devices. The /dial/ wizard surfaces a copy-paste install
+# command for households that do.
 #
-# When PIO is available under the pi user (/home/pi/.platformio/penv),
-# we build as pi via sudo -u so root doesn't end up with its own
-# duplicate toolchain cache. Falls through to whatever pio is in PATH
-# otherwise. Soft-fails: a failed build prints a warning and lets
-# install.sh continue — the wizard surfaces the stale-bin state.
+# PIO can live in any of three places (mirrors build.sh's resolution
+# order): on PATH, at /opt/jasper/.venv/bin/pio (the wizard's install
+# target), or at /home/pi/.platformio/penv/bin/pio (PIO's own
+# installer-script default). We accept any of them.
+#
+# Build runs as the pi user when /home/pi/.platformio exists, so the
+# toolchain cache lands in one place and root doesn't end up with a
+# duplicate copy. Otherwise we run as whoever invoked install.sh.
+#
+# Soft-fails: a failed build prints a warning and lets install.sh
+# continue — the wizard surfaces the stale-bin state to the user.
 _build_firmware_if_stale() {
     local fw_dir="$1"
     local bin_name="$2"
@@ -441,23 +448,33 @@ _build_firmware_if_stale() {
     fi
     [[ $need_build -eq 1 ]] || return 0
 
-    local build_user="" build_cmd=""
-    if [[ -x "/home/pi/.platformio/penv/bin/pio" ]]; then
-        build_user="pi"
-        build_cmd="sudo -u pi -H bash ${build_script}"
-    elif command -v pio >/dev/null 2>&1; then
-        build_user="$(id -un)"
-        build_cmd="bash ${build_script}"
+    # Detect PIO anywhere build.sh would find it.
+    local pio_found=0
+    if command -v pio >/dev/null 2>&1 \
+       || [[ -x "/opt/jasper/.venv/bin/pio" ]] \
+       || [[ -x "/home/pi/.platformio/penv/bin/pio" ]]; then
+        pio_found=1
     fi
 
-    if [[ -z "$build_cmd" ]]; then
+    if [[ $pio_found -ne 1 ]]; then
         echo "==> ${fw_dir} firmware: source newer than staged .bin, but"
         echo "    PlatformIO is not installed on this Pi. The wizard will"
         echo "    skip flashing for ${fw_dir} until PIO is available."
         echo "    To enable, run once on the Pi:"
-        echo "      /opt/jasper/.venv/bin/pip install platformio"
+        echo "      sudo /opt/jasper/.venv/bin/pip install platformio"
         echo "    Then re-run deploy/install.sh."
         return 0
+    fi
+
+    # Pick the build user. Prefer pi when pi has any PIO state, so a
+    # populated toolchain cache gets reused on each rebuild.
+    local build_user build_cmd
+    if [[ -d "/home/pi/.platformio" ]]; then
+        build_user="pi"
+        build_cmd="sudo -u pi -H bash ${build_script}"
+    else
+        build_user="$(id -un)"
+        build_cmd="bash ${build_script}"
     fi
 
     echo "==> ${fw_dir} firmware: building as ${build_user} (~30 s incremental, ~5 min first run)"

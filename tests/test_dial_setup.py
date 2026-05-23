@@ -79,7 +79,8 @@ def test_setup_html_missing_renders_warning_with_install_command():
 
     assert "fw-banner warn" in html_str
     assert "No firmware staged" in html_str
-    assert "pip install platformio" in html_str
+    # `sudo` is required — pip can't write to the root-owned venv otherwise.
+    assert "sudo /opt/jasper/.venv/bin/pip install platformio" in html_str
     assert "firmware/dial/build.sh" in html_str
     # Don't surface size/mtime when firmware is absent.
     assert "Firmware ready" not in html_str

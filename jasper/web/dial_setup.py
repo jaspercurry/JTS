@@ -235,11 +235,11 @@ def _setup_html(*, ssid: str, firmware: dict[str, Any]) -> bytes:
             '<div class="fw-banner warn">'
             '<strong>No firmware staged.</strong> '
             'Force Flash will not flash anything until <code>jasper-dial.bin</code> '
-            'is built. Run once on the Pi:'
-            '<pre>/opt/jasper/.venv/bin/pip install platformio &amp;&amp; \\\n'
+            'is built. Run once on the Pi (SSH in as <code>pi</code>):'
+            '<pre>sudo /opt/jasper/.venv/bin/pip install platformio\n'
             'bash /opt/jasper/firmware/dial/build.sh</pre>'
-            'then reload this page. (PlatformIO pulls a ~9 GB toolchain on '
-            'first run, so we only install it when you ask.)'
+            'then reload this page. (PlatformIO pulls ~300-500 MB of ESP32 '
+            'toolchain on first run, so we only install it when you ask.)'
             '</div>'
         )
 
