@@ -469,6 +469,85 @@ def test_loopback_playback_active_reads_proc_status(tmp_path):
         assert doctor._loopback_playback_active() is False
 
 
+# ----------------------------------------- DTLN-aec engine health assessment
+
+
+def _dtln_loaded_line(size: int = 256) -> str:
+    """Synthesize the bridge's successful-load log line in journal
+    `--output=cat` format. Matches jasper/cli/aec_bridge.py:~675."""
+    return (
+        f"2026-05-23 12:47:29,197 aec-bridge INFO "
+        f"DTLN-aec engine enabled: size={size}, udp out=127.0.0.1:9878"
+    )
+
+
+def _dtln_failed_line(reason: str = "No such file or directory") -> str:
+    """Synthesize the bridge's failed-load log line."""
+    return (
+        f"2026-05-23 12:47:29,197 aec-bridge WARNING "
+        f"JASPER_AEC_DTLN_ENABLED set but DTLN couldn't load: {reason}. "
+        f"Continuing with AEC3 only."
+    )
+
+
+def test_assess_dtln_engine_loaded_returns_ok():
+    """Happy path: bridge logged a successful engine-init line.
+    Doctor reports the engine size for the operator to confirm."""
+    r = doctor._assess_dtln_engine(_dtln_loaded_line(size=256))
+    assert r.status == "ok"
+    assert "loaded" in r.detail.lower()
+    assert "size=256" in r.detail
+
+
+def test_assess_dtln_engine_load_failed_returns_fail():
+    """The regression we exist to catch: JASPER_AEC_DTLN_ENABLED=1
+    but the engine couldn't load (e.g. /var/lib/jasper/dtln/*.onnx
+    missing because install.sh's download failed and the manual SCP
+    step didn't happen). Without this check, the operator would
+    spend a week analyzing 'DTLN never fires' data without realizing
+    the engine never ran."""
+    r = doctor._assess_dtln_engine(_dtln_failed_line(
+        reason="DTLN ONNX models missing in /var/lib/jasper/dtln"
+    ))
+    assert r.status == "fail"
+    assert "couldn't load" in r.detail
+    assert "/var/lib/jasper/dtln" in r.detail   # actionable path
+    assert "jasper-aec-bridge" in r.detail       # actionable next step
+
+
+def test_assess_dtln_engine_no_marker_warns():
+    """Bridge running but no engine-init marker in the journal
+    window — probably means the bridge hasn't restarted since the
+    env var was set. Warn with the actionable fix command."""
+    r = doctor._assess_dtln_engine("some unrelated log lines\nbridge boot\n")
+    assert r.status == "warn"
+    assert "systemctl restart jasper-aec-bridge" in r.detail
+
+
+def test_assess_dtln_engine_picks_most_recent_marker():
+    """If the journal window straddles a bridge restart that fixed
+    an earlier failure, the LATER successful-load line wins. Reverse
+    iteration in _assess_dtln_engine ensures we evaluate newest-first."""
+    journal = "\n".join([
+        _dtln_failed_line(reason="onnxruntime import failed"),
+        "(... operator fixed the venv ...)",
+        _dtln_loaded_line(size=256),
+    ])
+    r = doctor._assess_dtln_engine(journal)
+    assert r.status == "ok"
+
+
+def test_check_dtln_skips_when_env_disabled(monkeypatch):
+    """When JASPER_AEC_DTLN_ENABLED is unset (legacy dual-stream
+    config), the whole check should skip cleanly without running
+    journalctl. This is the common case for non-triple-stream
+    installs and must not flap."""
+    monkeypatch.delenv("JASPER_AEC_DTLN_ENABLED", raising=False)
+    r = doctor.check_aec_bridge_dtln_engine()
+    assert r.status == "ok"
+    assert "skipped" in r.detail.lower()
+
+
 # ---------------------------------------------------- peering doctor checks
 
 
