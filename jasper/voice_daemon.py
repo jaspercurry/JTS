@@ -332,15 +332,45 @@ TTS_ALSA_DRAIN_SEC = 0.3
 # for the no-pause case.
 #
 # Switching to a sustained-speech requirement handles both cases with
-# one primitive: wake-tail audio is too short (~100-200 ms of mic
-# residual) to ever hit 200 ms continuous, so it can't false-arm; a
-# real spoken command — fast or slow — easily clears it. Pattern
-# borrowed from OpenVoiceOS's dinkum-listener (`speech_begin`
-# parameter, default 0.3 s); see ovos-dinkum-listener voice_loop.py.
-# We use 200 ms instead of 300 ms because our short single-word
-# commands ("next", "pause") only span ~250 ms of audio, and 300 ms
-# would miss them.
+# one primitive: a real spoken command — fast or slow — clears 200 ms
+# continuous easily. Pattern borrowed from OpenVoiceOS's dinkum-listener
+# (`speech_begin` parameter, default 0.3 s); see ovos-dinkum-listener
+# voice_loop.py. We use 200 ms instead of 300 ms because our short
+# single-word commands ("next", "pause") only span ~250 ms of audio,
+# and 300 ms would miss them.
+#
+# What was wrong: the original premise that "wake-tail audio is too
+# short to ever hit 200 ms continuous" was empirically false. A
+# 2026-05-23 sweep across 83 captured wake events found 55 % of them
+# had the duration-only gate armed inside the wake-tail window (0-400
+# ms post-wake) — wake-word phoneme tail + room reverb routinely
+# clears 3 consecutive 80 ms frames at Silero ≥ 0.15. The original
+# tail-too-short claim was a guess that survived because most user
+# turns where the wake-tail armed the gate also had the user starting
+# their question within the next 800 ms (silence window), masking the
+# bug. The failure mode showed up when the user paused ≥ 1.4 s after
+# the wake before starting to speak: the wake-tail armed the gate,
+# 800 ms of silence fired end-of-utterance, the LLM received only
+# pre-roll + acquire-buffer audio plus its cached prior-turn context
+# and confabulated a response while the user was still mid-pause.
 SUSTAINED_SPEECH_TO_ARM_SEC = 0.20
+
+# Minimum PEAK Silero score that the arming speech-run must reach.
+# The duration gate alone (3 frames at >= 0.15) is too permissive
+# against wake-tail residual; real user speech reliably peaks well
+# above this within 2-3 frames while wake-tail residual maxes out in
+# the 0.15-0.55 band. The 2026-05-23 corpus sweep found 0.60 cleanly
+# rejects the broken event (tail peak 0.52) while keeping every
+# real-speech turn in the 83-event corpus armed within 2 s. See
+# scripts/probe-wake-gate.py for the harness used to derive this.
+#
+# Trade-off: a frame at >= 0.60 must appear within the arming run.
+# Borderline cases — user mumbles or speaks very quietly — may delay
+# arming until a louder frame lands. The fallback is the 5 s
+# NO_SPEECH_ABORT_SEC, which still applies; degradation is at worst
+# "turn aborts and user re-wakes," vs the silent failure of "model
+# hallucinates a response while user is still trying to start."
+SPEECH_RUN_PEAK_MIN = 0.60
 
 
 class State(Enum):
@@ -1202,9 +1232,15 @@ class WakeLoop:
         self._max_silero_score_in_turn: float = 0.0
         # Anchor timestamp for the current run of continuous speech.
         # Resets to 0 on any sub-threshold frame; once `now -
-        # _speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC`,
-        # arm the silence detector.
+        # _speech_run_started_at >= SUSTAINED_SPEECH_TO_ARM_SEC` AND
+        # `_speech_run_max_silero >= SPEECH_RUN_PEAK_MIN`, arm the
+        # silence detector.
         self._speech_run_started_at: float = 0.0
+        # Max Silero score observed within the current speech run.
+        # Resets to 0 on any sub-threshold frame (same lifetime as
+        # `_speech_run_started_at`). Used to reject wake-tail audio
+        # — see SPEECH_RUN_PEAK_MIN.
+        self._speech_run_max_silero: float = 0.0
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -2321,6 +2357,7 @@ class WakeLoop:
                     self._acquire_buffer, self._turn,  # type: ignore[arg-type]
                     vad_predict=self._vad.predict,
                     speech_threshold=END_OF_UTTERANCE_SPEECH_THRESHOLD,
+                    peak_min=SPEECH_RUN_PEAK_MIN,
                 )
             except Exception as e:  # noqa: BLE001
                 drained = 0
@@ -2552,20 +2589,32 @@ class WakeLoop:
         if speech_prob >= END_OF_UTTERANCE_SPEECH_THRESHOLD:
             if self._speech_run_started_at == 0.0:
                 self._speech_run_started_at = now
+                self._speech_run_max_silero = speech_prob
+            else:
+                self._speech_run_max_silero = max(
+                    self._speech_run_max_silero, speech_prob,
+                )
             sustained = now - self._speech_run_started_at
-            if not self._user_speech_seen and sustained >= SUSTAINED_SPEECH_TO_ARM_SEC:
+            if (not self._user_speech_seen
+                    and sustained >= SUSTAINED_SPEECH_TO_ARM_SEC
+                    and self._speech_run_max_silero >= SPEECH_RUN_PEAK_MIN):
                 logger.info(
-                    "user speech detected (sustained=%.0fms, silero=%.2f) — silence detector armed",
+                    "user speech detected (sustained=%.0fms, "
+                    "silero=%.2f, peak_in_run=%.2f) "
+                    "— silence detector armed",
                     sustained * 1000, speech_prob,
+                    self._speech_run_max_silero,
                 )
                 self._user_speech_seen = True
                 await self._telemetry_stage("speech_detected")
             self._silence_started_at = 0.0
         else:
-            # Sub-threshold frame breaks the run. Wake-tail residual
-            # never reaches ~200 ms continuous, so this is what keeps
-            # it from arming.
+            # Sub-threshold frame breaks the run. Both the duration
+            # anchor and the peak-tracker reset together so the next
+            # run starts fresh — partial accumulation across silence
+            # gaps would defeat the wake-tail-rejection design.
             self._speech_run_started_at = 0.0
+            self._speech_run_max_silero = 0.0
             if self._user_speech_seen:
                 if self._silence_started_at == 0.0:
                     self._silence_started_at = now
@@ -2667,6 +2716,7 @@ class WakeLoop:
         self._user_speech_seen = False
         self._silence_started_at = 0.0
         self._speech_run_started_at = 0.0
+        self._speech_run_max_silero = 0.0
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0

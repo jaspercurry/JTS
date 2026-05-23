@@ -48,6 +48,7 @@ async def drain_acquire_buffer(
     vad_predict: Callable[[Any], float] | None = None,
     speech_threshold: float = 0.15,
     min_consecutive_speech: int = 3,
+    peak_min: float = 0.0,
 ) -> tuple[int, bool]:
     """Pop frames from `buffer` and forward each via
     ``turn.send_audio`` in FIFO order. Loops until the buffer is
@@ -63,16 +64,17 @@ async def drain_acquire_buffer(
 
     If ``vad_predict`` is provided, also predict on each frame and
     flag whether any run of ``min_consecutive_speech`` consecutive
-    frames scored at or above ``speech_threshold``. This lets the
-    caller pre-arm its end-of-utterance silence detector for
-    fast-talker turns where the user's whole question lands in the
-    acquire window (so live frames start after the user has finished
-    speaking and never see speech to arm on themselves). Without
-    this signal those turns abort with "no user speech detected"
-    after 5 s while the LLM happily processed the audio from the
-    buffer. Stateful VADs (Silero) also benefit from getting the
-    acquire frames in order — the LSTM is warm when live frames
-    start.
+    frames scored at or above ``speech_threshold`` — AND, if
+    ``peak_min > 0``, the maximum score within that run reached
+    ``peak_min``. This lets the caller pre-arm its end-of-utterance
+    silence detector for fast-talker turns where the user's whole
+    question lands in the acquire window (so live frames start
+    after the user has finished speaking and never see speech to
+    arm on themselves). Without this signal those turns abort with
+    "no user speech detected" after 5 s while the LLM happily
+    processed the audio from the buffer. Stateful VADs (Silero)
+    also benefit from getting the acquire frames in order — the
+    LSTM is warm when live frames start.
 
     Default ``min_consecutive_speech=3`` (≈240 ms at 80 ms/frame)
     is the closest whole-frame match to the live-mic VAD gate's
@@ -81,13 +83,19 @@ async def drain_acquire_buffer(
     sync — the acquire path pre-arms ``_user_speech_seen`` and
     bypasses the live gate entirely, so a looser threshold here
     silently undoes the wake-tail filtering the live gate is
-    designed for. Was 2 frames (~160 ms); on slow-talker turns
-    with quiet music playing, the wake-word tail + faint music
-    vocals routinely cleared 2 consecutive frames at Silero ≥ 0.15.
-    Pre-arm fired, silence detector started counting, and the
-    turn ended after ``END_OF_UTTERANCE_SILENCE_SEC`` before the
-    user spoke — model hallucinated a follow-up from cached
-    prior-turn context.
+    designed for.
+
+    The ``peak_min`` parameter mirrors the live path's
+    ``SPEECH_RUN_PEAK_MIN``. Default is ``0.0`` (off) for backward
+    compatibility; callers that want wake-tail rejection should pass
+    the same value the live gate uses. Wake-tail audio with quiet
+    music vocals cleared the duration-only gate with peaks around
+    0.15-0.50, which the live path now rejects by requiring a peak
+    >= 0.60 in the arming run. Real user speech reliably peaks
+    above 0.7 within 2-3 frames; the gap is the load-bearing
+    discriminator. See ``voice_daemon.SPEECH_RUN_PEAK_MIN`` for the
+    full corpus-derived rationale and the 2026-05-23 sweep that
+    picked 0.60.
 
     Returns ``(count, sustained_speech_detected)``.
     ``sustained_speech_detected`` is always ``False`` if
@@ -97,6 +105,7 @@ async def drain_acquire_buffer(
     """
     count = 0
     consecutive_speech = 0
+    run_max_score = 0.0
     sustained_speech_detected = False
     while buffer:
         frame = buffer.popleft()
@@ -105,9 +114,12 @@ async def drain_acquire_buffer(
             prob = vad_predict(frame)
             if prob >= speech_threshold:
                 consecutive_speech += 1
-                if consecutive_speech >= min_consecutive_speech:
+                run_max_score = max(run_max_score, prob)
+                if (consecutive_speech >= min_consecutive_speech
+                        and run_max_score >= peak_min):
                     sustained_speech_detected = True
             else:
                 consecutive_speech = 0
+                run_max_score = 0.0
         count += 1
     return count, sustained_speech_detected

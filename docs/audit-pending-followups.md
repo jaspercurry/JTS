@@ -148,12 +148,23 @@ false-fire, a 5 s vs 3 s window is barely perceptible.
 
 ### Speech-begin minimum duration (200 ms before flipping `_user_speech_seen`)
 
-Reject. `END_OF_UTTERANCE_SPEECH_THRESHOLD` is deliberately low
-(0.10) so soft speech registers fast. Adding a 200 ms minimum
-re-introduces the "soft speaker doesn't get heard" failure mode the
-loose threshold was tuned to avoid. The 0.5 s grace period
-(`END_OF_UTTERANCE_GRACE_SEC`) already filters wake-word-tail false
-positives at the front of each turn, which is the underlying concern.
+**Superseded by the 2026-05-23 fix.** This was rejected at the time,
+but production telemetry later showed the original premise was wrong:
+the 0.5 s grace period was removed in favor of a 200 ms sustained-
+speech requirement (`SUSTAINED_SPEECH_TO_ARM_SEC = 0.20`), then
+augmented on 2026-05-23 with a peak-confidence requirement
+(`SPEECH_RUN_PEAK_MIN = 0.60`). The grace-period approach broke
+fast talkers ("Hey Jarvis volume up") because their command landed
+inside the 0.5 s discard window. The sustained-duration-only
+replacement still had a hole: wake-tail residual at silero
+≈ 0.15-0.55 cleared the gate in 55 % of captured wake events,
+manifesting as the model hallucinating a response when the user
+paused ≥ 1.4 s before starting to speak. The current peak-min
+augmentation discriminates wake-tail (peaks 0.15-0.55) from real
+speech (peaks > 0.7) cleanly. See the comment block above
+`SPEECH_RUN_PEAK_MIN` in `jasper/voice_daemon.py` for full
+rationale and `scripts/probe-wake-gate.py` for the harness that
+derived the threshold.
 
 ### Three-trigger ducking on wake/listening/TTS-speaking
 
