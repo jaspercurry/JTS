@@ -61,7 +61,13 @@ install_deps() {
         libsndfile1 curl ca-certificates rsync \
         dfu-util \
         libwebrtc-audio-processing-dev pkg-config \
+        meson ninja-build \
         nginx-light openssl
+    # meson + ninja-build are needed by build_webrtc_v2_for_aec3() to
+    # compile webrtc-audio-processing v2.1 statically from source. The
+    # resulting static archive is what jasper_aec3/setup.py links the
+    # `_aec3_v2` binding against (BEST_A AEC config). See
+    # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
     # libasound2-plugins is REQUIRED for the rate_converter line in
     # deploy/alsa/asoundrc.jasper. Without it ALSA silently falls back
     # to the linear resampler which loses ~12 dB of 4-8 kHz content
@@ -79,6 +85,70 @@ install_deps() {
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
         bluez-alsa-utils bluez-tools avahi-utils
+}
+
+build_webrtc_v2_for_aec3() {
+    # Build webrtc-audio-processing v2.1 statically into
+    # /opt/jasper/.cache/webrtc-aec3-v2/src/builddir/, then export
+    # JASPER_WEBRTC_V2_PREFIX for the caller. jasper_aec3/setup.py
+    # reads this env var (as WEBRTC_AEC3_V2_PREFIX) and links its
+    # `_aec3_v2` binding against the static archive.
+    #
+    # Why v2.1 vendored + static: Debian Trixie's apt
+    # libwebrtc-audio-processing-1 v1.3-3 doesn't expose
+    # EchoCanceller3Factory in its public headers, so the deep
+    # suppressor / ERLE / stationarity knobs that BEST_A relies on
+    # are unreachable. Mirroring PipeWire 1.4's pattern, we vendor
+    # v2.1 from the upstream pulseaudio fork and link statically —
+    # we own both sides of the ABI boundary; no Debian-rebuild risk.
+    # See HANDOFF-aec.md section E + experiments/aec3-v2-deep-tune-spike/.
+    #
+    # First-run cost: ~3-5 min on Pi 5. Re-runs are no-ops thanks to
+    # the static-archive existence check.
+    local cache_dir="/opt/jasper/.cache/webrtc-aec3-v2"
+    local src_dir="${cache_dir}/src"
+    local build_dir="${src_dir}/builddir"
+    local static_archive="${build_dir}/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.a"
+    local repo_url="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
+    local repo_tag="v2.1"
+
+    if [[ -f "${static_archive}" ]]; then
+        echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
+        export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
+        return 0
+    fi
+
+    echo "  building webrtc-audio-processing ${repo_tag} statically (first run, ~3-5 min)..."
+    mkdir -p "${cache_dir}"
+
+    if [[ ! -d "${src_dir}/.git" ]]; then
+        echo "    cloning ${repo_url}#${repo_tag} → ${src_dir}"
+        git clone --depth 1 --branch "${repo_tag}" "${repo_url}" "${src_dir}"
+    else
+        echo "    source tree present; reusing"
+    fi
+
+    if [[ ! -f "${build_dir}/build.ninja" ]]; then
+        echo "    meson setup builddir/"
+        (cd "${src_dir}" && meson setup builddir \
+            -Ddefault_library=static \
+            -Db_pie=true \
+            -Dc_args=-fPIC \
+            -Dcpp_args=-fPIC \
+            --buildtype=release)
+    fi
+
+    echo "    meson compile -C builddir/"
+    (cd "${src_dir}" && meson compile -C builddir)
+
+    if [[ ! -f "${static_archive}" ]]; then
+        echo "  ERROR: meson compile finished but ${static_archive} is missing" >&2
+        echo "  WEBRTC_AEC3_V2_PREFIX will not be set; setup.py will skip _aec3_v2" >&2
+        return 1
+    fi
+
+    echo "  → static archive: ${static_archive} ($(du -h "${static_archive}" | cut -f1))"
+    export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
 }
 
 install_camilladsp() {
@@ -647,14 +717,26 @@ EOF
 
     "${INSTALL_DIR}/.venv/bin/pip" install -e "${INSTALL_DIR}"
 
-    # jasper_aec3 — pybind11 binding around Trixie's
-    # libwebrtc-audio-processing-1 (v1.3-3, AEC3). Compiled per-host
-    # against the apt-installed library; pkg-config and the dev
-    # package are installed by install_deps. The wheel is the
-    # alternative AEC engine selected by JASPER_AEC_ENGINE=webrtc3.
-    # No-op when the source dir is absent (e.g. an old checkout).
+    # jasper_aec3 — pybind11 bindings for WebRTC AEC3. Two engines:
+    #   - _aec3      → links against Debian Trixie's apt-installed
+    #                  libwebrtc-audio-processing-1 (v1.3-3). Legacy
+    #                  fallback engine.
+    #   - _aec3_v2   → links statically against vendored
+    #                  webrtc-audio-processing v2.1 (built by
+    #                  build_webrtc_v2_for_aec3 below). Exposes the
+    #                  deep EchoCanceller3Config knobs the v1
+    #                  binding can't reach — required for the BEST_A
+    #                  config. Built conditionally when the vendored
+    #                  static archive exists.
+    # See docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture
+    # plan" and experiments/aec3-v2-deep-tune-spike/README.md for
+    # the BEST_A canonical config + per-knob rationale.
     if [[ -d "${INSTALL_DIR}/jasper_aec3" ]]; then
-        "${INSTALL_DIR}/.venv/bin/pip" install \
+        # Build vendored v2.1 first (cached after first run); exports
+        # WEBRTC_AEC3_V2_PREFIX into the env that setup.py reads.
+        build_webrtc_v2_for_aec3
+        WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
+            "${INSTALL_DIR}/.venv/bin/pip" install \
             "${INSTALL_DIR}/jasper_aec3"
     fi
 
