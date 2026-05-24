@@ -28,11 +28,21 @@ hobbyist path exists.
 **DLNA/UPnP** is the open alternative. It fills the same user need
 — cast audio from a phone to the speaker over the LAN — using a
 standardised protocol (UPnP AV / DLNA) that any controller app
-can speak. Android users install BubbleUPnP (free) or similar;
-BubbleUPnP can also bridge Cast-only apps (YouTube Music,
-Podcasts) to DLNA endpoints via its local proxy, substantially
-closing the Cast gap. Windows has native "Play To" / "Cast to
-Device" support. iPhone users already have AirPlay.
+can speak. Android users install BubbleUPnP (free) or similar.
+Windows has native "Play To" / "Cast to Device" support. iPhone
+users already have AirPlay.
+
+Note on BubbleUPnP and Cast bridging: the BubbleUPnP *app* on
+Android can capture audio from third-party apps (YouTube Music,
+Apple Music, etc.) via Android 10+ audio capture and re-render
+it to any DLNA target — but this is user-initiated, not
+transparent. BubbleUPnP *Server* (a separate Java daemon) wraps
+Chromecast devices as DLNA renderers (the opposite direction).
+Neither provides transparent "phone Cast icon → DLNA speaker"
+bridging. For iOS, **AirConnect** (philippe44, 4.1k stars,
+v1.9.3 released 2025-11-21) advertises virtual AirPlay endpoints
+that forward audio to UPnP/DLNA renderers — a potential Phase 3
+addition if iOS DLNA demand materialises.
 
 **Matter Casting** (Matter spec v1.3, May 2024) is an emerging
 open standard. No phone apps support it as a sender yet; no
@@ -111,12 +121,16 @@ pcm.jasper_renderer_in (plug → dmix)
 hw:Loopback,0,0 → CamillaDSP → pcm.jasper_out → speakers
 ```
 
-The sidecar is structurally identical to `jasper-usbsink`'s
-`state_publisher` — it polls gmrender's UPnP `AVTransport`
-service at 1 Hz for `TransportState` (PLAYING / PAUSED /
-STOPPED), applies hysteresis, and writes
-`/run/jasper-dlna/state.json` atomically. No audio passes
-through the sidecar; it is a pure observer.
+The sidecar subscribes to gmrender's UPnP `AVTransport` and
+`RenderingControl` services via GENA (`SUBSCRIBE`/`NOTIFY`)
+using the `async-upnp-client` library (the same library Home
+Assistant's DLNA DMR integration uses; packaged as
+`python3-async-upnp-client` in Debian Trixie). State changes
+arrive as `LastChange` event callbacks at <50 ms latency, vs
+~500 ms average with polling. A 30 s watchdog poll runs as a
+fallback for dropped subscriptions. The sidecar writes
+`/run/jasper-dlna/state.json` atomically on each state change.
+No audio passes through the sidecar; it is a pure observer.
 
 Total RAM when enabled: **~13-20 MB Pss** (gmrender C binary +
 GStreamer audio pipeline + Python sidecar). Total RAM when
@@ -134,8 +148,8 @@ UPnP/DLNA Media Renderer explicitly designed for Raspberry Pi.
 
 | Option | RAM | Verdict |
 |---|---|---|
-| **gmrender-resurrect** | ~8-15 MB (C + GStreamer audio-only) | Best fit: lightweight, Pi-optimized, ALSA output, headless |
-| upmpdcli + mpd | ~30-50 MB (two daemons) | Overkill; mpd is a full music server, not just a renderer |
+| **gmrender-resurrect** | ~8-15 MB (C + GStreamer audio-only) | Best fit for Phase 1: lightweight, Pi-optimized, ALSA output, headless, in Trixie as .deb |
+| **upmpdcli + mpd** | ~45-75 MB (two daemons) | Stronger renderer (OpenHome, gapless, used by Volumio/moOde/HiFiBerry). Phase 2 A/B test candidate — see §13 |
 | NymphCast server | ~20 MB + FFmpeg | Custom protocol; phones can't discover it natively |
 | VLC with UPnP | ~80-120 MB | Far too heavy for 1 GB Pi; designed for desktop |
 
@@ -234,7 +248,7 @@ N seconds of pause.
 │              │   UPnP    │  port: dynamic (libupnp)  │
 └──────────────┘  events   └──────────────────────────┘
                                           ▲
-                                          │ UPnP STOP
+                                          │ UPnP Pause
                               ┌───────────┴───────────┐
                               │  jasper-mux            │
                               │  (preemption)          │
@@ -245,8 +259,8 @@ N seconds of pause.
 
 1. **Discovery**: gmrender advertises `urn:schemas-upnp-org:device:MediaRenderer:1` via SSDP multicast (UDP 1900). Phone app discovers it.
 2. **Session**: Phone sends `SetAVTransportURI` + `Play` SOAP actions. gmrender fetches audio from the URL in the action, decodes via GStreamer, outputs to `alsasink device=jasper_renderer_in`.
-3. **State**: jasper-dlna sidecar polls `GetTransportInfo` on gmrender's `AVTransport` control URL every 1 s. Writes `{playing, transport_state, updated_at}` to `/run/jasper-dlna/state.json`.
-4. **Mux**: jasper-mux reads `dlna_playing()` from the state file (same pattern as `usbsink_playing()`). On transition to playing, pauses other active sources. On preemption by another source, sends `Stop` SOAP action to gmrender's `AVTransport` control URL.
+3. **State**: jasper-dlna sidecar subscribes to gmrender's `AVTransport` `LastChange` events via GENA. State changes arrive as HTTP `NOTIFY` callbacks at <50 ms latency. A 30 s watchdog poll runs as fallback. The sidecar writes `{playing, transport_state, updated_at}` to `/run/jasper-dlna/state.json` on each transition.
+4. **Mux**: jasper-mux reads `dlna_playing()` from the state file (same pattern as `usbsink_playing()`). On transition to playing, pauses other active sources. On preemption by another source, sends `Pause` → confirms `PAUSED_PLAYBACK` via `LastChange` → sends `SetAVTransportURI("")` to disarm. Falls back to `Stop` if the renderer rejects empty URIs.
 5. **Volume**: Camilla-as-master. The phone app's volume slider is an upstream trim (handled by gmrender internally); the Pi's canonical `listening_level` lives on CamillaDSP's `main_volume`. No push-mode integration needed.
 
 ### Volume model decision
@@ -294,23 +308,29 @@ on any transport error, logged at debug level.
 
 ### 3.2 Mux preemption (`jasper/mux.py`)
 
-Add `Source.DLNA` to the `Source` enum. Preemption sends a UPnP
-`Stop` action via SOAP POST to gmrender's `AVTransport` control
-URL:
+Add `Source.DLNA` to the `Source` enum. Preemption uses a
+two-step sequence to avoid phone-side auto-resume races (raw
+`Stop` can cause phones to re-issue `Play`):
+
+1. Send `Pause` via SOAP to `AVTransport` control URL
+2. Wait up to 500 ms for `PAUSED_PLAYBACK` (confirmed via
+   sidecar state file or direct `GetTransportInfo`)
+3. Send `SetAVTransportURI` with empty URI to disarm
+4. Fall back to `Stop` if gmrender rejects empty URIs (known
+   edge case — some builds log `WARNING: cannot set NULL uri`)
 
 ```python
 async def _pause_dlna(self) -> bool:
-    soap_body = DLNA_STOP_ENVELOPE  # AVTransport:1 Stop action
-    try:
-        resp = await self._http.post(
-            self._dlna_control_url,
-            content=soap_body,
-            headers={"SOAPAction": DLNA_STOP_ACTION},
-            timeout=2.0,
-        )
-        return resp.status_code == 200
-    except Exception:
+    ok = await self._dlna_soap("Pause")
+    if not ok:
         return False
+    await asyncio.sleep(0.5)
+    # Disarm: clear the URI so phone can't auto-resume
+    ok = await self._dlna_soap("SetAVTransportURI",
+        {"CurrentURI": "", "CurrentURIMetaData": ""})
+    if not ok:
+        return await self._dlna_soap("Stop")  # fallback
+    return True
 ```
 
 The control URL is discovered at mux startup via SSDP query for
@@ -477,7 +497,8 @@ WantedBy=multi-user.target
 
 **Key decisions:**
 - `Type=notify` + `WatchdogSec=30s` (Tier 1+2 resilience;
-  sidecar uses `Heartbeat.bump()` on each successful UPnP poll)
+  sidecar uses `Heartbeat.bump()` on each GENA event or
+  watchdog poll callback)
 - `BindsTo=gmediarender.service` (sidecar lifecycle follows
   gmrender — if gmrender stops, sidecar stops too)
 - `PartOf=gmediarender.service` (propagates restart from
@@ -595,7 +616,7 @@ Headroom: ~200 MB with AEC on.
 |---|---|---|
 | gmediarender (C binary) | ~3-5 MB | Idle; libupnp + SSDP |
 | GStreamer pipeline (audio-only, playing) | ~5-8 MB | Loaded on first play; plugins lazy-loaded |
-| jasper-dlna sidecar (Python) | ~5-8 MB | Minimal: stdlib HTTP client, json, watchdog |
+| jasper-dlna sidecar (Python) | ~8-12 MB | async-upnp-client + aiohttp for GENA + watchdog |
 | **Total when playing** | **~13-20 MB** | |
 | **Total when idle** | **~8-13 MB** | GStreamer pipeline not yet instantiated |
 | **Total when disabled** | **0 MB** | Both services stopped |
@@ -647,31 +668,48 @@ class DlnaConfig:
 ```
 
 Subsystems (started in order, cleaned up in reverse):
-1. UPnP discovery (find gmrender's `AVTransport` control URL)
-2. Heartbeat (`jasper.watchdog.Heartbeat`)
-3. State publisher task (1 Hz poll → state.json)
+1. UPnP discovery (find gmrender via SSDP)
+2. GENA event subscription (AVTransport + RenderingControl)
+3. Heartbeat (`jasper.watchdog.Heartbeat`)
+4. State publisher (event-driven + 30 s watchdog poll)
 
 No audio bridge, no preempt listener, no volume bridge. The
 sidecar is a pure observer.
 
-### 7.3 UPnP discovery
+### 7.3 UPnP discovery and GENA subscription
 
-At startup, the sidecar discovers the local gmrender instance
-by querying SSDP for `urn:schemas-upnp-org:device:MediaRenderer:1`
-on localhost. It parses the device description XML to extract the
-`AVTransport:1` control URL.
+Uses `async-upnp-client` (`python3-async-upnp-client` 0.44.0-1
+in Trixie; the library Home Assistant's DLNA DMR integration is
+built on).
+
+At startup:
+1. `SsdpListener` discovers the local gmrender instance by
+   `urn:schemas-upnp-org:device:MediaRenderer:1`
+2. `UpnpFactory.async_create_device(description_url)` parses
+   the device XML, extracts `AVTransport:1` and
+   `RenderingControl:1` service descriptions
+3. Subscribe to `LastChange` on both services via GENA
+   (`SUBSCRIBE` to the event URLs). The library handles
+   auto-resubscription before the 1800 s default timeout.
 
 If gmrender isn't running yet (sidecar started first due to
-systemd ordering race), retry with exponential backoff up to
-30 s, then let the watchdog restart the sidecar.
+systemd ordering race), retry discovery with exponential backoff
+up to 30 s, then let the watchdog restart the sidecar.
 
 ### 7.4 State publisher (`jasper/dlna/state_publisher.py`)
 
-Mirror `jasper/usbsink/state_publisher.py`:
+Event-driven, not polling (unlike usbsink's RMS-based
+publisher):
 
-- Poll gmrender's `GetTransportInfo` SOAP action every 1 s
-- Extract `CurrentTransportState`: `PLAYING`, `PAUSED_PLAYBACK`,
-  `STOPPED`, `NO_MEDIA_PRESENT`
+- Primary path: GENA `LastChange` callbacks from AVTransport.
+  Parse the embedded XML for `TransportState` (`PLAYING`,
+  `PAUSED_PLAYBACK`, `STOPPED`, `NO_MEDIA_PRESENT`).
+  Latency: <50 ms from gmrender state change to state.json
+  write.
+- Watchdog path: every 30 s, poll `GetTransportInfo` via SOAP.
+  Catches silently dropped GENA subscriptions (known to occur
+  with some UPnP stacks; documented in HA community threads).
+  If the poll disagrees with the last event, re-subscribe.
 - Apply hysteresis: 1 s active debounce, 2 s inactive debounce
   (same timings as usbsink)
 - Write `/run/jasper-dlna/state.json` atomically (tempfile +
@@ -689,11 +727,12 @@ State file schema:
 
 ### 7.5 Heartbeat
 
-Call `heartbeat.bump()` after each successful UPnP poll. If
-gmrender becomes unreachable (network partition, crash), polls
-fail, bump stops firing, systemd's `WatchdogSec=30s` expires
-and restarts the sidecar. When gmrender comes back (via its
-own `Restart=always`), the sidecar rediscovers it.
+Call `heartbeat.bump()` on each GENA event callback and on each
+successful watchdog poll. If gmrender becomes unreachable
+(network partition, crash), events stop and polls fail, bump
+stops firing, systemd's `WatchdogSec=30s` expires and restarts
+the sidecar. When gmrender comes back (via its own
+`Restart=always`), the sidecar rediscovers it via SSDP.
 
 ---
 
@@ -750,7 +789,7 @@ implementation and may not exhibit this failure mode.
 | `jasper/dlna/__init__.py` | Package | ~5 |
 | `jasper/dlna/daemon.py` | Sidecar daemon lifecycle | ~120 |
 | `jasper/dlna/state_publisher.py` | UPnP poll + state.json writer | ~150 |
-| `jasper/dlna/upnp.py` | SSDP discovery + SOAP action helpers | ~120 |
+| `jasper/dlna/upnp.py` | SSDP discovery + GENA subscription + SOAP helpers (via async-upnp-client) | ~150 |
 | `jasper/cli/dlna_main.py` | Entry point | ~40 |
 | `deploy/systemd/gmediarender.service` | Renderer unit | ~25 |
 | `deploy/systemd/jasper-dlna.service` | Sidecar unit | ~25 |
@@ -807,21 +846,27 @@ bridge, no preempt listener, no volume bridge).
 - Toggle at `/sources/` enables/disables cleanly
 - RAM stays under 20 MB Pss
 
-### Phase 2: Polish (~half day)
+### Phase 2: Polish + volume sync (~1 day)
 
-- Track metadata in state.json (poll `GetPositionInfo` for
-  `TrackURI` and `TrackMetaData`)
+- Volume mirror on connect: on each `SetAVTransportURI` event,
+  push `SetVolume` to gmrender's `RenderingControl` so the
+  phone's slider reflects the actual output level (prevents
+  the "full slider, quiet speaker" desync)
+- Track metadata in state.json (parse `TrackMetaData` from
+  `LastChange` events — already arriving via GENA)
 - Surface metadata in `/state` renderers section
 - Add `renderers.dlna` to `get_currentsong()` in `renderer.py`
   (so voice tools can report what's playing via DLNA)
 - Structured logging review (ensure all paths have `event=dlna.*`)
+- A/B test upmpdcli vs gmrender (see §13)
 - HANDOFF doc `Last verified` update
 
 ### Phase 3: Optional enhancements (deferred)
 
 - Tier 3 protocol supervisor (when/if wedge pattern observed)
-- Volume observer (phone slider → `listening_level`) if
-  requested by users
+- AirConnect service (philippe44) for iOS users who want DLNA
+  without installing a separate app — exposes virtual AirPlay
+  endpoints that forward to gmrender via AVTransport
 - Device name configuration in a settings wizard
 - Audible failure cue (`CueDef` for "DLNA renderer is down")
 - Wake-event telemetry: add DLNA playing context to wake events
@@ -895,6 +940,121 @@ endpoint invisible until the next reboot. `Restart=always` +
 `StartLimitBurst=5` catches config errors (5 rapid failures →
 systemd gives up) while ensuring the endpoint is always present
 for discovery.
+
+### Why GENA, not 1 Hz SOAP polling
+
+The original design (v1 of this doc) proposed polling
+`GetTransportInfo` at 1 Hz. An architecture review identified
+this as the wrong pattern:
+
+- UPnP's native eventing (GENA `SUBSCRIBE`/`NOTIFY` via the
+  `LastChange` state variable) exists precisely for this purpose
+  (AVTransport:1 spec, "Eventing and Moderation" section)
+- Latency drops from ~500 ms average to <50 ms
+- CPU drops from 1 SOAP round-trip/sec to near-zero in steady
+  state
+- Avoids gmrender's documented `ThreadPoolAdd too many jobs`
+  issue (#283) under load
+- `async-upnp-client` (0.44.0-1 in Trixie) provides GENA
+  subscription with auto-resubscription out of the box
+- Home Assistant's DLNA DMR integration validates this exact
+  approach at scale
+
+A 30 s watchdog poll remains as a safety net for silently
+dropped GENA subscriptions (a known failure mode documented in
+HA community threads for some UPnP stacks).
+
+### Why Pause+disarm, not raw Stop for preemption
+
+AVTransport:1 `Stop` is the correct semantic signal, but
+phone-side behavior on externally-issued Stop is not
+standardised. Some DLNA controllers (notably BubbleUPnP on
+certain firmwares) auto-retry `Play` when they see an unexpected
+Stop. The Pause → confirm PAUSED_PLAYBACK → clear URI sequence
+is more robust:
+
+- `Pause` is less likely to trigger phone-side auto-advance
+- Clearing the URI via `SetAVTransportURI("")` disarms the
+  session so auto-resume has nothing to play
+- `Stop` as fallback handles renderers that reject empty URIs
+
+This pattern matches what BubbleUPnP Server does internally
+when wrapping renderers.
+
+---
+
+## 13. upmpdcli evaluation (Phase 2)
+
+gmrender-resurrect is the Phase 1 choice for simplicity (single
+binary, no MPD dependency, in Trixie). However, **upmpdcli** is
+the renderer used by Volumio, moOde, and HiFiBerry's OpenHome
+path, and it offers meaningful advantages:
+
+| Feature | gmrender | upmpdcli |
+|---|---|---|
+| OpenHome | No (PR #45 stalled since 2017) | Yes, first-class |
+| Gapless | Weak (GStreamer queue2 pathology, issue #182) | Strong (MPD native) |
+| Server-side playlist | No (phone must stay connected) | Yes (phone can sleep) |
+| FLAC ≥96 kHz | GStreamer re-buffering issues reported | MPD handles natively |
+| DSD | Not supported | MPD DoP pass-through |
+| RAM | ~8-15 MB (single process) | ~45-75 MB (upmpdcli + MPD) |
+| Debian Trixie | `gmediarender` 0.3-1 | `upmpdcli` via upstream repo (not in official Trixie) |
+| Config complexity | One ExecStart line | MPD + upmpdcli.conf |
+
+**Phase 2 A/B test protocol:**
+
+1. Install upmpdcli + MPD on the Pi alongside gmrender
+2. Point MPD's ALSA output at `jasper_renderer_in`
+3. Set `openhome = 1` in `/etc/upmpdcli.conf`
+4. Acceptance test: gapless FLAC playback of a 24/192 album
+   from MinimServer via mconnect/iOS
+5. Compare RAM (smem), CPU, and gapless quality against gmrender
+6. If upmpdcli wins: migrate. The sidecar's GENA subscription
+   works identically against upmpdcli's UPnP stack.
+
+The migration cost is bounded: the sidecar doesn't care which
+binary implements the UPnP renderer — it subscribes to the same
+`AVTransport:1` and `RenderingControl:1` services either way.
+The install.sh change is replacing `gmediarender` with
+`upmpdcli` + `mpd` packages and adjusting the systemd units.
+
+---
+
+## 14. Multi-room forward compatibility
+
+The current ALSA topology (`jasper_renderer_in` → dmix →
+`hw:Loopback,0,0` → CamillaDSP → speakers) is compatible with
+a future Snapcast insertion. When multi-room arrives:
+
+- Redefine `jasper_renderer_in` to point at a Snapcast input
+  FIFO instead of `jasper_renderer_mix`
+- All renderers (shairport-sync, librespot, bluealsa, gmrender)
+  automatically flow through Snapcast without config changes
+- CamillaDSP moves to the snapclient side (one instance per
+  physical speaker)
+- "Camilla-as-master" volume model still holds per-node
+
+This is a non-breaking topology extension. **No Phase 1 changes
+needed.** One DLNA endpoint per physical JTS speaker; do not
+attempt a virtual "group" renderer (UPnP has no multi-room
+semantics; Sonos invented a proprietary layer for this, and
+Volumio's two-endpoint approach confused users).
+
+---
+
+## 15. Security
+
+- Bind gmrender to a specific interface via `--interface-name`
+  (e.g. `wlan0`) if the Pi has multiple NICs
+- Firewall UDP 1900 (SSDP) and TCP 49494 (UPnP HTTP) at the
+  WAN boundary — DLNA is LAN-only
+- pupnp 1.14.20 in Trixie is patched against CallStranger
+  (CVE-2020-12695, partial fix), CVE-2020-13848, CVE-2021-28302,
+  and CVE-2021-29462. No new pupnp CVEs assigned 2022-2025
+- Same-LAN UPnP abuse remains possible by protocol design (SSDP
+  is unauthenticated multicast). Acceptable for a home speaker
+  on a trusted LAN — same threat model as AirPlay and Spotify
+  Connect
 
 ---
 
