@@ -161,10 +161,10 @@ class LiveConnection(Protocol):
     closed at shutdown. Internally manages reconnection, keepalive, and
     context-reset on long idle gaps.
 
-    v1 ships one implementation (Gemini Live). Future providers
-    (OpenAI Realtime, etc) plug in by writing another adapter against
-    this Protocol — daemon code (voice_daemon.py) imports only this
-    interface and `LiveTurn`.
+    Three implementations ship today: Gemini Live, OpenAI Realtime, and
+    Grok (a thin OpenAI subclass). A fourth provider plugs in by writing
+    another adapter against this Protocol — daemon code imports only
+    this interface and `LiveTurn`.
     """
 
     async def start(
@@ -199,6 +199,12 @@ class LiveConnection(Protocol):
         and cannot accept turns. The daemon's wake handler can check
         this before paying the cost of opening a turn (so wake events
         during a known-down period are a clean no-op)."""
+        ...
+
+    def supports_server_vad(self) -> bool:
+        """Whether this provider supports mid-session switching to
+        server-side VAD via set_turn_detection(). Default False —
+        adapters that support it override to return True."""
         ...
 
 

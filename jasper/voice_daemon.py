@@ -423,11 +423,11 @@ class TtsVolumeTracker:
     """
 
     POLL_INTERVAL_SEC = 0.25
-    # Approximate peak of Gemini Live's TTS PCM output (dBFS). Voice
-    # is dynamic but consistent across sessions/utterances per the
-    # source library; observed peaks cluster around -3 dBFS. Used to
-    # convert "where do we want TTS to sit" → "what gain to apply".
-    GEMINI_SOURCE_PEAK_DBFS = -3.0
+    # Approximate peak of provider TTS PCM output (dBFS). Voice is
+    # dynamic but consistent across providers and sessions; observed
+    # peaks cluster around -3 dBFS. Used to convert "where do we want
+    # TTS to sit" → "what gain to apply".
+    TTS_SOURCE_PEAK_DBFS = -3.0
 
     def __init__(
         self,
@@ -509,12 +509,12 @@ class TtsVolumeTracker:
         ceiling = vol_db + self._offset_db
         if windowed_rms > self._silence_threshold_dbfs:
             target = (
-                windowed_rms + self._headroom_db - self.GEMINI_SOURCE_PEAK_DBFS
+                windowed_rms + self._headroom_db - self.TTS_SOURCE_PEAK_DBFS
             )
         elif self._anchor_dbfs > -120.0:
             target = (
                 self._anchor_dbfs + self._headroom_db
-                - self.GEMINI_SOURCE_PEAK_DBFS
+                - self.TTS_SOURCE_PEAK_DBFS
             )
         else:
             target = ceiling
@@ -1089,7 +1089,10 @@ async def _server_vad_response_trigger(turn, connection) -> None:
     if wait_eou is None or not callable(wait_eou):
         return
     try:
-        await wait_eou()
+        await asyncio.wait_for(wait_eou(), timeout=NO_SPEECH_ABORT_SEC + 5.0)
+    except asyncio.TimeoutError:
+        logger.warning("event=server_vad.eou_timeout")
+        return
     except asyncio.CancelledError:
         raise
     if turn.turn_lost():
@@ -1098,10 +1101,10 @@ async def _server_vad_response_trigger(turn, connection) -> None:
     if create is not None and callable(create):
         try:
             await create()
-            logger.info("server_vad: fired response.create after server EOU")
+            logger.info("event=server_vad.response_create")
         except Exception as e:  # noqa: BLE001
             logger.warning(
-                "server_vad: response.create failed (%s: %s)",
+                "event=server_vad.response_create_failed error=%s: %s",
                 type(e).__name__, e,
             )
 
@@ -2588,9 +2591,8 @@ class WakeLoop:
             now = asyncio.get_event_loop().time()
             elapsed = now - self._turn_started_at_loop
 
-            server_heard_speech = bool(
-                getattr(self._turn, "_server_speech_started", False)
-            )
+            ss_fn = getattr(self._turn, "server_speech_started", None)
+            server_heard_speech = bool(ss_fn()) if callable(ss_fn) else False
             if server_heard_speech and not self._user_speech_seen:
                 self._user_speech_seen = True
                 await self._telemetry_stage("speech_detected")
@@ -2598,8 +2600,7 @@ class WakeLoop:
             if not server_heard_speech and not self._user_speech_seen \
                     and elapsed >= NO_SPEECH_ABORT_SEC:
                 logger.info(
-                    "server_vad: no speech detected within %.1fs; "
-                    "aborting turn",
+                    "event=server_vad.no_speech timeout_sec=%.1f",
                     NO_SPEECH_ABORT_SEC,
                 )
                 await self._end_turn()
@@ -2607,7 +2608,7 @@ class WakeLoop:
 
             if elapsed >= HARD_RECORDING_CAP_SEC:
                 logger.info(
-                    "server_vad: hard recording cap (%.1fs); ending",
+                    "event=server_vad.hard_cap elapsed_sec=%.1f",
                     HARD_RECORDING_CAP_SEC,
                 )
                 self._input_ended = True
@@ -2838,7 +2839,7 @@ class WakeLoop:
         self._server_vad_this_turn = False
         if (
             self._cfg.server_vad_enabled
-            and self._cfg.voice_provider in ("openai", "grok")
+            and self._connection.supports_server_vad()
             and self._tts_volume_tracker.music_is_playing()
         ):
             set_td = getattr(self._connection, "set_turn_detection", None)
@@ -2853,18 +2854,16 @@ class WakeLoop:
                         "interrupt_response": False,
                     })
                     self._server_vad_this_turn = True
-                    if self._turn is not None:
-                        svad = getattr(self._turn, "_server_vad_active", None)
-                        if svad is not None:
-                            self._turn._server_vad_active = True  # type: ignore[union-attr]
+                    mark = getattr(self._turn, "_mark_server_vad", None)
+                    if callable(mark):
+                        mark()
                     logger.info(
-                        "server_vad: enabled for this turn (music_anchor=%.1f dBFS)",
+                        "event=server_vad.enabled music_anchor_dbfs=%.1f",
                         self._tts_volume_tracker._anchor_dbfs,
                     )
                 except Exception as e:  # noqa: BLE001
                     logger.warning(
-                        "server_vad: failed to enable (%s: %s); "
-                        "falling back to local VAD",
+                        "event=server_vad.enable_failed error=%s: %s",
                         type(e).__name__, e,
                     )
 
@@ -3167,8 +3166,7 @@ async def run() -> None:
         cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
     )
     if (
-        cfg.voice_provider == "grok"
-        and cfg.daily_spend_cap_usd > 0
+        cfg.daily_spend_cap_usd > 0
         and pricing.flat_per_hour_usd > 0
     ):
         # Grok bills per hour, not per token; UsageStore tracks tokens

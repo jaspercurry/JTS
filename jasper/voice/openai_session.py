@@ -445,26 +445,32 @@ class OpenAIRealtimeTurn(LiveTurn):
     def server_vad_active(self) -> bool:
         return self._server_vad_active
 
+    def server_speech_started(self) -> bool:
+        return self._server_speech_started
+
     def server_speech_detected(self) -> bool:
         return self._server_speech_stopped and self._server_committed
 
     async def wait_for_server_eou(self) -> None:
         await self._server_eou_event.wait()
 
+    def _mark_server_vad(self) -> None:
+        self._server_vad_active = True
+
     def _on_speech_started(self) -> None:
         self._server_speech_started = True
-        logger.info("openai turn: server VAD speech_started")
+        logger.info("event=server_vad.speech_started")
 
     def _on_speech_stopped(self) -> None:
         self._server_speech_stopped = True
-        logger.info("openai turn: server VAD speech_stopped")
+        logger.info("event=server_vad.speech_stopped")
         if self._server_committed:
             self._server_eou_event.set()
 
     def _on_server_committed(self) -> None:
         self._server_committed = True
         self._committed = True
-        logger.info("openai turn: server committed audio buffer")
+        logger.info("event=server_vad.committed")
         if self._server_speech_stopped:
             self._server_eou_event.set()
 
@@ -842,6 +848,9 @@ class OpenAIRealtimeConnection(LiveConnection):
             ConnectionState.FAILED,
         )
 
+    def supports_server_vad(self) -> bool:
+        return True
+
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
@@ -911,7 +920,7 @@ class OpenAIRealtimeConnection(LiveConnection):
             },
         })
         logger.info(
-            "openai connection: turn_detection → %s",
+            "event=server_vad.switch mode=%s",
             "server_vad" if mode is not None else "manual",
         )
 

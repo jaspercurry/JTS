@@ -665,6 +665,9 @@ class GeminiLiveConnection(LiveConnection):
             ConnectionState.FAILED,
         )
 
+    def supports_server_vad(self) -> bool:
+        return False
+
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
@@ -1202,8 +1205,9 @@ class GeminiLiveConnection(LiveConnection):
 
         We deliberately avoid the public `session.receive()` async
         generator: it `break`s out of its loop the moment the first
-        `turn_complete` arrives (the SDK's `live.py` does
-        `if result.server_content.turn_complete: yield result; break`).
+        `turn_complete` arrives (the SDK's `live.py` around line 455
+        does `if result.server_content.turn_complete: yield result;
+        break` — verify against your installed SDK version).
         On a persistent multi-turn connection that means everything
         from turn 2 onward is silently dropped: zero audio chunks
         delivered, zero input/output tokens, no exception. Calling

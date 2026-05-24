@@ -91,6 +91,11 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
             base_url=base_url or GROK_WEBSOCKET_BASE_URL,
         )
 
+    def _build_session_payload(self) -> dict:
+        payload = super()._build_session_payload()
+        payload["audio"]["input"].pop("noise_reduction", None)
+        return payload
+
     async def _dispatch_event(self, etype: str, event) -> None:
         # Per xAI docs, the only top-level event-name divergence from
         # OpenAI's GA is `response.text.delta` (xAI) vs
