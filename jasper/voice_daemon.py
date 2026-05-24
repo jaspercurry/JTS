@@ -1217,6 +1217,7 @@ class WakeLoop:
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
         self._vad = SpeechVAD()
+        self._vad_off: SpeechVAD | None = SpeechVAD() if mic_off is not None else None
 
         self._state = State.WAKE
         self._turn: LiveTurn | None = None
@@ -1294,6 +1295,9 @@ class WakeLoop:
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
         self._server_vad_this_turn: bool = False
+        self._max_silero_raw_in_turn: float = 0.0
+        self._silero_raw_armed_at_ms: int | None = None
+        self._silero_aec_armed_at_ms: int | None = None
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -1638,14 +1642,10 @@ class WakeLoop:
                 capture_ring_off.append(frame)
             if self._acquiring:
                 continue
-            if self._state is not State.WAKE:
-                # Secondary leg ignores frames during a live session
-                # — only the primary stream feeds the LLM. The leg
-                # resumes scoring when the session ends (state →
-                # WAKE) and the primary loop's `_acquiring` drops
-                # back to False.
-                continue
-            await self._handle_wake_frame(frame, leg="off")
+            if self._state is State.WAKE:
+                await self._handle_wake_frame(frame, leg="off")
+            elif self._state is State.SESSION:
+                await self._shadow_vad_score_raw(frame)
 
     async def _wake_tertiary_loop(self) -> None:
         """Parallel wake-only consumer of the DTLN-aec mic (UDP :9878).
@@ -2699,6 +2699,10 @@ class WakeLoop:
                     self._speech_run_max_silero,
                 )
                 self._user_speech_seen = True
+                if self._silero_aec_armed_at_ms is None:
+                    self._silero_aec_armed_at_ms = int(
+                        (now - self._turn_started_at_loop) * 1000
+                    )
                 await self._telemetry_stage("speech_detected")
             self._silence_started_at = 0.0
         else:
@@ -2787,6 +2791,33 @@ class WakeLoop:
             "mic_muted": self._mic_muted,
         }
 
+    async def _shadow_vad_score_raw(self, frame) -> None:
+        """Score a raw-stream frame through the shadow Silero VAD.
+
+        Pure telemetry — records what raw-stream Silero sees during the
+        session but makes no endpointing decisions. The active endpointer
+        (server_vad or AEC-stream Silero) is unaffected."""
+        if self._vad_off is None or self._input_ended:
+            return
+        try:
+            speech_prob = self._vad_off.predict(frame)
+            if speech_prob > self._max_silero_raw_in_turn:
+                self._max_silero_raw_in_turn = speech_prob
+            if (
+                self._silero_raw_armed_at_ms is None
+                and speech_prob >= SPEECH_RUN_PEAK_MIN
+            ):
+                elapsed_ms = int(
+                    (asyncio.get_event_loop().time() - self._turn_started_at_loop) * 1000
+                )
+                self._silero_raw_armed_at_ms = elapsed_ms
+                logger.info(
+                    "event=shadow_vad.raw_armed elapsed_ms=%d silero=%.2f",
+                    elapsed_ms, speech_prob,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _begin_turn(self) -> None:
         import time as _time
         # Anchor on the actual wake-fire moment (set in
@@ -2813,6 +2844,11 @@ class WakeLoop:
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0
+        self._max_silero_raw_in_turn = 0.0
+        self._silero_raw_armed_at_ms = None
+        self._silero_aec_armed_at_ms = None
+        if self._vad_off is not None:
+            self._vad_off.reset()
         t_after_state = _time.monotonic()
         # Pin TTS gain to the user's pre-duck master volume + offset
         # BEFORE ducking. The duck about to fire will drop main_volume
@@ -2934,10 +2970,35 @@ class WakeLoop:
         # changed their mind. Either way the outcome is 'no_speech',
         # which dual-stream FP analysis keys off.
         await self._telemetry_stage("turn_complete")
+        # Capture event_id BEFORE _telemetry_outcome clears it.
+        session_vad_store = getattr(self, "_wake_event_store", None)
+        session_vad_eid = getattr(self, "_current_event_id", None)
         terminal_outcome = (
             "completed" if self._user_speech_seen else "no_speech"
         )
         await self._telemetry_outcome(terminal_outcome, reason)
+
+        # Session VAD shadow telemetry — record what each stream's
+        # Silero saw so the weekly review can cross-tab scores.
+        store = session_vad_store
+        eid = session_vad_eid
+        if store is not None and eid is not None:
+            endpointer_label = "server_vad" if self._server_vad_this_turn else "silero_aec"
+            if not self._user_speech_seen and not self._server_vad_this_turn:
+                endpointer_label = "no_speech_abort"
+            try:
+                await store.update_session_vad(
+                    eid,
+                    max_silero_aec=self._max_silero_score_in_turn or None,
+                    max_silero_raw=self._max_silero_raw_in_turn or None,
+                    silero_aec_armed_at_ms=self._silero_aec_armed_at_ms,
+                    silero_raw_armed_at_ms=self._silero_raw_armed_at_ms,
+                    endpointer=endpointer_label,
+                    music_playing_at_turn=self._tts_volume_tracker.music_is_playing(),
+                    music_db_at_turn=self._tts_volume_tracker._anchor_dbfs,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wake_events: session VAD telemetry failed: %s", e)
 
         # Notify peering daemon EARLY (before slow cleanup) so peers
         # un-suppress promptly. Other devices' next wake events should
