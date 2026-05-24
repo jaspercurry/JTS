@@ -553,6 +553,17 @@ def _wrap(title: str, body: str, *, status_msg: str = "") -> bytes:
         border: 1px solid #fcc; border-radius: 6px;
       }
       .danger-zone p { margin: 0 0 0.6em; color: #844; font-size: 0.92em; }
+      .voice-pack-card {
+        margin: 1.4em 0; padding: 1em 1.2em;
+        background: #f4f9f4; border: 1px solid #c9e3c9;
+        border-radius: 8px;
+      }
+      .voice-pack-card h2 { margin: 0 0 0.6em; font-size: 1.05em; }
+      .voice-pack-card p { margin: 0.4em 0; font-size: 0.94em; }
+      .voice-pack-card code {
+        background: #e6e6e6; padding: 0.1em 0.3em; border-radius: 3px;
+        font-family: ui-monospace, monospace; font-size: 0.92em;
+      }
     """
     return f"""<!doctype html>
 <html lang="en">
@@ -738,6 +749,227 @@ Home Assistant.</p>
 """
 
 
+# Self-contained prompt the user pastes into their coding agent
+# (Claude Code, Cursor, Aider, ChatGPT with tool use, etc.) to audit
+# their actual HA usage and build a personalized pack of sentence-
+# trigger automations. Generic — assumes nothing about which agent
+# runs it. Two placeholders ({HA_URL_PLACEHOLDER},
+# {HA_TOKEN_PLACEHOLDER}) get substituted client-side: the default
+# "Copy prompt" button keeps them as visible placeholders; the
+# opt-in "Copy with credentials" button substitutes the live URL +
+# token after a confirm dialog. Methodology mirrors what we learned
+# pairing through this manually: classify firings by source so the
+# proposal targets real voice intent, not every entity in HA.
+VOICE_PACK_PROMPT = """\
+# JTS smart speaker — Home Assistant voice setup
+
+You're helping me wire my Home Assistant scenes/scripts to natural
+voice phrases so my JTS smart speaker
+(https://github.com/jaspercurry/JTS) can control them reliably.
+
+## Why this is needed
+
+JTS forwards smart-home commands to my Home Assistant's conversation
+API. HA's default conversation agent is rule-based — it only
+understands precise phrasing like "turn off the bedroom lights", not
+"bedroom off" or "bedroom dark". The fix is **sentence-trigger
+automations** in HA, one per phrase, that bypass HA's NLU and route
+directly to a scene or script.
+
+## Credentials
+
+- HA URL: `{HA_URL_PLACEHOLDER}`
+- Long-lived access token: `{HA_TOKEN_PLACEHOLDER}`
+
+If either is a placeholder, ask me to paste the real value. The token
+comes from `<HA URL>/profile/security` → "Long-Lived Access Tokens" →
+Create.
+
+## Step 0 — Confirm I've taken a backup
+
+Before any writes, ask me to take an HA backup (Settings → System →
+Backups → Create backup). 30 seconds, gives a clean rollback point.
+Wait for my confirmation before continuing.
+
+## Step 1 — Audit my actual usage (~21 days of logbook)
+
+Authenticate every HA request with `Authorization: Bearer <token>`.
+
+Pull the logbook:
+
+```
+GET <HA_URL>/api/logbook/<ISO-8601 start with +00:00 offset>?end_time=<ISO-8601 end>
+```
+
+(Default window is ~1 day if you omit `end_time` — supply both.)
+
+Each entry has fields: `entity_id`, `name`, `when`, `domain` (e.g.
+`'homekit'`), `context_domain`, `context_name`, `context_user_id`,
+`message`. **Use these to classify each scene/script firing by
+source:**
+
+- `domain == 'homekit'` OR `context_domain == 'homekit'` → **HomeKit /
+  Siri / Home app** (user voice today)
+- `context_domain == 'automation'` AND `context_name` matches
+  "Hue Remote" / "Remote" / "Btn" → **physical button**
+- `context_domain == 'automation'` AND `context_name` matches "Motion"
+  → **motion sensor** (skip — automatic, not voice-relevant)
+- `context_domain == 'automation'` AND `context_name` matches
+  "Door Unlocked" / "Unlock" → **door-unlock chain** (automatic)
+- `context_domain == 'conversation'` → **existing HA voice** (possibly
+  JTS already)
+- `context_domain == 'alexa'` → **Alexa voice**
+- `context_domain == 'mobile_app'` → **HA mobile app**
+- Otherwise → **manual / dashboard / schedule**
+
+Aggregate per scene/script: total fires, breakdown by source, friendly
+name.
+
+Also pull `/api/states` to get the canonical `friendly_name` for every
+scene/script — HomeKit sometimes overwrites friendly_name to
+"HomeKit" in logbook entries.
+
+## Step 2 — Ask me clarifying questions
+
+Based on what you find, ask me ~3–6 focused questions:
+
+- **Layout** — any open-plan / shared rooms? ("Kitchen and living room
+  are one space" changes whether "kitchen off" should kill both rooms
+  or just kitchen-side fixtures.)
+- **Naming** — any household-specific shorthand worth wiring? (e.g.
+  "movie time", "goodnight", "the dim setting".)
+- **Door unlocks** — should I add voice for unlocks? Default is **no**
+  — voice unlock is a weaker security posture than phone + FaceID.
+  Lock is safe to add.
+- **Existing voice surfaces** — am I migrating from HomeKit/Alexa to
+  JTS, or supplementing? (Affects which targets to prioritize.)
+- **Sanity check** — anything from your audit that looks like a
+  phrase I'd say but isn't obvious to you.
+
+## Step 3 — Propose, then wait for explicit OK
+
+Present a table grouped by priority:
+
+- **P1** = targets I already trigger via voice today (highest
+  HomeKit/Alexa/conversation fire count). Muscle-memory phrases I'll
+  appreciate immediately.
+- **P2** = occasional voice use today.
+- **P3** = filling obvious gaps (no voice today but would be natural).
+
+For each row: target `entity_id`, total fires + source breakdown,
+suggested phrase aliases (3–6 variants).
+
+HA's sentence-trigger syntax supports `(a|b|c)` for alternatives and
+`[optional]` for optional words. Be liberal — natural speech varies.
+Example:
+
+```yaml
+- "bedroom (medium|med|med bright|medium bright)"
+- "set [the] bedroom to (medium|med)"
+```
+
+**Wait for me to say "proceed" before deploying anything.** I may
+edit the proposal first.
+
+## Step 4 — Deploy via HA's config API
+
+For each approved automation:
+
+1. **Check for existing** — GET `/api/states`, find any automation
+   whose `attributes.friendly_name` equals `"Voice: <Alias>"`. If
+   found, reuse its `attributes.id` (a numeric string). If not,
+   generate a fresh id, e.g. `str(int(time.time() * 1000) + index)`.
+2. **POST** to `/api/config/automation/config/{numeric_id}` with body:
+
+```json
+{
+  "alias": "Voice: <Alias>",
+  "description": "Auto-generated by JTS voice pack. Target: <entity_id>",
+  "mode": "single",
+  "trigger": [{"platform": "conversation",
+               "command": ["phrase1", "phrase2"]}],
+  "condition": [],
+  "action": [{
+    "service": "scene.turn_on",
+    "target": {"entity_id": "<entity_id>"},
+    "metadata": {}
+  }]
+}
+```
+
+For scripts use `"service": "script.turn_on"`.
+
+3. After all writes, POST `/api/services/automation/reload` with body
+   `{}` so changes take effect immediately.
+4. **Verify** by GETting each `/api/config/automation/config/{id}`
+   back. Confirm alias, the conversation trigger commands list, and
+   the action target entity_id.
+
+## Step 5 — Hand off
+
+Tell me which phrases to try, grouped by room. Format: "Say to JTS:
+'bedroom dark' / 'open the blinds' / ...". **Do NOT trigger them
+yourself** via `/api/conversation/process` — that fires the action
+immediately, which moves real things in my home (lights, blinds,
+locks). I'll test on JTS.
+
+## Idempotency / re-runs
+
+I may re-paste this prompt weeks from now after adding new HA
+scenes/scripts. When you re-run:
+
+- Detect existing `Voice:` automations from `/api/states` (filter
+  where `friendly_name` starts with `"Voice: "`).
+- Propose only **net-new** targets and **updates** to existing
+  aliases. Don't re-create what's already there.
+- If renaming a `Voice:` automation (alias change), **UPDATE in
+  place** at its existing numeric id. **Never CREATE a new automation
+  with the new name** — that orphans the old one with the same
+  trigger phrases still active.
+
+## DO NOT
+
+- **Don't fire test actions** via `/api/conversation/process`. It
+  executes; for blinds, locks, or scenes affecting rooms I might be
+  in, that's disruptive. Verify by GET only.
+- **Don't add voice for door unlocks** unless I explicitly say yes,
+  even if my data shows heavy unlock use today. Lock is fine.
+- **Don't modify any automation that doesn't start with `Voice:`.**
+  My Hue Remote automations, motion sensors, and door-unlock chains
+  are out of scope.
+- **Don't propose voice for entities with zero fires** in the audit
+  window. Low signal, high clutter.
+- **Don't propose more than ~20 phrases** in one batch. If the pack
+  is large, prioritize P1 first and offer to add more later.
+- **Don't assume I want to replace HomeKit/Alexa.** Ask first.
+- **Don't leave orphans on rename.** UPDATE in place at the existing
+  numeric id; never CREATE under the new alias.
+
+## API reference
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/` | Confirm token works |
+| GET | `/api/logbook/{iso_start}?end_time={iso_end}` | Usage history |
+| GET | `/api/states` | Find entities + existing `Voice:` automations |
+| GET | `/api/config/automation/config/{numeric_id}` | Read a UI-managed automation |
+| POST | `/api/config/automation/config/{numeric_id}` | Create or update |
+| POST | `/api/services/automation/reload` (body `{}`) | Reload after writes |
+
+Authenticate with `Authorization: Bearer <token>`. Conversation trigger
+schema is `{"platform": "conversation", "command": [...]}` at the top
+of the `trigger` list. HA's config API normalizes singular
+`trigger`/`action` keys to plural `triggers`/`actions` on read —
+accept both shapes when verifying.
+
+---
+
+Begin by acknowledging the brief and (if URL/token are placeholders)
+asking me for the real values. Then proceed with the audit and report
+what you find before proposing.
+"""
+
+
 def _state_connected_html(state: dict[str, str], csrf_token: str = "") -> str:
     """Render state 3: URL + token both set. We optimistically display
     the connection as healthy; the user can hit "Test connection" to
@@ -763,6 +995,29 @@ to this Home Assistant instance.</p>
   <button id="test-btn" type="button">Test connection</button>
   <span id="test-status" class="hint" style="margin-left: 0.6em;"></span>
 </p>
+
+<div class="voice-pack-card">
+  <h2>Make voice phrases work for your setup</h2>
+  <p>HA's default voice agent only understands precise phrasing —
+  "turn off the bedroom lights" works, but "bedroom off" or
+  "bedroom dark" doesn't. The fix is sentence-trigger automations
+  in HA, one per phrase, that route directly to your scenes and
+  scripts.</p>
+  <p>Rather than write these by hand, copy the prompt below into
+  your coding agent of choice (Claude Code, Cursor, Aider, ChatGPT
+  with tool use, etc.) and let it audit your actual usage, ask a
+  few clarifying questions, and deploy the pack.</p>
+  <p>
+    <button id="copy-voice-prompt-btn" type="button">📋 Copy prompt</button>
+    <button id="copy-voice-prompt-creds-btn" type="button" class="secondary">📋 Copy with HA credentials</button>
+    <span id="copy-voice-prompt-feedback" class="copy-feedback"></span>
+  </p>
+  <p class="hint" style="margin-top: 0.8em;"><strong>Recommended:</strong>
+  take an HA backup first (Settings → System → Backups → Create
+  backup). The agent only creates automations prefixed
+  <code>Voice:</code> and never modifies your existing ones, but
+  a backup is cheap insurance.</p>
+</div>
 
 <details class="disclosure">
   <summary>Conversation agent (advanced)</summary>
@@ -937,6 +1192,83 @@ to this Home Assistant instance.</p>
     }}
     testBtn.disabled = false;
   }});
+
+  // ---- Voice-pack prompt: two copy buttons -------------------------
+  // Default button copies the prompt with visible <placeholders> for
+  // URL + token (safer to share, includes brief paste-in instructions
+  // for the agent). Credentials button substitutes the live values
+  // after a confirm dialog that flags the security trade-off.
+  // The template is JSON-encoded server-side so multi-line prose,
+  // backticks, and curly braces survive embedding in a JS string
+  // literal without quoting gymnastics.
+  const VOICE_PROMPT_TEMPLATE = {json.dumps(VOICE_PACK_PROMPT)};
+  const VOICE_HA_URL = {json.dumps(url)};
+  const VOICE_HA_TOKEN = {json.dumps(token)};
+  const URL_PLACEHOLDER_FOR_SHARING = '<your HA URL, e.g. http://homeassistant.local:8123>';
+  const TOKEN_PLACEHOLDER_FOR_SHARING =
+    '<paste a long-lived access token from HA → Profile → Security → Long-Lived Access Tokens>';
+
+  async function copyToClipboard(text) {{
+    try {{
+      await navigator.clipboard.writeText(text);
+      return true;
+    }} catch (e) {{
+      // execCommand fallback for browsers that block writeText in
+      // non-secure contexts (rare on LAN but cheap insurance).
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+      document.body.appendChild(ta);
+      ta.select();
+      let ok = false;
+      try {{ ok = document.execCommand('copy'); }} catch (e2) {{}}
+      document.body.removeChild(ta);
+      return ok;
+    }}
+  }}
+
+  function showCopyFeedback(msg, ok) {{
+    const fb = document.getElementById('copy-voice-prompt-feedback');
+    fb.textContent = msg;
+    fb.style.color = ok ? '#1db954' : '#a33';
+    fb.classList.add('shown');
+    setTimeout(() => fb.classList.remove('shown'), 3000);
+  }}
+
+  document.getElementById('copy-voice-prompt-btn')
+    .addEventListener('click', async () => {{
+      const text = VOICE_PROMPT_TEMPLATE
+        .replace('{{HA_URL_PLACEHOLDER}}', URL_PLACEHOLDER_FOR_SHARING)
+        .replace('{{HA_TOKEN_PLACEHOLDER}}', TOKEN_PLACEHOLDER_FOR_SHARING);
+      const ok = await copyToClipboard(text);
+      showCopyFeedback(
+        ok ? '✓ Prompt copied — paste into your coding agent'
+           : 'Copy failed — try selecting the page text manually',
+        ok);
+    }});
+
+  document.getElementById('copy-voice-prompt-creds-btn')
+    .addEventListener('click', async () => {{
+      const ok = confirm(
+        'This will put your Home Assistant URL and a long-lived ' +
+        'access token onto your clipboard.\\n\\n' +
+        'Anyone with this token can control your Home Assistant. ' +
+        'Do NOT:\\n' +
+        '  • paste into a public chat or shared doc\\n' +
+        '  • commit to a git repo\\n' +
+        '  • share a screenshot of the prompt\\n\\n' +
+        'Continue?');
+      if (!ok) return;
+      const text = VOICE_PROMPT_TEMPLATE
+        .replace('{{HA_URL_PLACEHOLDER}}', VOICE_HA_URL)
+        .replace('{{HA_TOKEN_PLACEHOLDER}}', VOICE_HA_TOKEN);
+      const copied = await copyToClipboard(text);
+      showCopyFeedback(
+        copied ? '✓ Prompt + credentials copied — paste into your coding agent'
+               : 'Copy failed — try the placeholder button instead',
+        copied);
+    }});
 </script>
 """
 
