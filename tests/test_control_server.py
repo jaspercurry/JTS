@@ -351,7 +351,9 @@ def test_volume_set_without_source_is_authoritative(server_with_coordinator):
 
 def test_volume_mute_toggles_off_then_on(server_with_coordinator):
     """First POST mutes (saves 60% pre-mute, returns 0). Second
-    POST unmutes (restores 60%). Used by the VK-01 knob click."""
+    POST unmutes (restores 60%). Public endpoint used by the
+    dashboard and any future client; the VK-01 knob click moved
+    off this route to /transport/* with the multi-tap rebind."""
     base, fake = server_with_coordinator
     status, body = _post(f"{base}/volume/mute", {})
     assert status == 200
@@ -373,6 +375,115 @@ def test_volume_mute_when_already_silent(server_with_coordinator):
     status, body = _post(f"{base}/volume/mute", {})
     assert status == 200
     assert body["percent"] == 0
+
+
+# --- /transport/{toggle,next,previous} ---
+
+
+@pytest.fixture
+def server_with_transport_stub(monkeypatch):
+    """Mirror server_with_coordinator but stub `_dispatch_transport`
+    so we don't need a renderer/Spotify-router stack. Yields
+    (base_url, calls) where calls is the list of actions dispatched."""
+    calls: list[str] = []
+
+    async def fake_dispatch(action: str) -> dict:
+        calls.append(action)
+        return {"result": "ok", "action": action}
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield base, calls
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_transport_toggle_dispatches_toggle(server_with_transport_stub):
+    base, calls = server_with_transport_stub
+    status, body = _post(f"{base}/transport/toggle", {})
+    assert status == 200
+    assert calls == ["toggle"]
+    assert body["action"] == "toggle"
+
+
+def test_transport_next_dispatches_next(server_with_transport_stub):
+    """Double-tap on the dial / VK-01 lands here."""
+    base, calls = server_with_transport_stub
+    status, body = _post(f"{base}/transport/next", {})
+    assert status == 200
+    assert calls == ["next"]
+    assert body["action"] == "next"
+
+
+def test_transport_previous_dispatches_previous(server_with_transport_stub):
+    """Triple-tap on the dial / VK-01 lands here."""
+    base, calls = server_with_transport_stub
+    status, body = _post(f"{base}/transport/previous", {})
+    assert status == 200
+    assert calls == ["previous"]
+    assert body["action"] == "previous"
+
+
+def test_transport_dispatcher_error_propagates_as_502(monkeypatch):
+    """If the renderer/router stack errors mid-dispatch the response is
+    502 with the error message in the body — same shape as the
+    refactored toggle path."""
+    async def fake_dispatch(action: str) -> dict:  # noqa: ARG001
+        raise RuntimeError("simulated MPRIS unavailable")
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status, body = _post(f"{base}/transport/next", {})
+        assert status == 502
+        assert "simulated MPRIS unavailable" in body.get("error", "")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_transport_dispatcher_error_field_propagates_as_502(monkeypatch):
+    """If the dispatcher returns {"error": ...} (e.g. "no playing
+    source"), the route surfaces it as 502 — same as the existing
+    toggle behaviour. Used today by the dial's LED to show red."""
+    async def fake_dispatch(action: str) -> dict:  # noqa: ARG001
+        return {"error": "no playing source"}
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_dispatch_transport", fake_dispatch)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        status, body = _post(f"{base}/transport/previous", {})
+        assert status == 502
+        assert body["error"] == "no playing source"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+# --- 404 / coordinator-failure ---
 
 
 def test_unknown_route_404(server_with_coordinator):

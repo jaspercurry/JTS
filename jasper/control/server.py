@@ -19,7 +19,7 @@ own the dispatch in one place rather than mirroring the list here
   kept because jasper-doctor calls it directly).
 
 Volume dispatch: requests build a fresh VolumeCoordinator per call
-(matches the per-request _toggle_transport pattern). The coordinator
+(matches the per-request _dispatch_transport pattern). The coordinator
 reads the canonical listening_level from /var/lib/jasper/speaker_volume.json,
 applies the change, dispatches to the active source (or CamillaDSP
 when idle), persists. This daemon doesn't run inbound observers —
@@ -450,7 +450,7 @@ async def _with_coordinator(
     camilla_port: int,
 ) -> Any:
     """Build a VolumeCoordinator for one operation, run `op(coord)`,
-    dispose. Mirrors `_toggle_transport`'s per-request pattern — each
+    dispose. Mirrors `_dispatch_transport`'s per-request pattern — each
     HTTP request creates and tears down its own async resources, so we
     don't have to manage a long-lived asyncio loop in this stdlib HTTP
     server.
@@ -768,13 +768,16 @@ async def _get_state(
     }
 
 
-async def _toggle_transport() -> dict:
+async def _dispatch_transport(action: str) -> dict:
     """Build renderer + Spotify-router clients in the current event
-    loop, dispatch a 'toggle' transport action, then close. We rebuild
-    per request because httpx's AsyncClient is loop-bound: a persistent
+    loop, dispatch a transport action, then close. We rebuild per
+    request because httpx's AsyncClient is loop-bound: a persistent
     instance would be tied to the first request's loop and error on
-    every subsequent one. The cost is small (~50 ms) and dial clicks
-    are rare."""
+    every subsequent one. The cost is small (~50 ms) and dial/remote
+    presses are rare.
+
+    `action` must be one of "toggle", "next", "previous" — the
+    dispatcher's documented vocabulary."""
     # Import inside the function so jasper-control doesn't import the
     # full voice-daemon dependency tree at startup.
     from ..accounts import Registry, maybe_migrate_legacy
@@ -820,7 +823,7 @@ async def _toggle_transport() -> dict:
             )
 
     dispatch = make_transport_dispatcher(renderer, router)
-    return await dispatch("toggle")
+    return await dispatch(action)
 
 
 def _make_handler(
@@ -1202,13 +1205,20 @@ def _make_handler(
                 self._send_json(self._volume_payload(new_pct))
                 return
 
-            if self.path == "/transport/toggle":
+            if self.path in (
+                "/transport/toggle", "/transport/next", "/transport/previous",
+            ):
+                action = self.path.rsplit("/", 1)[1]  # toggle | next | previous
                 try:
-                    result = asyncio.run(_toggle_transport())
+                    result = asyncio.run(_dispatch_transport(action))
                 except Exception as e:  # noqa: BLE001
-                    logger.exception("transport toggle failed")
+                    logger.exception("transport %s failed", action)
                     self._send_json({"error": str(e)}, status=502)
                     return
+                logger.info(
+                    "event=transport.dispatch action=%s client=%s",
+                    action, self.address_string(),
+                )
                 if "error" in result:
                     self._send_json(result, status=502)
                     return
