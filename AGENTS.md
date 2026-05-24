@@ -190,6 +190,61 @@ What does NOT derive (intentionally):
 
 ---
 
+## Laptop-side state — `.env.local` and `CLAUDE.local.md`
+
+The Pi-side single-source-of-truth above is `JASPER_HOSTNAME`. The
+laptop-side single source of truth for "which Pi does this checkout
+talk to?" is **`.env.local`** at the repo root. Gitignored. Two
+recognized keys:
+
+```sh
+PI_HOST=jts.local
+PI_USER=pi
+```
+
+It's auto-written by `bash scripts/onboard.sh <hostname>` (see
+[QUICKSTART.md](QUICKSTART.md)) and sourced by
+[`scripts/_lib.sh`](scripts/_lib.sh), which every laptop-side script
+should source as its first non-`set` line. New scripts pick up the
+state for free.
+
+`CLAUDE.local.md` (same root, also gitignored, also written by
+`onboard.sh`) is the Claude-Code-facing companion: it's `@`-imported
+from [CLAUDE.md](CLAUDE.md) so every session lands with the active
+Pi in its context window. Missing file is a graceful no-op — fresh
+clones work; `onboard.sh` populates it on first run.
+
+**Multi-Pi pattern**: one checkout (or worktree) per Pi. Each has
+its own `.env.local` and `CLAUDE.local.md`. The wrapper scripts
+(`deploy-to-pi.sh`, `fetch-pi-logs.sh`, etc.) all honor `PI_HOST`
+from `.env.local` via `_lib.sh`'s fallback chain, so flipping
+between Pis is just `cd` into the right checkout.
+
+**Adopting an already-deployed Pi** (password auth only): run
+`bash scripts/onboard.sh <hostname> --adopt`. The `--adopt` flag
+runs `ssh-copy-id` first so subsequent commands use pubkey auth.
+
+**Switching active target without re-onboarding**: `bash scripts/use
+<hostname>`. Rewrites `.env.local` + `CLAUDE.local.md` in one shot;
+no ssh, no install. Use this to flip a checkout between Pis that
+have both already been onboarded (the SSH alias from a prior
+`onboard.sh` run persists in `~/.ssh/config` so `ssh jts` /
+`ssh jts2` continue to work).
+
+**Driving onboarding for an end user**: invoke the `/onboard-pi` skill
+([`.claude/commands/onboard-pi.md`](.claude/commands/onboard-pi.md)).
+It auto-triggers when a user says any natural-language variant of "set
+up a Pi" / "install JTS" / "I just got a new speaker." The skill
+covers the full flow (hardware sanity → Pi Imager → flash → boot →
+`scripts/onboard.sh` → post-install wizards), drives it interactively
+one question per turn, and proactively probes the LAN for existing
+speakers to suggest a non-colliding hostname before the user picks
+one in Imager. **This is the canonical entry point for the human-
+facing setup story.** `QUICKSTART.md` is the same flow in human-
+readable form for users who'd rather read than be guided.
+
+---
+
 ## Renderer architecture — file map
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,

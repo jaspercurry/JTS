@@ -46,8 +46,17 @@ tests/voice_eval/traces_out/*
 wake-events/
 
 # Per-session scratch and WIP files used by Claude Code agents.
-# These are local-only notes; never commit them.
-.claude/
+# Use `.claude/*` not `.claude/` so re-include below actually works —
+# git can't un-ignore a file inside a fully-ignored parent directory.
+.claude/*
+# Slash commands ARE checked in — they're how users invoke flows
+# like /onboard-pi.
+!.claude/commands/
+!.claude/commands/**
+
+# Per-laptop active-Pi marker, written by scripts/onboard.sh. Loaded
+# into Claude Code's context via CLAUDE.md's @-import directive.
+CLAUDE.local.md
 
 # Reference voice recordings (whisper/yell/music/fast/slow) used as
 # the stable A/B baseline for AEC engine + wake-word model swaps.

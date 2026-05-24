@@ -77,6 +77,13 @@ install_deps() {
     # Source-build deps for shairport-sync (AirPlay 2) + nqptp, plus
     # the bluez-alsa userspace and the bt-agent helper. All of these
     # are absent on a stock Trixie Lite image.
+    #
+    # `avahi-daemon` is the mDNS *publisher* — Pi OS Lite ships
+    # `libnss-mdns` (resolution only) by default but does NOT install
+    # the daemon, so without this line `<hostname>.local` from another
+    # device fails to find us, `_jasper-control._tcp` isn't advertised
+    # to the dial, and `avahi-utils` tools have no daemon to talk to.
+    # `avahi-utils` provides avahi-browse / avahi-publish for diagnostics.
     apt-get install -y --no-install-recommends \
         autoconf automake libtool pkg-config \
         libpopt-dev libconfig-dev libavahi-client-dev \
@@ -84,7 +91,7 @@ install_deps() {
         libgcrypt20-dev uuid-dev libmbedtls-dev libglib2.0-dev \
         libavutil-dev libavcodec-dev libavformat-dev libswresample-dev \
         xxd \
-        bluez-alsa-utils bluez-tools avahi-utils
+        bluez-alsa-utils bluez-tools avahi-daemon avahi-utils
 }
 
 build_webrtc_v2_for_aec3() {

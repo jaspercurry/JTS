@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Switch this checkout's active speaker without re-onboarding.
+#
+# Updates .env.local + CLAUDE.local.md to point at a different host.
+# Doesn't ssh, doesn't run install.sh, doesn't add to ~/.ssh/config.
+# Pure state-flip; like `kubectl config use-context`.
+#
+# Usage:
+#   bash scripts/use jts2.local           # switch to jts2
+#   bash scripts/use jts.local            # switch back
+#   bash scripts/use kitchen.local jasper # override user
+#
+# Prerequisite: the target must already be onboarded (the SSH alias
+# in ~/.ssh/config has to exist). If it doesn't, run:
+#   bash scripts/onboard.sh <hostname>
+# That writes the alias + the state files + runs install.sh.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# shellcheck source=_lib.sh
+. "${SCRIPT_DIR}/_lib.sh"
+
+HOST="${1:-}"
+USR="${2:-pi}"
+
+if [[ -z "$HOST" ]]; then
+    echo "use: hostname required" >&2
+    echo "     usage: bash scripts/use <hostname> [user]" >&2
+    echo "     example: bash scripts/use jts2.local" >&2
+    exit 2
+fi
+
+# Alias derivation matches onboard.sh: hostname → strip .local suffix;
+# raw IP → no alias (user falls back to ssh user@ip).
+if [[ "$HOST" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ALIAS=""
+else
+    ALIAS="${HOST%%.*}"
+fi
+
+write_laptop_state "$HOST" "$USR" "$ALIAS"
+
+if [[ -n "$ALIAS" ]]; then
+    echo "==> active: ssh ${ALIAS}  (${USR}@${HOST})"
+else
+    echo "==> active: ssh ${USR}@${HOST}"
+fi
+echo "    .env.local + CLAUDE.local.md updated"
