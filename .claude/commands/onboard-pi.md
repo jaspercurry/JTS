@@ -71,84 +71,33 @@ second speaker, or replacing the existing one?"*
 
 ## Phase 1 — Hardware checklist
 
-Walk the user through what they need. **Ask explicitly, one or two
-items at a time.** Don't dump the whole BOM at once — confirm what
-they have as you go.
+Ask the user, one or two items at a time, whether they have:
 
-> "Before we flash anything, let me check what hardware you have in
-> front of you. I'll go through each piece — just answer yes/no or
-> tell me what model you got. The full BOM with costs is in
-> [README.md § Hardware](README.md#hardware); I'll quote the essentials."
+1. Raspberry Pi 5 (2 GB recommended)
+2. microSD card (16 GB+)
+3. Pi 5 power supply
+4. Apple USB-C → 3.5mm dongle
+5. Seeed ReSpeaker XVF3800 (USB-UA variant)
+6. TPA3255 amp + its own 32 V power supply
+7. Speakers + speaker wire
 
-The items to confirm, in roughly this order:
-
-1. **Raspberry Pi 5** — 1 GB or 2 GB model. 2 GB strongly recommended
-   (the AEC pipeline gets tight on 1 GB). Note: NOT a Pi 4 — Pi 5 has
-   a different USB controller, kernel, and we've only tested on Pi 5.
-2. **microSD card** — 16 GB or larger, any modern brand
-   (SanDisk Ultra, Samsung Evo, Kingston Canvas, etc.). 32 GB+ is
-   slightly more comfortable but 16 GB works.
-3. **Official Raspberry Pi 5 power supply** — the 27W USB-C one
-   (5.1 V / 5 A). Pi 5 needs more current than older Pi PSUs deliver
-   reliably; an off-brand 3 A supply can cause undervoltage warnings.
-4. **Apple USB-C → 3.5mm dongle** — ~$9 from Apple. This is the DAC.
-   **NOT optional**, and don't substitute — CamillaDSP's config is
-   tuned to this specific dongle's 48 kHz UAC2 profile. (Other USB
-   dongles work as audio out but you'd need to re-tune the DSP.)
-5. **Seeed ReSpeaker XVF3800, USB-UA variant** — ~$70 from
-   [Seeed Studio](https://www.seeedstudio.com/). The USB-UA variant
-   specifically (4 mics + onboard XMOS DSP). NOT the USB-A, USB-2 mic,
-   or Mini variants.
-6. **TPA3255 class-D amp board** — any reputable seller (Amazon /
-   AliExpress / Parts Express); ~$25-40. The exact PCB layout
-   doesn't matter; any TPA3255-based board with RCA input works.
-7. **32 V power supply for the amp** — at least 5 A. Mean Well
-   GST60A32 (~$25) is the canonical choice. **Separate** from the
-   Pi's PSU; the amp gets its own brick.
-8. **Speakers + speaker wire** — bookshelf or similar, 4-8 ohm, any
-   driver. The user may already have these.
-
-**If the user is missing items**: don't block. Tally what they need
-with the cost ballpark, and tell them to come back to `/onboard-pi`
-when hardware arrives. Nothing is persisted yet at this point, so
-re-invoking the skill later is clean.
-
-**If they have everything**: confirm with one sentence and proceed
-to Phase 1.5.
+Full BOM in [README.md § Hardware](README.md#hardware). If anything
+is missing, don't block — tell them to come back to `/onboard-pi`
+when hardware arrives. Nothing is persisted yet; the skill picks
+up cleanly later.
 
 ---
 
 ## Phase 1.5 — Assembly check
 
-Ask: *"Is everything wired up — amp powered from its 32 V supply,
-speakers connected to the amp's terminals, Pi's USB-A port to the
-Apple dongle, dongle's 3.5mm to the amp's RCA input (via a 3.5mm-to-RCA
-cable), and the ReSpeaker plugged into another Pi USB-A port?"*
+Ask: *"Is everything wired up — Pi powered, amp powered (its own
+32 V supply), speakers connected to the amp, Apple dongle in the
+Pi with its 3.5mm into the amp's RCA input, ReSpeaker plugged into
+the Pi?"*
 
-If **yes**: confirm, move to Phase 2.
-
-If **no or unsure**: walk them through the minimum-viable wiring,
-one connection at a time. The list:
-
-- Pi USB-C port ← official Pi 5 PSU
-- Pi USB-A port → Apple USB-C-to-3.5mm dongle (any of the Pi's USB-A ports)
-- Apple dongle's 3.5mm output → amp's RCA-L input (3.5mm-to-RCA cable)
-- Amp's barrel jack ← 32 V PSU
-- Amp's speaker terminals → speaker wire → speakers (mind +/− polarity)
-- Pi USB-A port (the other one) → ReSpeaker XVF3800
-- microSD card slot: empty for now — Phase 3 flashes the card
-
-The full wiring diagram is in [BRINGUP.md](BRINGUP.md) Phase 1, with
-diagrams. Reference it if the user wants more detail.
-
-**Photo guidance**: if the user has hardware in front of them and is
-unsure where something plugs in, they can paste a photo into Claude
-Code and you can identify components and point to which port goes
-where. This is genuinely useful and much faster than text-only
-descriptions for the wiring step.
-
-Once they confirm assembly is done (or you've walked through it),
-proceed to Phase 2.
+If yes: proceed.
+If no or unsure: point them at [BRINGUP.md](BRINGUP.md) Phase 1 for
+the wiring diagram.
 
 ---
 
