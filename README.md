@@ -279,6 +279,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
+  HANDOFF-apple-music.md   Apple Music integration research + plan (no code yet)
   HANDOFF-peering.md            Multi-Pi wake arbitration (off by default)
   HANDOFF-persistent-live-session.md
   HANDOFF-voice-music-control.md
@@ -431,6 +432,16 @@ reference. Currently:
   `jasper/citibike.py`, `jasper/transit/providers/citibike.py`, the
   `get_citibike_status` voice tool, or the Citi Bike card in the
   `/transit/` wizard.**
+- [`HANDOFF-apple-music.md`](docs/HANDOFF-apple-music.md) —
+  Research only, no implementation yet. Feasibility analysis for
+  adding Apple Music as a voice-controllable source: why no
+  librespot equivalent exists, the Music Assistant Widevine L3
+  streaming pipeline (the only proven headless approach), the
+  Cider RPC alternative (requires Mac), the chosen Path C
+  (vendor MA's streaming code, own everything else), sequenced
+  build plan, and the prior-art survey across Cider, pyatv,
+  Volumio, Sonos SMAPI, etc. **Start here before any
+  `jasper/apple_music/` work.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option
