@@ -141,19 +141,21 @@ UPnP/DLNA Media Renderer explicitly designed for Raspberry Pi.
 
 ### Package availability
 
-The Debian package name is `gmediarender` (not
-`gmrender-resurrect` — that's the upstream repo name). Check
-Trixie availability:
+**`gmediarender` is in Debian Trixie arm64.** Version 0.3-1,
+maintained by Tobias Frost. 206 kB installed, 69 kB download.
 
 ```sh
-apt-cache show gmediarender   # Debian Trixie arm64
+sudo apt-get install -y gmediarender \
+    gstreamer1.0-alsa gstreamer1.0-plugins-good \
+    gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly
 ```
 
-If packaged: `apt-get install -y gmediarender`. If not packaged
-or too old: source-build from the GitHub repo (autotools; build
-deps are `libupnp-dev`, `libgstreamer1.0-dev`,
-`gstreamer1.0-plugins-base`, `gstreamer1.0-plugins-good`,
-`gstreamer1.0-plugins-ugly`).
+Runtime deps pulled automatically: `libupnp17t64`, `libglib2.0`,
+`libgstreamer1.0-0`. The GStreamer plugin packages cover FLAC,
+MP3, AAC, OGG, WAV, ALAC, and WMA decoding. Source-build
+fallback (autotools; `libupnp-dev`, `libgstreamer1.0-dev`,
+`gstreamer1.0-plugins-base`) only needed if the Trixie version
+is inadequate — unlikely since 0.3 matches upstream v0.3.1.
 
 ### Key command-line flags
 
@@ -161,17 +163,24 @@ deps are `libupnp-dev`, `libgstreamer1.0-dev`,
 gmediarender \
     --friendly-name "JTS" \
     --uuid "${JASPER_DLNA_UUID}" \
-    --gstout-audiosink "alsasink device=jasper_renderer_in" \
-    --logfile /dev/stderr \
-    -f                         # stay in foreground (for systemd)
+    --port 49494 \
+    --gstout-audiosink alsasink \
+    --gstout-audiodevice jasper_renderer_in \
+    --logfile /dev/stderr
 ```
+
+Note: no `-f` flag exists; omitting `--daemon` / `-d` keeps
+the process in the foreground (correct for `Type=simple` systemd).
 
 | Flag | Purpose |
 |---|---|
 | `--friendly-name` | Name shown in DLNA controller apps |
 | `--uuid` | Stable UPnP device UUID (generated once at install, persisted) |
-| `--gstout-audiosink` | GStreamer audio sink element + properties — routes to our dmix |
-| `-f` | Foreground mode (no fork; systemd manages the process) |
+| `--port` | HTTP port for UPnP (default 49494; range 49152-65535) |
+| `--gstout-audiosink` | GStreamer audio sink element (e.g. `alsasink`) |
+| `--gstout-audiodevice` | ALSA device for the sink — routes to our renderer dmix |
+| `--interface-name` | Optional: bind to specific NIC (e.g. `wlan0`) |
+| `--mime-filter` | Optional: `audio` restricts to audio-only MIME types |
 
 ### UPnP services exposed
 
@@ -179,14 +188,25 @@ gmrender-resurrect exposes three standard UPnP services:
 
 | Service | Control URL | Purpose |
 |---|---|---|
-| `AVTransport:1` | `/AVTransport/control` | Play/Pause/Stop, transport state, track metadata |
-| `RenderingControl:1` | `/RenderingControl/control` | Volume (0-100), mute |
-| `ConnectionManager:1` | `/ConnectionManager/control` | Protocol info (what formats are supported) |
+| `AVTransport:1` | `/upnp/control/rendertransport1` | Play/Pause/Stop, transport state, track metadata |
+| `RenderingControl:1` | `/upnp/control/rendercontrol1` | Volume (0-100), mute |
+| `ConnectionManager:1` | `/upnp/control/renderconnmgr1` | Protocol info (what formats are supported) |
 
 All are queryable via standard UPnP SOAP actions on
-`127.0.0.1:<gmrender-port>`. The port is assigned dynamically
-by libupnp; the sidecar discovers it via UPnP/SSDP on
-localhost.
+`127.0.0.1:49494` (configurable via `--port`). The sidecar
+uses SSDP discovery to find the control URL at startup, so it
+adapts if the port changes.
+
+### Known gotcha: ALSA device hold after pause
+
+gmrender does NOT release the ALSA device after a UPnP `Pause`
+— only after `Stop`. Most phone apps send Pause, not Stop, when
+the user taps pause. This is a non-issue for JTS because all
+renderers write to `pcm.jasper_renderer_in` (a dmix), which
+allows concurrent access. dmix never blocks other writers.
+If JTS ever moves to `hw:` direct output (it won't — dmix is
+architectural), this would need a watchdog that sends Stop after
+N seconds of pause.
 
 ---
 
@@ -400,8 +420,10 @@ EnvironmentFile=-/var/lib/jasper/dlna.env
 ExecStart=/usr/bin/gmediarender \
     --friendly-name "${JASPER_DLNA_NAME:-JTS}" \
     --uuid "${JASPER_DLNA_UUID}" \
-    --gstout-audiosink "alsasink device=jasper_renderer_in" \
-    -f
+    --port 49494 \
+    --gstout-audiosink alsasink \
+    --gstout-audiodevice jasper_renderer_in \
+    --mime-filter audio
 Restart=always
 RestartSec=2
 Nice=-10
@@ -807,26 +829,28 @@ bridge, no preempt listener, no volume bridge).
 
 ---
 
-## 11. Open questions
+## 11. Open questions (updated 2026-05-24)
 
-1. **Debian Trixie package status.** Is `gmediarender` in
-   Trixie's arm64 repo? If not, source-build adds ~2 min to
-   `install.sh` on first run. Verify before implementation.
+1. ~~**Debian Trixie package status.**~~ **Resolved.**
+   `gmediarender` 0.3-1 is in Trixie arm64. `apt-get install`
+   works. Source-build fallback retained in install.sh but
+   unlikely to be needed.
 
-2. **GStreamer plugin set.** Which `gstreamer1.0-plugins-*`
-   packages are needed for the codecs users actually send via
-   DLNA? Baseline: `-base` + `-good` + `-ugly` covers FLAC,
-   MP3, AAC, OGG, WAV. ALAC may need `-bad`. Verify with
-   BubbleUPnP on Android.
+2. ~~**GStreamer plugin set.**~~ **Resolved.**
+   `gstreamer1.0-plugins-good` + `-bad` + `-ugly` +
+   `gstreamer1.0-alsa` covers FLAC, MP3, AAC, OGG, WAV, ALAC,
+   WMA. DSD is NOT supported (confirmed by upstream maintainer,
+   issue #213). Not a concern for DLNA streaming use cases.
 
-3. **SSDP port conflict.** Does libupnp's SSDP listener
-   conflict with any existing JTS daemon? Avahi uses mDNS
-   (UDP 5353); SSDP is UDP 1900. No known conflict, but verify.
+3. **SSDP port conflict.** Avahi uses mDNS (UDP 5353); SSDP
+   is UDP 1900. No known conflict with existing JTS daemons.
+   Verify at implementation time.
 
 4. **Enabled by default?** Current plan: enabled by default
    (no hardware dependency). Alternative: disabled by default
    to match USB Audio Input's conservative stance. Enabled is
-   more user-friendly since DLNA is purely software.
+   more user-friendly since DLNA is purely software and costs
+   0 MB when idle (gmrender only loads GStreamer on first play).
 
 ---
 
