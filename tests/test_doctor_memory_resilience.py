@@ -209,79 +209,127 @@ def test_sysctl_drift_ok_when_values_match():
 # --- check_oom_score_adj -------------------------------------------------
 
 
-def test_oom_score_adj_all_match():
-    """All critical daemons running with expected adj values."""
-    # Map unit name → fake PID. _pid_of_unit calls systemctl show
-    # which we mock.
+_PID_MAP = {
+    "jasper-camilla": "1001",
+    "jasper-aec-bridge": "1002",
+    "jasper-control": "1003",
+    "jasper-voice": "1004",
+    "jasper-mux": "1005",
+    "jasper-input": "1006",
+}
+
+_EXPECTED_CONFIG = {
+    "jasper-camilla": "-900",
+    "jasper-aec-bridge": "-700",
+    "jasper-control": "-600",
+    "jasper-voice": "-500",
+    "jasper-mux": "-300",
+    "jasper-input": "-300",
+}
+
+
+def _make_oom_run(pid_map, config_map):
+    """Build a `_run` mock for check_oom_score_adj's two systemctl
+    calls: `-p MainPID` and `-p OOMScoreAdjust`. Each returns the
+    value from the appropriate map for the unit named in the cmd."""
     def fake_run(cmd, **kwargs):
-        # cmd = ["systemctl", "show", "-p", "MainPID", "--value", "X.service"]
+        # cmd = ["systemctl", "show", "-p", <prop>, "--value", "X.service"]
+        prop = cmd[3]
         unit = cmd[5].rsplit(".", 1)[0]
-        pid_map = {
-            "jasper-camilla": "1001",
-            "jasper-aec-bridge": "1002",
-            "jasper-control": "1003",
-            "jasper-voice": "1004",
-            "jasper-mux": "1005",
-            "jasper-input": "1006",
-        }
         result = MagicMock()
-        result.stdout = pid_map.get(unit, "0") + "\n"
+        if prop == "MainPID":
+            result.stdout = pid_map.get(unit, "0") + "\n"
+        elif prop == "OOMScoreAdjust":
+            result.stdout = config_map.get(unit, "0") + "\n"
+        else:
+            result.stdout = "\n"
         return result
+    return fake_run
 
+
+def test_oom_score_adj_all_match():
+    """All critical daemons running with both unit-file and live
+    values matching expected."""
     def fake_read(self):
-        # Map /proc/<pid>/oom_score_adj to expected value
+        # /proc/<pid>/oom_score_adj — return expected for each pid
         pid_str = str(self).split("/")[2]
-        expected_by_pid = {
-            "1001": "-900",
-            "1002": "-700",
-            "1003": "-600",
-            "1004": "-500",
-            "1005": "-300",
-            "1006": "-300",
-        }
-        return expected_by_pid.get(pid_str, "0") + "\n"
+        return {
+            "1001": "-900", "1002": "-700", "1003": "-600",
+            "1004": "-500", "1005": "-300", "1006": "-300",
+        }.get(pid_str, "0") + "\n"
 
-    with patch.object(doctor, "_run", side_effect=fake_run), \
+    with patch.object(doctor, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
     assert "6 critical daemons protected" in r.detail
 
 
-def test_oom_score_adj_drift_on_one_daemon():
-    """jasper-camilla got started before the new unit landed and
-    still has the default (0). Should warn with specifics."""
-    def fake_run(cmd, **kwargs):
-        unit = cmd[5].rsplit(".", 1)[0]
-        result = MagicMock()
-        result.stdout = {
-            "jasper-camilla": "1001",
-            "jasper-aec-bridge": "1002",
-            "jasper-control": "1003",
-            "jasper-voice": "1004",
-            "jasper-mux": "1005",
-            "jasper-input": "1006",
-        }.get(unit, "0") + "\n"
-        return result
-
+def test_oom_score_adj_live_drift_only():
+    """jasper-camilla was started before the new unit landed but
+    the unit file IS correct — live-only drift, fixable by restart."""
     def fake_read(self):
         pid_str = str(self).split("/")[2]
-        # jasper-camilla (pid 1001) drifted to 0
+        # jasper-camilla (pid 1001) drifted live to 0; unit file correct
         return {
-            "1001": "0",
-            "1002": "-700",
-            "1003": "-600",
-            "1004": "-500",
-            "1005": "-300",
-            "1006": "-300",
+            "1001": "0", "1002": "-700", "1003": "-600",
+            "1004": "-500", "1005": "-300", "1006": "-300",
         }.get(pid_str, "0") + "\n"
 
-    with patch.object(doctor, "_run", side_effect=fake_run), \
+    with patch.object(doctor, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "warn"
-    assert "jasper-camilla=0" in r.detail
-    assert "want -900" in r.detail
+    assert "live-process drift" in r.detail
+    assert "jasper-camilla live=0" in r.detail
+    assert "next restart" in r.detail  # actionable hint
+
+
+def test_oom_score_adj_unit_file_drift_is_more_serious():
+    """The .service file itself doesn't have OOMScoreAdjust= (manual
+    edit / install.sh hasn't been re-run after a regression). This
+    is more serious than live-only drift because next restart won't
+    fix it — the unit file is the source of truth."""
+    # Live processes happen to show the correct value (the running
+    # processes were started before the unit-file got broken).
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        return {
+            "1001": "-900", "1002": "-700", "1003": "-600",
+            "1004": "-500", "1005": "-300", "1006": "-300",
+        }.get(pid_str, "0") + "\n"
+
+    # But the unit file says 0 for jasper-camilla — a regression
+    # we'd otherwise miss until next restart.
+    drifted_config = dict(_EXPECTED_CONFIG)
+    drifted_config["jasper-camilla"] = "0"
+    with patch.object(doctor, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+    assert r.status == "warn"
+    assert "UNIT FILE drift" in r.detail
+    assert "jasper-camilla unit=0" in r.detail
+    assert "next restart won't fix" in r.detail
+
+
+def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
+    """If BOTH kinds of drift exist, surface the unit-file one
+    (it's the more dangerous shape)."""
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        return {"1001": "0"}.get(pid_str, "-900") + "\n"  # live also wrong
+
+    drifted_config = dict(_EXPECTED_CONFIG)
+    drifted_config["jasper-camilla"] = "0"
+    with patch.object(doctor, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+    assert r.status == "warn"
+    assert "UNIT FILE drift" in r.detail  # not "live-process drift"
 
 
 def test_oom_score_adj_no_systemctl_is_ok():
