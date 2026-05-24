@@ -430,6 +430,80 @@ def _select_engine():
     return _Aec3Engine()
 
 
+class _SimpleAGC:
+    """Frame-rate peak-tracking AGC for the raw mic UDP leg.
+    EXPERIMENTAL — gated off by default. See docs/HANDOFF-vad-experiments.md.
+
+    Tracks per-frame peak with asymmetric attack/release smoothing,
+    computes the gain to bring the envelope toward `target_dbfs`,
+    capped at `max_gain_db`. Mirrors WebRTC AGC1 (kAdaptiveDigital)
+    behaviour without a second AudioProcessing instance — vectorised
+    numpy, ~tens of microseconds per 80 ms frame on a Pi 5.
+
+    Defaults match the AGC1 settings the AEC pipeline already uses
+    (JASPER_AEC_AGC1_TARGET_DBFS=9, _MAX_GAIN_DB=18) so the raw leg's
+    output level lands in the same ballpark as the AEC leg's.
+
+    KNOWN BUG (2026-05-24): hard-clips at full scale on transients
+    after the gain has ramped up across attempts. The release
+    coefficient slowly raises gain during quiet periods, and a sudden
+    loud syllable pushes the output past int16 max, where np.clip
+    hard-clips it. Cell 3 of the test matrix saw peaks at exactly
+    0.0 dB on attempts 3-7 of a 7-attempt run, and OpenAI's STT
+    returned empty transcripts on the distorted audio. Two fixes
+    before this is production-ready: (1) replace np.clip with tanh
+    soft-limit or a one-frame look-ahead peak limiter that reduces
+    gain pre-multiply; (2) optionally pair with a noise-suppression
+    stage so the AGC isn't amplifying background noise during pauses.
+    The cleaner long-term answer may be a second WebRTC AudioProcessing
+    instance with AEC disabled and AGC1+NS+HPF enabled — Option B in
+    the handoff doc. Until then, keep `JASPER_AEC_RAW_AGC_ENABLED`
+    OFF in production.
+    """
+
+    def __init__(
+        self,
+        target_dbfs: float,
+        max_gain_db: float,
+        attack_sec: float = 0.010,
+        release_sec: float = 0.500,
+        frame_sec: float = 0.080,
+    ) -> None:
+        import math
+        self._target = 10.0 ** (-abs(target_dbfs) / 20.0)
+        self._max_gain = 10.0 ** (max_gain_db / 20.0)
+        self._attack_c = math.exp(-frame_sec / max(attack_sec, 1e-4))
+        self._release_c = math.exp(-frame_sec / max(release_sec, 1e-4))
+        self._envelope = 1e-6
+        self._gain = 1.0
+        # Gain glide: smooth gain transitions over ~3 frames (~240 ms)
+        # so adapt steps don't introduce audible pumping.
+        self._gain_smooth_c = 0.5
+
+    def process(self, pcm_int16: bytes) -> bytes:
+        arr = np.frombuffer(pcm_int16, dtype=np.int16).astype(np.float32) / 32768.0
+        frame_peak = float(np.abs(arr).max())
+        if frame_peak > self._envelope:
+            self._envelope = (
+                self._attack_c * self._envelope
+                + (1.0 - self._attack_c) * frame_peak
+            )
+        else:
+            self._envelope = (
+                self._release_c * self._envelope
+                + (1.0 - self._release_c) * frame_peak
+            )
+        desired = self._target / max(self._envelope, 1e-6)
+        target_gain = min(desired, self._max_gain)
+        self._gain = (
+            self._gain_smooth_c * self._gain
+            + (1.0 - self._gain_smooth_c) * target_gain
+        )
+        out = arr * self._gain
+        np.clip(out, -1.0, 1.0, out=out)
+        return (out * 32767.0).astype(np.int16).tobytes()
+
+
 def _validate_mic_device() -> None:
     """Fail before opening the shared reference tap if the mic is absent.
 
@@ -607,6 +681,32 @@ def _aec_loop(  # noqa: PLR0915
     global _ref_starved_frames
     mic_gain_db = float(os.environ.get("JASPER_AEC_MIC_GAIN_DB", "0"))
     mic_gain_lin = 10.0 ** (mic_gain_db / 20.0)
+    # Raw-leg AGC: optional adaptive level normalization for the
+    # chip-direct UDP stream (udp:9877). Off by default (legacy
+    # behaviour). When on, mirrors the AEC pipeline's AGC1 settings
+    # so the raw stream's output level lands in the same ballpark.
+    # Use this when sending the raw leg to the LLM — without it the
+    # chip's mic output is below OpenAI's server-VAD threshold for
+    # most of a typical utterance, so the model only sees ~400 ms of
+    # a 1.2 s phrase.
+    raw_agc_enabled = _env_bool("JASPER_AEC_RAW_AGC_ENABLED", "0")
+    raw_agc_target_dbfs = int(os.environ.get(
+        "JASPER_AEC_RAW_AGC_TARGET_DBFS",
+        os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"),
+    ))
+    raw_agc_max_gain_db = int(os.environ.get(
+        "JASPER_AEC_RAW_AGC_MAX_GAIN_DB",
+        os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"),
+    ))
+    raw_agc = (
+        _SimpleAGC(raw_agc_target_dbfs, raw_agc_max_gain_db)
+        if raw_agc_enabled else None
+    )
+    logger.info(
+        "raw_agc=%s (target=%d max=%ddB)",
+        "on" if raw_agc_enabled else "off",
+        raw_agc_target_dbfs, raw_agc_max_gain_db,
+    )
     # Stall-recovery threshold: consecutive seconds of empty mic_q
     # before we bail for a systemd-driven restart. 0 = disabled
     # (legacy "log forever" behaviour). See BridgeStalled docstring.
@@ -819,7 +919,15 @@ def _aec_loop(  # noqa: PLR0915
             # stream. sendto failures here never block the AEC
             # pipeline (independent socket, non-blocking, swallowed
             # on EWOULDBLOCK).
-            out_batch_raw.extend(mic_bytes)
+            # Optional AGC on the raw leg (does not touch the AEC3
+            # input below — engine.process still receives ungained
+            # mic_bytes so AEC3's adaptive filter doesn't see a
+            # moving level target).
+            raw_emit_bytes = (
+                raw_agc.process(mic_bytes) if raw_agc is not None
+                else mic_bytes
+            )
+            out_batch_raw.extend(raw_emit_bytes)
             if len(out_batch_raw) >= OUT_FRAME_BYTES:
                 try:
                     out_sock_raw.sendto(
