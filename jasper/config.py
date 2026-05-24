@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
 from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
 from .citibike import parse_saved_stations as _parse_citibike_stations
+
+logger = logging.getLogger(__name__)
 
 
 def _env(name: str, default: str | None = None, *, required: bool = False) -> str:
@@ -60,6 +63,23 @@ def _validate(cfg: "Config") -> "Config":
             "it is now an offset relative to main_volume — positive "
             "values would push TTS above the user's master and risk "
             "blasting the speaker"
+        )
+    # Deprecation warning (PR #295, follow-up to PR #294). After the
+    # master+offset ceiling was lifted off the music-playing branch,
+    # this env var only affects the silence-fallback TTS level — a
+    # rarely-hit branch in practice (DEFAULT_ANCHOR_DBFS keeps real
+    # life out of branch 3 of _compute_gain). Default 0 is correct
+    # for almost all setups. Non-default values still work but flag
+    # one warning at startup so operators reviewing logs after a
+    # surprise know the knob is vestigial and what to read.
+    if cfg.tts_gain_db < 0.0:
+        logger.warning(
+            "JASPER_TTS_GAIN_DB=%s is DEPRECATED. After PR #294 lifted "
+            "the master ceiling off the music-playing branch, this env "
+            "var only affects silence-fallback TTS level — a rarely-hit "
+            "case. Default 0 is correct for almost all setups. See "
+            "docs/audio-paths.md 'Ceiling policy is branch-specific'.",
+            cfg.tts_gain_db,
         )
     # Silence threshold must sit somewhere in "no music" territory.
     # 0 dBFS or higher is meaningless (nothing is louder than full-scale).
@@ -444,21 +464,12 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # OFFSET (dB) applied on top of CamillaDSP's main_volume to
-            # form the SILENCE-FALLBACK ceiling. The TtsVolumeTracker's
-            # tracker-and-headroom formula (below) is the primary level
-            # control while music is playing; the absolute hearing-safety
-            # cap MAX_TTS_GAIN_DB in audio_io.py is the always-on safety.
-            # This offset only matters when music is NOT playing AND the
-            # loudness anchor is stale (e.g. loud music yesterday, quiet
-            # bedroom main_volume today). In that case, main_volume is
-            # the best proxy for "what level should TTS feel like", and
-            # this offset clamps the anchor's projection to it. During
-            # active music playback the ceiling does NOT apply — the
-            # tracker matches measured music level, capped only by
-            # MAX_TTS_GAIN_DB. Default 0 = "match the user's master
-            # exactly during stale-anchor silence." MUST be <= 0 —
-            # validator enforces.
+            # DEPRECATED — see warning in validate_config below. After
+            # PR #294 lifted the master ceiling off the music-playing
+            # branch, this only affects silence-fallback (rarely-hit).
+            # Default 0; positive values rejected; negative values log
+            # a one-shot deprecation warning at startup. Will be
+            # removed once unused.
             tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", 0.0),
             # When music is playing, TtsVolumeTracker sizes TTS to a
             # headroom above the windowed RMS of CamillaDSP's playback
