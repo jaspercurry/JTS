@@ -1,13 +1,18 @@
-# Tier 5 watchdog liveness gap — design proposal
+# Tier 5 watchdog liveness gap — design + shipped implementation
 
-> **Status: design proposal. No code ships from this doc.** This is the
-> research + option-comparison + recommended sequencing for closing
-> the gap exposed by the 2026-05-23 incident. The user decides
-> whether to ship each stage.
+> **Status: T5.1 + T5.2 shipped 2026-05-24.** This doc was the
+> research + option-comparison that drove implementation. T5.1
+> (`StartLimitAction=reboot` on critical units) and T5.2
+> (`SystemSupervisor`) are both live in main as of PRs #286 + #287.
+> The option matrix and decision rationale below are preserved for
+> future reviewers / forks. **T5.3 (shorter `RuntimeWatchdogSec`),
+> T5.4 (external hardware watchdog), and T5.5 (PSI gate) remain
+> deferred with explicit revisit triggers — see "Recommendation"
+> below.**
 >
 > **Read [`HANDOFF-resilience.md`](HANDOFF-resilience.md) first** —
-> this doc assumes you understand the 5-tier ladder and the
-> [Memory-pressure resilience (Stage 1)](HANDOFF-resilience.md)
+> this doc assumes you understand the resilience ladder and the
+> [Memory-pressure resilience (Stage 1)](HANDOFF-resilience.md#memory-pressure-resilience-stage-1)
 > work that landed in PR #276.
 
 ## TL;DR
@@ -25,24 +30,35 @@ hits the exact same shape under CIFS I/O stall ([HAOS issue
 #4547](https://github.com/home-assistant/operating-system/issues/4547)
 — same signature, same lack of hardware reset, status: open).
 
-**Recommended fix is two PRs, sequenced**:
+**Fix shipped as two PRs**:
 
-1. **T5.1 (zero-code, ~1 hour)**: add `StartLimitAction=reboot-force`
-   to the critical jasper-* units so a watchdog loop on any of
-   them escalates to system reboot. Pure systemd composition.
-2. **T5.2 (one engineer-day)**: new `jasper-control`-side
-   `SystemSupervisor` mirroring the proven `ShairportSupervisor`
-   shape — probe loop with rate limit + gate, escalates to clean
-   `systemctl reboot` on persistent system-wide wedge.
+1. **T5.1 ✅** ([PR #286](https://github.com/jaspercurry/JTS/pull/286)):
+   `StartLimitAction=reboot` (NOT `reboot-force` — clean shutdown
+   required on a 1 GB Pi so zram dirty pages sync) on the 4
+   critical jasper-* units (camilla, aec-bridge, voice, control).
+   Per-unit `StartLimitBurst`/`StartLimitIntervalSec` preserve
+   existing transient-tolerance patterns (e.g. jasper-voice keeps
+   20/300 for Apple-dongle de-enumeration). Pure systemd
+   composition, zero new code.
+2. **T5.2 ✅** ([PR #287](https://github.com/jaspercurry/JTS/pull/287)):
+   new [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
+   `SystemSupervisor`. Mirrors the proven `ShairportSupervisor`
+   Tier 3 shape — probe loop (sshd banner + `/healthz` + `/proc/loadavg`)
+   at 30 s ± jitter, escalates to clean `systemctl reboot` after 3
+   consecutive failures, rate-limited 1/24 h. Off via
+   `JASPER_SYSTEM_SUPERVISOR=disabled`. Surfaced on `/state` under
+   `resilience.system_supervisor` + structured `event=system_supervisor.*`
+   journal lines.
 
 The two layers compose cleanly. T5.1 catches "a specific critical
 daemon is broken;" T5.2 catches "the whole box is wedged." Tier 5
 hardware watchdog stays in place as the floor.
 
-Deferred: shorter `RuntimeWatchdogSec` (T5.3 — tuning question
-after data), external hardware watchdog (T5.4 — BOM/chassis), PSI-
-based watchdog gate (T5.5 — novel territory, no production
-precedent).
+**Still deferred (with revisit triggers documented below)**:
+shorter `RuntimeWatchdogSec` (T5.3 — needs ≥30 days of soak data),
+external hardware watchdog (T5.4 — BOM/chassis change for next
+hardware revision), PSI-based watchdog gate (T5.5 — novel territory,
+no production precedent).
 
 ## The problem
 

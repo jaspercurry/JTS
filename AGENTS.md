@@ -1518,6 +1518,44 @@ Design rationale: [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)
 
 ---
 
+## T5.2 — userspace-liveness SystemSupervisor — read first
+
+Closes the Tier 5 blind spot exposed by the 2026-05-23 incident.
+Lives in [`jasper/control/system_supervisor.py`](jasper/control/system_supervisor.py),
+runs inside `jasper-control`'s asyncio thread (no new daemon, no
+new resident-RAM cost). Probes three layers every 30 s ± jitter:
+
+1. **sshd banner exchange** on `127.0.0.1:22` (TCP accept + read
+   the `SSH-` banner within 2 s — catches the 2026-05-23 shape
+   where sshd accepts TCP but can't write the banner under
+   userspace starvation)
+2. **HTTP GET `/healthz`** on `127.0.0.1:8780` (jasper-control's
+   own endpoint — yes, probes itself; catches "asyncio loop
+   wedged but systemd sees us alive")
+3. **`/proc/loadavg` read** within 1 s (kernel I/O stall detector;
+   runs on `asyncio.to_thread` so the read can't block the loop)
+
+After 3 consecutive failures (any probe), rate-limited at 1 reboot
+per 24 hours, calls `systemctl --no-block reboot` (clean, NOT
+`reboot-force` — zram dirty pages must sync).
+
+Observability:
+
+```sh
+curl -s http://jts.local:8780/state | jq .resilience.system_supervisor
+ssh pi@jts.local 'journalctl -u jasper-control | grep event=system_supervisor'
+```
+
+Off switch: set `JASPER_SYSTEM_SUPERVISOR=disabled` in
+`/etc/jasper/jasper.env` (exact match, case-insensitive), then
+restart `jasper-control`. Mirrors `JASPER_SHAIRPORT_SUPERVISOR` —
+other values log a warning and stay enabled.
+
+Design rationale: [`docs/HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md)
+(T5.2).
+
+---
+
 ## USB Audio Input (`jasper-usbsink`) — read first
 
 Fourth music source. The user plugs a computer into the Pi's USB-C
@@ -1887,11 +1925,27 @@ ssh pi@jts.local 'sudo journalctl -b -1 -p warning --since "-2min"'
 
 **Self-inflicted wedges from heavy offline analysis.** Running
 something like `for i in range(100): Model()` (e.g.
-`openwakeword.Model()`) on the Pi can OOM the 2 GB RAM, fill
-`zram0`, peg every core on compression, starve PID 1, and trip
-the watchdog. Pi 5 is sized for production daemons, not analysis
-bursts. For wake-rate sweeps and similar, do it on the laptop
-(`pip install openwakeword onnxruntime`) and rsync the captures.
+`openwakeword.Model()`) on the Pi can OOM the RAM, fill `zram0`,
+and peg every core on compression. Pi 5 is sized for production
+daemons, not analysis bursts. For wake-rate sweeps and similar,
+do it on the laptop (`pip install openwakeword onnxruntime`) and
+rsync the captures.
+
+**What catches this if it happens anyway** (post-2026-05-24):
+- **Stage 1 memory resilience** (OOMScoreAdjust ladder + MGLRU
+  `min_ttl_ms=1000` + RAM-aware `vm.min_free_kbytes`) makes the
+  kernel OOM-killer fire fast on the offending process before
+  userspace wedges. The 2-min wedge in the 2026-05-23 incident
+  becomes a ~20 s kernel-OOM-kill under Stage 1.
+- **T5.2 `SystemSupervisor`** ([jasper/control/system_supervisor.py](jasper/control/system_supervisor.py))
+  catches the "PID 1 alive enough to pat `/dev/watchdog0` but
+  userspace dead" shape that the kernel hardware watchdog
+  (Tier 5) structurally cannot catch. The original "starve PID 1
+  and trip the watchdog" claim in pre-T5.2 versions of this doc
+  was wrong — PID 1 stayed alive through the 2026-05-23 wedge
+  while sshd's banner exchange timed out. T5.2 closes that gap.
+- See [docs/HANDOFF-resilience.md](docs/HANDOFF-resilience.md)
+  + [docs/HANDOFF-tier5-watchdog-liveness.md](docs/HANDOFF-tier5-watchdog-liveness.md).
 
 ---
 
