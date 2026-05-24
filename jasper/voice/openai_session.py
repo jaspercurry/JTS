@@ -922,6 +922,29 @@ class OpenAIRealtimeConnection(LiveConnection):
                         "rate": OPENAI_AUDIO_RATE_HZ,
                     },
                     "turn_detection": None,
+                    # Input transcription for diagnostics — emits one
+                    # ``conversation.item.input_audio_transcription.
+                    # completed`` event per user utterance so we can
+                    # see what STT actually heard, separate from the
+                    # model's tool choice. Without this, every "why
+                    # didn't my phrase work?" debug is guesswork
+                    # (e.g. "kitchen medium" routed to set_volume(50)
+                    # on 2026-05-24 — STT mishearing or model
+                    # mis-routing? Could not tell). The model's
+                    # decisions still come from the raw audio, not
+                    # this transcript — STT here is observability,
+                    # not the input path.
+                    #
+                    # gpt-4o-mini-transcribe: OpenAI's recommended
+                    # successor to whisper-1 (~$0.003/min audio, less
+                    # than whisper-1's $0.006, and more accurate per
+                    # their docs). ``language: "en"`` is a hint that
+                    # improves accuracy on the speech-through-music
+                    # case our AEC chain has to navigate.
+                    "transcription": {
+                        "model": "gpt-4o-mini-transcribe",
+                        "language": "en",
+                    },
                 },
                 "output": {
                     # Voice belongs HERE in Realtime 2 — at session
@@ -1417,6 +1440,29 @@ class OpenAIRealtimeConnection(LiveConnection):
             "response.function_call_arguments.delta",
             "response.function_call_arguments.done",
         ):
+            return
+
+        # User audio transcription (what the STT model heard the user
+        # say). Diagnostic only — the realtime model's tool choice
+        # comes from the raw audio, not this transcript. Logged at
+        # INFO so it sits alongside the tool-call lines, making the
+        # "model called X — what did STT think the user said?" debug
+        # question trivial to answer by grep. See the comment block
+        # next to ``transcription`` in ``_session_config`` for the
+        # full rationale.
+        if etype == "conversation.item.input_audio_transcription.completed":
+            transcript = _event_field(event, "transcript")
+            if isinstance(transcript, str):
+                logger.info(
+                    "openai user transcript: %r", transcript.strip()
+                )
+            return
+        if etype == "conversation.item.input_audio_transcription.failed":
+            err = _event_field(event, "error") or {}
+            logger.warning(
+                "openai user transcription failed: %s",
+                err.get("message") if isinstance(err, dict) else err,
+            )
             return
 
         # Server-side response complete.
