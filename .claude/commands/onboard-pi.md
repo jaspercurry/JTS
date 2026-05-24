@@ -272,15 +272,9 @@ the user through them, one at a time:
 Tell them they're done after Step 1 (voice provider). The rest can
 happen anytime later.
 
-**If `jasper-doctor` warned about XVF firmware**: the speaker WILL
-work without it — the chip ships on 2-channel firmware which gives
-beamforming + noise suppression but no echo cancellation. Wake-word
-detection is just less reliable when music is loud. To enable
-software AEC (recommended after the speaker is otherwise working),
-walk through the DFU firmware flash in [BRINGUP.md](BRINGUP.md)
-Phase 2A.5 — it's a one-time `dfu-util` flash that takes ~5 minutes
-including the jumper / button-hold dance to enter DFU mode. Mention
-this as a follow-up, not a blocker for "your speaker is working."
+**If `jasper-doctor` warned about XVF firmware**: speaker works fine;
+AEC is just off. To enable, walk through [BRINGUP.md](BRINGUP.md)
+Phase 2A.5 later. Not a blocker.
 
 ---
 
