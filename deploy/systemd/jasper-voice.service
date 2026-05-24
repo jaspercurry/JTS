@@ -114,5 +114,15 @@ PrivateTmp=true
 NoNewPrivileges=true
 ReadWritePaths=/var/lib/jasper
 
+# OOM protection (Stage 1 of memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Voice daemon has the LARGEST blast
+# radius of any jasper-* process (~150 MB Pss; loads onnx wake model
+# + Python deps + holds the LLM session). Conservative protection
+# of -500 — kept alive when other processes blow up, but if we
+# leak memory ourselves, the kernel should still pick us over
+# system-critical infrastructure. Stage 2 will add a MemoryMax=
+# bound via cgroups when the memory controller is enabled.
+OOMScoreAdjust=-500
+
 [Install]
 WantedBy=multi-user.target

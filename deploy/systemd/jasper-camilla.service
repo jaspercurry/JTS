@@ -47,5 +47,13 @@ IOSchedulingPriority=4
 LimitRTPRIO=99
 LimitMEMLOCK=infinity
 
+# OOM protection (Stage 1 of the memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Camilla is the audio bottleneck:
+# silencing music = worst possible UX. -900 makes the kernel OOM
+# killer almost-never pick this process. Note -1000 is reserved for
+# sshd / systemd-journald — we need the killer to retain *some*
+# credible candidate so it doesn't pick critical infrastructure.
+OOMScoreAdjust=-900
+
 [Install]
 WantedBy=multi-user.target

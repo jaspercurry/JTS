@@ -275,6 +275,157 @@ way to trip Tier 5 self-inflicted — each model load holds
 the laptop for that kind of work; the Pi venv is sized for
 production daemons, not analysis bursts.
 
+### Tier 5's liveness blind spot — known gap
+
+The 2026-05-23 incident exposed a real limitation. A PIO compile
+on the 1 GB Pi 5 OOM-stalled userspace for >2 minutes:
+
+- ICMP ping stayed healthy (~7 ms RTT, 0% loss) — kernel and
+  network stack alive
+- `ssh` connection accepted at TCP layer but **banner exchange
+  timed out** — userspace was effectively dead
+- **No watchdog reset** — PID 1 got just enough scheduler time to
+  keep patting `/dev/watchdog0` every <60 s
+- Required a manual power-cycle to recover
+
+The gap: **systemd patting `/dev/watchdog0` is a very weak
+liveness signal**. It only confirms PID 1's main loop got CPU
+once in the last 60 s. It does not confirm that sshd accepts
+connections, that jasper-control answers HTTP, that camilladsp
+is processing audio, or that any user-visible service does
+anything useful. So userspace can be fully wedged while Tier 5
+thinks the system is healthy.
+
+A follow-up investigation tracks this gap and the candidate
+fixes (userspace-probing watchdog daemon, software-reboot tier
+between 4 and 5, shorter `RuntimeWatchdogSec`, or stacked
+combinations). See the "Add OOM-stall guard to resilience
+ladder" chip / GitHub issue for the design proposal. **Until
+that ships, the memory-pressure resilience below (added 2026-05-24)
+reduces the frequency of userspace wedges but doesn't fix the
+recovery when they happen.**
+
+### Memory-pressure resilience (Stage 1)
+
+Added 2026-05-24 in response to the 2026-05-23 wedge. Stage 1
+ships the layer that works on the stock RPi 5 kernel without
+enabling the memory cgroup controller (which is disabled by
+the Pi 5 DTB — see [raspberrypi/linux#5933](https://github.com/raspberrypi/linux/issues/5933)
+and [#6980](https://github.com/raspberrypi/linux/issues/6980)).
+Stages 2 (cgroup-memory + slice architecture) and 3 (userspace
+OOM killer + observability) are planned follow-ups.
+
+**Layer 1a — `OOMScoreAdjust` ladder on critical daemons.** Per
+`systemd.exec(5)`, each unit can request a kernel-side bias on
+the OOM killer's victim selection. Values are added to
+`/proc/$pid/oom_score`, so the killer becomes much less likely
+to pick a daemon we've protected when memory tightens. The
+JTS ladder, descending priority:
+
+| Daemon | OOMScoreAdjust | Rationale |
+|---|---|---|
+| `jasper-camilla` | -900 | Silence is the worst possible UX |
+| `jasper-aec-bridge` | -700 | Real-time mic processing |
+| `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
+| `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
+| `jasper-mux`, `jasper-input` | -300 | Transient outage is graceful |
+| `sshd` | -1000 (Debian default) | Recovery path; never killable |
+
+Critical: **no jasper-* daemon is at -1000** because that fully
+disables OOM-kill for that PID. If every critical daemon is
+immortal, the kernel picks `sshd` or `systemd-journald` when
+memory truly runs out and the operator loses their debugging
+path. -900 is "almost never picked"; -1000 is "literally
+never picked."
+
+Works today on the stock kernel via `/proc/PID/oom_score_adj`
+— independent of the `cgroup_disable=memory` situation. Drift
+detection via `jasper-doctor`'s `check_oom_score_adj`.
+
+**Layer 1b — Zram resized via `rpi-swap` drop-in
+(`/etc/rpi/swap.conf.d/50-jts.conf`).** The Trixie default puts
+zram at ~100% of RAM. On a 1 GB Pi this amplifies thrash:
+the more compressed RAM is sitting in zram, the more zsmalloc
+bookkeeping has to compete with the workload for CPU during
+reclaim. Modern best practice ([Fedora SwapOnZRAM](https://fedoraproject.org/wiki/Changes/SwapOnZRAM),
+[systemd-zram-generator defaults](https://github.com/systemd/zram-generator/blob/main/zram-generator.conf.example),
+HAOS) is 25–50%. We pick 50% (~500 MB on 1 GB) with **lz4**
+compression. zstd has ~30% better compression ratio but
+decompresses ~3× slower per page on Cortex-A76; for a
+real-time audio device, predictable decompression latency
+matters more than raw compression ratio.
+
+**Layer 1c — vm.* sysctl tuning
+(`/etc/sysctl.d/99-jts-vm.conf`).** Reclaim and watermark
+tuning for low-RAM ARM with a zram-only swap topology. The
+load-bearing knobs:
+
+- `vm.swappiness=100` — bias the reclaim algorithm toward
+  using compressed RAM over evicting hot file cache. **Note**:
+  Fedora ships 180 on zram-only systems. We pick 100 as a
+  conservative middle because audio jitter from zram
+  decompression is the dominant risk on this box — we'd
+  rather evict file cache (re-readable from SD) than swap anon
+  pages (decompression latency hits the audio path).
+- `vm.page-cluster=0` — universal recommendation for zram
+  (no spatial locality on compressed pages, default 8-page
+  read-ahead just wastes RAM).
+- `vm.watermark_scale_factor=125` — wake kswapd at 1.25%
+  headroom (default 0.1% is ~1 MB on a 991 MB box, kswapd
+  burns through it in milliseconds under burst → reclaim
+  becomes bursty).
+- `vm.min_free_kbytes=32768` — 32 MB reserved floor. Starting
+  point per [Arch BBS #293444](https://bbs.archlinux.org/viewtopic.php?id=293444);
+  **needs validation** by sampling `/proc/meminfo` MemFree
+  under peak load to confirm we're not constantly bouncing
+  against the watermark.
+
+Full annotated config at [`deploy/sysctl/99-jts-vm.conf`](../deploy/sysctl/99-jts-vm.conf).
+
+**Layer 1d — MGLRU thrashing prevention
+(`/etc/tmpfiles.d/jts-mglru.conf`).** This is the single most
+direct fix for the 2026-05-23 incident shape. MGLRU has been
+on by default in the RPi kernel since 6.1. Setting
+`min_ttl_ms=1000` tells the kernel: protect any page that was
+accessed in the last 1 second from reclaim, even if it means
+triggering OOM-kill instead. Empirically validated by pelwell
+on Pi 4 Chromium ([forum thread](https://forums.raspberrypi.com/viewtopic.php?t=344246)).
+**Watch for spurious kills** in week 1 after this ships;
+reduce to 500 if anything legitimate is being killed under
+normal load.
+
+**Drift detection.** `jasper-doctor` adds five Stage-1 checks
+that fail-soft (warn, not fail) so the operator sees
+divergence at a glance:
+
+- `check_oom_score_adj` — actual vs expected adj per critical daemon
+- `check_zram_size_ratio` — WARN if zram > 60% of RAM
+- `check_mglru_min_ttl` — WARN if min_ttl_ms drifted from 1000
+- `check_sysctl_drift` — WARN on vm.* divergence from
+  `/etc/sysctl.d/99-jts-vm.conf`
+- `check_memory_headroom` — WARN if MemAvailable < 100 MB,
+  FAIL < 30 MB (catches the "about to OOM" state)
+
+**What Stage 1 explicitly does NOT do.** It doesn't enable the
+memory cgroup, so the `MemoryHigh=` / `MemoryMax=` directives
+already present in jasper-mux.service and jasper-input.service
+remain silent no-ops. It doesn't install a userspace OOM
+killer (earlyoom / systemd-oomd). It doesn't carve daemons into
+slices. Those are Stage 2 and Stage 3 — landing only after
+Stage 1 has been steady for ≥48 hours in production.
+
+**What Stage 1 expected outcome is.** Re-running the 2026-05-23
+incident shape (PIO compile on 1 GB Pi): kernel OOM-killer
+fires within ~20 s (vs >2 min before), picks the offending
+process (lower OOMScoreAdjust than any jasper-* daemon), MGLRU
+prevents the grind-through-zram-thrash phase, system recovers
+without manual intervention. Verified by `jasper-doctor`
+post-install:
+
+```sh
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "OOM|zram|MGLRU|vm.|memory"
+```
+
 ### Hardware-event recovery — sidebar to the ladder
 
 Separate from the watchdog ladder above, one failure class is worth
@@ -622,4 +773,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-23
+Last verified: 2026-05-24

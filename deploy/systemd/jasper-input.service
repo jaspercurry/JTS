@@ -26,5 +26,12 @@ NoNewPrivileges=true
 MemoryHigh=80M
 MemoryMax=120M
 
+# OOM protection (Stage 1 of memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Input bridge for HID accessories
+# (VK-01 dial knob). Direct USB still works without the bridge.
+# Moderate protection. NOTE: MemoryHigh/MemoryMax are silent
+# no-ops until the memory cgroup is enabled (Stage 2 of plan).
+OOMScoreAdjust=-300
+
 [Install]
 WantedBy=multi-user.target

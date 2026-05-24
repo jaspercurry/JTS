@@ -910,6 +910,226 @@ def check_ram() -> CheckResult:
     return CheckResult("RAM", "warn", "couldn't read /proc/meminfo")
 
 
+def _meminfo_kb(field: str) -> int | None:
+    """Read a single field (e.g. 'MemAvailable') from /proc/meminfo
+    in KiB. Returns None on read error."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1])
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def check_memory_headroom() -> CheckResult:
+    """Live memory pressure check: WARN if MemAvailable is so low that
+    the next ad-hoc allocation will tip the box into zram-thrash. The
+    2026-05-23 incident shape was MemAvailable falling from ~250 MB
+    to single-digit MB over ~10 s as a PIO compile ramped up; this
+    check catches that BEFORE the wedge if the operator runs the
+    doctor first. 200 MB threshold is calibrated for the 1 GB Pi
+    (~20% of RAM); ~3% (30 MB) is hard floor below which OOM is
+    imminent."""
+    total_kb = _meminfo_kb("MemTotal") or 0
+    avail_kb = _meminfo_kb("MemAvailable")
+    if avail_kb is None or total_kb == 0:
+        return CheckResult(
+            "memory headroom", "warn", "couldn't read /proc/meminfo",
+        )
+    avail_mb = avail_kb // 1024
+    total_mb = total_kb // 1024
+    pct = (avail_kb * 100) // total_kb if total_kb else 0
+    if total_mb < 1500 and avail_mb < 30:
+        return CheckResult(
+            "memory headroom", "fail",
+            f"only {avail_mb} MB available ({pct}%) — OOM imminent",
+        )
+    if total_mb < 1500 and avail_mb < 100:
+        return CheckResult(
+            "memory headroom", "warn",
+            f"only {avail_mb} MB available ({pct}%) — tight on 1 GB Pi",
+        )
+    return CheckResult(
+        "memory headroom", "ok",
+        f"{avail_mb} MB available ({pct}%)",
+    )
+
+
+def check_zram_size_ratio() -> CheckResult:
+    """Verify the rpi-swap drop-in sized zram to ≤60% of RAM. The
+    old zramswap default was 100% of RAM, which amplifies thrash
+    (more zsmalloc bookkeeping during reclaim). Stage 1 of the
+    memory-resilience plan reduces this to 50%. Skip cleanly if
+    zram isn't in use (older RPi OS / dphys-swapfile setups)."""
+    try:
+        zram_size_bytes = int(Path("/sys/block/zram0/disksize").read_text().strip())
+    except (OSError, ValueError):
+        return CheckResult(
+            "zram size", "ok", "no zram0 device (rpi-swap not active)",
+        )
+    if zram_size_bytes == 0:
+        return CheckResult("zram size", "ok", "zram0 present but unsized")
+    total_kb = _meminfo_kb("MemTotal") or 0
+    if total_kb == 0:
+        return CheckResult("zram size", "warn", "couldn't compute ratio")
+    total_bytes = total_kb * 1024
+    pct = (zram_size_bytes * 100) // total_bytes
+    zram_mb = zram_size_bytes // (1024 * 1024)
+    if pct > 60:
+        return CheckResult(
+            "zram size", "warn",
+            f"{zram_mb} MB ({pct}% of RAM) — old default; "
+            f"Stage 1 plan recommends 50%. Re-run install.sh or check "
+            f"/etc/rpi/swap.conf.d/50-jts.conf.",
+        )
+    return CheckResult(
+        "zram size", "ok", f"{zram_mb} MB ({pct}% of RAM)",
+    )
+
+
+def check_mglru_min_ttl() -> CheckResult:
+    """Verify MGLRU min_ttl_ms is set to prevent thrashing under
+    memory pressure. Stage 1 of the memory-resilience plan ships
+    1000 ms via /etc/tmpfiles.d/jts-mglru.conf. Skip cleanly on
+    kernels without MGLRU (< 6.1) — the tmpfiles config uses
+    `w-` which silently no-ops there."""
+    p = Path("/sys/kernel/mm/lru_gen/min_ttl_ms")
+    if not p.exists():
+        return CheckResult(
+            "MGLRU min_ttl", "ok",
+            "kernel lacks MGLRU (< 6.1) — thrash prevention via watermarks only",
+        )
+    try:
+        v = int(p.read_text().strip())
+    except (OSError, ValueError):
+        return CheckResult("MGLRU min_ttl", "warn", "couldn't read value")
+    if v == 0:
+        return CheckResult(
+            "MGLRU min_ttl", "warn",
+            "0 ms (default) — thrash prevention disabled. "
+            "Run `sudo systemd-tmpfiles --create /etc/tmpfiles.d/jts-mglru.conf` "
+            "or re-run install.sh.",
+        )
+    if v != 1000:
+        return CheckResult(
+            "MGLRU min_ttl", "ok",
+            f"{v} ms (non-default — operator override)",
+        )
+    return CheckResult("MGLRU min_ttl", "ok", "1000 ms")
+
+
+# Expected vm.* values after Stage 1 lands. Drift here means the
+# sysctl wasn't applied (post-boot before sysctl --system ran) or
+# something later overwrote it (rare — there's no other writer).
+_EXPECTED_VM_SYSCTL = {
+    "swappiness": "100",
+    "page-cluster": "0",
+    "min_free_kbytes": "32768",
+    "vfs_cache_pressure": "200",
+    "watermark_scale_factor": "125",
+}
+
+
+def check_sysctl_drift() -> CheckResult:
+    """Verify the vm.* tunings from /etc/sysctl.d/99-jts-vm.conf
+    took effect. Drift detection — not a failure, just informational
+    so the operator knows whether to re-apply via `sudo sysctl --system`
+    or reboot. On systems with no /proc/sys/vm/ at all (e.g. running
+    the doctor in a dev container), skip cleanly."""
+    drift = []
+    checked = 0
+    for key, want in _EXPECTED_VM_SYSCTL.items():
+        path = Path(f"/proc/sys/vm/{key}")
+        if not path.exists():
+            continue  # kernel doesn't expose this knob
+        try:
+            got = path.read_text().strip()
+        except OSError:
+            continue
+        checked += 1
+        if got != want:
+            drift.append(f"vm.{key}={got} (want {want})")
+    if checked == 0:
+        return CheckResult(
+            "vm.* sysctls", "ok", "/proc/sys/vm not available (not Linux?)",
+        )
+    if drift:
+        return CheckResult(
+            "vm.* sysctls", "warn",
+            "drift: " + ", ".join(drift) +
+            ". Run `sudo sysctl --system` or check /etc/sysctl.d/99-jts-vm.conf.",
+        )
+    return CheckResult(
+        "vm.* sysctls", "ok", f"all {checked} expected values live",
+    )
+
+
+# Expected OOMScoreAdjust per critical daemon. -900 = camilla (silence
+# is worst UX), -700 = aec-bridge, -600 = control, -500 = voice, -300
+# for mux/input. See docs/HANDOFF-resilience.md "OOM-score ladder".
+_EXPECTED_OOM_ADJ = {
+    "jasper-camilla": -900,
+    "jasper-aec-bridge": -700,
+    "jasper-control": -600,
+    "jasper-voice": -500,
+    "jasper-mux": -300,
+    "jasper-input": -300,
+}
+
+
+def _pid_of_unit(unit: str) -> int | None:
+    """Best-effort: get the main PID of a systemd unit. Returns None
+    if the unit isn't running, or if systemctl isn't available
+    (running on a dev host)."""
+    try:
+        out = _run(
+            ["systemctl", "show", "-p", "MainPID", "--value", f"{unit}.service"],
+        ).stdout.strip()
+        pid = int(out)
+        return pid if pid > 0 else None
+    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
+        return None
+
+
+def check_oom_score_adj() -> CheckResult:
+    """Verify critical daemons have the OOMScoreAdjust we configured
+    in their .service files. Drift means either (a) the service was
+    started before the new unit landed (fixed by `systemctl restart`)
+    or (b) the unit was manually edited. Live value is in
+    /proc/<pid>/oom_score_adj — the kernel's source of truth."""
+    mismatches = []
+    missing = []
+    for unit, want in _EXPECTED_OOM_ADJ.items():
+        pid = _pid_of_unit(unit)
+        if pid is None:
+            missing.append(unit)
+            continue
+        try:
+            got = int(Path(f"/proc/{pid}/oom_score_adj").read_text().strip())
+        except (OSError, ValueError):
+            continue
+        if got != want:
+            mismatches.append(f"{unit}={got} (want {want})")
+    if mismatches:
+        return CheckResult(
+            "OOM score adj", "warn",
+            "drift: " + ", ".join(mismatches) +
+            ". Re-run install.sh or `systemctl restart <unit>` for each.",
+        )
+    if missing:
+        return CheckResult(
+            "OOM score adj", "ok",
+            f"{len(_EXPECTED_OOM_ADJ) - len(missing)} daemons protected; "
+            f"{len(missing)} not running ({', '.join(missing)})",
+        )
+    return CheckResult(
+        "OOM score adj", "ok",
+        f"all {len(_EXPECTED_OOM_ADJ)} critical daemons protected",
+    )
+
+
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
     'auto' (the install.sh default) when the file is missing or
@@ -2182,6 +2402,17 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),
         check_ram,
+        # Stage 1 memory-pressure resilience (docs/HANDOFF-resilience.md
+        # "Memory-pressure resilience"). All five checks are drift
+        # detectors — they verify Stage 1's protections are actually
+        # in effect after install.sh. Each fails soft (warn, not fail)
+        # because Stage 1 protections are belt-and-suspenders, not
+        # critical-path.
+        check_memory_headroom,
+        check_zram_size_ratio,
+        check_mglru_min_ttl,
+        check_sysctl_drift,
+        check_oom_score_adj,
         lambda: check_spend_cap(cfg),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
