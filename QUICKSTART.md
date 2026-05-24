@@ -51,28 +51,34 @@ ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"
 ## 1. Flash the Pi (5 minutes)
 
 1. Insert a microSD card (16 GB+) into your laptop.
-2. Open Raspberry Pi Imager. Pick:
+2. Open Raspberry Pi Imager. **Verify it's 2.0.6 or later** (Imager →
+   About). Earlier 2.0.x releases have an [open bug](https://github.com/raspberrypi/rpi-imager/issues/1320)
+   that silently breaks customization on Trixie.
+3. Step through the wizard:
    - **Device**: Raspberry Pi 5
-   - **OS**: Raspberry Pi OS Lite (64-bit) — the Trixie release
+   - **OS**: Raspberry Pi OS Lite (64-bit), Trixie
    - **Storage**: your SD card
-3. Click **Next**. When asked **"Would you like to apply OS customisation
-   settings?"**, pick **Edit Settings**.
-4. In **General**:
-   - **Set hostname**: `jts` (or `jts2`, `kitchen`, whatever you like).
-     A second speaker on the same LAN needs a different hostname.
-   - **Set username and password**: username `pi`, any password
-     (this is a fallback you almost never use — pubkey is the
-     primary path).
-   - **Configure wireless LAN**: paste your 2.4 GHz SSID + password.
-     Set the WiFi country to your own.
-   - **Set locale**: timezone + keyboard for your country.
-5. In **Services**:
-   - Check **Enable SSH**.
-   - Pick **Use public-key authentication only**.
-   - Click **RUN SSH-KEYGEN** (Imager auto-populates from your
-     `~/.ssh/`), OR paste the contents of `~/.ssh/id_ed25519.pub`.
-6. Click **Save**, **Yes** to apply, **Yes** to erase the SD card.
-   Wait ~2 minutes.
+4. Imager asks if you want to customise — say yes. You'll see a
+   multi-step wizard (one screen per step):
+   - **Hostname**: pick a name (`jts` for your first speaker; pick a
+     different name like `jts2`, `kitchen`, `bedroom` for a second
+     speaker — two devices on the same LAN can't share a hostname).
+   - **Localisation**: pick your **Capital city** (this also sets the
+     WiFi country code). **Time zone** and **Keyboard layout** auto-fill
+     from the city — confirm or override.
+   - **User**: username `pi`, any password (fallback only — pubkey is
+     the primary auth), confirm password, and **check "Enable
+     passwordless sudo"**. This is important: `install.sh` runs `sudo`
+     over SSH and will hang on a password prompt without it.
+   - **Wi-Fi**: leave "Secure network" selected. SSID (auto-detected
+     from your laptop's current WiFi if available), password, confirm.
+   - **Remote Access (SSH)**: turn SSH on, pick **"Use public key
+     authentication"**, then in the SSH Key Manager paste the contents
+     of `~/.ssh/id_ed25519.pub` or click **Browse** and select the
+     file. Imager 2.0.x doesn't auto-import — you have to add the key
+     explicitly.
+   - **Skip** the Raspberry Pi Connect and Interfaces & Features steps.
+5. **Save → Yes → Yes** to write. ~2 minutes.
 
 ---
 

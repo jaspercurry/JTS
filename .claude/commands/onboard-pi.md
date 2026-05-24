@@ -110,33 +110,46 @@ on the Trixie image. Surface this warning before they download.
 
 If Imager isn't installed (Phase 0 check), tell them to download from
 [raspberrypi.com/software](https://www.raspberrypi.com/software/) and
-confirm when open. If installed, ask them to verify the version via
-`Raspberry Pi Imager → About` (or `defaults read "/Applications/Raspberry Pi Imager.app/Contents/Info.plist" CFBundleShortVersionString` on macOS, which you can run yourself).
+confirm when open. If installed, ask them to verify via
+`Raspberry Pi Imager → About`.
 
-Then walk them through the Imager wizard, **one field per turn**:
+Walk them through the wizard, **one step per turn**. (Imager 2.0 is a
+multi-step wizard — each customisation step below is its own full
+screen, not a tab.)
 
-1. **Device**: Raspberry Pi 5
-2. **OS**: Raspberry Pi OS Lite (64-bit) — Trixie release
-3. **Storage**: their SD card
-4. **OS customisation → General**:
-   - **Hostname**: pick one. Default `jts`.
-     - **If you found an existing JTS speaker in Phase 0**, propose
-       a non-colliding alternative: *"You already have `jts.local` —
-       what should we name this one? Common choices: `jts2`,
-       `kitchen`, `bedroom`, `livingroom`."* Don't let them pick a
-       name that's already taken — Avahi will silently suffix-resolve
-       to `jts-2.local` and break URL discovery.
-   - **Username**: `pi`
-   - **Password**: any (fallback only; pubkey is the primary path)
-   - **Wireless LAN**: their 2.4 GHz SSID + password + country
-   - **Locale**: timezone + keyboard
-5. **OS customisation → Services**:
-   - **Enable SSH**: yes
-   - **Use public-key authentication** (NOT password). If they don't
-     have a pubkey (Phase 0 check showed nothing), generate one
-     first: `ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"`.
-     Then they can paste `~/.ssh/id_ed25519.pub` into Imager.
-6. **Save → Yes → Yes**. Confirm with the user that flashing is done.
+1. **Device** → Raspberry Pi 5
+2. **OS** → Raspberry Pi OS Lite (64-bit), Trixie
+3. **Storage** → their SD card. Imager prompts about customisation —
+   say yes, edit settings.
+4. **Customisation → Hostname**: pick a name (default `jts`).
+   **If Phase 0 found an existing JTS speaker**, suggest a non-
+   colliding alternative (`jts2`, `kitchen`, `bedroom`). Don't let
+   them pick a name already in use — Avahi will silently
+   suffix-resolve to `<name>-2.local` and break URL discovery.
+5. **Customisation → Localisation**: three dropdowns —
+   **Capital city** (this also sets the WiFi country, so pick one in
+   their actual region), **Time zone** (auto-fills from city, confirm
+   or override), **Keyboard layout** (auto-fills, confirm).
+6. **Customisation → User**: **Username** `pi` (JTS scripts default
+   to this), **Password** (any — it's a fallback; SSH uses pubkey),
+   **Confirm password**, and ✅ **check "Enable passwordless sudo"**.
+   This is load-bearing: `install.sh` runs `sudo` over SSH and will
+   hang on a password prompt without it.
+7. **Customisation → Wi-Fi**: leave "Secure network" selected.
+   **SSID** (auto-detected from the laptop's WiFi if available),
+   **Password**, **Confirm**. Leave "Hidden SSID" unchecked.
+8. **Customisation → Remote Access (SSH)**: **Enable SSH** ON,
+   pick **"Use public key authentication"**, then in the SSH Key
+   Manager either paste the contents of `~/.ssh/id_ed25519.pub` or
+   click **Browse** and select the file. Imager 2.0.x does NOT
+   auto-import — keys must be added explicitly. If they don't have
+   a pubkey yet (Phase 0 check), generate one first:
+   `ssh-keygen -t ed25519 -C "$(whoami)@$(hostname -s)-jts"`.
+9. **Skip** Raspberry Pi Connect (next step) — not needed for JTS.
+10. **Skip** Interfaces & Features — JTS configures I2C/SPI itself;
+    don't enable USB Gadget Mode here (that's a separate rescue
+    feature documented elsewhere).
+11. **Save → Yes → Yes**. Confirm when flashing is done.
 
 ---
 
