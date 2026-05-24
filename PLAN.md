@@ -445,40 +445,93 @@ they don't get lost in the working tree.
 
 ---
 
-## Resilience ladder — deferred tiers (no version)
+## Resilience ladder — current state
 
-`docs/HANDOFF-resilience.md` documents the full five-tier ladder.
-Tiers 1+2 (sd_notify watchdog + `Type=notify` + `Restart=on-watchdog`)
-shipped in PRs [#77](https://github.com/jaspercurry/JTS/pull/77) +
-[#93](https://github.com/jaspercurry/JTS/pull/93) alongside the UDP
-transport that eliminated the snd-aloop kernel-state failure class.
-Tier 5 (hardware watchdog) was already wired by Raspberry Pi OS
-Trixie's defaults; PR [#160](https://github.com/jaspercurry/JTS/pull/160)
-added the persistent journal pairing so watchdog-triggered reboots
-leave forensics. Tiers 3–4 in the PLAN's sense (`OnFailure=` chaining,
-`rmmod snd_aloop` recovery) are noted for completeness but have weak
-triggers.
+`docs/HANDOFF-resilience.md` is the canonical reference. Status as
+of 2026-05-24 after the May-2026 resilience sprint (10 PRs,
+#276–#290):
+
+| Layer | Status | Catches |
+|---|---|---|
+| Tier 1 (sd_notify heartbeat sentinel) | ✅ shipped PR #77 | in-process logic deadlock / blocked event loop |
+| Tier 2 (`Type=notify` + `WatchdogSec=30s`) | ✅ shipped PR #77/#93 | daemon hang detected by Tier 1 |
+| Tier 3 (shairport-sync protocol supervisor) | ✅ shipped | AP2 control-plane wedge while MPRIS still answers |
+| **Stage 1 memory-pressure prevention** | ✅ shipped PR #276 / #280 / #281 / #284 / #285 | OOM avoidance: OOMScoreAdjust ladder + MGLRU + zram + RAM-aware sysctls |
+| Tier 4 (kernel-state recovery via `rmmod`) | ❌ deferred (clear trigger documented) | snd-aloop kernel wedge — moot since UDP transport |
+| **T5.1 (`StartLimitAction=reboot`)** | ✅ shipped PR #286 | a single critical daemon stuck in restart loop |
+| **T5.2 (`SystemSupervisor` userspace probing)** | ✅ shipped PR #287 | "userspace dead but no daemon failed" (the 2026-05-23 shape) |
+| Tier 5 (BCM2712 hardware watchdog + persistent journal) | ✅ shipped PR #160 | PID 1 wedge / kernel panic |
+| T5.3 (shorter `RuntimeWatchdogSec`) | ❌ deferred — needs ≥30 days post-T5.2 data |  |
+| T5.4 (external hardware watchdog HAT) | ❌ deferred to next hardware revision |  |
+| T5.5 (PSI-as-watchdog-gate) | ❌ deferred — no production precedent |  |
+
+The May-2026 sprint addressed the 2026-05-23 incident (PIO compile
+on 1 GB Pi 5 OOM-stalled userspace for >2 minutes; PID 1 stayed
+alive enough to pat `/dev/watchdog0` so Tier 5 never fired) end-to-
+end with Stage 1 (prevention) + T5.1 (per-daemon restart escalation)
++ T5.2 (userspace probe + clean reboot). See
+[docs/HANDOFF-tier5-watchdog-liveness.md](docs/HANDOFF-tier5-watchdog-liveness.md)
+for the option matrix and T5.3–T5.5 revisit triggers.
+
+### Stage 1 — memory-pressure prevention (shipped 2026-05-24)
+
+Four layers, no new daemons, ~10 MB resident cost:
+
+- **1a. OOMScoreAdjust ladder** on 6 jasper-* daemons + sshd
+  (live-written via `/proc/PID/oom_score_adj` at install time
+  so values land without restart). Canonical values live in
+  [`jasper/_oom_adj.py`](jasper/_oom_adj.py) — single source of
+  truth for both `install.sh` and `jasper-doctor`.
+- **1b. zram resized to 50% of RAM** via `/etc/rpi/swap.conf.d/50-jts.conf`
+  drop-in (rpi-swap generator; reboot required to apply).
+- **1c. vm.* sysctls** in `/etc/sysctl.d/99-jts-vm.conf` — `swappiness=100`,
+  `page-cluster=0`, `watermark_scale_factor=125`, RAM-aware
+  `vm.min_free_kbytes = clamp(0.02 × MemTotal_kB, 8192, 262144)`
+  computed at install time. Works across 1/2/4/8/16 GB Pi 5 SKUs.
+- **1d. MGLRU `min_ttl_ms=1000`** via tmpfiles.d — protects
+  recently-accessed pages from reclaim, forces OOM-kill over
+  zram thrash.
+
+Drift detection: 6 new doctor checks
+(`check_memory_headroom`, `check_zram_size_ratio`, `check_mglru_min_ttl`,
+`check_sysctl_drift`, `check_oom_score_adj`, `check_start_limit_action`).
+
+### T5.1 — `StartLimitAction=reboot` (shipped PR #286)
+
+Added to 4 critical units: `jasper-camilla`, `jasper-aec-bridge`,
+`jasper-voice`, `jasper-control`. When restart-burst limits are
+exceeded, systemd cleanly reboots (NOT `reboot-force` — must sync
+zram dirty pages on 1 GB Pi). Per-unit burst/interval preserve
+existing transient-tolerance (jasper-voice keeps 20/300; others
+use 4/300 proposal default).
+
+### T5.2 — `SystemSupervisor` (shipped PR #287)
+
+New [`jasper/control/system_supervisor.py`](jasper/control/system_supervisor.py).
+Runs inside `jasper-control`'s asyncio thread — no new daemon.
+Probes sshd banner + `/healthz` + `/proc/loadavg` every 30 s.
+Clean `systemctl reboot` after 3 consecutive failures, rate-limited
+1/24h, off-switchable via `JASPER_SYSTEM_SUPERVISOR=disabled`.
 
 ### Tier 5 — BCM2712 hardware watchdog (shipped 2026-05-20)
 
-Done in PR #160, two halves:
+Already enabled by RPi OS Trixie's
+`/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`
+(`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). systemd PID 1
+pats `/dev/watchdog0` (`bcm2835-wdt`); if PID 1 can't get
+scheduled to ping for ~60 s, the hardware watchdog hard-resets
+the board. **Caveat exposed by 2026-05-23**: PID 1 can stay
+alive enough to keep patting while userspace is effectively
+dead — see T5.2 above.
 
-- **Watchdog itself**: already enabled by RPi OS Trixie's
-  `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`
-  (`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). systemd PID 1
-  pats `/dev/watchdog0` (`bcm2835-wdt`); if PID 1 can't get
-  scheduled to ping for ~60 s, the hardware watchdog hard-resets
-  the board. No JTS-side config needed; we discovered this on
-  2026-05-20 when a heavy offline analysis script OOM'd the Pi
-  and the watchdog kicked in.
-- **Forensics pairing**: `deploy/journald/50-jts-persistent-storage.conf`
-  overrides RPi OS's `40-rpi-volatile-storage.conf` so journals
-  survive across the watchdog reset. Capped at 200 MB. Without
-  this, the user only sees the reboot — never the cause.
+PR [#160](https://github.com/jaspercurry/JTS/pull/160) added
+the persistent journal pairing (`deploy/journald/50-jts-persistent-storage.conf`)
+so journals survive across the watchdog reset (capped at 200 MB)
+— without this, the user only sees the reboot, never the cause.
 
-Verify on the Pi via `systemctl show -p RuntimeWatchdogUSec` (expect
-`1min`) and `journalctl --header | grep "File path"` (expect
-`/var/log/journal/...`, not `/run/log/journal/...`).
+Verify on the Pi via `systemctl show -p RuntimeWatchdogUSec`
+(expect `1min`) and `journalctl --header | grep "File path"`
+(expect `/var/log/journal/...`, not `/run/log/journal/...`).
 
 ### Tier 3 — `OnFailure=` cross-service chaining (deferred)
 

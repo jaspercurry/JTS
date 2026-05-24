@@ -101,16 +101,21 @@ wedges. We removed only the second card (`LoopbackAEC`) from
 
 ### 2. A five-tier resilience ladder, with sd_notify watchdog as Tier 1+2
 
-> **Note**: the tier ladder below addresses **liveness failures** —
-> stuck processes, wedged supervisors, hung subsystems. For
-> **resource-pressure prevention** (memory-OOM avoidance), see
-> [Memory-pressure resilience (Stage 1)](#memory-pressure-resilience-stage-1)
-> below — it sits parallel to the tier ladder, not inside it.
-> For the **Tier 5 liveness blind spot** exposed by the
-> 2026-05-23 incident, see
-> [Tier 5's liveness blind spot](#tier-5s-liveness-blind-spot--known-gap)
-> and the design proposal at
-> [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md).
+> **Note**: the 5-tier ladder below is the original 2026-05-11
+> response, scoped to **liveness failures** — stuck processes,
+> wedged supervisors, hung subsystems. Two later additions extend
+> the ladder, both shipped in May 2026:
+>
+> - **Stage 1 — memory-pressure prevention** sits *parallel* to
+>   the ladder. See [Memory-pressure resilience (Stage 1)](#memory-pressure-resilience-stage-1)
+>   below.
+> - **T5.1 + T5.2** sit *below* Tier 5, catching the "userspace
+>   dead but PID 1 alive" shape the hardware watchdog
+>   structurally misses. See [Tier 5's liveness blind spot](#tier-5s-liveness-blind-spot--known-gap)
+>   for the gap analysis and
+>   [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md)
+>   for the option matrix + revisit triggers on the still-deferred
+>   T5.3–T5.5 options.
 
 Even with the snd-aloop failure class eliminated, we want
 recovery from *any* future in-process hang — not just the

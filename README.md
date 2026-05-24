@@ -404,23 +404,26 @@ reference. Currently:
   ALSA mute trap), diagnostic cookbook. Start here for any
   mic-side investigation.
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
-  five-tier resilience ladder, the 2026-05-11 incident, the
-  decision to swap the bridge→voice transport from snd-aloop to
-  UDP, the Tier 3 protocol-level supervisor for shairport-sync,
-  the 2026-05-23 incident + Tier 5 liveness blind spot, and the
-  Stage 1 memory-pressure resilience layer (OOMScoreAdjust ladder
-  + zram tuning + sysctl tuning + MGLRU thrash prevention).
+  resilience ladder: Tiers 1–3 (sd_notify per-daemon watchdog +
+  shairport supervisor), Stage 1 memory-pressure prevention
+  (OOMScoreAdjust ladder + MGLRU + zram + sysctls + RAM-aware
+  defaults), T5.1 `StartLimitAction=reboot` escalation, T5.2
+  `SystemSupervisor` userspace-liveness probing, and the Tier 5
+  kernel hardware watchdog with persistent journal forensics. The
+  2026-05-11 and 2026-05-23 incidents that drove each addition.
   Read before touching `jasper/watchdog.py`,
-  `jasper/control/shairport_supervisor.py`, or the `Type=notify` /
-  `WatchdogSec=` blocks in any service unit.
+  `jasper/control/{shairport,system}_supervisor.py`, or the
+  `Type=notify` / `WatchdogSec=` / `StartLimitAction=` blocks in
+  any service unit.
 - [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md) —
-  Design proposal (no code yet) for closing the Tier 5 liveness
-  gap exposed by the 2026-05-23 incident. Industry survey
-  (HAOS, balenaOS, OpenWrt, Meskes `watchdog`), option matrix
-  (probing system supervisor / `StartLimitAction=reboot` /
-  shorter `RuntimeWatchdogSec` / external hardware / PSI gate),
-  recommended sequencing. Read before any work that touches
-  Tier 5 or proposes new system-level recovery.
+  Design + shipped implementation (T5.1 + T5.2, May 2026) for
+  closing the Tier 5 liveness gap exposed by the 2026-05-23
+  incident. Industry survey (HAOS, balenaOS, OpenWrt, Meskes
+  `watchdog`), option matrix (probing system supervisor /
+  `StartLimitAction=reboot` / shorter `RuntimeWatchdogSec` /
+  external hardware / PSI gate), sequencing rationale, and
+  revisit triggers for the still-deferred T5.3–T5.5 options.
+  Read before any further work on Tier 5.
 - [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) —
   Smart-home integration. The speaker delegates "turn on the
   bedroom lights" / "good night" / household sentence triggers
