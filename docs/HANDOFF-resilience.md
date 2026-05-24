@@ -101,6 +101,17 @@ wedges. We removed only the second card (`LoopbackAEC`) from
 
 ### 2. A five-tier resilience ladder, with sd_notify watchdog as Tier 1+2
 
+> **Note**: the tier ladder below addresses **liveness failures** —
+> stuck processes, wedged supervisors, hung subsystems. For
+> **resource-pressure prevention** (memory-OOM avoidance), see
+> [Memory-pressure resilience (Stage 1)](#memory-pressure-resilience-stage-1)
+> below — it sits parallel to the tier ladder, not inside it.
+> For the **Tier 5 liveness blind spot** exposed by the
+> 2026-05-23 incident, see
+> [Tier 5's liveness blind spot](#tier-5s-liveness-blind-spot--known-gap)
+> and the design proposal at
+> [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md).
+
 Even with the snd-aloop failure class eliminated, we want
 recovery from *any* future in-process hang — not just the
 specific one we hit. The systemd `sd_notify` watchdog gives us
@@ -275,7 +286,7 @@ way to trip Tier 5 self-inflicted — each model load holds
 the laptop for that kind of work; the Pi venv is sized for
 production daemons, not analysis bursts.
 
-### Tier 5's liveness blind spot — known gap
+### Tier 5's liveness blind spot — known gap {#tier-5s-liveness-blind-spot--known-gap}
 
 The 2026-05-23 incident exposed a real limitation. A PIO compile
 on the 1 GB Pi 5 OOM-stalled userspace for >2 minutes:
@@ -296,16 +307,24 @@ is processing audio, or that any user-visible service does
 anything useful. So userspace can be fully wedged while Tier 5
 thinks the system is healthy.
 
-A follow-up investigation tracks this gap and the candidate
-fixes (userspace-probing watchdog daemon, software-reboot tier
-between 4 and 5, shorter `RuntimeWatchdogSec`, or stacked
-combinations). See the "Add OOM-stall guard to resilience
-ladder" chip / GitHub issue for the design proposal. **Until
-that ships, the memory-pressure resilience below (added 2026-05-24)
-reduces the frequency of userspace wedges but doesn't fix the
-recovery when they happen.**
+**Design proposal for closing this gap**:
+[`HANDOFF-tier5-watchdog-liveness.md`](HANDOFF-tier5-watchdog-liveness.md)
+(2026-05-24). Recommends a two-PR sequence:
+- **T5.1**: `StartLimitAction=reboot` on critical jasper-* units
+  so 4 watchdog-loop failures in 5 min cleanly reboot the box.
+  Zero new code, ships in ~1 hour. Catches the "one critical
+  daemon is broken" shape.
+- **T5.2**: new `SystemSupervisor` in `jasper-control` mirroring
+  the proven `ShairportSupervisor` Tier 3 shape. Probes sshd,
+  jasper-control HTTP, `/proc/loadavg`; escalates to clean
+  `systemctl reboot` after 3 consecutive failures. ~1 engineer-day.
+  Catches the 2026-05-23 shape (userspace-dead-but-no-daemon-failed).
 
-### Memory-pressure resilience (Stage 1)
+**Until T5.1 + T5.2 ship, the memory-pressure resilience below
+(Stage 1, PR #276) reduces the frequency of userspace wedges
+but doesn't fix the recovery when they happen.**
+
+### Memory-pressure resilience (Stage 1) {#memory-pressure-resilience-stage-1}
 
 Added 2026-05-24 in response to the 2026-05-23 wedge. Stage 1
 ships the layer that works on the stock RPi 5 kernel without
