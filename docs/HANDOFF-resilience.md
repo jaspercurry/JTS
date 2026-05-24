@@ -307,22 +307,32 @@ is processing audio, or that any user-visible service does
 anything useful. So userspace can be fully wedged while Tier 5
 thinks the system is healthy.
 
-**Design proposal for closing this gap**:
-[`HANDOFF-tier5-watchdog-liveness.md`](HANDOFF-tier5-watchdog-liveness.md)
-(2026-05-24). Recommends a two-PR sequence:
-- **T5.1**: `StartLimitAction=reboot` on critical jasper-* units
-  so 4 watchdog-loop failures in 5 min cleanly reboot the box.
-  Zero new code, ships in ~1 hour. Catches the "one critical
-  daemon is broken" shape.
+**Design proposal**: [`HANDOFF-tier5-watchdog-liveness.md`](HANDOFF-tier5-watchdog-liveness.md)
+(2026-05-24). Two-PR sequence:
+
+- **T5.1** ✅ **shipped**: `StartLimitAction=reboot` on the 4 critical
+  jasper-* units (camilla, aec-bridge, voice, control). When any
+  one of them exceeds its `StartLimitBurst=` within `StartLimitIntervalSec=`,
+  systemd itself cleanly reboots the box — filesystems unmount,
+  journal flushes, dirty pages sync. Per-unit thresholds preserve
+  existing transient-tolerance for audio-device dropouts
+  (jasper-voice keeps 20/300, jasper-camilla 5/60, aec-bridge and
+  control use proposal default 4/300). `reboot` not `reboot-force`
+  — clean shutdown is essential on a 1 GB Pi to flush zram dirty
+  pages. Catches the "one critical daemon is sick" shape, but NOT
+  the "userspace is dead while jasper-* daemons happen to be alive"
+  shape. `jasper-doctor`'s `check_start_limit_action` surfaces
+  drift if a Debian/RPi-OS update removes the directive.
 - **T5.2**: new `SystemSupervisor` in `jasper-control` mirroring
   the proven `ShairportSupervisor` Tier 3 shape. Probes sshd,
   jasper-control HTTP, `/proc/loadavg`; escalates to clean
   `systemctl reboot` after 3 consecutive failures. ~1 engineer-day.
   Catches the 2026-05-23 shape (userspace-dead-but-no-daemon-failed).
 
-**Until T5.1 + T5.2 ship, the memory-pressure resilience below
-(Stage 1, PR #276) reduces the frequency of userspace wedges
-but doesn't fix the recovery when they happen.**
+**Until T5.2 ships, the memory-pressure resilience below
+(Stage 1) plus T5.1 reduce wedge frequency + add a software reboot
+tier — but the 2026-05-23 shape (no daemon failed, but userspace
+is starved) still requires manual power-cycle.**
 
 ### Memory-pressure resilience (Stage 1) {#memory-pressure-resilience-stage-1}
 

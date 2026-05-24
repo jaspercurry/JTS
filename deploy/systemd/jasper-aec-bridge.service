@@ -40,6 +40,15 @@ Wants=jasper-aec-init.service
 # in production on 2026-05-10.
 PartOf=jasper-camilla.service
 
+# Tier 4.5 — escalate to system reboot if the per-service watchdog
+# spiral exceeds 4 restarts in 5 minutes. See
+# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)" for
+# rationale. `reboot` (not `reboot-force`): clean unmount needed
+# on a 1 GB Pi to flush dirty zram pages.
+StartLimitIntervalSec=300
+StartLimitBurst=4
+StartLimitAction=reboot
+
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
 # emit `READY=1` (via sdnotify, see jasper/watchdog.py) before

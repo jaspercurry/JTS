@@ -15,6 +15,17 @@ Wants=sound.target
 StartLimitIntervalSec=60
 StartLimitBurst=5
 
+# Tier 4.5 — escalate to system reboot if the per-service restart
+# spiral exceeds the burst limit. systemd cleanly reboots the box
+# (filesystems unmount, journal flushes, dirty pages sync) — far
+# better than the kernel hardware watchdog at Tier 5 which slams
+# the box without warning. Triggers iff Camilla fails to start 5
+# times in 60s; in normal operation this should never fire. See
+# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)" for
+# the rationale. `reboot` (not `reboot-force`): we want clean
+# shutdown — on a 1 GB Pi the dirty pages in zram MUST sync.
+StartLimitAction=reboot
+
 [Service]
 Type=simple
 # --statefile lets CamillaDSP persist the currently-loaded config path

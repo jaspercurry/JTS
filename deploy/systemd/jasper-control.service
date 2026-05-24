@@ -8,6 +8,18 @@ After=jasper-camilla.service network-online.target
 # write lands. After= still orders us behind camilla on cold boot.
 Wants=network-online.target jasper-camilla.service
 
+# Tier 4.5 — escalate to system reboot if the per-service restart
+# spiral exceeds 4 restarts in 5 minutes. jasper-control is the
+# recovery surface (HTTP API for the dial, /system/ dashboard);
+# if it's stuck in a restart loop while the rest of the system
+# looks OK, the operator can't reach the dashboard to diagnose
+# — exactly the case where clean system reboot beats waiting.
+# See docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)".
+# `reboot` (not `reboot-force`): clean shutdown needed for zram.
+StartLimitIntervalSec=300
+StartLimitBurst=4
+StartLimitAction=reboot
+
 [Service]
 Type=simple
 EnvironmentFile=/etc/jasper/jasper.env
