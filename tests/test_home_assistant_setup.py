@@ -540,8 +540,13 @@ def test_ready_endpoint_returns_no_when_unconfigured(wizard_server):
 
 
 def test_state_connected_html_masks_token(wizard_server):
-    """The connected-state UI must not leak the full token in the page
-    body. mask_secret() shows prefix…suffix only."""
+    """The connected-state UI must NEVER render the full token into
+    the page body. mask_secret() shows prefix…suffix only for the
+    operator's display; the "📋 Copy with HA credentials" button
+    fetches the live token lazily via POST /credentials-for-copy
+    (see do_POST handler for the rationale). Regressing this means a
+    browser extension / screenshot / save-page-as can exfiltrate the
+    token without the user doing anything; tight invariant."""
     base_url, _, _ = wizard_server
     _post(f"{base_url}/save", {
         "url": "homeassistant.local",
@@ -557,6 +562,98 @@ def test_state_connected_html_masks_token(wizard_server):
     # Masked form is
     assert "eyJ0" in body  # prefix shown
     assert "…" in body
+    # Defense-in-depth: the old leaky JS constants must not reappear.
+    # If a future contributor inlines the token "for convenience,"
+    # this regresses immediately.
+    assert "VOICE_HA_TOKEN" not in body
+    assert "VOICE_HA_URL" not in body
+
+
+def test_credentials_for_copy_returns_url_and_token(wizard_server):
+    """Happy path: POST with valid CSRF returns the live URL+token as
+    JSON. This is what the "Copy with HA credentials" button calls."""
+    import http.cookiejar
+    import json as _json
+    from ._web_test_helpers import CSRF_COOKIE_NAME
+
+    base_url, _, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local",
+        "token": "eyJ0eXAi-secret-xyz",
+        "agent_id": "",
+    })
+    # Mint the CSRF cookie via a GET, then POST with X-CSRF-Token header.
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        _NoRedirect(), urllib.request.HTTPCookieProcessor(jar),
+    )
+    opener.open(f"{base_url}/").read()
+    csrf_token = next(
+        (c.value for c in jar if c.name == CSRF_COOKIE_NAME), ""
+    )
+    assert csrf_token, "wizard didn't mint a CSRF cookie on GET /"
+
+    req = urllib.request.Request(
+        f"{base_url}/credentials-for-copy",
+        data=b"", method="POST",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    with opener.open(req) as r:
+        assert r.status == 200
+        payload = _json.loads(r.read().decode())
+    assert payload["url"] == "http://homeassistant.local:8123"  # _normalize_url
+    assert payload["token"] == "eyJ0eXAi-secret-xyz"
+
+
+def test_credentials_for_copy_rejects_missing_csrf(wizard_server):
+    """Without the CSRF header (or with the wrong one), the endpoint
+    returns 403. Defense against a malicious same-origin POST that
+    can't read our CSRF cookie."""
+    base_url, _, _ = wizard_server
+    _post(f"{base_url}/save", {
+        "url": "homeassistant.local",
+        "token": "eyJ0eXAi-secret-xyz",
+        "agent_id": "",
+    })
+    req = urllib.request.Request(
+        f"{base_url}/credentials-for-copy",
+        data=b"", method="POST",
+    )
+    try:
+        urllib.request.urlopen(req)  # noqa: S310 — test only
+        assert False, "expected 403"
+    except urllib.error.HTTPError as e:
+        assert e.code == 403
+
+
+def test_credentials_for_copy_returns_400_when_no_state(wizard_server):
+    """Defensive: if somehow the endpoint is hit before /save (state
+    file missing), return 400 rather than empty strings. Shouldn't
+    happen in practice because the page that calls this only renders
+    when both URL+token are set."""
+    import http.cookiejar
+    from ._web_test_helpers import CSRF_COOKIE_NAME
+
+    base_url, _, _ = wizard_server
+    # Note: no /save. State file is empty.
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        _NoRedirect(), urllib.request.HTTPCookieProcessor(jar),
+    )
+    opener.open(f"{base_url}/").read()
+    csrf_token = next(
+        (c.value for c in jar if c.name == CSRF_COOKIE_NAME), ""
+    )
+    req = urllib.request.Request(
+        f"{base_url}/credentials-for-copy",
+        data=b"", method="POST",
+        headers={"X-CSRF-Token": csrf_token},
+    )
+    try:
+        opener.open(req)
+        assert False, "expected 400"
+    except urllib.error.HTTPError as e:
+        assert e.code == 400
 
 
 # ---- helper ---------------------------------------------------------------
