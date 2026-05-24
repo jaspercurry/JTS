@@ -199,12 +199,33 @@ SYSTEM_INSTRUCTION = (
     # Per OpenAI's Realtime Prompting Guide. Mic mishears are a real
     # input on a voice-only device; without this rule the model
     # confidently answers a wrong-interpreted utterance.
+    #
+    # The "fragment" and "empty-string arguments" clauses were added
+    # 2026-05-24 after the VAD test matrix surfaced a dangerous
+    # failure mode: when STT returned empty or one-word transcripts
+    # ("What?", "That's...", ""), the model would still confidently
+    # call tools — calendar_today_summary, get_subway_arrivals with
+    # `direction=''`, set_volume(60), and in one case home_assistant
+    # ("turn on the bedroom lights") which actually executed and
+    # turned the lights on while the user was asking about weather.
+    # The original "don't call any tool" rule was being interpreted
+    # too narrowly — the model didn't perceive "transcript is a
+    # fragment" as "unclear audio." Enumerating those triggers
+    # explicitly and flagging the empty-arguments anti-pattern is
+    # per the prompting playbook's "enumerate triggers; conditional
+    # rules over absolutes" guidance.
+    # See docs/HANDOFF-vad-experiments.md "Known product bug".
     "If the user's audio is unclear — partial, garbled, talking-"
-    "over-music, side conversation, words trailing off — ask once "
-    "for clarification with a short English phrase like 'Sorry, "
-    "could you repeat that?' Don't guess at the request; don't "
-    "call any tool; don't reason about what was probably said. "
-    "One clarification request, then wait.\n"
+    "over-music, side conversation, words trailing off, a short "
+    "fragment like 'What?' or 'That's', or nothing intelligible "
+    "after the wake word — ask once for clarification with a short "
+    "English phrase like 'Sorry, I didn't catch that.' Don't guess "
+    "at the request; don't call any tool; don't reason about what "
+    "was probably said. If you find yourself about to call a tool "
+    "with empty-string arguments or arguments you're inventing "
+    "without having heard them, you don't have enough information "
+    "— say the clarification line instead. One clarification "
+    "request, then wait.\n"
 
     # ---- After a tool returns --------------------------------------------
     # Per-tool voice-answer style lives in each tool's description.
