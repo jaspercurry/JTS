@@ -84,7 +84,8 @@ def test_memory_headroom_handles_meminfo_read_failure():
 
 
 def test_zram_size_warns_when_over_60pct_of_ram():
-    """Old default of zram = 100% of RAM should warn."""
+    """Old default of zram = 100% of RAM should warn AND mention
+    that reboot is required (rpi-swap is a generator, not a service)."""
     fake_read = MagicMock(side_effect=[
         "1014767616",  # /sys/block/zram0/disksize — ~990 MB
     ])
@@ -95,6 +96,8 @@ def test_zram_size_warns_when_over_60pct_of_ram():
         r = doctor.check_zram_size_ratio()
     assert r.status == "warn"
     assert "old default" in r.detail
+    assert "reboot" in r.detail   # don't tell the operator to re-run
+                                  # install.sh — they need to reboot
 
 
 def test_zram_size_ok_at_50pct():

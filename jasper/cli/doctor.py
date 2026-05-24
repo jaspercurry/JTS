@@ -981,8 +981,9 @@ def check_zram_size_ratio() -> CheckResult:
         return CheckResult(
             "zram size", "warn",
             f"{zram_mb} MB ({pct}% of RAM) — old default; "
-            f"Stage 1 plan recommends 50%. Re-run install.sh or check "
-            f"/etc/rpi/swap.conf.d/50-jts.conf.",
+            f"Stage 1 plan recommends 50%. If the drop-in is present "
+            f"(check /etc/rpi/swap.conf.d/50-jts.conf), reboot to apply "
+            f"— rpi-swap is a generator (runs at boot, not a service).",
         )
     return CheckResult(
         "zram size", "ok", f"{zram_mb} MB ({pct}% of RAM)",
