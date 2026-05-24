@@ -222,13 +222,25 @@ empty STT input. **This is a safety-relevant failure mode** — the model
 should refuse to call tools (especially side-effecting ones) when STT
 returned nothing.
 
-Fix path (not done): update `SYSTEM_INSTRUCTION` in `voice_daemon.py` to
-explicitly handle "no audio context" — say "I didn't catch that" instead
-of calling a tool. Reference
+**Initial fix landed 2026-05-24 (same day, follow-up PR):** the Unclear
+Audio section in `SYSTEM_INSTRUCTION` was extended with explicit
+fragment-trigger enumeration ("a short fragment like 'What?' or 'That's'")
+and an empty-string-arguments anti-pattern guard ("if you find yourself
+about to call a tool with empty-string arguments or arguments you're
+inventing without having heard them, you don't have enough information —
+say the clarification line instead"). Tests in
+[`tests/test_system_prompt_unclear_audio.py`](../tests/test_system_prompt_unclear_audio.py)
+pin the literal example fragments observed in production failures.
+
+**This is a prompt-level guard, not a deterministic enforcement.** The
+model can still hallucinate — but should do so less often with the
+explicit triggers. A belt-and-suspenders deterministic guard in the
+dispatch layer (refuse to execute side-effecting tools when the most
+recent transcript is empty *and* the args are empty/default) is the
+next-level fix if the prompt guard proves insufficient. Reference
 [`docs/HANDOFF-prompting.md`](HANDOFF-prompting.md) for the
-prompting playbook. Also consider a deterministic guard in the
-dispatch layer: refuse to execute side-effecting tools when the most
-recent transcript is empty.
+prompting playbook — the guard follows that doc's "enumerate triggers;
+conditional rules over absolutes" convention.
 
 ---
 
