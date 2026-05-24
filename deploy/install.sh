@@ -1306,6 +1306,41 @@ migrate_memory_resilience() {
         echo "  memory_resilience: /etc/rpi not present (rpi-swap not installed) — skipped zram sizing"
     fi
 
+    # Step 4: live-write /proc/PID/oom_score_adj for every running
+    # critical daemon. The OOMScoreAdjust= directives in the .service
+    # files only take effect on next process start; install.sh doesn't
+    # restart jasper-camilla (Rust binary, intentionally never auto-
+    # restarted per AGENTS.md) or jasper-mux (not in install.sh's
+    # restart list), so their running processes would sit at adj=0
+    # until next reboot. Live-writing /proc/PID/oom_score_adj sets
+    # the kernel-visible value immediately without restart —
+    # zero audio glitch, fully reversible (next restart re-reads
+    # the unit file's directive). Root-only, fails-soft per daemon.
+    declare -A _oom_adj_target=(
+        [jasper-camilla]=-900
+        [jasper-aec-bridge]=-700
+        [jasper-control]=-600
+        [jasper-voice]=-500
+        [jasper-mux]=-300
+        [jasper-input]=-300
+    )
+    local live_writes=0 live_skips=0
+    for unit in "${!_oom_adj_target[@]}"; do
+        local want="${_oom_adj_target[$unit]}"
+        local pid
+        pid=$(systemctl show -p MainPID --value "${unit}.service" 2>/dev/null || true)
+        if [[ -z "${pid}" || "${pid}" == "0" ]]; then
+            live_skips=$((live_skips+1))
+            continue
+        fi
+        if [[ -w "/proc/${pid}/oom_score_adj" ]]; then
+            if echo "${want}" > "/proc/${pid}/oom_score_adj" 2>/dev/null; then
+                live_writes=$((live_writes+1))
+            fi
+        fi
+    done
+    echo "  memory_resilience: live-set oom_score_adj on ${live_writes} running daemon(s) (${live_skips} not running)"
+
     if (( errors > 0 )); then
         echo "  memory_resilience: ${errors} step(s) failed; system in degraded state but functional"
         echo "  memory_resilience: re-run install.sh after fixing, or check jasper-doctor"

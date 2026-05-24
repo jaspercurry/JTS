@@ -1093,15 +1093,41 @@ def _pid_of_unit(unit: str) -> int | None:
         return None
 
 
+def _configured_oom_adj_of_unit(unit: str) -> int | None:
+    """Best-effort: read OOMScoreAdjust= from systemd's view of the
+    unit. This catches drift between "what the .service file says"
+    and "what's actually running" — a unit file edit that hasn't
+    been picked up via daemon-reload + restart shows here, but not
+    in /proc/<pid>/oom_score_adj. Returns None on dev hosts or
+    when the value couldn't be read."""
+    try:
+        out = _run(
+            ["systemctl", "show", "-p", "OOMScoreAdjust", "--value",
+             f"{unit}.service"],
+        ).stdout.strip()
+        if not out or out == "[not set]":
+            return 0  # systemd default when OOMScoreAdjust= absent
+        return int(out)
+    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
+        return None
+
+
 def check_oom_score_adj() -> CheckResult:
-    """Verify critical daemons have the OOMScoreAdjust we configured
-    in their .service files. Drift means either (a) the service was
-    started before the new unit landed (fixed by `systemctl restart`)
-    or (b) the unit was manually edited. Live value is in
-    /proc/<pid>/oom_score_adj — the kernel's source of truth."""
-    mismatches = []
+    """Verify critical daemons have the OOMScoreAdjust we configured.
+    Checks BOTH the live process (/proc/<pid>/oom_score_adj — the
+    kernel's actual victim-selection value) AND the unit-file value
+    (systemctl show -p OOMScoreAdjust — what's set for the NEXT
+    restart). Live drift means a process was started before the
+    new unit landed → next restart fixes it. Configured drift means
+    the unit file itself doesn't have the directive → next restart
+    *won't* fix it, so we surface both shapes separately."""
+    live_drift = []   # /proc/PID disagrees with expected
+    config_drift = []  # systemctl show disagrees with expected
     missing = []
     for unit, want in _EXPECTED_OOM_ADJ.items():
+        configured = _configured_oom_adj_of_unit(unit)
+        if configured is not None and configured != want:
+            config_drift.append(f"{unit} unit={configured} (want {want})")
         pid = _pid_of_unit(unit)
         if pid is None:
             missing.append(unit)
@@ -1111,12 +1137,21 @@ def check_oom_score_adj() -> CheckResult:
         except (OSError, ValueError):
             continue
         if got != want:
-            mismatches.append(f"{unit}={got} (want {want})")
-    if mismatches:
+            live_drift.append(f"{unit} live={got} (want {want})")
+    if config_drift:
+        # Unit-file drift is the more serious case — survives restarts.
         return CheckResult(
             "OOM score adj", "warn",
-            "drift: " + ", ".join(mismatches) +
-            ". Re-run install.sh or `systemctl restart <unit>` for each.",
+            "UNIT FILE drift (next restart won't fix): " +
+            ", ".join(config_drift) +
+            ". Re-run install.sh to restore .service files.",
+        )
+    if live_drift:
+        return CheckResult(
+            "OOM score adj", "warn",
+            "live-process drift (will fix on next restart): " +
+            ", ".join(live_drift) +
+            ". `systemctl restart <unit>` to apply now.",
         )
     if missing:
         return CheckResult(
