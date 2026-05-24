@@ -323,16 +323,35 @@ thinks the system is healthy.
   the "userspace is dead while jasper-* daemons happen to be alive"
   shape. `jasper-doctor`'s `check_start_limit_action` surfaces
   drift if a Debian/RPi-OS update removes the directive.
-- **T5.2**: new `SystemSupervisor` in `jasper-control` mirroring
-  the proven `ShairportSupervisor` Tier 3 shape. Probes sshd,
-  jasper-control HTTP, `/proc/loadavg`; escalates to clean
-  `systemctl reboot` after 3 consecutive failures. ~1 engineer-day.
-  Catches the 2026-05-23 shape (userspace-dead-but-no-daemon-failed).
+- **T5.2** ✅ **shipped**: new `SystemSupervisor` in
+  [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
+  mirroring the proven `ShairportSupervisor` Tier 3 shape. Probes
+  three layers every 30 s ± jitter:
+    1. **sshd banner exchange** on `127.0.0.1:22` (TCP accept + SSH-
+       protocol banner read within 2 s — the 2026-05-23 shape was
+       sshd accepting the TCP connect but not writing the banner)
+    2. **jasper-control's own `/healthz`** on `127.0.0.1:8780`
+       (yes, we probe ourselves; this catches "asyncio loop wedged
+       but systemd thinks we're alive")
+    3. **`/proc/loadavg` read** within 1 s (kernel I/O stall)
+  After 3 consecutive failures (any probe), rate-limited at 1
+  reboot per 24 hours, calls `systemctl --no-block reboot` for
+  a clean shutdown. Off via `JASPER_SYSTEM_SUPERVISOR=disabled`.
+  Surfaced on `/state` under `resilience.system_supervisor` and
+  via structured `event=system_supervisor.*` journal lines.
 
-**Until T5.2 ships, the memory-pressure resilience below
-(Stage 1) plus T5.1 reduce wedge frequency + add a software reboot
-tier — but the 2026-05-23 shape (no daemon failed, but userspace
-is starved) still requires manual power-cycle.**
+**Stage 1 + T5.1 + T5.2 now together cover the 2026-05-23 incident
+shape end-to-end**:
+  - Stage 1's MGLRU + OOMScoreAdjust + sysctls reduce *frequency*
+    of wedges
+  - T5.1's `StartLimitAction=reboot` catches the "one critical
+    daemon is broken" sub-shape
+  - T5.2's `SystemSupervisor` catches the "userspace dead but
+    no daemon technically failed" shape — the exact 2026-05-23
+    signature
+
+The Tier 5 kernel hardware watchdog stays as the floor for the
+case where T5.2 itself wedges.
 
 ### Memory-pressure resilience (Stage 1) {#memory-pressure-resilience-stage-1}
 

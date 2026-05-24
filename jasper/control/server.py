@@ -40,7 +40,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable
 
-from . import shairport_supervisor, wifi_guardian_state
+from . import shairport_supervisor, system_supervisor, wifi_guardian_state
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -757,6 +757,11 @@ async def _get_state(
         },
         "resilience": {
             "shairport": shairport_supervisor.snapshot(),
+            # T5.2 — userspace-liveness supervisor. Probes sshd / our
+            # own HTTP / /proc/loadavg every 30 s; clean-reboots after
+            # 3 consecutive failures (rate-limited 1/24h). Off via
+            # JASPER_SYSTEM_SUPERVISOR=disabled.
+            "system_supervisor": system_supervisor.snapshot(),
             # WiFi profile guardian: self-heal of the NM keyfile after
             # dirty shutdown. Synthesised from the on-disk stash + the
             # most recent `event=wifi_guardian.*` journal line — there's
@@ -1716,6 +1721,14 @@ def main(argv: list[str] | None = None) -> int:
     # docs/HANDOFF-resilience.md (Tier 3). Off via
     # JASPER_SHAIRPORT_SUPERVISOR=disabled in /etc/jasper/jasper.env.
     shairport_supervisor.start_supervisor()
+    # T5.2 — userspace-liveness supervisor closing the gap exposed
+    # by the 2026-05-23 incident (PID 1 alive enough to pat the
+    # kernel watchdog but sshd / userspace effectively dead). Probes
+    # sshd banner + our own HTTP /healthz + /proc/loadavg; clean
+    # `systemctl reboot` after 3 consecutive failures, rate-limited
+    # to 1 reboot per 24 hours. docs/HANDOFF-tier5-watchdog-liveness.md.
+    # Off via JASPER_SYSTEM_SUPERVISOR=disabled.
+    system_supervisor.start_supervisor()
     logger.info(
         "jasper-control listening on http://%s:%d "
         "(camilla=%s:%d, dial-log=%s:%d/udp, voice=%s)",
