@@ -69,18 +69,86 @@ second speaker, or replacing the existing one?"*
 
 ---
 
-## Phase 1 — Hardware sanity
+## Phase 1 — Hardware checklist
 
-If the user is new, briefly confirm they have:
+Walk the user through what they need. **Ask explicitly, one or two
+items at a time.** Don't dump the whole BOM at once — confirm what
+they have as you go.
 
-- Raspberry Pi 5 (1GB or 2GB; **2GB strongly recommended**)
-- microSD card (16 GB+)
-- Apple USB-C → 3.5mm dongle (the DAC; not optional in this build)
-- Seeed ReSpeaker XVF3800 USB mic (4-mic array)
-- TPA3255 amp + 32V supply + speakers + speaker wire
+> "Before we flash anything, let me check what hardware you have in
+> front of you. I'll go through each piece — just answer yes/no or
+> tell me what model you got. The full BOM with costs is in
+> [README.md § Hardware](README.md#hardware); I'll quote the essentials."
 
-Full BOM at `README.md` § Hardware. If they don't have everything, link
-them there and stop — onboarding can't proceed without hardware.
+The items to confirm, in roughly this order:
+
+1. **Raspberry Pi 5** — 1 GB or 2 GB model. 2 GB strongly recommended
+   (the AEC pipeline gets tight on 1 GB). Note: NOT a Pi 4 — Pi 5 has
+   a different USB controller, kernel, and we've only tested on Pi 5.
+2. **microSD card** — 16 GB or larger, any modern brand
+   (SanDisk Ultra, Samsung Evo, Kingston Canvas, etc.). 32 GB+ is
+   slightly more comfortable but 16 GB works.
+3. **Official Raspberry Pi 5 power supply** — the 27W USB-C one
+   (5.1 V / 5 A). Pi 5 needs more current than older Pi PSUs deliver
+   reliably; an off-brand 3 A supply can cause undervoltage warnings.
+4. **Apple USB-C → 3.5mm dongle** — ~$9 from Apple. This is the DAC.
+   **NOT optional**, and don't substitute — CamillaDSP's config is
+   tuned to this specific dongle's 48 kHz UAC2 profile. (Other USB
+   dongles work as audio out but you'd need to re-tune the DSP.)
+5. **Seeed ReSpeaker XVF3800, USB-UA variant** — ~$70 from
+   [Seeed Studio](https://www.seeedstudio.com/). The USB-UA variant
+   specifically (4 mics + onboard XMOS DSP). NOT the USB-A, USB-2 mic,
+   or Mini variants.
+6. **TPA3255 class-D amp board** — any reputable seller (Amazon /
+   AliExpress / Parts Express); ~$25-40. The exact PCB layout
+   doesn't matter; any TPA3255-based board with RCA input works.
+7. **32 V power supply for the amp** — at least 5 A. Mean Well
+   GST60A32 (~$25) is the canonical choice. **Separate** from the
+   Pi's PSU; the amp gets its own brick.
+8. **Speakers + speaker wire** — bookshelf or similar, 4-8 ohm, any
+   driver. The user may already have these.
+
+**If the user is missing items**: don't block. Tally what they need
+with the cost ballpark, and tell them to come back to `/onboard-pi`
+when hardware arrives. Nothing is persisted yet at this point, so
+re-invoking the skill later is clean.
+
+**If they have everything**: confirm with one sentence and proceed
+to Phase 1.5.
+
+---
+
+## Phase 1.5 — Assembly check
+
+Ask: *"Is everything wired up — amp powered from its 32 V supply,
+speakers connected to the amp's terminals, Pi's USB-A port to the
+Apple dongle, dongle's 3.5mm to the amp's RCA input (via a 3.5mm-to-RCA
+cable), and the ReSpeaker plugged into another Pi USB-A port?"*
+
+If **yes**: confirm, move to Phase 2.
+
+If **no or unsure**: walk them through the minimum-viable wiring,
+one connection at a time. The list:
+
+- Pi USB-C port ← official Pi 5 PSU
+- Pi USB-A port → Apple USB-C-to-3.5mm dongle (any of the Pi's USB-A ports)
+- Apple dongle's 3.5mm output → amp's RCA-L input (3.5mm-to-RCA cable)
+- Amp's barrel jack ← 32 V PSU
+- Amp's speaker terminals → speaker wire → speakers (mind +/− polarity)
+- Pi USB-A port (the other one) → ReSpeaker XVF3800
+- microSD card slot: empty for now — Phase 3 flashes the card
+
+The full wiring diagram is in [BRINGUP.md](BRINGUP.md) Phase 1, with
+diagrams. Reference it if the user wants more detail.
+
+**Photo guidance**: if the user has hardware in front of them and is
+unsure where something plugs in, they can paste a photo into Claude
+Code and you can identify components and point to which port goes
+where. This is genuinely useful and much faster than text-only
+descriptions for the wiring step.
+
+Once they confirm assembly is done (or you've walked through it),
+proceed to Phase 2.
 
 ---
 
@@ -203,6 +271,16 @@ the user through them, one at a time:
 
 Tell them they're done after Step 1 (voice provider). The rest can
 happen anytime later.
+
+**If `jasper-doctor` warned about XVF firmware**: the speaker WILL
+work without it — the chip ships on 2-channel firmware which gives
+beamforming + noise suppression but no echo cancellation. Wake-word
+detection is just less reliable when music is loud. To enable
+software AEC (recommended after the speaker is otherwise working),
+walk through the DFU firmware flash in [BRINGUP.md](BRINGUP.md)
+Phase 2A.5 — it's a one-time `dfu-util` flash that takes ~5 minutes
+including the jumper / button-hold dance to enter DFU mode. Mention
+this as a follow-up, not a blocker for "your speaker is working."
 
 ---
 
