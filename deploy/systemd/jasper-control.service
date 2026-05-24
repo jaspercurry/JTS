@@ -53,5 +53,12 @@ ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
 
+# OOM protection (Stage 1 of memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Control is the recovery surface — if
+# this dies, the operator can't reach /system/, can't flip AEC mode,
+# can't read the dashboard. Protected at -600, slightly less than
+# voice but well above any normal process.
+OOMScoreAdjust=-600
+
 [Install]
 WantedBy=multi-user.target

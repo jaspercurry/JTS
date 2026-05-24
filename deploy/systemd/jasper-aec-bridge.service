@@ -88,5 +88,13 @@ IOSchedulingPriority=4
 LimitRTPRIO=99
 LimitMEMLOCK=infinity
 
+# OOM protection (Stage 1 of memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Real-time mic processing: killing
+# this stops AEC and the wake loop runs raw, but the speaker can
+# still play music — so we protect heavily but not as hard as
+# camilla (-900). -700 keeps us well above any non-jasper process
+# the kernel might consider.
+OOMScoreAdjust=-700
+
 [Install]
 WantedBy=multi-user.target

@@ -15,5 +15,14 @@ MemoryHigh=80M
 MemoryMax=120M
 Nice=-3
 
+# OOM protection (Stage 1 of memory-resilience plan, see
+# docs/HANDOFF-resilience.md). Mux arbitration is a graceful-fail
+# subsystem — when it's gone, latest-source-wins stops working but
+# AirPlay/Spotify/BT each still play. Moderate protection only.
+# NOTE: MemoryHigh/MemoryMax above are silent no-ops until the
+# memory cgroup is enabled (Stage 2 of plan). Kept here as
+# documentation of intent.
+OOMScoreAdjust=-300
+
 [Install]
 WantedBy=multi-user.target

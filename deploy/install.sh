@@ -1226,6 +1226,93 @@ EOF
     echo "  migrate_wifi_guardian: seeded ${stash} from active profile (SSID=${ssid}, key-mgmt=${key_mgmt})"
 }
 
+# Stage 1 memory-pressure resilience. See docs/HANDOFF-resilience.md
+# "Memory-pressure resilience". Installs the kernel-tunable side of
+# the layered defense (vm.* sysctls, MGLRU thrashing prevention, zram
+# sizing) AND runs the apply commands. The per-service OOMScoreAdjust
+# directives are already in the .service files installed by
+# install_systemd_units; they take effect on the next service start
+# (which install_systemd_units triggers).
+#
+# Each step is independent and logged — a failure in one doesn't
+# block the others. Stage 1 protections work today on the stock RPi
+# kernel without enabling the memory cgroup controller (which is
+# disabled by the Pi 5 DTB; see HANDOFF-resilience.md "Stage 2" for
+# that work). MemoryHigh=/MemoryMax= directives in jasper-mux.service
+# and jasper-input.service stay as documented intent — they're
+# silent no-ops until Stage 2 enables the cgroup.
+#
+# Triggered by the 2026-05-23 incident: a PIO compile pushed the
+# 1 GB Pi 5 into zram-thrash for 2+ minutes, kernel watchdog never
+# fired because PID 1 stayed barely-alive.
+#
+# Idempotent — install -m 644 overwrites with same content.
+migrate_memory_resilience() {
+    local errors=0
+
+    # Step 1: vm.* sysctls (eviction policy, dirty-page strategy,
+    # watermarks, vfs cache pressure). 99- prefix means our values
+    # win over distro defaults loaded earlier.
+    if install -m 0644 "${REPO_DIR}/deploy/sysctl/99-jts-vm.conf" /etc/sysctl.d/; then
+        if sysctl --system >/dev/null 2>&1; then
+            echo "  memory_resilience: vm.* sysctls applied"
+        else
+            echo "  memory_resilience: WARN — sysctl --system failed; tunings live after reboot"
+            errors=$((errors+1))
+        fi
+    else
+        echo "  memory_resilience: WARN — failed to install /etc/sysctl.d/99-jts-vm.conf"
+        errors=$((errors+1))
+    fi
+
+    # Step 2: MGLRU min_ttl_ms (thrashing prevention). On kernels
+    # without MGLRU (< 6.1), the `w-` tmpfiles directive silently
+    # skips the missing path — so this is safe on older kernels
+    # even though it's a no-op there.
+    if install -m 0644 "${REPO_DIR}/deploy/tmpfiles/jts-mglru.conf" /etc/tmpfiles.d/; then
+        # --prefix scopes the apply to just our file (not the whole
+        # tmpfiles tree, which would touch unrelated paths).
+        if systemd-tmpfiles --create --prefix=/sys/kernel/mm/lru_gen \
+                >/dev/null 2>&1; then
+            echo "  memory_resilience: MGLRU min_ttl_ms applied"
+        else
+            echo "  memory_resilience: MGLRU tmpfiles installed (no-op on kernels < 6.1)"
+        fi
+    else
+        echo "  memory_resilience: WARN — failed to install MGLRU tmpfiles config"
+        errors=$((errors+1))
+    fi
+
+    # Step 3: zram sizing + compression algorithm. rpi-swap is the
+    # Trixie standard zram manager; on Bookworm or earlier RPi OS
+    # versions the user may be on dphys-swapfile or zramswap — skip
+    # gracefully there. The OOMScoreAdjust + sysctls + MGLRU pieces
+    # still apply and provide real protection.
+    if [[ -d /etc/rpi ]]; then
+        install -d -m 0755 /etc/rpi/swap.conf.d
+        if install -m 0644 "${REPO_DIR}/deploy/rpi-swap/50-jts.conf" \
+                /etc/rpi/swap.conf.d/; then
+            if systemctl restart rpi-swap >/dev/null 2>&1; then
+                echo "  memory_resilience: zram resized via rpi-swap (50% RAM, lz4)"
+            else
+                echo "  memory_resilience: WARN — rpi-swap restart failed; new sizing live after reboot"
+                errors=$((errors+1))
+            fi
+        else
+            echo "  memory_resilience: WARN — failed to install rpi-swap drop-in"
+            errors=$((errors+1))
+        fi
+    else
+        echo "  memory_resilience: /etc/rpi not present (rpi-swap not installed) — skipped zram sizing"
+    fi
+
+    if (( errors > 0 )); then
+        echo "  memory_resilience: ${errors} step(s) failed; system in degraded state but functional"
+        echo "  memory_resilience: re-run install.sh after fixing, or check jasper-doctor"
+    fi
+    return 0  # never fails install — best-effort migration
+}
+
 install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
@@ -1894,6 +1981,7 @@ main() {
     tune_wifi_for_airplay
     install_jasper
     install_systemd_units
+    migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     install_journald_persistent_storage
     install_avahi_jasper_control
     install_peering_template
