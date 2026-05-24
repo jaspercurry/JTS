@@ -1166,6 +1166,14 @@ async def _server_vad_response_trigger(turn, connection) -> None:
                 "event=server_vad.response_create_failed error=%s: %s",
                 type(e).__name__, e,
             )
+    # Do NOT return. This task lives in WakeLoop._bg_tasks; the
+    # session-frame handler treats any completed _bg_tasks task as
+    # "turn over" and tears down the turn. If we returned here, the
+    # model's response would arrive after turn release and be dropped
+    # — exactly the regression observed on 2026-05-24 (response.done
+    # arrived AFTER turn release: 7 audio deltas dropped). Idle here
+    # until _end_turn's cleanup loop cancels us.
+    await asyncio.Event().wait()
 
 
 class WakeLoop:
@@ -2644,11 +2652,24 @@ class WakeLoop:
 
         # ---- Server-side VAD branch ----
         # When server_vad is active, the server owns end-of-utterance
-        # detection. Skip local Silero; just forward audio and watch
-        # for the server's committed event.
+        # detection. Skip local Silero for turn-control decisions; just
+        # forward audio and watch for the server's committed event.
         if self._server_vad_this_turn:
             now = asyncio.get_event_loop().time()
             elapsed = now - self._turn_started_at_loop
+
+            # Shadow telemetry: still run Silero on the primary stream
+            # so wake_events.max_silero_aec is populated for cross-cell
+            # comparison. Does NOT affect turn behavior — purely an
+            # observer. Without this, server-VAD turns leave that column
+            # NULL and we can't compare local-VAD-permissiveness across
+            # stream configs (AEC vs raw+AGC).
+            try:
+                shadow_prob = self._vad.predict(frame)
+                if shadow_prob > self._max_silero_score_in_turn:
+                    self._max_silero_score_in_turn = shadow_prob
+            except Exception:  # noqa: BLE001
+                pass
 
             ss_fn = getattr(self._turn, "server_speech_started", None)
             server_heard_speech = bool(ss_fn()) if callable(ss_fn) else False

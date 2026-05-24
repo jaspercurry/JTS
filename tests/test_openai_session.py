@@ -1789,6 +1789,11 @@ async def test_set_turn_detection_sends_session_update():
         assert "input_audio_buffer.clear" in types
         assert "session.update" in types
         su = [e for e in new if e["type"] == "session.update"][0]
+        # OpenAI's API requires `session.type` on every session.update,
+        # not just the first. Omitting it returns
+        # missing_required_parameter and the switch silently no-ops —
+        # observed in production on 2026-05-24 against gpt-realtime-2.
+        assert su["session"]["type"] == "realtime"
         td = su["session"]["audio"]["input"]["turn_detection"]
         assert td["type"] == "server_vad"
         assert td["create_response"] is False
@@ -1813,6 +1818,7 @@ async def test_set_turn_detection_null_restores_manual():
         types = [e["type"] for e in new]
         assert "input_audio_buffer.clear" not in types
         su = [e for e in new if e["type"] == "session.update"][0]
+        assert su["session"]["type"] == "realtime"
         assert su["session"]["audio"]["input"]["turn_detection"] is None
         assert conn._server_vad_active is False
     finally:
