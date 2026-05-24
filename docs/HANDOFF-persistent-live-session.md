@@ -19,7 +19,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis".
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
 - **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, source-aware transport — all work when Gemini actually responds.
-- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music.
+- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music. (Historical snapshot from this handoff. Today's default is `0` and the env-var semantics changed: a `TtsVolumeTracker` now auto-matches TTS to measured music level; the env var only acts as a ceiling during silence-fallback. See [audio-paths.md](audio-paths.md) "Why TTS still tracks user volume changes".)
 - **Voice pinning**: Aoede prebuilt voice via `speech_config` so style is consistent across sessions.
 - **Time injection**: current local time is added to system instruction at session start.
 - **Logging**: per-session timing (`session connect done in Xms`, `first audio chunk from Gemini in Yms`, tool-call elapsed, payload preview truncated to 240 chars), bytes-sent / chunks-received counters, structured `SILENT FAILURE` warning when sent>0 and received==0.

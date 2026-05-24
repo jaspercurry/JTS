@@ -97,12 +97,16 @@ over its websocket on port 1234.
 > ### Important: two paths to the dongle
 >
 > Music goes **through** CamillaDSP. TTS goes **around** it; both sum at
-> the dongle's dmix. `main_volume` only attenuates music — TTS matches
-> user volume via a separate tracker (`TtsVolumeTracker`) that measures
-> the actual music level downstream and scales TTS to match. To test the
-> chain at a controlled volume, play to `plughw:Loopback,0,0` (the music
-> input), not `jasper_out` (which bypasses the DSP). Why the split and
-> what the tracker does: [`docs/audio-paths.md`](docs/audio-paths.md).
+> the dongle's dmix. `main_volume` only attenuates music — TTS keeps up
+> via a separate tracker (`TtsVolumeTracker`) that measures the actual
+> music level downstream (`playback_rms`) and scales TTS to sit a
+> configurable headroom above it. Works the same whether the user is
+> turning the iPhone slider, the Spotify slider, the dial, the
+> `listening_level` wizard, or an external amp downstream of the dongle.
+> To test the chain at a controlled volume, play to
+> `plughw:Loopback,0,0` (the music input), not `jasper_out` (which
+> bypasses the DSP). Why the split and what the tracker does:
+> [`docs/audio-paths.md`](docs/audio-paths.md).
 
 `jasper-mux` arbitrates between the three renderers — when a new
 source transitions to playing while another is already active, it

@@ -444,19 +444,21 @@ class Config:
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz
             # before write (factor 2, exact integer ratio).
             tts_output_rate=_env_int("JASPER_TTS_OUTPUT_RATE", 48000),
-            # OFFSET (dB) applied on top of CamillaDSP's main_volume —
-            # a SECONDARY ceiling alongside the TtsVolumeTracker's
-            # tracker-and-headroom formula (below) and the absolute
-            # hearing-safety cap MAX_TTS_GAIN_DB in audio_io.py. With
-            # music ducking ~25 dB during TTS, voice and music don't
-            # overlap perceptually, so this offset's main historical
-            # role (keep TTS quieter than concurrent music) is mostly
-            # moot. Default 0 lets the tracker drive the level; the
-            # safety cap at -6 still bounds the maximum. Stays useful
-            # as a master-volume-tracking ceiling when no music has
-            # played to update the loudness anchor (sudden master
-            # change with stale anchor → ceiling kicks in proportional
-            # to master). MUST be <= 0 — validator enforces.
+            # OFFSET (dB) applied on top of CamillaDSP's main_volume to
+            # form the SILENCE-FALLBACK ceiling. The TtsVolumeTracker's
+            # tracker-and-headroom formula (below) is the primary level
+            # control while music is playing; the absolute hearing-safety
+            # cap MAX_TTS_GAIN_DB in audio_io.py is the always-on safety.
+            # This offset only matters when music is NOT playing AND the
+            # loudness anchor is stale (e.g. loud music yesterday, quiet
+            # bedroom main_volume today). In that case, main_volume is
+            # the best proxy for "what level should TTS feel like", and
+            # this offset clamps the anchor's projection to it. During
+            # active music playback the ceiling does NOT apply — the
+            # tracker matches measured music level, capped only by
+            # MAX_TTS_GAIN_DB. Default 0 = "match the user's master
+            # exactly during stale-anchor silence." MUST be <= 0 —
+            # validator enforces.
             tts_gain_db=_env_float("JASPER_TTS_GAIN_DB", 0.0),
             # When music is playing, TtsVolumeTracker sizes TTS to a
             # headroom above the windowed RMS of CamillaDSP's playback

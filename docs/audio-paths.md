@@ -80,7 +80,8 @@ Two notes:
 Since TTS bypasses CamillaDSP, naively it would always play at fixed
 amplitude regardless of how the user set volume. To preserve the
 property "however the user adjusted volume — iPhone slider, AirPlay,
-Spotify, the dial — TTS matches," `TtsVolumeTracker` in
+Spotify, the dial, the external amp — TTS matches the music level the
+user is actually hearing," `TtsVolumeTracker` in
 [`jasper/voice_daemon.py`](../jasper/voice_daemon.py) measures
 CamillaDSP's `playback_rms` (the actual signal hitting the DAC, after
 every upstream attenuator) and scales TTS to sit a configurable
@@ -90,6 +91,42 @@ changes it.
 
 This compensation is load-bearing — it's what makes the bypass invisible
 to the user. Don't remove it without first removing the bypass.
+
+### Ceiling policy is branch-specific (read before changing the formula)
+
+The tracker's first version (May 2026) treated `main_volume + offset_db`
+as an **absolute** ceiling on TTS gain in every branch — the mental
+model was "main_volume controls max possible TTS loudness, the
+tracker can only push DOWN from there." That assumption broke once
+source-side sliders (iPhone, Spotify, BT) and external amplifiers
+became the dominant carriers of user loudness intent. At
+`listening_level` below ~90% on loud-source music (e.g. AirPlay at
+70% → `main_volume = -15 dB`), the ceiling actively defeated the
+tracker, leaving TTS several dB *quieter* than music instead of the
++6 dB above music the headroom formula intended. PR #294
+(2026-05-24) lifted the ceiling off the music-playing branch only:
+
+- **Music actively playing** (`windowed_rms > silence_threshold`):
+  no `main_volume + offset_db` ceiling. The measured signal IS the
+  answer. Hearing-safety lives in `TtsPlayout.MAX_TTS_GAIN_DB`
+  (-6 dB).
+- **Silence with a valid anchor**: ceiling APPLIES. Anchor can be
+  stale (loud music yesterday, quiet bedroom today at low
+  `main_volume`), and `main_volume + offset_db` is the right
+  backstop against blasting in that case.
+- **No anchor ever recorded** (sentinel < -120, effectively
+  first-boot only): target IS the ceiling — `main_volume` is the
+  only loudness signal we have.
+
+`JASPER_TTS_GAIN_DB` (the `offset_db`) therefore only affects the
+silence branches now. Default `0` = "TTS in silence sits at
+`main_volume` exactly." Negative values push TTS below `main_volume`
+during silence; positive values are rejected by config validation.
+
+This branch-specific policy is the structural invariant the
+regression tests in `tests/test_tts_volume_tracker.py` lock in
+(`test_music_branch_ignores_master_volume_entirely` in particular).
+Re-introducing an unmeasured cap on the music branch will fail it.
 
 ## Operational notes
 
@@ -131,3 +168,7 @@ the music chain reference, BEFORE CamillaDSP processing. So:
 - [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md) —
   voice tool transport routing.
 - [HANDOFF-aec.md](HANDOFF-aec.md) — why the AEC bridge taps pre-DSP.
+
+---
+
+Last verified: 2026-05-24 (re-verified after PR #294 lifted the master+offset ceiling off the music-playing branch — section "Ceiling policy is branch-specific" added)

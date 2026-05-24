@@ -405,15 +405,33 @@ class TtsVolumeTracker:
     AFTER every attenuation stage, immediately before the DAC. Maintain
     a windowed peak (max RMS over MUSIC_WINDOW_SEC) so quick quiet
     passages don't let TTS climb between phrases. Set TTS gain so that
-    Gemini's source-peak ends up `music_headroom_db` above the windowed
+    the TTS source-peak ends up `music_headroom_db` above the windowed
     music RMS:
 
-        tts_gain_db = (windowed_rms + headroom) - GEMINI_SOURCE_PEAK
+        tts_gain_db = (windowed_rms + headroom) - TTS_SOURCE_PEAK
 
-    Always capped at the user's master_volume + offset (the legacy
-    formula remains as a hard ceiling — playback_rms can only make TTS
-    quieter, never louder). When playback_rms < silence_threshold the
-    tracker falls back to the legacy formula directly.
+    Ceiling policy is branch-specific. The pre-tracker formula treated
+    `master_volume + offset` as an absolute ceiling in all branches —
+    the intent was "master_volume controls max possible TTS loudness."
+    That assumption was reasonable when main_volume was the single
+    canonical loudness knob; it breaks down once source-side sliders
+    (iPhone, Spotify, BT) and external amplifiers carry user intent
+    instead. At non-max listening_level on a loud-source music chain
+    (e.g. AirPlay with main_volume = -15 dB) the ceiling actively
+    defeated the tracker, leaving TTS several dB QUIETER than music
+    instead of the +6 dB above music the headroom formula targets.
+
+    So:
+      - Music actively playing: NO master ceiling. The whole point of
+        measuring playback_rms is to compute the right TTS level from
+        the actual signal; layering an unmeasured cap on top defeats
+        that. Hearing safety is enforced by TtsPlayout's MAX_TTS_GAIN_DB.
+      - Silence with a valid anchor: ceiling APPLIES. Anchor can be
+        stale (we played loud music yesterday, now it's a quiet bedroom
+        at low main_volume), and master+offset is the right backstop
+        against blasting in that case.
+      - No anchor ever recorded (first boot, sentinel): ceiling IS
+        the target — main_volume is the only loudness signal we have.
 
     Hearing-safety belt is in TtsPlayout.set_gain_db (MIN/MAX clamp).
     This class is defense-in-depth on top of that.
@@ -491,36 +509,40 @@ class TtsVolumeTracker:
         """Pure: given current main_volume and windowed RMS peak,
         return target gain.
 
-        Three branches:
+        Three branches with branch-specific ceiling policy (see class
+        docstring for the why):
           1. Music currently playing (windowed_rms above threshold) →
-             match observed loudness directly.
+             match observed loudness directly. No master+offset
+             ceiling; hearing safety lives in TtsPlayout's MAX cap.
           2. Silence, but we have a loudness anchor (the last-known
              music level, possibly from a previous session) → target
-             that level. This is what fixes the "TTS too loud during
-             silence when iPhone is at 20%" problem: anchor reflects
-             actual perceived output regardless of upstream attenuators.
-          3. Otherwise → main_volume + offset (legacy fallback). With
-             initial_anchor_dbfs defaulting to DEFAULT_ANCHOR_DBFS
+             that level, CAPPED at master+offset. Anchor can be stale
+             (yesterday's loud party at today's quiet bedroom volume),
+             so the cap defends against blasting.
+          3. No anchor ever recorded (sentinel < -120) → target IS the
+             ceiling. main_volume is the only loudness signal we have.
+             With initial_anchor_dbfs defaulting to DEFAULT_ANCHOR_DBFS
              (-30 dBFS = 40%), branch 3 is rarely hit in practice; it's
-             a backstop.
-
-        master_volume + offset is the ABSOLUTE CEILING in all branches.
-        Anchor can only push gain DOWN from that ceiling, never up."""
+             a backstop for genuine first-boot."""
         ceiling = vol_db + self._offset_db
         if windowed_rms > self._silence_threshold_dbfs:
             target = (
                 windowed_rms + self._headroom_db - self.TTS_SOURCE_PEAK_DBFS
             )
+            # No ceiling clamp on the music-playing branch — the
+            # measured signal IS the answer. MAX_TTS_GAIN_DB in
+            # TtsPlayout handles hearing safety.
         elif self._anchor_dbfs > -120.0:
-            target = (
+            target = min(
                 self._anchor_dbfs + self._headroom_db
-                - self.TTS_SOURCE_PEAK_DBFS
+                - self.TTS_SOURCE_PEAK_DBFS,
+                ceiling,
             )
         else:
             target = ceiling
         # Quantize to 1 dB to avoid log spam and rapid micro-adjustments
         # below human-perceivable change (~3 dB JND for loudness).
-        return round(min(target, ceiling))
+        return round(target)
 
     def _maybe_update_anchor(self, windowed_rms: float) -> None:
         """If music is currently playing (above silence threshold),
