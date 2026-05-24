@@ -530,3 +530,84 @@ async def test_silence_with_loud_stale_anchor_at_low_master_stays_quiet():
     await tracker.apply_now()
     # Ceiling binds at -40 (well within MIN/MAX clamp).
     assert tts.gain_db == -40.0
+
+
+# --- structured event=tts_gain.compute telemetry --------------------------
+
+@pytest.mark.asyncio
+async def test_gain_compute_event_fires_on_user_perceptible_change(caplog):
+    """When set_gain_db actually moves the gain, one structured event
+    line fires carrying enough fields to reconstruct the choice. This
+    is the observability fix that would have saved an hour on the
+    2026-05-24 production bug investigation."""
+    cam = _FakeCamilla(volume_db=-15.0, playback_rms=(-26.0, -26.0))
+    tts = _tts()
+    tracker = _tracker(
+        cam, tts, offset_db=0.0, headroom_db=16.0,
+        initial_anchor_dbfs=-120.0,
+    )
+    caplog.set_level("INFO", logger="jasper.voice_daemon")
+    await tracker.apply_now()
+    events = [r for r in caplog.records if "event=tts_gain.compute" in r.message]
+    assert len(events) == 1, f"expected 1 event, got {len(events)}"
+    msg = events[0].message
+    # Every field a debugger needs:
+    for fragment in (
+        "branch=music",          # which decision path
+        "windowed_rms=-26.0",    # input — what playback_rms reported
+        "anchor_dbfs=-26.0",     # anchor (just updated from windowed)
+        "main_volume_db=-15.0",  # CamillaDSP master at the moment
+        "offset_db=0.0",         # the deprecated knob's value
+        "ceiling_db=-15.0",      # main_volume + offset (silence-only)
+        "target_db=-7.0",        # what formula computed
+        "final_db=-7.0",         # what TtsPlayout actually applied
+        "max_cap_db=-6.0",       # hearing-safety cap (constant)
+    ):
+        assert fragment in msg, f"missing {fragment!r} in: {msg}"
+
+
+@pytest.mark.asyncio
+async def test_gain_compute_event_does_not_fire_on_unchanged_gain(caplog):
+    """Logging volume must stay proportional to perceptible change.
+    Two consecutive applies with the same inputs produce one event
+    (the first) and silence on the second."""
+    cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-25.0, -25.0))
+    tts = _tts()
+    tracker = _tracker(
+        cam, tts, offset_db=0.0, headroom_db=16.0,
+        initial_anchor_dbfs=-120.0,
+    )
+    caplog.set_level("INFO", logger="jasper.voice_daemon")
+    await tracker.apply_now()
+    await tracker.apply_now()  # same inputs, gain unchanged
+    events = [r for r in caplog.records if "event=tts_gain.compute" in r.message]
+    assert len(events) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("vol_db,rms,anchor,expected_branch", [
+    (-5.0, (-25.0, -25.0), -120.0, "music"),     # windowed > threshold
+    (-5.0, (-80.0, -80.0), -30.0, "anchor"),     # silence + valid anchor
+    (-5.0, (-80.0, -80.0), -120.0, "no_anchor"), # silence + sentinel anchor
+])
+async def test_gain_compute_event_branch_label_matches_formula(
+    caplog, vol_db, rms, anchor, expected_branch,
+):
+    """The branch label in the event log must match the branch the
+    formula actually took. If these drift apart, future debugging
+    will be reading lies. Lock in lockstep behavior across all three
+    branches."""
+    cam = _FakeCamilla(volume_db=vol_db, playback_rms=rms)
+    tts = _tts()
+    tracker = _tracker(
+        cam, tts, offset_db=0.0, headroom_db=16.0,
+        initial_anchor_dbfs=anchor,
+    )
+    caplog.set_level("INFO", logger="jasper.voice_daemon")
+    await tracker.apply_now()
+    events = [r for r in caplog.records if "event=tts_gain.compute" in r.message]
+    assert len(events) == 1, f"case {expected_branch}: expected 1 event"
+    assert f"branch={expected_branch}" in events[0].message, (
+        f"expected branch={expected_branch} for vol={vol_db} "
+        f"rms={rms} anchor={anchor}; got: {events[0].message}"
+    )

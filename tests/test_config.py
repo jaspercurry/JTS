@@ -162,3 +162,47 @@ def test_tts_gain_db_zero_is_allowed(monkeypatch):
     monkeypatch.setenv("JASPER_TTS_GAIN_DB", "0")
     cfg = Config.from_env()
     assert cfg.tts_gain_db == 0.0
+
+
+def test_tts_gain_db_default_is_silent_no_warning(monkeypatch, caplog):
+    """Default 0.0 doesn't fire the deprecation warning — most users
+    are on the default and shouldn't see noise about a knob they're
+    not using."""
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.delenv("JASPER_TTS_GAIN_DB", raising=False)
+    caplog.set_level("WARNING", logger="jasper.config")
+    cfg = Config.from_env()
+    assert cfg.tts_gain_db == 0.0
+    assert not any(
+        "JASPER_TTS_GAIN_DB" in r.message and "DEPRECATED" in r.message
+        for r in caplog.records
+    )
+
+
+def test_tts_gain_db_negative_fires_deprecation_warning(monkeypatch, caplog):
+    """Setting the deprecated env var to a non-default value fires
+    a single startup warning naming the env var, the value, and a
+    pointer to the doc — enough for an operator reading logs to find
+    out the knob is vestigial without a separate ping."""
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "-8")
+    caplog.set_level("WARNING", logger="jasper.config")
+    cfg = Config.from_env()
+    assert cfg.tts_gain_db == -8.0  # still loaded, still works
+    warnings = [
+        r for r in caplog.records
+        if "JASPER_TTS_GAIN_DB" in r.message and "DEPRECATED" in r.message
+    ]
+    assert len(warnings) == 1, f"expected 1 deprecation warning, got {len(warnings)}"
+    assert "-8" in warnings[0].message  # quotes the value back
+    assert "audio-paths.md" in warnings[0].message  # points to the doc
+
+
+def test_tts_gain_db_positive_still_rejected(monkeypatch):
+    """Hearing-safety check stays — positive values still raise even
+    though the env var is otherwise deprecated. Deprecation softness
+    doesn't extend to safety-relevant misconfigurations."""
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_TTS_GAIN_DB", "3.0")
+    with pytest.raises(RuntimeError, match="must be <= 0"):
+        Config.from_env()
