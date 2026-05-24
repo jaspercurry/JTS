@@ -292,6 +292,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-mic-quality-v2.md     Active workstream: sequencing for DTLN-aec spike + wake-word path + wizard
+  HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
@@ -437,6 +438,17 @@ reference. Currently:
   HANDOFF-aec.md (engine internals) + HANDOFF-wake-telemetry.md
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
+- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
+  Active workstream (May 2026). The VAD / mic-stream A/B test matrix:
+  why local Silero on the AEC stream (Cell 0) is the production default,
+  why server VAD configurations all failed in different ways (wake-word
+  interference, threshold cliff, sentence-cutting), and the open
+  hypothesis that a raw mic stream with real WebRTC AGC1 may be the
+  ultimate answer once ducking is doing its job. **Read this first when
+  touching `_SimpleAGC` in `aec_bridge.py`, the server-VAD code path in
+  `voice_daemon.py`, or `set_turn_detection` in `openai_session.py`.**
+  Also documents the new debug-WAV recording instrumentation
+  (`JASPER_DEBUG_RECORD_OPENAI_AUDIO`).
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — Open
   architectural decision for upgrading barge-in from VAD-only
   filtering to AEC-cancellation-of-TTS. Research-only doc;

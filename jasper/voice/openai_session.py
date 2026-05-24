@@ -232,6 +232,13 @@ class OpenAIRealtimeTurn(LiveTurn):
         # Reset to None at turn start so the first frame doesn't carry
         # tail samples from the previous turn.
         self._resample_state: tuple | None = None
+        # Debug: tee the exact 24 kHz bytes being sent to OpenAI into
+        # a per-turn WAV file. Gated on JASPER_DEBUG_RECORD_OPENAI_AUDIO=1
+        # so it stays off in production. Lets us answer "did the user's
+        # full sentence reach OpenAI" without guessing — the WAV here
+        # is exactly what OpenAI's STT model received.
+        self._debug_wav = None
+        self._debug_wav_path: str | None = None
         # The most recent assistant audio item id seen, kept for
         # potential `conversation.item.truncate(item_id=..., audio_end_ms=...)`
         # calls when implementing real barge-in. Today the daemon uses
@@ -366,6 +373,18 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._released = True
         elapsed_ms = (_time.monotonic() - self._started_at_monotonic) * 1000
         await self._audio_q.put(None)
+        # Close debug WAV if open. Always log the path so the user
+        # can find which file goes with which turn.
+        if self._debug_wav is not None:
+            try:
+                self._debug_wav.close()
+                logger.info(
+                    "debug: closed OpenAI send-audio WAV: %s",
+                    self._debug_wav_path,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("debug record close failed: %s", e)
+            self._debug_wav = None
         # If the daemon released the turn before sending end_input
         # (no-speech abort, hard cap, etc.), best-effort cancel the
         # in-flight response so the server doesn't keep generating.
@@ -881,6 +900,30 @@ class OpenAIRealtimeConnection(LiveConnection):
         )
         if not pcm_24khz:
             return
+        # Debug tee — see OpenAIRealtimeTurn._debug_wav docstring.
+        if os.environ.get("JASPER_DEBUG_RECORD_OPENAI_AUDIO", "").strip() in ("1", "true", "yes", "on"):
+            try:
+                if turn._debug_wav is None:
+                    import wave as _wave
+                    import time as _time_mod
+                    debug_dir = os.environ.get(
+                        "JASPER_DEBUG_OPENAI_AUDIO_DIR",
+                        "/tmp/jasper-openai-debug",
+                    )
+                    os.makedirs(debug_dir, exist_ok=True)
+                    ts = _time_mod.strftime("%Y%m%dT%H%M%SZ", _time_mod.gmtime())
+                    path = f"{debug_dir}/{ts}-{id(turn):x}.wav"
+                    w = _wave.open(path, "wb")
+                    w.setnchannels(1)
+                    w.setsampwidth(2)
+                    w.setframerate(OPENAI_AUDIO_RATE_HZ)
+                    turn._debug_wav = w
+                    turn._debug_wav_path = path
+                    logger.info("debug: recording OpenAI send audio → %s", path)
+                turn._debug_wav.writeframes(pcm_24khz)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("debug record failed (will skip rest of turn): %s", e)
+                turn._debug_wav = None
         b64 = base64.b64encode(pcm_24khz).decode("ascii")
         await self._send_event({
             "type": "input_audio_buffer.append",
@@ -912,6 +955,12 @@ class OpenAIRealtimeConnection(LiveConnection):
         await self._send_event({
             "type": "session.update",
             "session": {
+                # session.type is required on every session.update, not
+                # just the first — omitting it returns
+                # missing_required_parameter and the switch silently
+                # no-ops, leaving the daemon waiting for a
+                # speech_started event the server will never send.
+                "type": "realtime",
                 "audio": {
                     "input": {
                         "turn_detection": mode,
