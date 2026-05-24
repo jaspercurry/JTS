@@ -406,10 +406,21 @@ reference. Currently:
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — The
   five-tier resilience ladder, the 2026-05-11 incident, the
   decision to swap the bridge→voice transport from snd-aloop to
-  UDP, and the Tier 3 protocol-level supervisor for shairport-sync.
+  UDP, the Tier 3 protocol-level supervisor for shairport-sync,
+  the 2026-05-23 incident + Tier 5 liveness blind spot, and the
+  Stage 1 memory-pressure resilience layer (OOMScoreAdjust ladder
+  + zram tuning + sysctl tuning + MGLRU thrash prevention).
   Read before touching `jasper/watchdog.py`,
   `jasper/control/shairport_supervisor.py`, or the `Type=notify` /
   `WatchdogSec=` blocks in any service unit.
+- [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md) —
+  Design proposal (no code yet) for closing the Tier 5 liveness
+  gap exposed by the 2026-05-23 incident. Industry survey
+  (HAOS, balenaOS, OpenWrt, Meskes `watchdog`), option matrix
+  (probing system supervisor / `StartLimitAction=reboot` /
+  shorter `RuntimeWatchdogSec` / external hardware / PSI gate),
+  recommended sequencing. Read before any work that touches
+  Tier 5 or proposes new system-level recovery.
 - [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) —
   Smart-home integration. The speaker delegates "turn on the
   bedroom lights" / "good night" / household sentence triggers
