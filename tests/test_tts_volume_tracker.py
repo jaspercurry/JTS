@@ -1,10 +1,17 @@
 """Tests for TtsVolumeTracker.
 
 Critical paths:
-- silence (no music): falls back to legacy `main_volume + offset` formula
-- music playing: targets `windowed_rms + headroom - GEMINI_PEAK`
-- master_volume + offset is an absolute ceiling — playback_rms can
-  only quiet TTS, never make it louder than master suggests
+- music playing: targets `windowed_rms + headroom - TTS_PEAK` with
+  NO master+offset clamp. The whole point of measuring playback_rms
+  is to match the actual signal — layering an unmeasured ceiling on
+  top defeats that. Hearing safety is enforced by TtsPlayout's
+  MAX_TTS_GAIN_DB.
+- silence with stale anchor: anchor + headroom, CAPPED at
+  master+offset. Defends against "loud-music-yesterday, quiet-bedroom-
+  today" without depending on anchor freshness signals.
+- silence with NO anchor recorded: falls back to master+offset
+  (first-boot only — `DEFAULT_ANCHOR_DBFS` keeps real life out of
+  this branch).
 - mute → silence floor
 - read failure → silence floor (better quiet than loud)
 - pause skips polling (so duck-induced changes don't pull TTS down
@@ -129,19 +136,21 @@ async def test_music_targets_rms_plus_headroom():
 
 
 @pytest.mark.asyncio
-async def test_loud_music_clamped_to_master_ceiling():
+async def test_loud_music_clamped_only_by_hearing_safety_cap():
     """When music is loud enough that the formula would push TTS
-    above master+offset, the ceiling binds.
-      master=-5, music_rms=-10 (loud), headroom=12, gemini_peak=-3
-      target = -10 + 12 - (-3) = 5  → above MAX_TTS_GAIN_DB!
-      ceiling = -5 + -8 = -13
-      result = min(5, -13) = -13.
+    above MAX_TTS_GAIN_DB, only the hearing-safety cap binds —
+    NOT the master+offset ceiling (that one's a silence-fallback
+    backstop, not applicable while we're actively measuring music).
+      master=-5, music_rms=-10 (loud), headroom=12, tts_peak=-3
+      target = -10 + 12 - (-3) = 5  → way above MAX
+      MAX_TTS_GAIN_DB = -6 in TtsPlayout
+      result = -6   (NOT -13, the old ceiling-binds value)
     """
     cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-10.0, -10.0))
     tts = _tts()
     tracker = _tracker(cam, tts, offset_db=-8.0)
     await tracker.apply_now()
-    assert tts.gain_db == -13.0
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
 
 
 @pytest.mark.asyncio
@@ -160,18 +169,29 @@ async def test_quiet_music_targets_match_actual_level():
 
 
 @pytest.mark.asyncio
-async def test_master_ceiling_holds_when_master_is_quiet():
-    """User has lowered master to -25 even though music plays loud.
-      master=-25, music_rms=-15, headroom=12, gemini_peak=-3
-      target = -15 + 12 - (-3) = 0  → would clip
-      ceiling = -25 + -8 = -33
-      result = -33.
-    Master_volume is ALWAYS the upper bound."""
+async def test_loud_music_at_low_master_matches_music_not_master():
+    """REGRESSION (the user-reported bug): loud music plays at
+    low/medium master_volume — e.g. external-amp setup where the
+    user has cranked main_volume to compensate for a quiet amp, OR
+    AirPlay carrying loud music at listening_level 50%.
+
+    Old behavior: master+offset ceiling clamped TTS to track master,
+    leaving TTS several dB QUIETER than the music the tracker
+    measured. Subjectively "voice significantly quieter than music."
+
+    New behavior: tracker matches measured music; only the hearing-
+    safety MAX cap binds.
+
+      master=-25, music_rms=-15 (loud source), headroom=12, peak=-3
+      target = -15 + 12 - (-3) = 0
+      MAX_TTS_GAIN_DB = -6   (NOT the old ceiling at -33)
+      result = -6.
+    """
     cam = _FakeCamilla(volume_db=-25.0, playback_rms=(-15.0, -15.0))
     tts = _tts()
     tracker = _tracker(cam, tts, offset_db=-8.0)
     await tracker.apply_now()
-    assert tts.gain_db == -33.0
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
 
 
 @pytest.mark.asyncio
@@ -183,8 +203,8 @@ async def test_uses_max_of_left_right():
     tts = _tts()
     tracker = _tracker(cam, tts, offset_db=-8.0)
     await tracker.apply_now()
-    # max(-50, -20) = -20; -20 + 12 - (-3) = -5; ceiling -13 → -13.
-    assert tts.gain_db == -13.0
+    # max(-50, -20) = -20; -20 + 12 - (-3) = -5; MAX cap at -6 binds.
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
 
 
 # --- mute / failure paths -------------------------------------------------
@@ -230,14 +250,14 @@ async def test_windowed_peak_holds_through_quiet_passages():
     cam = _FakeCamilla(volume_db=-5.0, playback_rms=(-15.0, -15.0))
     tts = _tts()
     tracker = _tracker(cam, tts, offset_db=-8.0, window_sec=10.0)
-    # Loud chorus first.
+    # Loud chorus first.  -15 + 12 - (-3) = 0 → MAX cap at -6.
     await tracker.apply_now()
-    assert tts.gain_db == -13.0  # ceiling-bound on loud music
-    # Quiet passage.
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
+    # Quiet passage (well below silence threshold).
     cam.playback_rms = (-60.0, -60.0)
     await tracker.apply_now()
     # Windowed peak still has the -15 reading, so target unchanged.
-    assert tts.gain_db == -13.0
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
 
 
 # --- pause / resume ------------------------------------------------------
@@ -397,3 +417,116 @@ async def test_anchor_does_not_update_during_silence():
     await tracker.apply_now()
     # Anchor unchanged from initial -30; not updated to -80.
     assert tracker._anchor_dbfs == -30.0  # type: ignore[attr-defined]
+
+
+# --- regression: the user-reported "TTS quieter than music" bug -----------
+
+@pytest.mark.asyncio
+async def test_regression_airplay_listening_level_70_does_not_clobber_tts():
+    """REGRESSION for the 2026-05-24 production complaint.
+
+    Live state from the Pi when the user reported "TTS voice is
+    significantly quieter than the music":
+      - provider OpenAI gpt-realtime-2 (active source: AirPlay)
+      - listening_level 70%  →  main_volume = -15 dB
+      - anchor_dbfs ≈ -26 dBFS (modern pop through CamillaDSP)
+      - headroom = 16 dB (env default), tts_peak = -3 dB, offset = 0
+
+    Under the old "ceiling = master+offset clamps everything" rule:
+      target = -26 + 16 - (-3) = -7
+      ceiling = -15 + 0 = -15
+      result = min(-7, -15) = -15   ← clobbered ~8 dB below intent
+
+    Under the music-branch-no-ceiling rule:
+      target = -7   (passes through; -7 < MAX cap -6 so no clamp)
+      result = -7.
+
+    A regression here means somebody re-introduced an unmeasured
+    clamp on the music branch — DON'T do that. The point of measuring
+    playback_rms is to drive the level FROM the measurement.
+    """
+    cam = _FakeCamilla(volume_db=-15.0, playback_rms=(-26.0, -26.0))
+    tts = _tts()
+    tracker = _tracker(
+        cam, tts,
+        offset_db=0.0,        # production default
+        headroom_db=16.0,     # production default
+    )
+    await tracker.apply_now()
+    # Pre-fix: tts.gain_db would have been -15 (master ceiling clobber).
+    # Post-fix: -7 dB, matching music + headroom math directly.
+    assert tts.gain_db == -7.0
+    # Specifically not -15 (the old buggy clamp). 8 dB difference in
+    # TTS level is FAR above the ~3 dB JND for loudness — this is
+    # what the user reported as "significantly quieter than music."
+    assert tts.gain_db > -15.0
+
+
+@pytest.mark.asyncio
+async def test_external_amp_scenario_voice_matches_loud_music():
+    """User has external amp with its own knob; turns up
+    listening_level to compensate. main_volume ≈ -3 dB (94%),
+    music plays loud (anchor ≈ -22 dBFS).
+
+    target = -22 + 16 - (-3) = -3   → MAX cap binds at -6.
+
+    Before fix this passed since -3 < ceiling (-3). The point of
+    this test is to lock in that the external-amp case keeps
+    working with offset_db = 0 (the production default).
+    """
+    cam = _FakeCamilla(volume_db=-3.0, playback_rms=(-22.0, -22.0))
+    tts = _tts()
+    tracker = _tracker(cam, tts, offset_db=0.0, headroom_db=16.0)
+    await tracker.apply_now()
+    assert tts.gain_db == TtsPlayout.MAX_TTS_GAIN_DB
+
+
+@pytest.mark.asyncio
+async def test_music_branch_ignores_master_volume_entirely():
+    """Stronger property: as long as music is playing above silence,
+    the SAME measured music level produces the SAME TTS gain
+    regardless of main_volume. The measurement is downstream of
+    main_volume, so it already reflects it — pulling main_volume
+    into the formula a second time is the bug we're guarding."""
+    music_rms = -25.0
+    gains = []
+    for vol_db in (-3.0, -10.0, -20.0, -30.0, -40.0):
+        cam = _FakeCamilla(volume_db=vol_db, playback_rms=(music_rms, music_rms))
+        tts = _tts()
+        tracker = _tracker(
+            cam, tts, offset_db=0.0, headroom_db=16.0,
+            initial_anchor_dbfs=-120.0,  # ensure music branch fires
+        )
+        await tracker.apply_now()
+        gains.append(tts.gain_db)
+    # All five readings must match — main_volume is invisible to the
+    # music branch by design.
+    assert len(set(gains)) == 1, f"main_volume leaked into music branch: {gains}"
+
+
+# --- silence-fallback ceiling: the kept defense ---------------------------
+
+@pytest.mark.asyncio
+async def test_silence_with_loud_stale_anchor_at_low_master_stays_quiet():
+    """The legitimate use case for the master+offset ceiling, kept
+    intentionally: user played loud music at high volume yesterday
+    (anchor = -10 dBFS, near peak). Today the room is quiet and
+    main_volume is at -40 dB (bedroom level). Without the ceiling
+    the anchor would project to a loud TTS. With the ceiling kept
+    on the silence branch, TTS stays at master-volume-appropriate
+    level.
+
+      master=-40, anchor=-10, no music currently playing
+      anchor target = -10 + 12 - (-3) = 5  → would be loud
+      ceiling = -40 + 0 = -40
+      min(5, -40) = -40 → quiet bedroom respected.
+    """
+    cam = _FakeCamilla(volume_db=-40.0, playback_rms=(-80.0, -80.0))
+    tts = _tts()
+    tracker = _tracker(
+        cam, tts, offset_db=0.0, headroom_db=12.0,
+        initial_anchor_dbfs=-10.0,
+    )
+    await tracker.apply_now()
+    # Ceiling binds at -40 (well within MIN/MAX clamp).
+    assert tts.gain_db == -40.0
