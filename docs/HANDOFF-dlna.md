@@ -308,35 +308,41 @@ on any transport error, logged at debug level.
 
 ### 3.2 Mux preemption (`jasper/mux.py`)
 
-Add `Source.DLNA` to the `Source` enum. Preemption uses a
-two-step sequence to avoid phone-side auto-resume races (raw
-`Stop` can cause phones to re-issue `Play`):
+Add `Source.DLNA` to the `Source` enum. Mux preempts DLNA via
+an HTTP POST to the sidecar's localhost `/preempt` endpoint —
+**not** by issuing UPnP SOAP actions directly. This is the
+"preemption proxy" pattern (see §12 decision record):
 
+```python
+async def _pause_dlna(self) -> bool:
+    try:
+        resp = await self._http.post(
+            f"http://127.0.0.1:{DLNA_SIDECAR_PORT}/preempt",
+            json={"silenced": True},
+            timeout=2.0,
+        )
+        return resp.status_code == 200
+    except Exception:
+        return False
+```
+
+Same shape as `_usbsink_set_preempt()`. Mux never knows about
+UPnP SOAP, AVTransport, or OpenHome. The sidecar translates the
+preempt request into the correct UPnP action sequence (today:
+Pause→disarm on AVTransport; future: OpenHome Transport:Stop if
+upmpdcli replaces gmrender).
+
+The sidecar's preempt handler implements:
 1. Send `Pause` via SOAP to `AVTransport` control URL
-2. Wait up to 500 ms for `PAUSED_PLAYBACK` (confirmed via
-   sidecar state file or direct `GetTransportInfo`)
+2. Wait up to 500 ms for `PAUSED_PLAYBACK` (confirmed via GENA
+   `LastChange` event)
 3. Send `SetAVTransportURI` with empty URI to disarm
 4. Fall back to `Stop` if gmrender rejects empty URIs (known
    edge case — some builds log `WARNING: cannot set NULL uri`)
 
-```python
-async def _pause_dlna(self) -> bool:
-    ok = await self._dlna_soap("Pause")
-    if not ok:
-        return False
-    await asyncio.sleep(0.5)
-    # Disarm: clear the URI so phone can't auto-resume
-    ok = await self._dlna_soap("SetAVTransportURI",
-        {"CurrentURI": "", "CurrentURIMetaData": ""})
-    if not ok:
-        return await self._dlna_soap("Stop")  # fallback
-    return True
-```
-
-The control URL is discovered at mux startup via SSDP query for
-the local gmrender instance, or read from the sidecar's state
-file. Escape hatch: `JASPER_MUX_DLNA_PREEMPT=disabled` (same
-pattern as `JASPER_USBSINK_PREEMPT`, `JASPER_SHAIRPORT_SUPERVISOR`).
+Escape hatch: `JASPER_MUX_DLNA_PREEMPT=disabled` (same pattern
+as `JASPER_USBSINK_PREEMPT`, `JASPER_SHAIRPORT_SUPERVISOR`).
+Default sidecar port: 8782 (env: `JASPER_DLNA_PREEMPT_PORT`).
 
 ### 3.3 Volume coordinator (`jasper/volume_coordinator.py`)
 
@@ -523,8 +529,26 @@ automatically.
 
 ### 5.1 Package installation
 
+The renderer binary is selected by `JASPER_DLNA_RENDERER`
+(default: `gmrender`; future: `upmpdcli`). This env var lives
+in `/var/lib/jasper/dlna.env` alongside the UUID.
+
 ```bash
 install_dlna_renderer() {
+    local renderer
+    renderer="${JASPER_DLNA_RENDERER:-gmrender}"
+
+    if [[ "$renderer" == "gmrender" ]]; then
+        _install_gmrender
+    elif [[ "$renderer" == "upmpdcli" ]]; then
+        _install_upmpdcli  # Phase 2; not implemented yet
+    else
+        echo "  Unknown JASPER_DLNA_RENDERER=${renderer}; defaulting to gmrender"
+        _install_gmrender
+    fi
+}
+
+_install_gmrender() {
     if [[ -x /usr/bin/gmediarender ]]; then
         echo "  gmediarender already installed"
         return 0
@@ -553,6 +577,13 @@ install_dlna_renderer() {
     echo "  Installed gmediarender"
 }
 ```
+
+To A/B test upmpdcli alongside gmrender without a redeploy:
+```sh
+echo 'JASPER_DLNA_RENDERER=upmpdcli' >> /var/lib/jasper/dlna.env
+sudo bash deploy/install.sh   # installs upmpdcli, swaps units
+```
+Rollback: remove the line, re-run install.sh.
 
 ### 5.2 System user creation
 
@@ -670,11 +701,15 @@ class DlnaConfig:
 Subsystems (started in order, cleaned up in reverse):
 1. UPnP discovery (find gmrender via SSDP)
 2. GENA event subscription (AVTransport + RenderingControl)
-3. Heartbeat (`jasper.watchdog.Heartbeat`)
-4. State publisher (event-driven + 30 s watchdog poll)
+3. Preempt listener (localhost HTTP, port 8782)
+4. Heartbeat (`jasper.watchdog.Heartbeat`)
+5. State publisher (event-driven + 30 s watchdog poll)
 
-No audio bridge, no preempt listener, no volume bridge. The
-sidecar is a pure observer.
+No audio bridge, no volume bridge. The sidecar is a stateless
+observer + preemption proxy. The preempt listener is the
+renderer-agnostic interface that mux talks to — it translates
+`{"silenced": true}` into the correct UPnP action sequence for
+whatever renderer is running.
 
 ### 7.3 UPnP discovery and GENA subscription
 
@@ -734,6 +769,36 @@ stops firing, systemd's `WatchdogSec=30s` expires and restarts
 the sidecar. When gmrender comes back (via its own
 `Restart=always`), the sidecar rediscovers it via SSDP.
 
+### 7.6 Preempt handler (`jasper/dlna/preempt.py`)
+
+Localhost HTTP server on port 8782 (same bounded-ThreadPool
+pattern as usbsink's `preempt_listener.py`):
+
+```
+POST /preempt {"silenced": true}   → 200 {"silenced": true, "applied": true}
+POST /preempt {"silenced": false}  → 200 {"silenced": false, "applied": true}
+GET  /preempt                      → 200 {"silenced": bool}
+```
+
+On `silenced=true`, the handler:
+1. Calls `Pause` on the discovered `AVTransport` service
+2. Waits ≤500 ms for `PAUSED_PLAYBACK` in the event stream
+3. Calls `SetAVTransportURI("")` to disarm auto-resume
+4. Falls back to `Stop` if empty URI is rejected
+
+On `silenced=false`, the handler clears the preempt flag (no
+UPnP action — the phone resumes when the user next presses
+play; we don't auto-resume a preempted DLNA session).
+
+**Why the sidecar owns this, not mux directly:** the preemption
+sequence is renderer-specific (AVTransport Pause→disarm today;
+OpenHome Transport:Stop in the upmpdcli future). By hiding it
+behind an HTTP POST, mux stays protocol-agnostic. The same
+`_http.post("/preempt", json={"silenced": True})` call works
+regardless of which renderer binary is running. This is the
+single biggest cost saving when switching to upmpdcli — mux.py
+doesn't change at all.
+
 ---
 
 ## 8. Resilience
@@ -787,9 +852,10 @@ implementation and may not exhibit this failure mode.
 | Path | Purpose | LoC est. |
 |---|---|---|
 | `jasper/dlna/__init__.py` | Package | ~5 |
-| `jasper/dlna/daemon.py` | Sidecar daemon lifecycle | ~120 |
-| `jasper/dlna/state_publisher.py` | UPnP poll + state.json writer | ~150 |
+| `jasper/dlna/daemon.py` | Sidecar daemon lifecycle | ~130 |
+| `jasper/dlna/state_publisher.py` | GENA event → state.json writer | ~150 |
 | `jasper/dlna/upnp.py` | SSDP discovery + GENA subscription + SOAP helpers (via async-upnp-client) | ~150 |
+| `jasper/dlna/preempt.py` | Preemption proxy HTTP endpoint (mux → UPnP action translation) | ~100 |
 | `jasper/cli/dlna_main.py` | Entry point | ~40 |
 | `deploy/systemd/gmediarender.service` | Renderer unit | ~25 |
 | `deploy/systemd/jasper-dlna.service` | Sidecar unit | ~25 |
@@ -802,7 +868,7 @@ implementation and may not exhibit this failure mode.
 | Path | Change |
 |---|---|
 | `jasper/source_state.py` | Add `dlna_playing()` probe |
-| `jasper/mux.py` | Add `Source.DLNA`, preemption via UPnP STOP |
+| `jasper/mux.py` | Add `Source.DLNA`, preemption via sidecar `/preempt` POST (same shape as usbsink) |
 | `jasper/volume_coordinator.py` | Add `Source.DLNA` to enum + `_camilla_carries_level()` |
 | `jasper/renderer.py` | Add `dlna_playing()` to `active_renderers()` |
 | `jasper/web/sources_setup.py` | Add `"dlna"` toggle |
@@ -815,9 +881,10 @@ implementation and may not exhibit this failure mode.
 
 ### Total new code
 
-~665 LoC of Python, ~50 LoC of systemd unit config. About
-half the size of `jasper-usbsink` (the sidecar has no audio
-bridge, no preempt listener, no volume bridge).
+~725 LoC of Python, ~50 LoC of systemd unit config. About
+60% the size of `jasper-usbsink` (the sidecar has no audio
+bridge and no volume bridge, but adds the preemption proxy
+that makes future renderer swaps cheap).
 
 ---
 
@@ -980,6 +1047,64 @@ is more robust:
 
 This pattern matches what BubbleUPnP Server does internally
 when wrapping renderers.
+
+### Why mux talks to the sidecar, not to UPnP directly (preemption proxy)
+
+The original design had mux issuing UPnP SOAP actions directly
+against gmrender's `AVTransport` control URL. An architecture
+review identified that this couples mux to the renderer binary:
+
+- gmrender exposes `AVTransport:1` only
+- upmpdcli exposes both `AVTransport:1` and OpenHome services
+  (`Transport:1`, `Playlist:1`, etc.)
+- The preemption sequence differs: AVTransport needs
+  Pause→disarm; OpenHome needs `Transport:Stop`
+- If mux issues SOAP directly, switching renderers requires
+  changing mux.py
+
+**The preemption-proxy pattern solves this**: mux POSTs
+`{"silenced": true}` to the sidecar's `/preempt` endpoint
+(same shape as `_usbsink_set_preempt()`). The sidecar
+translates to the correct UPnP action for whatever renderer
+is running. On renderer swap:
+
+- mux.py: **no changes** (still POSTs to `/preempt`)
+- source_state.py: **no changes** (still reads state.json)
+- volume_coordinator.py: **no changes** (still camilla-master)
+- sources_setup.py: **one line** (unit name change)
+- sidecar: **add OpenHome subscription + preempt branch**
+
+This is the single biggest cost saving when switching to
+upmpdcli. The mechanical swap becomes ~2 days instead of ~5
+because the renderer-specific protocol knowledge lives entirely
+inside the sidecar.
+
+### Renderer-swap cost-reduction strategy
+
+The Phase 1 architecture is deliberately built to minimize
+future switch cost. Decisions that make the swap cheap:
+
+| Decision | Phase 1 cost | Payoff on swap |
+|---|---|---|
+| Sidecar owns preemption via `/preempt` endpoint | ~30 LoC | mux.py untouched |
+| `JASPER_DLNA_RENDERER` env var in install.sh | 1 conditional | Side-by-side A/B without code changes |
+| UUID persisted in `/var/lib/jasper/dlna.env` | Already needed | Controllers don't re-discover after swap |
+| State.json schema is renderer-agnostic | Free | No consumer changes |
+| Sidecar discovers renderer via SSDP (not hardcoded URLs) | Already needed | Works against any `MediaRenderer:1` |
+| `install.sh` keeps gmrender path behind an `elif` on the env var | ~20 lines | Rollback = one env var flip + restart |
+| GStreamer output device is `jasper_renderer_in` (not a gmrender-specific path) | Free | MPD uses the same ALSA PCM |
+
+**Realistic switch costs by scope:**
+
+| Scope | Work | Time |
+|---|---|---|
+| Drop-in swap (AVTransport only, no OpenHome) | install.sh + units + doctor + one sidecar branch | 1-2 days |
+| Full swap with OpenHome (the audiophile story) | Above + GENA subscriptions for OH services + preempt branch for OH + validation | 5-7 days |
+| Production-ready with validation matrix | Above + gapless/bitperfect/AEC/soak tests | 2-3 weeks |
+
+The architecture lets you do the drop-in swap first (risk-free,
+since mux and the rest of JTS don't change), validate in
+production, then add OpenHome incrementally.
 
 ---
 
