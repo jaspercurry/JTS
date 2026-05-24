@@ -836,8 +836,14 @@ Based on what you find, ask me ~3–6 focused questions:
 - **Layout** — any open-plan / shared rooms? ("Kitchen and living room
   are one space" changes whether "kitchen off" should kill both rooms
   or just kitchen-side fixtures.)
-- **Naming** — any household-specific shorthand worth wiring? (e.g.
-  "movie time", "goodnight", "the dim setting".)
+- **Naming — the load-bearing question.** For each scene/script that
+  fires more than a handful of times, ask what I'd actually **say** to
+  trigger it. HA's `friendly_name` often describes *what the lights
+  do* (e.g. "Cook Mode" — bright kitchen for cooking) rather than *how
+  I'd describe them* (e.g. "kitchen bright"). Walk the list with me
+  and capture phrase → target pairs explicitly. This is the step that
+  prevents "I said 'kitchen bright' and nothing happened" 48 hours
+  after deploy.
 - **Door unlocks** — should I add voice for unlocks? Default is **no**
   — voice unlock is a weaker security posture than phone + FaceID.
   Lock is safe to add.
@@ -848,28 +854,54 @@ Based on what you find, ask me ~3–6 focused questions:
 
 ## Step 3 — Propose, then wait for explicit OK
 
-Present a table grouped by priority:
+Present the proposal in **two sections** so I can see both what you're
+wiring AND what you're skipping. The second section is the one that
+prevents gaps from shipping.
 
-- **P1** = targets I already trigger via voice today (highest
-  HomeKit/Alexa/conversation fire count). Muscle-memory phrases I'll
-  appreciate immediately.
-- **P2** = occasional voice use today.
-- **P3** = filling obvious gaps (no voice today but would be natural).
+### Section A — Phrases I propose to wire
 
-For each row: target `entity_id`, total fires + source breakdown,
-suggested phrase aliases (3–6 variants).
+Grouped **by room/area** (not by priority — by where in the house
+they live). For each row:
 
-HA's sentence-trigger syntax supports `(a|b|c)` for alternatives and
-`[optional]` for optional words. Be liberal — natural speech varies.
+- Phrase aliases (3–6 variants — HA syntax supports `(a|b|c)` and
+  `[optional]`; be liberal, natural speech varies)
+- → target `entity_id`
+- Fire count over the audit window + source breakdown
+- Priority hint (P1 = heavy voice use today / P2 = occasional /
+  P3 = obvious gap, no voice today)
+
 Example:
 
-```yaml
-- "bedroom (medium|med|med bright|medium bright)"
-- "set [the] bedroom to (medium|med)"
+```
+BEDROOM
+  "bedroom (medium|med|med bright)" / "set [the] bedroom to (medium|med)"
+    → scene.warm_bedroom_med_bright_side_floor_lamps
+    (20 fires: 11 Hue Remote, 9 HomeKit voice — P1)
 ```
 
-**Wait for me to say "proceed" before deploying anything.** I may
-edit the proposal first.
+### Section B — Scenes/scripts I did NOT wire (and why)
+
+List **every other scene and script in my HA** with a 1-line reason
+each:
+
+- "Motion-only — fires N times via sensor, never voice-relevant"
+- "Never fired in the audit window — likely unused"
+- "Friendly name `<X>` is ambiguous — what phrase would you say?"
+- "Has Hue Remote button but no clear verbal phrase — confirm before
+  wiring"
+- "Bundled into another target's phrases (e.g. covered by `kitchen
+  off` which fires `<combined_script>`)"
+
+For each in this section, ask whether I want it wired. **This is
+where gaps surface**: e.g. a `Cook Mode` script I'd call "kitchen
+bright" — if I don't see "kitchen bright" in Section A, this is
+where I notice and ask you to add it before deploy.
+
+---
+
+**Wait for me to say "proceed" before deploying anything.** I will
+likely edit either section first — moving entries from B → A,
+renaming phrases, tightening aliases.
 
 ## Step 4 — Deploy via HA's config API
 
