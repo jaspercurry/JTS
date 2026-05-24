@@ -471,11 +471,12 @@ divergence at a glance:
 
 **What Stage 1 explicitly does NOT do.** It doesn't enable the
 memory cgroup, so the `MemoryHigh=` / `MemoryMax=` directives
-already present in jasper-mux.service and jasper-input.service
-remain silent no-ops. It doesn't install a userspace OOM
-killer (earlyoom / systemd-oomd). It doesn't carve daemons into
-slices. Those are Stage 2 and Stage 3 — landing only after
-Stage 1 has been steady for ≥48 hours in production.
+already present in six unit files remain silent no-ops. It
+doesn't install a userspace OOM killer (earlyoom / systemd-oomd).
+It doesn't carve daemons into slices. Those are Stage 2 +
+Stage 3 — see the dedicated section below for what they'd
+add, what they'd cost, and the explicit triggers that should
+prompt picking the work back up.
 
 **What Stage 1 expected outcome is.** Re-running the 2026-05-23
 incident shape (PIO compile on 1 GB Pi): kernel OOM-killer
@@ -488,6 +489,142 @@ post-install:
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "OOM|zram|MGLRU|vm.|memory"
 ```
+
+### Stage 2 — cgroup memory + slice architecture (deferred, with explicit triggers)
+
+Documented here so the next person reading this doesn't have to
+re-derive the analysis. **Currently deferred** — the motivating
+incident (2026-05-23) is covered end-to-end by Stage 1 + T5.1 +
+T5.2, and Stage 2's incremental value is best paid for after
+observed evidence rather than speculative scope.
+
+#### What Stage 2 would do
+
+Two changes, paired:
+
+**1. Enable the Linux memory cgroup controller.** The Pi 5's device-
+tree blob ships with `cgroup_disable=memory` in the kernel's boot
+arguments (an RPi-Foundation choice to save ~32 bytes per page of
+accounting overhead — ~8 MB on a 1 GB Pi). Adding
+`cgroup_enable=memory` to `/boot/firmware/cmdline.txt` and rebooting
+flips the controller on. Verified working on Pi 5 + kernel 6.12.x
+across the K3s / Docker / Home Assistant Supervised communities; no
+known stability regressions on JTS-relevant workloads.
+
+**Once on, the `MemoryHigh=` / `MemoryMax=` directives that already
+exist in 6 unit files** (`jasper-mux.service`, `jasper-input.service`,
+`jasper-usbsink.service`, `jasper-system-web.service`,
+`jasper-bluetooth-web.service`, `librespot.service`) **start
+enforcing**. Today they're silent no-ops — systemd accepts them,
+kernel ignores them because there's no memory cgroup. This is a
+real bug class: the operator looks at the unit file and assumes
+they have protection, but they don't.
+
+**2. Carve daemons into purpose-named slices.** Express memory
+policy declaratively instead of per-unit:
+
+```
+jts-audio.slice    ← jasper-camilla, shairport-sync, librespot, bluealsa
+                     MemorySwapMax=0          # audio pages NEVER touch zram
+                     ManagedOOMPreference=avoid
+
+jts-mic.slice      ← jasper-aec-bridge
+                     MemorySwapMax=0          # realtime mic, same logic
+
+jts-control.slice  ← jasper-control, jasper-mux, jasper-input
+                     MemoryHigh=120M MemoryMax=180M
+
+jts-voice.slice    ← jasper-voice
+                     MemoryHigh=220M MemoryMax=320M
+                     ManagedOOMMemoryPressure=kill   # oomd kills this first
+
+jts-wizard.slice   ← jasper-{web,system-web,bluetooth-web,correction-web,dial-web}
+                     MemoryHigh=64M MemoryMax=128M
+                     ManagedOOMMemoryPressure=kill   # cheap to kill, re-spawned
+```
+
+The slice abstraction means a new daemon is one `Slice=jts-X.slice`
+drop-in away from inheriting the right policy. The `MemorySwapMax=0`
+on audio + mic is the single most defensible addition: audio pages
+never sitting in zram → no decompression-jitter window during memory
+pressure → no xrun-class failure mode from that path.
+
+#### What new protection it adds (vs what's already shipped)
+
+Three failure classes Stage 1 + T5.x do NOT catch:
+
+1. **Slow memory leak in a single daemon** (e.g. a regression in
+   jasper-voice). Stage 1's OOMScoreAdjust biases the kernel
+   OOM killer away from jasper-* but doesn't cap per-daemon
+   growth — a leak gradually starves everything else. With
+   `MemoryMax=320M` on `jts-voice.slice`, the cgroup OOM-killer
+   fires on jasper-voice specifically, `Restart=on-failure`
+   brings it back fresh, the rest of the system is unharmed.
+2. **Audio jitter from zram decompression.** Under memory
+   pressure, jasper-camilla's pages can be swapped to zram.
+   Next audio frame triggers a page-fault → lz4 decompression
+   (~5-15 µs on Cortex-A76, more on zstd). With a small ALSA
+   buffer (~10 ms) one bad timing window = an xrun.
+   `MemorySwapMax=0` on `jts-audio.slice` says these pages
+   never go to zram → eliminates the class.
+3. **`systemd-oomd` for surgical slice-level kills.** Once
+   cgroup memory + PSI are enabled, oomd can read pressure
+   signals and kill a whole slice (e.g., `jts-wizard.slice`)
+   before the kernel OOM-killer fires. More targeted than the
+   kernel's badness heuristic.
+
+#### What Stage 2 would cost
+
+| Cost | Estimate |
+|---|---|
+| Kernel-side RAM (memory cgroup accounting) | ~8 MB on a 1 GB Pi (~0.8%) |
+| Userspace RAM (systemd-oomd if shipped as part of Stage 3) | ~15 MB |
+| Engineering time | ~2-3 hours: cmdline guardian + 5 slice unit files + 6 Slice= drop-ins + 4 new doctor checks + tests |
+| Reboot | One, after the cmdline.txt edit |
+| Risk: existing `MemoryHigh/Max` values become effective | Moderate. They were sized when they were no-ops, so we don't actually know if `MemoryMax=120M` on jasper-mux is right or generous. First post-deploy soak may surface a daemon that briefly exceeds during startup. Mitigation: ship with generous headroom + monitor `/sys/fs/cgroup/.../memory.events` for a week before tightening |
+
+#### Why it's deferred (the honest framing)
+
+- **The motivating incident is covered.** Stage 1 (prevention) +
+  T5.2 (recovery) caught the 2026-05-23 shape end-to-end. Shipping
+  Stage 2 to catch hypothetical-future leaks is premature without
+  evidence.
+- **The existing `MemoryHigh/Max` values are unvalidated.** They've
+  never enforced — we don't actually know they're correctly sized.
+  Enabling them blind risks restarts on healthy daemons we'd then
+  need to debug. The right pattern is *measure first*: run Stage 1
+  + telemetry for ≥30 days, see what daemons' actual memory
+  profiles look like, then size the caps.
+- **The audio-xrun failure mode is theoretical here.** If we'd
+  seen the symptom (music glitching during memory pressure), the
+  `MemorySwapMax=0` fix would be obvious. We haven't observed
+  it on jts2.local. Worth instrumenting first (xrun count over
+  time correlated with PSI pressure events) before shipping the
+  structural fix.
+- **systemd-oomd has known issues** on Pi-class hardware: the
+  cgroup memory enablement quirks documented in
+  [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md)
+  Option E, and the well-documented "kills the whole cgroup with no
+  per-process forensics" complaint from Fedora's 34-era rollout.
+
+#### Triggers for shipping Stage 2
+
+Any one of:
+- **Observed slow memory leak.** MemAvailable trends down over days
+  in `/system/`'s memory sparkline (60-min ring buffer in
+  `system_metrics.py` makes this easy to spot).
+- **Audio xruns correlated with memory pressure.** `/proc/asound/card*/pcm*/sub*/xrun`
+  counter ticking up during PSI memory-pressure events.
+- **A new dependency that might leak.** Adding a Python lib or
+  model that's known-leaky and we want a hard cap to bound it.
+- **Open-source adoption stress.** If JTS sees significant fork
+  activity and other operators report leak shapes we don't see
+  on the original hardware.
+
+Until then, the engineering hours are better spent elsewhere. The
+HANDOFF entry exists so the next contributor doesn't have to
+re-derive what the right structural fix is — only whether the
+trigger is present yet.
 
 ### Hardware-event recovery — sidebar to the ladder
 
