@@ -18,6 +18,19 @@ Wants=network-online.target jasper-camilla.service
 StartLimitBurst=20
 StartLimitIntervalSec=300
 
+# Tier 4.5 — escalate to system reboot if the per-service restart
+# spiral exceeds the existing burst limit (20 in 5min). The 20/300
+# values are intentionally tolerant of transient Apple-dongle
+# de-enumeration (per the comment block above re: 2026-05-10).
+# But if the spiral DOES exceed 20 — which means sustained sickness
+# beyond what transient hardware blips can produce — the right
+# answer is a clean system reboot, not the kernel hardware
+# watchdog at Tier 5. See docs/HANDOFF-tier5-watchdog-liveness.md
+# "Option B (T5.1)". `reboot` (not `reboot-force`): we want clean
+# shutdown so zram dirty pages sync; on a 1 GB Pi `reboot-force`
+# can leave the next boot in EXT4 "orphan cleanup" state.
+StartLimitAction=reboot
+
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
 # emit `READY=1` (via sdnotify, see jasper/watchdog.py) before

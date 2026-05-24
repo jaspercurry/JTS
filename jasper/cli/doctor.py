@@ -1159,6 +1159,22 @@ def check_sysctl_drift() -> CheckResult:
     )
 
 
+# Expected StartLimitAction= per critical daemon. T5.1 of the
+# watchdog-liveness plan: a restart spiral on any of these four
+# escalates to a clean system reboot rather than waiting for the
+# Tier 5 kernel hardware watchdog (which has the "PID 1 alive but
+# userspace dead" blind spot documented in HANDOFF-resilience.md).
+# Doctor reports drift so a Debian/RPi-OS update that removes our
+# unit-file directives surfaces in the next install. See
+# docs/HANDOFF-tier5-watchdog-liveness.md "Option B (T5.1)".
+_EXPECTED_START_LIMIT_ACTION = {
+    "jasper-camilla": "reboot",
+    "jasper-aec-bridge": "reboot",
+    "jasper-voice": "reboot",
+    "jasper-control": "reboot",
+}
+
+
 # Expected OOMScoreAdjust per critical daemon. -900 = camilla (silence
 # is worst UX), -700 = aec-bridge, -600 = control, -500 = voice, -300
 # for mux/input. See docs/HANDOFF-resilience.md "OOM-score ladder".
@@ -1264,6 +1280,51 @@ def check_oom_score_adj() -> CheckResult:
     return CheckResult(
         "OOM score adj", "ok",
         f"all {len(_EXPECTED_OOM_ADJ)} critical daemons protected",
+    )
+
+
+def _start_limit_action_of_unit(unit: str) -> str | None:
+    """Best-effort: read `StartLimitAction=` from systemd's view of
+    the unit. Returns the lowercased action string, or `None` if
+    systemctl isn't available (dev host) or the lookup fails."""
+    try:
+        out = _run(
+            ["systemctl", "show", "-p", "StartLimitAction", "--value",
+             f"{unit}.service"],
+        ).stdout.strip().lower()
+        return out or "none"
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return None
+
+
+def check_start_limit_action() -> CheckResult:
+    """Verify the T5.1 `StartLimitAction=reboot` directive is in
+    effect on every critical daemon. Drift here means a Debian /
+    RPi-OS update edited the unit, or someone manually disabled the
+    escalation. Doctor surfaces this — without StartLimitAction=reboot
+    we're back to Tier 5's "PID 1 alive but userspace dead" gap.
+    See docs/HANDOFF-tier5-watchdog-liveness.md."""
+    drift = []
+    for unit, want in _EXPECTED_START_LIMIT_ACTION.items():
+        got = _start_limit_action_of_unit(unit)
+        if got is None:
+            # systemctl unavailable (dev host) — skip cleanly
+            return CheckResult(
+                "StartLimitAction", "ok",
+                "systemctl unavailable — skipped (not Linux?)",
+            )
+        if got != want:
+            drift.append(f"{unit}={got} (want {want})")
+    if drift:
+        return CheckResult(
+            "StartLimitAction", "warn",
+            "T5.1 escalation drift: " + ", ".join(drift) +
+            ". Re-run install.sh to restore .service files.",
+        )
+    return CheckResult(
+        "StartLimitAction", "ok",
+        f"T5.1 reboot escalation active on all {len(_EXPECTED_START_LIMIT_ACTION)} "
+        "critical daemons",
     )
 
 
@@ -2550,6 +2611,10 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_mglru_min_ttl,
         check_sysctl_drift,
         check_oom_score_adj,
+        # T5.1 watchdog escalation — verify StartLimitAction=reboot is
+        # still configured on the 4 critical daemons. See
+        # docs/HANDOFF-tier5-watchdog-liveness.md.
+        check_start_limit_action,
         lambda: check_spend_cap(cfg),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor

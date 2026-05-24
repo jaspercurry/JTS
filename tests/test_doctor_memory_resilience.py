@@ -551,6 +551,83 @@ def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
     assert "UNIT FILE drift" in r.detail  # not "live-process drift"
 
 
+# --- check_start_limit_action (T5.1) ------------------------------------
+
+
+def _make_start_limit_action_run(actions: dict[str, str]):
+    """Build a _run mock for `systemctl show -p StartLimitAction
+    --value <unit>.service`. Returns the value from `actions`."""
+    def fake_run(cmd, **kwargs):
+        # cmd = ["systemctl", "show", "-p", "StartLimitAction",
+        #        "--value", "X.service"]
+        unit = cmd[5].rsplit(".", 1)[0]
+        result = MagicMock()
+        result.stdout = actions.get(unit, "none") + "\n"
+        return result
+    return fake_run
+
+
+def test_start_limit_action_all_set_to_reboot():
+    """T5.1 happy path: all 4 critical units have StartLimitAction=reboot."""
+    actions = {
+        "jasper-camilla": "reboot",
+        "jasper-aec-bridge": "reboot",
+        "jasper-voice": "reboot",
+        "jasper-control": "reboot",
+    }
+    with patch.object(doctor, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
+        r = doctor.check_start_limit_action()
+    assert r.status == "ok"
+    assert "4 critical daemons" in r.detail
+
+
+def test_start_limit_action_drift_one_unit_lost_directive():
+    """A Debian/RPi-OS update edited jasper-control's unit and removed
+    the directive — should warn and name the unit."""
+    actions = {
+        "jasper-camilla": "reboot",
+        "jasper-aec-bridge": "reboot",
+        "jasper-voice": "reboot",
+        "jasper-control": "none",   # drifted to default
+    }
+    with patch.object(doctor, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
+        r = doctor.check_start_limit_action()
+    assert r.status == "warn"
+    assert "T5.1" in r.detail
+    assert "jasper-control" in r.detail
+    assert "want reboot" in r.detail
+
+
+def test_start_limit_action_drift_wrong_action():
+    """Someone set StartLimitAction=reboot-force on jasper-voice — wrong
+    on a 1 GB Pi (dirty zram pages would skip sync)."""
+    actions = {
+        "jasper-camilla": "reboot",
+        "jasper-aec-bridge": "reboot",
+        "jasper-voice": "reboot-force",   # wrong shape
+        "jasper-control": "reboot",
+    }
+    with patch.object(doctor, "_run",
+                      side_effect=_make_start_limit_action_run(actions)):
+        r = doctor.check_start_limit_action()
+    assert r.status == "warn"
+    assert "jasper-voice=reboot-force" in r.detail
+
+
+def test_start_limit_action_skips_on_dev_host():
+    """Dev host without systemctl — should skip cleanly rather than
+    crash or false-warn."""
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("systemctl not found")
+
+    with patch.object(doctor, "_run", side_effect=fake_run):
+        r = doctor.check_start_limit_action()
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
 def test_oom_score_adj_no_systemctl_is_ok():
     """Dev host without systemctl — _pid_of_unit returns None for
     every unit — should report 0 protected / 6 missing, NOT crash."""
