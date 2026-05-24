@@ -35,6 +35,19 @@
 // shorter than a typical human hold but longer than a quick click.
 #define LONG_PRESS_MS 500
 
+// Inter-tap quiescence window for multi-tap detection.
+//   1 tap  → /transport/toggle (play/pause)
+//   2 taps → /transport/next   (skip)
+//   3 taps → /transport/previous (back)
+// A pending tap commits this many ms after the last release; three
+// taps short-circuit and fire previous immediately since we don't
+// define a quadruple-tap. Cost: single-tap toggle is delayed by this
+// window so we can distinguish it from a double. 280 ms is a
+// deliberate compromise — tight enough to keep play/pause snappy,
+// loose enough to catch natural human double-taps (typically
+// 150-300 ms apart).
+#define DOUBLE_TAP_WINDOW_MS 280
+
 // --- Display (GC9A01 driver, 240x240 round IPS) ---
 // Pins from the CrowPanel HMI factory firmware source. SPI bus is
 // dedicated to the display (no other SPI peripherals).

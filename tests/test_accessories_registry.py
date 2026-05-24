@@ -12,6 +12,8 @@ from jasper.accessories.registry import (
     KEY_VOLUMEUP,
     KNOWN_DEVICES,
     VK01,
+    KeyAction,
+    TapAction,
     lookup,
 )
 
@@ -53,12 +55,22 @@ def test_vk01_rotate_actions_coalesce_and_target_volume_adjust():
     assert up.body["delta_percent"] == -down.body["delta_percent"]
 
 
-def test_vk01_click_targets_volume_mute_no_coalesce():
-    mute = VK01.keymap[KEY_MUTE]
-    assert mute.method == "POST"
-    assert mute.path == "/volume/mute"
-    assert mute.coalesce is False
-    assert mute.body == {}
+def test_vk01_click_is_tap_action_for_transport():
+    """VK-01's click (KEY_MUTE keycode) maps to a TapAction so single
+    tap toggles play/pause, double skips, triple goes back — same
+    semantics as the WiFi dial. The keycode happens to be KEY_MUTE
+    because that's what the VK-01's HID descriptor sends; we treat it
+    as an opaque button-id and dispatch by tap count."""
+    click = VK01.keymap[KEY_MUTE]
+    assert isinstance(click, TapAction), (
+        "VK-01 click should be TapAction, got %r" % type(click)
+    )
+    assert click.on_single == KeyAction("POST", "/transport/toggle", {})
+    assert click.on_double == KeyAction("POST", "/transport/next", {})
+    assert click.on_triple == KeyAction("POST", "/transport/previous", {})
+    # Sanity: window must be positive — a 0 ms window degenerates
+    # to "every tap fires immediately" which defeats the gesture.
+    assert click.window_ms > 0
 
 
 @pytest.mark.parametrize("device", KNOWN_DEVICES)

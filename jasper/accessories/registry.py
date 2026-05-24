@@ -10,7 +10,7 @@ Adding a new HID accessory is a one-entry change in `KNOWN_DEVICES`.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Union
 
 
 # Subset of evdev keycodes we care about for HID consumer-control
@@ -36,13 +36,44 @@ class KeyAction:
 
 
 @dataclass(frozen=True)
+class TapAction:
+    """One HID keycode → tap-count-dependent HTTP calls.
+
+    Each press of the bound key advances a counter; the counter
+    commits after `window_ms` of quiescence, or immediately on the
+    third tap (which is unambiguous — we don't define quadruple-tap
+    semantics, so no need to wait further).
+
+    Cost: each single tap is delayed by `window_ms` before its HTTP
+    call fires (we have to wait to be sure no second tap is coming).
+    For mute-style "I need this now" actions, use KeyAction instead.
+    """
+
+    on_single: KeyAction
+    on_double: KeyAction | None = None
+    on_triple: KeyAction | None = None
+    # Inter-tap quiescence window. 400 ms is a deliberate compromise:
+    # tight enough that single-tap doesn't feel laggy, loose enough
+    # that natural human double/triple-taps register reliably. macOS's
+    # default double-click speed is ~500 ms; we run a touch tighter.
+    # Earlier value (280 ms) was too aggressive for BT HID — physical
+    # knob clicks add springback delay between presses; user couldn't
+    # land three taps within the window (verified on VK-01 hardware
+    # 2026-05-23).
+    window_ms: int = 400
+
+
+Action = Union[KeyAction, TapAction]
+
+
+@dataclass(frozen=True)
 class Device:
     """A supported HID accessory."""
 
     name: str
     vendor_id: int   # USB VID
     product_id: int  # USB PID
-    keymap: Mapping[int, KeyAction]
+    keymap: Mapping[int, Action]
     # Optional regex (Python `re` syntax) for the BT advertised name.
     # When set, the pair wizard filters discovered devices through
     # this — keeps us from grabbing an unrelated nearby HID device
@@ -53,11 +84,16 @@ class Device:
 
 
 # Anticater VK-01 Desktop Volume Knob (USB-C / BT 5.1 HID).
-# Default factory keymap: rotate = vol ±, click = mute. Long-press is
-# indistinguishable from a tap on the wire (firmware emits a ~3 ms
-# press+release regardless of physical hold duration), so it has no
-# entry here — hold-to-talk needs LQ-app reconfig or RE'd Pi-side
+# Default factory keymap: rotate = vol ±, click sends KEY_MUTE. Long-
+# press is indistinguishable from a tap on the wire (firmware emits a
+# ~3 ms press+release regardless of physical hold duration), so it has
+# no entry here — hold-to-talk needs LQ-app reconfig or RE'd Pi-side
 # config (deferred).
+#
+# We map the click (KEY_MUTE keycode) to a TapAction so single = play/
+# pause toggle, double = next, triple = previous — matching the dial's
+# semantics. The hardware sends KEY_MUTE per press but we treat the
+# keycode as opaque button-id and dispatch by tap count.
 VK01 = Device(
     name="Anticater VK-01",
     vendor_id=0x514C,
@@ -69,7 +105,11 @@ VK01 = Device(
         KEY_VOLUMEDOWN: KeyAction(
             "POST", "/volume/adjust", {"delta_percent": -2}, coalesce=True,
         ),
-        KEY_MUTE: KeyAction("POST", "/volume/mute", {}),
+        KEY_MUTE: TapAction(
+            on_single=KeyAction("POST", "/transport/toggle", {}),
+            on_double=KeyAction("POST", "/transport/next", {}),
+            on_triple=KeyAction("POST", "/transport/previous", {}),
+        ),
     },
     # Anticater's BT advertised name pattern (per the manual). Case-
     # insensitive — some firmware revs lowercase it.

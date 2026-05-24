@@ -22,9 +22,16 @@ import asyncio
 import logging
 
 import httpx
-import pyudev
 
-from .registry import KNOWN_DEVICES, Device, KeyAction, lookup, lookup_by_name
+# pyudev is Linux-only (Pi runtime). Imported lazily inside _supervise
+# so the rest of the module (registry types, _TapCounter, _Coalescer)
+# stays importable on dev hosts that don't have it — used by the
+# hardware-free pytest suite. Same lazy-import idiom as
+# jasper/control/server.py's _dispatch_transport.
+
+from .registry import (
+    KNOWN_DEVICES, Device, KeyAction, TapAction, lookup, lookup_by_name,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +122,110 @@ async def _post_once(
         )
 
 
+class _TapCounter:
+    """Per-keycode tap-count state machine: counts consecutive presses,
+    fires the matching HTTP call (single/double/triple) after the
+    quiescence window — or immediately on the third tap, since
+    quadruple-tap has no semantic and waiting another window just
+    adds perceived latency to "previous".
+
+    Concurrency notes (handled, but worth knowing if you change this):
+      - hit() can run while a prior fire's HTTP is in flight; we snapshot
+        the count into a local before the HTTP, so a late hit() during
+        dispatch can't corrupt it.
+      - The timer is cancelled-and-replaced on each hit() that arrives
+        during its sleep phase. If a hit() lands in the narrow window
+        after sleep but before the snapshot, the cancel is a no-op and
+        the in-flight fire proceeds with the count it observed; the
+        late hit() starts a fresh sequence on its own next timer.
+    """
+
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        control_url: str,
+        action: TapAction,
+        device_name: str,
+        key_name: str,
+    ) -> None:
+        self._client = client
+        self._control_url = control_url
+        self._action = action
+        self._device_name = device_name
+        self._key_name = key_name
+        self._window_sec = action.window_ms / 1000.0
+        self._count = 0
+        self._timer: asyncio.Task | None = None
+        # Retain in-flight dispatch tasks so they aren't garbage-
+        # collected mid-await (asyncio drops weakly-held tasks).
+        self._dispatches: set[asyncio.Task] = set()
+
+    def hit(self) -> None:
+        self._count += 1
+        # Cancel any pending deferred-fire timer; it'll be replaced.
+        if self._timer is not None and not self._timer.done():
+            self._timer.cancel()
+        # Three taps is the longest gesture we recognise — fire
+        # immediately rather than waiting another window for a
+        # quadruple that has no meaning.
+        if self._count >= 3:
+            count = self._count
+            self._count = 0
+            self._track(asyncio.create_task(self._dispatch(count)))
+            return
+        # Otherwise, defer — there might be more taps coming.
+        self._timer = asyncio.create_task(self._fire_after_delay())
+
+    def _track(self, task: asyncio.Task) -> None:
+        self._dispatches.add(task)
+        task.add_done_callback(self._dispatches.discard)
+
+    async def _fire_after_delay(self) -> None:
+        try:
+            await asyncio.sleep(self._window_sec)
+        except asyncio.CancelledError:
+            return
+        # Snapshot count BEFORE the await in _dispatch so a late hit()
+        # arriving during HTTP can't mutate what we're firing.
+        count = self._count
+        self._count = 0
+        await self._dispatch(count)
+
+    async def _dispatch(self, count: int) -> None:
+        if count == 1:
+            target = self._action.on_single
+        elif count == 2:
+            target = self._action.on_double
+        else:  # count >= 3
+            target = self._action.on_triple
+        if target is None:
+            # Tap-count has no mapping — silently drop with a log so
+            # the operator can confirm taps are registering but the
+            # gesture isn't defined for this device.
+            logger.info(
+                "event=knob.tap.unmapped device=%s key=%s count=%d",
+                self._device_name, self._key_name, count,
+            )
+            return
+        try:
+            r = await self._client.request(
+                target.method,
+                self._control_url + target.path,
+                json=target.body or None,
+                timeout=2.0,
+            )
+            logger.info(
+                "event=knob.tap device=%s key=%s count=%d path=%s status=%d",
+                self._device_name, self._key_name, count, target.path,
+                r.status_code,
+            )
+        except httpx.HTTPError as e:
+            logger.warning(
+                "event=knob.tap.failed device=%s key=%s count=%d path=%s err=%s",
+                self._device_name, self._key_name, count, target.path, e,
+            )
+
+
 def _key_name(code: int) -> str:
     """Best-effort human keycode name for logging."""
     from evdev import ecodes  # type: ignore
@@ -157,6 +268,7 @@ async def _read_device(
     )
 
     coalescers: dict[int, _Coalescer] = {}
+    tap_counters: dict[int, _TapCounter] = {}
     tasks: set[asyncio.Task] = set()  # retain non-coalescing dispatch tasks
 
     try:
@@ -168,7 +280,16 @@ async def _read_device(
             action = device.keymap.get(ev.code)
             if action is None:
                 continue
-            if action.coalesce:
+            if isinstance(action, TapAction):
+                tc = tap_counters.get(ev.code)
+                if tc is None:
+                    tc = _TapCounter(
+                        client, control_url, action, device.name,
+                        _key_name(ev.code),
+                    )
+                    tap_counters[ev.code] = tc
+                tc.hit()
+            elif action.coalesce:
                 cz = coalescers.get(ev.code)
                 if cz is None:
                     cz = _Coalescer(
@@ -200,6 +321,7 @@ async def _supervise(control_url: str) -> None:
     """Discover known HID accessories at startup, then watch udev for
     hot-plug. One reader task per attached device; tasks exit on
     unplug and are recreated on replug."""
+    import pyudev  # Linux-only — lazy-imported so the module loads on dev hosts.
     from evdev import InputDevice, list_devices  # type: ignore
 
     ctx = pyudev.Context()

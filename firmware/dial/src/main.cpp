@@ -235,6 +235,14 @@ static bool postTransportToggle() {
     return postJson("/transport/toggle", "{}");
 }
 
+static bool postTransportNext() {
+    return postJson("/transport/next", "{}");
+}
+
+static bool postTransportPrevious() {
+    return postJson("/transport/previous", "{}");
+}
+
 static bool postSessionStart() {
     return postJson("/session/start", "{}");
 }
@@ -448,10 +456,18 @@ void loop() {
     }
 
     // Button (encoder press) — polled with software debounce.
-    //   Short press (release before LONG_PRESS_MS): /transport/toggle
+    //   Short press (release before LONG_PRESS_MS): counts as a tap;
+    //     pending taps commit after DOUBLE_TAP_WINDOW_MS quiescence
+    //     OR immediately on the third tap. Tap-count maps to:
+    //       1 → /transport/toggle (play/pause)
+    //       2 → /transport/next   (skip)
+    //       3 → /transport/previous (back)
     //   Long press: at LONG_PRESS_MS while still held, /session/start
     //               (low latency — fires DURING the hold, not after);
     //               on release, /session/end so Gemini can respond.
+    //               Starting a session clears any pending tap count
+    //               so a "tap-then-hold" combo doesn't fire a stray
+    //               toggle alongside the session.
     // Dispatching the long-press start mid-hold lets the user begin
     // talking the instant they're past the threshold; the dial's LED
     // could indicate "listening" if we wanted, though phase 5 owns
@@ -460,8 +476,37 @@ void loop() {
     static unsigned long buttonChangedAt = 0;
     static unsigned long buttonPressedAt = 0;
     static bool sessionStarted = false;
+    static int tapCount = 0;
+    static unsigned long lastTapAt = 0;
     bool buttonNow = digitalRead(SWITCH_PIN);
     unsigned long now = millis();
+
+    // Commit any pending tap sequence once the inter-tap window has
+    // expired. Checked every loop iteration, independent of the
+    // button's current state — the window measures elapsed time since
+    // the most recent RELEASE, not since the most recent press.
+    if (tapCount > 0 && (now - lastTapAt) >= DOUBLE_TAP_WINDOW_MS) {
+        int committed = tapCount;
+        tapCount = 0;
+        bool ok = false;
+        const char *what = "";
+        if (committed == 1) {
+            ok = postTransportToggle();
+            what = "toggle";
+        } else if (committed == 2) {
+            ok = postTransportNext();
+            what = "next";
+        } else {
+            // ≥3 is also handled inline at the third tap below, so
+            // this branch only fires if something unusual happened
+            // (e.g. the window check ran late and saw count=3+).
+            ok = postTransportPrevious();
+            what = "previous";
+        }
+        dlog("[button] %d-tap commit → %s %s",
+             committed, what, ok ? "OK" : "FAIL");
+    }
+
     if (buttonNow != buttonPrev && now - buttonChangedAt > 30) {
         buttonChangedAt = now;
         buttonPrev = buttonNow;
@@ -478,9 +523,19 @@ void loop() {
                 dlog("[button] long-press release (%lums) → session/end %s",
                      held, ok ? "OK" : "FAIL");
             } else if (held < LONG_PRESS_MS) {
-                bool ok = postTransportToggle();
-                dlog("[button] short-press (%lums) → toggle %s",
-                     held, ok ? "OK" : "FAIL");
+                // Tap. Add to the pending sequence; commit happens
+                // when the window expires (above) or immediately if
+                // this is the third consecutive tap.
+                tapCount++;
+                lastTapAt = now;
+                if (tapCount >= 3) {
+                    bool ok = postTransportPrevious();
+                    dlog("[button] triple-tap (%lums) → previous %s",
+                         held, ok ? "OK" : "FAIL");
+                    tapCount = 0;
+                } else {
+                    dlog("[button] tap %d (%lums)", tapCount, held);
+                }
             } else {
                 // Held past the threshold but session never started —
                 // most likely WiFi was down at the moment. The user got
@@ -497,7 +552,9 @@ void loop() {
         && (now - buttonPressedAt) >= LONG_PRESS_MS
     ) {
         // Mid-press: still holding past the threshold, fire session/start.
+        // Drop any pending taps — the user is now in hold-to-talk mode.
         sessionStarted = true;
+        tapCount = 0;
         bool ok = postSessionStart();
         scenes_set_listening(true);
         dlog("[button] long-press start at %lums → session/start %s",
