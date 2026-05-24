@@ -976,8 +976,13 @@ def check_zram_size_ratio() -> CheckResult:
     """Verify the rpi-swap drop-in sized zram to ≤60% of RAM. The
     old zramswap default was 100% of RAM, which amplifies thrash
     (more zsmalloc bookkeeping during reclaim). Stage 1 of the
-    memory-resilience plan reduces this to 50%. Skip cleanly if
-    zram isn't in use (older RPi OS / dphys-swapfile setups)."""
+    memory-resilience plan reduces this to 50%.
+
+    Skip cleanly if:
+      - zram isn't in use at all (older RPi OS / dphys-swapfile setups)
+      - rpi-swap isn't installed (Bookworm or earlier — JTS's drop-in
+        targets rpi-swap exclusively, so on other zram managers there
+        is no actionable fix for the operator from this side)"""
     try:
         zram_size_bytes = int(Path("/sys/block/zram0/disksize").read_text().strip())
     except (OSError, ValueError):
@@ -993,6 +998,17 @@ def check_zram_size_ratio() -> CheckResult:
     pct = (zram_size_bytes * 100) // total_bytes
     zram_mb = zram_size_bytes // (1024 * 1024)
     if pct > 60:
+        # If rpi-swap isn't installed, the JTS drop-in is moot —
+        # different package owns the zram device. Don't warn the
+        # operator about something they can't fix from this side.
+        # Detection: /etc/rpi/swap.conf exists iff rpi-swap is the
+        # canonical Pi-side zram manager (Trixie default).
+        if not Path("/etc/rpi/swap.conf").exists():
+            return CheckResult(
+                "zram size", "ok",
+                f"{zram_mb} MB ({pct}% of RAM) — managed by a different "
+                f"zram package (rpi-swap not installed); JTS drop-in is inert",
+            )
         return CheckResult(
             "zram size", "warn",
             f"{zram_mb} MB ({pct}% of RAM) — old default; "
@@ -1039,15 +1055,28 @@ def check_mglru_min_ttl() -> CheckResult:
 _JTS_SYSCTL_CONF = Path("/etc/sysctl.d/99-jts-vm.conf")
 
 
-def _parse_jts_sysctl_conf() -> dict[str, str]:
-    """Parse the JTS sysctl drop-in into a {key: value} dict where
-    `key` is the part after `vm.` (e.g. 'swappiness') and `value` is
-    the resolved string (so RAM-dependent values like min_free_kbytes
-    reflect what install.sh actually wrote for THIS Pi). Returns an
-    empty dict if the file doesn't exist or has no parsable lines."""
-    out: dict[str, str] = {}
+@dataclass
+class _SysctlConf:
+    """Result of parsing the JTS sysctl drop-in.
+
+    `values` — vm.* keys with resolved numeric/string values.
+    `unresolved` — vm.* keys whose value is an unsubstituted template
+        placeholder like '__VM_MIN_FREE_KBYTES__'. A non-empty list
+        means install.sh's sed step failed for that key — the kernel
+        will silently use whatever it had before, and the doctor
+        should warn so the operator knows their config is broken."""
+    values: dict[str, str]
+    unresolved: list[str]
+
+
+def _parse_jts_sysctl_conf() -> _SysctlConf:
+    """Parse the JTS sysctl drop-in. Key (after `vm.`) maps to the
+    resolved value if it's a real value, or lands in `unresolved` if
+    the template substitution failed."""
+    values: dict[str, str] = {}
+    unresolved: list[str] = []
     if not _JTS_SYSCTL_CONF.exists():
-        return out
+        return _SysctlConf(values=values, unresolved=unresolved)
     try:
         for line in _JTS_SYSCTL_CONF.read_text().splitlines():
             line = line.strip()
@@ -1060,19 +1089,16 @@ def _parse_jts_sysctl_conf() -> dict[str, str]:
             value = value.strip()
             if not key.startswith("vm."):
                 continue
-            # Drop any 'vm.' prefix — we'll match against
-            # /proc/sys/vm/<key>.
+            # Drop any 'vm.' prefix — we'll match against /proc/sys/vm/<key>.
             sub_key = key[3:]
-            # If the value is still a template placeholder (the
-            # install.sh sed step failed), skip — would otherwise
-            # produce a confusing "drift" message comparing
-            # "10148" to "__VM_MIN_FREE_KBYTES__".
+            # Template placeholder (install.sh's sed step failed)?
             if value.startswith("__") and value.endswith("__"):
+                unresolved.append(sub_key)
                 continue
-            out[sub_key] = value
+            values[sub_key] = value
     except OSError:
-        return {}
-    return out
+        return _SysctlConf(values={}, unresolved=[])
+    return _SysctlConf(values=values, unresolved=unresolved)
 
 
 def check_sysctl_drift() -> CheckResult:
@@ -1087,12 +1113,24 @@ def check_sysctl_drift() -> CheckResult:
     the right target for THIS hardware. On systems with no
     /proc/sys/vm/ at all (e.g. running the doctor in a dev
     container), skip cleanly."""
-    expected = _parse_jts_sysctl_conf()
-    if not expected:
+    conf = _parse_jts_sysctl_conf()
+    if not conf.values and not conf.unresolved:
         return CheckResult(
             "vm.* sysctls", "warn",
             f"{_JTS_SYSCTL_CONF} missing or empty — re-run install.sh",
         )
+    # Unresolved template placeholders are a higher-priority warning
+    # than drift — they mean install.sh's sed step failed and the
+    # operator is running with kernel defaults for those knobs (not
+    # what they wanted).
+    if conf.unresolved:
+        return CheckResult(
+            "vm.* sysctls", "warn",
+            "unsubstituted template placeholder(s) in conf: " +
+            ", ".join(f"vm.{k}" for k in conf.unresolved) +
+            ". install.sh's sed step likely failed — re-run install.sh.",
+        )
+    expected = conf.values
     drift = []
     checked = 0
     for key, want in expected.items():
@@ -1131,6 +1169,15 @@ _EXPECTED_OOM_ADJ = {
     "jasper-voice": -500,
     "jasper-mux": -300,
     "jasper-input": -300,
+    # sshd (Debian unit name: `ssh.service`) defaults to -1000 from the
+    # `openssh-server` package. The resilience story explicitly relies
+    # on sshd being immortal — if it drops to default 0 during OOM, the
+    # operator loses their recovery path. Track it here defensively so
+    # a future RPi OS / Debian update that changes the default surfaces
+    # in jasper-doctor before someone actually needs to SSH in to
+    # debug. On non-Debian distros that name the unit `sshd.service`,
+    # `ssh.service` will simply be reported as "not running" — skipped.
+    "ssh": -1000,
 }
 
 

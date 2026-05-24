@@ -802,4 +802,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-24 (Stage 1 + PR1.5 + PR1.6 + PR1.7 live; T5.x in proposal at HANDOFF-tier5-watchdog-liveness.md)
+Last verified: 2026-05-24
