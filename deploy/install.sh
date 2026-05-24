@@ -1653,6 +1653,19 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/systemd/bluealsa.service.d/jts-restart.conf" \
         "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
 
+    # sshd OOM-protection drop-in: Debian's openssh-server package
+    # ships ssh.service WITHOUT an OOMScoreAdjust= directive, so the
+    # kernel's default (0) applies — making sshd a candidate for
+    # OOM-kill under heavy pressure. JTS's resilience story relies
+    # on sshd being the recovery path during failure events; the
+    # drop-in forces OOMScoreAdjust=-1000 (immortal). Operators on
+    # distros whose sshd unit is named differently (sshd.service on
+    # RHEL/Fedora) should rename. See the file's header comment.
+    install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
+        "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+
     systemctl daemon-reload
 
     # Migrate the 4 wizard services from always-on to socket-activated.
