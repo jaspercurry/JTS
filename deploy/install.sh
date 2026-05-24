@@ -1253,15 +1253,39 @@ migrate_memory_resilience() {
     # Step 1: vm.* sysctls (eviction policy, dirty-page strategy,
     # watermarks, vfs cache pressure). 99- prefix means our values
     # win over distro defaults loaded earlier.
-    if install -m 0644 "${REPO_DIR}/deploy/sysctl/99-jts-vm.conf" /etc/sysctl.d/; then
+    #
+    # vm.min_free_kbytes is RAM-dependent — we compute it from
+    # /proc/meminfo and substitute into the template. Formula:
+    # clamp(2% of MemTotal_kB, 8192, 262144). See header comment in
+    # the template at deploy/sysctl/99-jts-vm.conf for rationale.
+    # awk handles overflow safely (printf "%d" rounds).
+    local min_free_kb
+    min_free_kb=$(awk '
+        /MemTotal:/ {
+            v = int($2 * 0.02 + 0.5)
+            if (v < 8192) v = 8192
+            if (v > 262144) v = 262144
+            printf "%d\n", v
+        }
+    ' /proc/meminfo)
+    if [[ -z "${min_free_kb}" || ! "${min_free_kb}" =~ ^[0-9]+$ ]]; then
+        # Fallback if /proc/meminfo is unreadable (shouldn't happen on
+        # any real Linux). Pick a conservative value.
+        min_free_kb=16384
+        echo "  memory_resilience: WARN — couldn't read MemTotal; using fallback min_free_kbytes=${min_free_kb}"
+    fi
+    if sed -e "s/__VM_MIN_FREE_KBYTES__/${min_free_kb}/g" \
+            "${REPO_DIR}/deploy/sysctl/99-jts-vm.conf" \
+            > /etc/sysctl.d/99-jts-vm.conf; then
+        chmod 0644 /etc/sysctl.d/99-jts-vm.conf
         if sysctl --system >/dev/null 2>&1; then
-            echo "  memory_resilience: vm.* sysctls applied"
+            echo "  memory_resilience: vm.* sysctls applied (min_free_kbytes=${min_free_kb} kB per RAM)"
         else
             echo "  memory_resilience: WARN — sysctl --system failed; tunings live after reboot"
             errors=$((errors+1))
         fi
     else
-        echo "  memory_resilience: WARN — failed to install /etc/sysctl.d/99-jts-vm.conf"
+        echo "  memory_resilience: WARN — failed to render /etc/sysctl.d/99-jts-vm.conf"
         errors=$((errors+1))
     fi
 
