@@ -149,6 +149,46 @@ Both daemons converge through the persistence file. voice_daemon's
 coordinator runs the inbound observers; control_daemon's
 coordinator does not (it doesn't need them — it's a write surface).
 
+### Two deferral triggers in `_set_camilla`
+
+The coordinator writes camilla via `_set_camilla(level)` on the
+camilla-master paths (AirPlay + idle + USBSINK). A camilla write
+mid-voice-session would clobber the Ducker's setting and make music
+audibly louder mid-TTS, so two complementary gates short-circuit:
+
+1. **`_voice_session_active` flag** — set by `note_voice_session(True/
+   False)` from jasper-voice's `WakeLoop`. Catches the voice-tool-
+   driven path (LLM calls `set_volume` mid-session). Only meaningful
+   on the long-lived coordinator owned by jasper-voice; per-request
+   coordinators in jasper-control always have this flag at `False`.
+2. **Inferred-duck check** (PR #299) — if the requested target is
+   more than `_DUCK_INFERENCE_THRESHOLD_DB = 5 dB` ABOVE camilla's
+   current `main_volume`, a Ducker is plausibly active and we
+   defer. Catches the dial / web-slider path through jasper-
+   control's per-request coordinator (which can't see voice-session
+   state).
+
+Both gates persist `listening_level` (user intent recorded), only the
+camilla write is skipped. When `Ducker.restore()` runs at session
+end it reads disk → `get_camilla_target_db()` → camilla lands at
+the user's intended level. The inferred-duck check is **asymmetric
+by design**: only raises by > threshold defer. Requests at or below
+current `main_volume` pass through — the user is asking for
+at-or-below the ducked level, which doesn't break the duck's
+protection. Test names:
+`test_set_camilla_passes_through_when_lowering_below_ducked_level`
+and `test_set_camilla_passes_through_when_no_duck_inferred` lock
+the asymmetry in.
+
+What we **don't** do (per the deeper investigation in PR #299): TTS
+gain does NOT respond to dial / web-slider input during TTS playback.
+The tracker stays paused. The user can adjust between turns; mid-
+TTS the audible feedback is that music doesn't get loud (good), and
+TTS itself plays at the gain set at turn-start (no change). Building
+real-time TTS responsiveness to user input requires either
+cross-daemon UDS coordination or a delta-based tracker refactor;
+neither felt justified for the use frequency observed in production.
+
 ## Hearing-safety belt
 
 The coordinator pushes commands; it doesn't enforce safety on its own.
@@ -295,3 +335,7 @@ If you're changing the staleness semantics (idle reset thresholds),
 the field of authority is `last_used_at` in the persistence record,
 written ONLY on user-initiated changes (set/adjust/observe), NOT
 on boot restore.
+
+---
+
+Last verified: 2026-05-24 (re-verified after PR #299 added the inferred-duck defer to `_set_camilla` and the "Two deferral triggers" subsection)
