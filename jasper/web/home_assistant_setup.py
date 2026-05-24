@@ -1228,14 +1228,15 @@ to this Home Assistant instance.</p>
   // ---- Voice-pack prompt: two copy buttons -------------------------
   // Default button copies the prompt with visible <placeholders> for
   // URL + token (safer to share, includes brief paste-in instructions
-  // for the agent). Credentials button substitutes the live values
-  // after a confirm dialog that flags the security trade-off.
+  // for the agent). Credentials button fetches the live values from
+  // ./credentials-for-copy after a confirm dialog that flags the
+  // security trade-off, substitutes them in, and copies. The live
+  // values are NEVER rendered into the page body — see
+  // do_POST('/credentials-for-copy') for the rationale.
   // The template is JSON-encoded server-side so multi-line prose,
   // backticks, and curly braces survive embedding in a JS string
   // literal without quoting gymnastics.
   const VOICE_PROMPT_TEMPLATE = {json.dumps(VOICE_PACK_PROMPT)};
-  const VOICE_HA_URL = {json.dumps(url)};
-  const VOICE_HA_TOKEN = {json.dumps(token)};
   const URL_PLACEHOLDER_FOR_SHARING = '<your HA URL, e.g. http://homeassistant.local:8123>';
   const TOKEN_PLACEHOLDER_FOR_SHARING =
     '<paste a long-lived access token from HA → Profile → Security → Long-Lived Access Tokens>';
@@ -1292,9 +1293,36 @@ to this Home Assistant instance.</p>
         '  • share a screenshot of the prompt\\n\\n' +
         'Continue?');
       if (!ok) return;
+      // Fetch credentials lazily. The page intentionally never holds
+      // the live URL/token in DOM — see the server-side
+      // /credentials-for-copy handler's docstring. CSRF token is the
+      // same one the Disconnect form uses; we read it from the
+      // hidden input rather than plumbing a separate meta tag.
+      const csrfEl = document.querySelector('input[name="csrf_token"]');
+      if (!csrfEl) {{
+        showCopyFeedback('Could not fetch credentials (no CSRF token)', false);
+        return;
+      }}
+      let creds;
+      try {{
+        const r = await fetch('./credentials-for-copy', {{
+          method: 'POST',
+          headers: {{'X-CSRF-Token': csrfEl.value}},
+        }});
+        if (!r.ok) {{
+          showCopyFeedback(
+            `Could not fetch credentials (server returned ${{r.status}})`,
+            false);
+          return;
+        }}
+        creds = await r.json();
+      }} catch (e) {{
+        showCopyFeedback('Could not fetch credentials — network error', false);
+        return;
+      }}
       const text = VOICE_PROMPT_TEMPLATE
-        .replace('{{HA_URL_PLACEHOLDER}}', VOICE_HA_URL)
-        .replace('{{HA_TOKEN_PLACEHOLDER}}', VOICE_HA_TOKEN);
+        .replace('{{HA_URL_PLACEHOLDER}}', creds.url)
+        .replace('{{HA_TOKEN_PLACEHOLDER}}', creds.token);
       const copied = await copyToClipboard(text);
       showCopyFeedback(
         copied ? '✓ Prompt + credentials copied — paste into your coding agent'
@@ -1390,6 +1418,43 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     verify_ssl=_verify_ssl_from_state(state),
                 )
                 self._send_json(result)
+                return
+            if path == "/credentials-for-copy":
+                # Returns the live HA URL + token to the page's JS so
+                # the "📋 Copy with HA credentials" button can substitute
+                # them into the voice-pack prompt template and put the
+                # result on the clipboard.
+                #
+                # Why a separate endpoint instead of inlining the values
+                # into the page (the old design): inlining renders the
+                # raw token into the connected-state HTML body, where
+                # any browser extension can read it, screenshots capture
+                # it, "view source" / "save page as" persist it, and a
+                # stale tab keeps it in memory indefinitely. The new
+                # shape fetches lazily on the user's click, holds the
+                # token in a local const for one event-loop turn, copies,
+                # and lets it fall out of scope. Cross-origin reads are
+                # SOP-blocked by the browser; same-origin abuse is
+                # gated by the CSRF header.
+                #
+                # CSRF: required (the response leaks credentials). The
+                # connected-state page already renders the token in a
+                # hidden input for the Disconnect form, so the JS reads
+                # it from there and forwards as the X-CSRF-Token header.
+                if not verify_csrf(self):
+                    reject_csrf(self)
+                    return
+                state = read_env_file(cfg["state_path"])
+                url_val = state.get(ENV_URL, "")
+                token_val = state.get(ENV_TOKEN, "")
+                if not (url_val and token_val):
+                    # Defensive — shouldn't happen if the connected-state
+                    # page even rendered (it only does when both are set).
+                    self._send_json(
+                        {"error": "credentials not set"}, status=400,
+                    )
+                    return
+                self._send_json({"url": url_val, "token": token_val})
                 return
             if path not in ("/save", "/disconnect"):
                 self.send_error(HTTPStatus.NOT_FOUND)
