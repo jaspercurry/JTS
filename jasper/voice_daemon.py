@@ -555,6 +555,43 @@ class TtsVolumeTracker:
         if self._volume_persistence is not None:
             self._volume_persistence.maybe_save_anchor(windowed_rms)
 
+    def _apply_gain(self, vol_db: float, windowed_rms: float) -> None:
+        """Compute target → apply via set_gain_db → emit structured event
+        on user-perceptible change. Centralizes the pattern shared by
+        apply_now and _loop.
+
+        The structured `event=tts_gain.compute` line fires only when
+        `tts.gain_db` actually moves (set_gain_db is a no-op on equal
+        values), so log volume stays proportional to perceptible change.
+        Carries every input the formula consumed plus the branch and
+        all clamping stages — enough to reconstruct any gain choice
+        from logs alone, without correlating across the three separate
+        log lines that used to be required."""
+        target = self._compute_gain(vol_db, windowed_rms)
+        old_gain = self._tts.gain_db
+        self._tts.set_gain_db(target)
+        if self._tts.gain_db == old_gain:
+            return
+        # Reconstruct branch for the structured event. Cheap: just
+        # comparisons + arithmetic on three floats. Mirrors the
+        # branching in _compute_gain by design — keep these two
+        # in lockstep if you add a fourth branch.
+        ceiling = vol_db + self._offset_db
+        if windowed_rms > self._silence_threshold_dbfs:
+            branch = "music"
+        elif self._anchor_dbfs > -120.0:
+            branch = "anchor"
+        else:
+            branch = "no_anchor"
+        logger.info(
+            "event=tts_gain.compute branch=%s windowed_rms=%.1f "
+            "anchor_dbfs=%.1f main_volume_db=%.1f offset_db=%.1f "
+            "ceiling_db=%.1f target_db=%.1f final_db=%.1f max_cap_db=%.1f",
+            branch, windowed_rms, self._anchor_dbfs, vol_db,
+            self._offset_db, ceiling, target,
+            self._tts.gain_db, TtsPlayout.MAX_TTS_GAIN_DB,
+        )
+
     async def apply_now(self) -> None:
         result = await self._camilla.get_volume_and_mute(best_effort=True)
         if result is None:
@@ -572,7 +609,7 @@ class TtsVolumeTracker:
         rms = max(rms_pair) if rms_pair is not None else float("-inf")
         windowed = self._record_rms(rms)
         self._maybe_update_anchor(windowed)
-        self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
+        self._apply_gain(vol_db, windowed)
 
     async def start(self) -> None:
         await self.apply_now()
@@ -616,7 +653,7 @@ class TtsVolumeTracker:
             rms = max(rms_pair) if rms_pair is not None else float("-inf")
             windowed = self._record_rms(rms)
             self._maybe_update_anchor(windowed)
-            self._tts.set_gain_db(self._compute_gain(vol_db, windowed))
+            self._apply_gain(vol_db, windowed)
 
 
 def _build_system_instruction(

@@ -119,14 +119,44 @@ tracker, leaving TTS several dB *quieter* than music instead of the
   only loudness signal we have.
 
 `JASPER_TTS_GAIN_DB` (the `offset_db`) therefore only affects the
-silence branches now. Default `0` = "TTS in silence sits at
-`main_volume` exactly." Negative values push TTS below `main_volume`
-during silence; positive values are rejected by config validation.
+silence branches now and is **deprecated** as of PR #295. Default
+`0` = "TTS in silence sits at `main_volume` exactly." Negative values
+still work but log a one-shot deprecation warning at startup; positive
+values are rejected by config validation. The env var will be removed
+once nobody's using it.
 
 This branch-specific policy is the structural invariant the
 regression tests in `tests/test_tts_volume_tracker.py` lock in
 (`test_music_branch_ignores_master_volume_entirely` in particular).
 Re-introducing an unmeasured cap on the music branch will fail it.
+
+### Debugging TTS gain — structured telemetry
+
+Every user-perceptible TTS gain change emits a single structured log
+line (PR #295) carrying the full computation context:
+
+```
+event=tts_gain.compute branch=music windowed_rms=-26.0 anchor_dbfs=-25.9
+  main_volume_db=-15.0 offset_db=0.0 ceiling_db=-15.0 target_db=-7.0
+  final_db=-7.0 max_cap_db=-6.0
+```
+
+Fields:
+- `branch` — which decision path fired (`music` / `anchor` / `no_anchor`)
+- `windowed_rms` — what `playback_rms` reported, post-windowing
+- `anchor_dbfs` — last-known music level (frozen during silence)
+- `main_volume_db` — CamillaDSP's `main_volume` at the moment
+- `offset_db` — the deprecated `JASPER_TTS_GAIN_DB` offset
+- `ceiling_db` — `main_volume + offset` (applied to silence branches only)
+- `target_db` — what the formula computed before any clamping
+- `final_db` — what `TtsPlayout` actually applied after `MAX_TTS_GAIN_DB`
+- `max_cap_db` — hearing-safety cap (always `-6 dB`)
+
+Fires only on actual changes to `final_db` (no log spam). The existing
+`tts gain set: X dB` short line still fires alongside it for grep-
+friendly summaries. Together, the two lines let you reconstruct any
+TTS gain choice from logs alone — no need to correlate across separate
+`event=duck`, `volume persistence`, and `tts gain set` lines.
 
 ## Operational notes
 
