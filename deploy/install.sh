@@ -1283,20 +1283,35 @@ migrate_memory_resilience() {
         errors=$((errors+1))
     fi
 
-    # Step 3: zram sizing + compression algorithm. rpi-swap is the
-    # Trixie standard zram manager; on Bookworm or earlier RPi OS
-    # versions the user may be on dphys-swapfile or zramswap — skip
-    # gracefully there. The OOMScoreAdjust + sysctls + MGLRU pieces
-    # still apply and provide real protection.
+    # Step 3: zram sizing via rpi-swap drop-in. rpi-swap is the
+    # Trixie standard zram manager (replaces dphys-swapfile); on older
+    # RPi OS the user may be on something else — skip gracefully there.
+    #
+    # IMPORTANT: rpi-swap is a systemd *generator*, not a service.
+    # `systemctl restart rpi-swap` is not a thing — the generator
+    # runs once at early boot and sizes the zram device. Per
+    # swap.conf(5): "After modifying any swap configuration, you must
+    # reboot the system for changes to take effect." `jasper-doctor`'s
+    # check_zram_size_ratio will warn until the reboot lands.
     if [[ -d /etc/rpi ]]; then
         install -d -m 0755 /etc/rpi/swap.conf.d
         if install -m 0644 "${REPO_DIR}/deploy/rpi-swap/50-jts.conf" \
                 /etc/rpi/swap.conf.d/; then
-            if systemctl restart rpi-swap >/dev/null 2>&1; then
-                echo "  memory_resilience: zram resized via rpi-swap (50% RAM, lz4)"
+            # Check whether zram is already the target size — if so,
+            # no operator action needed; if not, surface the reboot
+            # requirement loudly. 520 MiB ≈ 50% × 991 MB / 1 GB.
+            local cur_zram_bytes=0
+            if [[ -r /sys/block/zram0/disksize ]]; then
+                cur_zram_bytes=$(cat /sys/block/zram0/disksize 2>/dev/null || echo 0)
+            fi
+            local target_zram_bytes=$((520 * 1024 * 1024))
+            local zram_diff=$((cur_zram_bytes - target_zram_bytes))
+            # Within ±60 MB of target counts as "already correct."
+            if [[ ${zram_diff#-} -lt 62914560 ]]; then
+                echo "  memory_resilience: zram drop-in installed; live size already ~50% RAM"
             else
-                echo "  memory_resilience: WARN — rpi-swap restart failed; new sizing live after reboot"
-                errors=$((errors+1))
+                echo "  memory_resilience: zram drop-in installed; REBOOT REQUIRED to resize"
+                echo "                     current: $((cur_zram_bytes / 1024 / 1024)) MB → target: ~520 MB"
             fi
         else
             echo "  memory_resilience: WARN — failed to install rpi-swap drop-in"
