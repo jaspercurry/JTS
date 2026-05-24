@@ -14,6 +14,19 @@ The pitch: a music streamer that's also a voice assistant, built
 from open hardware and open audio software, with the LLM costing
 roughly $1–3/month at light use on the cheapest provider.
 
+**Want to set one up?**
+- **Using Claude Code?** Just open this repo and say *"I want to set up
+  a JTS speaker"* (or *"set up a Pi"*, *"I just got a new Pi"*,
+  whatever feels natural). Claude reads the
+  [`/onboard-pi`](.claude/commands/onboard-pi.md) skill and walks you
+  through every step — Pi Imager download, SD card flash, first boot,
+  network discovery (including multi-speaker collision detection), and
+  the install. ~30 minutes total.
+- **Prefer to read the steps yourself?** [QUICKSTART.md](QUICKSTART.md)
+  is the same flow as a human-readable walkthrough.
+- **Doing the full long-form bringup** (hardware calibration, XVF
+  firmware flashing, satellite devices)? See [BRINGUP.md](BRINGUP.md).
+
 ---
 
 ## Hardware
@@ -314,17 +327,57 @@ tests/                          Hardware-free pytest suite
 
 ---
 
+## Onboarding pattern (Apache 2.0 — fork this for your own project)
+
+The setup flow we landed for JTS is generalizable. Four pieces:
+
+1. **`.claude/commands/onboard-pi.md`** — a Claude Code skill with a
+   pushy auto-trigger description. Body lays out phases (hardware
+   sanity → Pi Imager → flash → boot → install → configure) with a
+   one-question-per-turn discipline and front-loaded anti-pattern
+   warnings. Pre-flight LAN probe handles multi-instance collision
+   avoidance before the user picks a hostname.
+2. **`scripts/onboard.sh`** — the deterministic shell side. Idempotent.
+   Probes reachability, persists state, calls into the existing
+   `deploy-to-pi.sh`, validates with `jasper-doctor`. Emits
+   structured `event=onboard.<phase> status=<s>` lines parallel to
+   the Pi-side daemon logging convention.
+3. **`scripts/_lib.sh`** — shared header. Sources `.env.local`,
+   exports `PI_HOST`/`PI_USER` with a documented fallback chain,
+   exposes a `write_laptop_state` helper so the onboarder and the
+   `use` switcher stay in template-sync.
+4. **`CLAUDE.local.md`** (gitignored, written by the onboarder) —
+   loaded via `CLAUDE.md`'s `@`-import so every Claude Code session
+   in the checkout automatically knows which Pi is active. Includes
+   a behavioral directive (*"prefer `ssh <alias>` over inline
+   `user@host`"*) that fixes "Claude reinvents the connection method
+   every session" at the prompt layer rather than the script layer.
+
+The split: **deterministic shell does what must be reliable; Claude
+does what benefits from intelligence** (discovery, troubleshooting,
+recovery, multi-instance reasoning). This is opposite to PostHog's
+[wizard](https://github.com/PostHog/wizard) (Claude Agent SDK in a
+standalone CLI with hosted LLM gateway) because the user is already
+in Claude Code when they start — we don't need to host an agent;
+we are one. The pattern composes for any project where setup
+involves (a) external hardware/software prerequisites, (b)
+multi-instance collision concerns, and (c) idempotent install
+steps. Apache 2.0 like the rest of the repo.
+
+---
+
 ## Documentation map
 
 | File | Audience | Purpose |
 |---|---|---|
 | [README.md](README.md) | Anyone landing on the repo | What this is, where to look |
 | [AGENTS.md](AGENTS.md) | All AI agents (canonical) | Operational rules + per-subsystem guidance + documentation paradigm. Edit here. |
-| [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@README.md` + `@AGENTS.md`). Don't edit; AGENTS.md is canonical. |
+| [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@README.md` + `@AGENTS.md` + per-checkout `@CLAUDE.local.md`). Don't edit; AGENTS.md is canonical. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
-| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker |
+| [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Pi Imager → boot → `scripts/onboard.sh` → working speaker in ~30 min. Imager 2.0.6+ required. |
+| [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle and which volume knob attenuates which path |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |

@@ -2803,10 +2803,14 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # of /etc/NetworkManager/system-connections/ would either fail
         # to recreate (no stash) or recreate the wrong network (drift).
         check_wifi_guardian,
-        # Rotary dial: avahi advertising the control service so the
-        # dial finds us via mDNS-SD, plus a heartbeat from any dial
-        # currently on the network.
+        # mDNS publishing chain — three checks ordered most-specific
+        # cause first so the operator reads the right failure message:
+        #   1. daemon installed and running at all
+        #   2. our jasper-control service being advertised
+        #   3. hostname collision detection (Avahi's silent suffix-resolve)
+        check_avahi_daemon,
         check_avahi_jasper_control,
+        check_hostname_avahi_consistency,
         check_dial_heartbeat,
         # Multi-device peering. The mode check verifies the env file
         # is parseable (a typo in JASPER_PEERING resolves to OFF, but
@@ -3217,6 +3221,106 @@ def _local_peer_id() -> str:
         return Path("/var/lib/jasper/peer_id").read_text().strip()
     except OSError:
         return ""
+
+
+def check_avahi_daemon() -> CheckResult:
+    """avahi-daemon is the mDNS *publisher* — without it the speaker
+    is invisible to `<hostname>.local` resolution from other devices,
+    the dial can't auto-discover via `_jasper-control._tcp`, and any
+    user-facing mention of "visit http://jts.local/" silently fails.
+
+    Pi OS Lite Trixie ships `libnss-mdns` (resolution-side) but does
+    NOT pre-install or enable avahi-daemon. install.sh added the
+    package starting 2026-05-24; on Pis bootstrapped before that this
+    check flags the gap so the operator knows to re-run install.sh.
+
+    Fires BEFORE check_avahi_jasper_control so the operator sees the
+    package/daemon failure first, not the indirect "service not
+    advertised" message.
+    """
+    label = "avahi-daemon"
+    state = _run(["systemctl", "is-active", "avahi-daemon.service"]).stdout.strip()
+    if state == "active":
+        return CheckResult(label, "ok", "running (mDNS publishing enabled)")
+    # is-active prints "inactive" for both unit-not-found and stopped.
+    # Distinguish via `status` exit code: 4 means unit not loaded.
+    status = _run(["systemctl", "status", "avahi-daemon.service"])
+    if "could not be found" in status.stderr.lower() or status.returncode == 4:
+        return CheckResult(
+            label, "fail",
+            "avahi-daemon NOT installed. Re-run deploy/install.sh — "
+            "it now installs the package (2026-05-24+). Without it, "
+            "`<hostname>.local` doesn't resolve and the dial can't "
+            "auto-discover this Pi.",
+        )
+    return CheckResult(
+        label, "fail",
+        f"systemctl is-active = '{state}'. "
+        "`sudo systemctl enable --now avahi-daemon` to fix.",
+    )
+
+
+def check_hostname_avahi_consistency() -> CheckResult:
+    """Detect Avahi's silent hostname suffix-resolve on collision.
+
+    When two devices on the same LAN both claim the same hostname,
+    Avahi's conflict-resolution renames the loser to `<hostname>-2`,
+    `<hostname>-3`, etc. — the OS-level `/etc/hostname` stays as the
+    user configured it, but `avahi-resolve` and outbound mDNS replies
+    use the suffixed form. The user has no UI surface that tells
+    them this happened; they just notice "my second speaker isn't
+    reachable as jts.local — what's going on?".
+
+    Approach: resolve `<sys_hostname>.local` via `avahi-resolve-host-name`
+    and compare the result to one of our own interface IPs. If the
+    name we configured resolves to someone *else's* IP, another
+    device on the LAN won the claim and we got suffix-resolved.
+    Decoupled from `_jasper-control._tcp` so it works before
+    jasper-control is up.
+    """
+    label = "hostname ↔ avahi consistency"
+    sys_hostname = _run(["hostname", "-s"]).stdout.strip()
+    if not sys_hostname:
+        return CheckResult(label, "warn", "could not read system hostname")
+    bin_path = shutil.which("avahi-resolve-host-name")
+    if bin_path is None:
+        return CheckResult(
+            label, "warn",
+            "avahi-resolve-host-name missing (apt install avahi-utils)",
+        )
+    # -4: IPv4 only. Output is one line: `<hostname>.local <IP>`.
+    proc = _run([bin_path, "-4", f"{sys_hostname}.local"], timeout=4.0)
+    if proc.returncode != 0:
+        # Don't fail — check_avahi_daemon already reports the root
+        # cause if the daemon isn't running.
+        return CheckResult(
+            label, "warn",
+            f"avahi-resolve-host-name {sys_hostname}.local exited "
+            f"{proc.returncode}. Likely avahi-daemon not yet "
+            f"advertising us — check_avahi_daemon reports the cause.",
+        )
+    parts = proc.stdout.strip().split()
+    if len(parts) < 2:
+        return CheckResult(
+            label, "warn",
+            f"unexpected avahi-resolve output: {proc.stdout.strip()!r}",
+        )
+    resolved_ip = parts[1]
+    # `hostname -I` prints space-separated IPs for all up interfaces.
+    own_ips = set(_run(["hostname", "-I"]).stdout.split())
+    if resolved_ip in own_ips:
+        return CheckResult(
+            label, "ok",
+            f"`{sys_hostname}.local` resolves to us ({resolved_ip})",
+        )
+    return CheckResult(
+        label, "warn",
+        f"`{sys_hostname}.local` resolves to {resolved_ip}, but this "
+        f"Pi's IPs are {sorted(own_ips)}. Another device on the LAN "
+        f"is using your hostname; Avahi suffix-resolved us to "
+        f"`{sys_hostname}-N.local`. Pick a unique hostname: "
+        f"`sudo hostnamectl set-hostname <new>` then reboot.",
+    )
 
 
 def check_avahi_jasper_control() -> CheckResult:

@@ -8,3 +8,4 @@
 
 @README.md
 @AGENTS.md
+@CLAUDE.local.md
