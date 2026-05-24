@@ -427,23 +427,26 @@ _EXPECTED_CONFIG = {
 
 def _make_oom_run(pid_map, config_map):
     """Build a `_run` mock for check_oom_score_adj's two BATCHED
-    systemctl calls (PR cleanup post-T5.2):
-      `systemctl show -p MainPID --value u1.service u2.service ...`
-      `systemctl show -p OOMScoreAdjust --value u1.service u2.service ...`
-    Each returns N lines (one per unit, in argument order)."""
+    systemctl calls. Real wire format: when called with multiple
+    units AND --value, systemctl uses `\\n\\n` (blank line) between
+    values — NOT a single newline. Reproduce that here so tests
+    catch regressions in the parser.
+
+      `systemctl show -p MainPID --value u1 u2 u3` →
+        "1234\\n\\n5678\\n\\n9012\\n"
+    """
     def fake_run(cmd, **kwargs):
-        # cmd = ["systemctl", "show", "-p", <prop>, "--value",
-        #        "u1.service", "u2.service", ...]
         prop = cmd[3]
-        # Units start at index 5 (after `--value`).
         units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
         result = MagicMock()
         if prop == "MainPID":
-            result.stdout = "\n".join(pid_map.get(u, "0") for u in units) + "\n"
+            values = [pid_map.get(u, "0") for u in units]
         elif prop == "OOMScoreAdjust":
-            result.stdout = "\n".join(config_map.get(u, "0") for u in units) + "\n"
+            values = [config_map.get(u, "0") for u in units]
         else:
-            result.stdout = "\n"
+            values = []
+        # Real systemctl emits \n\n between values + trailing \n.
+        result.stdout = "\n\n".join(values) + "\n" if values else "\n"
         return result
     return fake_run
 
@@ -553,6 +556,64 @@ def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
         r = doctor.check_oom_score_adj()
     assert r.status == "warn"
     assert "UNIT FILE drift" in r.detail  # not "live-process drift"
+
+
+def test_systemctl_show_property_parses_double_newline_separator():
+    """Regression test for the wire-format bug discovered on jts2.local
+    post-cleanup-deploy (2026-05-24): when called with multiple units
+    AND --value, systemctl emits values separated by \\n\\n (blank
+    line), NOT a single \\n.
+
+    Pre-fix: parser split on \\n and got 2N-1 elements for N units,
+    triggered the "len mismatch → return None" fallback, and
+    check_oom_score_adj reported "systemctl unavailable — skipped
+    (not Linux?)" on a real Pi. Bad UX.
+
+    This test pins the parser to the actual wire format so the
+    failure cannot recur silently. Verified directly via
+    `systemctl show -p MainPID --value u1 u2 | cat -A` on the Pi."""
+    # Mock that emits the real systemctl format
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        # Real format: value1\n\nvalue2\n\nvalue3\n
+        result.stdout = "1001\n\n1002\n\n1003\n"
+        return result
+
+    with patch.object(doctor, "_run", side_effect=fake_run):
+        result = doctor._systemctl_show_property(
+            "MainPID", ["unit-a", "unit-b", "unit-c"],
+        )
+    # Must return 3 values (one per unit), NOT None / 5 / 6.
+    assert result == ["1001", "1002", "1003"]
+
+
+def test_systemctl_show_property_handles_single_unit():
+    """Single unit still works — separator is just `\\n` then."""
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.stdout = "1234\n"
+        return result
+
+    with patch.object(doctor, "_run", side_effect=fake_run):
+        result = doctor._systemctl_show_property("MainPID", ["unit-a"])
+    assert result == ["1234"]
+
+
+def test_systemctl_show_property_handles_empty_values():
+    """All units returned empty (e.g. all not-running) — still
+    produces N entries, NOT len mismatch."""
+    def fake_run(cmd, **kwargs):
+        result = MagicMock()
+        result.stdout = "\n\n\n\n\n"  # 3 empty values
+        return result
+
+    with patch.object(doctor, "_run", side_effect=fake_run):
+        result = doctor._systemctl_show_property(
+            "MainPID", ["unit-a", "unit-b", "unit-c"],
+        )
+    # All-empty is unusual but should still be 3 entries.
+    assert result is not None
+    assert len(result) == 3
 
 
 # --- check_start_limit_action (T5.1) ------------------------------------
