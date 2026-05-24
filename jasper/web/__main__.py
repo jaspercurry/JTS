@@ -145,14 +145,20 @@ def main() -> int:
     # out to systemctl for AirPlay + Spotify Connect; DBus for BT.
     sources_server = sources_setup.make_server(target_for(sources_port))
 
-    # Wake-word picker — radio over the curated registry in
-    # jasper/wake_models.py. Writes /var/lib/jasper/wake_model.env and
-    # restarts jasper-voice on save.
+    # Wake-word page — model picker + detection layers + sensitivity.
+    # Writes /var/lib/jasper/wake_model.env on model save; proxies
+    # layer/sensitivity changes to jasper-control on
+    # JASPER_CONTROL_BASE (default 127.0.0.1:8780).
     wake_state = os.environ.get(
         "JASPER_WAKE_MODEL_FILE", wake_setup.WAKE_MODEL_FILE,
     )
+    wake_control_base = os.environ.get(
+        "JASPER_CONTROL_BASE", wake_setup.DEFAULT_CONTROL_BASE,
+    )
     wake_server = wake_setup.make_server(
-        target_for(wake_port), state_path=wake_state,
+        target_for(wake_port),
+        state_path=wake_state,
+        control_base=wake_control_base,
     )
 
     # Wi-Fi network management — scan / connect / forget. Stateless on

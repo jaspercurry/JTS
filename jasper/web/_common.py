@@ -284,6 +284,65 @@ NAV_BACK_CSS = """
 """
 
 
+# iOS-style on/off switch. Used by every wizard that exposes a binary
+# toggle (sources, wake detection layers). One source of truth for the
+# size, the green-when-on accent, and the disabled appearance — pages
+# import this CSS and the matching `toggle_html()` helper rather than
+# rolling their own checkbox styling. Embed inside any <style> block.
+TOGGLE_CSS = """
+  .toggle {
+    position: relative; display: inline-block; flex-shrink: 0;
+    width: 54px; height: 30px;
+  }
+  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle .track {
+    position: absolute; inset: 0;
+    background-color: #ccc;
+    border-radius: 30px;
+    cursor: pointer;
+    transition: background-color 0.18s ease;
+  }
+  .toggle .track::before {
+    position: absolute; content: "";
+    width: 24px; height: 24px;
+    top: 3px; left: 3px;
+    background-color: #fff;
+    border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    transition: transform 0.18s ease;
+  }
+  .toggle input:checked + .track { background-color: #1db954; }
+  .toggle input:checked + .track::before { transform: translateX(24px); }
+  .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+  .toggle input:focus-visible + .track {
+    outline: 2px solid #1db954; outline-offset: 2px;
+  }
+"""
+
+
+def toggle_html(
+    input_id: str, *, checked: bool = False, disabled: bool = False,
+) -> str:
+    """Render an iOS-style toggle. Pairs with `TOGGLE_CSS`.
+
+    `input_id` is the DOM id; pages bind to it via
+    `document.getElementById(input_id).addEventListener('change', ...)`.
+    Initial `checked` / `disabled` set the first-paint state — server-
+    rendered HTML is hydrated by a /state poll so the actual value
+    converges to truth within a poll cycle anyway."""
+    attrs = [f'id="{html.escape(input_id)}"', 'type="checkbox"']
+    if checked:
+        attrs.append("checked")
+    if disabled:
+        attrs.append("disabled")
+    return (
+        f'<label class="toggle">'
+        f'<input {" ".join(attrs)}>'
+        f'<span class="track"></span>'
+        f'</label>'
+    )
+
+
 def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
     """Wrap a body fragment into a complete HTML5 document with the
     shared style and an optional status banner.
@@ -709,3 +768,89 @@ def mask_secret(value: str) -> str:
     if len(value) <= 8:
         return "…" * len(value)
     return f"{value[:4]}…{value[-4:]}"
+
+
+# ---------------------------------------------------------------------------
+# jasper-control HTTP proxy helpers.
+# ---------------------------------------------------------------------------
+#
+# Several wizards (today: /system, /wake) forward a handful of read +
+# write endpoints to the jasper-control daemon on 127.0.0.1:8780. Pulled
+# out here so each wizard doesn't carry its own copy of the
+# urllib-error-to-502 plumbing.
+
+import json as _json  # noqa: E402  (lazy: only imported by proxy helpers)
+import urllib.error  # noqa: E402
+import urllib.request  # noqa: E402
+
+DEFAULT_CONTROL_BASE = "http://127.0.0.1:8780"
+
+
+def proxy_get(
+    path: str,
+    *,
+    control_base: str = DEFAULT_CONTROL_BASE,
+    timeout: float = 30.0,
+) -> tuple[int, bytes]:
+    """Proxy a GET to jasper-control. Returns `(status, body)`. On
+    connection failure, returns `(502, {"error": "..."} JSON)` so the
+    caller can write it straight through to its own JSON client without
+    branching on transport errors vs HTTP errors."""
+    url = control_base.rstrip("/") + path
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read() or b'{"error":"upstream HTTP error"}'
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        body = _json.dumps(
+            {"error": f"jasper-control unreachable: {e}"},
+        ).encode()
+        return 502, body
+
+
+def proxy_post(
+    path: str,
+    *,
+    control_base: str = DEFAULT_CONTROL_BASE,
+    timeout: float = 5.0,
+    body: bytes | None = None,
+) -> tuple[int, bytes]:
+    """Proxy a POST to jasper-control. `body` defaults to empty (for
+    parameterless action endpoints); pass JSON bytes for endpoints that
+    take parameters. Same `(status, body)` contract as `proxy_get`."""
+    url = control_base.rstrip("/") + path
+    data = body if body is not None else b""
+    req = urllib.request.Request(
+        url, data=data, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(len(data)),
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read() or b'{"error":"upstream HTTP error"}'
+    except (urllib.error.URLError, OSError, TimeoutError) as e:
+        err_body = _json.dumps(
+            {"error": f"jasper-control unreachable: {e}"},
+        ).encode()
+        return 502, err_body
+
+
+def send_proxy_json(
+    handler: BaseHTTPRequestHandler, body: bytes, *, status: int = 200,
+) -> None:
+    """Write a proxied JSON body back to the client. Sends the right
+    Content-Type / Content-Length / Cache-Control headers so the
+    browser-side fetch() sees a well-formed JSON response even when
+    the upstream is down (and we're forwarding a 502 from proxy_get
+    / proxy_post)."""
+    handler.send_response(status)
+    handler.send_header("Content-Type", "application/json")
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Cache-Control", "no-store")
+    handler.end_headers()
+    handler.wfile.write(body)

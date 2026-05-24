@@ -39,7 +39,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ._common import begin_request, send_html_response, wrap_page
+from ._common import TOGGLE_CSS, begin_request, send_html_response, wrap_page
 
 logger = logging.getLogger(__name__)
 
@@ -195,47 +195,21 @@ def _apply(source: str, enabled: bool) -> None:
         _set_unit(USBSINK_UNIT, enabled)
 
 
-# Page-specific CSS layered on top of PAGE_STYLE from _common.py. The
-# wizard uses iOS-style switches rather than checkboxes — bigger touch
-# target, instantly readable on/off state, and matches the JTS green
-# accent used by the volume fill on the landing page.
-_PAGE_CSS = """
+# Per-row layout layered on top of PAGE_STYLE + TOGGLE_CSS. The iOS
+# switch markup itself (label.toggle > input + span.track) lives in
+# _common.TOGGLE_CSS so /wake/'s detection layers can reuse the same
+# visual without copy-pasting the rules.
+_PAGE_CSS = f"""
 <style>
-  .source-row {
+{TOGGLE_CSS}
+  .source-row {{
     display: flex; align-items: center; justify-content: space-between;
     padding: 1em 0;
     border-bottom: 1px solid #eee;
-  }
-  .source-row:last-child { border-bottom: none; }
-  .source-name { font-weight: 600; font-size: 1.05em; color: #222; }
-  .source-note { color: #888; font-size: 0.9em; margin-top: 0.2em; }
-  .toggle {
-    position: relative; display: inline-block; flex-shrink: 0;
-    width: 54px; height: 30px;
-  }
-  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
-  .toggle .track {
-    position: absolute; inset: 0;
-    background-color: #ccc;
-    border-radius: 30px;
-    cursor: pointer;
-    transition: background-color 0.18s ease;
-  }
-  .toggle .track::before {
-    position: absolute; content: "";
-    width: 24px; height: 24px;
-    top: 3px; left: 3px;
-    background-color: #fff;
-    border-radius: 50%;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-    transition: transform 0.18s ease;
-  }
-  .toggle input:checked + .track { background-color: #1db954; }
-  .toggle input:checked + .track::before { transform: translateX(24px); }
-  .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
-  .toggle input:focus-visible + .track {
-    outline: 2px solid #1db954; outline-offset: 2px;
-  }
+  }}
+  .source-row:last-child {{ border-bottom: none; }}
+  .source-name {{ font-weight: 600; font-size: 1.05em; color: #222; }}
+  .source-note {{ color: #888; font-size: 0.9em; margin-top: 0.2em; }}
 </style>
 """
 
