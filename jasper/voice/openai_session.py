@@ -239,6 +239,11 @@ class OpenAIRealtimeTurn(LiveTurn):
         # so this stays unused; recorded so the field is ready when
         # someone wires up barge-in for real.
         self._last_assistant_item_id: str | None = None
+        self._server_vad_active: bool = False
+        self._server_speech_started: bool = False
+        self._server_speech_stopped: bool = False
+        self._server_committed: bool = False
+        self._server_eou_event: asyncio.Event = asyncio.Event()
 
     async def send_audio(self, pcm_16khz_int16: bytes) -> None:
         if self._released or self._turn_lost or self._committed:
@@ -322,8 +327,13 @@ class OpenAIRealtimeTurn(LiveTurn):
         """Commit the user audio buffer and trigger a response.
 
         Equivalent of Gemini's ``activity_end``: server stops listening
-        for more user audio and starts generating. Idempotent."""
+        for more user audio and starts generating. Idempotent.
+
+        No-op when server_vad is active — the server already committed
+        the buffer via speech_stopped + committed events."""
         if self._committed or self._released or self._turn_lost:
+            return
+        if self._server_vad_active:
             return
         self._committed = True
         try:
@@ -429,6 +439,40 @@ class OpenAIRealtimeTurn(LiveTurn):
     def clear_interrupted(self) -> None:
         self._interrupted = False
         self._interrupt_event.clear()
+
+    # ---- Server VAD ----
+
+    def server_vad_active(self) -> bool:
+        return self._server_vad_active
+
+    def server_speech_started(self) -> bool:
+        return self._server_speech_started
+
+    def server_speech_detected(self) -> bool:
+        return self._server_speech_stopped and self._server_committed
+
+    async def wait_for_server_eou(self) -> None:
+        await self._server_eou_event.wait()
+
+    def _mark_server_vad(self) -> None:
+        self._server_vad_active = True
+
+    def _on_speech_started(self) -> None:
+        self._server_speech_started = True
+        logger.info("event=server_vad.speech_started")
+
+    def _on_speech_stopped(self) -> None:
+        self._server_speech_stopped = True
+        logger.info("event=server_vad.speech_stopped")
+        if self._server_committed:
+            self._server_eou_event.set()
+
+    def _on_server_committed(self) -> None:
+        self._server_committed = True
+        self._committed = True
+        logger.info("event=server_vad.committed")
+        if self._server_speech_stopped:
+            self._server_eou_event.set()
 
     # ---- Internal — called by the connection's receive loop ----
 
@@ -662,6 +706,7 @@ class OpenAIRealtimeConnection(LiveConnection):
         # avoid tearing down the user's in-flight conversation; this flag
         # is checked in `_on_turn_released` to fire the deferred reconnect.
         self._proactive_reconnect_pending: bool = False
+        self._server_vad_active: bool = False
 
         # Tight-retry-loop detection — same logic as Gemini, lifted into
         # ``_supervisor.FailureFingerprint``.
@@ -803,6 +848,9 @@ class OpenAIRealtimeConnection(LiveConnection):
             ConnectionState.FAILED,
         )
 
+    def supports_server_vad(self) -> bool:
+        return True
+
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
@@ -847,6 +895,35 @@ class OpenAIRealtimeConnection(LiveConnection):
         await self._send_event({"type": "input_audio_buffer.commit"})
         await self._send_event({"type": "response.create"})
 
+    async def _create_response_only(self) -> None:
+        """Send response.create WITHOUT a preceding commit — used when
+        server_vad has already committed the audio buffer."""
+        await self._send_event({"type": "response.create"})
+
+    async def set_turn_detection(self, mode: dict | None) -> None:
+        """Switch turn detection mid-session.
+
+        mode=None restores manual VAD. mode={...} activates server_vad
+        (with create_response/interrupt_response already set to false by
+        the caller so the daemon retains response timing control)."""
+        if mode is not None and not self._server_vad_active:
+            await self._send_event({"type": "input_audio_buffer.clear"})
+        self._server_vad_active = mode is not None
+        await self._send_event({
+            "type": "session.update",
+            "session": {
+                "audio": {
+                    "input": {
+                        "turn_detection": mode,
+                    },
+                },
+            },
+        })
+        logger.info(
+            "event=server_vad.switch mode=%s",
+            "server_vad" if mode is not None else "manual",
+        )
+
     async def _cancel_response(self) -> None:
         # Best-effort: tell the server to stop generating. Idempotent on
         # the server side — extra cancels for a non-existent response
@@ -859,6 +936,16 @@ class OpenAIRealtimeConnection(LiveConnection):
             logger.debug("openai connection: cancel ignored (%s)", e)
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
+        if self._server_vad_active:
+            try:
+                await self.set_turn_detection(None)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "openai connection: failed to restore manual VAD "
+                    "after turn (%s: %s); next turn's session.update "
+                    "will correct",
+                    type(e).__name__, e,
+                )
         async with self._turn_lock:
             if self._active_turn is turn:
                 self._active_turn = None
@@ -945,6 +1032,7 @@ class OpenAIRealtimeConnection(LiveConnection):
                         "model": "gpt-4o-mini-transcribe",
                         "language": "en",
                     },
+                    "noise_reduction": {"type": "far_field"},
                 },
                 "output": {
                     # Voice belongs HERE in Realtime 2 — at session
@@ -1470,19 +1558,27 @@ class OpenAIRealtimeConnection(LiveConnection):
             await self._handle_response_done(event, turn)
             return
 
-        # Server-side VAD events. We run manual VAD (turn_detection=None)
-        # so these shouldn't normally fire — log and ignore if they do.
-        if etype in (
-            "input_audio_buffer.speech_started",
-            "input_audio_buffer.speech_stopped",
-        ):
-            logger.debug(
-                "openai connection: unexpected VAD event %s under manual VAD",
-                etype,
-            )
+        if etype == "input_audio_buffer.speech_started":
+            if self._server_vad_active and turn is not None:
+                turn._on_speech_started()
+            else:
+                logger.debug("openai connection: VAD event %s (no server_vad turn)", etype)
             return
 
-        # Other informational events. Logged at DEBUG.
+        if etype == "input_audio_buffer.speech_stopped":
+            if self._server_vad_active and turn is not None:
+                turn._on_speech_stopped()
+            else:
+                logger.debug("openai connection: VAD event %s (no server_vad turn)", etype)
+            return
+
+        if etype == "input_audio_buffer.committed":
+            if self._server_vad_active and turn is not None:
+                turn._on_server_committed()
+            else:
+                logger.debug("openai connection: event %s", etype)
+            return
+
         logger.debug("openai connection: event %s", etype)
 
     async def _maybe_reset_context(self) -> None:

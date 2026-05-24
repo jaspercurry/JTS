@@ -423,11 +423,11 @@ class TtsVolumeTracker:
     """
 
     POLL_INTERVAL_SEC = 0.25
-    # Approximate peak of Gemini Live's TTS PCM output (dBFS). Voice
-    # is dynamic but consistent across sessions/utterances per the
-    # source library; observed peaks cluster around -3 dBFS. Used to
-    # convert "where do we want TTS to sit" → "what gain to apply".
-    GEMINI_SOURCE_PEAK_DBFS = -3.0
+    # Approximate peak of provider TTS PCM output (dBFS). Voice is
+    # dynamic but consistent across providers and sessions; observed
+    # peaks cluster around -3 dBFS. Used to convert "where do we want
+    # TTS to sit" → "what gain to apply".
+    TTS_SOURCE_PEAK_DBFS = -3.0
 
     def __init__(
         self,
@@ -472,6 +472,12 @@ class TtsVolumeTracker:
     def resume(self) -> None:
         self._paused = False
 
+    def music_is_playing(self) -> bool:
+        """True when the music chain has audible signal — used by the
+        server_vad switching logic to decide whether to delegate
+        end-of-utterance detection to the provider."""
+        return self._anchor_dbfs > self._silence_threshold_dbfs
+
     def _record_rms(self, rms_dbfs: float) -> float:
         """Append latest RMS reading and return windowed peak."""
         now = asyncio.get_event_loop().time()
@@ -503,12 +509,12 @@ class TtsVolumeTracker:
         ceiling = vol_db + self._offset_db
         if windowed_rms > self._silence_threshold_dbfs:
             target = (
-                windowed_rms + self._headroom_db - self.GEMINI_SOURCE_PEAK_DBFS
+                windowed_rms + self._headroom_db - self.TTS_SOURCE_PEAK_DBFS
             )
         elif self._anchor_dbfs > -120.0:
             target = (
                 self._anchor_dbfs + self._headroom_db
-                - self.GEMINI_SOURCE_PEAK_DBFS
+                - self.TTS_SOURCE_PEAK_DBFS
             )
         else:
             target = ceiling
@@ -1076,6 +1082,33 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
             return
 
 
+async def _server_vad_response_trigger(turn, connection) -> None:
+    """Wait for the server's VAD to signal end-of-utterance, then fire
+    response.create. Only spawned when server_vad is active for the turn."""
+    wait_eou = getattr(turn, "wait_for_server_eou", None)
+    if wait_eou is None or not callable(wait_eou):
+        return
+    try:
+        await asyncio.wait_for(wait_eou(), timeout=NO_SPEECH_ABORT_SEC + 5.0)
+    except asyncio.TimeoutError:
+        logger.warning("event=server_vad.eou_timeout")
+        return
+    except asyncio.CancelledError:
+        raise
+    if turn.turn_lost():
+        return
+    create = getattr(connection, "_create_response_only", None)
+    if create is not None and callable(create):
+        try:
+            await create()
+            logger.info("event=server_vad.response_create")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "event=server_vad.response_create_failed error=%s: %s",
+                type(e).__name__, e,
+            )
+
+
 class WakeLoop:
     """Mic consumer. Dispatches each primary-mic frame to either the
     wake-word detector (WAKE state) or the active live turn (SESSION
@@ -1184,6 +1217,7 @@ class WakeLoop:
         # ONLY if the local VAD detects user speech — TTS bleed-through
         # is filtered out, real interrupts pass through.
         self._vad = SpeechVAD()
+        self._vad_off: SpeechVAD | None = SpeechVAD() if mic_off is not None else None
 
         self._state = State.WAKE
         self._turn: LiveTurn | None = None
@@ -1260,6 +1294,10 @@ class WakeLoop:
         # `_speech_run_started_at`). Used to reject wake-tail audio
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
+        self._server_vad_this_turn: bool = False
+        self._max_silero_raw_in_turn: float = 0.0
+        self._silero_raw_armed_at_ms: int | None = None
+        self._silero_aec_armed_at_ms: int | None = None
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -1604,14 +1642,10 @@ class WakeLoop:
                 capture_ring_off.append(frame)
             if self._acquiring:
                 continue
-            if self._state is not State.WAKE:
-                # Secondary leg ignores frames during a live session
-                # — only the primary stream feeds the LLM. The leg
-                # resumes scoring when the session ends (state →
-                # WAKE) and the primary loop's `_acquiring` drops
-                # back to False.
-                continue
-            await self._handle_wake_frame(frame, leg="off")
+            if self._state is State.WAKE:
+                await self._handle_wake_frame(frame, leg="off")
+            elif self._state is State.SESSION:
+                await self._shadow_vad_score_raw(frame)
 
     async def _wake_tertiary_loop(self) -> None:
         """Parallel wake-only consumer of the DTLN-aec mic (UDP :9878).
@@ -2546,13 +2580,53 @@ class WakeLoop:
 
         assert self._turn is not None
 
-        # Once we've sent `audio_stream_end` we stop forwarding mic
-        # frames for the rest of this turn — the model is generating
-        # its response and any further audio would re-open an audio
-        # stream the server has been told is finished.
         if self._input_ended:
             return
 
+        # ---- Server-side VAD branch ----
+        # When server_vad is active, the server owns end-of-utterance
+        # detection. Skip local Silero; just forward audio and watch
+        # for the server's committed event.
+        if self._server_vad_this_turn:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - self._turn_started_at_loop
+
+            ss_fn = getattr(self._turn, "server_speech_started", None)
+            server_heard_speech = bool(ss_fn()) if callable(ss_fn) else False
+            if server_heard_speech and not self._user_speech_seen:
+                self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
+
+            if not server_heard_speech and not self._user_speech_seen \
+                    and elapsed >= NO_SPEECH_ABORT_SEC:
+                logger.info(
+                    "event=server_vad.no_speech timeout_sec=%.1f",
+                    NO_SPEECH_ABORT_SEC,
+                )
+                await self._end_turn()
+                return
+
+            if elapsed >= HARD_RECORDING_CAP_SEC:
+                logger.info(
+                    "event=server_vad.hard_cap elapsed_sec=%.1f",
+                    HARD_RECORDING_CAP_SEC,
+                )
+                self._input_ended = True
+                await self._end_turn()
+                return
+
+            eou_check = getattr(self._turn, "server_speech_detected", None)
+            if eou_check is not None and callable(eou_check) and eou_check():
+                self._input_ended = True
+
+            try:
+                await self._turn.send_audio(frame.tobytes())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("send_audio failed (will end turn): %s", e)
+                await self._end_turn()
+            return
+
+        # ---- Local Silero VAD path (manual VAD) ----
         # End-of-utterance detection: run Silero VAD on the frame and
         # arm the silence detector once the user has been speaking
         # continuously for SUSTAINED_SPEECH_TO_ARM_SEC. Wake-word tail
@@ -2625,6 +2699,10 @@ class WakeLoop:
                     self._speech_run_max_silero,
                 )
                 self._user_speech_seen = True
+                if self._silero_aec_armed_at_ms is None:
+                    self._silero_aec_armed_at_ms = int(
+                        (now - self._turn_started_at_loop) * 1000
+                    )
                 await self._telemetry_stage("speech_detected")
             self._silence_started_at = 0.0
         else:
@@ -2713,6 +2791,33 @@ class WakeLoop:
             "mic_muted": self._mic_muted,
         }
 
+    async def _shadow_vad_score_raw(self, frame) -> None:
+        """Score a raw-stream frame through the shadow Silero VAD.
+
+        Pure telemetry — records what raw-stream Silero sees during the
+        session but makes no endpointing decisions. The active endpointer
+        (server_vad or AEC-stream Silero) is unaffected."""
+        if self._vad_off is None or self._input_ended:
+            return
+        try:
+            speech_prob = self._vad_off.predict(frame)
+            if speech_prob > self._max_silero_raw_in_turn:
+                self._max_silero_raw_in_turn = speech_prob
+            if (
+                self._silero_raw_armed_at_ms is None
+                and speech_prob >= SPEECH_RUN_PEAK_MIN
+            ):
+                elapsed_ms = int(
+                    (asyncio.get_event_loop().time() - self._turn_started_at_loop) * 1000
+                )
+                self._silero_raw_armed_at_ms = elapsed_ms
+                logger.info(
+                    "event=shadow_vad.raw_armed elapsed_ms=%d silero=%.2f",
+                    elapsed_ms, speech_prob,
+                )
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _begin_turn(self) -> None:
         import time as _time
         # Anchor on the actual wake-fire moment (set in
@@ -2739,6 +2844,11 @@ class WakeLoop:
         self._input_ended = False
         self._turn_started_at_loop = asyncio.get_event_loop().time()
         self._max_silero_score_in_turn = 0.0
+        self._max_silero_raw_in_turn = 0.0
+        self._silero_raw_armed_at_ms = None
+        self._silero_aec_armed_at_ms = None
+        if self._vad_off is not None:
+            self._vad_off.reset()
         t_after_state = _time.monotonic()
         # Pin TTS gain to the user's pre-duck master volume + offset
         # BEFORE ducking. The duck about to fire will drop main_volume
@@ -2761,22 +2871,49 @@ class WakeLoop:
         )
         self._turn = await self._connection.acquire_turn()
         t_after_acquire = _time.monotonic()
-        # Breakdown so a slow wake→activity_start can be localized to
-        # the actual offender. `sched_lag` is the event-loop scheduling
-        # delay between wake firing and this coroutine starting;
-        # everything else is one named await. Pair with the
-        # `acquire-buffer drained: N frames` log to gauge how much
-        # audio Silero misses while this runs.
+
+        self._server_vad_this_turn = False
+        if (
+            self._cfg.server_vad_enabled
+            and self._connection.supports_server_vad()
+            and self._tts_volume_tracker.music_is_playing()
+        ):
+            set_td = getattr(self._connection, "set_turn_detection", None)
+            if set_td is not None and callable(set_td):
+                try:
+                    await set_td({
+                        "type": "server_vad",
+                        "threshold": self._cfg.server_vad_threshold,
+                        "silence_duration_ms": self._cfg.server_vad_silence_ms,
+                        "prefix_padding_ms": self._cfg.server_vad_prefix_ms,
+                        "create_response": False,
+                        "interrupt_response": False,
+                    })
+                    self._server_vad_this_turn = True
+                    mark = getattr(self._turn, "_mark_server_vad", None)
+                    if callable(mark):
+                        mark()
+                    logger.info(
+                        "event=server_vad.enabled music_anchor_dbfs=%.1f",
+                        self._tts_volume_tracker._anchor_dbfs,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "event=server_vad.enable_failed error=%s: %s",
+                        type(e).__name__, e,
+                    )
+
         logger.info(
             "turn acquire done in %.0fms "
             "(sched_lag=%.0f state=%.0f tts_apply=%.0f duck=%.0f acquire=%.0f) "
-            "(wake→activity_start)",
-            (t_after_acquire - t_wake) * 1000,
+            "(wake→activity_start%s)",
+            (_time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
             (t_after_tts_apply - t_after_state) * 1000,
             (t_after_duck - t_after_tts_apply) * 1000,
             (t_after_acquire - t_after_duck) * 1000,
+            ", server_vad" if self._server_vad_this_turn else "",
         )
         # Pre-roll: drain the recent-mic ring buffer into the turn so
         # the user's first phoneme (which preceded the wake firing)
@@ -2801,6 +2938,11 @@ class WakeLoop:
             _idle_watchdog(self._turn, self._cfg.idle_timeout_sec)
         )
         self._bg_tasks = {playback, idle}
+        if self._server_vad_this_turn:
+            vad_trigger = asyncio.create_task(
+                _server_vad_response_trigger(self._turn, self._connection)
+            )
+            self._bg_tasks.add(vad_trigger)
         self._state = State.SESSION
 
     async def _cleanup_after_failed_begin(self) -> None:
@@ -2828,10 +2970,35 @@ class WakeLoop:
         # changed their mind. Either way the outcome is 'no_speech',
         # which dual-stream FP analysis keys off.
         await self._telemetry_stage("turn_complete")
+        # Capture event_id BEFORE _telemetry_outcome clears it.
+        session_vad_store = getattr(self, "_wake_event_store", None)
+        session_vad_eid = getattr(self, "_current_event_id", None)
         terminal_outcome = (
             "completed" if self._user_speech_seen else "no_speech"
         )
         await self._telemetry_outcome(terminal_outcome, reason)
+
+        # Session VAD shadow telemetry — record what each stream's
+        # Silero saw so the weekly review can cross-tab scores.
+        store = session_vad_store
+        eid = session_vad_eid
+        if store is not None and eid is not None:
+            endpointer_label = "server_vad" if self._server_vad_this_turn else "silero_aec"
+            if not self._user_speech_seen and not self._server_vad_this_turn:
+                endpointer_label = "no_speech_abort"
+            try:
+                await store.update_session_vad(
+                    eid,
+                    max_silero_aec=self._max_silero_score_in_turn or None,
+                    max_silero_raw=self._max_silero_raw_in_turn or None,
+                    silero_aec_armed_at_ms=self._silero_aec_armed_at_ms,
+                    silero_raw_armed_at_ms=self._silero_raw_armed_at_ms,
+                    endpointer=endpointer_label,
+                    music_playing_at_turn=self._tts_volume_tracker.music_is_playing(),
+                    music_db_at_turn=self._tts_volume_tracker._anchor_dbfs,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("wake_events: session VAD telemetry failed: %s", e)
 
         # Notify peering daemon EARLY (before slow cleanup) so peers
         # un-suppress promptly. Other devices' next wake events should
@@ -3060,8 +3227,7 @@ async def run() -> None:
         cfg.voice_provider, pricing.label, cfg.daily_spend_cap_usd,
     )
     if (
-        cfg.voice_provider == "grok"
-        and cfg.daily_spend_cap_usd > 0
+        cfg.daily_spend_cap_usd > 0
         and pricing.flat_per_hour_usd > 0
     ):
         # Grok bills per hour, not per token; UsageStore tracks tokens

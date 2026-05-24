@@ -183,6 +183,17 @@ _MIGRATION_COLUMNS: list[tuple[str, str]] = [
     # (e.g. "aec_on,dtln" or "aec_off"). Lets the weekly review
     # answer "which engines are pulling weight?" directly.
     ("fired_legs", "TEXT"),
+    # Session-time shadow VAD telemetry (2026-05-24): record what each
+    # stream's Silero VAD saw during the turn so the weekly review can
+    # cross-tab raw vs AEC scores against the actual endpointer outcome.
+    ("max_silero_aec", "REAL"),
+    ("max_silero_raw", "REAL"),
+    ("silero_aec_armed_at_ms", "INTEGER"),
+    ("silero_raw_armed_at_ms", "INTEGER"),
+    ("endpointer", "TEXT"),
+    ("transcript_nonempty", "INTEGER"),
+    ("music_playing_at_turn", "INTEGER"),
+    ("music_db_at_turn", "REAL"),
 ]
 
 
@@ -462,6 +473,49 @@ class WakeEventStore:
                 WHERE event_id = ?
                 """,
                 (outcome, outcome_detail, tool_name, event_id),
+            )
+
+    async def update_session_vad(
+        self,
+        event_id: str,
+        *,
+        max_silero_aec: float | None = None,
+        max_silero_raw: float | None = None,
+        silero_aec_armed_at_ms: int | None = None,
+        silero_raw_armed_at_ms: int | None = None,
+        endpointer: str | None = None,
+        transcript_nonempty: bool | None = None,
+        music_playing_at_turn: bool | None = None,
+        music_db_at_turn: float | None = None,
+    ) -> None:
+        """Record session-time shadow VAD telemetry on the wake event row.
+
+        Called at turn-end with whatever data is available. Each field
+        is optional — None leaves the column unchanged (COALESCE)."""
+        self._require_open()
+        async with self._lock():
+            self._conn.execute(  # type: ignore[union-attr]
+                """
+                UPDATE wake_events SET
+                    max_silero_aec = COALESCE(?, max_silero_aec),
+                    max_silero_raw = COALESCE(?, max_silero_raw),
+                    silero_aec_armed_at_ms = COALESCE(?, silero_aec_armed_at_ms),
+                    silero_raw_armed_at_ms = COALESCE(?, silero_raw_armed_at_ms),
+                    endpointer = COALESCE(?, endpointer),
+                    transcript_nonempty = COALESCE(?, transcript_nonempty),
+                    music_playing_at_turn = COALESCE(?, music_playing_at_turn),
+                    music_db_at_turn = COALESCE(?, music_db_at_turn)
+                WHERE event_id = ?
+                """,
+                (
+                    max_silero_aec, max_silero_raw,
+                    silero_aec_armed_at_ms, silero_raw_armed_at_ms,
+                    endpointer,
+                    int(transcript_nonempty) if transcript_nonempty is not None else None,
+                    int(music_playing_at_turn) if music_playing_at_turn is not None else None,
+                    music_db_at_turn,
+                    event_id,
+                ),
             )
 
     async def record_flag(self, reason: str) -> dict[str, Any] | None:
