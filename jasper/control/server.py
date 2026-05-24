@@ -319,10 +319,10 @@ def _read_wake_threshold() -> float:
 
 def _write_wake_threshold(value: float) -> None:
     """Atomic write of JASPER_WAKE_THRESHOLD into wake_model.env,
-    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed (the
-    /wake/ wizard previously owned both; the slider moved to /system/
-    in the wake-detection-card refactor but the env file stays the
-    same so the daemon's load path doesn't change)."""
+    preserving JASPER_WAKE_MODEL. Both keys are wizard-managed by the
+    /wake/ page (model picker writes JASPER_WAKE_MODEL via the form
+    save; sensitivity slider posts to /wake/sensitivity which lands
+    here)."""
     if not 0.0 <= value <= 1.0:
         raise ValueError(f"threshold out of range: {value}")
     _atomic_rewrite_env(
@@ -345,7 +345,7 @@ def _aec_bridge_active() -> bool:
 
 def _aec_full_status() -> dict:
     """JSON shape returned by GET /aec — the single source of truth
-    for the /system Wake detection card. Includes both the configured
+    for the /wake/ page's detection card. Includes both the configured
     state (from aec_mode.env) and the observed bridge service state.
 
     Per-leg observed state isn't returned separately today. A
@@ -965,13 +965,13 @@ def _make_handler(
             if self.path == "/aec":
                 # Software AEC bridge state + per-leg config + wake
                 # threshold. Mode and leg booleans are the persisted
-                # request (what the operator asked for, via /system
-                # Wake detection card or aec_mode.env); bridge_active
-                # is the observed truth from systemd. They diverge
-                # briefly during a reconciler-driven transition
-                # (~10-15 s). Threshold is read from wake_model.env
-                # so the slider on /system stays in sync with the
-                # /wake/ wizard (both write the same file).
+                # request (what the operator asked for, via the /wake/
+                # page or aec_mode.env directly); bridge_active is the
+                # observed truth from systemd. They diverge briefly
+                # during a reconciler-driven transition (~10-15 s).
+                # Threshold is read from wake_model.env — the same
+                # file the /wake/ form save writes the model into, so
+                # both controls stay in sync without sharing code.
                 #
                 # DTLN load failures don't surface in this payload —
                 # /system's Diagnostics disclosure runs jasper-doctor
@@ -1357,8 +1357,9 @@ def _make_handler(
                 # kick the reconciler. The reconciler stops/starts
                 # jasper-aec-bridge.service and restarts jasper-voice
                 # with the new JASPER_MIC_DEVICE (udp:9876 vs chip
-                # direct). Used by the /system dashboard's A/B-test
-                # card. Non-blocking — the dashboard polls /aec to
+                # direct). Called by the /wake/ page's AEC layer toggle
+                # (after a current-state read for idempotent set-state
+                # semantics). Non-blocking — the wizard polls /aec to
                 # see when the transition lands (~10-15 s).
                 #
                 # Risk model: LAN-trust, same as /system/restart/*.
@@ -1452,13 +1453,13 @@ def _make_handler(
                 return
 
             if self.path == "/aec/threshold":
-                # Sensitivity slider on the /system Wake detection
-                # card. Writes JASPER_WAKE_THRESHOLD into
-                # wake_model.env (same file the /wake/ wizard owns
-                # for the model picker) and restarts jasper-voice
-                # — the openWakeWord detector reads the threshold
-                # at startup, so a hot config change without a
-                # restart wouldn't take effect on the next wake.
+                # Sensitivity slider on the /wake/ page. Writes
+                # JASPER_WAKE_THRESHOLD into wake_model.env (same
+                # file the /wake/ form save writes the model into)
+                # and restarts jasper-voice — the openWakeWord
+                # detector reads the threshold at startup, so a hot
+                # config change without a restart wouldn't take
+                # effect on the next wake.
                 #
                 # AEC-mode and leg toggles share the reconciler
                 # which already restarts voice; threshold-only

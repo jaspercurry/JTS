@@ -360,23 +360,38 @@ def test_index_html_renders_custom_row_for_unknown_active(monkeypatch):
     assert custom_path in html
 
 
-def test_index_html_omits_sensitivity_slider():
-    """The slider moved to /system/'s Wake detection card. The /wake/
-    page should no longer render a `type="range"` input — it carries
-    a moved-link panel instead so users discover where it went."""
+def test_index_html_renders_detection_card():
+    """The detection-layers card sits at the top of /wake/ with one
+    row per layer (AEC, raw, DTLN) — each row carries an iOS toggle
+    that the page hydrates from /detection.json on load."""
     html = wake_setup._index_html({}).decode()
-    assert 'type="range"' not in html
-    assert 'name="threshold"' not in html
-    assert "Wake word sensitivity" not in html
+    assert 'id="layer-aec"' in html
+    assert 'id="layer-raw"' in html
+    assert 'id="layer-dtln"' in html
+    # iOS toggle classes come from the shared _common.TOGGLE_CSS.
+    assert 'class="toggle"' in html
+    # Each row exposes a status element for the poll loop to fill.
+    assert 'id="layer-status-aec"' in html
+    assert 'id="layer-status-raw"' in html
+    assert 'id="layer-status-dtln"' in html
 
 
-def test_index_html_links_to_system_for_sensitivity():
-    """The /wake/ page surfaces a small panel pointing at /system/'s
-    Wake detection card so users tuning sensitivity find the new
-    home rather than wondering where the slider went."""
+def test_index_html_includes_sensitivity_slider():
+    """Sensitivity is back on /wake/ as a native control next to the
+    detection layers — `type="range"` confirms the slider rendered."""
     html = wake_setup._index_html({}).decode()
-    assert '/system/' in html
-    assert 'sensitivity' in html.lower()
+    assert 'type="range"' in html
+    assert 'id="sensitivity-input"' in html
+    assert 'id="sensitivity-save"' in html
+
+
+def test_index_html_no_system_crosslink_for_wake_detection():
+    """The "Wake detection card moved to /system/" panel is gone now
+    that the controls live on /wake/. A stale link would mis-direct
+    users; assert it never re-appears."""
+    html = wake_setup._index_html({}).decode()
+    assert 'moved-panel' not in html
+    assert '/system/' not in html
 
 
 # ---------- End-to-end HTTP exercise ---------------------------------------
@@ -428,10 +443,11 @@ def test_http_post_save_persists_state(running_server, monkeypatch):
 
 
 def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch):
-    """The slider moved to /system/, but it writes the same file. A
-    /wake/ model-save must preserve any JASPER_WAKE_THRESHOLD the
-    slider previously wrote — otherwise picking a new model would
-    silently zap the user's sensitivity setting."""
+    """Form save (model picker) and JSON POST /sensitivity write the
+    same wake_model.env. A model-save must preserve any
+    JASPER_WAKE_THRESHOLD the slider's /sensitivity handler previously
+    wrote into the file — otherwise picking a new model would silently
+    zap the user's sensitivity setting."""
     from ._web_test_helpers import post_with_csrf
     base, state_path = running_server
     called = []
@@ -439,8 +455,7 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
         wake_setup, "restart_voice_daemon",
         lambda: called.append("restart"),
     )
-    # Seed wake_model.env with a hand-set threshold (as if /system/
-    # had previously written it).
+    # Seed wake_model.env as if /sensitivity had previously landed.
     with open(state_path, "w") as f:
         f.write("JASPER_WAKE_THRESHOLD=0.42\nJASPER_WAKE_MODEL=jarvis_v2\n")
     post_with_csrf(base, "/save", {"model": "alexa"})
@@ -448,3 +463,247 @@ def test_http_post_save_preserves_existing_threshold(running_server, monkeypatch
     assert state["JASPER_WAKE_MODEL"] == "alexa"
     assert state["JASPER_WAKE_THRESHOLD"] == "0.42"
     assert called == ["restart"]
+
+
+# ---------- Detection-card proxy routes ------------------------------------
+# These cover the /detection.json poll plus the /layer/<name> and
+# /sensitivity POST routes that forward to jasper-control with the
+# wizard's user-facing vocabulary (layer/aec, sensitivity) rewritten
+# to jasper-control's internal vocabulary (/aec/{toggle,leg,threshold}).
+
+
+@pytest.fixture
+def fake_control():
+    """Stand up a fake jasper-control HTTP server on a random port.
+    Records each request as (method, path, parsed-json-or-None) and
+    returns canned responses keyed by path."""
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    received: list[tuple] = []
+    # Default response is the AEC status shape jasper-control returns.
+    responses = {
+        "/aec": {
+            "mode": "auto",
+            "bridge_active": True,
+            "legs": {"raw": {"configured": True}, "dtln": {"configured": False}},
+            "threshold": 0.5,
+        },
+        "/aec/toggle": {"mode": "disabled", "bridge_active": True},
+        "/aec/leg": {
+            "mode": "auto",
+            "bridge_active": True,
+            "legs": {"raw": {"configured": False}, "dtln": {"configured": True}},
+            "threshold": 0.5,
+        },
+        "/aec/threshold": {"threshold": 0.42},
+    }
+
+    class _UpHandler(BaseHTTPRequestHandler):
+        def log_message(self, *a, **kw) -> None:
+            pass
+
+        def _reply(self, payload, status=200):
+            body = json.dumps(payload).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            received.append(("GET", self.path, None))
+            payload = responses.get(self.path)
+            if payload is None:
+                self.send_error(404); return
+            self._reply(payload)
+
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length") or "0")
+            raw = self.rfile.read(length) if length else b""
+            try:
+                parsed = json.loads(raw.decode()) if raw else None
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                parsed = None
+            received.append(("POST", self.path, parsed))
+            payload = responses.get(self.path)
+            if payload is None:
+                self.send_error(404); return
+            self._reply(payload)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _UpHandler)
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    base = f"http://127.0.0.1:{srv.server_port}"
+    try:
+        yield base, received, responses
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        t.join(timeout=2)
+
+
+@pytest.fixture
+def wired_server(tmp_path: Path, fake_control):
+    """The /wake/ server pointed at the fake jasper-control so layer
+    + sensitivity POSTs flow through real handler logic and land
+    against assertable upstream calls."""
+    base, received, responses = fake_control
+    state_path = str(tmp_path / "wake_model.env")
+    server = wake_setup.make_server(
+        ("127.0.0.1", 0), state_path=state_path, control_base=base,
+    )
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{port}", received, responses, state_path
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def _json_post_with_csrf(base_url: str, path: str, payload: dict):
+    """POST JSON to `base_url + path` with the CSRF cookie + header set.
+    Returns (status, parsed json body)."""
+    import json as _json
+    from ._web_test_helpers import make_csrf_session
+    session = make_csrf_session(base_url, page_path="/")
+    body = _json.dumps(payload).encode()
+    req = urllib.request.Request(
+        base_url + path, data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-CSRF-Token": session["token"],
+        },
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(session["jar"]),
+    )
+    try:
+        with opener.open(req, timeout=5) as r:
+            return r.status, _json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        return e.code, _json.loads(e.read().decode())
+
+
+def test_detection_json_proxies_aec(wired_server):
+    base, received, _, _ = wired_server
+    with urllib.request.urlopen(base + "/detection.json") as r:
+        import json as _json
+        payload = _json.loads(r.read().decode())
+    assert payload["mode"] == "auto"
+    assert payload["bridge_active"] is True
+    assert ("GET", "/aec", None) in received
+
+
+def test_layer_aec_no_op_when_already_in_state(wired_server):
+    """AEC master uses set-state semantics: setting `enabled=true` when
+    the upstream is already in mode=auto must NOT call /aec/toggle
+    (which would flip to disabled). The handler reads /aec first and
+    short-circuits if the state already matches."""
+    base, received, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/layer/aec", {"enabled": True})
+    assert status == 200
+    assert body["mode"] == "auto"
+    posts = [r for r in received if r[0] == "POST"]
+    assert posts == [], f"unexpected upstream POSTs: {posts}"
+
+
+def test_layer_aec_toggles_when_state_differs(wired_server):
+    """When the user asks for `enabled=false` and upstream reports
+    mode=auto, the handler must POST /aec/toggle to flip the state."""
+    base, received, _, _ = wired_server
+    status, _ = _json_post_with_csrf(base, "/layer/aec", {"enabled": False})
+    assert status == 200
+    posts = [r for r in received if r[0] == "POST"]
+    assert len(posts) == 1
+    method, path, parsed = posts[0]
+    assert path == "/aec/toggle"
+    # /aec/toggle takes no body — the handler sent zero bytes upstream.
+    assert parsed is None
+
+
+def test_layer_raw_posts_aec_leg_with_body(wired_server):
+    """Leg toggles rewrite to /aec/leg with `{leg, enabled}` so
+    jasper-control's existing single-endpoint handler stays unchanged."""
+    base, received, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/layer/raw", {"enabled": False})
+    assert status == 200
+    assert body["legs"]["raw"]["configured"] is False
+    posts = [r for r in received if r[0] == "POST"]
+    assert len(posts) == 1
+    method, path, parsed = posts[0]
+    assert path == "/aec/leg"
+    assert parsed == {"leg": "raw", "enabled": False}
+
+
+def test_layer_dtln_posts_aec_leg_with_body(wired_server):
+    base, received, _, _ = wired_server
+    _json_post_with_csrf(base, "/layer/dtln", {"enabled": True})
+    posts = [r for r in received if r[0] == "POST"]
+    assert any(
+        path == "/aec/leg" and parsed == {"leg": "dtln", "enabled": True}
+        for _, path, parsed in posts
+    )
+
+
+def test_sensitivity_posts_aec_threshold(wired_server):
+    """Wizard accepts `{value: 0.42}`; jasper-control wants
+    `{threshold: 0.42}`. The proxy rewrites the body so the user-
+    facing URL stops leaking AEC vocabulary."""
+    base, received, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/sensitivity", {"value": 0.42})
+    assert status == 200
+    assert body["threshold"] == 0.42
+    posts = [r for r in received if r[0] == "POST"]
+    assert len(posts) == 1
+    method, path, parsed = posts[0]
+    assert path == "/aec/threshold"
+    assert parsed == {"threshold": 0.42}
+
+
+def test_layer_rejects_unknown_name(wired_server):
+    base, _, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/layer/garbage", {"enabled": True})
+    assert status == 400
+    assert "unknown layer" in body["error"]
+
+
+def test_layer_rejects_non_boolean_enabled(wired_server):
+    base, _, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/layer/raw", {"enabled": "yes"})
+    assert status == 400
+    assert "boolean" in body["error"]
+
+
+def test_sensitivity_rejects_non_numeric_value(wired_server):
+    base, _, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/sensitivity", {"value": "loud"})
+    assert status == 400
+    assert "number" in body["error"]
+
+
+def test_sensitivity_rejects_out_of_range(wired_server):
+    base, _, _, _ = wired_server
+    status, body = _json_post_with_csrf(base, "/sensitivity", {"value": 2.0})
+    assert status == 400
+    assert "between 0 and 1" in body["error"]
+
+
+def test_layer_requires_csrf(wired_server):
+    """JSON-bodied POSTs ride the X-CSRF-Token header; bare POSTs
+    without a session must 403 before any upstream call is made."""
+    base, received, _, _ = wired_server
+    req = urllib.request.Request(
+        base + "/layer/raw", data=b'{"enabled":false}', method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=2)
+        status = 200
+    except urllib.error.HTTPError as e:
+        status = e.code
+    assert status == 403
+    # No upstream POST was issued.
+    assert not [r for r in received if r[0] == "POST"]

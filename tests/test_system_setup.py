@@ -233,6 +233,30 @@ def test_unknown_route_404(dashboard_server) -> None:
     assert status == 404
 
 
+def test_aec_card_moved_to_wake(dashboard_server) -> None:
+    """The Wake detection card moved to /wake/. /system/ must no
+    longer serve the routes that backed it — /aec.json, /aec/toggle,
+    /aec/leg, /aec/threshold all 404 here, and the HTML must not
+    reference the old DOM ids the card's JS bound to."""
+    base, received, _ = dashboard_server
+    for route in ("/aec.json",):
+        status, _ = _http_get(f"{base}{route}")
+        assert status == 404, f"{route} should be gone from /system/"
+    for route in ("/aec/toggle", "/aec/leg", "/aec/threshold"):
+        status, _ = _http_post(f"{base}{route}")
+        assert status == 404, f"{route} should be gone from /system/"
+    # And jasper-control never saw an /aec call from /system/.
+    assert not [r for r in received if "/aec" in r[1]]
+    # The HTML stopped referencing the card-specific DOM ids.
+    _, body = _http_get(f"{base}/")
+    text = body.decode()
+    for stale in (
+        "btn-aec-toggle", "leg-raw", "leg-dtln",
+        "wake-threshold", "aec-card", "leg-table",
+    ):
+        assert stale not in text, f"{stale} should be gone from /system/ HTML"
+
+
 def test_data_json_502_when_control_down() -> None:
     """If jasper-control is unreachable, /data.json returns 502 with
     a useful error body rather than crashing the dashboard. Lets the
