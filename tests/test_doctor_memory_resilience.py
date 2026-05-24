@@ -122,28 +122,67 @@ def test_memory_headroom_handles_meminfo_read_failure():
 # --- check_zram_size_ratio -----------------------------------------------
 
 
-def test_zram_size_warns_when_over_60pct_of_ram():
-    """Old default of zram = 100% of RAM should warn AND mention
-    that reboot is required (rpi-swap is a generator, not a service)."""
-    fake_read = MagicMock(side_effect=[
-        "1014767616",  # /sys/block/zram0/disksize — ~990 MB
-    ])
+def _zram_test_mocks(zram_bytes: int, rpi_swap_installed: bool = True):
+    """Mock both Path.read_text() (for /sys/block/zram0/disksize) and
+    Path.exists() (for /etc/rpi/swap.conf)."""
+    def fake_read(self):
+        s = str(self)
+        if s == "/sys/block/zram0/disksize":
+            return str(zram_bytes)
+        raise FileNotFoundError(s)
+    def fake_exists(self):
+        s = str(self)
+        if s == "/etc/rpi/swap.conf":
+            return rpi_swap_installed
+        return False
+    return fake_read, fake_exists
+
+
+def test_zram_size_warns_when_over_60pct_of_ram_with_rpi_swap():
+    """rpi-swap installed + zram > 60% of RAM → actionable warn:
+    reboot to apply the JTS drop-in."""
+    fake_read, fake_exists = _zram_test_mocks(
+        zram_bytes=1014767616,  # ~990 MB zram
+        rpi_swap_installed=True,
+    )
     with patch("pathlib.Path.read_text", fake_read), \
+         patch("pathlib.Path.exists", fake_exists), \
          patch("builtins.open", return_value=_mock_meminfo({
-             "MemTotal": 1014768,   # ~991 MB
+             "MemTotal": 1014768,
          })):
         r = doctor.check_zram_size_ratio()
     assert r.status == "warn"
     assert "old default" in r.detail
-    assert "reboot" in r.detail   # don't tell the operator to re-run
-                                  # install.sh — they need to reboot
+    assert "reboot" in r.detail
+
+
+def test_zram_size_skips_when_rpi_swap_not_installed():
+    """Bookworm / non-Trixie / forked-onto-another-distro: rpi-swap
+    isn't installed, so JTS's drop-in is inert — no actionable fix
+    from the operator's side. Skip with ok rather than warn forever."""
+    fake_read, fake_exists = _zram_test_mocks(
+        zram_bytes=1014767616,  # ~990 MB zram, 99% of RAM
+        rpi_swap_installed=False,
+    )
+    with patch("pathlib.Path.read_text", fake_read), \
+         patch("pathlib.Path.exists", fake_exists), \
+         patch("builtins.open", return_value=_mock_meminfo({
+             "MemTotal": 1014768,
+         })):
+        r = doctor.check_zram_size_ratio()
+    # NOT warn — no actionable resolution. Operator can't fix from
+    # this side without changing distros.
+    assert r.status == "ok"
+    assert "rpi-swap not installed" in r.detail or "different zram package" in r.detail
 
 
 def test_zram_size_ok_at_50pct():
-    fake_read = MagicMock(side_effect=[
-        str(520 * 1024 * 1024),  # ~520 MB zram
-    ])
+    fake_read, fake_exists = _zram_test_mocks(
+        zram_bytes=520 * 1024 * 1024,  # ~520 MB zram
+        rpi_swap_installed=True,
+    )
     with patch("pathlib.Path.read_text", fake_read), \
+         patch("pathlib.Path.exists", fake_exists), \
          patch("builtins.open", return_value=_mock_meminfo({
              "MemTotal": 1014768,
          })):
@@ -328,11 +367,12 @@ def test_sysctl_drift_uses_installed_min_free_kbytes_value():
     assert r.status == "ok"
 
 
-def test_sysctl_drift_skips_unsubstituted_template_placeholder():
-    """Defensive: if install.sh's sed step failed, the conf file would
-    contain the literal '__VM_MIN_FREE_KBYTES__' placeholder. Doctor
-    must skip that line rather than report drift comparing a number
-    to a placeholder string."""
+def test_sysctl_drift_warns_on_unsubstituted_template_placeholder():
+    """Defensive: if install.sh's sed step failed, the conf file
+    contains the literal '__VM_MIN_FREE_KBYTES__' placeholder. The
+    kernel will silently use its default for that knob (NOT what we
+    wanted). Doctor must surface this — silent "ok" would hide a
+    real config-broken state."""
     conf_broken = _FAKE_INSTALLED_CONF.replace(
         "vm.min_free_kbytes = 20296",
         "vm.min_free_kbytes = __VM_MIN_FREE_KBYTES__",
@@ -344,7 +384,7 @@ def test_sysctl_drift_skips_unsubstituted_template_placeholder():
             "page-cluster": "0",
             "watermark_scale_factor": "125",
             "watermark_boost_factor": "0",
-            "min_free_kbytes": "16384",  # whatever the kernel default is
+            "min_free_kbytes": "16384",
             "dirty_background_ratio": "2",
             "dirty_ratio": "10",
             "vfs_cache_pressure": "200",
@@ -354,10 +394,11 @@ def test_sysctl_drift_skips_unsubstituted_template_placeholder():
     with patch("pathlib.Path.exists", fake_exists), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_sysctl_drift()
-    # All non-placeholder values match → ok. The placeholder line
-    # is correctly skipped (would have produced a confusing drift
-    # message otherwise).
-    assert r.status == "ok"
+    assert r.status == "warn"
+    assert "placeholder" in r.detail
+    assert "min_free_kbytes" in r.detail
+    # And the actionable hint
+    assert "re-run install.sh" in r.detail
 
 
 # --- check_oom_score_adj -------------------------------------------------
@@ -370,6 +411,7 @@ _PID_MAP = {
     "jasper-voice": "1004",
     "jasper-mux": "1005",
     "jasper-input": "1006",
+    "ssh": "1007",
 }
 
 _EXPECTED_CONFIG = {
@@ -379,6 +421,7 @@ _EXPECTED_CONFIG = {
     "jasper-voice": "-500",
     "jasper-mux": "-300",
     "jasper-input": "-300",
+    "ssh": "-1000",
 }
 
 
@@ -401,23 +444,50 @@ def _make_oom_run(pid_map, config_map):
     return fake_run
 
 
+_LIVE_OK = {
+    "1001": "-900", "1002": "-700", "1003": "-600",
+    "1004": "-500", "1005": "-300", "1006": "-300",
+    "1007": "-1000",   # ssh (Debian default)
+}
+
+
 def test_oom_score_adj_all_match():
     """All critical daemons running with both unit-file and live
-    values matching expected."""
+    values matching expected. Includes ssh (Debian openssh-server
+    default of -1000) as the recovery-path lifeline."""
     def fake_read(self):
-        # /proc/<pid>/oom_score_adj — return expected for each pid
         pid_str = str(self).split("/")[2]
-        return {
-            "1001": "-900", "1002": "-700", "1003": "-600",
-            "1004": "-500", "1005": "-300", "1006": "-300",
-        }.get(pid_str, "0") + "\n"
+        return _LIVE_OK.get(pid_str, "0") + "\n"
 
     with patch.object(doctor, "_run",
                       side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "6 critical daemons protected" in r.detail
+    assert "7 critical daemons protected" in r.detail
+
+
+def test_oom_score_adj_warns_if_sshd_drifts():
+    """sshd dropped to default 0 (e.g. Debian openssh-server packaging
+    changed). This is exactly the resilience gap we want to surface —
+    if sshd is OOM-killable, the operator loses their recovery path
+    during an OOM event."""
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        live = dict(_LIVE_OK)
+        live["1007"] = "0"  # sshd drifted to default
+        return live.get(pid_str, "0") + "\n"
+
+    # Also reflect the drift in the unit file's configured value, so
+    # this surfaces as the more-serious "UNIT FILE drift" message.
+    drifted_config = dict(_EXPECTED_CONFIG)
+    drifted_config["ssh"] = "0"
+    with patch.object(doctor, "_run",
+                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_oom_score_adj()
+    assert r.status == "warn"
+    assert "ssh" in r.detail
 
 
 def test_oom_score_adj_live_drift_only():
@@ -425,11 +495,9 @@ def test_oom_score_adj_live_drift_only():
     the unit file IS correct — live-only drift, fixable by restart."""
     def fake_read(self):
         pid_str = str(self).split("/")[2]
-        # jasper-camilla (pid 1001) drifted live to 0; unit file correct
-        return {
-            "1001": "0", "1002": "-700", "1003": "-600",
-            "1004": "-500", "1005": "-300", "1006": "-300",
-        }.get(pid_str, "0") + "\n"
+        live = dict(_LIVE_OK)
+        live["1001"] = "0"  # jasper-camilla drifted live to 0
+        return live.get(pid_str, "0") + "\n"
 
     with patch.object(doctor, "_run",
                       side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
@@ -450,10 +518,7 @@ def test_oom_score_adj_unit_file_drift_is_more_serious():
     # processes were started before the unit-file got broken).
     def fake_read(self):
         pid_str = str(self).split("/")[2]
-        return {
-            "1001": "-900", "1002": "-700", "1003": "-600",
-            "1004": "-500", "1005": "-300", "1006": "-300",
-        }.get(pid_str, "0") + "\n"
+        return _LIVE_OK.get(pid_str, "0") + "\n"
 
     # But the unit file says 0 for jasper-camilla — a regression
     # we'd otherwise miss until next restart.
