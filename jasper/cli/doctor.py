@@ -1211,6 +1211,11 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
     invocations per doctor run. With the batch, it's 2 invocations
     total — one for MainPID, one for OOMScoreAdjust. ~7× faster
     per check.
+
+    Wire format note: `systemctl show -p X --value <u1> <u2> ... <uN>`
+    emits `value1\\n\\nvalue2\\n\\n...valueN\\n`. The separator is
+    `\\n\\n` (blank line between values), NOT plain `\\n`. We split
+    on that explicitly.
     """
     try:
         out = _run(
@@ -1221,17 +1226,27 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         ).stdout
     except (subprocess.SubprocessError, FileNotFoundError):
         return None
-    # `--value` with multiple units returns one value per unit, one
-    # per line, in argument order. Trailing newline produces an empty
-    # final element — filter it.
-    lines = out.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    if len(lines) != len(units):
-        # systemctl returned an unexpected shape — fall back to None
-        # so the caller can degrade gracefully.
+    # Strip trailing newline before splitting so the last value isn't
+    # followed by a phantom empty element.
+    text = out.rstrip("\n")
+    # systemctl separates per-unit values with a blank line (\n\n) when
+    # multiple units are requested with --value. Splitting on \n alone
+    # would produce 2N-1 elements for N units; split on \n\n to get N.
+    if not text:
+        # All units returned empty values (e.g. all not-running).
+        # Still need len(units) entries.
+        return [""] * len(units)
+    if "\n\n" in text:
+        parts = text.split("\n\n")
+    else:
+        # Single unit, or systemd version that doesn't emit blank
+        # separators. Fall back to plain \n split.
+        parts = text.split("\n")
+    if len(parts) != len(units):
+        # Unexpected shape — degrade gracefully so the caller can
+        # surface "skipped" rather than crash.
         return None
-    return lines
+    return parts
 
 
 def check_oom_score_adj() -> CheckResult:
