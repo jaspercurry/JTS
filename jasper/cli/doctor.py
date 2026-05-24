@@ -1175,32 +1175,19 @@ _EXPECTED_START_LIMIT_ACTION = {
 }
 
 
-# Expected OOMScoreAdjust per critical daemon. -900 = camilla (silence
-# is worst UX), -700 = aec-bridge, -600 = control, -500 = voice, -300
-# for mux/input. See docs/HANDOFF-resilience.md "OOM-score ladder".
-_EXPECTED_OOM_ADJ = {
-    "jasper-camilla": -900,
-    "jasper-aec-bridge": -700,
-    "jasper-control": -600,
-    "jasper-voice": -500,
-    "jasper-mux": -300,
-    "jasper-input": -300,
-    # sshd (Debian unit name: `ssh.service`) defaults to -1000 from the
-    # `openssh-server` package. The resilience story explicitly relies
-    # on sshd being immortal — if it drops to default 0 during OOM, the
-    # operator loses their recovery path. Track it here defensively so
-    # a future RPi OS / Debian update that changes the default surfaces
-    # in jasper-doctor before someone actually needs to SSH in to
-    # debug. On non-Debian distros that name the unit `sshd.service`,
-    # `ssh.service` will simply be reported as "not running" — skipped.
-    "ssh": -1000,
-}
+# OOMScoreAdjust values are the canonical set from jasper._oom_adj —
+# shared with install.sh so a future tweak only touches one file.
+# See jasper/_oom_adj.py for rationale per daemon.
+from .._oom_adj import EXPECTED as _EXPECTED_OOM_ADJ  # noqa: E402
 
 
 def _pid_of_unit(unit: str) -> int | None:
-    """Best-effort: get the main PID of a systemd unit. Returns None
-    if the unit isn't running, or if systemctl isn't available
-    (running on a dev host)."""
+    """Best-effort single-unit PID lookup. Returns None if the unit
+    isn't running, or if systemctl isn't available (dev host).
+
+    Used only when a caller wants just one PID. The batch caller
+    `check_oom_score_adj` uses `_systemctl_show_property` directly
+    to avoid N subprocess invocations for N units."""
     try:
         out = _run(
             ["systemctl", "show", "-p", "MainPID", "--value", f"{unit}.service"],
@@ -1211,23 +1198,40 @@ def _pid_of_unit(unit: str) -> int | None:
         return None
 
 
-def _configured_oom_adj_of_unit(unit: str) -> int | None:
-    """Best-effort: read OOMScoreAdjust= from systemd's view of the
-    unit. This catches drift between "what the .service file says"
-    and "what's actually running" — a unit file edit that hasn't
-    been picked up via daemon-reload + restart shows here, but not
-    in /proc/<pid>/oom_score_adj. Returns None on dev hosts or
-    when the value couldn't be read."""
+def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
+    """Batch read of one systemd property across multiple units. One
+    subprocess call returns N values (one per unit, in input order).
+
+    Returns:
+        list of values (length == len(units)), OR None if systemctl
+        is unavailable (dev host).
+
+    Why this matters: before the batch, check_oom_score_adj called
+    `systemctl show` 2× per daemon × 7 daemons = 14 subprocess
+    invocations per doctor run. With the batch, it's 2 invocations
+    total — one for MainPID, one for OOMScoreAdjust. ~7× faster
+    per check.
+    """
     try:
         out = _run(
-            ["systemctl", "show", "-p", "OOMScoreAdjust", "--value",
-             f"{unit}.service"],
-        ).stdout.strip()
-        if not out or out == "[not set]":
-            return 0  # systemd default when OOMScoreAdjust= absent
-        return int(out)
-    except (subprocess.SubprocessError, ValueError, FileNotFoundError):
+            ["systemctl", "show", "-p", prop, "--value"] +
+            [f"{u}.service" for u in units],
+            # Wider timeout — listing N units takes longer than 1.
+            timeout=10.0,
+        ).stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
         return None
+    # `--value` with multiple units returns one value per unit, one
+    # per line, in argument order. Trailing newline produces an empty
+    # final element — filter it.
+    lines = out.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    if len(lines) != len(units):
+        # systemctl returned an unexpected shape — fall back to None
+        # so the caller can degrade gracefully.
+        return None
+    return lines
 
 
 def check_oom_score_adj() -> CheckResult:
@@ -1239,15 +1243,36 @@ def check_oom_score_adj() -> CheckResult:
     new unit landed → next restart fixes it. Configured drift means
     the unit file itself doesn't have the directive → next restart
     *won't* fix it, so we surface both shapes separately."""
+    units = list(_EXPECTED_OOM_ADJ.keys())
+    # Batch both systemctl-show calls — one subprocess per property
+    # instead of one per (property × unit).
+    pids_raw = _systemctl_show_property("MainPID", units)
+    configs_raw = _systemctl_show_property("OOMScoreAdjust", units)
+    if pids_raw is None or configs_raw is None:
+        return CheckResult(
+            "OOM score adj", "ok",
+            "systemctl unavailable — skipped (not Linux?)",
+        )
     live_drift = []   # /proc/PID disagrees with expected
     config_drift = []  # systemctl show disagrees with expected
     missing = []
-    for unit, want in _EXPECTED_OOM_ADJ.items():
-        configured = _configured_oom_adj_of_unit(unit)
+    for unit, want, pid_str, config_str in zip(
+        units, _EXPECTED_OOM_ADJ.values(), pids_raw, configs_raw,
+    ):
+        # Parse configured value. systemd returns "0" when
+        # OOMScoreAdjust= is absent from the unit (its default).
+        try:
+            configured = int(config_str) if config_str else 0
+        except ValueError:
+            configured = None
         if configured is not None and configured != want:
             config_drift.append(f"{unit} unit={configured} (want {want})")
-        pid = _pid_of_unit(unit)
-        if pid is None:
+        # Parse PID. systemctl returns "0" when the unit isn't running.
+        try:
+            pid = int(pid_str) if pid_str else 0
+        except ValueError:
+            pid = 0
+        if pid <= 0:
             missing.append(unit)
             continue
         try:
