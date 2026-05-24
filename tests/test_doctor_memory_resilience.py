@@ -426,18 +426,22 @@ _EXPECTED_CONFIG = {
 
 
 def _make_oom_run(pid_map, config_map):
-    """Build a `_run` mock for check_oom_score_adj's two systemctl
-    calls: `-p MainPID` and `-p OOMScoreAdjust`. Each returns the
-    value from the appropriate map for the unit named in the cmd."""
+    """Build a `_run` mock for check_oom_score_adj's two BATCHED
+    systemctl calls (PR cleanup post-T5.2):
+      `systemctl show -p MainPID --value u1.service u2.service ...`
+      `systemctl show -p OOMScoreAdjust --value u1.service u2.service ...`
+    Each returns N lines (one per unit, in argument order)."""
     def fake_run(cmd, **kwargs):
-        # cmd = ["systemctl", "show", "-p", <prop>, "--value", "X.service"]
+        # cmd = ["systemctl", "show", "-p", <prop>, "--value",
+        #        "u1.service", "u2.service", ...]
         prop = cmd[3]
-        unit = cmd[5].rsplit(".", 1)[0]
+        # Units start at index 5 (after `--value`).
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
         result = MagicMock()
         if prop == "MainPID":
-            result.stdout = pid_map.get(unit, "0") + "\n"
+            result.stdout = "\n".join(pid_map.get(u, "0") for u in units) + "\n"
         elif prop == "OOMScoreAdjust":
-            result.stdout = config_map.get(unit, "0") + "\n"
+            result.stdout = "\n".join(config_map.get(u, "0") for u in units) + "\n"
         else:
             result.stdout = "\n"
         return result
@@ -629,12 +633,15 @@ def test_start_limit_action_skips_on_dev_host():
 
 
 def test_oom_score_adj_no_systemctl_is_ok():
-    """Dev host without systemctl — _pid_of_unit returns None for
-    every unit — should report 0 protected / 6 missing, NOT crash."""
+    """Dev host without systemctl — the batched `_systemctl_show_property`
+    returns None, and check_oom_score_adj fast-fails to a skip
+    (rather than reporting N "not running" units). The post-cleanup
+    behavior is cleaner: one "skipped — not Linux?" instead of per-
+    unit noise."""
     def fake_run(cmd, **kwargs):
         raise FileNotFoundError("systemctl not found")
 
     with patch.object(doctor, "_run", side_effect=fake_run):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "not running" in r.detail
+    assert "systemctl unavailable" in r.detail
