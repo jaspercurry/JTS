@@ -1,0 +1,32 @@
+# /etc/systemd/system/jts-mic.slice
+#
+# Stage 2 mic-protection subset (shipped 2026-05-24 with the audio
+# slice — see jts-audio.slice header for the empirical justification).
+#
+# Currently contains jasper-aec-bridge — the WebRTC AEC3 daemon that
+# processes raw mic frames in real time. Today's stress test showed
+# aec-bridge accumulated 42 MB of VmSwap during sustained memory
+# pressure, causing audio-path decompression jitter when the
+# downstream voice pipeline pulled cleaned mic frames.
+#
+# Separate slice from audio (rather than one big "jts-realtime")
+# because the failure modes are different:
+#   - jts-audio's daemons feed the speaker; jitter = audible glitch
+#   - jts-mic's daemon feeds the wake-word detector + LLM session;
+#     jitter = missed wakes / stutter in voice turns
+# Different alert thresholds and (in Stage 3) different oomd policy
+# might apply, so keep them separated from the start.
+#
+# Same `MemorySwapMax=0` semantic as jts-audio: pages never to zram.
+
+[Unit]
+Description=JTS mic path (AEC bridge + future mic processing) — pages never swap to zram
+Before=slices.target
+
+[Slice]
+MemoryAccounting=yes
+MemorySwapMax=0
+ManagedOOMPreference=avoid
+
+[Install]
+WantedBy=slices.target

@@ -706,3 +706,118 @@ def test_oom_score_adj_no_systemctl_is_ok():
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
     assert "systemctl unavailable" in r.detail
+
+
+# --- Stage 2 audio-slice checks ------------------------------------------
+
+
+def test_cgroup_memory_enabled_when_controller_listed():
+    """memory cgroup is on → check passes."""
+    fake_read = MagicMock(return_value="cpu io memory pids\n")
+    fake_exists = MagicMock(return_value=True)
+    with patch("pathlib.Path.exists", fake_exists), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_cgroup_memory_enabled()
+    assert r.status == "ok"
+    assert "controller enabled" in r.detail
+
+
+def test_cgroup_memory_disabled_fails_loudly():
+    """memory NOT in cgroup.controllers → audio-slice MemorySwapMax=0
+    is a no-op. This is the exact silent-failure trap we want the
+    doctor to surface, so it's FAIL (not warn) — the audio protection
+    is gone."""
+    fake_read = MagicMock(return_value="cpu io pids\n")  # no memory
+    fake_exists = MagicMock(return_value=True)
+    with patch("pathlib.Path.exists", fake_exists), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_cgroup_memory_enabled()
+    assert r.status == "fail"
+    assert "NOT enabled" in r.detail
+    assert "Reboot" in r.detail
+
+
+def test_cgroup_memory_skips_on_dev_host():
+    """No /sys/fs/cgroup → not Linux, skip cleanly."""
+    fake_exists = MagicMock(return_value=False)
+    with patch("pathlib.Path.exists", fake_exists):
+        r = doctor.check_cgroup_memory_enabled()
+    assert r.status == "ok"
+    assert "not Linux" in r.detail
+
+
+def test_audio_path_no_swap_happy_path():
+    """All audio-path daemons running with VmSwap=0 (or very low):
+    happy path = ok."""
+    def fake_run(cmd, **kwargs):
+        unit = cmd[5].rsplit(".", 1)[0]
+        pid_map = {
+            "jasper-camilla": "2001",
+            "jasper-aec-bridge": "2002",
+            "shairport-sync": "2003",
+            "librespot": "2004",
+            "bluealsa-aplay": "2005",
+        }
+        result = MagicMock()
+        result.stdout = pid_map.get(unit, "0") + "\n"
+        return result
+
+    def fake_read(self):
+        # All audio daemons have VmSwap=0 (or tiny transient)
+        return (
+            "Name:\tfake\n"
+            "VmRSS:\t100000 kB\n"
+            "VmSwap:\t0 kB\n"
+        )
+
+    with patch.object(doctor, "_run", side_effect=fake_run), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_audio_path_no_swap()
+    assert r.status == "ok"
+    assert "swap-free" in r.detail
+
+
+def test_audio_path_no_swap_warns_on_42mb_swap():
+    """Reproduce the 2026-05-24 failure-mode signature: aec-bridge
+    with 42 MB of VmSwap. Should warn loudly with the daemon name
+    + amount."""
+    def fake_run(cmd, **kwargs):
+        unit = cmd[5].rsplit(".", 1)[0]
+        pid_map = {
+            "jasper-camilla": "2001",
+            "jasper-aec-bridge": "2002",
+            "shairport-sync": "2003",
+            "librespot": "2004",
+            "bluealsa-aplay": "2005",
+        }
+        result = MagicMock()
+        result.stdout = pid_map.get(unit, "0") + "\n"
+        return result
+
+    def fake_read(self):
+        pid_str = str(self).split("/")[2]
+        # jasper-aec-bridge (pid 2002) has 42 MB swapped (the
+        # 2026-05-24 signature). Others are clean.
+        if pid_str == "2002":
+            return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t43056 kB\n"
+        return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n"
+
+    with patch.object(doctor, "_run", side_effect=fake_run), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_audio_path_no_swap()
+    assert r.status == "warn"
+    assert "jasper-aec-bridge" in r.detail
+    assert "43056" in r.detail
+    assert "music may glitch" in r.detail
+
+
+def test_audio_path_no_swap_dev_host():
+    """No systemctl → all daemons "not running", check still passes
+    cleanly (doesn't crash)."""
+    def fake_run(cmd, **kwargs):
+        raise FileNotFoundError("systemctl not found")
+
+    with patch.object(doctor, "_run", side_effect=fake_run):
+        r = doctor.check_audio_path_no_swap()
+    assert r.status == "ok"
+    assert "not running" in r.detail

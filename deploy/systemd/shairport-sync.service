@@ -15,6 +15,9 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
+# Stage 2 audio-protection: pages never swap to zram. See
+# docs/HANDOFF-resilience.md "Stage 2 — audio-protection subset".
+Slice=jts-audio.slice
 Type=simple
 # Render /etc/shairport-sync.conf from the template every time the
 # service starts, picking up the current value of

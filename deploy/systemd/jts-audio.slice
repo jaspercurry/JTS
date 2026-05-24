@@ -1,0 +1,48 @@
+# /etc/systemd/system/jts-audio.slice
+#
+# Stage 2 audio-protection subset (shipped 2026-05-24 in response
+# to empirical evidence: today's stress test caused audible "splotchy,
+# crushed" music playback because aec-bridge's pages were swapped to
+# zram and audio-frame access triggered decompression jitter).
+#
+# Daemons in this slice handle audio output: CamillaDSP, the three
+# music renderers (shairport-sync, librespot, bluealsa-aplay).
+#
+# **The load-bearing directive is `MemorySwapMax=0`.** It tells the
+# kernel: pages owned by processes in this cgroup MUST NEVER be
+# swapped to zram. Audio is real-time — a single page-fault triggers
+# zstd decompression (~10-15 µs on Cortex-A76), which on a small
+# ALSA buffer (~10 ms) can blow the timing budget and cause an
+# ALSA underrun. With MemorySwapMax=0, the kernel either keeps
+# the page in real RAM or OOM-kills the daemon (NEVER swaps it).
+# Killed-and-restarted is preferable to silently-jittering audio.
+#
+# Requires the memory cgroup controller to be enabled. install.sh's
+# migrate_cgroup_memory_enabled adds `cgroup_enable=memory cgroup_memory=1`
+# to /boot/firmware/cmdline.txt (Pi 5's DTB ships with cgroup_disable=memory,
+# so the kernel needs the explicit override). REBOOT REQUIRED to apply.
+#
+# Verification post-reboot:
+#   systemctl show jts-audio.slice -p MemorySwapMax       # should read 0
+#   cat /sys/fs/cgroup/jts-audio.slice/memory.swap.max    # should read 0
+#   cat /proc/$(pidof camilladsp)/status | grep VmSwap    # should stay 0 under stress
+#
+# `MemoryAccounting=yes` is required for cgroup memory accounting to
+# track this slice's processes. Without it, the kernel doesn't tally
+# per-cgroup usage and `MemorySwapMax=0` is a no-op.
+#
+# `ManagedOOMPreference=avoid` is read by systemd-oomd if/when we ship
+# it (Stage 3). Tells oomd to consider non-audio slices first under
+# memory pressure. Harmless when oomd isn't installed.
+
+[Unit]
+Description=JTS audio path (CamillaDSP + renderers) — pages never swap to zram
+Before=slices.target
+
+[Slice]
+MemoryAccounting=yes
+MemorySwapMax=0
+ManagedOOMPreference=avoid
+
+[Install]
+WantedBy=slices.target

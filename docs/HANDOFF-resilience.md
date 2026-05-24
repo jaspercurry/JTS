@@ -490,13 +490,145 @@ post-install:
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "OOM|zram|MGLRU|vm.|memory"
 ```
 
-### Stage 2 — cgroup memory + slice architecture (deferred, with explicit triggers)
+### Stage 2 — cgroup memory + slice architecture (audio-protection subset shipped 2026-05-24)
 
-Documented here so the next person reading this doesn't have to
-re-derive the analysis. **Currently deferred** — the motivating
-incident (2026-05-23) is covered end-to-end by Stage 1 + T5.1 +
-T5.2, and Stage 2's incremental value is best paid for after
-observed evidence rather than speculative scope.
+**Status update (2026-05-24)**: the audio-protection subset of Stage 2
+shipped after the 2026-05-24 stress test produced empirical evidence
+that the trigger condition documented below ("audio xruns correlated
+with memory pressure") was met. **The rest of Stage 2** — per-daemon
+`MemoryHigh=`/`MemoryMax=` enforcement on non-audio slices,
+systemd-oomd integration — remains deferred per the trigger analysis.
+
+#### 2026-05-24 stress test (the evidence that triggered the audio subset)
+
+`stress-ng --vm 1 --vm-bytes 300M --vm-keep --timeout 60s` on the 1 GB
+Pi 5 with Stage 1 + T5.1 + T5.2 in place. The system *survived*:
+
+- Load capped at 3.07 (no scheduler death spiral)
+- SystemSupervisor probes stayed green (sshd / `/healthz` /
+  `/proc/loadavg` all responded within budget)
+- All 6 jasper-* daemons stayed active
+- OOM-killer never had to fire — zram absorbed the pressure
+
+**But the music played during the stress was audibly degraded** —
+"splotchy, crushed" per the operator's real-time report. Forensics
+captured immediately after the stress:
+
+```
+jasper-aec-bridge: VmLck=16 kB    VmSwap=43056 kB   ← 42 MB in zram
+jasper-camilla:    VmLck=64 kB    VmSwap=416 kB
+```
+
+Mechanism: under memory pressure, the kernel evicted the audio-path
+daemons' pages to zram. Subsequent audio-frame access triggered
+zstd decompression (~10-15 µs per page on Cortex-A76), and the
+decompression-latency variance exceeded the ALSA buffer's slack
+window (~10 ms), causing per-frame underruns. `LimitMEMLOCK=infinity`
+in the unit files grants permission to lock memory but the daemons
+weren't actually calling `mlockall()` — only ~64 kB locked.
+
+This is the failure mode `MemorySwapMax=0` on a cgroup explicitly
+prevents — and it's the audio-protection subset of Stage 2 that
+shipped in response. Same-day evidence → same-day fix.
+
+#### What the audio-protection subset does
+
+Two changes:
+
+**1. Enable the memory cgroup controller.** `install.sh`'s
+`migrate_cgroup_memory_enabled` idempotently adds three tokens to
+`/boot/firmware/cmdline.txt`:
+- `cgroup_enable=memory` — overrides the Pi 5 DTB's `cgroup_disable=memory`
+- `cgroup_memory=1` — paired token (legacy, harmless on current kernels)
+- `psi=1` — enables `/proc/pressure/` if `CONFIG_PSI=y` (no-op
+  otherwise). Not required for Stage 2 audio but unlocks PSI
+  observability for future Stage 3 work.
+
+**Reboot required** — kernel only reads cmdline at boot.
+
+**2. Carve audio + mic daemons into protected slices** with
+`MemorySwapMax=0`:
+
+```
+jts-audio.slice          ← jasper-camilla, shairport-sync,
+                            librespot, bluealsa-aplay
+                          MemorySwapMax=0
+                          ManagedOOMPreference=avoid
+
+jts-mic.slice            ← jasper-aec-bridge
+                          MemorySwapMax=0
+                          ManagedOOMPreference=avoid
+```
+
+`Slice=` directives in the unit files (or drop-ins for unit files
+JTS doesn't own, like `bluealsa-aplay.service.d/jts-slice.conf`)
+assign each daemon to its protected slice. Once `MemorySwapMax=0` is
+in effect, the kernel literally cannot swap those daemons' pages to
+zram — under memory pressure it either keeps the pages in real RAM,
+sheds pages from other (unprotected) cgroups, or OOM-kills the
+audio daemon (a clean restart that's preferable to silent jitter).
+
+Why slices rather than `MemorySwapMax=0` on each unit directly:
+expressiveness for future scaling. New audio daemons go into the
+existing slice via one `Slice=` line; policy lives in one place.
+
+Why audio + mic are separate slices: different failure-mode
+semantics. Audio jitter = audible glitch; mic jitter = missed wake
+events or stuttery voice turns. Future Stage 3 oomd policy might
+differ between them.
+
+#### Verification post-deploy + reboot
+
+```sh
+# 1. Memory cgroup actually online
+cat /sys/fs/cgroup/cgroup.controllers | tr ' ' '\n' | grep memory
+
+# 2. MemorySwapMax=0 in effect on the slice
+systemctl show jts-audio.slice -p MemorySwapMax     # → MemorySwapMax=0
+cat /sys/fs/cgroup/jts-audio.slice/memory.swap.max  # → 0
+
+# 3. Each audio daemon is actually IN the slice
+systemctl show jasper-camilla -p Slice              # → Slice=jts-audio.slice
+
+# 4. Daemons aren't swapping (this is the load-bearing one)
+for unit in jasper-camilla jasper-aec-bridge shairport-sync librespot bluealsa-aplay; do
+    pid=$(systemctl show -p MainPID --value ${unit}.service)
+    [ "$pid" != "0" ] && echo "$unit: $(grep VmSwap /proc/$pid/status)"
+done
+# All should show VmSwap: 0 kB (or very near zero)
+
+# 5. Doctor verifies all of the above in one shot
+sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "cgroup memory|audio path"
+```
+
+#### What the rest of Stage 2 would still add (still deferred)
+
+The audio-protection subset doesn't enforce `MemoryHigh=`/`MemoryMax=`
+on non-audio daemons. The 6 unit files that already have those
+directives (mux, input, usbsink, system-web, bluetooth-web,
+librespot) **do now enforce** as a side-effect of memory cgroup
+being on — those values become live the moment the controller is
+enabled.
+
+But there are no per-daemon caps on `jasper-voice` (~150 MB) or
+`jasper-control` (~35 MB) yet, and no per-slice cap on the
+non-audio path. Adding those would catch:
+- Slow memory leak in jasper-voice or jasper-control
+- A future regression that ballooned a daemon's working set
+
+These deferrals remain valid until the same "evidence → trigger"
+discipline that shipped the audio subset shows the same need on
+the non-audio path. The trigger conditions documented at the end
+of this section still apply.
+
+---
+
+### Stage 2 — full architecture (still deferred, with explicit triggers)
+
+Below this point is the original deferred analysis (predating the
+2026-05-24 audio-subset ship). Kept for the rest of Stage 2 (per-
+daemon caps, systemd-oomd) that hasn't yet been justified by
+observed evidence.
 
 #### What Stage 2 would do
 

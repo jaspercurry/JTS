@@ -27,6 +27,13 @@ StartLimitBurst=5
 StartLimitAction=reboot
 
 [Service]
+# Stage 2 audio-protection: assign to jts-audio.slice with
+# MemorySwapMax=0 so CamillaDSP's audio buffers + DSP state never
+# get swapped to zram. Empirically validated as needed by today's
+# stress test (2026-05-24) — splotchy music = zstd decompression
+# jitter on swapped audio pages. See docs/HANDOFF-resilience.md
+# "Stage 2 — audio-protection subset (shipped)".
+Slice=jts-audio.slice
 Type=simple
 # --statefile lets CamillaDSP persist the currently-loaded config path
 # (and main_volume) across restarts. Without it, every restart drops

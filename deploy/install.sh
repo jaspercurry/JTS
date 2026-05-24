@@ -1439,6 +1439,65 @@ migrate_memory_resilience() {
     return 0  # never fails install — best-effort migration
 }
 
+# Stage 2 audio-protection: enable the Linux memory cgroup controller
+# so jts-audio.slice's `MemorySwapMax=0` actually enforces.
+#
+# Pi 5's device-tree blob (DTB) injects `cgroup_disable=memory` into the
+# kernel's boot arguments — RPi Foundation chose this to save ~8 MB of
+# accounting overhead. Override it by adding `cgroup_enable=memory
+# cgroup_memory=1` to /boot/firmware/cmdline.txt. The kernel honors
+# both flags and lets the explicit-enable win.
+#
+# Also adds `psi=1` defensively. RPi 6.12.x ships CONFIG_PSI=y +
+# CONFIG_PSI_DEFAULT_DISABLED=y; the boot param turns PSI on. No-op
+# on kernels that don't support PSI. Enables `/proc/pressure/`
+# observability; not required for Stage 2 audio (which uses
+# MemorySwapMax=0, not PSI), but useful for future Stage 3 work +
+# `/system/` dashboard surface.
+#
+# IDEMPOTENT: grep guards each token. Existing cmdline.txt values
+# are preserved unchanged. Operator-added tokens (custom kernel
+# flags, etc.) survive.
+#
+# REBOOT REQUIRED: kernel command line only re-reads at boot.
+# Function surfaces this loudly so the operator knows.
+migrate_cgroup_memory_enabled() {
+    local cmdline_file="/boot/firmware/cmdline.txt"
+    if [[ ! -f "${cmdline_file}" ]]; then
+        echo "  cgroup_memory: WARN — ${cmdline_file} missing (not RPi OS?); skipped"
+        return 0
+    fi
+    local current
+    current=$(cat "${cmdline_file}")
+    local changed=0
+    local to_add=()
+    for token in "cgroup_enable=memory" "cgroup_memory=1" "psi=1"; do
+        if ! grep -qE "(^|[[:space:]])${token}([[:space:]]|$)" "${cmdline_file}"; then
+            to_add+=("${token}")
+            changed=1
+        fi
+    done
+    if (( changed == 0 )); then
+        echo "  cgroup_memory: cmdline.txt already configured"
+        return 0
+    fi
+    # cmdline.txt is a SINGLE line — preserve that. Append the new
+    # tokens with spaces. Strip trailing newline if any.
+    {
+        printf '%s' "${current% }"
+        for t in "${to_add[@]}"; do
+            printf ' %s' "${t}"
+        done
+        printf '\n'
+    } > "${cmdline_file}.tmp"
+    mv "${cmdline_file}.tmp" "${cmdline_file}"
+    chmod 0755 "${cmdline_file}"
+    echo "  cgroup_memory: cmdline.txt updated; added: ${to_add[*]}"
+    echo "  cgroup_memory: REBOOT REQUIRED for kernel to honor the new boot args"
+    logger -t jasper-install -- "event=cgroup_memory.cmdline_updated added=${to_add[*]}" 2>/dev/null || true
+    return 0
+}
+
 install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-camilla.service" \
@@ -1665,6 +1724,28 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \
         "${SYSTEMD_DIR}/ssh.service.d/oom-protection.conf"
+
+    # Stage 2 audio-protection slices: MemorySwapMax=0 on jts-audio.slice
+    # (camilla + shairport-sync + librespot + bluealsa-aplay) and
+    # jts-mic.slice (aec-bridge). Pages in these slices can NEVER be
+    # swapped to zram — direct fix for the 2026-05-24 stress test that
+    # caused audible audio glitches because aec-bridge accumulated 42 MB
+    # of VmSwap. Requires cgroup memory controller enabled in
+    # /boot/firmware/cmdline.txt (handled by migrate_cgroup_memory_enabled).
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jts-audio.slice" \
+        "${SYSTEMD_DIR}/jts-audio.slice"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jts-mic.slice" \
+        "${SYSTEMD_DIR}/jts-mic.slice"
+    # bluealsa-aplay's Slice= assignment lands as a drop-in (we don't
+    # own that unit file fully — the package ships it). The 4 services
+    # we DO own (jasper-camilla, jasper-aec-bridge, shairport-sync,
+    # librespot) have Slice= directly in the .service file installed
+    # above; no separate drop-in needed for them.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/bluealsa-aplay.service.d/jts-slice.conf" \
+        "${SYSTEMD_DIR}/bluealsa-aplay.service.d/jts-slice.conf"
 
     systemctl daemon-reload
 
@@ -2121,6 +2202,7 @@ main() {
     install_jasper
     install_systemd_units
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
+    migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
     install_avahi_jasper_control
     install_peering_template
