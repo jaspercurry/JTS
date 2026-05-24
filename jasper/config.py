@@ -30,6 +30,12 @@ def _validate(cfg: "Config") -> "Config":
         raise RuntimeError("JASPER_WAKE_THRESHOLD must be between 0.0 and 1.0")
     if cfg.idle_timeout_sec <= 0:
         raise RuntimeError("JASPER_IDLE_TIMEOUT_SEC must be > 0")
+    if not 0.0 <= cfg.server_vad_threshold <= 1.0:
+        raise RuntimeError("JASPER_SERVER_VAD_THRESHOLD must be between 0.0 and 1.0")
+    if cfg.server_vad_silence_ms <= 0:
+        raise RuntimeError("JASPER_SERVER_VAD_SILENCE_MS must be > 0")
+    if cfg.server_vad_prefix_ms < 0:
+        raise RuntimeError("JASPER_SERVER_VAD_PREFIX_MS must be >= 0")
     for name, value in [
         ("JASPER_OPENAI_CONTEXT_RESET_SEC", cfg.openai_context_reset_sec),
         ("JASPER_GEMINI_CONTEXT_RESET_SEC", cfg.gemini_context_reset_sec),
@@ -117,6 +123,11 @@ class Config:
     tts_silence_threshold_dbfs: float
     tts_music_window_sec: float
     vad_barge_in_threshold: float
+
+    server_vad_enabled: bool
+    server_vad_threshold: float
+    server_vad_silence_ms: int
+    server_vad_prefix_ms: int
 
     camilla_host: str
     camilla_port: int
@@ -493,6 +504,18 @@ class Config:
             # is being missed.
             vad_barge_in_threshold=_env_float(
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
+            ),
+            server_vad_enabled=_env(
+                "JASPER_SERVER_VAD_ENABLED", "1",
+            ).strip().lower() not in ("0", "false", "no"),
+            server_vad_threshold=_env_float(
+                "JASPER_SERVER_VAD_THRESHOLD", 0.5,
+            ),
+            server_vad_silence_ms=_env_int(
+                "JASPER_SERVER_VAD_SILENCE_MS", 350,
+            ),
+            server_vad_prefix_ms=_env_int(
+                "JASPER_SERVER_VAD_PREFIX_MS", 300,
             ),
             camilla_host=_env("JASPER_CAMILLA_HOST", "127.0.0.1"),
             camilla_port=_env_int("JASPER_CAMILLA_PORT", 1234),

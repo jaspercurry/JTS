@@ -1202,14 +1202,14 @@ class GeminiLiveConnection(LiveConnection):
 
         We deliberately avoid the public `session.receive()` async
         generator: it `break`s out of its loop the moment the first
-        `turn_complete` arrives (see python-genai #2244 — the SDK's
-        `live.py:455-460` does `if result.server_content.turn_complete:
-        yield result; break`). On a persistent multi-turn connection
-        that means everything from turn 2 onward is silently dropped:
-        zero audio chunks delivered, zero input/output tokens, no
-        exception. Calling `_receive()` directly in a `while` loop
-        bypasses the early-break and gives us every message for the
-        connection's lifetime, exactly what we need.
+        `turn_complete` arrives (the SDK's `live.py` does
+        `if result.server_content.turn_complete: yield result; break`).
+        On a persistent multi-turn connection that means everything
+        from turn 2 onward is silently dropped: zero audio chunks
+        delivered, zero input/output tokens, no exception. Calling
+        `_receive()` directly in a `while` loop bypasses the
+        early-break and gives us every message for the connection's
+        lifetime, exactly what we need.
 
         Audio chunks / tool calls / turn_complete / interrupted go to
         the active turn (if any). Connection-level messages

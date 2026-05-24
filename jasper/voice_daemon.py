@@ -472,6 +472,12 @@ class TtsVolumeTracker:
     def resume(self) -> None:
         self._paused = False
 
+    def music_is_playing(self) -> bool:
+        """True when the music chain has audible signal — used by the
+        server_vad switching logic to decide whether to delegate
+        end-of-utterance detection to the provider."""
+        return self._anchor_dbfs > self._silence_threshold_dbfs
+
     def _record_rms(self, rms_dbfs: float) -> float:
         """Append latest RMS reading and return windowed peak."""
         now = asyncio.get_event_loop().time()
@@ -1076,6 +1082,30 @@ async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
             return
 
 
+async def _server_vad_response_trigger(turn, connection) -> None:
+    """Wait for the server's VAD to signal end-of-utterance, then fire
+    response.create. Only spawned when server_vad is active for the turn."""
+    wait_eou = getattr(turn, "wait_for_server_eou", None)
+    if wait_eou is None or not callable(wait_eou):
+        return
+    try:
+        await wait_eou()
+    except asyncio.CancelledError:
+        raise
+    if turn.turn_lost():
+        return
+    create = getattr(connection, "_create_response_only", None)
+    if create is not None and callable(create):
+        try:
+            await create()
+            logger.info("server_vad: fired response.create after server EOU")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "server_vad: response.create failed (%s: %s)",
+                type(e).__name__, e,
+            )
+
+
 class WakeLoop:
     """Mic consumer. Dispatches each primary-mic frame to either the
     wake-word detector (WAKE state) or the active live turn (SESSION
@@ -1260,6 +1290,7 @@ class WakeLoop:
         # `_speech_run_started_at`). Used to reject wake-tail audio
         # — see SPEECH_RUN_PEAK_MIN.
         self._speech_run_max_silero: float = 0.0
+        self._server_vad_this_turn: bool = False
         # Rolling ring buffer of the most recent mic frames. Always
         # appended-to (regardless of WAKE/SESSION state); drained into
         # the new turn at _begin_turn so the first phoneme of the
@@ -2546,13 +2577,55 @@ class WakeLoop:
 
         assert self._turn is not None
 
-        # Once we've sent `audio_stream_end` we stop forwarding mic
-        # frames for the rest of this turn — the model is generating
-        # its response and any further audio would re-open an audio
-        # stream the server has been told is finished.
         if self._input_ended:
             return
 
+        # ---- Server-side VAD branch ----
+        # When server_vad is active, the server owns end-of-utterance
+        # detection. Skip local Silero; just forward audio and watch
+        # for the server's committed event.
+        if self._server_vad_this_turn:
+            now = asyncio.get_event_loop().time()
+            elapsed = now - self._turn_started_at_loop
+
+            server_heard_speech = bool(
+                getattr(self._turn, "_server_speech_started", False)
+            )
+            if server_heard_speech and not self._user_speech_seen:
+                self._user_speech_seen = True
+                await self._telemetry_stage("speech_detected")
+
+            if not server_heard_speech and not self._user_speech_seen \
+                    and elapsed >= NO_SPEECH_ABORT_SEC:
+                logger.info(
+                    "server_vad: no speech detected within %.1fs; "
+                    "aborting turn",
+                    NO_SPEECH_ABORT_SEC,
+                )
+                await self._end_turn()
+                return
+
+            if elapsed >= HARD_RECORDING_CAP_SEC:
+                logger.info(
+                    "server_vad: hard recording cap (%.1fs); ending",
+                    HARD_RECORDING_CAP_SEC,
+                )
+                self._input_ended = True
+                await self._end_turn()
+                return
+
+            eou_check = getattr(self._turn, "server_speech_detected", None)
+            if eou_check is not None and callable(eou_check) and eou_check():
+                self._input_ended = True
+
+            try:
+                await self._turn.send_audio(frame.tobytes())
+            except Exception as e:  # noqa: BLE001
+                logger.warning("send_audio failed (will end turn): %s", e)
+                await self._end_turn()
+            return
+
+        # ---- Local Silero VAD path (manual VAD) ----
         # End-of-utterance detection: run Silero VAD on the frame and
         # arm the silence detector once the user has been speaking
         # continuously for SUSTAINED_SPEECH_TO_ARM_SEC. Wake-word tail
@@ -2761,22 +2834,51 @@ class WakeLoop:
         )
         self._turn = await self._connection.acquire_turn()
         t_after_acquire = _time.monotonic()
-        # Breakdown so a slow wake→activity_start can be localized to
-        # the actual offender. `sched_lag` is the event-loop scheduling
-        # delay between wake firing and this coroutine starting;
-        # everything else is one named await. Pair with the
-        # `acquire-buffer drained: N frames` log to gauge how much
-        # audio Silero misses while this runs.
+
+        self._server_vad_this_turn = False
+        if (
+            self._cfg.server_vad_enabled
+            and self._cfg.voice_provider in ("openai", "grok")
+            and self._tts_volume_tracker.music_is_playing()
+        ):
+            set_td = getattr(self._connection, "set_turn_detection", None)
+            if set_td is not None and callable(set_td):
+                try:
+                    await set_td({
+                        "type": "server_vad",
+                        "threshold": self._cfg.server_vad_threshold,
+                        "silence_duration_ms": self._cfg.server_vad_silence_ms,
+                        "prefix_padding_ms": self._cfg.server_vad_prefix_ms,
+                        "create_response": False,
+                        "interrupt_response": False,
+                    })
+                    self._server_vad_this_turn = True
+                    if self._turn is not None:
+                        svad = getattr(self._turn, "_server_vad_active", None)
+                        if svad is not None:
+                            self._turn._server_vad_active = True  # type: ignore[union-attr]
+                    logger.info(
+                        "server_vad: enabled for this turn (music_anchor=%.1f dBFS)",
+                        self._tts_volume_tracker._anchor_dbfs,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "server_vad: failed to enable (%s: %s); "
+                        "falling back to local VAD",
+                        type(e).__name__, e,
+                    )
+
         logger.info(
             "turn acquire done in %.0fms "
             "(sched_lag=%.0f state=%.0f tts_apply=%.0f duck=%.0f acquire=%.0f) "
-            "(wake→activity_start)",
-            (t_after_acquire - t_wake) * 1000,
+            "(wake→activity_start%s)",
+            (_time.monotonic() - t_wake) * 1000,
             (t_begin - t_wake) * 1000,
             (t_after_state - t_begin) * 1000,
             (t_after_tts_apply - t_after_state) * 1000,
             (t_after_duck - t_after_tts_apply) * 1000,
             (t_after_acquire - t_after_duck) * 1000,
+            ", server_vad" if self._server_vad_this_turn else "",
         )
         # Pre-roll: drain the recent-mic ring buffer into the turn so
         # the user's first phoneme (which preceded the wake firing)
@@ -2801,6 +2903,11 @@ class WakeLoop:
             _idle_watchdog(self._turn, self._cfg.idle_timeout_sec)
         )
         self._bg_tasks = {playback, idle}
+        if self._server_vad_this_turn:
+            vad_trigger = asyncio.create_task(
+                _server_vad_response_trigger(self._turn, self._connection)
+            )
+            self._bg_tasks.add(vad_trigger)
         self._state = State.SESSION
 
     async def _cleanup_after_failed_begin(self) -> None:
