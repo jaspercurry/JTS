@@ -49,6 +49,13 @@ StartLimitIntervalSec=300
 StartLimitBurst=4
 StartLimitAction=reboot
 
+# Stage 2 audio-protection: assign to jts-mic.slice with
+# MemorySwapMax=0. Today's stress test (2026-05-24) caught
+# aec-bridge accumulating 42 MB of VmSwap during sustained
+# memory pressure — exactly the failure mode this slice prevents.
+# See docs/HANDOFF-resilience.md "Stage 2 — audio-protection
+# subset (shipped)".
+
 [Service]
 # Tier 1+2 of the resilience ladder. `Type=notify` makes the daemon
 # emit `READY=1` (via sdnotify, see jasper/watchdog.py) before
@@ -66,6 +73,7 @@ StartLimitAction=reboot
 # (down from systemd's default 90 s). If the daemon can't shut down
 # in 5 s, it's wedged and we want to get to SIGKILL+restart fast
 # rather than accumulating wedge time.
+Slice=jts-mic.slice
 Type=notify
 WatchdogSec=30s
 TimeoutStopSec=5s

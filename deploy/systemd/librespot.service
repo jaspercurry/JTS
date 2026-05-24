@@ -10,6 +10,9 @@ StartLimitIntervalSec=60
 StartLimitBurst=5
 
 [Service]
+# Stage 2 audio-protection: pages never swap to zram. See
+# docs/HANDOFF-resilience.md "Stage 2 — audio-protection subset".
+Slice=jts-audio.slice
 Type=simple
 User=pi
 Group=audio

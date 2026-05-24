@@ -1368,6 +1368,114 @@ def check_start_limit_action() -> CheckResult:
     )
 
 
+# --- Stage 2 audio-protection checks (shipped 2026-05-24) ---
+#
+# These verify that the audio-path daemons' pages won't be swapped to
+# zram under memory pressure — the failure mode confirmed empirically
+# by the 2026-05-24 stress test (splotchy/crushed music as zram
+# decompression jitter blew the ALSA buffer timing budget).
+
+
+def check_cgroup_memory_enabled() -> CheckResult:
+    """Verify the Linux memory cgroup controller is actually enabled.
+    Required for `MemorySwapMax=0` on jts-audio.slice / jts-mic.slice
+    to enforce. The Pi 5 DTB defaults to `cgroup_disable=memory`;
+    install.sh adds `cgroup_enable=memory` to cmdline.txt to override.
+    Failure here means the audio-slice protection is silently a
+    no-op — exactly the trap PR1 + PR1.6 documented for the existing
+    `MemoryHigh=`/`MemoryMax=` directives."""
+    p = Path("/sys/fs/cgroup/cgroup.controllers")
+    if not p.exists():
+        return CheckResult(
+            "cgroup memory", "ok",
+            "/sys/fs/cgroup not present (not Linux?)",
+        )
+    try:
+        controllers = p.read_text().strip().split()
+    except OSError:
+        return CheckResult(
+            "cgroup memory", "warn", "couldn't read cgroup.controllers",
+        )
+    if "memory" not in controllers:
+        return CheckResult(
+            "cgroup memory", "fail",
+            "memory controller NOT enabled — audio-slice MemorySwapMax=0 "
+            "is silently a no-op. Reboot to apply install.sh's cmdline.txt "
+            "edit (cgroup_enable=memory).",
+        )
+    return CheckResult(
+        "cgroup memory", "ok",
+        "controller enabled (audio-slice protection effective)",
+    )
+
+
+# Audio-path daemons that should NEVER accumulate VmSwap. The check
+# is permissive about small transient values (kernel sometimes evicts
+# a few pages during process startup) but warns if any daemon has
+# meaningful swap — that's the 2026-05-24 failure-mode signature.
+_AUDIO_PATH_UNITS = (
+    "jasper-camilla",
+    "jasper-aec-bridge",
+    "shairport-sync",
+    "librespot",
+    "bluealsa-aplay",
+)
+
+# Threshold for "this daemon has meaningful pages in zram" — well above
+# the small (<100 kB) transient that's normal at startup, well below
+# the 42 MB observed on aec-bridge during the 2026-05-24 stress.
+_AUDIO_VMSWAP_WARN_KB = 1024  # 1 MB
+
+
+def check_audio_path_no_swap() -> CheckResult:
+    """Verify audio-path daemons have ~0 pages in zram. If any are
+    swapped meaningfully (>1 MB), it means either the slice's
+    `MemorySwapMax=0` isn't enforcing (cgroup memory not enabled,
+    Slice= not assigned, or daemon not in the slice) — OR pressure
+    has already started evicting audio pages, in which case music
+    quality is at risk."""
+    swapped: list[str] = []
+    missing: list[str] = []
+    for unit in _AUDIO_PATH_UNITS:
+        pid = _pid_of_unit(unit)
+        if pid is None:
+            missing.append(unit)
+            continue
+        try:
+            status = Path(f"/proc/{pid}/status").read_text()
+        except OSError:
+            continue
+        vmswap_kb = 0
+        for line in status.split("\n"):
+            if line.startswith("VmSwap:"):
+                try:
+                    vmswap_kb = int(line.split()[1])
+                except (IndexError, ValueError):
+                    pass
+                break
+        if vmswap_kb > _AUDIO_VMSWAP_WARN_KB:
+            swapped.append(f"{unit}={vmswap_kb} kB")
+    if swapped:
+        return CheckResult(
+            "audio path no-swap", "warn",
+            "audio-path daemons with pages in zram: " +
+            ", ".join(swapped) +
+            ". Check Slice= and cgroup_enable=memory; music may glitch "
+            "under load until restored.",
+        )
+    if missing:
+        running = len(_AUDIO_PATH_UNITS) - len(missing)
+        return CheckResult(
+            "audio path no-swap", "ok",
+            f"{running} audio daemons running, all swap-free; "
+            f"{len(missing)} not running ({', '.join(missing)})",
+        )
+    return CheckResult(
+        "audio path no-swap", "ok",
+        f"all {len(_AUDIO_PATH_UNITS)} audio-path daemons swap-free",
+    )
+
+
 def _aec_mode_setting() -> str:
     """Read JASPER_AEC_MODE from /var/lib/jasper/aec_mode.env. Returns
     'auto' (the install.sh default) when the file is missing or
@@ -2655,6 +2763,12 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # still configured on the 4 critical daemons. See
         # docs/HANDOFF-tier5-watchdog-liveness.md.
         check_start_limit_action,
+        # Stage 2 audio-protection (shipped 2026-05-24 in response to
+        # the stress test showing aec-bridge's 42 MB VmSwap caused
+        # audible music degradation). Verifies cgroup memory is
+        # enabled + audio-path daemons aren't swapping to zram.
+        check_cgroup_memory_enabled,
+        check_audio_path_no_swap,
         lambda: check_spend_cap(cfg),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
