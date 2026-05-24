@@ -568,6 +568,130 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
     assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
 
 
+# ---- duck-inference defer (PR #299) --------------------------------------
+#
+# jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
+# `_voice_session_active` flag above is always False even when jasper-voice
+# has a session in flight. The defer-on-inferred-duck path below catches
+# the dial-during-TTS case in that per-request coordinator.
+
+async def test_set_camilla_deferred_when_request_would_unduck_music(tmp_path):
+    """Per-request coordinator (`_voice_session_active=False`) sees
+    camilla at -40 dB (a Ducker has lowered it). Dial twists to 70%
+    → target -15 dB. delta = -15 - (-40) = +25 dB, way above the 5 dB
+    threshold → defer. Regression for the pre-existing dial-clobbers-
+    music-mid-TTS bug — without this check, the dial path used to
+    write camilla immediately and music would become audibly louder
+    mid-utterance."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-40.0)  # Ducker has lowered it
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    # Note: _voice_session_active stays False — this is the
+    # per-request coordinator shape.
+    await coord.set_listening_level(70)
+    # Camilla NOT touched — defer fired.
+    assert cam.set_calls == []
+    # listening_level still persisted so Ducker.restore lands at -15.
+    assert coord.get_listening_level() == 70
+    record = persistence.load()
+    assert record is not None and record.listening_level == 70
+
+
+async def test_set_camilla_passes_through_when_no_duck_inferred(tmp_path):
+    """No duck active (camilla at the expected -15 dB for the current
+    listening_level=70%). User dials to 50% → target -25 dB. delta =
+    -25 - (-15) = -10 dB (negative, would lower). Lowering passes
+    through — both directions safe when no duck protection at risk."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-15.0)  # synced with listening_level=70%
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    await coord.set_listening_level(50)
+    # Camilla written.
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
+
+
+async def test_set_camilla_passes_through_when_lowering_below_ducked_level(
+    tmp_path,
+):
+    """User lowers volume during a duck (camilla at -40, dial to 10%
+    → target -45). delta = -45 - (-40) = -5 dB (negative). Asymmetric
+    by design: we only defer raises (the unsafe direction). Lowering
+    is fine — the music gets quieter, which is what the user wanted
+    and doesn't break the duck's protection."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-40.0)  # ducked
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    await coord.set_listening_level(10)
+    # 10% → -45 dB. Camilla written through.
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-45.0)) < 0.01
+
+
+async def test_set_camilla_passes_through_when_camilla_unreachable(tmp_path):
+    """Defensive: if camilla is in a restart blip and best_effort
+    read returns None, fall through to the existing write path
+    (which also handles unreachable best_effort). Don't accidentally
+    defer just because we couldn't read state. The next set call
+    (or source transition) will re-apply once camilla is back."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    cam.unavailable = True  # all best_effort calls return None / False
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    # Should not raise — best_effort=True on both read and write.
+    await coord.set_listening_level(70)
+    # set_volume_db was attempted (returned False since unavailable)
+    # but the path didn't short-circuit on the inferred-duck check.
+    # set_calls stays empty because _FakeCamilla.set_volume_db returns
+    # False without recording. The important assertion is that
+    # listening_level still persisted.
+    assert coord.get_listening_level() == 70
+    record = persistence.load()
+    assert record is not None and record.listening_level == 70
+
+
+async def test_set_camilla_defer_logs_structured_event(tmp_path, caplog):
+    """The defer path emits a structured log line so a debugger can
+    distinguish 'deferred because voice session active' from
+    'deferred because we inferred a duck.' If this defer fires
+    spuriously in production, the log makes the cause obvious."""
+    import logging
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-40.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    caplog.set_level(logging.INFO, logger="jasper.volume_coordinator")
+    await coord.set_listening_level(70)
+    deferral_events = [
+        r for r in caplog.records
+        if "event=volume.deferred" in r.message
+        and "reason=inferred_duck" in r.message
+    ]
+    assert len(deferral_events) == 1
+    msg = deferral_events[0].message
+    # Carries enough to diagnose without correlating other lines.
+    assert "target_db=-15.0" in msg
+    assert "current_db=-40.0" in msg
+    assert "delta_db=25.0" in msg
+
+
 async def test_get_camilla_target_db_idle_returns_listening_level_db(tmp_path):
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)

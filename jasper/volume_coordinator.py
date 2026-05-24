@@ -133,6 +133,30 @@ ECHO_WINDOW_SEC = 0.5
 PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
+# Duck-inference threshold for the defensive defer path in `_set_camilla`.
+# jasper-control builds a fresh VolumeCoordinator per HTTP request — its
+# `_voice_session_active` is always False even when jasper-voice has a
+# session in flight (the flag is only set on jasper-voice's long-lived
+# coordinator via `note_voice_session`). Without a defensive check the
+# dial path would clobber the Ducker's main_volume setting and music
+# would become audibly louder mid-TTS.
+#
+# We infer an active duck by comparing camilla's current `main_volume_db`
+# to the requested target derived from `listening_level`: if the requested
+# target is more than this many dB ABOVE the current main_volume, a
+# Ducker is presumed to have written camilla. 5 dB is comfortably above
+# normal jitter (~0.1 dB on a stable camilla) and well below any
+# reasonable JASPER_DUCK_DB (default -25 dB; shallowest a user is likely
+# to set is ~-10 dB).
+#
+# This is intentionally one-directional: only "raise above current"
+# triggers the defer (the unsafe direction — would un-duck music
+# mid-TTS). Requests at or below current main_volume pass through
+# (the user's request is already at-or-below the ducked level, so
+# letting it through doesn't break the duck's protection).
+_DUCK_INFERENCE_THRESHOLD_DB = 5.0
+
+
 @dataclass
 class _OutboundStamp:
     """Per-source last-outbound timestamp + the value we wrote."""
@@ -818,6 +842,38 @@ class VolumeCoordinator:
                 "camilla main_volume deferred to ducker.restore: "
                 "%d%% (%.1f dB) — voice session active",
                 level, db,
+            )
+            return
+        # Defensive duck-inference defer (PR #299). The above
+        # `_voice_session_active` gate only fires on jasper-voice's
+        # long-lived coordinator. jasper-control builds a fresh
+        # VolumeCoordinator per HTTP request whose flag is always
+        # False, so dial / web-slider writes from that path used to
+        # clobber the Ducker mid-session — music became audibly
+        # louder mid-TTS. Infer an active duck by comparing the
+        # requested target to camilla's current main_volume: if we'd
+        # be raising it by more than _DUCK_INFERENCE_THRESHOLD_DB,
+        # something else (the Ducker) has plausibly lowered it and
+        # we should defer.
+        #
+        # Asymmetric on purpose: only "raise by > threshold" defers.
+        # Requests at or below current main_volume pass through —
+        # the user is asking for at-or-below the ducked level, so
+        # letting it through doesn't break the duck's protection.
+        # listening_level is still persisted by _dispatch's finally
+        # block, so when Ducker.restore() reads it on session end
+        # the user's intent lands.
+        current_db = await self._camilla.get_volume_db(best_effort=True)
+        if (
+            current_db is not None
+            and (db - current_db) > _DUCK_INFERENCE_THRESHOLD_DB
+        ):
+            logger.info(
+                "event=volume.deferred reason=inferred_duck "
+                "target_db=%.1f current_db=%.1f delta_db=%.1f "
+                "threshold_db=%.1f level=%d%%",
+                db, current_db, db - current_db,
+                _DUCK_INFERENCE_THRESHOLD_DB, level,
             )
             return
         # best_effort: dial twist arriving during a 2s camilla restart
