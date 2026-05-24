@@ -464,9 +464,11 @@ reference. Currently:
   auto-release, then the button), and the open questions before
   specing. Referenced from PLAN.md.
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
-  — Long-running Gemini Live connection management (Gemini-specific
-  details — see HANDOFF-voice-providers.md for the cross-provider
-  architecture)
+  — **Historical** (per AGENTS.md rule #9). Frozen-in-time
+  session-pickup brief from 2026-05-05 when the persistent-single
+  Gemini Live rework was scoped. Preserved for primary-source
+  archaeology; do NOT read for current state. Current operational
+  truth: [HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md).
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md)
   — Source-aware transport (AirPlay/Spotify Connect) + volume
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
@@ -686,12 +688,14 @@ hazard on certain firmware versions (respeaker repo issue #8).
 These have their own HANDOFF docs that are worth reading before
 modifying. One-line summaries here:
 
-- **Voice loop** ([HANDOFF-persistent-live-session.md](docs/HANDOFF-persistent-live-session.md))
-  — Long-lived Gemini Live connection with manual VAD,
-  `activity_start`/`activity_end` markers, sustained-speech
-  detection. The choice of manual VAD over server-side auto VAD
-  is empirically derived (auto VAD silently drops turn 2 on a
-  paused-resumed connection).
+- **Voice loop** ([HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md))
+  — Long-lived Gemini Live / OpenAI Realtime / Grok connection
+  with manual VAD, `activity_start`/`activity_end` markers,
+  sustained-speech detection. The choice of manual VAD over
+  server-side auto VAD is empirically derived (auto VAD silently
+  drops turn 2 on a paused-resumed connection). Original rework
+  rationale (archaeology only):
+  [HANDOFF-persistent-live-session.md](docs/HANDOFF-persistent-live-session.md).
 - **Music transport** ([HANDOFF-voice-music-control.md](docs/HANDOFF-voice-music-control.md))
   — Source-aware `next_track`/`pause`/`resume`/etc. routing
   across AirPlay (MPRIS via shairport-sync) and Spotify Connect

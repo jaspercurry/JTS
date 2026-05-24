@@ -76,6 +76,42 @@ right place. Read this before adding or restructuring docs.
    [agents.md](https://agents.md) cross-tool convention adopted
    by Codex, Cursor, GitHub Copilot, Gemini, Aider, and others.
 
+9. **Historical handoffs are tagged at the top.** Most
+   `docs/HANDOFF-*.md` files are living operational references
+   (rules 2 and 3). A small minority are frozen-in-time
+   session-pickup narratives ("you're picking up X, here's the
+   state of the world, your job is Y"). These age fast — env
+   defaults change, files move, the work they describe gets
+   completed and superseded. They're still useful as
+   primary-source archaeology for "why did we make this
+   decision," but they're not current operational truth.
+
+   Tag such docs with a `> **Status: historical**` callout
+   immediately under the H1 title. The tag tells readers (a) not
+   to trust specific facts (env defaults, line numbers, "what's
+   working" snapshots), (b) where to look for current operational
+   truth, and (c) what the snapshot date / context was. The
+   touched-subsystem rule (#6) does NOT apply — these docs are
+   intentionally not kept in sync with code.
+
+   Template (markdown blockquote, GitHub-rendered admonition):
+
+   ```markdown
+   # Handoff: <title>
+
+   > **Status: historical.** Snapshot from <YYYY-MM-DD> when
+   > <one-sentence context>. Preserved for primary-source
+   > archaeology — specific facts (env defaults, file paths, line
+   > numbers, "what's working" lists) will drift over time. Read
+   > this for the narrative, not for current state. Current
+   > operational truth lives in [<linked doc>](<path>).
+   ```
+
+   When in doubt about whether a doc is "operational" vs
+   "historical": if you'd reach for it to answer "what does this
+   subsystem currently do?", it's operational. If you'd reach for
+   it to answer "why did we end up here?", it's historical.
+
 ---
 
 ## Deploying code changes to the Pi
