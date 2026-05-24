@@ -1,5 +1,18 @@
 # Handoff: persistent-single Gemini Live session rework
 
+> **Status: historical.** Snapshot from 2026-05-05 when the
+> persistent-single Gemini Live rework was being scoped — the
+> original session-pickup brief written for the engineer who did
+> the rework. Preserved for primary-source archaeology (why the
+> per-turn architecture was rejected, what the silent-failure
+> shape looked like, the May-2026 prior-art table) — specific
+> facts (env defaults, file paths, line numbers, "what's working"
+> lists) have drifted and the AGENTS.md touched-subsystem rule
+> does NOT apply to this doc. Current operational truth for the
+> voice loop lives in [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md);
+> the architectural decision rationale this doc captures has
+> since been ported into that doc's "Architecture" section.
+
 You're picking up an in-progress voice-assistant project (JTS = "Jasper Smart Speaker"). The hardware bring-up is **done and working**. The voice-loop integration with Gemini Live is **partially working but unreliable**. Your job is to do one focused architectural rework that fixes the reliability problem.
 
 Read this whole doc first. Then read the project docs listed at the bottom in the order given. Don't start writing code until you've done both.
