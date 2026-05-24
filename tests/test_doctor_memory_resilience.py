@@ -44,16 +44,18 @@ def test_memory_headroom_healthy_on_1gb():
 
 
 def test_memory_headroom_warn_below_100mb_on_1gb():
+    """1 GB Pi: warn threshold is max(100 MB, 10% × 991 MB ≈ 99 MB) = 100 MB."""
     with patch("builtins.open", return_value=_mock_meminfo({
         "MemTotal": 1014768,
         "MemAvailable": 80000,   # ~78 MB, below 100 MB warn threshold
     })):
         r = doctor.check_memory_headroom()
     assert r.status == "warn"
-    assert "tight on 1 GB" in r.detail
+    assert "tight" in r.detail
 
 
 def test_memory_headroom_fail_below_30mb_on_1gb():
+    """1 GB Pi: fail threshold is max(30 MB, 3% × 991 MB ≈ 30 MB) = 30 MB."""
     with patch("builtins.open", return_value=_mock_meminfo({
         "MemTotal": 1014768,
         "MemAvailable": 20000,  # ~19 MB, below 30 MB fail threshold
@@ -63,15 +65,52 @@ def test_memory_headroom_fail_below_30mb_on_1gb():
     assert "imminent" in r.detail
 
 
-def test_memory_headroom_does_not_warn_on_2gb_pi():
-    """Same MemAvailable in absolute terms, but on a 2 GB box, no warn."""
+def test_memory_headroom_2gb_pi_uses_proportional_thresholds():
+    """2 GB Pi: warn at max(100 MB, 10% × 2 GB = 200 MB) = 200 MB.
+    78 MB on a 2 GB Pi IS dangerously tight (3.8% headroom) — the
+    old check missed this because it gated on total_mb < 1500."""
     with patch("builtins.open", return_value=_mock_meminfo({
-        "MemTotal": 2048000,
-        "MemAvailable": 80000,   # 78 MB — tight, but on 2 GB it's a smaller fraction concern
+        "MemTotal": 2097152,    # 2 GB
+        "MemAvailable": 80000,   # 78 MB — way below 200 MB warn
     })):
         r = doctor.check_memory_headroom()
-    # Stage 1 thresholds only fire on 1 GB hardware (< 1500 MB total).
+    # Below 3% (60 MB) is fail; 78 MB is in warn territory.
+    # 78 MB is > 60 MB so it's warn, not fail.
+    assert r.status == "warn"
+
+
+def test_memory_headroom_8gb_pi_uses_proportional_thresholds():
+    """8 GB Pi: warn at 800 MB (10%), fail at 240 MB (3%). 500 MB
+    available is tight relative to the box, so warn fires."""
+    with patch("builtins.open", return_value=_mock_meminfo({
+        "MemTotal": 8388608,    # 8 GB
+        "MemAvailable": 500000,  # ~488 MB — below 800 MB warn threshold
+    })):
+        r = doctor.check_memory_headroom()
+    assert r.status == "warn"
+    # And NOT below fail (240 MB)
+    assert "imminent" not in r.detail
+
+
+def test_memory_headroom_8gb_pi_with_healthy_available():
+    """8 GB Pi with 2 GB available is healthy (25%)."""
+    with patch("builtins.open", return_value=_mock_meminfo({
+        "MemTotal": 8388608,
+        "MemAvailable": 2097152,  # 2 GB available
+    })):
+        r = doctor.check_memory_headroom()
     assert r.status == "ok"
+
+
+def test_memory_headroom_16gb_pi_fail_threshold_scales():
+    """16 GB Pi: fail threshold is 3% = 480 MB. 400 MB available
+    on a 16 GB box means something is wrong — should fail, not just warn."""
+    with patch("builtins.open", return_value=_mock_meminfo({
+        "MemTotal": 16777216,
+        "MemAvailable": 400000,  # ~390 MB — below fail threshold of 480 MB
+    })):
+        r = doctor.check_memory_headroom()
+    assert r.status == "fail"
 
 
 def test_memory_headroom_handles_meminfo_read_failure():
@@ -159,30 +198,75 @@ def test_mglru_min_ttl_no_kernel_support_is_ok():
 # --- check_sysctl_drift --------------------------------------------------
 
 
-def test_sysctl_drift_skips_when_proc_sys_vm_missing():
-    """Dev host without /proc/sys/vm/ shouldn't claim drift."""
-    fake_exists = MagicMock(return_value=False)
-    with patch("pathlib.Path.exists", fake_exists):
+# Helper: the doctor now reads expected values from
+# /etc/sysctl.d/99-jts-vm.conf, so tests need to mock both that
+# file's read AND the /proc/sys/vm/<key> reads.
+
+_FAKE_INSTALLED_CONF = """\
+# JTS sysctl conf as written by install.sh
+vm.swappiness = 100
+vm.page-cluster = 0
+vm.watermark_scale_factor = 125
+vm.watermark_boost_factor = 0
+vm.min_free_kbytes = 20296
+vm.dirty_background_ratio = 2
+vm.dirty_ratio = 10
+vm.vfs_cache_pressure = 200
+vm.overcommit_memory = 0
+"""
+
+
+def _make_sysctl_drift_mocks(installed_conf: str, live_values: dict[str, str]):
+    """Returns (path_exists_fn, path_read_text_fn) suitable for the
+    `patch("pathlib.Path.exists" / "read_text", ...)` pattern. The
+    exists fn returns True for both the conf file AND for any
+    /proc/sys/vm/<key> path that the live_values dict mentions."""
+    def fake_exists(self):
+        s = str(self)
+        if s == "/etc/sysctl.d/99-jts-vm.conf":
+            return True
+        if s.startswith("/proc/sys/vm/"):
+            key = s.rsplit("/", 1)[-1]
+            return key in live_values
+        return False
+
+    def fake_read(self):
+        s = str(self)
+        if s == "/etc/sysctl.d/99-jts-vm.conf":
+            return installed_conf
+        if s.startswith("/proc/sys/vm/"):
+            key = s.rsplit("/", 1)[-1]
+            return live_values.get(key, "?") + "\n"
+        return ""
+
+    return fake_exists, fake_read
+
+
+def test_sysctl_drift_warns_when_jts_conf_missing():
+    """Dev host or pre-install: /etc/sysctl.d/99-jts-vm.conf
+    doesn't exist — should warn (not silently report ok)."""
+    with patch("pathlib.Path.exists", lambda self: False):
         r = doctor.check_sysctl_drift()
-    assert r.status == "ok"
-    assert "not Linux" in r.detail
+    assert r.status == "warn"
+    assert "missing" in r.detail or "re-run install.sh" in r.detail
 
 
 def test_sysctl_drift_detects_swappiness_off_default():
-    """Linux with stock vm.swappiness=60 should warn after our 100
-    sysctl was supposed to land."""
-    fake_exists = MagicMock(return_value=True)
-    def fake_read(self):
-        # Map by path basename — the function reads each vm.* knob
-        # individually. Return "stock default" values that don't match.
-        name = str(self).rsplit("/", 1)[-1]
-        return {
-            "swappiness": "60",          # stock default — should be 100
-            "page-cluster": "3",         # stock default — should be 0
-            "min_free_kbytes": "16384",  # stock default — should be 32768
-            "vfs_cache_pressure": "100", # stock default — should be 200
-            "watermark_scale_factor": "10",  # stock default — should be 125
-        }.get(name, "?")
+    """Conf says 100, live is 60 (stock default) — should warn."""
+    fake_exists, fake_read = _make_sysctl_drift_mocks(
+        _FAKE_INSTALLED_CONF,
+        {  # stock defaults — none match the conf
+            "swappiness": "60",
+            "page-cluster": "3",
+            "min_free_kbytes": "16384",
+            "vfs_cache_pressure": "100",
+            "watermark_scale_factor": "10",
+            "watermark_boost_factor": "15000",
+            "dirty_background_ratio": "10",
+            "dirty_ratio": "20",
+            "overcommit_memory": "0",
+        },
+    )
     with patch("pathlib.Path.exists", fake_exists), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_sysctl_drift()
@@ -191,21 +275,88 @@ def test_sysctl_drift_detects_swappiness_off_default():
 
 
 def test_sysctl_drift_ok_when_values_match():
-    """All vm.* values match what /etc/sysctl.d/99-jts-vm.conf
-    requested — happy path."""
-    fake_exists = MagicMock(return_value=True)
-    def fake_read(self):
-        name = str(self).rsplit("/", 1)[-1]
-        return {
+    """Conf and live agree — happy path."""
+    fake_exists, fake_read = _make_sysctl_drift_mocks(
+        _FAKE_INSTALLED_CONF,
+        {
             "swappiness": "100",
             "page-cluster": "0",
-            "min_free_kbytes": "32768",
-            "vfs_cache_pressure": "200",
             "watermark_scale_factor": "125",
-        }.get(name, "?")
+            "watermark_boost_factor": "0",
+            "min_free_kbytes": "20296",  # matches conf's RAM-aware value
+            "dirty_background_ratio": "2",
+            "dirty_ratio": "10",
+            "vfs_cache_pressure": "200",
+            "overcommit_memory": "0",
+        },
+    )
     with patch("pathlib.Path.exists", fake_exists), \
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_sysctl_drift()
+    assert r.status == "ok"
+
+
+def test_sysctl_drift_uses_installed_min_free_kbytes_value():
+    """The whole point of PR1.7: RAM-aware min_free_kbytes shouldn't
+    trigger drift just because it's not the old hardcoded 32768.
+    A 1 GB Pi installs ~20296 kB; a 4 GB Pi installs ~81920. Both
+    are 'correct' for their hardware. Doctor reads the installed
+    conf to know what to expect."""
+    # Simulate a 4 GB Pi install where min_free_kbytes was computed
+    # to 81920 (2% of 4 GB).
+    conf_4gb = _FAKE_INSTALLED_CONF.replace(
+        "vm.min_free_kbytes = 20296",
+        "vm.min_free_kbytes = 81920",
+    )
+    fake_exists, fake_read = _make_sysctl_drift_mocks(
+        conf_4gb,
+        {
+            "swappiness": "100",
+            "page-cluster": "0",
+            "watermark_scale_factor": "125",
+            "watermark_boost_factor": "0",
+            "min_free_kbytes": "81920",  # matches the 4 GB-specific value
+            "dirty_background_ratio": "2",
+            "dirty_ratio": "10",
+            "vfs_cache_pressure": "200",
+            "overcommit_memory": "0",
+        },
+    )
+    with patch("pathlib.Path.exists", fake_exists), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_sysctl_drift()
+    assert r.status == "ok"
+
+
+def test_sysctl_drift_skips_unsubstituted_template_placeholder():
+    """Defensive: if install.sh's sed step failed, the conf file would
+    contain the literal '__VM_MIN_FREE_KBYTES__' placeholder. Doctor
+    must skip that line rather than report drift comparing a number
+    to a placeholder string."""
+    conf_broken = _FAKE_INSTALLED_CONF.replace(
+        "vm.min_free_kbytes = 20296",
+        "vm.min_free_kbytes = __VM_MIN_FREE_KBYTES__",
+    )
+    fake_exists, fake_read = _make_sysctl_drift_mocks(
+        conf_broken,
+        {
+            "swappiness": "100",
+            "page-cluster": "0",
+            "watermark_scale_factor": "125",
+            "watermark_boost_factor": "0",
+            "min_free_kbytes": "16384",  # whatever the kernel default is
+            "dirty_background_ratio": "2",
+            "dirty_ratio": "10",
+            "vfs_cache_pressure": "200",
+            "overcommit_memory": "0",
+        },
+    )
+    with patch("pathlib.Path.exists", fake_exists), \
+         patch("pathlib.Path.read_text", fake_read):
+        r = doctor.check_sysctl_drift()
+    # All non-placeholder values match → ok. The placeholder line
+    # is correctly skipped (would have produced a confusing drift
+    # message otherwise).
     assert r.status == "ok"
 
 

@@ -374,11 +374,18 @@ load-bearing knobs:
   headroom (default 0.1% is ~1 MB on a 991 MB box, kswapd
   burns through it in milliseconds under burst → reclaim
   becomes bursty).
-- `vm.min_free_kbytes=32768` — 32 MB reserved floor. Starting
-  point per [Arch BBS #293444](https://bbs.archlinux.org/viewtopic.php?id=293444);
-  **needs validation** by sampling `/proc/meminfo` MemFree
-  under peak load to confirm we're not constantly bouncing
-  against the watermark.
+- `vm.min_free_kbytes` — kernel's reserved memory floor.
+  **Computed per-Pi at install time** by `install.sh`'s
+  `migrate_memory_resilience` step: `clamp(0.02 × MemTotal_kB,
+  8192, 262144)` = 2% of RAM with an 8 MB floor (matches Pi
+  Foundation default; never reduce below) and a 256 MB cap (so
+  a 16 GB Pi doesn't reserve unreasonably much). Resolves to
+  20 MB on 1 GB Pi, 40 MB on 2 GB, 80 MB on 4 GB, 160 MB on
+  8 GB. 2% is in the safe band per Linux Hint guidance
+  (>5% causes OOM-immediate); matches Pop!_OS's runtime
+  safeguard floor pattern at [pop-os/default-settings#163](https://github.com/pop-os/default-settings/pull/163).
+  Doctor reads the installed conf and verifies live `/proc/sys/vm/min_free_kbytes`
+  matches — drift surfaces immediately.
 
 Full annotated config at [`deploy/sysctl/99-jts-vm.conf`](../deploy/sysctl/99-jts-vm.conf).
 
@@ -403,8 +410,11 @@ divergence at a glance:
 - `check_mglru_min_ttl` — WARN if min_ttl_ms drifted from 1000
 - `check_sysctl_drift` — WARN on vm.* divergence from
   `/etc/sysctl.d/99-jts-vm.conf`
-- `check_memory_headroom` — WARN if MemAvailable < 100 MB,
-  FAIL < 30 MB (catches the "about to OOM" state)
+- `check_memory_headroom` — RAM-tier-aware percentage thresholds
+  with absolute MB floors: WARN if `MemAvailable < max(100 MB,
+  10% × RAM)`, FAIL if `< max(30 MB, 3% × RAM)`. Fires on every
+  Pi SKU (1 GB through 16 GB) — on 8 GB Pi, warn fires at
+  800 MB available, fail at 240 MB.
 
 **What Stage 1 explicitly does NOT do.** It doesn't enable the
 memory cgroup, so the `MemoryHigh=` / `MemoryMax=` directives
@@ -773,4 +783,4 @@ sudo journalctl -fu jasper-dongle-recover
 
 ---
 
-Last verified: 2026-05-24
+Last verified: 2026-05-24 (Stage 1 + PR1.5 + PR1.6 + PR1.7 live; T5.x in proposal at HANDOFF-tier5-watchdog-liveness.md)

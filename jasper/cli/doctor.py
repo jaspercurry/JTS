@@ -925,13 +925,22 @@ def _meminfo_kb(field: str) -> int | None:
 
 def check_memory_headroom() -> CheckResult:
     """Live memory pressure check: WARN if MemAvailable is so low that
-    the next ad-hoc allocation will tip the box into zram-thrash. The
-    2026-05-23 incident shape was MemAvailable falling from ~250 MB
-    to single-digit MB over ~10 s as a PIO compile ramped up; this
-    check catches that BEFORE the wedge if the operator runs the
-    doctor first. 200 MB threshold is calibrated for the 1 GB Pi
-    (~20% of RAM); ~3% (30 MB) is hard floor below which OOM is
-    imminent."""
+    the next ad-hoc allocation will tip the box into zram-thrash.
+
+    Thresholds are percentage-of-RAM with absolute MB floors, so this
+    fires sanely on every Pi SKU (1 GB through 16 GB) without needing
+    per-tier branching:
+      warn if  available < max(100 MB, 10% of total)
+      fail if  available < max(30 MB,  3% of total)
+
+    On 1 GB:  warn at 100 MB, fail at 30 MB
+    On 2 GB:  warn at 200 MB, fail at 60 MB
+    On 8 GB:  warn at 800 MB, fail at 240 MB
+
+    The 2026-05-23 incident shape was MemAvailable falling from
+    ~250 MB to single-digit MB over ~10 s as a PIO compile ramped
+    up; this check catches that BEFORE the wedge if the operator
+    runs the doctor first."""
     total_kb = _meminfo_kb("MemTotal") or 0
     avail_kb = _meminfo_kb("MemAvailable")
     if avail_kb is None or total_kb == 0:
@@ -941,15 +950,21 @@ def check_memory_headroom() -> CheckResult:
     avail_mb = avail_kb // 1024
     total_mb = total_kb // 1024
     pct = (avail_kb * 100) // total_kb if total_kb else 0
-    if total_mb < 1500 and avail_mb < 30:
+    # Percentage-with-floor pattern — see Prometheus node_exporter
+    # alert conventions and Pop!_OS pop-os/default-settings#163.
+    fail_mb = max(30, total_mb * 3 // 100)
+    warn_mb = max(100, total_mb * 10 // 100)
+    if avail_mb < fail_mb:
         return CheckResult(
             "memory headroom", "fail",
-            f"only {avail_mb} MB available ({pct}%) — OOM imminent",
+            f"only {avail_mb} MB available ({pct}%) — OOM imminent "
+            f"(fail threshold {fail_mb} MB)",
         )
-    if total_mb < 1500 and avail_mb < 100:
+    if avail_mb < warn_mb:
         return CheckResult(
             "memory headroom", "warn",
-            f"only {avail_mb} MB available ({pct}%) — tight on 1 GB Pi",
+            f"only {avail_mb} MB available ({pct}%) — tight "
+            f"(warn threshold {warn_mb} MB)",
         )
     return CheckResult(
         "memory headroom", "ok",
@@ -1021,27 +1036,66 @@ def check_mglru_min_ttl() -> CheckResult:
     return CheckResult("MGLRU min_ttl", "ok", "1000 ms")
 
 
-# Expected vm.* values after Stage 1 lands. Drift here means the
-# sysctl wasn't applied (post-boot before sysctl --system ran) or
-# something later overwrote it (rare — there's no other writer).
-_EXPECTED_VM_SYSCTL = {
-    "swappiness": "100",
-    "page-cluster": "0",
-    "min_free_kbytes": "32768",
-    "vfs_cache_pressure": "200",
-    "watermark_scale_factor": "125",
-}
+_JTS_SYSCTL_CONF = Path("/etc/sysctl.d/99-jts-vm.conf")
+
+
+def _parse_jts_sysctl_conf() -> dict[str, str]:
+    """Parse the JTS sysctl drop-in into a {key: value} dict where
+    `key` is the part after `vm.` (e.g. 'swappiness') and `value` is
+    the resolved string (so RAM-dependent values like min_free_kbytes
+    reflect what install.sh actually wrote for THIS Pi). Returns an
+    empty dict if the file doesn't exist or has no parsable lines."""
+    out: dict[str, str] = {}
+    if not _JTS_SYSCTL_CONF.exists():
+        return out
+    try:
+        for line in _JTS_SYSCTL_CONF.read_text().splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip()
+            if not key.startswith("vm."):
+                continue
+            # Drop any 'vm.' prefix — we'll match against
+            # /proc/sys/vm/<key>.
+            sub_key = key[3:]
+            # If the value is still a template placeholder (the
+            # install.sh sed step failed), skip — would otherwise
+            # produce a confusing "drift" message comparing
+            # "10148" to "__VM_MIN_FREE_KBYTES__".
+            if value.startswith("__") and value.endswith("__"):
+                continue
+            out[sub_key] = value
+    except OSError:
+        return {}
+    return out
 
 
 def check_sysctl_drift() -> CheckResult:
     """Verify the vm.* tunings from /etc/sysctl.d/99-jts-vm.conf
     took effect. Drift detection — not a failure, just informational
     so the operator knows whether to re-apply via `sudo sysctl --system`
-    or reboot. On systems with no /proc/sys/vm/ at all (e.g. running
-    the doctor in a dev container), skip cleanly."""
+    or reboot.
+
+    Reads expected values from the installed conf file rather than
+    hardcoding, so RAM-dependent values (vm.min_free_kbytes, which
+    install.sh computes per-Pi as 2% of RAM) are checked against
+    the right target for THIS hardware. On systems with no
+    /proc/sys/vm/ at all (e.g. running the doctor in a dev
+    container), skip cleanly."""
+    expected = _parse_jts_sysctl_conf()
+    if not expected:
+        return CheckResult(
+            "vm.* sysctls", "warn",
+            f"{_JTS_SYSCTL_CONF} missing or empty — re-run install.sh",
+        )
     drift = []
     checked = 0
-    for key, want in _EXPECTED_VM_SYSCTL.items():
+    for key, want in expected.items():
         path = Path(f"/proc/sys/vm/{key}")
         if not path.exists():
             continue  # kernel doesn't expose this knob
