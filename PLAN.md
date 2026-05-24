@@ -65,6 +65,7 @@ Starting points:
 | **v2.1** | UMIK-1/2 auto-fetch + bundled phone-mic calibration profiles | Strict superset of v2 |
 | **v3** | More tools: weather (Open-Meteo, no key), timers (SQLite), calendar (Google OAuth), reminders (Pushcut bridge) | Each is a 30–80 LoC tool; do as a batch |
 | **v4** | First-boot **captive portal** via Balena WiFi Connect | Requires NM/dhcpcd swap — lots of integration testing; do once the rest is stable |
+| **v4.1** | **DLNA/UPnP media input** via gmrender-resurrect (fifth music source) | Network-only, no hardware dependency; fills the Android "cast to speaker" gap. Phase 1: gmrender + sidecar (~13-20 MB). Phase 2: A/B test upmpdcli for OpenHome + gapless. Preemption-proxy architecture makes renderer swap cheap (~2 days mechanical). See [docs/HANDOFF-dlna.md](docs/HANDOFF-dlna.md). |
 | **v5** | **Wireless stereo pair** via Snapcast (Pi Zero 2W slave) | Architecturally clean addition once v1–v3 stable |
 | **v6** | **Wireless subwoofer** node + crossover in master CamillaDSP | Strict superset of v5; biggest video story |
 | **v7** | Direct device-to-device **mesh** (master AP+STA, slave priority fallback) | Networking polish; only matters at v5+ scale |
@@ -78,6 +79,13 @@ The v1 architecture decisions that protect this sequence:
   and v9's HA bridge.
 - **48 kHz everywhere** keeps resampling out of the hot path now and
   through Snapcast later.
+- **Renderer dmix (`jasper_renderer_in`)** lets any new source
+  (DLNA, future protocols) write audio without touching other
+  renderers. Same PCM name works as a Snapcast FIFO target later.
+- **Preemption-proxy pattern** (sidecar owns renderer-specific
+  protocol, mux talks to a generic `/preempt` HTTP endpoint) means
+  swapping renderer binaries (gmrender → upmpdcli) doesn't touch
+  mux, volume coordinator, or source_state code.
 - **Systemd-managed services in `/opt/jasper`** keep the install
   survivable.
 
