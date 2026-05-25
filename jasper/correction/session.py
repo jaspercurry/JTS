@@ -49,8 +49,9 @@ from typing import Any, Awaitable, Callable
 
 import numpy as np
 
-from . import analysis, deconv, peq, sweep, target
+from . import analysis, calibration, deconv, peq, sweep, target
 from .camilla_yaml import emit_correction_config
+from .calibration import CalibrationRecord
 from .peq import PEQ
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,7 @@ class SessionConfig:
     sessions_dir: Path = Path("/var/lib/jasper/correction/sessions")
     config_dir: Path = Path("/var/lib/camilladsp/configs")
     base_config_path: Path = Path("/etc/camilladsp/v1.yml")
+    calibration_dir: Path = calibration.DEFAULT_CALIBRATION_DIR
 
     f1_hz: float = 20.0
     f2_hz: float = 20000.0
@@ -245,6 +247,8 @@ class MeasurementSession:
         *,
         total_positions: int = 1,
         target_choice: str = "flat",
+        mic_calibration: CalibrationRecord | None = None,
+        input_device: dict[str, Any] | None = None,
     ) -> None:
         self.cfg = cfg or SessionConfig()
         self.session_id = uuid.uuid4().hex[:12]
@@ -258,6 +262,8 @@ class MeasurementSession:
         self.target_choice = (
             target_choice if target_choice in TARGET_CHOICES else "flat"
         )
+        self.mic_calibration = mic_calibration
+        self.input_device = input_device
         # Per-position smoothed magnitude responses (dB on log grid).
         # Spatial-averaged at end of multi-position flow.
         self.position_magnitudes: list[np.ndarray] = []
@@ -299,13 +305,14 @@ class MeasurementSession:
 
         # Per-session debug bundle. All artifacts (info.json,
         # result.json, per-position WAVs, verify.wav, applied.yml)
-        # land here. The directory is created lazily on first
-        # write so tests that pass a SessionConfig pointing at a
-        # tmp_path don't have to pre-mkdir.
+        # and mic_calibration.* land here. The directory is created
+        # lazily on first write so tests that pass a SessionConfig
+        # pointing at a tmp_path don't have to pre-mkdir.
         self.bundle_dir: Path = self.cfg.sessions_dir / self.session_id
         self.save_bundles: bool = _bundles_enabled()
 
-        # Events / SSE.
+        # Events retained for debugging / future progress streams. The
+        # shipped browser UI currently polls GET /status.
         self._events: list[SessionEvent] = []
         self._event_seq = 0
         # Lazy-init the asyncio.Lock — Python 3.9 binds it to the
@@ -407,6 +414,7 @@ class MeasurementSession:
         if bundle is None:
             return
         info = {
+            "bundle_schema_version": 2,
             "session_id": self.session_id,
             "state": self.state.value,
             "started_at": self.started_at,
@@ -416,6 +424,12 @@ class MeasurementSession:
             "current_position": self.current_position,
             "target_choice": self.target_choice,
             "noise_floor_db": self.noise_floor_db,
+            "input_device": self.input_device,
+            "mic_calibration": (
+                self.mic_calibration.public_metadata()
+                if self.mic_calibration
+                else None
+            ),
             "current_correction_at_start": self.current_correction_at_start,
             "autolevel": self.autolevel.snapshot(),
             "sweep_meta": (
@@ -444,6 +458,7 @@ class MeasurementSession:
         tmp_path = target_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(info, indent=2, default=str))
         tmp_path.replace(target_path)
+        self._write_mic_calibration_bundle(bundle)
 
     def _write_result_json(self) -> None:
         """Snapshot the chart curves + verify after design / verify.
@@ -454,7 +469,14 @@ class MeasurementSession:
         if bundle is None:
             return
         result = {
+            "bundle_schema_version": 2,
             "session_id": self.session_id,
+            "input_device": self.input_device,
+            "mic_calibration": (
+                self.mic_calibration.public_metadata()
+                if self.mic_calibration
+                else None
+            ),
             "measured": (
                 self.measured_curve.__dict__ if self.measured_curve else None
             ),
@@ -474,6 +496,40 @@ class MeasurementSession:
         tmp_path = target_path.with_suffix(".json.tmp")
         tmp_path.write_text(json.dumps(result, indent=2, default=str))
         tmp_path.replace(target_path)
+
+    def _write_mic_calibration_bundle(self, bundle: Path) -> None:
+        """Persist the selected mic calibration into the session bundle.
+
+        `info.json` carries only public metadata. The bundle also needs
+        the parsed curve and raw vendor/upload file so a future FIR or
+        agent pass can replay the measurement without relying on the
+        global `/var/lib/jasper/correction/calibration_mics` registry.
+        """
+        if self.mic_calibration is None:
+            return
+        record = self.mic_calibration
+        payload = {
+            **record.public_metadata(),
+            "raw_filename": "mic_calibration.txt",
+            "curve": record.curve.to_dict(),
+        }
+        meta_path = bundle / "mic_calibration.json"
+        tmp_meta = meta_path.with_suffix(".json.tmp")
+        tmp_meta.write_text(json.dumps(payload, indent=2, default=str))
+        tmp_meta.chmod(0o600)
+        tmp_meta.replace(meta_path)
+
+        raw_path = Path(record.raw_path)
+        if raw_path.exists():
+            try:
+                bundle_raw = bundle / "mic_calibration.txt"
+                shutil.copy2(raw_path, bundle_raw)
+                bundle_raw.chmod(0o600)
+            except OSError as e:
+                logger.warning(
+                    "mic_calibration.txt copy failed for session %s: %s",
+                    self.session_id, e,
+                )
 
     def _copy_applied_yaml(self) -> None:
         """Copy the just-emitted correction YAML into the bundle. We
@@ -586,6 +642,10 @@ class MeasurementSession:
         freqs, mag_db = deconv.magnitude_response(ir, self.cfg.sample_rate)
         smoothed = analysis.smooth_fractional_octave(freqs, mag_db, fraction=48)
         log_freqs, log_mag = analysis.resample_log(freqs, smoothed)
+        if self.mic_calibration is not None:
+            log_mag = calibration.apply_calibration_curve(
+                log_freqs, log_mag, self.mic_calibration.curve,
+            )
         log_mag = analysis.normalize_to_band(log_freqs, log_mag)
         return log_freqs, log_mag
 
@@ -1199,6 +1259,12 @@ class MeasurementSession:
             "total_positions": self.total_positions,
             "current_position": self.current_position,
             "target_choice": self.target_choice,
+            "input_device": self.input_device,
+            "mic_calibration": (
+                self.mic_calibration.public_metadata()
+                if self.mic_calibration
+                else None
+            ),
             "sweep": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),

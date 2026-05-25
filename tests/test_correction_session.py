@@ -18,6 +18,7 @@ import pytest
 from scipy.signal import fftconvolve
 
 from jasper.correction import sweep
+from jasper.correction.calibration import store_calibration
 from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
 
 
@@ -27,6 +28,7 @@ def _make_session(tmp_path: Path) -> MeasurementSession:
     cfg = SessionConfig(
         sweep_dir=tmp_path / "sweeps",
         capture_dir=tmp_path / "captures",
+        sessions_dir=tmp_path / "sessions",
         config_dir=tmp_path / "configs",
         base_config_path=tmp_path / "v1.yml",
         # Short sweep keeps tests fast.
@@ -74,6 +76,61 @@ def _synthesize_room_capture(
 
     captured = fftconvolve(sweep_signal.astype(np.float64), h, mode="full")
     return captured
+
+
+@pytest.mark.asyncio
+async def test_session_applies_mic_calibration_during_capture(
+    tmp_path: Path, monkeypatch,
+):
+    """A selected mic calibration is applied inside _smooth_capture,
+    before normalization / PEQ design, so result curves and bundles
+    all inherit calibrated data."""
+    record = store_calibration(
+        text="20 -1\n100 0\n1000 1\n20000 2\n",
+        provider="manual_upload",
+        model="other",
+        label="Lab mic",
+        source="uploaded:lab.txt",
+        root=tmp_path / "calibrations",
+    )
+    sess = _make_session(tmp_path)
+    sess.mic_calibration = record
+    called = {"value": False}
+
+    from jasper.correction import calibration as cal_mod
+
+    real_apply = cal_mod.apply_calibration_curve
+
+    def wrapped_apply(freqs, magnitude, curve):
+        called["value"] = True
+        assert curve == record.curve
+        return real_apply(freqs, magnitude, curve)
+
+    monkeypatch.setattr(cal_mod, "apply_calibration_curve", wrapped_apply)
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = tmp_path / "capture.wav"
+    sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
+
+    await sess.on_capture_uploaded(cap_path)
+
+    assert called["value"] is True
+    assert sess.state == SessionState.READY
+    assert sess.snapshot()["mic_calibration"]["calibration_id"] == (
+        record.calibration_id
+    )
+    meta_path = sess.bundle_dir / "mic_calibration.json"
+    raw_path = sess.bundle_dir / "mic_calibration.txt"
+    assert meta_path.exists()
+    assert raw_path.exists()
+    assert "20 -1" in raw_path.read_text()
+    assert record.calibration_id in meta_path.read_text()
+    assert (meta_path.stat().st_mode & 0o777) == 0o600
+    assert (raw_path.stat().st_mode & 0o777) == 0o600
 
 
 @pytest.mark.asyncio

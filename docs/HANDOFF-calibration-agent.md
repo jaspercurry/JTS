@@ -1,64 +1,74 @@
 # HANDOFF: LLM-driven calibration agent
 
-> **Status: research only, no implementation yet (2026-05-25).** This is
-> a design-space document — survey of the problem, options, and a
-> recommended build sequence — modelled on
-> [`HANDOFF-remote-updates.md`](HANDOFF-remote-updates.md) and
-> [`HANDOFF-barge-in.md`](HANDOFF-barge-in.md). Nothing in here ships
-> until a follow-up PR (or several) implements it.
+> **Status: research + early substrate (2026-05-25).** This is the
+> design-space document for the guided calibration/tuning arc. Phase
+> 0a substrate is now underway: calibrated mic registry/parser,
+> Dayton/miniDSP serial lookup, manual upload fallback, input-device
+> picker, and bundle metadata. The LLM agent itself is still not
+> implemented.
 >
-> **What this proposes:** layer an LLM "audio engineer" on top of the
-> existing `/correction/` wizard. After the auto-PEQ is computed, an
-> agent (Claude Opus 4.7 / GPT-5 / Gemini Pro — whichever the user has
-> a key for) interprets the measurement, asks the user about room
-> shape and listening position, critiques the auto-filter, suggests
-> alternatives, and iterates across re-measurements. Restraint-first
-> philosophy: the agent's job is to talk users *out* of over-EQ at
-> least as often as into adjustments.
+> **What this proposes:** build toward a guided speaker-tuning system
+> on top of the existing `/correction/` wizard. The first layer is
+> deterministic: calibrated mic ingest, device selection, richer
+> measurement bundles, and science-based visualizations. The later
+> layer is an LLM "audio engineer" (best available Claude Opus /
+> GPT-5 / Gemini Pro — whichever the user has a key for) that
+> interprets the measurement, asks about room shape and listening
+> position, critiques the auto-filter, suggests alternatives, and
+> iterates across re-measurements. Restraint-first philosophy: the
+> agent's job is to
+> talk users *out* of over-EQ at least as often as into adjustments.
 >
-> **What this does NOT propose:** any change to the measurement
-> pipeline, the PEQ designer, the CamillaDSP hot-swap path, or any
-> other shipped subsystem in
-> [`HANDOFF-correction.md`](HANDOFF-correction.md). The agent sits
-> *above* that surface and calls into it via tools — same arms-length
-> shape as the voice tools.
+> **What this does NOT propose:** the LLM agent should not replace the
+> measurement pipeline, the PEQ designer, the CamillaDSP hot-swap path,
+> or any other shipped subsystem in
+> [`HANDOFF-correction.md`](HANDOFF-correction.md). Deterministic
+> substrate can evolve underneath it; the agent sits *above* that
+> surface and calls into it via tools — same arms-length shape as the
+> voice tools.
 
 ---
 
 ## TL;DR
 
 1. The shipped `/correction/` substrate is good (Phase 0–2.2 in
-   [`HANDOFF-correction.md`](HANDOFF-correction.md), 102 tests
+   [`HANDOFF-correction.md`](HANDOFF-correction.md), 123 correction
+   tests
    green on synthetic data). What it lacks is the **judgment layer**:
    today's UX is "auto-PEQ proposes ≤5 cuts, you tap Apply" with no
    coaching, no room-shape context, no critique of the proposal.
-2. **No existing product fills that gap.** Sonos Trueplay, Dirac,
-   Sonarworks, Genelec GLM, Audyssey, Neumann MA 1 — every commercial
-   room-correction tool is a closed-loop one-shot batch process. None
-   are agentic. The closest architectural prior art is in *
-   spectroscopy* — LUMIR / IR-Agent / EIS-LLM — where the same
+2. **The May 2026 research pass found no product filling that gap
+   cleanly.** Sonos Trueplay, Dirac, Sonarworks, Genelec GLM,
+   Audyssey, Neumann MA 1 — every commercial room-correction tool we
+   reviewed is a closed-loop one-shot batch process. The closest
+   architectural prior art is in *spectroscopy* — LUMIR / IR-Agent /
+   EIS-LLM — where the same
    measure → interpret → propose → iterate pattern was built in 2025.
-3. Substrate to graft: ~30–50 pages of distilled audio-engineering
+3. Substrate to graft: calibrated microphone ingest, richer
+   measurement artifacts, ~30–50 pages of distilled audio-engineering
    knowledge as markdown, a provider-abstracted agent harness (mirror
    [`jasper/voice/`](../jasper/voice/)'s `LiveConnection` shape), a
    small tool registry that calls into the existing
    [`MeasurementSession`](../jasper/correction/session.py), and a chat
    panel in the existing wizard.
-4. The user has a **Dayton USB-C calibration microphone** (works
-   plugged into the iPhone or an Android phone). This is a meaningful
-   upgrade over the bundled-curve iPhone-built-in compensation
-   acknowledged as approximate in
-   [`HANDOFF-correction.md`](HANDOFF-correction.md). Calibrated input
-   is a prerequisite for the agent's recommendations to be
-   trustworthy — bad inputs + confident model = bad advice delivered
-   with authority. Calibration-mic ingest should land *before* or
-   *with* the agent, not after.
-5. Provider posture: **add Anthropic Opus 4.7 as a first-class
-   option** alongside the existing Gemini / OpenAI keys reused from
-   `/var/lib/jasper/voice_provider.env`. Opus is genuinely well-suited
-   to expert-reasoning + tool-use tasks like this. xAI Grok stays
-   voice-only for now (its strongest model lineage isn't matched in
-   the chat surface).
+4. The first supported measurement mics should be **Dayton Audio**
+   iMM-6 / iMM-6C / UMM-6 and **miniDSP** UMIK-1 / UMIK-2. For these,
+   the UX should be "enter mic model + serial number, JTS fetches the
+   calibration file for you" whenever the vendor endpoint allows it.
+   Users should not have to download a file into their phone and then
+   re-upload it if the speaker can fetch it server-side. A manual
+   calibration-file upload path still matters for unsupported mics and
+   vendor lookup failures.
+5. Calibrated input is a prerequisite for the agent's recommendations
+   to be trustworthy — bad inputs + confident model = bad advice
+   delivered with authority. Calibration-mic ingest should land
+   *before* or *with* the agent, not after.
+6. Provider posture: **add Anthropic Claude as a first-class option**
+   alongside the existing Gemini / OpenAI keys reused from
+   `/var/lib/jasper/voice_provider.env`. Opus-class Claude models are
+   genuinely well-suited to expert-reasoning + tool-use tasks like
+   this. xAI Grok stays voice-only for now (its strongest model
+   lineage isn't matched in the chat surface).
 
 ---
 
@@ -90,6 +100,52 @@ applies the right constraints (cuts-only, 20–350 Hz, Q ≤ 8,
 Every one of those is a judgment call. An LLM with the right knowledge
 base and the right tools is well-suited to making them out loud, with
 the user, in a way that the user can push back on.
+
+## North star: assisted tuning, not just auto-correction
+
+The long-term product vision is bigger than "generate a PEQ from a
+sweep." The system should help people make the speaker sound good to
+them, while keeping the technical layers honest and separate:
+
+1. **Room correction** — compensate for repeatable speaker + room
+   behavior where EQ is physically useful. This starts with today's
+   restrained bass-region PEQ and can later grow into FIR / mixed-phase
+   work when the measurement artifacts and safety rails support it.
+2. **Target / house curve selection** — decide what "good" means for a
+   room and listener. A Harman / Olive-Welti-style downward slope,
+   B&K-style target, `neutral` / `warm` / `bright`, or a user-created
+   target are taste decisions layered on top of measurement quality.
+3. **Preference EQ / voice tuning** — let the user give qualitative
+   feedback after listening to music they know: "I wish it had more
+   bass," "the vocals feel recessed," "make it a little brighter."
+   The system can translate that feedback into a safe, reversible
+   preference layer without pretending it is correcting the room.
+4. **Active speaker commissioning** — for JTS speakers where the
+   woofer and tweeter are on separate amplifier/DSP channels,
+   CamillaDSP also owns crossover filters, per-driver gain, delay,
+   polarity, limiter behavior, and phase alignment. This is not room
+   correction; it is the speaker's baseline acoustic design. The
+   measurement tools should eventually help tune the crossover and
+   driver integration before room correction or preference EQ runs.
+
+Future UX sketch: the user says, "Jarvis, help me tune my speaker."
+JTS opens the tuning flow, asks the user to play a track they know,
+listens to qualitative feedback, shows what it plans to change, and
+lets the user A/B the result. The voice loop can be the entry point,
+but the actual calibration/tuning surface should remain visual because
+plots, filter diffs, target curves, and measurement quality warnings
+are part of the trust model.
+
+The knowledge corpus should preserve all of these layers:
+science-based room-correction guidance, active speaker DSP guidance,
+and human-language preference vocabulary. That gives a future agent
+enough context to say, for example, "that sounds like a preference for
+a warmer target, not evidence that the 80 Hz room mode needs another
+cut," or "that 2 kHz cancellation might be crossover/driver
+integration, not the room." Persistent household taste and room notes
+should live in a runtime/user-private store under `/var/lib/jasper/...`,
+not in repo docs; the repo should contain the schema, concepts, and
+public guidance.
 
 The deeper point is **restraint**. Toole's central thesis (*Sound
 Reproduction*, 3rd ed., 2017) is that good loudspeakers in reasonable
@@ -125,12 +181,12 @@ full picture. The bits that matter for this proposal:
   `POST /upload-capture`, `POST /apply`, `POST /reset`,
   `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
   `POST /autolevel/cancel`.
-- Frontend is a single-page Preact app embedded as inline HTML via
-  the `_PAGE_HTML` template with `__HOSTNAME__` / `__REQUIRED_SR__` /
-  navigation substitutions in `_render_page()`. uPlot for the chart,
-  AudioWorklet for mic capture at 48 kHz (constraint-pinned;
-  the page hard-rejects sample-rate / EC / NS / AGC overrides per
-  WebKit Bug 179411 mitigation).
+- Frontend is an inline HTML / vanilla JS page emitted from the
+  `_PAGE_HTML` template with `__HOSTNAME__` / `__REQUIRED_SR__` /
+  navigation substitutions in `_render_page()`. It uses a canvas
+  chart and an AudioWorklet for mic capture at 48 kHz
+  (constraint-pinned; the page hard-rejects sample-rate / EC / NS /
+  AGC overrides per WebKit Bug 179411 mitigation).
 - Browser polls `GET /status` every 500 ms for state snapshots; no
   SSE today.
 
@@ -146,7 +202,7 @@ full picture. The bits that matter for this proposal:
 | `target.py` | Named targets: `flat` / `neutral` / `warm` / `bright` (interpolations over a Harman-shaped base). |
 | `camilla_yaml.py` | YAML emission by string concatenation (no pyyaml dep, keeps output reviewable). Preserves `master_gain` mixer; inserts `peq_1 … peq_N` biquads in front of the existing `flat` filter. |
 | `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
-| `session.py` (1,211 lines) | `MeasurementSession` + `SessionState` enum + `AutolevelStatus` + bundle writers. The big one. |
+| `session.py` | `MeasurementSession` + `SessionState` enum + `AutolevelStatus` + bundle writers. The big one. |
 
 ### Critical correctness property: `/start` always resets to flat
 
@@ -197,59 +253,85 @@ recommendations should keep or tighten them, never loosen:
 
 ### Tests
 
-102 hardware-free pytest functions across 9 files (~2,560 lines),
-all green on synthetic data. **Hardware verification — actually
-running a sweep, taking the mic to multiple positions, applying the
-filter, listening — is the gating step before this agent makes sense.**
-The agent's recommendations are bounded by the measurement quality.
+121 hardware-free correction pytest functions are green on synthetic
+data as of 2026-05-25. **Hardware verification — actually running a
+sweep, taking the mic to multiple positions, applying the filter,
+listening — is the gating step before this agent makes sense.** The
+agent's recommendations are bounded by the measurement quality.
 If the measurement pipeline is silently wrong end-to-end on real
 hardware, the agent will confidently tell you to apply a filter that
 makes the room sound worse.
 
 ---
 
-## Measurement hardware — Dayton USB-C calibration mic
+## Measurement hardware — supported and bring-your-own mics
 
-The user has a **Dayton USB-C calibration microphone** (the
-USB-C-native sibling of the Dayton iMM-6 family) that plugs into
-either an iPhone (Lightning-to-USB-C or USB-C-native depending on
-generation) or an Android phone. This matters for the agent in three
-ways:
+The primary supported measurement mics should be:
 
-1. **Accuracy floor.** Today's iPhone-built-in capture is
-   compensation-curve approximate (HouseCurve / Faber-style bundled
-   curve; the inaccuracy is acknowledged in
-   [`HANDOFF-correction.md`](HANDOFF-correction.md) as the rationale
-   for the Phase 4 UMIK-2 escape hatch). A Dayton USB-C mic with its
-   published per-unit calibration `.txt` file replaces a ~±3 dB
-   smoothed curve with a ~±0.5 dB measured one. **An LLM agent's
-   recommendations inherit the measurement's accuracy** — at ±3 dB
-   you can't reliably distinguish a 2 dB modal peak from a 4 dB one,
-   which is the difference between "ignore it" and "cut it 3 dB."
-2. **iOS/Android plumbing.** Web Audio's `getUserMedia` on both iOS
-   Safari (16+) and Chrome on Android exposes a connected USB-C
-   audio class device as a selectable input. The current page
-   constraint set
-   (`{sampleRate: {exact: 48000}, echoCancellation: false,
-   noiseSuppression: false, autoGainControl: false}`) should be
-   compatible — but the constraint-verify table in the page will
-   need to be re-read to confirm the device that actually gets
-   selected is the calibration mic, not the phone's built-in.
-   Worth surfacing a device-picker in the page if there are
-   multiple inputs.
-3. **Cal-file ingest.** Dayton ships per-unit `.txt` calibration
-   files (frequency, dB-offset pairs, similar to UMIK-2's format).
-   The wizard needs a one-time "upload your cal file" step — this
-   is the cleanest place to make the existing `iphone_mic_correction`
-   bundled curve a fallback instead of the default.
+- **Dayton Audio iMM-6 / iMM-6C / UMM-6.** Dayton's public
+  calibration tool accepts a microphone model and serial number. The
+  iMM-6C product instructions explicitly say to select `iMM-6`, enter
+  the iMM-6C serial from the case, then download the file.
+- **miniDSP UMIK-1 / UMIK-2.** miniDSP documents the serial lookup
+  flow on the UMIK product pages. UMIK-1 uses a seven-digit serial in
+  `XXX-XXXX` form; UMIK-2 downloads two files named like
+  `800xxxx.txt` and `800xxxx_90deg.txt`.
+- **Unsupported / advanced mics.** The fallback UX is manual upload:
+  pick "Other calibrated mic," upload a REW/HouseCurve-style text
+  file, choose orientation/sign convention if needed, and store it
+  under the same calibration registry.
+
+The happy-path UX should be server-side serial lookup, not phone file
+management:
+
+```
+User opens /correction/ on phone
+  → chooses "miniDSP UMIK-1" or "Dayton iMM-6C"
+  → enters serial number
+  → JTS fetches the calibration file from the vendor endpoint
+  → JTS previews the parsed curve and stores it for future sessions
+```
+
+This avoids the painful mobile flow where the user downloads a random
+`.txt` into iOS/Android storage and then has to find it again in a
+file picker. The manual upload path is still essential, but it should
+be the fallback, not the expected path for known mics.
+
+Implementation shape:
+
+1. Add a small calibration registry under `jasper/correction/`, with
+   one provider adapter per lookup family:
+   `dayton_audio`, `minidsp_umik`, and `manual_upload`.
+2. Store calibration files and metadata under
+   `/var/lib/jasper/correction/calibration_mics/`, including model,
+   serial hash, private raw source, public source marker, fetch
+   timestamp, raw file hash, parsed point count, orientation, and
+   normalized sign convention.
+3. Parse calibration files into one internal shape:
+   `frequency_hz[]`, `correction_db[]`, optional `phase_deg[]`, and
+   optional SPL sensitivity metadata. Provider adapters own vendor
+   quirks; the DSP code only sees the normalized additive correction.
+4. Apply the correction before target normalization / PEQ design so
+   every downstream visualization, bundle, and agent tool is looking
+   at calibrated measurement data.
+5. Record a hash of the selected browser `deviceId`,
+   browser-reported label, mic model, orientation, and calibration
+   hash in every session bundle so the measurement can be replayed or
+   challenged later without leaking raw device identifiers.
+
+Calibration files are not a formal universal standard, but there is
+a practical quasi-standard: frequency in Hz plus gain/correction in
+dB, space/tab/comma delimited, with comments and sometimes a third
+phase column. The parser should accept this broad family, reject
+ambiguous files loudly, and normalize sign convention at import time.
 
 **Recommendation:** treat calibration-mic ingest as **Phase 0a** —
 prerequisite work, sequenced before or alongside the agent. The
 agent's quality is bounded by the measurement; shipping the agent
 on top of uncalibrated input is a recipe for confidently bad advice.
-The work needed is small enough (cal-file parser, device-picker in
-the page, fallback chain in `analysis.py`) to fit cleanly in front
-of Phase A.
+The work needed is small enough (calibration registry, vendor
+fetchers, parser, device-picker, fallback chain in the analysis path)
+to fit cleanly in front of Phase A.
 
 ---
 
@@ -275,53 +357,48 @@ of Phase A.
 
 ### Layer 1 — Knowledge base (markdown files)
 
-Live in a new `docs/calibration-agent/` directory:
+Live in `docs/calibration-agent/`. The initial corpus exists; keep
+filling it with short, source-backed concept files as research is
+distilled.
 
 ```
 docs/calibration-agent/
 ├── README.md                    # how the loader assembles the prompt
 ├── concepts/
-│   ├── schroeder-frequency.md   # fs ≈ 2000 √(RT60/V); regime divider
-│   ├── modal-response.md        # peaks (EQ-able) vs nulls (not)
-│   ├── sbir-and-placement.md    # boundary interference; move the speaker
-│   ├── baffle-step.md
-│   ├── comb-filtering.md
-│   └── rt60-and-room-treatment.md
+│   ├── measurement-quality.md   # clipping, SNR, repeatability, mic cal
+│   ├── room-correction-limits.md # peaks, nulls, SBIR, transition region
+│   └── spatial-averaging.md     # RMS vs vector averages, multi-position
 ├── targets/
-│   ├── flat.md
-│   ├── harman-olive-welti.md    # ~-1 dB/octave in-room slope
-│   └── house-curves.md          # neutral / warm / bright; user taste
+│   └── house-curves.md          # B&K/Harman-like families + taste
 ├── filter-design/
-│   ├── peq-constraints.md       # Q ranges, gain limits, headroom
-│   ├── fir-vs-iir.md            # latency + pre-ringing trade-offs
-│   └── phase-and-group-delay.md
-├── philosophy/
-│   ├── restraint.md             # Toole; less is more above fs
-│   ├── when-eq-fails.md         # nulls, SBIR, ringing modes
-│   └── common-diy-mistakes.md
+│   ├── fir-room-correction.md   # minimum / linear / mixed phase ladder
+│   └── preference-eq.md         # taste layer, not room correction
 └── jts-specific/
-    ├── what-our-pipeline-does.md     # describe the tools the agent has
-    ├── what-our-pipeline-cannot-do.md # mono, 20-350 Hz, no FIR yet
-    └── house-conventions.md          # household taste, gear, room (per-install)
+    ├── implementation-ladder.md      # staged PEQ → FIR → LLM path
+    └── runtime-context-schema.md     # public schema for private runtime notes
 ```
 
-Each concept file is ~500–2000 words. Total corpus targets
-30–50 pages → ~25–40K tokens, which fits comfortably in any frontier
-model's context window. **No RAG / retrieval — concatenate the whole
-corpus into the system prompt at agent startup.** Revisit retrieval
-only if the corpus grows past ~150K tokens, which it shouldn't.
+The corpus can grow from here, but prefer fewer high-signal files over
+a sprawling tree. Total corpus target is still 30–50 pages / ~25–40K
+tokens, which fits comfortably in any frontier model's context window.
+**No RAG / retrieval — concatenate the whole corpus into the system
+prompt at agent startup.** Revisit retrieval only if the corpus grows
+past ~150K tokens, which it shouldn't.
 
 The `jts-specific/` directory is the bit that makes the agent's
 advice grounded in *our* pipeline rather than general audio theory.
-`what-our-pipeline-cannot-do.md` is particularly important — it
-prevents the agent from confidently suggesting FIR phase correction
-that the implementation can't actually deliver.
+[`implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md)
+is particularly important: it prevents the agent from confidently
+suggesting FIR phase correction that the implementation can't
+actually deliver.
 
-`house-conventions.md` is the household-customization slot — gear,
-room dimensions, taste preferences, "the speaker sits 60 cm from the
-back wall behind the desk." This file gets edited by the user (or by
-the agent, with confirmation) over time as the system learns the
-context.
+Household-specific context is **not** stored in repo docs. Gear, room
+dimensions, taste preferences, "the speaker sits 60 cm from the back
+wall behind the desk," and prior user feedback belong in a
+user-private runtime file such as
+`/var/lib/jasper/correction/runtime_context.json` (exact path TBD).
+The repo corpus defines the public schema and interpretation rules;
+the install owns the private values.
 
 **Source bibliography** (each cited in the markdown corpus, not
 loaded verbatim):
@@ -349,8 +426,8 @@ jasper/calibration_agent/
 ├── agent.py            # CalibrationAgent protocol: send_message, tools
 ├── prompt.py           # assemble_system_prompt() reads the markdowns
 ├── tools.py            # tool registry + per-tool implementations
-├── anthropic_agent.py  # Claude Opus 4.7 (claude-opus-4-7-20251022)
-├── openai_agent.py     # GPT-5 (gpt-5-2026-xx-xx)
+├── anthropic_agent.py  # best available Claude Opus snapshot
+├── openai_agent.py     # best available GPT-5 snapshot
 ├── gemini_agent.py     # Gemini 2.5 / 3.x Pro (text)
 └── session.py          # ChatSession — history, tool-call loop, budget cap
 ```
@@ -409,8 +486,8 @@ not yet applied). The panel shows:
   from a wall ~70 cm behind the speaker — let's check that")
 - Conversational input box (markdown-rendered output)
 - A "**context the agent has**" disclosure: room shape, listening
-  position, taste preferences — pre-filled from
-  `house-conventions.md` if present, editable inline
+  position, taste preferences — pre-filled from the private runtime
+  context file if present, editable inline
 - **Filter-diff visualization** when the agent proposes alternatives:
   predicted-curve overlay alongside the auto-PEQ's, side-by-side
   filter table
@@ -418,10 +495,11 @@ not yet applied). The panel shows:
   surfaces both the auto-PEQ and any agent-proposed alternatives as
   selectable options
 
-Frontend stays Preact + stdlib HTTP. Chat is naturally
-polling-friendly; the existing 500 ms `/status` poll can grow a
-`chat` sub-section. No SSE / WebSocket needed for v1 — revisit only
-if turn latency feels bad.
+Frontend stays inline HTML / vanilla JS + stdlib HTTP unless the
+correction UI is separately migrated. Chat is naturally polling-
+friendly; the existing 500 ms `/status` poll can grow a `chat`
+sub-section. No SSE / WebSocket needed for v1 — revisit only if turn
+latency feels bad.
 
 New routes on `jasper-correction-web`:
 
@@ -432,8 +510,8 @@ New routes on `jasper-correction-web`:
   (folded into `/status` if simpler).
 - `POST /chat/reset` — clear the chat history (start a fresh
   conversation against the same measurement).
-- `POST /chat/context` — update `house-conventions.md` from the UI
-  disclosure.
+- `POST /chat/context` — update the private runtime context from the
+  UI disclosure.
 
 ---
 
@@ -508,10 +586,11 @@ APIs (`gemini` / `openai` / `grok`) via the `LiveConnection` /
 not a realtime audio one. So it gets its own provider abstraction +
 its own model picker, even when it reuses the same API key.
 
-### Recommended: add Anthropic Opus 4.7 as a first-class option
+### Recommended: add Anthropic Claude as a first-class option
 
-Claude Opus 4.7 (`claude-opus-4-7-20251022`) is widely regarded as
-the strongest frontier model for the kind of structured-reasoning +
+Use the best available Claude Opus-class snapshot at implementation
+time, pinned to a concrete model ID after checking current Anthropic
+docs. Claude is a strong fit for the kind of structured-reasoning +
 tool-use task this agent does. The user has explicitly said: *open
 to allowing users to add their Anthropic key and use that frontier
 model if we thought that would get them a meaningfully better
@@ -570,7 +649,7 @@ Realistic per-session cost ranges (15–30 turns, ~5K–20K context):
 
 | Provider | Model | Range |
 |---|---|---|
-| Anthropic | Claude Opus 4.7 | $0.30 – $1.00 |
+| Anthropic | best available Claude Opus | $0.30 – $1.00 |
 | OpenAI | GPT-5 (assumed text-side flagship) | $0.20 – $0.60 |
 | Google | Gemini 2.5 / 3.x Pro | $0.05 – $0.15 |
 
@@ -621,12 +700,12 @@ transfer.
    handoff as Phase E once chat is proven out.
 6. **History across sessions.** Multiple calibration sessions over
    weeks/months — should the agent remember? **Recommend a
-   conservative yes:** `house-conventions.md` is the persistent
-   memory slot, edited by user or by agent-with-confirmation.
-   Individual chat transcripts persist in the session bundle
-   (`agent_transcript.json`) but aren't loaded into context for
-   future sessions unless explicitly referenced. Same shape as
-   Claude Code's CLAUDE.md → memory split.
+   conservative yes:** a user-private runtime context file is the
+   persistent memory slot, edited by user or by
+   agent-with-confirmation. Individual chat transcripts persist in
+   the session bundle (`agent_transcript.json`) but aren't loaded
+   into context for future sessions unless explicitly referenced.
+   Same shape as repo docs → private memory split.
 
 ---
 
@@ -636,19 +715,41 @@ Each phase is independently shippable, each ends in a measurable
 user-visible improvement, each is small enough that a stall doesn't
 strand the work.
 
-### Phase 0a — Calibration mic + N10 hardware verification (PRECONDITION)
+### Phase 0a — Calibration mic + device picker (SUBSTRATE UNDERWAY)
 
 Before any LLM work:
 
-- Wire the Dayton USB-C calibration mic into the page's
-  `getUserMedia` constraint set (likely just a device picker; the
-  audio constraint set should be compatible).
-- Add a "upload your cal file" step (Dayton ships per-unit
-  frequency-response `.txt` files). Parse → resample to the analysis
-  log grid → apply as an additive offset in `analysis.py` after
-  smoothing, before PEQ design.
-- Make the existing iPhone-built-in compensation curve a **fallback**
-  rather than the default.
+- Add a browser input-device picker and persist the selected
+  `deviceId` for the session. The page should make it obvious which
+  microphone the browser actually granted, because "USB mic plugged
+  in" does not guarantee "browser selected USB mic."
+- Add server-side vendor lookup for known mics:
+  Dayton Audio iMM-6 / iMM-6C / UMM-6 and miniDSP UMIK-1 / UMIK-2.
+  The user enters model + serial; JTS fetches, parses, previews, and
+  stores the calibration file.
+- Add manual upload as the fallback for unsupported mics, offline
+  installs, vendor lookup failures, and advanced calibration files
+  from third-party labs.
+- Parse → normalize → resample the calibration curve to the analysis
+  log grid → apply as an additive correction before target
+  normalization and PEQ design.
+- Make any built-in phone-mic compensation a **fallback** rather than
+  the default when an external calibrated mic is selected.
+
+### Phase 0b — Bundle contract + N10 hardware verification (PARTIAL)
+
+Before any LLM work:
+
+- Upgrade the session bundle so it is replayable and agent-ready:
+  raw captures, derived impulse responses, complex transfer functions
+  when available, smoothed magnitude variants, phase/group-delay
+  outputs where meaningful, clipping/SNR/repeatability flags,
+  selected mic/device metadata, calibration-file hash, target curve,
+  generated PEQ, predicted response, applied config, and verify
+  measurement.
+- Keep the current `info.json` / `result.json` shape compatible, but
+  add explicit versioning so future FIR and agent tooling can detect
+  what artifacts are present instead of guessing from filenames.
 - **Actually run the full Phase 0–2.2 pipeline on a real room** with
   the calibrated mic. This is the N10 hardware verification the user
   flagged as missing. Document what you find in
@@ -658,13 +759,56 @@ Before any LLM work:
 
 **Sequencing rationale:** the agent's recommendations inherit the
 measurement quality. Shipping the agent on top of uncalibrated input
-is a confidence-amplifier on bad data. Phase 0a should land first;
+is a confidence-amplifier on bad data. Phase 0a/0b should land first;
 ideally several real calibration sessions are run before Phase A so
 the author has lived experience of what the agent should be saying.
 
-### Phase A — Knowledge base + agent scaffold (CLI-testable, no UI)
+### Phase 0c — FIR + tuning corpus research (INITIAL PASS DONE)
 
-- Write the markdown corpus under `docs/calibration-agent/`.
+Initial deep-research intake was distilled on 2026-05-25 from three
+user-provided reports (Google, Anthropic, OpenAI). The consensus
+reinforced the staged plan: keep conservative bass PEQ, improve
+bundle reproducibility, add calibrated mic + multi-position
+measurement, separate target/preference layers, introduce FIR first
+as runtime/export substrate, and keep LLM guidance advisory and
+parameter-bounded.
+
+Before asking an LLM to opine about FIR, phase, target curves, or
+preference tuning, keep extending the source corpus and cite it:
+
+- Distill REW, Toole/Olive/Welti, Dirac, CamillaDSP, CamillaFIR,
+  HouseCurve, Genelec/Neumann, and other high-quality open or
+  publicly readable sources into short markdown concept files.
+- Separate **facts and constraints** ("narrow nulls are not fixed by
+  EQ", "minimum-phase correction is different from linear-phase
+  convolution") from **taste guidance** ("warmer", "brighter",
+  "more bass", "less forward vocals").
+- Document FIR design choices before implementation: minimum-phase vs
+  linear-phase vs mixed-phase, windowing / FDW, tap count and latency
+  budgets on Raspberry Pi 5, pre-ringing risk, boost/headroom limits,
+  and CamillaDSP coefficient loading.
+- Include a parallel glossary that maps user language to technical
+  levers. Example: "more bass" might mean target curve tilt,
+  low-shelf preference EQ, or undoing an over-aggressive modal cut;
+  the agent should ask clarifying questions before changing filters.
+- Version the corpus and record the corpus git SHA in every future
+  agent transcript.
+
+Current distilled corpus files:
+
+- [`docs/calibration-agent/concepts/measurement-quality.md`](calibration-agent/concepts/measurement-quality.md)
+- [`docs/calibration-agent/concepts/room-correction-limits.md`](calibration-agent/concepts/room-correction-limits.md)
+- [`docs/calibration-agent/concepts/spatial-averaging.md`](calibration-agent/concepts/spatial-averaging.md)
+- [`docs/calibration-agent/filter-design/fir-room-correction.md`](calibration-agent/filter-design/fir-room-correction.md)
+- [`docs/calibration-agent/filter-design/preference-eq.md`](calibration-agent/filter-design/preference-eq.md)
+- [`docs/calibration-agent/targets/house-curves.md`](calibration-agent/targets/house-curves.md)
+- [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md)
+
+### Phase A — Corpus loader + agent scaffold (CLI-testable, no UI)
+
+- Extend the markdown corpus under `docs/calibration-agent/` as
+  needed, then build a deterministic loader that assembles it into
+  the agent prompt.
 - Build `jasper/calibration_agent/` with the Anthropic adapter as
   reference.
 - Implement the read-only tools first
@@ -696,12 +840,13 @@ the author has lived experience of what the agent should be saying.
 
 - New `POST /chat` + `GET /chat` + `POST /chat/reset` +
   `POST /chat/context` routes.
-- Chat-panel UI inside the existing Preact app — appears on
+- Chat-panel UI inside the existing correction page — appears on
   `state == READY`, persists through `APPLIED` and `VERIFIED`.
 - Filter-diff visualization: predicted-curve overlay, side-by-side
   filter table.
-- House-conventions disclosure (read/write `house-conventions.md`
-  inline).
+- Runtime-context disclosure (read/write the private
+  `/var/lib/jasper/...` context file inline, with confirmation for
+  agent-authored changes).
 - Bundle gets `agent_transcript.json` alongside `info.json`.
 
 ### Phase D — Iterative re-measurement loop
@@ -731,36 +876,52 @@ Things I'd want to settle in conversation before any code lands:
    [`pyproject.toml`](../pyproject.toml) doesn't list `anthropic`.
    Adding it is fine but it's a real ~10 MB RAM cost at agent
    startup (lazy-imported, so zero idle). Worth confirming the
-   household is happy with that cost in exchange for Opus 4.7
+   household is happy with that cost in exchange for Claude Opus
    access.
-2. **Where does the Dayton cal file get stored?** Most-likely:
-   `/var/lib/jasper/correction/calibration_mics/<serial>.txt`. The
-   page lets the user upload + name; the parser writes it under that
-   slug. Should the file be considered household-private (don't ship
-   in debug bundles) or measurement-context (do ship)? My instinct:
-   include in bundles so the agent can read it.
-3. **Per-room vs per-listening-position calibrations.** The agent
+2. **How much vendor lookup should ship in the first mic PR?**
+   Recommend Dayton + miniDSP in v1, manual upload in the same PR, and
+   a provider interface so future serial lookup schemes don't touch
+   the DSP path. If a vendor endpoint changes or blocks server-side
+   fetches, the UI should fall back to manual upload with a clear
+   message.
+3. **Where do calibration files get stored?** Most-likely:
+   `/var/lib/jasper/correction/calibration_mics/<provider>/<model>/`.
+   The raw serial should be treated as household-private in normal UI;
+   bundles can include a hash + copied calibration file when the user
+   explicitly exports a debug bundle. The agent needs the curve, not
+   necessarily the serial.
+4. **Calibration-file sign convention.** Some files are correction
+   curves, some are microphone response curves, and some include a
+   third phase column. The import preview should make the sign explicit
+   and provider adapters should normalize to "add this dB correction
+   to the measured response."
+5. **Per-room vs per-listening-position calibrations.** The agent
    probably wants to know "the lounge calibration" vs "the kitchen
    calibration" — same speaker, different rooms. Today's session
    bundles are flat under `sessions/<id>/`. Worth a folder
-   hierarchy? My instinct: defer, let `house-conventions.md` carry
-   the context for now.
-4. **"Reasoning visibility" in chat.** Anthropic's `extended_thinking`
-   feature exposes the model's pre-response reasoning. Should we
-   show it in the chat panel (collapsed by default)? My instinct:
-   yes, behind a "Show the agent's reasoning" disclosure. The user
-   audience for this feature already wants to peek under the hood.
-5. **Knowledge-base versioning.** The markdown corpus will evolve.
+   hierarchy? My instinct: defer, let the private runtime context
+   carry the context for now.
+6. **Rationale visibility in chat.** The UI should show concise,
+   source-cited, user-facing rationale: what evidence the agent used,
+   what it is uncertain about, and why it recommends restraint or a
+   change. Do not expose hidden model chain-of-thought.
+7. **Knowledge-base versioning.** The markdown corpus will evolve.
    How does the bundle record *which version of the corpus* the
    agent was running against? My instinct: include the corpus
    git-SHA in `agent_transcript.json`, so a later reader knows what
    the agent was reading when it gave the advice.
-6. **Cost cap UX.** When the cap is hit mid-session, do we (a)
+8. **Cost cap UX.** When the cap is hit mid-session, do we (a)
    refuse to continue, (b) auto-fall-back to a cheaper provider, or
    (c) just warn? My instinct: (a) refuse + post a chat message
    ("we've spent $X, the cap is $Y, raise it at
    `JASPER_CALIBRATION_AGENT_MAX_USD_PER_SESSION` to continue").
    No silent provider switch — the user picked Opus for a reason.
+9. **Preference tuning scope.** How much should "make it brighter" or
+   "more bass" live inside `/correction/` versus a separate
+   `/tuning/` surface? My instinct: same underlying artifacts and
+   target-curve engine, separate user-facing mode, because preference
+   EQ is reversible taste shaping while room correction is
+   measurement-driven compensation.
 
 ---
 
@@ -770,10 +931,16 @@ Explicitly out of scope, to keep this from sprawling:
 
 - **No new voice provider for calibration.** Voice and chat surfaces
   are intentionally separate.
-- **No FIR / phase correction** in this proposal. Phase 5 of
-  [`HANDOFF-correction.md`](HANDOFF-correction.md) covers FIR; the
-  agent can *recommend* it conditionally ("once Phase 5 ships, this
-  notch would benefit from a min-phase FIR cut") but can't apply it.
+- **No FIR / phase correction in the first agent implementation.**
+  FIR is a parallel research and substrate workstream, not something
+  the initial read-only agent should improvise. Phase 5 of
+  [`HANDOFF-correction.md`](HANDOFF-correction.md) covers FIR; this
+  handoff now adds the corpus/bundle prerequisites needed to approach
+  it carefully.
+- **No preference-EQ voice loop in the first implementation.** The
+  "play music you love and tell JTS what you hear" flow is an
+  explicit north-star feature, but it should build on the same
+  target-curve and bundle substrate after room measurement is solid.
 - **No new measurement methodology** (e.g. MLS, log chirp variants,
   multitone). The Novak 2015 ESS substrate stays.
 - **No third-party room-correction engine integration** (REW headless,
@@ -793,8 +960,10 @@ Explicitly out of scope, to keep this from sprawling:
 
 Detailed survey is in the proposal-conversation log. Headlines:
 
-- **No agentic / conversational room-correction product exists** as
-  of May 2026. Every commercial system (Sonos Trueplay, Dirac
+- **The May 2026 research pass did not find an agentic /
+  conversational room-correction product.** Every commercial system
+  we reviewed
+  (Sonos Trueplay, Dirac
   Live, Sonarworks SoundID, Genelec GLM, Neumann MA 1, Audyssey,
   IK ARC Studio, Apple HomePod auto-cal) is a closed-loop one-shot
   batch process with no per-decision rationale and no user dialogue.
@@ -828,10 +997,21 @@ Audio engineering:
 - Toole, *Sound Reproduction*, 3rd ed., Routledge (2017)
 - [Dirac — On Room Correction and Equalization (PDF)](https://www.dirac.com/wp-content/uploads/2021/09/On-equalization-filters.pdf)
 - [REW Help — Why Can't I Fix All my Acoustic Problems with EQ?](https://www.roomeqwizard.com/help/help_en-GB/html/iseqtheanswer.html)
+- [CamillaDSP](https://www.camilladsp.com/) — real-time IIR/FIR engine already in JTS
+- [CamillaFIR](https://vilhovalittu.github.io/CamillaFIR/) — open FIR room-correction workflow reference
+- [HouseCurve — file formats](https://housecurve.com/docs/manual/file_formats) — practical curve/calibration text format
+- [HouseCurve — target curves](https://housecurve.github.io/docs/tuning/target_curve.html) — house curves and taste guidance
 - [Sonavyx — Schroeder Frequency Explained](https://sonavyx.com/en/insights/schroeder-frequency-explained)
 - [GIK Acoustics — What is SBIR?](https://www.gikacoustics.com/blogs/knowledge-base/speaker-boundary-interference-response-sbir)
 - [Audiosolace — Harman Target Curve Explained](https://audiosolace.com/harman-target-curve-explained/)
 - [PS Audio — Using EQ With Speakers: Some Limitations](https://www.psaudio.com/blogs/copper/using-eq-with-speakers-some-limitations)
+
+Microphone calibration:
+- [Dayton Audio Microphone Calibration Tool](https://support.daytonaudio.com/MicrophoneCalibrationTool)
+- [Dayton Audio iMM-6C product page](https://www.daytonaudio.com/product/1974/imm-6c-idevice-usb-c-calibrated-microphone)
+- [Dayton Audio UMM-6 product page](https://www.daytonaudio.com/product/1116/umm-6-usb-measurement-microphone)
+- [miniDSP — UMIK-1 calibration file download](https://www.minidsp.com/products/acoustic-measurement/umik-1?format=pdf&type=raw)
+- [miniDSP — UMIK-2 user manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf)
 
 LLM-agent prior art:
 - [LUMIR — LLM agent for IR spectroscopy](https://www.sciencedirect.com/science/article/abs/pii/S0003267025012516)

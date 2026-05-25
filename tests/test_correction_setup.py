@@ -1,7 +1,8 @@
 """Tests for the room-correction wizard at /correction/.
 
-Phase 0 has very little server-side logic (the action is in the
-browser), so the test surface is small:
+The page started as the Phase 0 mic-permission skeleton and has grown
+into the full correction wizard, so this file pins both browser-facing
+HTML/JS contracts and real HTTP dispatch:
 
   1. Page render — hostname substitutes through, sample-rate constant
      reaches the JS, the WiiM-style placement advice is present, the
@@ -10,16 +11,19 @@ browser), so the test surface is small:
   3. End-to-end via a real ThreadingHTTPServer to confirm the routes
      dispatch from real HTTP — same shape as test_voice_setup.
 
-When Phase 1 lands sweep / capture / apply routes, this file extends
-with their shape (POST validation, SSE framing, etc.) — keep the
-existing test names so future-me can grep for the Phase 0 pin.
+Keep the existing test names where possible so future-me can grep for
+the original Phase 0 pins.
 """
 from __future__ import annotations
 
+import io
+import json
 import threading
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
+
+import pytest
 
 from jasper.web import correction_setup
 
@@ -64,6 +68,15 @@ def test_render_page_includes_ca_download_link():
     assert "Certificate Trust Settings" in body
 
 
+def test_read_json_body_rejects_invalid_content_length():
+    class Handler:
+        headers = {"Content-Length": "not-a-number"}
+        rfile = io.BytesIO()
+
+    with pytest.raises(correction_setup.BadRequest, match="Content-Length"):
+        correction_setup._read_json_body(Handler())
+
+
 def test_render_page_includes_placement_advice():
     """The WiiM-style 'lay flat, bottom toward speakers, no case' is
     the only mic-positioning guidance we can give on iOS (no mic-
@@ -86,6 +99,44 @@ def test_render_page_requests_constraints_explicitly():
     assert "autoGainControl: false" in body
     # And the constructor pin for sample rate.
     assert "sampleRate: REQUIRED_SR" in body
+
+
+def test_render_page_includes_mic_picker_and_calibration_controls():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="input-device-select"' in body
+    assert "enumerateDevices" in body
+    assert "audioConstraints.deviceId = {exact: inputDeviceSelect.value}" in body
+    assert 'id="mic-model-select"' in body
+    assert "Dayton Audio iMM-6 / iMM-6C" in body
+    assert "miniDSP UMIK-1" in body
+    assert "calibration/fetch" in body
+    assert "calibration/upload" in body
+    assert "calibration_id: selectedCalibrationId" in body
+
+
+def test_sanitize_input_device_hashes_browser_ids():
+    raw = {
+        "device_id": "raw-device-id",
+        "requested_device_id": "requested-device-id",
+        "actual_device_id": "actual-device-id",
+        "label": "USB measurement mic",
+        "browser_label": "Dayton Audio USB",
+        "sample_rate": 48000,
+        "channel_count": 1,
+        "echo_cancellation": False,
+        "noise_suppression": False,
+        "auto_gain_control": False,
+        "ignored": "drop me",
+    }
+    out = correction_setup._sanitize_input_device(raw)
+    assert out["label"] == "USB measurement mic"
+    assert out["sample_rate"] == 48000.0
+    assert out["echo_cancellation"] is False
+    assert "ignored" not in out
+    assert "raw-device-id" not in str(out)
+    assert out["device_id_hash"]
+    assert out["requested_device_id_hash"]
+    assert out["actual_device_id_hash"]
 
 
 def test_render_page_reads_back_settings_for_verify():
@@ -370,6 +421,122 @@ def test_e2e_unknown_path_404s():
             assert e.code == 404
         else:
             raise AssertionError("expected 404 for unknown path")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_calibration_upload_parses_and_stores(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "filename": "lab.txt",
+            "content": "20 -1\n100 0\n1000 1\n",
+            "model": "other",
+            "label": "Lab mic",
+            "sign_convention": "correction",
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/calibration/upload",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        resp = urllib.request.urlopen(req)
+        assert resp.status == 200
+        data = json.loads(resp.read().decode())
+        assert data["calibration"]["provider"] == "manual_upload"
+        assert data["calibration"]["point_count"] == 3
+        assert data["calibration"]["calibration_id"]
+        assert data["preview"]["freqs_hz"][0] == 20.0
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
+    monkeypatch.setenv("JASPER_CORRECTION_CALIBRATION_DIR", str(tmp_path))
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "filename": "bad.txt",
+            "content": "this is not a calibration file",
+            "model": "other",
+            "label": "Lab mic",
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/calibration/upload",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body = json.loads(e.read().decode())
+            assert "at least 2 rows" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_invalid_json_returns_400():
+    server, base = _start_server()
+    try:
+        req = urllib.request.Request(
+            f"{base}/calibration/upload",
+            data=b"{not json",
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            assert e.code == 400
+            body = json.loads(e.read().decode())
+            assert "invalid JSON" in body["error"]
+        else:
+            raise AssertionError("expected HTTP 400")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
+    from jasper.correction import calibration
+
+    def fake_fetch_vendor_calibration(**kwargs):
+        raise calibration.CalibrationUpstreamError("miniDSP unavailable")
+
+    monkeypatch.setattr(
+        calibration,
+        "fetch_vendor_calibration",
+        fake_fetch_vendor_calibration,
+    )
+    server, base = _start_server()
+    try:
+        payload = json.dumps({
+            "model": "minidsp_umik2",
+            "serial": "810-8494",
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/calibration/fetch",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            assert e.code == 502
+            body = json.loads(e.read().decode())
+            assert body["error"] == "miniDSP unavailable"
+        else:
+            raise AssertionError("expected HTTP 502")
     finally:
         server.shutdown()
         server.server_close()

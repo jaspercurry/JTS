@@ -37,8 +37,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import html
 import json
 import logging
+import math
 import os
 import threading
 import time
@@ -58,6 +61,13 @@ logger = logging.getLogger(__name__)
 # we refuse the upload rather than silently resampling (silent
 # resampling would produce a working but wrong correction).
 REQUIRED_SAMPLE_RATE = 48000
+MAX_JSON_BODY_BYTES = 64 * 1024
+MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
+MAX_DEVICE_FIELD_CHARS = 160
+
+
+class BadRequest(ValueError):
+    """Client supplied an invalid request body."""
 
 
 # Module-level session + bridge to the async loop. Lazy-init on
@@ -113,6 +123,8 @@ def _replace_session(
     *,
     total_positions: int = 1,
     target_choice: str = "flat",
+    mic_calibration=None,
+    input_device: dict[str, Any] | None = None,
 ):
     """Replace the global session with a fresh one. Called by /start
     so the user can re-run measurements without restarting the
@@ -123,6 +135,8 @@ def _replace_session(
     _session = MeasurementSession(
         total_positions=total_positions,
         target_choice=target_choice,
+        mic_calibration=mic_calibration,
+        input_device=input_device,
     )
     return _session
 
@@ -154,6 +168,18 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
                 border-radius: 6px; padding: 0.7em 0.9em;
                 margin: 1em 0; color: #800; }
   .err-banner.hidden { display: none; }
+
+  .mic-panel { background:#f7f7f7; border:1px solid #ddd;
+               border-radius:6px; padding:0.8em 0.9em; margin:1em 0; }
+  .mic-grid { display:grid; grid-template-columns: minmax(0, 1fr);
+              gap:0.6em; }
+  .mic-row { display:flex; gap:0.5em; flex-wrap:wrap; align-items:end; }
+  .mic-row label { flex:1 1 180px; }
+  .mic-row button { flex:0 0 auto; }
+  .mic-status { margin:0.6em 0 0; color:#555; }
+  .mic-status.ok { color:#176f36; font-weight:600; }
+  .mic-status.bad { color:#a00000; font-weight:600; }
+  .cal-preview { font-variant-numeric: tabular-nums; color:#555; }
 
   details.advice { background: #f4f4f4; border-radius: 6px;
                    padding: 0.5em 0.8em 0.7em; margin: 1em 0; }
@@ -229,8 +255,61 @@ __NAV_BACK__
     <li>Take it out of any case if it has one.</li>
     <li>Keep the room quiet during the sweep — close windows, mute other devices, no talking.</li>
   </ol>
-  <p class="hint">iOS doesn't let us pick which mic to use; pointing the bottom edge at the speakers gets the most consistent capture. Holding the phone at ear height (rather than putting it on the cushion) means we're measuring what you actually hear.</p>
+  <p class="hint">If you are using an external USB measurement mic, pick it below after granting mic permission. Holding the mic at ear height means we're measuring what you actually hear.</p>
 </details>
+
+<div class="mic-panel">
+  <h2 style="margin-top:0">Microphone</h2>
+  <div class="mic-grid">
+    <div class="mic-row">
+      <label for="input-device-select">Input device
+        <select id="input-device-select">
+          <option value="">Default microphone</option>
+        </select>
+      </label>
+      <button id="refresh-inputs" type="button" class="secondary">Refresh inputs</button>
+    </div>
+    <p class="hint" style="margin:0">Browser labels usually appear after you tap <strong>Start mic capture</strong> and grant permission.</p>
+
+    <label for="mic-model-select">Calibration
+      <select id="mic-model-select">
+        <option value="">None / phone built-in</option>
+        __MIC_MODEL_OPTIONS__
+        <option value="other">Other calibrated mic</option>
+      </select>
+    </label>
+
+    <div id="serial-row" class="mic-row hidden">
+      <label for="mic-serial">Serial number
+        <input id="mic-serial" type="text" inputmode="text" autocomplete="off"
+               placeholder="e.g. 700-1234">
+      </label>
+      <button id="fetch-calibration" type="button" class="secondary">Fetch calibration</button>
+    </div>
+
+    <div id="upload-row" class="mic-row hidden">
+      <label for="calibration-file">Calibration file
+        <input id="calibration-file" type="file" accept=".txt,.cal,.frd,.csv,.omm,text/plain">
+      </label>
+      <label for="mic-orientation">Orientation
+        <select id="mic-orientation">
+          <option value="0deg">0° / pointed at speaker</option>
+          <option value="90deg">90° / upright</option>
+          <option value="unknown">Unknown</option>
+        </select>
+      </label>
+      <label for="calibration-sign">File values are
+        <select id="calibration-sign">
+          <option value="correction">dB correction to add</option>
+          <option value="response">mic response to invert</option>
+        </select>
+      </label>
+      <button id="upload-calibration" type="button" class="secondary">Upload calibration</button>
+    </div>
+    <p id="calibration-status" class="mic-status">No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.</p>
+    <p id="calibration-preview" class="cal-preview hidden"></p>
+  </div>
+</div>
 
 <button id="start" type="button">Start mic capture</button>
 
@@ -331,6 +410,19 @@ __NAV_BACK__
   var REQUIRED_SR = __REQUIRED_SR__;
 
   var startBtn = document.getElementById('start');
+  var inputDeviceSelect = document.getElementById('input-device-select');
+  var refreshInputsBtn = document.getElementById('refresh-inputs');
+  var micModelSelect = document.getElementById('mic-model-select');
+  var micSerialInput = document.getElementById('mic-serial');
+  var micOrientationSelect = document.getElementById('mic-orientation');
+  var serialRow = document.getElementById('serial-row');
+  var uploadRow = document.getElementById('upload-row');
+  var calibrationFileInput = document.getElementById('calibration-file');
+  var calibrationSignSelect = document.getElementById('calibration-sign');
+  var fetchCalibrationBtn = document.getElementById('fetch-calibration');
+  var uploadCalibrationBtn = document.getElementById('upload-calibration');
+  var calibrationStatus = document.getElementById('calibration-status');
+  var calibrationPreview = document.getElementById('calibration-preview');
   var currentCorrectionBanner = document.getElementById('current-correction');
   var currentCorrectionLabel = document.getElementById('current-correction-label');
   var currentCorrectionResetBtn = document.getElementById('current-correction-reset');
@@ -364,6 +456,7 @@ __NAV_BACK__
   var verifySummary = document.getElementById('verify-summary');
 
   var ctx = null;
+  var micStream = null;
   var workletNode = null;
   var pollTimer = null;
   var sessionId = null;
@@ -376,6 +469,9 @@ __NAV_BACK__
   // has reached the target range.
   var latestMicRmsDb = -120;
   var autolevelRmsBuffer = [];  // recent dB samples for smoothing
+  var selectedCalibrationId = null;
+  var selectedCalibrationMeta = null;
+  var selectedInputDevice = null;
 
   // For the three audio-processing flags (echoCancellation,
   // noiseSuppression, autoGainControl), iOS Safari often returns
@@ -389,8 +485,168 @@ __NAV_BACK__
     return value === false || value === undefined || value === null;
   }
 
+  function stopMicStream() {
+    if (micStream) {
+      micStream.getTracks().forEach(function (t) { t.stop(); });
+      micStream = null;
+    }
+    if (ctx && ctx.state !== 'closed') {
+      ctx.close().catch(function () {});
+    }
+    ctx = null;
+    workletNode = null;
+  }
+
+  function escapeText(s) {
+    return String(s || '').replace(/[&<>"']/g, function (ch) {
+      return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[ch];
+    });
+  }
+
+  async function populateInputDevices(selectedId) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) {
+      return;
+    }
+    try {
+      var devices = await navigator.mediaDevices.enumerateDevices();
+      var inputs = devices.filter(function (d) { return d.kind === 'audioinput'; });
+      var prior = selectedId || inputDeviceSelect.value || '';
+      inputDeviceSelect.innerHTML = '<option value="">Default microphone</option>';
+      inputs.forEach(function (d, idx) {
+        var opt = document.createElement('option');
+        opt.value = d.deviceId;
+        opt.textContent = d.label || ('Microphone ' + (idx + 1));
+        inputDeviceSelect.appendChild(opt);
+      });
+      if (prior) inputDeviceSelect.value = prior;
+    } catch (e) {
+      console.warn('enumerateDevices failed', e);
+    }
+  }
+
+  function updateMicCalibrationRows() {
+    var model = micModelSelect.value;
+    selectedCalibrationId = null;
+    selectedCalibrationMeta = null;
+    calibrationPreview.classList.add('hidden');
+    calibrationPreview.textContent = '';
+    calibrationStatus.className = 'mic-status';
+    if (!model) {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.add('hidden');
+      calibrationStatus.textContent =
+        'No calibration loaded. This is okay for a quick check, but a calibrated mic is recommended before trusting filter decisions.';
+    } else if (model === 'other') {
+      serialRow.classList.add('hidden');
+      uploadRow.classList.remove('hidden');
+      calibrationStatus.textContent =
+        'Upload a calibration file for this microphone.';
+    } else {
+      serialRow.classList.remove('hidden');
+      uploadRow.classList.remove('hidden');
+      calibrationStatus.textContent =
+        'Enter the mic serial so JTS can fetch the calibration file. Upload is available as a fallback.';
+    }
+  }
+
+  function showCalibrationLoaded(payload) {
+    selectedCalibrationMeta = payload.calibration || null;
+    selectedCalibrationId = selectedCalibrationMeta ?
+      selectedCalibrationMeta.calibration_id : null;
+    if (!selectedCalibrationId) return;
+    calibrationStatus.className = 'mic-status ok';
+    calibrationStatus.textContent =
+      'Loaded ' + selectedCalibrationMeta.label + ' calibration (' +
+      selectedCalibrationMeta.point_count + ' points).';
+    if (payload.preview && payload.preview.freqs_hz) {
+      var n = payload.preview.freqs_hz.length;
+      var f0 = payload.preview.freqs_hz[0];
+      var f1 = payload.preview.freqs_hz[n - 1];
+      calibrationPreview.textContent =
+        'Preview range: ' + Math.round(f0) + '–' + Math.round(f1) +
+        ' Hz · hash ' + selectedCalibrationMeta.file_sha256.slice(0, 12);
+      calibrationPreview.classList.remove('hidden');
+    }
+  }
+
+  async function fetchCalibration() {
+    var model = micModelSelect.value;
+    var serial = micSerialInput.value.trim();
+    if (!model || model === 'other') return;
+    if (!serial) {
+      calibrationStatus.className = 'mic-status bad';
+      calibrationStatus.textContent = 'Enter the microphone serial number first.';
+      return;
+    }
+    fetchCalibrationBtn.disabled = true;
+    calibrationStatus.className = 'mic-status';
+    calibrationStatus.textContent = 'Fetching calibration from vendor…';
+    try {
+      var payload = await postJson('calibration/fetch', {
+        model: model,
+        serial: serial,
+        orientation: micOrientationSelect.value || 'unknown'
+      });
+      showCalibrationLoaded(payload);
+    } catch (e) {
+      calibrationStatus.className = 'mic-status bad';
+      calibrationStatus.textContent =
+        'Lookup failed: ' + e.message + '. Use upload as a fallback.';
+    } finally {
+      fetchCalibrationBtn.disabled = false;
+    }
+  }
+
+  async function uploadCalibration() {
+    var file = calibrationFileInput.files && calibrationFileInput.files[0];
+    if (!file) {
+      calibrationStatus.className = 'mic-status bad';
+      calibrationStatus.textContent = 'Choose a calibration file first.';
+      return;
+    }
+    uploadCalibrationBtn.disabled = true;
+    calibrationStatus.className = 'mic-status';
+    calibrationStatus.textContent = 'Reading calibration file…';
+    try {
+      var content = await file.text();
+      var payload = await postJson('calibration/upload', {
+        filename: file.name,
+        content: content,
+        model: micModelSelect.value || 'other',
+        label: micModelSelect.options[micModelSelect.selectedIndex].text,
+        orientation: micOrientationSelect.value || 'unknown',
+        sign_convention: calibrationSignSelect.value || 'correction'
+      });
+      showCalibrationLoaded(payload);
+    } catch (e) {
+      calibrationStatus.className = 'mic-status bad';
+      calibrationStatus.textContent = 'Upload failed: ' + e.message;
+    } finally {
+      uploadCalibrationBtn.disabled = false;
+    }
+  }
+
+  function selectedInputDeviceMetadata(actual) {
+    var opt = inputDeviceSelect.options[inputDeviceSelect.selectedIndex];
+    var requestedId = inputDeviceSelect.value || null;
+    return {
+      device_id: actual.deviceId || requestedId,
+      requested_device_id: requestedId,
+      actual_device_id: actual.deviceId || null,
+      label: actual.label || (opt && opt.textContent) || null,
+      browser_label: actual.label || null,
+      sample_rate: actual.sampleRate,
+      channel_count: actual.channelCount,
+      echo_cancellation: actual.echoCancellation,
+      noise_suppression: actual.noiseSuppression,
+      auto_gain_control: actual.autoGainControl
+    };
+  }
+
   function renderConstraints(actual, problems) {
     var rows = [
+      ['inputDevice', 'selected',
+       actual.label || actual.deviceId || 'default microphone', true],
       ['sampleRate', REQUIRED_SR + ' Hz', actual.sampleRate + ' Hz',
        actual.sampleRate === REQUIRED_SR],
       ['echoCancellation', 'false',
@@ -409,7 +665,7 @@ __NAV_BACK__
     rows.forEach(function (r) {
       var tr = document.createElement('tr');
       tr.innerHTML =
-        '<td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + '</td>' +
+        '<td>' + escapeText(r[0]) + '</td><td>' + escapeText(r[1]) + '</td><td>' + escapeText(r[2]) + '</td>' +
         '<td class="' + (r[3] ? 'ok' : 'bad') + '">' +
           (r[3] ? '✓ ok' : '✗ bad') + '</td>';
       rowsTbody.appendChild(tr);
@@ -432,6 +688,7 @@ __NAV_BACK__
   async function startMicCapture() {
     startBtn.disabled = true;
     startBtn.textContent = 'Capturing…';
+    stopMicStream();
 
     try {
       var Ctor = window.AudioContext || window.webkitAudioContext;
@@ -444,18 +701,24 @@ __NAV_BACK__
     }
 
     var stream;
+    var audioConstraints = {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      sampleRate: REQUIRED_SR,
+      channelCount: 1
+    };
+    if (inputDeviceSelect.value) {
+      audioConstraints.deviceId = {exact: inputDeviceSelect.value};
+    }
     try {
       stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: false,
-          autoGainControl: false,
-          sampleRate: REQUIRED_SR,
-          channelCount: 1
-        },
+        audio: audioConstraints,
         video: false
       });
+      micStream = stream;
     } catch (e) {
+      stopMicStream();
       alert('Microphone permission denied or unavailable: ' + e.message);
       startBtn.disabled = false;
       startBtn.textContent = 'Start mic capture';
@@ -466,13 +729,18 @@ __NAV_BACK__
     measureSection.classList.remove('hidden');
 
     var settings = stream.getAudioTracks()[0].getSettings();
+    var trackLabel = stream.getAudioTracks()[0].label || '';
     var actual = {
       sampleRate: settings.sampleRate || ctx.sampleRate,
       echoCancellation: settings.echoCancellation,
       noiseSuppression: settings.noiseSuppression,
       autoGainControl: settings.autoGainControl,
-      channelCount: settings.channelCount || 1
+      channelCount: settings.channelCount || 1,
+      deviceId: settings.deviceId || inputDeviceSelect.value || '',
+      label: trackLabel
     };
+    await populateInputDevices(actual.deviceId);
+    selectedInputDevice = selectedInputDeviceMetadata(actual);
     var problems = [];
     if (actual.sampleRate !== REQUIRED_SR) problems.push('sampleRate');
     // Only TRUE counts as a problem — undefined / null mean Safari
@@ -715,6 +983,10 @@ __NAV_BACK__
     });
     if (!resp.ok) {
       var msg = await resp.text();
+      try {
+        var payload = JSON.parse(msg);
+        if (payload && payload.error) msg = payload.error;
+      } catch (_e) {}
       throw new Error('POST ' + path + ' → ' + resp.status + ': ' + msg);
     }
     return await resp.json();
@@ -776,7 +1048,9 @@ __NAV_BACK__
       var targetChoice = targetSelect.value || 'flat';
       var resp = await postJson('start', {
         total_positions: totalPositions,
-        target_choice: targetChoice
+        target_choice: targetChoice,
+        calibration_id: selectedCalibrationId,
+        input_device: selectedInputDevice
       });
       sessionId = resp.session_id;
     } catch (e) {
@@ -1112,7 +1386,6 @@ __NAV_BACK__
     } catch (e) {
       setStateBadge('failed', e.message);
       runBtn.disabled = false;
-      testToneBtn.disabled = false;
     }
   }
 
@@ -1197,6 +1470,17 @@ __NAV_BACK__
   }
 
   startBtn.addEventListener('click', function () { startMicCapture(); });
+  refreshInputsBtn.addEventListener('click', function () { populateInputDevices(); });
+  inputDeviceSelect.addEventListener('change', function () {
+    if (micStream) {
+      startMicCapture().catch(function (e) {
+        setStateBadge('failed', e.message);
+      });
+    }
+  });
+  micModelSelect.addEventListener('change', function () { updateMicCalibrationRows(); });
+  fetchCalibrationBtn.addEventListener('click', function () { fetchCalibration(); });
+  uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
   runBtn.addEventListener('click', function () { startMeasurement(); });
   continueBtn.addEventListener('click', function () { continueToNextPosition(); });
   applyBtn.addEventListener('click', function () { applyCorrection(); });
@@ -1208,6 +1492,8 @@ __NAV_BACK__
 
   // Populate the banner on page load (and after apply / reset so the
   // user sees the new state without a refresh).
+  populateInputDevices();
+  updateMicCalibrationRows();
   refreshCurrentCorrection();
 
   // Redraw chart on resize / orientation change — without this, the
@@ -1232,12 +1518,22 @@ __NAV_BACK__
 
 
 def _render_page(hostname: str) -> bytes:
+    from jasper.correction.calibration import SUPPORTED_MODELS
+
+    mic_model_options = "\n        ".join(
+        '<option value="{key}">{label}</option>'.format(
+            key=html.escape(key, quote=True),
+            label=html.escape(spec["label"]),
+        )
+        for key, spec in SUPPORTED_MODELS.items()
+    )
     return (
         _PAGE_HTML
         .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
         .replace("__NAV_BACK__", NAV_BACK_HTML)
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
+        .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
     ).encode("utf-8")
 
 
@@ -1246,16 +1542,30 @@ def _render_page(hostname: str) -> bytes:
 # ----------------------------------------------------------------------
 
 
-def _read_json_body(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+def _read_json_body(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int = MAX_JSON_BODY_BYTES,
+) -> dict[str, Any]:
     """Parse JSON body. Empty body → {}."""
-    length = int(handler.headers.get("Content-Length") or "0")
+    try:
+        length = int(handler.headers.get("Content-Length") or "0")
+    except ValueError as e:
+        raise BadRequest("invalid Content-Length") from e
     if length <= 0:
         return {}
+    if length > max_bytes:
+        raise BadRequest(f"JSON body too large ({length} bytes)")
     raw = handler.rfile.read(length)
     try:
-        return json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
-        return {}
+        data = json.loads(raw.decode("utf-8"))
+    except UnicodeDecodeError as e:
+        raise BadRequest("JSON body must be UTF-8") from e
+    except json.JSONDecodeError as e:
+        raise BadRequest(f"invalid JSON: {e.msg}") from e
+    if not isinstance(data, dict):
+        raise BadRequest("JSON body must be an object")
+    return data
 
 
 def _camilla() -> "Any":
@@ -1268,6 +1578,69 @@ def _camilla() -> "Any":
         host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
         port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
     )
+
+
+def _calibration_root() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_CORRECTION_CALIBRATION_DIR",
+            "/var/lib/jasper/correction/calibration_mics",
+        )
+    )
+
+
+def _short_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return text[:MAX_DEVICE_FIELD_CHARS]
+
+
+def _device_id_hash(value: Any) -> str | None:
+    text = _short_text(value)
+    if text is None:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if math.isfinite(out) else None
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
+    """Normalize browser-reported input-device metadata before bundles.
+
+    Browser `deviceId` values can be stable identifiers, so persist
+    hashes rather than raw IDs. Labels are user-visible in the browser
+    picker and useful for debugging, but still capped.
+    """
+    if not isinstance(raw, dict):
+        return None
+    sanitized = {
+        "device_id_hash": _device_id_hash(raw.get("device_id")),
+        "requested_device_id_hash": _device_id_hash(
+            raw.get("requested_device_id"),
+        ),
+        "actual_device_id_hash": _device_id_hash(raw.get("actual_device_id")),
+        "label": _short_text(raw.get("label")),
+        "browser_label": _short_text(raw.get("browser_label")),
+        "sample_rate": _optional_float(raw.get("sample_rate")),
+        "channel_count": _optional_float(raw.get("channel_count")),
+        "echo_cancellation": _optional_bool(raw.get("echo_cancellation")),
+        "noise_suppression": _optional_bool(raw.get("noise_suppression")),
+        "auto_gain_control": _optional_bool(raw.get("auto_gain_control")),
+    }
+    return {k: v for k, v in sanitized.items() if v is not None} or None
 
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1294,6 +1667,8 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     total_positions = max(1, min(10, int(body.get("total_positions", 1))))
     target_choice = str(body.get("target_choice", "flat"))
     noise_floor_db_raw = body.get("noise_floor_db")
+    calibration_id = str(body.get("calibration_id") or "").strip()
+    input_device = _sanitize_input_device(body.get("input_device"))
     noise_floor_db: float | None
     try:
         noise_floor_db = (
@@ -1304,18 +1679,27 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     except (TypeError, ValueError):
         noise_floor_db = None
 
+    mic_calibration = None
+    if calibration_id:
+        from jasper.correction.calibration import load_calibration_record
+        mic_calibration = load_calibration_record(
+            calibration_id,
+            root=_calibration_root(),
+        )
+
     sess = _replace_session(
         total_positions=total_positions,
         target_choice=target_choice,
+        mic_calibration=mic_calibration,
+        input_device=input_device,
     )
     sess.noise_floor_db = noise_floor_db
 
     cam = _camilla()
 
     # Snapshot what was loaded BEFORE we reset, so the bundle records
-    # the prior state. Best-effort: if CamillaDSP is unreachable we
-    # still proceed — the reset call below will also fail soft and
-    # the sweep will go through whatever pipeline is live.
+    # the prior state. Best-effort: a snapshot failure should not stop
+    # measurement, but the reset below is load-bearing and must succeed.
     async def _snapshot() -> dict[str, Any] | None:
         path = await cam.get_config_file_path(best_effort=True)
         return parse_current_correction(path, config_dir=sess.cfg.config_dir)
@@ -1326,15 +1710,20 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         logger.exception("/start: snapshot current_correction failed")
         sess.current_correction_at_start = None
 
-    async def _reset_to_base() -> None:
-        await cam.set_config_file_path(
-            str(sess.cfg.base_config_path), best_effort=True,
+    async def _reset_to_base() -> bool:
+        return await cam.set_config_file_path(
+            str(sess.cfg.base_config_path), best_effort=False,
         )
 
     try:
-        _run_async(_reset_to_base(), timeout=5.0)
+        reset_ok = _run_async(_reset_to_base(), timeout=5.0)
     except Exception:  # noqa: BLE001
-        logger.exception("/start: reset to base config failed (continuing)")
+        logger.exception("/start: reset to base config failed")
+        raise RuntimeError(
+            "could not reset speaker to flat before measuring"
+        ) from None
+    if not reset_ok:
+        raise RuntimeError("could not reset speaker to flat before measuring")
 
     async def _run_first_sweep() -> None:
         try:
@@ -1350,6 +1739,12 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         "state": sess.state.value,
         "total_positions": sess.total_positions,
         "target_choice": sess.target_choice,
+        "input_device": sess.input_device,
+        "mic_calibration": (
+            sess.mic_calibration.public_metadata()
+            if sess.mic_calibration
+            else None
+        ),
         "current_correction_at_start": sess.current_correction_at_start,
     }
 
@@ -1551,6 +1946,73 @@ def _handle_test_tone(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     _run_async(_run_test_tone(), timeout=duration_s + 30.0)
     return {"played": True, "duration_s": duration_s}
+
+
+def _calibration_payload(record) -> dict[str, Any]:
+    from jasper.correction import calibration
+    return {
+        "calibration": record.public_metadata(),
+        "preview": calibration.preview_curve(record.curve),
+    }
+
+
+def _handle_calibration_models(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    from jasper.correction.calibration import SUPPORTED_MODELS
+    return {
+        "models": [
+            {"key": key, **value}
+            for key, value in SUPPORTED_MODELS.items()
+        ]
+    }
+
+
+def _handle_calibration_fetch(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    from jasper.correction.calibration import fetch_vendor_calibration
+
+    body = _read_json_body(handler)
+    model = str(body.get("model") or "").strip()
+    serial = str(body.get("serial") or "").strip()
+    orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
+    record = fetch_vendor_calibration(
+        model_key=model,
+        serial=serial,
+        orientation=orientation,
+        root=_calibration_root(),
+    )
+    return _calibration_payload(record)
+
+
+def _handle_calibration_upload(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    from jasper.correction.calibration import store_calibration
+
+    body = _read_json_body(
+        handler,
+        max_bytes=MAX_CALIBRATION_UPLOAD_JSON_BYTES,
+    )
+    text = str(body.get("content") or "")
+    filename = str(body.get("filename") or "uploaded-calibration.txt")
+    model = str(body.get("model") or "other").strip() or "other"
+    label = str(body.get("label") or "Other calibrated mic").strip()
+    orientation = str(body.get("orientation") or "unknown").strip() or "unknown"
+    sign_convention = (
+        str(body.get("sign_convention") or "correction").strip()
+        or "correction"
+    )
+    record = store_calibration(
+        text=text,
+        provider="manual_upload",
+        model=model,
+        label=label,
+        source=f"uploaded:{filename}",
+        orientation=orientation,
+        sign_convention=sign_convention,
+        root=_calibration_root(),
+    )
+    return _calibration_payload(record)
 
 
 def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
@@ -1755,6 +2217,11 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             self.end_headers()
             self.wfile.write(body)
 
+        def _send_client_error(
+            self, message: str, *, status: int = 400,
+        ) -> None:
+            self._send_json({"error": message}, status=status)
+
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
@@ -1784,13 +2251,23 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     logger.exception("/sessions failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
+            if path == "/calibration/models":
+                try:
+                    self._send_json(_handle_calibration_models(self))
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("/calibration/models failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             try:
                 if path == "/start":
-                    self._send_json(_handle_start(self))
+                    try:
+                        self._send_json(_handle_start(self))
+                    except (FileNotFoundError, ValueError) as e:
+                        self._send_client_error(str(e))
                     return
                 if path == "/next-position":
                     self._send_json(_handle_next_position(self))
@@ -1813,12 +2290,38 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/upload-capture":
                     self._send_json(_handle_upload_capture(self))
                     return
+                if path == "/calibration/fetch":
+                    try:
+                        self._send_json(_handle_calibration_fetch(self))
+                    except ValueError as e:
+                        self._send_client_error(str(e))
+                    except Exception as e:  # noqa: BLE001
+                        from jasper.correction.calibration import (
+                            CalibrationNotFoundError,
+                            CalibrationUpstreamError,
+                        )
+                        if isinstance(e, CalibrationNotFoundError):
+                            self._send_client_error(str(e), status=404)
+                        elif isinstance(e, CalibrationUpstreamError):
+                            self._send_client_error(str(e), status=502)
+                        else:
+                            raise
+                    return
+                if path == "/calibration/upload":
+                    try:
+                        self._send_json(_handle_calibration_upload(self))
+                    except ValueError as e:
+                        self._send_client_error(str(e))
+                    return
                 if path == "/apply":
                     self._send_json(_handle_apply(self))
                     return
                 if path == "/reset":
                     self._send_json(_handle_reset(self))
                     return
+            except BadRequest as e:
+                self._send_client_error(str(e))
+                return
             except Exception as e:  # noqa: BLE001
                 logger.exception("POST %s failed", path)
                 self._send_json({"error": str(e)}, status=500)

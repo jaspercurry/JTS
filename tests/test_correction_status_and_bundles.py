@@ -16,6 +16,8 @@ Two features land in this PR. Both are exercised here:
 """
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import os
 import threading
@@ -117,7 +119,13 @@ def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
     """info.json appears at the bundle root once the session
     transitions out of IDLE. The first PREPARING transition is the
     earliest it should land."""
-    sess = _make_session(tmp_path)
+    sess = _make_session(
+        tmp_path,
+        input_device={
+            "label": "USB measurement mic",
+            "device_id_hash": "abc123",
+        },
+    )
     # Trigger a state transition (uses the internal helper directly —
     # the public flow does this via prepare_and_play_sweep which
     # we test elsewhere).
@@ -128,8 +136,10 @@ def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
     assert info_path.exists()
     data = json.loads(info_path.read_text())
     assert data["session_id"] == sess.session_id
+    assert data["bundle_schema_version"] == 2
     assert data["state"] == "preparing"
     assert data["target_choice"] == "flat"
+    assert data["input_device"]["label"] == "USB measurement mic"
     assert "config" in data
     assert data["config"]["sample_rate"] == 48000
 
@@ -208,6 +218,10 @@ async def test_design_writes_result_json(tmp_path: Path):
     from scipy.signal import fftconvolve
 
     sess = _make_session(tmp_path)
+    sess.input_device = {
+        "label": "USB measurement mic",
+        "device_id_hash": "abc123",
+    }
     sess.total_positions = 1
 
     captured_paths: list[str] = []
@@ -232,6 +246,8 @@ async def test_design_writes_result_json(tmp_path: Path):
     assert result_path.exists()
     result = json.loads(result_path.read_text())
     assert result["session_id"] == sess.session_id
+    assert result["bundle_schema_version"] == 2
+    assert result["input_device"]["device_id_hash"] == "abc123"
     assert result["measured"] is not None
     assert "freqs_hz" in result["measured"]
     assert "magnitude_db" in result["measured"]
@@ -245,8 +261,9 @@ async def test_design_writes_result_json(tmp_path: Path):
 class _FakeCamilla:
     """Records calls to set_config_file_path so we can assert the
     /start handler resets to base BEFORE the sweep kicks off."""
-    def __init__(self, current_path: str) -> None:
+    def __init__(self, current_path: str, *, reset_ok: bool = True) -> None:
         self.current_path = current_path
+        self.reset_ok = reset_ok
         self.set_calls: list[str] = []
 
     async def get_config_file_path(self, *, best_effort: bool = False):
@@ -256,8 +273,53 @@ class _FakeCamilla:
         self, path: str, *, best_effort: bool = False,
     ) -> bool:
         self.set_calls.append(path)
+        if not self.reset_ok:
+            return False
         self.current_path = path
         return True
+
+
+def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
+    from jasper.correction.session import SessionConfig
+
+    real_replace = correction_setup._replace_session
+
+    def stub_replace(
+        *,
+        total_positions: int,
+        target_choice: str,
+        mic_calibration=None,
+        input_device=None,
+    ):
+        sess = real_replace(
+            total_positions=total_positions,
+            target_choice=target_choice,
+            mic_calibration=mic_calibration,
+            input_device=input_device,
+        )
+        sess.cfg = SessionConfig(
+            sweep_dir=tmp_path / "sweeps",
+            capture_dir=tmp_path / "captures",
+            sessions_dir=tmp_path / "sessions",
+            config_dir=tmp_path / "configs",
+            base_config_path=tmp_path / "v1.yml",
+            duration_s=1.0,
+        )
+        sess.cfg.base_config_path.write_text("# stub\n")
+        sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
+        # Recompute bundle_dir using the new cfg.
+        sess.bundle_dir = sess.cfg.sessions_dir / sess.session_id
+        captured["sess"] = sess
+        return sess
+
+    return stub_replace
+
+
+class _DummyJsonHandler:
+    headers = {"Content-Length": "2"}
+
+    def __init__(self) -> None:
+        self.rfile = io.BytesIO(b"{}")
 
 
 def test_start_handler_resets_to_base_before_sweep(
@@ -270,8 +332,6 @@ def test_start_handler_resets_to_base_before_sweep(
     the already-corrected curve and produce compounding distortion.
     """
     from jasper.web import correction_setup
-    from jasper.correction.session import SessionConfig
-
     fake_cam = _FakeCamilla(
         current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
     )
@@ -299,29 +359,12 @@ def test_start_handler_resets_to_base_before_sweep(
     )
 
     # Point the new session at tmp_path so we don't write to /var.
-    real_replace = correction_setup._replace_session
     captured: dict = {}
-
-    def stub_replace(*, total_positions: int, target_choice: str):
-        sess = real_replace(
-            total_positions=total_positions,
-            target_choice=target_choice,
-        )
-        sess.cfg = SessionConfig(
-            sweep_dir=tmp_path / "sweeps",
-            capture_dir=tmp_path / "captures",
-            sessions_dir=tmp_path / "sessions",
-            config_dir=tmp_path / "configs",
-            base_config_path=tmp_path / "v1.yml",
-            duration_s=1.0,
-        )
-        sess.cfg.base_config_path.write_text("# stub\n")
-        sess.cfg.config_dir.mkdir(parents=True, exist_ok=True)
-        # Recompute bundle_dir using the new cfg.
-        sess.bundle_dir = sess.cfg.sessions_dir / sess.session_id
-        captured["sess"] = sess
-        return sess
-    monkeypatch.setattr(correction_setup, "_replace_session", stub_replace)
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        _stub_replace_to_tmp(correction_setup, tmp_path, captured),
+    )
 
     server = correction_setup.make_server(
         ("127.0.0.1", 0), hostname="jts.local",
@@ -350,6 +393,51 @@ def test_start_handler_resets_to_base_before_sweep(
     # the UI can render "was: correction_xyz" if it wants.
     assert body["current_correction_at_start"] is not None
     assert body["current_correction_at_start"]["session_id"] == "xyz"
+
+
+def test_start_handler_aborts_if_reset_to_base_fails(
+    tmp_path: Path, monkeypatch,
+):
+    """If CamillaDSP cannot switch to the flat base config, /start must
+    fail before playing a sweep. Measuring through an existing
+    correction would compound filters and corrupt the result."""
+    from jasper.web import correction_setup
+
+    fake_cam = _FakeCamilla(
+        current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
+        reset_ok=False,
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: fake_cam)
+    captured: dict = {}
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        _stub_replace_to_tmp(correction_setup, tmp_path, captured),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_run_async",
+        lambda coro, timeout=10.0: asyncio.run(coro),
+    )
+
+    scheduled = {"value": False}
+
+    def fake_schedule(*args, **kwargs):
+        scheduled["value"] = True
+        raise AssertionError("sweep should not be scheduled")
+
+    monkeypatch.setattr(
+        correction_setup.asyncio,
+        "run_coroutine_threadsafe",
+        fake_schedule,
+    )
+
+    with pytest.raises(RuntimeError, match="reset speaker to flat"):
+        correction_setup._handle_start(_DummyJsonHandler())
+
+    sess = captured["sess"]
+    assert fake_cam.set_calls == [str(sess.cfg.base_config_path)]
+    assert scheduled["value"] is False
 
 
 def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):

@@ -230,6 +230,12 @@ install_camilladsp() {
     # corrections survive Pi restarts; the room-correction wizard
     # writes correction_<id>_<unixtime>.yml under configs/.
     install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
+    install -d -m 0750 \
+        /var/lib/jasper/correction \
+        /var/lib/jasper/correction/sweeps \
+        /var/lib/jasper/correction/captures \
+        /var/lib/jasper/correction/sessions \
+        /var/lib/jasper/correction/calibration_mics
 
     # Seed the statefile if missing. The unit's ExecStart deliberately
     # has NO positional CONFIGFILE — CamillaDSP would clobber the
