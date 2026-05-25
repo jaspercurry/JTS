@@ -142,6 +142,7 @@ class Config:
     tts_music_headroom_db: float
     tts_silence_threshold_dbfs: float
     tts_music_window_sec: float
+    tts_drain_tail_sec: float
     vad_barge_in_threshold: float
 
     server_vad_enabled: bool
@@ -508,6 +509,19 @@ class Config:
             # actually gets quieter.
             tts_music_window_sec=_env_float(
                 "JASPER_TTS_MUSIC_WINDOW_SEC", 8.0,
+            ),
+            # End-of-stream drain tail. After the last sample is queued
+            # to PortAudio's ring, the dmix layer + DAC still take a
+            # short moment to flush. Adding this to TtsPlayout's
+            # sample-counted deadline guarantees the speaker is silent
+            # before the daemon ends the turn (un-ducks music, fires
+            # the end-of-turn chirp). Measured on the Apple dongle dmix
+            # at ~60-85 ms; 0.085 s gives a small margin without
+            # holding the duck noticeably long. Bump on a Pi if you
+            # ever observe truncated tails; lower if end-of-turn feels
+            # sluggish.
+            tts_drain_tail_sec=_env_float(
+                "JASPER_TTS_DRAIN_TAIL_SEC", 0.085,
             ),
             # Silero VAD probability threshold for barge-in gating.
             # While the model is producing TTS, mic frames are only
