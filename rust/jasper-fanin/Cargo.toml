@@ -1,0 +1,61 @@
+[package]
+name = "jasper-fanin"
+version = "0.1.0"
+edition = "2021"
+description = "JTS renderer fan-in: sums per-renderer snd-aloop substreams into a single summed-music output stream for CamillaDSP + AEC bridge."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+# Why these dependencies — pinned to current stable versions on Trixie's
+# rustc (1.75+). See docs/HANDOFF-fan-in-daemon.md "Why Rust" for the
+# language-choice rationale.
+[dependencies]
+# Idiomatic Rust wrapper around libasound — the daemon's primary I/O
+# surface. Mature crate, used by most Rust ALSA projects (paplay,
+# pulse-pipewire-bridge, etc.). Compiles against Trixie's
+# libasound2-dev.
+alsa = "0.9"
+
+# systemd notification socket: READY=1 on startup, WATCHDOG=1 keepalives,
+# STOPPING=1 on shutdown. The Type=notify + WatchdogSec=30s contract
+# in deploy/systemd/jasper-fanin.service requires this.
+sd-notify = "0.4"
+
+# Structured logging to stderr. journald captures it; the daemon's
+# stdout/stderr are how it surfaces event= lines for jasper-trace.sh
+# and the /state aggregator to consume.
+log = "0.4"
+env_logger = "0.11"
+
+# Signal handling that doesn't fight async/tokio. We're a plain-thread
+# daemon (no async runtime), so signal-hook's flag pattern is the
+# right shape.
+signal-hook = "0.3"
+
+# Top-level error ergonomics. Internal modules may use thiserror for
+# structured errors; anyhow is the catch-all at main().
+anyhow = "1"
+
+# Direct libc bindings — needed for mlockall (the in-process
+# belt-and-suspenders alongside the systemd unit's LimitMEMLOCK=infinity
+# and Slice=jts-audio.slice MemorySwapMax=0).
+libc = "0.2"
+
+[profile.release]
+# Optimize aggressively. The hot path (per-frame mixer) is small;
+# compile time isn't a concern on a Pi 5. Smaller binary via
+# strip=debuginfo (keep symbols for crash debugging via journald;
+# strip the dwarf section). panic=abort because we don't want to
+# unwind from a panic in audio code anyway — let the daemon die,
+# systemd restarts in ~2s.
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+
+[[bin]]
+name = "jasper-fanin"
+path = "src/main.rs"
