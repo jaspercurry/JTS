@@ -533,6 +533,21 @@ def test_index_html_is_valid_shape() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_render_index_has_nav_back_home_link() -> None:
+    """Every JTS wizard page has a '← Home' link in the top-left
+    matching the shared `_common.NAV_BACK_HTML` constant. The recorder
+    isn't using `wrap_page()` (it builds its own HTML), so this is
+    the explicit guard that we don't forget to inject the nav link
+    + the matching `.nav-back` CSS."""
+    html_text = wake_corpus_setup._render_index_html("token")
+    # The link itself
+    assert 'class="nav-back"' in html_text
+    assert 'href="/"' in html_text
+    assert "← Home" in html_text
+    # The CSS that styles it
+    assert ".nav-back {" in html_text
+
+
 def test_render_index_embeds_csrf_token() -> None:
     """The CSRF token must appear in a meta tag so the JS can read it.
     Token is HTML-escaped defensively (even though secrets.token_hex

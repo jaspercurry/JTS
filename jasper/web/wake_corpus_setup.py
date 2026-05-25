@@ -80,6 +80,14 @@ from jasper.cli.wake_enroll import (
     write_wav,
 )
 
+# Shared "← Home" nav element + its CSS. Matches every other JTS
+# wizard's escape-hatch link back to http://jts.local/. Single source
+# of truth in jasper.web._common — we inject the CSS fragment into
+# the recorder's own style block (the recorder doesn't use the
+# wrap_page() helper since its HTML is more bespoke than the form-
+# based wizards).
+from jasper.web._common import NAV_BACK_CSS, NAV_BACK_HTML
+
 logger = logging.getLogger("jasper-wake-corpus-web")
 
 
@@ -960,7 +968,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{csrf_token}">
   <title>JTS Wake-Word Corpus Recorder</title>
-  <style>
+  <style>{nav_back_css}
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
                    Roboto, sans-serif;
@@ -1100,6 +1108,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   </style>
 </head>
 <body>
+  {nav_back_html}
   <h1>JTS Wake-Word Corpus Recorder</h1>
 
   <div class="card" id="status-card">
@@ -1384,8 +1393,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 def _render_index_html(csrf_token: str = "") -> str:
     # html.escape on the token belt-and-suspenders even though
     # `secrets.token_hex` only produces hex chars (no HTML metachars).
-    return _INDEX_HTML_TEMPLATE.replace(
-        "{csrf_token}", html.escape(csrf_token, quote=True),
+    # The nav-back CSS + HTML are static (no user input) so no
+    # escaping needed for those.
+    return (
+        _INDEX_HTML_TEMPLATE
+        .replace("{csrf_token}", html.escape(csrf_token, quote=True))
+        .replace("{nav_back_css}", NAV_BACK_CSS)
+        .replace("{nav_back_html}", NAV_BACK_HTML)
     )
 
 
