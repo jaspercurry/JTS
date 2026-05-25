@@ -2863,13 +2863,22 @@ class WakeLoop:
     def session_status(self) -> dict:
         """Diagnostic snapshot — exposed via the control socket so
         jasper-control / the dial can render correct UI without polling
-        the spend-cap or connection state separately."""
+        the spend-cap or connection state separately.
+
+        `duck_active` is the authoritative signal for "is the Ducker
+        currently holding camilla main_volume below the canonical
+        listening_level target?" — consumed by jasper-control's
+        VolumeCoordinator to decide whether to defer a dial/web-slider
+        camilla write. See docs/HANDOFF-volume.md "Cross-daemon defer
+        signal" for the design.
+        """
         return {
             "state": self._state.name,
             "input_ended": self._input_ended,
             "spend_allowed": self._spend_cap.allowed(),
             "connection_paused": self._connection.is_paused(),
             "mic_muted": self._mic_muted,
+            "duck_active": self._ducker.is_ducked,
         }
 
     async def _shadow_vad_score_raw(self, frame) -> None:

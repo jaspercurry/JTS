@@ -38,7 +38,7 @@ import threading
 import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, Optional
 
 from . import shairport_supervisor, system_supervisor, wifi_guardian_state
 
@@ -448,6 +448,7 @@ async def _with_coordinator(
     *,
     camilla_host: str,
     camilla_port: int,
+    duck_active_probe: Optional[Callable[[], Awaitable[Optional[bool]]]] = None,
 ) -> Any:
     """Build a VolumeCoordinator for one operation, run `op(coord)`,
     dispose. Mirrors `_dispatch_transport`'s per-request pattern — each
@@ -456,7 +457,13 @@ async def _with_coordinator(
     server.
 
     `op` is an async callable taking the live coordinator and
-    returning the per-request result (dict or scalar)."""
+    returning the per-request result (dict or scalar).
+
+    `duck_active_probe` is forwarded into the coordinator. When set
+    (callers that write camilla via the dial/web path), the
+    coordinator defers its camilla write iff the probe returns True.
+    See `_make_duck_active_probe` for the wire details and
+    docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
     from ..camilla import CamillaController
     from ..renderer import RendererClient
     from ..volume_coordinator import VolumeCoordinator
@@ -487,6 +494,7 @@ async def _with_coordinator(
         spotify_device_name=os.environ.get(
             "JASPER_SPOTIFY_DEVICE_NAME", "JTS",
         ),
+        duck_active_probe=duck_active_probe,
     )
     coord.load_persisted_level()
     try:
@@ -499,6 +507,48 @@ async def _with_coordinator(
         # RendererClient has no aclose — it's a stateless probe wrapper.
         # CamillaController has no aclose — sync websocket reconnects
         # on next use. GC handles cleanup of the cached client.
+
+
+def _make_duck_active_probe(
+    voice_socket_path: str,
+) -> Callable[[], Awaitable[Optional[bool]]]:
+    """Build the cross-daemon duck-active probe consumed by
+    VolumeCoordinator._set_camilla in the per-request coordinators here.
+
+    The probe asks jasper-voice over UDS whether the Ducker is
+    currently holding camilla below the canonical listening_level
+    target. True → defer the dial's camilla write (Ducker.restore
+    will land it on session end). False → write camilla normally.
+    None → unknown (UDS unreachable / voice wedged / response
+    malformed); the coordinator treats this as fail-open and writes
+    camilla — the dial must never silently stop working because of
+    an inter-daemon problem.
+
+    Tight 1 s timeout: STATUS is a synchronous attribute read in
+    voice_daemon (no I/O). If it doesn't return in 1 s the daemon
+    is wedged and we'd rather fail-open than block dial input. See
+    docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+    async def probe() -> Optional[bool]:
+        try:
+            response = await _voice_socket_command(
+                voice_socket_path, "STATUS", timeout=1.0,
+            )
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            asyncio.TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+        ):
+            return None
+        duck_active = response.get("duck_active")
+        if isinstance(duck_active, bool):
+            return duck_active
+        # Older jasper-voice without the field, or unexpected type —
+        # fail-open. Same effect as voice unreachable.
+        return None
+    return probe
 
 
 async def _voice_socket_command(
@@ -899,12 +949,19 @@ def _make_handler(
     sampler: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
+    # One probe instance per handler — it's stateless (just closes
+    # over voice_socket_path), so all volume ops share it. Read-only
+    # `_get_op` doesn't need it (`get_listening_level` doesn't touch
+    # camilla), but passing None there keeps the construction uniform.
+    duck_active_probe = _make_duck_active_probe(voice_socket_path)
+
     async def _set_op(percent: int):
         async def _op(coord):
             return await coord.set_listening_level(percent)
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
+            duck_active_probe=duck_active_probe,
         )
 
     async def _observe_op(source_name: str, percent: int) -> int:
@@ -935,6 +992,7 @@ def _make_handler(
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
+            duck_active_probe=duck_active_probe,
         )
 
     async def _adjust_op(delta_percent: int):
@@ -943,6 +1001,7 @@ def _make_handler(
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
+            duck_active_probe=duck_active_probe,
         )
 
     async def _get_op():
@@ -964,6 +1023,7 @@ def _make_handler(
         return await _with_coordinator(
             _op,
             camilla_host=camilla_host, camilla_port=camilla_port,
+            duck_active_probe=duck_active_probe,
         )
 
     class Handler(BaseHTTPRequestHandler):

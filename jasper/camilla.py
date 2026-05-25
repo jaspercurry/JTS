@@ -294,6 +294,15 @@ class Ducker:
         self._target_db_provider = target_db_provider
         self._ducked = False
 
+    @property
+    def is_ducked(self) -> bool:
+        """True iff camilla's main_volume is currently held below the
+        canonical listening_level target by this Ducker. Read by
+        WakeLoop.session_status() so jasper-control can authoritatively
+        gate its own camilla writes during a voice session — see
+        docs/HANDOFF-volume.md "Cross-daemon defer signal"."""
+        return self._ducked
+
     async def duck(self) -> None:
         if self._ducked:
             return

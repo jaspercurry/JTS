@@ -751,6 +751,95 @@ def test_session_endpoint_503_when_voice_socket_missing(server_with_coordinator)
     assert "voice_daemon" in body["error"]
 
 
+# --- _make_duck_active_probe (cross-daemon defer signal) -----------------
+#
+# Unit tests for the probe factory consumed by per-request
+# VolumeCoordinators. Validates the wire format and the fail-open
+# error envelope. See docs/HANDOFF-volume.md "Cross-daemon defer signal".
+
+
+def test_duck_active_probe_returns_true_when_voice_reports_ducked(monkeypatch):
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        assert cmd == "STATUS"
+        return {"state": "LISTENING", "duck_active": True}
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is True
+
+
+def test_duck_active_probe_returns_false_when_voice_reports_no_duck(monkeypatch):
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        return {"state": "IDLE", "duck_active": False}
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is False
+
+
+def test_duck_active_probe_returns_none_on_uds_missing(monkeypatch):
+    """Voice daemon socket doesn't exist (jasper-voice crashed or
+    never started). Probe must return None so the coordinator falls
+    open and the dial keeps working."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        raise FileNotFoundError(socket_path)
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is None
+
+
+def test_duck_active_probe_returns_none_on_timeout(monkeypatch):
+    """Voice daemon is wedged and doesn't respond within 1s. Probe
+    fails open so the dial doesn't lock up waiting for it."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is None
+
+
+def test_duck_active_probe_returns_none_when_field_absent(monkeypatch):
+    """Older jasper-voice without the duck_active field — the
+    coordinator treats missing/wrong-type as unknown (fail-open)."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        return {"state": "IDLE"}  # no duck_active key
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is None
+
+
+def test_duck_active_probe_returns_none_when_field_wrong_type(monkeypatch):
+    """Defensive: future protocol drift returning a non-bool (string,
+    int) shouldn't crash — fail open."""
+    import asyncio
+    import jasper.control.server as srv_mod
+
+    async def fake_command(socket_path, cmd, *, timeout=5.0):
+        return {"state": "IDLE", "duck_active": "true"}  # string, not bool
+
+    monkeypatch.setattr(srv_mod, "_voice_socket_command", fake_command)
+    probe = srv_mod._make_duck_active_probe("/tmp/unused.sock")
+    assert asyncio.run(probe()) is None
+
+
 # --- /dial/status (heartbeat) ---
 
 
