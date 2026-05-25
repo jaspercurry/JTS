@@ -549,6 +549,22 @@ __NAV_BACK__
     }
   }
 
+  function invalidateLoadedCalibration() {
+    if (!selectedCalibrationId && !selectedCalibrationMeta) return;
+    selectedCalibrationId = null;
+    selectedCalibrationMeta = null;
+    calibrationPreview.classList.add('hidden');
+    calibrationPreview.textContent = '';
+    calibrationStatus.className = 'mic-status bad';
+    if (micModelSelect.value === 'other') {
+      calibrationStatus.textContent =
+        'Calibration settings changed. Upload the file again before measuring.';
+    } else {
+      calibrationStatus.textContent =
+        'Calibration settings changed. Fetch or upload again before measuring.';
+    }
+  }
+
   function showCalibrationLoaded(payload) {
     selectedCalibrationMeta = payload.calibration || null;
     selectedCalibrationId = selectedCalibrationMeta ?
@@ -1479,6 +1495,10 @@ __NAV_BACK__
     }
   });
   micModelSelect.addEventListener('change', function () { updateMicCalibrationRows(); });
+  micSerialInput.addEventListener('input', function () { invalidateLoadedCalibration(); });
+  micOrientationSelect.addEventListener('change', function () { invalidateLoadedCalibration(); });
+  calibrationSignSelect.addEventListener('change', function () { invalidateLoadedCalibration(); });
+  calibrationFileInput.addEventListener('change', function () { invalidateLoadedCalibration(); });
   fetchCalibrationBtn.addEventListener('click', function () { fetchCalibration(); });
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
   runBtn.addEventListener('click', function () { startMeasurement(); });

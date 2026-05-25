@@ -306,20 +306,20 @@ This avoids the painful mobile flow where the user downloads a random
 file picker. The manual upload path is still essential, but it should
 be the fallback, not the expected path for known mics.
 
-Implementation shape:
+Implemented shape:
 
-1. Add a small calibration registry under `jasper/correction/`, with
+1. Added a small calibration registry under `jasper/correction/`, with
    one provider adapter per lookup family:
-   `dayton_audio`, `minidsp_umik`, and `manual_upload`.
+   `dayton_audio`, `minidsp`, and `manual_upload`.
 2. Store calibration files and metadata under
    `/var/lib/jasper/correction/calibration_mics/`, including model,
-   serial hash, private raw source, public source marker, fetch
-   timestamp, raw file hash, parsed point count, orientation, and
-   normalized sign convention.
+   serial hash, redacted public source marker, fetch timestamp, raw
+   file hash, parsed point count, orientation, and normalized sign
+   convention.
 3. Parse calibration files into one internal shape:
    `frequency_hz[]`, `correction_db[]`, optional `phase_deg[]`, and
-   optional SPL sensitivity metadata. Provider adapters own vendor
-   quirks; the DSP code only sees the normalized additive correction.
+   explicit sign convention. Provider adapters own vendor quirks; the
+   DSP code only sees the normalized additive correction.
 4. Apply the correction before target normalization / PEQ design so
    every downstream visualization, bundle, and agent tool is looking
    at calibrated measurement data.
@@ -334,13 +334,13 @@ dB, space/tab/comma delimited, with comments and sometimes a third
 phase column. The parser should accept this broad family, reject
 ambiguous files loudly, and normalize sign convention at import time.
 
-**Recommendation:** treat calibration-mic ingest as **Phase 0a** —
-prerequisite work, sequenced before or alongside the agent. The
-agent's quality is bounded by the measurement; shipping the agent
-on top of uncalibrated input is a recipe for confidently bad advice.
-The work needed is small enough (calibration registry, vendor
-fetchers, parser, device-picker, fallback chain in the analysis path)
-to fit cleanly in front of Phase A.
+**Status:** calibration-mic ingest is now the **Phase 0a substrate**.
+It remains prerequisite work for the future LLM agent because the
+agent's quality is bounded by the measurement; shipping the agent on
+top of uncalibrated input would be a recipe for confidently bad
+advice. The shipped substrate is intentionally small and modular:
+calibration registry, vendor fetchers, parser, device picker, manual
+upload fallback, and one additive correction hook in the analysis path.
 
 ---
 
@@ -886,7 +886,7 @@ Current distilled corpus files:
 
 ## Open questions
 
-Things I'd want to settle in conversation before any code lands:
+Things that are still worth tracking after the Phase 0a substrate:
 
 1. **Anthropic SDK as a net-new dependency.** Today's
    [`pyproject.toml`](../pyproject.toml) doesn't list `anthropic`.
@@ -894,23 +894,24 @@ Things I'd want to settle in conversation before any code lands:
    startup (lazy-imported, so zero idle). Worth confirming the
    household is happy with that cost in exchange for Claude Opus
    access.
-2. **How much vendor lookup should ship in the first mic PR?**
-   Recommend Dayton + miniDSP in v1, manual upload in the same PR, and
-   a provider interface so future serial lookup schemes don't touch
-   the DSP path. If a vendor endpoint changes or blocks server-side
-   fetches, the UI should fall back to manual upload with a clear
-   message.
-3. **Where do calibration files get stored?** Most-likely:
-   `/var/lib/jasper/correction/calibration_mics/<provider>/<model>/`.
-   The raw serial should be treated as household-private in normal UI;
-   bundles can include a hash + copied calibration file when the user
-   explicitly exports a debug bundle. The agent needs the curve, not
-   necessarily the serial.
-4. **Calibration-file sign convention.** Some files are correction
-   curves, some are microphone response curves, and some include a
-   third phase column. The import preview should make the sign explicit
-   and provider adapters should normalize to "add this dB correction
-   to the measured response."
+2. **Vendor endpoint drift.** Phase 0a ships Dayton + miniDSP serial
+   lookup plus manual upload fallback. Keep the provider boundary in
+   [`jasper/correction/calibration.py`](../jasper/correction/calibration.py)
+   narrow so future serial schemes do not touch measurement math. If a
+   vendor blocks or changes lookup, the correct UX is a clear lookup
+   error plus manual upload, not a hidden fallback to uncalibrated
+   measurement.
+3. **Calibration-file storage/privacy.** Phase 0a stores records under
+   `/var/lib/jasper/correction/calibration_mics/<provider>/<model>/`,
+   hashes serials, redacts raw browser device ids, and copies the
+   selected calibration file/curve into each bundle. Future exported
+   bundles should keep that posture: enough replay provenance for the
+   agent, no raw serial/device identifiers in public metadata.
+4. **Calibration-file sign convention UX.** Phase 0a normalizes to
+   "add this dB correction to the measured response" and exposes a
+   manual upload sign selector. Future provider adapters should keep
+   that invariant and improve preview/plotting before asking users to
+   trust obscure files.
 5. **Per-room vs per-listening-position calibrations.** The agent
    probably wants to know "the lounge calibration" vs "the kitchen
    calibration" — same speaker, different rooms. Today's session

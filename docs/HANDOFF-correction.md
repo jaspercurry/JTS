@@ -63,8 +63,8 @@
   - `GET /sessions` (debug endpoint) lists the 20 most-recent
     bundles for `curl`-based debugging / future history UI.
   - 11 new tests, total 102 in the correction suite.
-- 🚧 **Phase 2.3 — calibrated measurement mic substrate.** In-flight
-  on 2026-05-25. Adds an input-device picker, first-class mic
+- ✅ **Phase 2.3 — calibrated measurement mic substrate.**
+  Implemented 2026-05-25. Adds an input-device picker, first-class mic
   calibration registry, server-side serial lookup for Dayton Audio
   iMM-6 / iMM-6C / UMM-6 and miniDSP UMIK-1 / UMIK-2, manual
   calibration-file upload fallback for unsupported mics, and
@@ -197,19 +197,26 @@ uses `asyncio.run()` per request to bridge stdlib HTTP into async
 coordinator code; we do the same here for the
 `measurement_window()` async context manager.
 
-**Concrete shape (as shipped after Phase 2.1):**
+**Concrete shape (as shipped after Phase 2.3):**
 ```
 GET  /                       page render (stdlib HTML + inline AudioWorklet, no SPA)
 GET  /healthz                liveness — "ok"
 GET  /jts-root-ca.crt        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
 GET  /status                 session + currently-loaded correction snapshot
-                             ({state, peqs, autolevel, current_correction: {path,
+                             ({state, peqs, autolevel, input_device,
+                             mic_calibration, current_correction: {path,
                              session_id, applied_at_epoch, peq_count} | null})
 GET  /sessions               debug: 20 most-recent session bundles
+GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  reset to base config, begin measurement, returns session_id;
-                             body: {total_positions, target_choice, noise_floor_db?}
+                             body: {total_positions, target_choice,
+                             noise_floor_db?, calibration_id?, input_device?}
 POST /next-position          advance to position[N+1] sweep
 POST /upload-capture         body = WAV (audio/wav); per-position OR verify capture
+POST /calibration/fetch      body: {model, serial, orientation?}; server-side
+                             Dayton/miniDSP lookup, normalized + stored
+POST /calibration/upload     body: {filename, content, model?, label?,
+                             orientation?, sign_convention?}; manual fallback
 POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
 POST /reset                  → SetConfig(/etc/camilladsp/v1.yml) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
@@ -864,10 +871,17 @@ Every measurement session writes a self-contained bundle at
 sessions/<session_id>/
 ├── info.json        session params, target_choice, autolevel state,
 │                    noise_floor_db, peqs, timestamps,
-│                    current_correction_at_start, sweep_meta
+│                    input_device, mic_calibration public metadata,
+│                    current_correction_at_start, sweep_meta,
+│                    bundle_schema_version
 ├── result.json      measured / target / predicted curves; verify_curve
-│                    + verify_metrics when /verify ran
+│                    + verify_metrics when /verify ran; repeats
+│                    input_device + mic_calibration public metadata
 ├── captures/        per-position WAVs (p0.wav, p1.wav, ...)
+├── mic_calibration.json
+│                    selected calibration public metadata + parsed curve
+├── mic_calibration.txt
+│                    exact uploaded/fetched calibration file used
 ├── verify.wav       single-position re-measurement (if /verify ran)
 └── applied.yml      copy of the CamillaDSP config that was applied
                      (so the bundle is self-contained even if the

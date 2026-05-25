@@ -112,6 +112,11 @@ def test_render_page_includes_mic_picker_and_calibration_controls():
     assert "calibration/fetch" in body
     assert "calibration/upload" in body
     assert "calibration_id: selectedCalibrationId" in body
+    assert "function invalidateLoadedCalibration()" in body
+    assert "micSerialInput.addEventListener('input'" in body
+    assert "micOrientationSelect.addEventListener('change'" in body
+    assert "calibrationSignSelect.addEventListener('change'" in body
+    assert "calibrationFileInput.addEventListener('change'" in body
 
 
 def test_sanitize_input_device_hashes_browser_ids():
