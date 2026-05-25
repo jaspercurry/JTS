@@ -225,6 +225,23 @@ equivalent) and call it on every tool-round server event, or document
 why they don't need one (e.g. the wire format streams a heartbeat
 that satisfies the anchor naturally).
 
+### End-of-turn timing
+
+End-of-turn (the moment the daemon un-ducks music, fires the
+"done listening" chirp, and releases the turn) is anchored on
+`TtsPlayout.expected_drain_at()` — a sample-counted deadline that
+tracks when the last queued audio sample actually exits the OS
+audio stack, not when it leaves the inter-task queue. Both
+`_play_responses` (consumer) and `_idle_watchdog` (server-said-done
+path) consult this primitive, so timing is provider-agnostic and
+the two paths converge.
+
+New adapters get this for free — drain math lives below the
+provider abstraction. Per-provider chunk pacing (OpenAI burst,
+Gemini real-time) doesn't require any adapter changes. The full
+design + prior-art survey + observability hooks live in
+[audio-paths.md](audio-paths.md) under "End-of-turn drain".
+
 ## Anti-patterns
 
 These have all been surfaced and rejected in design reviews:
@@ -247,6 +264,14 @@ These have all been surfaced and rejected in design reviews:
   tag it explicitly: `@tool(providers={"openai"})`. The model on
   another provider then literally cannot see or call it — the safest
   failure mode.
+- **Don't approximate end-of-turn from upstream signals** —
+  network-arrival timestamps, queue-dequeue stamps, fixed
+  post-response margins. The TtsPlayout drain primitive
+  (`expected_drain_at` / `wait_drained`) is the only correct anchor;
+  it accounts for the OS audio pipeline depth that upstream signals
+  can't see. PR #311 retired two such approximations
+  (`POST_RESPONSE_IDLE_TIMEOUT_SEC=0.5`, `TTS_ALSA_DRAIN_SEC=0.3`)
+  that were clipping the last word on burst-streamed responses.
 
 ## Related docs
 
@@ -254,4 +279,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-24
+Last verified: 2026-05-25 (PR #311 added "End-of-turn timing" subsection + the matching anti-pattern entry)

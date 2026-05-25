@@ -158,6 +158,75 @@ friendly summaries. Together, the two lines let you reconstruct any
 TTS gain choice from logs alone — no need to correlate across separate
 `event=duck`, `volume persistence`, and `tts gain set` lines.
 
+## End-of-turn drain — when is the speaker actually silent?
+
+`sounddevice.RawOutputStream.write()` returns when the bytes are
+accepted into PortAudio's internal ring, **not** when they reach the
+DAC. There are still ~chunk_duration of ring + ~60-85 ms of dmix
+tail + DAC flush ahead of the bytes at that point. A naive
+end-of-turn timer that fires "shortly after the last write" can land
+mid-tail, clipping the last word — observed in production
+(PR #311, 2026-05-25) when OpenAI Realtime burst-streamed 10 chunks
+in 730 ms ahead of a 4 s playout.
+
+`TtsPlayout` owns the drain semantic. Two methods:
+
+- `expected_drain_at()` — monotonic deadline when the last-queued
+  sample's tail will have cleared the OS audio stack. Backed by a
+  single `_ring_end_monotonic` float that advances on each `write()`
+  (anchors fresh on now() if the speaker was idle; appends during
+  back-pressure). Reset by `flush()` since barge-in's `abort()`
+  discards the ring. Returns `0.0` when nothing is queued — naturally
+  reads as "already drained" against `time.monotonic()`.
+- `wait_drained()` — single `asyncio.sleep` to the deadline. No
+  polling because the deadline is known up-front.
+
+Both end-of-turn paths consult the same primitive:
+
+- `_play_responses` (the consumer) awaits `tts.wait_drained()` after
+  its final write — replaces a fixed `TTS_ALSA_DRAIN_SEC` sleep.
+- `_idle_watchdog` (the server-said-done path) polls
+  `tts.expected_drain_at()` cooperatively — replaces a fixed
+  `POST_RESPONSE_IDLE_TIMEOUT_SEC` margin.
+
+Both anchor on the same math, so they converge on identical timing.
+Whichever observes "drained" first triggers `_end_turn` via the
+bg-task done check; the loser's task is cancelled cleanly.
+
+The dmix + DAC flush tail itself is configurable:
+`JASPER_TTS_DRAIN_TAIL_SEC` (default 0.085 s, wired through
+`cfg.tts_drain_tail_sec`). Bump on a Pi if you observe truncation;
+lower if end-of-turn feels sluggish.
+
+**Observability.** `_end_turn` logs `drain wait X.XXs` in the
+canonical `turn ended:` line whenever audio was actually received.
+This number is "time from last server activity (response.done or
+last audio.delta) to the daemon recognizing the turn was over."
+Healthy range on the current hardware: ~50-150 ms. Drift above ~150
+ms or provider-asymmetric values are the signal to investigate.
+
+```sh
+ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
+```
+
+**Prior art surveyed** (PR #311) before picking sample-counting:
+
+- **LiveKit Agents** — sample-counted `_pushed_duration` +
+  `wait_for_playout()` future. Closest analog; same pattern we use.
+- **OpenAI wavtools** (older `openai-realtime-console`) — tracks
+  `scheduledEndTime` against `AudioContext.currentTime`. Same idea
+  on a different audio API.
+- **Pipecat** — trailing-silence-pad + EndFrame propagation. The
+  pattern JTS effectively had before this fix; race-prone on tight
+  UX, which is what bit us.
+- **Wyoming (HA Assist)** — protocol round-trip (server sends
+  `AudioStop`, satellite acks `Played` after `aplay` exits).
+  Overkill for an in-process TTS player.
+- **PortAudio callback-based completion** — `outputBufferDacTime` in
+  the stream callback's `time_info` is the most precise signal but
+  requires switching from blocking `write()` to a callback model.
+  Major threading refactor; out of proportion to the fix.
+
 ## Operational notes
 
 **Test the music chain** (volume-controlled): `aplay -D plughw:Loopback,0,0 file.wav`.
@@ -201,4 +270,4 @@ the music chain reference, BEFORE CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-24 (re-verified after PR #294 lifted the master+offset ceiling off the music-playing branch — section "Ceiling policy is branch-specific" added)
+Last verified: 2026-05-25 (PR #311 added "End-of-turn drain" section; the TtsPlayout drain primitive replaced the old fixed-margin watchdog and `_play_responses` sleep)
