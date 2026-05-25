@@ -551,7 +551,18 @@ reference. Currently:
   reference, what's been tried, and an escalation ladder for new
   scenarios. Patterns currently fixed: CamillaDSP rate_adjust +
   AsyncSinc oscillation (PR #75), shairport `resync_threshold`
-  misfire on snd-aloop fill (PR #83).
+  misfire on snd-aloop fill (PR #83), renderer-side dmix buffer
+  invisible to shairport's latency model (PR #308).
+- [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) —
+  **Design (no code yet).** Tier 2A audio-architecture rework:
+  delete the renderer-side dmix by assigning each renderer its own
+  snd-aloop substream pair, with a small Rust daemon
+  (`jasper-fanin`) summing the capture sides into a single "summed
+  music" substream that both CamillaDSP and the AEC bridge dsnoop.
+  Saves ~85 ms of unnecessary buffering, eliminates the dmix
+  invisible-buffer footgun, recovers the `-EBUSY` arbitration floor.
+  Includes the full resilience + observability contract the daemon
+  must ship with from PR #1.
 - [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
   Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
   how to add a new reactive or proactive cue. Start here when a
