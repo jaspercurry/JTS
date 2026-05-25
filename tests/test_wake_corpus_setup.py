@@ -958,6 +958,33 @@ def test_html_delete_button_uses_trash_icon() -> None:
     assert '"danger icon"' in html_text
 
 
+def test_clip_row_audio_cell_does_not_block_trash_button() -> None:
+    """Regression: with a naked `audio` element in a fixed-pixel
+    grid column, the audio's intrinsic min-content (browser-default
+    300px+) blows past the column width and pushes the trash button
+    off the right edge of the card. Fix is twofold and both legs
+    must remain in the CSS:
+
+      1. `minmax(0, …)` on the audio column overrides grid's default
+         min-width:auto so the column can shrink below content min-content.
+      2. Explicit `width: 100%; min-width: 0` on .clip audio so the
+         element itself shrinks to fit instead of forcing the cell
+         to grow.
+
+    A future CSS edit dropping either leg would silently re-introduce
+    the "I see the audio but can't find the delete button" bug.
+    """
+    html_text = wake_corpus_setup._render_index_html("t")
+    # Leg 1: minmax(0, …) in the .clip grid template
+    assert "minmax(0," in html_text, (
+        "the .clip row's audio column needs minmax(0, …) so the "
+        "audio's intrinsic min-content doesn't force the grid to grow"
+    )
+    # Leg 2: explicit width constraints on the audio element
+    assert ".clip audio" in html_text
+    assert "min-width: 0" in html_text
+
+
 # ---------------------------------------------------------------------------
 # /api/recording/level SSE endpoint — read-only, no CSRF, streams
 # ---------------------------------------------------------------------------
