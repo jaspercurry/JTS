@@ -49,6 +49,7 @@ import html
 import json
 import logging
 import os
+import secrets
 import sys
 import threading
 import time
@@ -100,6 +101,18 @@ LEGS = ("on", "off", "dtln")
 # buffer. The server auto-stops at this duration with a flag in the
 # metadata so the operator notices.
 MAX_RECORDING_DURATION_SEC = 30.0
+
+# How long after the last clip's metadata-file mtime we'll still
+# resume a session on backend startup. Set to 1 hour so a quick crash-
+# and-restart picks up cleanly, but a session abandoned overnight
+# doesn't surprise the operator the next day with "wait, why does the
+# UI show clips from yesterday?"
+RESUME_WINDOW_SEC = 3600.0
+
+# CSRF header name. Matches common JS framework conventions; the
+# embedded JS reads `<meta name="csrf-token">` and sends this header
+# on every mutating request.
+CSRF_HEADER = "X-CSRF-Token"
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +209,13 @@ class RecordingTask:
         return time.monotonic() - self._start_monotonic
 
     async def stop(self) -> dict[str, bytes]:
-        """Cancel the collection task, return PCM bytes per leg."""
+        """Cancel the collection task, return PCM bytes per leg.
+
+        Idempotent: calling twice is a no-op on the second call (the
+        task + stack sentinels are cleared after first cleanup, so we
+        skip both double-await and double-exit which AsyncExitStack
+        would error on).
+        """
         if self._task is not None and not self._task.done():
             self._task.cancel()
             try:
@@ -205,6 +224,7 @@ class RecordingTask:
                 pass
             except Exception as e:
                 logger.warning("recording task raised on cancel: %s", e)
+        self._task = None
 
         result: dict[str, bytes] = {}
         for leg, frames in self._buffers.items():
@@ -219,6 +239,7 @@ class RecordingTask:
                 await self._stack.__aexit__(None, None, None)
             except Exception as e:
                 logger.warning("cleanup raised: %s", e)
+            self._stack = None
         return result
 
 
@@ -272,6 +293,12 @@ class RecordingBackend:
         self._current: RecordingTask | None = None
         self._current_clip_id: str | None = None
         self._current_meta: dict[str, str] | None = None  # condition, distance, start_ts
+        # Sentinel: set inside _lock when a start_recording call has
+        # passed validation but the (slow) RecordingTask.start() hasn't
+        # finished yet. Concurrent start attempts see this and refuse
+        # with the correct "already in progress" error rather than
+        # racing into a UDP-bind-failed error.
+        self._starting_clip_id: str | None = None
         self._auto_stop_handle: Any | None = None  # asyncio.TimerHandle
 
         # Background asyncio loop running in a daemon thread. Lazily
@@ -291,6 +318,11 @@ class RecordingBackend:
         )
         self._loop_thread.start()
         self._loop_ready.wait()
+        # Recover from a previous run if there's a recent metadata
+        # file on disk — operator-friendly behavior after a crash
+        # or accidental Ctrl-C. Done AFTER the loop is up so any
+        # future async work can run.
+        self._maybe_load_recent_session()
 
     def _run_loop(self) -> None:
         self._loop = asyncio.new_event_loop()
@@ -328,6 +360,75 @@ class RecordingBackend:
         with self._lock:
             return self._current is not None
 
+    # ----- crash recovery -------------------------------------------
+
+    def _maybe_load_recent_session(
+        self, now: float | None = None,
+    ) -> None:
+        """If the metadata dir has a JSON file modified within
+        RESUME_WINDOW_SEC, load it as the current session. Lets the
+        operator pick up after a crash without losing earlier clips
+        in the same recording window.
+
+        Called automatically from `start()`. Safe to call multiple
+        times (only triggers if no session is currently set).
+
+        Subsequent `begin_session()` calls always start fresh —
+        recovery is a one-shot at startup, not a re-attach feature.
+        """
+        with self._lock:
+            if self._session_id is not None:
+                return  # already have a session, nothing to recover
+        if not self._metadata_dir.is_dir():
+            return
+
+        now = now if now is not None else time.time()
+        candidates = sorted(
+            self._metadata_dir.glob("enroll_*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if not candidates:
+            return
+        newest = candidates[0]
+        age = now - newest.stat().st_mtime
+        if age > RESUME_WINDOW_SEC:
+            logger.info(
+                "skipping recovery: newest metadata %s is %.0fs old "
+                "(window=%.0fs)", newest.name, age, RESUME_WINDOW_SEC,
+            )
+            return
+
+        try:
+            data = json.loads(newest.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "recovery skipped: failed to read %s: %s", newest, e,
+            )
+            return
+
+        try:
+            session_id = data["session_id"]
+            member = data["member"]
+            clips = [
+                ClipMetadata(**clip) for clip in data.get("clips", [])
+            ]
+        except (KeyError, TypeError) as e:
+            logger.warning(
+                "recovery skipped: %s schema mismatch: %s", newest, e,
+            )
+            return
+
+        with self._lock:
+            self._session_id = session_id
+            self._member = member
+            self._clips = clips
+        logger.info(
+            "recovered session %s for %s with %d clip(s) (%d non-deleted)",
+            session_id, member, len(clips),
+            sum(1 for c in clips if not c.deleted),
+        )
+
     def begin_session(self, member: str) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
@@ -351,7 +452,14 @@ class RecordingBackend:
         return self._session_id
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
-        """Begin recording on the backend loop. Returns {clip_id, start_ts}."""
+        """Begin recording on the backend loop. Returns {clip_id, start_ts}.
+
+        Reserves the recording slot under the lock via
+        `_starting_clip_id` before releasing for the slow async start;
+        concurrent calls see the sentinel and refuse with the correct
+        "already in progress" error instead of racing into a UDP-bind
+        failure.
+        """
         if condition not in CONDITIONS:
             raise ValueError(
                 f"unknown condition {condition!r}; expected {CONDITIONS}",
@@ -361,11 +469,15 @@ class RecordingBackend:
                 f"unknown distance {distance!r}; expected {DISTANCES}",
             )
 
+        clip_id = str(uuid.uuid4())
         with self._lock:
             if self._session_id is None or self._member is None:
                 raise StateError("call begin_session() first")
-            if self._current is not None:
+            if self._current is not None or self._starting_clip_id is not None:
                 raise StateError("recording already in progress")
+            # Reserve the slot — concurrent calls now see this and
+            # refuse cleanly.
+            self._starting_clip_id = clip_id
 
         task = RecordingTask(self._ports)
         # Start on the backend loop. If the UDP bind fails (jasper-voice
@@ -374,11 +486,12 @@ class RecordingBackend:
         try:
             self._submit(task.start())
         except Exception as e:
+            with self._lock:
+                self._starting_clip_id = None
             raise StateError(
                 f"failed to start recording (is jasper-voice down?): {e}",
             ) from e
 
-        clip_id = str(uuid.uuid4())
         start_ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         with self._lock:
             self._current = task
@@ -388,6 +501,7 @@ class RecordingBackend:
                 "distance": distance,
                 "start_ts": start_ts,
             }
+            self._starting_clip_id = None  # transitioned: starting → current
             # Auto-stop timer — guards against a forgotten Stop click.
             self._auto_stop_handle = self._loop.call_later(
                 self._max_duration_sec, self._auto_stop_threadsafe,
@@ -569,7 +683,7 @@ def voice_daemon_active() -> bool:
 
 class _Handler(BaseHTTPRequestHandler):
     backend: RecordingBackend
-    output_dir: Path
+    csrf_token: str
 
     # ----- helpers --------------------------------------------------
 
@@ -598,6 +712,29 @@ class _Handler(BaseHTTPRequestHandler):
         except json.JSONDecodeError as e:
             raise ValueError(f"invalid JSON body: {e}") from e
 
+    def _check_csrf(self) -> bool:
+        """Verify the X-CSRF-Token header matches the server token.
+
+        Returns True if valid, False (and sends 403) otherwise. The
+        token is embedded in the served HTML page via a meta tag; the
+        page's JS reads it and sends it on every mutating request.
+        Defense against a malicious cross-origin site triggering
+        recordings or daemon toggles from the operator's browser.
+
+        Uses `secrets.compare_digest` for timing-safe comparison
+        (defense-in-depth — the attacker probably can't observe
+        latency in practice, but it's a one-line free win).
+        """
+        header_token = self.headers.get(CSRF_HEADER, "")
+        if not secrets.compare_digest(header_token, self.csrf_token):
+            self._send_error_json(
+                403,
+                f"missing or invalid {CSRF_HEADER} header — reload "
+                "the page to refresh the token",
+            )
+            return False
+        return True
+
     # ----- GET --------------------------------------------------------
 
     def do_GET(self) -> None:  # noqa: N802
@@ -605,7 +742,7 @@ class _Handler(BaseHTTPRequestHandler):
         path = url.path.rstrip("/") or "/"
 
         if path == "/":
-            html_text = _render_index_html()
+            html_text = _render_index_html(self.csrf_token)
             data = html_text.encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -679,6 +816,11 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         path = urlparse(self.path).path.rstrip("/") or "/"
+
+        # All POSTs are mutating — require CSRF token. _check_csrf
+        # sends the 403 itself; we just return on failure.
+        if not self._check_csrf():
+            return
 
         try:
             body = self._read_json()
@@ -756,6 +898,8 @@ class _Handler(BaseHTTPRequestHandler):
     # ----- DELETE -----------------------------------------------------
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if not self._check_csrf():
+            return
         path = urlparse(self.path).path.rstrip("/") or "/"
         # /api/clip/<id>
         parts = path.split("/")
@@ -770,10 +914,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
 
 
-def _make_handler_class(backend: RecordingBackend) -> type[_Handler]:
+def _make_handler_class(
+    backend: RecordingBackend, csrf_token: str,
+) -> type[_Handler]:
     class _BoundHandler(_Handler):
         pass
     _BoundHandler.backend = backend
+    _BoundHandler.csrf_token = csrf_token
     return _BoundHandler
 
 
@@ -782,11 +929,12 @@ def _make_handler_class(backend: RecordingBackend) -> type[_Handler]:
 # ---------------------------------------------------------------------------
 
 
-_INDEX_HTML = """<!DOCTYPE html>
+_INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{csrf_token}">
   <title>JTS Wake-Word Corpus Recorder</title>
   <style>
     body {
@@ -999,9 +1147,18 @@ _INDEX_HTML = """<!DOCTYPE html>
   <script>
     const $ = id => document.getElementById(id);
     let elapsedTimer = null;
+    // Read the CSRF token embedded in the page's meta tag; send it
+    // on every mutating request. Defense against a cross-origin
+    // site triggering recordings or daemon toggles from the
+    // operator's browser.
+    const CSRF_TOKEN = document.querySelector(
+      'meta[name="csrf-token"]'
+    ).getAttribute('content');
 
     async function api(method, path, body) {
-      const opts = { method, headers: {'Content-Type': 'application/json'} };
+      const headers = {'Content-Type': 'application/json'};
+      if (method !== 'GET') headers['X-CSRF-Token'] = CSRF_TOKEN;
+      const opts = { method, headers };
       if (body !== undefined) opts.body = JSON.stringify(body);
       const r = await fetch(path, opts);
       if (!r.ok) {
@@ -1195,8 +1352,12 @@ _INDEX_HTML = """<!DOCTYPE html>
 """
 
 
-def _render_index_html() -> str:
-    return _INDEX_HTML
+def _render_index_html(csrf_token: str = "") -> str:
+    # html.escape on the token belt-and-suspenders even though
+    # `secrets.token_hex` only produces hex chars (no HTML metachars).
+    return _INDEX_HTML_TEMPLATE.replace(
+        "{csrf_token}", html.escape(csrf_token, quote=True),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1271,9 +1432,15 @@ def main(argv: list[str] | None = None) -> int:
 
     backend = RecordingBackend(args.output, ports=ports)
     backend.start()
+    # CSRF token regenerated each process startup. If you reload the
+    # tab the page picks up the current token; old tabs keep their
+    # stale token and get 403s until reload — acceptable UX for an
+    # operator tool that runs for a single session.
+    csrf_token = secrets.token_hex(16)
     try:
         server = ThreadingHTTPServer(
-            (args.host, args.port), _make_handler_class(backend),
+            (args.host, args.port),
+            _make_handler_class(backend, csrf_token),
         )
         logger.info(
             "jasper-wake-corpus-web on http://%s:%d  output=%s  legs=%s",

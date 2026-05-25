@@ -346,6 +346,43 @@ def test_write_review_package_symlink_mode(
     assert linked.resolve() == clip_paths[0].resolve()
 
 
+def test_write_review_package_rejects_path_escaping_corpus(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Defense-in-depth: a CSV with a hand-edited path like
+    `../../etc/passwd` (or any other escape) must be skipped, not
+    silently bundled into the review package."""
+    import logging
+
+    # Set up: a corpus dir + a "secret" file OUTSIDE it that an
+    # attacker might try to exfiltrate via a crafted CSV.
+    corpus = tmp_path / "corpus"
+    (corpus / "aec_on_music" / "train").mkdir(parents=True)
+    _make_wav(corpus / "aec_on_music" / "train" / "ok.wav")
+    secret = tmp_path / "secret.wav"
+    _make_wav(secret)
+
+    # A row referencing a relative path that resolves OUTSIDE corpus.
+    bad_row = _sample_score_row(path=Path("../secret.wav"))
+    good_row = _sample_score_row(
+        path=corpus / "aec_on_music/train/ok.wav",
+    )
+
+    output = tmp_path / "review"
+    with caplog.at_level(logging.WARNING, logger="jasper-wake-review"):
+        wake_review.write_review_package(
+            [bad_row, good_row], corpus, output,
+        )
+
+    # The escaping path got skipped + warned.
+    assert any("escapes corpus_dir" in rec.message
+               for rec in caplog.records)
+    # The secret was NOT bundled into clips/.
+    assert not (output / "clips" / "secret.wav").exists()
+    # But the legit clip WAS bundled.
+    assert (output / "clips" / "ok.wav").exists()
+
+
 def test_write_review_package_refuses_non_empty_dir(
     tmp_path: Path, corpus_with_clips: tuple[Path, list[Path]],
 ) -> None:

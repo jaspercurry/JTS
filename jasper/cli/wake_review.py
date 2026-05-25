@@ -418,12 +418,30 @@ def write_review_package(
     clips_dir = output_dir / "clips"
     clips_dir.mkdir()
 
+    # Resolve corpus_dir once for the defense-in-depth path-containment
+    # check below. Symlinks are resolved so we compare canonical paths.
+    corpus_resolved = corpus_dir.resolve()
     placed_rows: list[ScoreRow] = []
     for row in rows:
         # row.path may be absolute (from scoring with an absolute
         # corpus_dir) or relative; either way, resolve it against
         # the corpus_dir if it's not already absolute.
         src = row.path if row.path.is_absolute() else corpus_dir / row.path
+        # Defense-in-depth: refuse paths that escape corpus_dir. CSV
+        # output from jasper-wake-score never produces escaping paths
+        # (walk_corpus only emits paths inside corpus_dir), but a
+        # hand-edited or untrusted CSV could try to copy files from
+        # outside the corpus. Better to fail noisily than to silently
+        # bundle /etc/passwd into a review package.
+        try:
+            src.resolve().relative_to(corpus_resolved)
+        except ValueError:
+            logger.warning(
+                "clip path escapes corpus_dir, skipping: %s "
+                "(resolved=%s, corpus=%s)",
+                src, src.resolve(), corpus_resolved,
+            )
+            continue
         if not src.is_file():
             logger.warning("clip not found, skipping: %s", src)
             continue
