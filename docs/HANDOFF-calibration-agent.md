@@ -127,6 +127,8 @@ them, while keeping the technical layers honest and separate:
    correction; it is the speaker's baseline acoustic design. The
    measurement tools should eventually help tune the crossover and
    driver integration before room correction or preference EQ runs.
+   Current planning lives in
+   [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 
 Future UX sketch: the user says, "Jarvis, help me tune my speaker."
 JTS opens the tuning flow, asks the user to play a track they know,

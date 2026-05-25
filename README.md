@@ -595,6 +595,13 @@ reference. Currently:
   preference-tuning vision: voice entry point, user feedback like
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
+- [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
+  — Active speaker DSP / crossover commissioning workstream
+  seed (2026-05-25). Canonical handoff for future JTS hardware where
+  CamillaDSP directly drives woofer and tweeter amplifier channels:
+  speaker-baseline layer, safe 2-way bring-up, channel-map hazards,
+  TTS/cue bypass risk, measurement protocol, LR4/IIR-first default,
+  delay/null verification, and separation from room correction.
 - [`docs/calibration-agent/`](docs/calibration-agent/README.md) —
   Calibration/tuning knowledge corpus:
   measurement-quality guidance, FIR research landing zone,

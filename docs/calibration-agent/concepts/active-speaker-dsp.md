@@ -3,6 +3,8 @@
 > **Status: initial concept.** This file captures the overlap between
 > JTS room correction and active speaker commissioning for speakers
 > where CamillaDSP drives woofer and tweeter channels separately.
+> Current operational planning lives in
+> [`../../HANDOFF-active-speaker-dsp.md`](../../HANDOFF-active-speaker-dsp.md).
 
 ## Operational Summary
 

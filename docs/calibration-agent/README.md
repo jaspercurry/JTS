@@ -51,6 +51,8 @@ Every concept file should have:
   measurement trade-offs.
 - [`concepts/active-speaker-dsp.md`](concepts/active-speaker-dsp.md)
   — active crossover, driver alignment, and speaker-baseline tuning.
+  Current operational truth and implementation planning live in
+  [`../HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md).
 - [`filter-design/fir-room-correction.md`](filter-design/fir-room-correction.md)
   — FIR fundamentals and implementation constraints.
 - [`filter-design/preference-eq.md`](filter-design/preference-eq.md)
