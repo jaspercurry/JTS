@@ -88,6 +88,11 @@ INTER_CLIP_PAUSE_SEC = 2.0
 DEFAULT_AEC_ON_PORT = 9876
 DEFAULT_AEC_OFF_PORT = 9877
 DEFAULT_AEC_DTLN_PORT = 9878
+# Truly-raw mic 0 (chip channel 2 — no chip DSP applied). Optional
+# 4th capture leg used by the wake-corpus recorder when the operator
+# wants mic-agnostic training data. The bridge always emits here;
+# consumers opt in by binding the port.
+DEFAULT_AEC_RAW0_PORT = 9879
 
 # What we tell systemd to stop / start. The voice daemon owns both
 # UDP receiver sockets in production, so it must be down for the

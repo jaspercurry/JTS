@@ -181,6 +181,21 @@ OUT_PORT_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW", "9877"))
 # the triple-stream rollout; flip via env var per
 # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture plan".
 OUT_PORT_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_DTLN", "9878"))
+# 4th UDP stream: truly-raw mic 0 (chip channel 2). Unlike the
+# chip-direct stream on OUT_PORT_RAW (which is chip channel 1 = ASR
+# beam, with chip BF+NS+AGC+HPF applied), channel 2 is the raw mic 0
+# ADC output with NO chip DSP whatsoever — not even MIC_GAIN. It's
+# what a cheap USB mic without an XMOS chip would deliver.
+#
+# Used by the wake-corpus recorder so we can build training data that's
+# mic-agnostic — useful if we ever swap in cheaper mic hardware, and a
+# useful baseline for understanding how much of wake performance comes
+# from the chip's DSP vs the wake model itself. Same 1280-sample /
+# 16 kHz mono int16 packet shape as the other legs.
+#
+# Always emitted. Cost is ~0.25% of one core for the extra slice +
+# sendto — same noise-floor cost as the existing :9877 raw leg.
+OUT_PORT_RAW0 = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW0", "9879"))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
 # 320-sample AEC frames into one UDP packet keeps the
 # bridge↔voice contract symmetric with the existing MicCapture
@@ -642,11 +657,17 @@ def _ref_thread(ref_q: Queue) -> None:
         pcm.close()
 
 
-def _mic_thread(mic_q: Queue) -> None:
+def _mic_thread(mic_q: Queue, raw0_q: Optional[Queue] = None) -> None:
     """Capture 16k 6ch from XVF chip (6-ch firmware), pluck
     channel MIC_CHANNEL_INDEX (default 1 = ASR beam, chip
-    BF+NS+AGC+HPF applied, chip AEC disabled via SHF_BYPASS).
-    Push mono int16 frames."""
+    BF+NS+AGC+HPF applied, chip AEC disabled via SHF_BYPASS) and
+    push mono int16 frames into mic_q.
+
+    If `raw0_q` is provided, ALSO extract channel 2 (raw mic 0, no
+    chip DSP) and push it onto that queue. Used by the truly-raw
+    UDP leg on OUT_PORT_RAW0. Independent queue + extraction so a
+    backlog on one doesn't stall the other.
+    """
     def cb(indata, frames, time_info, status):
         if status:
             logger.debug("mic status: %s", status)
@@ -657,6 +678,18 @@ def _mic_thread(mic_q: Queue) -> None:
             mic_q.put_nowait(mono.tobytes())
         except Full:
             logger.warning("mic queue full, dropping frame")
+        if raw0_q is not None:
+            # Channel 2 = raw mic 0 ADC output, bypasses chip's
+            # BF/NS/AGC/HPF. ".copy=True" so the slice doesn't share
+            # backing storage with `indata` (which sounddevice reuses).
+            raw0 = indata[:, 2].astype(np.int16, copy=True)
+            try:
+                raw0_q.put_nowait(raw0.tobytes())
+            except Full:
+                # The raw0 leg is observational; if it can't keep up,
+                # drop quietly so we don't spam the journal during a
+                # bridge stall that's already noisy via the mic_q path.
+                pass
 
     with sd.InputStream(
         device=MIC_DEVICE, samplerate=SAMPLE_RATE, channels=MIC_CHANNELS,
@@ -668,6 +701,7 @@ def _mic_thread(mic_q: Queue) -> None:
 def _aec_loop(  # noqa: PLR0915
     ref_q: Queue, mic_q: Queue, engine: _Aec3Engine,
     heartbeat: Optional[Heartbeat] = None,
+    raw0_q: Optional[Queue] = None,
 ) -> None:
     # Post-AEC static gain applied to the engine output before it
     # reaches jasper-voice over UDP. Restores level into openWakeWord's training
@@ -754,6 +788,14 @@ def _aec_loop(  # noqa: PLR0915
     out_sock_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     out_sock_raw.setblocking(False)
     out_dest_raw = (OUT_HOST, OUT_PORT_RAW)
+    # 4th-leg socket for truly-raw mic 0 (chip channel 2). Same
+    # 1280-sample / 16 kHz mono int16 packet shape as the other
+    # legs. Independent socket so a sendto failure here doesn't
+    # affect the AEC ON or chip-direct paths.
+    out_sock_raw0 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    out_sock_raw0.setblocking(False)
+    out_dest_raw0 = (OUT_HOST, OUT_PORT_RAW0)
+    out_batch_raw0 = bytearray()
 
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
@@ -783,8 +825,9 @@ def _aec_loop(  # noqa: PLR0915
             )
 
     logger.info(
-        "udp outputs: aec=%s:%d raw=%s:%d%s frame=%d samples (%d bytes)",
+        "udp outputs: aec=%s:%d raw=%s:%d raw0=%s:%d%s frame=%d samples (%d bytes)",
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW,
+        OUT_HOST, OUT_PORT_RAW0,
         f" dtln={OUT_HOST}:{OUT_PORT_DTLN}" if dtln_engine else "",
         OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
@@ -940,6 +983,32 @@ def _aec_loop(  # noqa: PLR0915
                     )
                 del out_batch_raw[:OUT_FRAME_BYTES]
 
+            # Truly-raw mic 0 (chip channel 2 — no chip DSP) UDP
+            # leg. Drained independently of mic_q so a backlog on
+            # one doesn't stall the other. The raw0_q is fed from
+            # the same PortAudio callback that feeds mic_q, so
+            # there's nominally one new raw0 frame per loop
+            # iteration; we drain at most one and carry on
+            # (silence-fill is fine — nobody time-aligns this
+            # stream to the AEC engine).
+            if raw0_q is not None:
+                try:
+                    raw0_bytes = raw0_q.get_nowait()
+                    out_batch_raw0.extend(raw0_bytes)
+                except Empty:
+                    pass
+                if len(out_batch_raw0) >= OUT_FRAME_BYTES:
+                    try:
+                        out_sock_raw0.sendto(
+                            bytes(out_batch_raw0[:OUT_FRAME_BYTES]),
+                            out_dest_raw0,
+                        )
+                    except BlockingIOError:
+                        logger.warning(
+                            "udp raw0 sendto would block, dropping frame"
+                        )
+                    del out_batch_raw0[:OUT_FRAME_BYTES]
+
             clean = engine.process(mic_bytes, ref_bytes)
             # Save pre-gain output for the RMS metric — we want
             # "attenuation" to reflect what AEC actually accomplished,
@@ -1060,6 +1129,7 @@ def _aec_loop(  # noqa: PLR0915
     finally:
         out_sock.close()
         out_sock_raw.close()
+        out_sock_raw0.close()
         if out_sock_dtln is not None:
             out_sock_dtln.close()
         for w in (mic_wav, aec_wav, ref_wav):
@@ -1100,9 +1170,16 @@ def main() -> int:
 
     ref_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
     mic_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
+    # 4th-leg queue for truly-raw mic 0 (chip channel 2 — no chip
+    # DSP). The mic thread fills it from the same callback that
+    # fills mic_q; the AEC loop drains it independently to emit on
+    # OUT_PORT_RAW0. See OUT_PORT_RAW0 comment for rationale.
+    raw0_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
 
     ref_t = threading.Thread(target=_ref_thread, args=(ref_q,), daemon=True)
-    mic_t = threading.Thread(target=_mic_thread, args=(mic_q,), daemon=True)
+    mic_t = threading.Thread(
+        target=_mic_thread, args=(mic_q, raw0_q), daemon=True,
+    )
     ref_t.start()
     mic_t.start()
 
@@ -1119,7 +1196,7 @@ def main() -> int:
     heartbeat.start()
 
     try:
-        _aec_loop(ref_q, mic_q, engine, heartbeat=heartbeat)
+        _aec_loop(ref_q, mic_q, engine, heartbeat=heartbeat, raw0_q=raw0_q)
     except BridgeStalled as e:
         logger.error("%s", e)
         _shutdown.set()
