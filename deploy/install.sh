@@ -742,16 +742,76 @@ EOF
         # Build vendored v2.1 first (cached after first run); exports
         # WEBRTC_AEC3_V2_PREFIX into the env that setup.py reads.
         build_webrtc_v2_for_aec3
-        # --force-reinstall: pip wheel cache only keys on source hash +
-        # setuptools metadata, not on env vars. Without --force-reinstall,
-        # a previously-cached wheel built without WEBRTC_AEC3_V2_PREFIX
-        # (i.e. with only the v1 extension) would be reused even after
-        # the vendored v2 build completes. Forcing a rebuild is the
-        # simplest way to guarantee setup.py sees the env var and builds
-        # both extensions. The binding compiles in ~10s on Pi 5.
-        WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
-            "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
-            "${INSTALL_DIR}/jasper_aec3"
+
+        # Fingerprint-cache the C++ rebuild: skip pip install when
+        # nothing the binding depends on has changed.
+        #
+        # Why this exists: --force-reinstall (kept below) forces a
+        # full pip-side rebuild whose --no-cache-defeat is the only
+        # way to guarantee setup.py sees WEBRTC_AEC3_V2_PREFIX (pip's
+        # wheel cache doesn't key on env vars). But the actual C++
+        # compile of aec3_binding_v2.cpp at -O3 takes 1-3 min on Pi 5
+        # with ~430 MB peak RAM on cc1plus — wasteful on the ~80%
+        # of deploys that don't touch jasper_aec3/.
+        #
+        # Fingerprint inputs (any change → rebuild):
+        #   - mtime + name of every .cpp/.h/.py/pyproject.toml in
+        #     jasper_aec3/
+        #   - mtime of the vendored libwebrtc-audio-processing-2.a
+        #     (rebuilt rarely by build_webrtc_v2_for_aec3)
+        #   - Python version (ABI break → rebuild)
+        #   - WEBRTC_AEC3_V2_PREFIX value (cache path change → rebuild)
+        #
+        # Defense-in-depth: even on cache hit, verify the module
+        # imports cleanly — catches accidentally-deleted .so files
+        # or partial installs between deploys.
+        #
+        # Escape hatch: `sudo rm /opt/jasper/.cache/jasper_aec3.installed.fingerprint`
+        # then re-deploy → unconditional rebuild.
+        local marker="${INSTALL_DIR}/.cache/jasper_aec3.installed.fingerprint"
+        local fingerprint
+        fingerprint=$(
+            (
+                find "${INSTALL_DIR}/jasper_aec3" -type f \
+                    \( -name '*.cpp' -o -name '*.h' \
+                       -o -name '*.py' -o -name 'pyproject.toml' \
+                       -o -name 'setup.py' -o -name 'setup.cfg' \) \
+                    -exec stat -c '%Y %n' {} \; 2>/dev/null | sort
+                # Vendored static archive — null if build_webrtc_v2_for_aec3
+                # didn't set the prefix, which means we'd be building
+                # the v1-only binding (still want to fingerprint that).
+                if [[ -n "${JASPER_WEBRTC_V2_PREFIX:-}" ]]; then
+                    find "${JASPER_WEBRTC_V2_PREFIX}" -name 'libwebrtc-audio-processing-2.a' \
+                        -exec stat -c '%Y %n' {} \; 2>/dev/null
+                fi
+                "${INSTALL_DIR}/.venv/bin/python" --version 2>&1
+                echo "WEBRTC_PREFIX=${JASPER_WEBRTC_V2_PREFIX:-}"
+            ) | sha256sum | awk '{print $1}'
+        )
+
+        local needs_rebuild=1
+        if [[ -f "${marker}" ]] \
+           && [[ "$(cat "${marker}")" == "${fingerprint}" ]] \
+           && "${INSTALL_DIR}/.venv/bin/python" -c "import jasper_aec3" 2>/dev/null; then
+            echo "==> jasper_aec3 source + env unchanged, skipping rebuild"
+            echo "    (delete ${marker} to force)"
+            needs_rebuild=0
+        fi
+
+        if [[ "${needs_rebuild}" == "1" ]]; then
+            # --force-reinstall: pip wheel cache only keys on source hash
+            # + setuptools metadata, not on env vars. Without --force-reinstall,
+            # a previously-cached wheel built without WEBRTC_AEC3_V2_PREFIX
+            # (i.e. with only the v1 extension) would be reused even after
+            # the vendored v2 build completes. Forcing a rebuild is the
+            # simplest way to guarantee setup.py sees the env var and builds
+            # both extensions.
+            WEBRTC_AEC3_V2_PREFIX="${JASPER_WEBRTC_V2_PREFIX:-}" \
+                "${INSTALL_DIR}/.venv/bin/pip" install --force-reinstall --no-deps \
+                "${INSTALL_DIR}/jasper_aec3"
+            mkdir -p "$(dirname "${marker}")"
+            echo "${fingerprint}" > "${marker}"
+        fi
     fi
 
     # openWakeWord stock models (hey_jarvis + required feature models)
