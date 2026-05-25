@@ -589,10 +589,11 @@ reference. Currently:
   for a guided speaker-tuning system layered on top of
   `/correction/`: calibrated mic ingest (Dayton/miniDSP serial lookup
   plus manual upload fallback), richer measurement bundles,
-  FIR/target-curve research corpus, and eventually an LLM "audio
-  engineer" that critiques the auto-filter, explains trade-offs, and
-  iterates across re-measurements. Also captures the longer-term
-  preference-tuning vision: voice entry point, user feedback like
+  FIR/target-curve research corpus, read-only
+  `jasper-calibration-agent` bundle-intake tooling, and eventually an
+  LLM "audio engineer" that critiques the auto-filter, explains
+  trade-offs, and iterates across re-measurements. Also captures the
+  longer-term preference-tuning vision: voice entry point, user feedback like
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)

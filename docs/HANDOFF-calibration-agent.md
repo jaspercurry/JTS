@@ -4,8 +4,9 @@
 > design-space document for the guided calibration/tuning arc. Phase
 > 0a substrate is now underway: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
-> picker, and bundle metadata. The LLM agent itself is still not
-> implemented.
+> picker, bundle metadata, capture-quality checks, and a read-only
+> `jasper-calibration-agent` intake CLI. The LLM agent itself is
+> still not implemented.
 >
 > **What this proposes:** build toward a guided speaker-tuning system
 > on top of the existing `/correction/` wizard. The first layer is
@@ -822,19 +823,29 @@ Current distilled corpus files:
 
 ### Phase A — Corpus loader + agent scaffold (CLI-testable, no UI)
 
+- ✅ **Read-only deterministic intake substrate.** Implemented
+  2026-05-25 as `jasper-calibration-agent`. The CLI loads a
+  correction session bundle, summarizes measurement/device/mic
+  provenance, surfaces bundle + capture-quality issues, finds
+  bass-band peaks/nulls vs target, notes that Schroeder estimation is
+  unavailable until room/RT60 context exists, and pulls short guidance
+  snippets from `docs/calibration-agent/`. It performs no side effects
+  and does not call an LLM.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed, then build a deterministic loader that assembles it into
-  the agent prompt.
+  the agent prompt. The current intake CLI already includes a small
+  corpus lookup tool; a future prompt assembler can reuse it.
 - Build `jasper/calibration_agent/` with the Anthropic adapter as
   reference.
 - Implement the read-only tools first
   (`get_measurement_summary`, `analyze_peaks_nulls`, `compute_schroeder`,
-  `look_up`).
+  `look_up`). The first deterministic versions are in
+  `jasper.calibration_agent.tools`.
 - CLI tool: `sudo /opt/jasper/.venv/bin/jasper-calibration-agent
   <session_id>` → loads the session bundle from
-  `/var/lib/jasper/correction/sessions/<id>/`, sends to the model,
-  prints the agent's analysis. No chat loop yet — single-shot
-  "interpret this session" output.
+  `/var/lib/jasper/correction/sessions/<id>/` and prints the
+  deterministic intake report. The LLM-backed single-shot
+  "interpret this session" output is still future work.
 - Tests against synthetic + recorded bundle fixtures. Don't burn API
   budget in CI; the harness gets `pytest.mark.requires_api_key` so
   CI skips it by default and a human runs it during PR review.
