@@ -924,6 +924,30 @@ def _make_handler_class(
     return _BoundHandler
 
 
+def make_server(
+    target,
+    *,
+    csrf_token: str,
+    backend: RecordingBackend,
+) -> ThreadingHTTPServer:
+    """Construct the recorder's HTTP server bound to `target`.
+
+    `target` is either:
+      - an `(host, port)` tuple for direct binding (CLI use)
+      - a `socket.socket` already bound by systemd (socket-activation
+        path via `jasper.web.__main__`)
+      - an `int` port (legacy direct-bind shortcut)
+
+    Pairs with `jasper.web._systemd.make_http_server` to handle the
+    socket-vs-bind branching. The backend must already be `start()`ed
+    by the caller (the asyncio loop thread + crash-recovery state both
+    depend on it).
+    """
+    from . import _systemd
+    handler_cls = _make_handler_class(backend, csrf_token)
+    return _systemd.make_http_server(target, handler_cls)
+
+
 # ---------------------------------------------------------------------------
 # Frontend — single-file HTML+CSS+JS, no external assets
 # ---------------------------------------------------------------------------
@@ -1155,6 +1179,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       'meta[name="csrf-token"]'
     ).getAttribute('content');
 
+    // API base — relative to the current page so the same JS works
+    // standalone (http://host:8782/) AND behind nginx
+    // (http://host/wake-corpus/). All endpoint paths must be relative
+    // ("api/...") NOT absolute ("/api/..."), otherwise the nginx
+    // prefix gets stripped and the request 502s.
     async function api(method, path, body) {
       const headers = {'Content-Type': 'application/json'};
       if (method !== 'GET') headers['X-CSRF-Token'] = CSRF_TOKEN;
@@ -1175,7 +1204,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
     async function refreshStatus() {
       try {
-        const s = await api('GET', '/api/status');
+        const s = await api('GET', 'api/status');
         const voiceEl = $('voice-status');
         const toggleEl = $('voice-toggle');
         if (s.voice_daemon_active) {
@@ -1220,7 +1249,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
     async function toggleVoice(action) {
       try {
-        await api('POST', '/api/voice-daemon', {action});
+        await api('POST', 'api/voice-daemon', {action});
         await refreshStatus();
       } catch (e) { showErr(`voice-daemon ${action}: ${e.message}`); }
     }
@@ -1229,7 +1258,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       const member = $('member').value.trim();
       if (!member) { showErr('member is required'); return; }
       try {
-        await api('POST', '/api/session', {member});
+        await api('POST', 'api/session', {member});
         showErr('');
         await refreshStatus();
         await refreshClips();
@@ -1245,7 +1274,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       const isRecording = $('record-btn').classList.contains('recording');
       if (isRecording) {
         try {
-          await api('POST', '/api/clip/stop', {});
+          await api('POST', 'api/clip/stop', {});
           if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
           await refreshStatus();
           await refreshClips();
@@ -1254,7 +1283,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const condition = selectedRadio('condition');
         const distance = selectedRadio('distance');
         try {
-          const r = await api('POST', '/api/clip/start', {condition, distance});
+          const r = await api('POST', 'api/clip/start', {condition, distance});
           showErr('');
           const startMs = Date.now();
           if (elapsedTimer) clearInterval(elapsedTimer);
@@ -1269,7 +1298,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
     async function refreshClips() {
       try {
-        const r = await api('GET', '/api/clips');
+        const r = await api('GET', 'api/clips');
         const list = $('clips-list');
         list.innerHTML = '';
         const counts = {};
@@ -1283,14 +1312,14 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             <span>${c.condition}</span>
             <span>${c.distance}</span>
             <span>${c.duration_sec.toFixed(2)}s</span>
-            <audio controls preload="none" src="/api/clip/${c.clip_id}/wav?leg=on"></audio>
+            <audio controls preload="none" src="api/clip/${c.clip_id}/wav?leg=on"></audio>
             <button class="danger" data-id="${c.clip_id}">delete</button>
           `;
           row.querySelector('button').onclick = async (ev) => {
             const id = ev.target.dataset.id;
             if (!confirm(`Delete clip ${c.seq}?`)) return;
             try {
-              await api('DELETE', `/api/clip/${id}`);
+              await api('DELETE', `api/clip/${id}`);
               await refreshClips();
             } catch (e) { showErr(`delete: ${e.message}`); }
           };
@@ -1438,9 +1467,10 @@ def main(argv: list[str] | None = None) -> int:
     # operator tool that runs for a single session.
     csrf_token = secrets.token_hex(16)
     try:
-        server = ThreadingHTTPServer(
+        server = make_server(
             (args.host, args.port),
-            _make_handler_class(backend, csrf_token),
+            csrf_token=csrf_token,
+            backend=backend,
         )
         logger.info(
             "jasper-wake-corpus-web on http://%s:%d  output=%s  legs=%s",
