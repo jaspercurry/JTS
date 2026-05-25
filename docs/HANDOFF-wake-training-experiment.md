@@ -215,20 +215,31 @@ Conv-Attention head). openWakeWord's training notebooks are
 on Colab. livekit-wakeword's [PR #69](https://github.com/livekit/livekit-wakeword/pull/69)
 adds custom positive samples support but sits unmerged; we vendor it.
 
-**Per-leg specialized models.** Three trained models, one per leg of
-the existing OR-gate:
+**Per-leg specialized models.** Three trained models matching the
+three production wake-detection legs:
 
-- `jarvis_jts_raw_v1.onnx` — trained on chip-direct audio (RAW leg)
-- `jarvis_jts_aec_v1.onnx` — trained on AEC3-processed audio (AEC ON
-  leg, current BEST_A production config)
+- `jarvis_jts_raw_v1.onnx` — trained on chip-direct audio (`:9877`
+  chip-direct leg — chip BF+NS+AGC+HPF, no software AEC)
+- `jarvis_jts_aec_v1.onnx` — trained on AEC3-processed audio (`:9876`
+  AEC ON leg, current BEST_A production config)
 - `jarvis_jts_dtln_v1.onnx` — trained on DTLN-aec-processed audio
-  (DTLN leg)
+  (`:9878` DTLN leg)
 
 Each leg's training distribution is matched to its deployment
 distribution (the "matched-conditions training" principle from Wu
 2020). The chain is treated as a fixed snapshot of current production
 during training; if chain ablation later wins, retraining is cheap
 (~$5-15 per leg per Modal run).
+
+**A 4th `raw0` leg is captured during Phase 0b** from chip channel
+2 (truly raw — no chip OR software DSP, what a cheap mic without an
+XMOS chip would deliver). It is NOT consumed by production wake
+detection — it exists purely as training data for two future use
+cases: (a) testing whether iteration-N's model generalizes to cheap-
+mic hardware without retraining, (b) producing a `jarvis_jts_raw0_v1`
+model later if we ever ship JTS on cheaper mic hardware. Iteration 1
+captures it but doesn't train on it; the value compounds across
+future iterations.
 
 **Fusion: existing OR-gate.** The triple-stream architecture shipped
 in PR #253 is unchanged. Each leg scores against its own specialized
@@ -327,35 +338,73 @@ emits a `review/` directory per test run with:
 
 This is the "metrics rank, ears select" infrastructure from §7.
 
-**Phase 0b — Gold corpus capture (~60-75 min Jasper recording time
-across two sessions, + half-day tooling).** Extend
-`jasper-wake-enroll` (from PR #303) with a `--capture-ref` flag that
-also taps the AEC reference signal via the `pcm.jasper_capture`
-dsnoop tap. Each utterance produces 3 WAVs (raw mic + AEC ON + AEC
-reference) plus the optional DTLN leg if running. Without the
-reference signal, we can only test NS/AGC variations offline, not
-AEC variations — so capturing it is the gate on Phase 2's chain-
-ablation option.
+**Phase 0b — Gold corpus capture (~60-90 min Jasper recording time
+across two sessions).** **Tooling shipped.** Browser-based recorder
+at http://jts.local/wake-corpus/, exposed via socket-activated
+`jasper-web` (no daemon resident when nobody's looking). PRs landed:
+- PR #303 (data engineering CLIs: extract, enroll, noise capture)
+- PR #306 (score, review)
+- PR #307/309/312/313 (recorder hardening + nginx integration + home-
+  page card)
+- PR #315 (live mic-level meter + ambient condition + trash icon)
+- PR #323 (raw mic 0 4th leg + sessions management UX)
 
-Recording protocol — **Jasper (~60-75 min total, across two
+**What the recorder captures.** Up to **four legs** per utterance,
+written into per-leg quadrant directories at
+`/var/lib/jasper/enrollment_positives/aec_<leg>_<condition>/`:
+
+| Leg | Source | Signal path |
+|---|---|---|
+| `on` | UDP `:9876` | chip ch1 (chip BF+NS+AGC+HPF) → SW AEC3 + NS=low + AGC1 |
+| `off` | UDP `:9877` | chip ch1 — **no software processing** |
+| `dtln` | UDP `:9878` | chip ch1 → SW DTLN-aec |
+| `raw0` | UDP `:9879` | chip ch2 — **truly raw, no chip OR software DSP** (gated by per-session toggle) |
+
+The 4th `raw0` leg (PR #323) is the future-proofing layer — it
+captures what a cheap USB mic without an XMOS chip would deliver.
+Training on `raw0` produces a model that's largely mic-agnostic; the
+other three legs train models specialized to the JTS chain. **Always
+opt into this in iteration 1** — it's why we're recording in the
+first place.
+
+**AEC reference signal NOT captured** (revised from earlier plan).
+The reference was originally going to be captured as a 5th tap to
+enable offline AEC chain variation. Iteration 1 fixes the chain at
+the current BEST_A production config and trains against the fixed
+chain. Phase 2 (chain ablation) is the gate on whether we ever need
+that reference capture — and Phase 2 is itself gated on Phase 1
+leaving meaningful condition gaps.
+
+**Recording protocol — Jasper (~60-90 min total, across two
 sessions on different days):**
-- 80 utterances total: 3 distances (~1 m near, ~2 m mid, ~3-4 m far)
-  × 2 music states (quiet, music playing varied content/volume) ×
-  ~13-14 utterances per cell
+- **Conditions (now 3, not 2):** quiet (no music), **ambient** (AC /
+  fridge / HVAC cycling, no music), music (defined playlist).
+  Ambient added 2026-05-25 in PR #315 — realistic-home third state
+  that sits between quiet and music acoustically.
+- **Distances (unchanged):** ~1 m near, ~2 m mid, ~3-4 m far.
+- **Cell grid: 3 × 3 = 9 cells.** Aim ~7-9 utterances per cell in
+  Session A (training) → ~63-81 total. Aim ~2-3 per cell in Session
+  B (held-out) → ~20-25 total.
 - Voice condition: normal speaking volume, slightly lower on the
-  normal side, slightly faster than average
-- Distance markers (tape on floor) for repeatability
+  normal side, slightly faster than average.
+- Distance markers (tape on floor) for repeatability.
 - Music: defined playlist (one pop track, one classical, one podcast
-  clip) consistent across music-condition takes
-- Per-utterance metadata logged: timing, distance, condition, any
-  notes ("dog barked", "neighbor noise")
+  clip) consistent across music-condition takes.
 - **Captured across TWO recording sessions on DIFFERENT DAYS.**
-  Session A: 60 utterances split across all cells (the training +
-  baseline corpus). Session B: 20 utterances spread across all cells
-  (the held-out test corpus — NEVER touches training). Slight
-  ambient variation + slight mic position shift between sessions is
-  the point; we want the test corpus to be in-distribution but not
+  Session A is the training + baseline corpus. Session B is the
+  held-out test corpus (NEVER touches training). Slight ambient
+  variation + slight mic position shift between sessions is the
+  point; we want the test corpus to be in-distribution but not
   identically-captured.
+- Both sessions: **opt into raw mic 0** via the recorder's "Also
+  capture raw mic 0" checkbox at session start. Per-session
+  property — every clip in the session inherits it.
+
+**Sessions management UX (PR #323).** The recorder's top-of-page
+Sessions card lists every recorded session (member, timestamp,
+clip count, condition breakdown, raw-mic-0 indicator). Each row has
+Load (resume) + Delete (hard-remove WAVs + JSON) buttons. Cleanup
+of pre-raw0 sessions = one click each before starting fresh.
 
 Plus **~15 min hard-negative recording in Session B**: Jasper
 records similar-sounding words/phrases that should NOT trigger:
@@ -363,9 +412,8 @@ records similar-sounding words/phrases that should NOT trigger:
   "garbage", "jealous" — single-word utterances, ~3 reps each
 - Short phrases: "Travis is here", "good service", etc.
 - ~30-40 negative utterances total
-- Same condition variety (3 distances × 2 music states) where it's
-  practical, but coverage doesn't need to be exhaustive — these are
-  hard negatives, not the primary eval set
+- Condition variety where it's practical — these are hard negatives,
+  not the primary eval set
 
 These go into training as targeted negatives alongside the synthetic
 phoneme-substitution adversarial set that livekit-wakeword already
@@ -375,8 +423,22 @@ generates via CMUDict.
 to record. Future iteration (v2) when she is — adds a regularization
 probe + potentially trained samples.
 
-Total: 80 Jasper Jarvis (60 train + 20 held-out) + ~30-40 negative
-utterances. Single speaker, two sessions, ~75-90 min total recording.
+Total: ~85-105 Jasper Jarvis (Session A train + Session B held-out)
++ ~30-40 negative utterances. Single speaker, two sessions, ~60-90
+min total recording across the two sessions.
+
+**Fetching the corpus to laptop for offline processing.** The
+recorder writes everything under `/var/lib/jasper/enrollment_positives/`.
+Pull with rsync:
+
+```sh
+rsync -avz --progress \
+  pi@jts.local:/var/lib/jasper/enrollment_positives/ \
+  ./data/enrollment_positives/
+```
+
+Then `scripts/_extract_wake_corpus.py` (from PR #303) handles
+quadrant-split + the conversion to per-leg training arrays.
 
 **Phase 0c — Baseline measurement (~half-day).** Run the gold corpus
 through the harness with the current production chain + jarvis_v2.
@@ -893,8 +955,34 @@ For context, history, and rationale. Don't restate; link.
 
 ## 12. Status + last verified
 
-**PR #303 data engineering: merged 2026-05-25.** Extract / enroll /
-noise-capture CLIs are available. All 63 tests passing.
+**Data-engineering CLIs (PR #303): merged 2026-05-25.** Extract /
+enroll / noise-capture.
+
+**Browser-based wake-corpus recorder: SHIPPED 2026-05-25.**
+Available at http://jts.local/wake-corpus/. PRs landed in sequence:
+- PR #303 — data engineering CLIs (extract / enroll / noise)
+- PR #306 — scoring + review packages
+- PR #307 / #309 — recorder hardening (CSRF, idempotent stop)
+- PR #312 — socket-activated nginx integration (http://jts.local/wake-corpus/)
+- PR #313 — home-page card + back-to-home nav
+- PR #315 — live mic-level SSE meter + ambient condition + trash icon
+- PR #318 — trash button CSS overflow fix
+- **PR #323 — raw mic 0 4th leg (chip ch2, `:9879`) + sessions
+  management UX (list / load / delete) + per-session
+  include_raw_mic_0 toggle**
+
+Recorder UX status:
+- ✅ One-click record, click-again-stop, spacebar hotkey
+- ✅ Live mic-level meter (SSE, ~12 Hz when recording, ~2 Hz idle)
+- ✅ 3 conditions: quiet / ambient / music
+- ✅ 3 distances: near / mid / far
+- ✅ Per-session raw-mic-0 toggle (4 legs vs 3)
+- ✅ Sessions card: list all sessions, Load (resume), Delete (with
+  confirm)
+- ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
+  playback
+- ✅ jasper-voice start/stop wired (refuses start while recording —
+  would EADDRINUSE the UDP ports)
 
 **Phase −1 (pre-foundation verifications): in progress.**
 - −1a (LLM session routing): investigation results in PR cover
@@ -904,10 +992,10 @@ noise-capture CLIs are available. All 63 tests passing.
 
 **Phase 0a (offline harness): not started.** Gated on Phase −1.
 
-**Phase 0b (gold corpus capture): pending tooling.** Single speaker
-(Jasper) across two recording sessions on different days. 60 train +
-20 held-out positives + ~30-40 negative utterances. No multi-speaker
-data in iteration 1.
+**Phase 0b (gold corpus capture): tooling READY, recording PENDING.**
+First two recording sessions scheduled for Jasper's next studio
+morning. Cleanup of pre-raw0 corpus is one-click per old session
+via the new Sessions card.
 
 **Phase 0c (baseline): pending Phase 0a + 0b.**
 
@@ -915,6 +1003,33 @@ data in iteration 1.
 
 ## Changelog
 
+- **2026-05-25 (v5):** Capture tooling shipped end-to-end. Phase 0b
+  rewritten:
+  - Recorder is now the browser UI at http://jts.local/wake-corpus/,
+    NOT a `jasper-wake-enroll --capture-ref` CLI extension. PRs #303
+    → #323 are the lineage; full list in §12.
+  - 4th leg added: raw mic 0 (chip ch2, UDP `:9879`) — truly raw,
+    no chip OR software DSP, captures what a cheap USB mic would
+    deliver. Per-session opt-in via recorder checkbox. Stored under
+    `aec_raw0_<condition>/`. Iteration 1 captures but does not
+    train on it; value compounds for future iterations (cheap-mic
+    portability test + `jarvis_jts_raw0_v1` model later).
+  - Conditions extended from 2 to 3: quiet / **ambient** / music.
+    Ambient is the realistic-home third state (AC, fridge, HVAC —
+    no music). Cell grid is now 3 × 3 = 9 cells (was 3 × 2 = 6).
+  - Recording protocol numbers updated: ~7-9 per cell in Session A
+    (~63-81 train), ~2-3 per cell in Session B (~20-25 held-out).
+    Total recording time unchanged at ~60-90 min across two sessions.
+  - Sessions management UX documented: list / load / delete per
+    session via the recorder's top-of-page card.
+  - AEC reference signal capture (originally Phase 0b's gate on
+    Phase 2 offline chain ablation) DROPPED for iteration 1 — Phase
+    1 trains against a fixed chain at current production BEST_A, and
+    Phase 2 is itself gated on Phase 1 leaving gaps. Reference
+    capture comes back if Phase 2 ever runs.
+  - Architecture §4: per-leg models updated to call out 3 production
+    models trained on `:9876` / `:9877` / `:9878`. The `raw0`
+    capture is explicitly for future use, not iteration 1 training.
 - **2026-05-25 (v1):** Initial document.
 - **2026-05-25 (v2):** Major revision after methodology critique:
   - Added Phase −1 (pre-foundation verifications): LLM routing
@@ -977,5 +1092,5 @@ data in iteration 1.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-25
+Last verified: 2026-05-25 (v5 — recorder shipped end-to-end with 4th raw0 leg + sessions UX)
 

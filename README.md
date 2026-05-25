@@ -291,7 +291,8 @@ deploy/
   nginx-jasper.conf             Standalone /spotify + /dial HTTPS site
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
-  HANDOFF-mic-quality-v2.md     Active workstream: sequencing for DTLN-aec spike + wake-word path + wizard
+  HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
+  HANDOFF-mic-quality-v2.md     Empirical history: AEC sweeps, BEST_A, triple-stream architecture
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
   HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
@@ -438,6 +439,18 @@ reference. Currently:
   HANDOFF-aec.md (engine internals) + HANDOFF-wake-telemetry.md
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
+- [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
+  **Current primary workstream (2026-05-25).** The forward-looking
+  plan for training a custom `jarvis_jts_*_v1` wake-word model
+  matched to the JTS audio chain, replacing the community
+  `jarvis_v2` model (published recall 26%). Sequenced phases
+  (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
+  explicit listening checkpoints. Capture tooling shipped end-to-
+  end via the browser recorder at http://jts.local/wake-corpus/
+  (PRs #303 → #323) with a 4th `raw0` leg for future-proofing
+  against cheaper mic hardware. Read this before working on wake-
+  word reliability, training data collection, or testing
+  methodology.
 - [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
   Active workstream (May 2026). The VAD / mic-stream A/B test matrix:
   why local Silero on the AEC stream (Cell 0) is the production default,

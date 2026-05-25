@@ -1091,6 +1091,18 @@ AEC (`:9878`). Two **additive** sub-toggles live in the same
 `/var/lib/jasper/aec_mode.env` file as the AEC master mode, owned
 by the **/system Wake detection card**:
 
+> **Corpus-only 4th UDP leg (`:9879`) since PR #323.** The bridge
+> also always emits chip channel 2 (truly raw — no chip OR software
+> DSP) on `:9879`. **Not consumed by wake detection** — only by the
+> wake-corpus recorder when an operator opts into "Also capture raw
+> mic 0" in the http://jts.local/wake-corpus/ Begin-a-session form.
+> Always-on cost ~0.25% of one core. Used for mic-agnostic wake-
+> word training data — see [docs/HANDOFF-wake-training-experiment.md](docs/HANDOFF-wake-training-experiment.md)
+> Phase 0b. Do NOT add it as a 4th wake-detection leg without
+> first training a `raw0`-specific model — the unconditioned raw
+> signal is acoustically different from what the production legs'
+> models were trained on, and would degrade OR-gate precision.
+
 ```
 JASPER_AEC_MODE=auto            # master — bridge on/off
 JASPER_WAKE_LEG_RAW=1           # additive raw leg (~5 MB / negligible)
