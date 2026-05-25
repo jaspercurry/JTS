@@ -5,7 +5,8 @@
 # /var/lib/jasper/airplay_mode.env, the AirPlay device name based on
 # JASPER_AIRPLAY_DEVICE_NAME (in /etc/jasper/jasper.env), and the
 # fixed backend latency offset derived from the active CamillaDSP
-# config's samplerate/chunksize/target_level.
+# config's samplerate/chunksize/target_level PLUS the
+# pcm.jasper_renderer_mix dmix buffer in /etc/asound.conf.
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
@@ -22,6 +23,9 @@
 #                                 Default: /var/lib/camilladsp/statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/v1.yml.
+#   JASPER_ASOUNDRC             — ALSA system-wide config path used to
+#                                 source the renderer-side dmix buffer
+#                                 size. Default: /etc/asound.conf.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -36,6 +40,7 @@ JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 DERIVE_HELPER="${JASPER_DERIVE_DEVICE_NAME:-/usr/local/sbin/jasper-derive-device-name}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/v1.yml}"
+ASOUNDRC="${JASPER_ASOUNDRC:-/etc/asound.conf}"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -91,11 +96,55 @@ camilla_devices_int() {
     ' "$config"
 }
 
+# Read the buffer_size (in frames) from the pcm.jasper_renderer_mix
+# dmix block in the asoundrc.
+#
+# The renderer-side dmix (added in PR #214, 2026-05-22) sits between
+# all renderers and hw:Loopback,0,0. Its buffer is INVISIBLE to
+# shairport's snd_pcm_delay() because shairport queries the dmix
+# slave (the loopback ring), not the dmix's own internal queue. So
+# this script must explicitly add it to the latency offset that
+# shairport uses for AirPlay packet scheduling. Without this
+# accounting, shairport miscalculates packet arrival times by
+# buffer_size / sample_rate seconds, drops packets as "out of date,"
+# and produces audible artifacts at steady state.
+#
+# Returns the integer frame count on stdout, or empty if the file
+# isn't readable or the block can't be found (callers must treat
+# empty as 0, which corresponds to the pre-PR-#214 topology — no
+# dmix, no compensation needed).
+asoundrc_renderer_dmix_buffer_frames() {
+    local asoundrc="$1"
+    [[ -r "$asoundrc" ]] || return 0
+    awk '
+        /^pcm\.jasper_renderer_mix[[:space:]]*\{/ {
+            in_block = 1
+            next
+        }
+        in_block && /^pcm\./ {
+            # Hit the next pcm definition without finding buffer_size.
+            exit
+        }
+        in_block {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "buffer_size") {
+                    val = $(i + 1)
+                    if (val ~ /^[0-9]+$/) {
+                        print val
+                        exit
+                    }
+                }
+            }
+        }
+    ' "$asoundrc"
+}
+
 derive_audio_backend_latency_offset() {
     local config
     local sample_rate
     local chunksize
     local target_level
+    local renderer_dmix_buffer
 
     config="$(camilla_config_path)"
     if [[ ! -r "$config" ]]; then
@@ -121,15 +170,36 @@ derive_audio_backend_latency_offset() {
         target_level="$chunksize"
     fi
 
+    # Renderer-side dmix buffer (PR #214, 2026-05-22). Empty when the
+    # asoundrc lacks a pcm.jasper_renderer_mix block — pre-PR-#214 hosts
+    # or hosts that haven't deployed the dmix shape yet. In that case we
+    # treat the contribution as 0 (no compensation needed because the
+    # dmix isn't in the chain).
+    renderer_dmix_buffer="$(asoundrc_renderer_dmix_buffer_frames "$ASOUNDRC" || true)"
+    if [[ -z "$renderer_dmix_buffer" ]]; then
+        renderer_dmix_buffer=0
+    fi
+
     awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
-        -v target_level="$target_level" '
+        -v target_level="$target_level" \
+        -v renderer_dmix_buffer="$renderer_dmix_buffer" '
         BEGIN {
             if (sample_rate <= 0) {
                 printf "0.000000"
                 exit
             }
-            offset = -((target_level - chunksize) / sample_rate)
+            # Total invisible-to-shairport delay budget in frames:
+            #   (target_level - chunksize)   ← CamillaDSP playback buffer
+            #                                   above its implicit one-chunk
+            #                                   baseline.
+            #   + renderer_dmix_buffer       ← jasper_renderer_mix dmix
+            #                                   queue between shairport and
+            #                                   the snd-aloop slave.
+            # shairport feeds this many frames early so audio still emerges
+            # from the speaker at the AirPlay-scheduled time.
+            invisible_frames = (target_level - chunksize) + renderer_dmix_buffer
+            offset = -(invisible_frames / sample_rate)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0
             }

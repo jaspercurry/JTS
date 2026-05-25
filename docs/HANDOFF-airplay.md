@@ -11,13 +11,15 @@ shairport-sync path. It bundles:
   source-cited mechanism details, the diagnostic experiments we've run)
 - An escalation ladder for unknown failure modes
 
-The target shipped path is **green** as of 2026-05-14 — synced mode is
+The target shipped path is **green** as of 2026-05-25 — synced mode is
 glitch-free on the Apple USB-C dongle with
 [PR #83](https://github.com/jaspercurry/JTS/pull/83)'s shairport fix,
 CamillaDSP `target_level: 4096` on the dsnoop/dmix path, and
 shairport's derived `audio_backend_latency_offset_in_seconds` to keep
-AirPlay video/multi-room timing honest after the larger DSP buffer. With
-the current values, the rendered offset is `-0.064000`. If you're hearing
+AirPlay video/multi-room timing honest after the larger DSP buffer AND
+the renderer-side dmix (the latter added 2026-05-22 by PR #214; the
+latency-offset derivation was updated 2026-05-25 to include it). With the
+current values, the rendered offset is `-0.149333`. If you're hearing
 artifacts, something has changed (active correction profile, DAC swap,
 software update, network change, hardware fault). This doc helps you
 find what.
@@ -64,6 +66,7 @@ guide.
 |---|---|---|---|
 | Glitches every ~5–15 s, broken audio | CamillaDSP `Capture read short` floods + `Prepare playback after buffer underrun` every ~5 s | rate_adjust + AsyncSinc oscillating | [Pattern A](#pattern-a--camilladsp-rate_adjust--asyncsinc-oscillation) |
 | Periodic small tears, shairport clean | CamillaDSP `Prepare playback after buffer underrun`, no `Capture read short` flood | CamillaDSP playback target too shallow for dsnoop/dmix path | [Pattern A2](#pattern-a2--camilladsp-playback-buffer-too-shallow) |
+| Occasional clicks/discontinuities during steady-state playback (esp. AirPlay), no obvious pattern in shairport stats | shairport `Dropping out of date packet ... Lead time is 0.115-0.120 seconds` at ~5-15 s intervals, lead-time cluster is extremely tight | Renderer-side dmix buffer uncompensated in shairport's latency offset | [Pattern A3](#pattern-a3--renderer-side-dmix-buffer-uncompensated) |
 | Glitches every ~60 s, brief tear then quiet | shairport `Large positive sync error +50ms` → `alsa underrun` → `Large negative sync error -485ms` | shairport `resync_threshold` misfire on snd-aloop fill (NOT actual DAC drift) | [Pattern B](#pattern-b--shairport-resync_threshold-misfire-the-classic) |
 | Similar to B but interval varies; appeared after DAC swap | Same as B; possibly with shorter or irregular intervals | DAC crystal drift exceeded continuous-correction headroom (~2500 ppm) | [Pattern C](#pattern-c--dac-swap-drift-exceeds-continuous-correction-headroom) |
 | Random / non-periodic, sometimes worse on busy Pi or at certain times | shairport log mostly clean except occasional events; possibly `Broken pipe`; WiFi RX errors increment | Network, sender, WiFi, or CPU contention | [Pattern D](#pattern-d--non-periodic-glitches-network--sender--cpu) |
@@ -121,10 +124,22 @@ camilla underruns:      0
 Anything non-zero needs diagnosis.
 
 Decision rule:
-- shairport events non-zero → Pattern B/C/D first.
+- shairport `Dropping out of date packet` events with tightly clustered lead times (~0.115-0.120 s) → **Pattern A3** first.
+- shairport `Large positive`/`Large negative` events non-zero → Pattern B/C/D first.
 - Camilla short reads non-zero → Pattern A first.
 - Camilla underruns non-zero while shairport and short reads are zero → Pattern A2 first.
 - Active config under `/var/lib/camilladsp/configs/` → inspect it; room-correction profiles can persist stale settings even when `/etc/camilladsp/v1.yml` is clean.
+
+To distinguish Pattern A3 from generic late-packet events (e.g. transient WiFi), look at the lead-time distribution:
+
+```sh
+sudo journalctl -u shairport-sync --since '10 minutes ago' -o cat \
+  | grep "Dropping out of date packet" \
+  | awk -F'Lead time is ' '{print $2}' | awk '{print $1}' \
+  | sort | uniq -c | sort -rn | head -10
+```
+
+A tight cluster (most events within ~3 ms of each other, around 0.118 s) is Pattern A3 — a fixed-size buffer mismatch produces a fixed-size lead-time bias. A wide spread (50-500 ms varied) is network/sender (Pattern D).
 
 ### Full polling diagnostic (5-min run, ~5 min wall time)
 
@@ -356,19 +371,23 @@ Pair that buffer change with the rendered shairport latency offset:
 
 ```libconfig
 general = {
-    audio_backend_latency_offset_in_seconds = -0.064000;  // current rendered value
+    audio_backend_latency_offset_in_seconds = -0.149333;  // current rendered value
 };
 ```
 
 This does **not** shrink CamillaDSP's underrun-protection buffer. It tells
-shairport to feed the hidden downstream DSP path 64 ms early so that the
-sound leaving the speaker lands at the AirPlay-scheduled time.
+shairport to feed the hidden downstream DSP path early so that the sound
+leaving the speaker lands at the AirPlay-scheduled time.
 
 Do not hard-code this value by hand in the template. The template contains
 `__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__`; `jasper-apply-airplay-mode`
-derives it from the active CamillaDSP config as
-`-((target_level - chunksize) / samplerate)`. If `target_level` changes,
-the next shairport render/restart follows automatically.
+derives it as
+`-((target_level - chunksize + dmix_buffer_size) / samplerate)`, where
+`target_level` and `chunksize` come from the active CamillaDSP config and
+`dmix_buffer_size` comes from `buffer_size` in the
+`pcm.jasper_renderer_mix` block of `/etc/asound.conf`. If either changes,
+the next shairport render/restart follows automatically. The dmix term
+was added 2026-05-25 — see Pattern A3 below.
 
 Required places:
 - `deploy/camilladsp/v1.yml`
@@ -413,6 +432,142 @@ sudo systemctl restart jasper-camilla
 
 If direct capture is clean but `plug:jasper_capture` underruns, increase
 `target_level` on the dsnoop config before considering topology changes.
+
+---
+
+## Pattern A3 — Renderer-side dmix buffer uncompensated
+
+**Status: fixed in PR #[TBD] (2026-05-25).**
+
+### Symptoms
+- Occasional clicks / brief discontinuities during steady-state AirPlay
+  playback. Not periodic in a tight cadence; tends to cluster in dense
+  bursts during loud passages with quiet gaps between tracks.
+- shairport log:
+  ```
+  player.c:1130 Dropping out of date packet ###### with timestamp ##########.
+                Lead time is 0.118-0.120 seconds.
+  ```
+  emitted at roughly 5–15 s intervals during playback.
+- Lead-time distribution **tightly clustered** to within ~3 ms across
+  100+ events. This is the canonical signature: a fixed-size buffer
+  mismatch produces a fixed-size lead-time bias.
+- shairport otherwise clean — **no** `Large positive`/`Large negative`
+  events, **no** mid-stream `recovering from a previous underrun`.
+- CamillaDSP playback chain healthy — buffer near `target_level`, no
+  `PB: Prepare playback after buffer underrun` events.
+- May coincide with track-change clusters showing 3 ALSA underruns in
+  ~200 ms during `do_flush()`. Those are downstream of the same root
+  cause — the dmix slave momentarily empties during a flush.
+
+### Cause
+The root behavior in one sentence: **applications query delay based on
+the immediately adjacent plugin layer's write pointer, rather than a
+holistic calculation of the entire downstream routing graph.** So a dmix
+client sees only the slave's view of its own ring fill — never the
+buffering inside the dmix itself.
+
+[PR #214](https://github.com/jaspercurry/JTS/pull/214) (2026-05-22)
+inserted `pcm.jasper_renderer_mix` (a `dmix` with `buffer_size 4096`)
+between every renderer and `hw:Loopback,0,0`, fixing a multi-renderer
+`-EBUSY` crash-loop. The dmix adds ~85 ms of buffering between
+shairport's `output_device` (`pcm.jasper_renderer_in`) and the snd-aloop
+slave.
+
+`snd_pcm_delay()` on a dmix client returns the **slave's** queue length —
+NOT the dmix's own internal queue between client writes and slave reads.
+That internal buffer is structurally invisible to anything querying delay
+through the dmix.
+
+shairport's drift-correction math at [`player.c:2722-2756`](https://github.com/mikebrady/shairport-sync/blob/4.3.7/player.c#L2722-L2756)
+reads `snd_pcm_delay()` and adds `audio_backend_latency_offset_in_seconds`
+to model "how late am I." Before this fix,
+`jasper-apply-airplay-mode` derived the offset from CamillaDSP's
+`target_level - chunksize` only:
+
+```
+old: offset = -((target_level - chunksize) / samplerate)
+     = -(3072 / 48000)
+     = -0.064 s
+```
+
+The real invisible-to-shairport delay after PR #214 is the CamillaDSP
+buffer **plus** the dmix buffer:
+
+```
+new: offset = -((target_level - chunksize + dmix_buffer_size) / samplerate)
+     = -((3072 + 4096) / 48000)
+     = -0.149 s
+```
+
+The 85 ms gap meant packets arrived at shairport's "is this packet still
+in-window" check (`player.c:1130`) consistently ~85-118 ms late — and got
+dropped. Each drop is an audible discontinuity.
+
+This is structurally the same class of bug as Pattern B (and the same
+upstream root cause Mike Brady identified in
+[shairport-sync#1980](https://github.com/mikebrady/shairport-sync/issues/1980) — `snd_pcm_delay()` misreports
+through DSP-in-chain). The difference: Pattern B's buffer was snd-aloop
+ring fill (variable, ramping with crystal drift, triggers discrete-path
+sync corrections); Pattern A3's buffer is the dmix internal queue (fixed
+size, triggers the drop-late-packet path).
+
+### Fix
+Extend `derive_audio_backend_latency_offset()` in
+[`deploy/bin/jasper-apply-airplay-mode`](../deploy/bin/jasper-apply-airplay-mode)
+to read `buffer_size` from the `pcm.jasper_renderer_mix` block in
+`/etc/asound.conf` and add it to the offset calculation. The function
+falls back to 0 dmix contribution when the asoundrc is missing or the
+block isn't found (matching the pre-PR-#214 topology — older hosts that
+haven't deployed the dmix shape still get the original offset).
+
+```
+offset = -((target_level - chunksize + dmix_buffer_size) / samplerate)
+```
+
+If you ever change either `target_level` or the dmix `buffer_size`
+(e.g. Tier 1B's planned reduction to 2048), the next
+`jasper-apply-airplay-mode` run picks up both automatically.
+
+### Verify the fix
+
+```sh
+# 1. Confirm rendered offset matches expected
+grep audio_backend_latency_offset /etc/shairport-sync.conf
+# Expected with production config: -0.149333
+
+# 2. 5-min log scan during AirPlay playback should show zero drops
+sleep 300  # 5 min of actual playback
+sudo journalctl -u shairport-sync --since '5 minutes ago' \
+  | grep -c "Dropping out of date packet"
+# Expected: 0
+```
+
+If the offset reads but drops persist, check that
+`jasper-apply-airplay-mode` actually ran on the last
+`shairport-sync.service` restart (`ExecStartPre` line in the unit) and
+that `/etc/asound.conf` contains the `pcm.jasper_renderer_mix` block.
+
+### What does NOT fix this
+- Disabling synchronization (`disable_synchronization=yes`) — masks the
+  symptom but loses A/V sync for video AirPlay and inter-speaker sync
+  for multi-room. Eliminates the trigger by disabling the entire check,
+  not by fixing the math.
+- Increasing `audio_backend_buffer_desired_length_in_seconds` further —
+  this absorbs underrun jitter, not the fixed-size scheduling bias.
+- Shrinking the dmix `buffer_size` alone — helps proportionally (this
+  is Tier 1B in the audio architecture plan) but doesn't address the
+  model mismatch on its own.
+
+### Notes for Tier 1B / 2A follow-on work
+- When dmix `buffer_size` shrinks (Tier 1B target: 2048 → ~64 ms total
+  invisible buffer, ~43 ms latency saved), the derivation
+  automatically picks up the new value.
+- When the dmix is removed entirely (Tier 2A's per-renderer-substream
+  architecture), the asoundrc no longer contains
+  `pcm.jasper_renderer_mix`. The script's fallback returns 0 dmix
+  contribution; the offset reverts to compensating only CamillaDSP's
+  target buffer. No code change in the rendering pipeline needed.
 
 ---
 
@@ -842,7 +997,7 @@ real audio clock.
 | `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
 | `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
 | `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
-| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize) / samplerate)` | Compensates the fixed downstream-delay increase from CamillaDSP's target buffer; currently renders as `-0.064000` |
+| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + dmix_buffer_size) / samplerate)` | Compensates the fixed downstream-delay invisible to shairport's `snd_pcm_delay()`: CamillaDSP's target buffer above its one-chunk baseline PLUS the `pcm.jasper_renderer_mix` dmix buffer between shairport and the loopback slave. Currently renders as `-0.149333`. |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
 | `deploy/camilladsp/v1.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
