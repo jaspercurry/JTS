@@ -30,11 +30,19 @@ devices:
   # can tap the same music stream as CamillaDSP. On the Pi, the default
   # target_level=chunksize left the playback buffer too shallow and
   # produced periodic `PB: Prepare playback after buffer underrun` warnings
-  # with otherwise clean shairport logs. 4096 samples is 4 chunks (~85 ms),
-  # comfortably below CamillaDSP's documented max of
-  # `(2 + queuelimit) * chunksize` while leaving headroom for dsnoop/dmix
-  # scheduling jitter.
-  target_level: 4096
+  # with otherwise clean shairport logs. The 2026-05-14 fix bumped this to
+  # 4096 (~85 ms) — comfortably underrun-safe but generous on latency.
+  # 2026-05-25 trim: reduced to 2048 (~43 ms) as an independent latency
+  # optimization. 2048 == 2× chunksize, the documented floor for stable
+  # operation (target_level >= chunksize is hard-required; ≥2× is the
+  # convention for jitter absorption). Still well above the dsnoop/dmix
+  # scheduling-jitter floor we measured at chunksize back in 2026-05-14.
+  # Saves ~21 ms of music latency that survives Tier 2A (the dmix
+  # restructure that follows). Operator gate: 24-hour zero-xrun soak under
+  # realistic load (Spotify + BT phone + TTS) before considering this
+  # stable; revert to 4096 if `event=camilla.playback_underrun` lines
+  # appear at any rate above zero.
+  target_level: 2048
   # Capture rate (48 kHz, from snd-aloop) equals playback rate
   # (48 kHz, to dongle dmix), so no resampler is needed. With both
   # ends at the same rate, the canonical CamillaDSP config is

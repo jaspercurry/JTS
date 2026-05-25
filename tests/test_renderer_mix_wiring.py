@@ -158,6 +158,97 @@ def test_install_writes_asound_conf_to_system_wide_location():
         )
 
 
+def test_asoundrc_declares_per_renderer_substream_aliases():
+    """Phase 1 of Tier 2A (docs/HANDOFF-fan-in-daemon.md) — each
+    renderer eventually gets its own snd-aloop substream pair, replacing
+    the shared jasper_renderer_mix dmix.
+
+    The aliases are defined NOW (additive) so the renderer service files
+    can switch to them in a later phase. Today they're defined but
+    nothing references them; tomorrow they replace the dmix front-end.
+    """
+    rc = (REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text()
+    aliases = {
+        "librespot_substream": "hw:Loopback,0,0",
+        "shairport_substream": "hw:Loopback,0,1",
+        "bluealsa_substream": "hw:Loopback,0,2",
+        "usbsink_substream": "hw:Loopback,0,3",
+    }
+    for alias_name, expected_slave in aliases.items():
+        assert f"pcm.{alias_name}" in rc, (
+            f"asoundrc.jasper missing pcm.{alias_name} alias "
+            f"(Phase 1 of Tier 2A; see docs/HANDOFF-fan-in-daemon.md)"
+        )
+        # Locate the block and verify the slave is the expected substream.
+        block_start = rc.index(f"pcm.{alias_name}")
+        block_end = rc.find("}", block_start)
+        block = rc[block_start:block_end]
+        assert f'slave.pcm "{expected_slave}"' in block, (
+            f"pcm.{alias_name} should slave to {expected_slave} per the "
+            f"Tier 2A substream allocation in docs/HANDOFF-fan-in-daemon.md"
+        )
+        # Each alias is a `plug:` wrapper so each renderer's native
+        # rate/format gets converted to the substream's 48 kHz S16_LE.
+        assert "type plug" in block, (
+            f"pcm.{alias_name} must be a `type plug` wrapper for "
+            f"rate/format conversion (per Tier 2A design)"
+        )
+
+
+def test_per_renderer_substream_aliases_have_unique_substreams():
+    """Each renderer alias must point at a distinct substream pair.
+    Sharing a substream between renderers re-introduces the EBUSY
+    contention that PR #214 fixed — defeats the whole point of
+    Tier 2A's per-renderer assignment.
+    """
+    rc = (REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text()
+    aliases = [
+        "librespot_substream",
+        "shairport_substream",
+        "bluealsa_substream",
+        "usbsink_substream",
+    ]
+    slaves: dict[str, str] = {}
+    for alias in aliases:
+        block_start = rc.index(f"pcm.{alias}")
+        block_end = rc.find("}", block_start)
+        block = rc[block_start:block_end]
+        # Pull the slave.pcm value.
+        for line in block.splitlines():
+            line = line.strip()
+            if line.startswith("slave.pcm "):
+                slaves[alias] = line.split('"')[1]
+                break
+    # All four must be defined and unique.
+    assert len(slaves) == 4, f"missing slave declarations: {slaves}"
+    seen: set[str] = set()
+    for alias, slave in slaves.items():
+        assert slave not in seen, (
+            f"substream collision: {alias} shares {slave} with another "
+            f"renderer alias — re-introduces EBUSY contention"
+        )
+        seen.add(slave)
+
+
+def test_snd_aloop_modprobe_pins_pcm_notify_zero():
+    """Phase 1 of Tier 2A pins pcm_notify=0 in the snd-aloop module
+    options. With each renderer eventually owning its own substream
+    pair, we don't want the capture side torn down when any single
+    substream changes parameters.
+
+    The default kernel value is already 0; pinning it is insurance
+    against future default flips. See docs/HANDOFF-fan-in-daemon.md
+    "snd-aloop module parameters" section.
+    """
+    conf = (
+        REPO / "deploy" / "modprobe.d" / "snd-aloop.conf"
+    ).read_text()
+    assert "pcm_notify=0" in conf, (
+        "deploy/modprobe.d/snd-aloop.conf must pin pcm_notify=0 "
+        "per Tier 2A design (Phase 1)"
+    )
+
+
 def test_install_backs_up_pre_existing_etc_asound_conf():
     """Symmetric with the /root/.asoundrc migration: install.sh must
     back up any hand-edited or apt-installed `/etc/asound.conf` before

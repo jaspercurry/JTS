@@ -1,0 +1,91 @@
+[Unit]
+Description=Jasper renderer fan-in (per-substream → summed music reference)
+Documentation=file:///opt/jasper/docs/HANDOFF-fan-in-daemon.md
+After=sound.target
+
+# StartLimit tuned for the audio path. Tighter burst than the
+# default-4/300 sidecar pattern because fan-in is hot-path
+# infrastructure (CamillaDSP + AEC bridge depend on its output);
+# but generous enough to absorb transient hardware blips
+# (USB DAC de-enumeration, USB suspend resume). After 5 failures
+# in 5 minutes we escalate to a clean system reboot (Tier 5.1) —
+# matches the resilience-ladder pattern for jasper-camilla /
+# jasper-aec-bridge / jasper-voice / jasper-control.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+StartLimitAction=reboot
+
+[Service]
+# Type=notify + WatchdogSec=30s is the JTS-standard Tier 1+2
+# resilience contract. The daemon's src/watchdog.rs sends READY=1
+# at startup and pings WATCHDOG=1 every ~10 s, gated on a
+# progress sentinel updated by the work loop after every successful
+# frame. A wedged work loop stops bumping; the heartbeat thread
+# stops pinging; systemd reaps us within WatchdogSec.
+Type=notify
+WatchdogSec=30s
+
+# 5 s, not the systemd default 90 s. Critical to escalate to
+# SIGKILL fast — the 2026-05-11 snd-aloop wedge taught the project
+# that a daemon with blocked I/O can sit on SIGTERM for 90 s and
+# corrupt kernel-side ALSA state by the time SIGKILL fires. 5 s
+# beats that race.
+TimeoutStopSec=5s
+
+# Restart=on-failure covers all non-zero-exit paths including
+# WatchdogSec timeout. RestartSec=5 backs off enough for a
+# transient hardware blip (e.g., USB de-enumeration) to settle
+# before retry.
+Restart=on-failure
+RestartSec=5
+
+# OOM ladder slot. Between Camilla (-900, silence-critical) and
+# AEC bridge (-700, capture-critical). The fan-in daemon is the
+# upstream source of the music signal both consume; killing it
+# preferentially over Camilla makes sense (Camilla can emit silence
+# briefly; losing Camilla itself means total silence).
+# See docs/HANDOFF-resilience.md "OOM ladder" section.
+OOMScoreAdjust=-800
+
+# Stage 2 audio protection: pages never paged to zram. Audio jitter
+# from zram decompression latency is the dominant risk on a 1 GB
+# Pi 5 under memory pressure; this slice membership shields the
+# work loop. See docs/HANDOFF-resilience.md "Stage 2 audio-protection
+# subset" section. The slice itself is defined in
+# deploy/systemd/jts-audio.slice.
+Slice=jts-audio.slice
+
+# Real-time scheduling. SCHED_FIFO priority 30 + mlockall.
+# OSPERT 2024 measured Pi 5 stock-kernel worst-case scheduling
+# latency at 36.8 ms under heavy stress; SCHED_FIFO + mlockall
+# materially reduces this. PREEMPT_RT would reduce further (to
+# ~125 µs) and is the documented escalation path if the 72-hour
+# soak under realistic stress shows xruns.
+LimitMEMLOCK=infinity
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=30
+
+# Hardening — matches the conventions of jasper-camilla,
+# jasper-aec-bridge, jasper-voice. Defense in depth.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/jasper /run/jasper-fanin
+
+# Runtime dir auto-created on start (mode 0750, owner=root unless
+# overridden). systemd cleans it up on stop, so the UDS socket
+# never leaks across daemon lifecycle.
+RuntimeDirectory=jasper-fanin
+RuntimeDirectoryMode=0750
+
+# Configuration files — chain matches voice / aec / control daemons.
+# /etc/jasper/jasper.env is the operator's system-wide config;
+# the wizard-owned file is optional (no wizard for fanin in v1).
+EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/fanin.env
+
+ExecStart=/opt/jasper/bin/jasper-fanin
+
+[Install]
+WantedBy=multi-user.target

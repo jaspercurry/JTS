@@ -654,12 +654,65 @@ async def _get_state(
             return False
         return await _probe_dial_reachable(dial_ip)
 
-    cam_db, airplay, voice_st, ha_status, dial_online = await asyncio.gather(
+    async def _fanin_status() -> dict | None:
+        """Probe the jasper-fanin daemon's UDS STATUS endpoint.
+
+        Returns None when:
+          - the daemon isn't running (default; Tier 2A not opted in)
+          - the socket doesn't exist (daemon not yet bound)
+          - the probe times out (work loop wedged, ALSA blocked)
+          - the response isn't valid JSON
+
+        Distinguishes 'opted out / default' (returns None silently)
+        from 'opted in but broken' (jasper-doctor's
+        check_fanin_service handles the latter with actionable
+        diagnostics). Same fail-soft pattern as _voice_status.
+        See docs/HANDOFF-fan-in-daemon.md for the daemon design.
+        """
+        socket_path = os.environ.get(
+            "JASPER_FANIN_CONTROL_SOCKET",
+            "/run/jasper-fanin/control.sock",
+        )
+        try:
+            reader, writer = await asyncio.wait_for(
+                asyncio.open_unix_connection(socket_path),
+                timeout=2.0,
+            )
+        except (FileNotFoundError, ConnectionRefusedError,
+                asyncio.TimeoutError, OSError):
+            return None
+        try:
+            writer.write(b"STATUS\n")
+            await writer.drain()
+            body = await asyncio.wait_for(reader.read(8192), timeout=2.0)
+        except (asyncio.TimeoutError, ConnectionResetError, OSError):
+            writer.close()
+            return None
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except (OSError, AssertionError):
+                pass
+        try:
+            return json.loads(body.decode("utf-8", errors="replace"))
+        except json.JSONDecodeError:
+            return None
+
+    (
+        cam_db,
+        airplay,
+        voice_st,
+        ha_status,
+        dial_online,
+        fanin_st,
+    ) = await asyncio.gather(
         _camilla_volume(),
         _airplay_playing(),
         _voice_status(),
         _ha_status(),
         _dial_online(),
+        _fanin_status(),
     )
 
     spotify_blob = librespot_state.read(
@@ -752,6 +805,14 @@ async def _get_state(
             "usbsink": usbsink_state,
         },
         "active_source": active_source,
+        # Tier 2A fan-in daemon. null when the daemon isn't running
+        # (default — operator hasn't opted into the fanin topology
+        # yet; the dmix-based renderer path is still active). When
+        # running, the daemon's UDS STATUS endpoint emits a JSON
+        # snapshot with per-input frame counts, output xrun counts,
+        # and watchdog metrics — surfaced verbatim here. See
+        # docs/HANDOFF-fan-in-daemon.md.
+        "fanin": fanin_st,
         "satellites": {
             "dial": dial,
         },

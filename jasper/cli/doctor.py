@@ -26,6 +26,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -1816,6 +1817,147 @@ def _assess_aec_bridge_output(
     return CheckResult("AEC bridge output", "ok", summary)
 
 
+def check_fanin_binary_installed() -> CheckResult:
+    """The jasper-fanin Rust daemon (Tier 2A audio architecture) ships
+    as an installed-but-disabled-by-default binary at
+    /opt/jasper/bin/jasper-fanin. install.sh runs cargo build during
+    deploy; this check verifies the build actually produced the
+    binary. A missing binary means cargo build silently failed and
+    Phase 3 opt-in would fail at `systemctl enable`.
+
+    See docs/HANDOFF-fan-in-daemon.md for the migration plan.
+    """
+    path = Path("/opt/jasper/bin/jasper-fanin")
+    if not path.exists():
+        return CheckResult(
+            "jasper-fanin binary",
+            "fail",
+            f"{path} missing. Re-run install.sh; check cargo build "
+            f"output for compilation errors.",
+        )
+    if not os.access(path, os.X_OK):
+        return CheckResult(
+            "jasper-fanin binary",
+            "fail",
+            f"{path} present but not executable. Run: "
+            f"sudo chmod +x {path}",
+        )
+    try:
+        size_kb = path.stat().st_size // 1024
+    except OSError:
+        size_kb = 0
+    return CheckResult(
+        "jasper-fanin binary", "ok", f"{path} ({size_kb} KB)"
+    )
+
+
+def check_fanin_service() -> CheckResult:
+    """The jasper-fanin systemd unit is INSTALLED but NOT ENABLED by
+    default. The dmix-based renderer path is still the active topology
+    at deploy time; operators opt into the fanin topology by setting
+    `JASPER_AUDIO_TOPOLOGY=fanin` in /etc/jasper/jasper.env and
+    `systemctl enable --now jasper-fanin.service`. See
+    docs/HANDOFF-fan-in-daemon.md "Migration plan" for the full
+    procedure and the 72-hour soak gate.
+
+    Returns:
+      - ok ("disabled — Tier 2A not opted in") when the unit is
+        loaded but disabled. This is the expected default state.
+      - ok ("active, responding") when enabled and the UDS endpoint
+        replies to STATUS with a fresh progress sentinel.
+      - warn when enabled+active but the UDS probe fails or the work
+        loop is stale.
+      - fail when enabled but the service isn't active.
+    """
+    enabled = _run(
+        ["systemctl", "is-enabled", "jasper-fanin.service"]
+    ).stdout.strip()
+    active = _run(
+        ["systemctl", "is-active", "jasper-fanin.service"]
+    ).stdout.strip()
+
+    if enabled in ("disabled", "static", "indirect"):
+        return CheckResult(
+            "jasper-fanin service",
+            "ok",
+            "disabled (Tier 2A migration not opted in; default state)",
+        )
+    if enabled == "not-found":
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "systemd unit not installed. Re-run install.sh.",
+        )
+
+    # Unit is enabled (or masked, alias, ...) — operator opted in.
+    if active != "active":
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"enabled but state={active}. "
+            f"Check: journalctl -u jasper-fanin",
+        )
+
+    # Service is active. Probe the UDS endpoint to verify the work
+    # loop is making progress (catches "process alive but wedged").
+    socket_path = "/run/jasper-fanin/control.sock"
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(socket_path)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        sock.close()
+    except OSError as e:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"active but UDS probe at {socket_path} failed: {e}. "
+            f"Work loop may be wedged; "
+            f"check: journalctl -u jasper-fanin | tail",
+        )
+
+    body = b"".join(chunks).decode("utf-8", errors="replace")
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"active but UDS STATUS returned invalid JSON: {e}",
+        )
+
+    progress_age = data.get("watchdog", {}).get(
+        "last_progress_age_ms", -1
+    )
+    if progress_age < 0:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            "active but STATUS response missing watchdog state",
+        )
+    if progress_age > 1000:
+        return CheckResult(
+            "jasper-fanin service",
+            "warn",
+            f"active but last_progress_age_ms={progress_age} "
+            f"(work loop may be wedged; watchdog should fire soon)",
+        )
+    frames = data.get("output", {}).get("frames_written", 0)
+    xruns = data.get("output", {}).get("xrun_count", 0)
+    return CheckResult(
+        "jasper-fanin service",
+        "ok",
+        f"active, frames_written={frames}, output xruns={xruns}, "
+        f"progress_age_ms={progress_age}",
+    )
+
+
 def check_aec_bridge_output_health() -> CheckResult:
     """Verify the bridge isn't silently producing garbage. The bare
     `is-active` check passes whenever the process is running — but
@@ -2773,6 +2915,16 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
+        # Tier 2A fan-in daemon (docs/HANDOFF-fan-in-daemon.md).
+        # The binary check fails hard if cargo build silently failed
+        # during install; the service check is a no-op-by-default
+        # (the daemon ships disabled, operator opts in for Phase 3).
+        # When opted in, the service check probes the UDS endpoint
+        # to detect a wedged work loop (catches "process alive but
+        # not making progress" — the same shape Tier 5.2's
+        # SystemSupervisor protects against at the global level).
+        check_fanin_binary_installed,
+        check_fanin_service,
         # Reports which additive wake-detection legs the user has
         # armed via the /system Wake detection card (raw + DTLN).
         # Doesn't fail on any combination — pure visibility — so

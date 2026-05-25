@@ -48,14 +48,20 @@ general = {
     //   peak-to-peak fill swing instead of the previous
     //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
-    // Derived by jasper-apply-airplay-mode from the active CamillaDSP
-    // config as:
-    //   -((target_level - chunksize) / samplerate)
-    // Shairport's ALSA handle is the Loopback device, so it cannot
-    // see Camilla/dmix buffering via snd_pcm_delay(). A negative
-    // offset tells shairport to feed audio to Loopback early so
-    // AirPlay video/multi-room sync accounts for the fixed DSP buffer
-    // above CamillaDSP's implicit one-chunk baseline.
+    // Derived by jasper-apply-airplay-mode as:
+    //   -((target_level - chunksize + dmix_buffer) / samplerate)
+    // where target_level/chunksize/samplerate come from the active
+    // CamillaDSP config and dmix_buffer is buffer_size from the
+    // pcm.jasper_renderer_mix block in /etc/asound.conf. Shairport's
+    // ALSA handle is the renderer-side dmix (the plug on top of
+    // jasper_renderer_mix), so snd_pcm_delay() returns the dmix slave's
+    // queue — invisible to shairport are (a) the dmix's own internal
+    // buffer between client writes and slave reads, and (b) CamillaDSP's
+    // target_level buffer further downstream. This offset tells shairport
+    // to feed audio to that handle early so the sound emerges from the
+    // speaker at the AirPlay-scheduled time, keeping video/multi-room
+    // sync honest. Renders as -0.149333 with the production values
+    // (chunksize=1024, target_level=4096, dmix buffer_size=4096).
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
