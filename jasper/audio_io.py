@@ -401,6 +401,8 @@ class TtsPlayout:
         device: str | int,
         output_rate: int = INPUT_RATE,
         gain_db: float = 0.0,
+        *,
+        drain_tail_sec: float = 0.085,  # production wires from cfg.tts_drain_tail_sec
     ) -> None:
         if output_rate < self.INPUT_RATE:
             raise RuntimeError(
@@ -431,6 +433,11 @@ class TtsPlayout:
         # used to silently no-op, which was the cause of "I can't
         # hear the cue" being mis-diagnosed as routing problems.
         self._closed_stream_warned = False
+        # Drain tracking — see `expected_drain_at`. None (not 0.0)
+        # because CLOCK_MONOTONIC's reference is platform-defined; 0.0
+        # is briefly a legitimate now() value on a freshly-booted Pi.
+        self._drain_tail_sec = float(drain_tail_sec)
+        self._ring_end_monotonic: float | None = None
         # Apply the constructor's gain_db through the same clamp +
         # validation path as runtime updates. If a caller passes the
         # legacy "-8.0 fixed gain" value, this becomes the active
@@ -533,6 +540,9 @@ class TtsPlayout:
                 )
                 self._closed_stream_warned = True
             return
+        # Empty PCM would set the drain deadline to "now + 0", masking the silent state.
+        if not pcm:
+            return
         # Always go through the numpy pipeline so the mono→stereo
         # duplication at the end runs uniformly. The dropped fast
         # path was for "no gain, no upsample" which is a test-only
@@ -555,11 +565,21 @@ class TtsPlayout:
         # exact byte layout it expects.
         mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
         stereo_i16 = np.repeat(mono_i16, 2)
-        write_start = time.monotonic()
+        # Update the drain deadline *before* the blocking write so a
+        # concurrent reader (the idle watchdog) sees a consistent view.
+        chunk_duration_sec = len(mono_i16) / self._output_rate
+        now = time.monotonic()
+        if self._ring_end_monotonic is None or now > self._ring_end_monotonic:
+            self._ring_end_monotonic = now + chunk_duration_sec
+        else:
+            self._ring_end_monotonic += chunk_duration_sec
+        write_start = now
         await asyncio.to_thread(self._stream.write, stereo_i16.tobytes())
         write_ms = (time.monotonic() - write_start) * 1000
-        chunk_ms = len(mono_i16) * 1000 / self._output_rate
-        # Slow writes stall consumer dequeue, letting the idle watchdog's tail timer fire mid-playback.
+        chunk_ms = chunk_duration_sec * 1000
+        # Sustained back-pressure correlates with OS-layer underruns and
+        # audible glitches. Doesn't affect drain timing (we track samples
+        # queued, not write latency).
         if write_ms > chunk_ms + 100:
             logger.warning(
                 "tts.write slow: %.0fms for %.0fms of audio "
@@ -584,3 +604,24 @@ class TtsPlayout:
             await asyncio.to_thread(self._stream.start)
         except Exception as e:  # noqa: BLE001
             logger.warning("tts flush failed: %s", e)
+        # abort() discarded the ring; the tracked deadline is stale.
+        self._ring_end_monotonic = None
+
+    def expected_drain_at(self) -> float:
+        """Monotonic deadline at which the last-queued sample's tail
+        will have cleared the OS audio stack — i.e. the speaker is
+        silent. Returns ``0.0`` when nothing is queued (the sentinel
+        naturally compares as "already drained" against
+        ``time.monotonic()``)."""
+        if self._ring_end_monotonic is None:
+            return 0.0
+        return self._ring_end_monotonic + self._drain_tail_sec
+
+    async def wait_drained(self) -> None:
+        """Block until ``expected_drain_at`` has passed. Cheap when
+        nothing is queued (the 0.0 sentinel yields negative remaining,
+        which skips the sleep). Single ``asyncio.sleep`` otherwise —
+        deadline is known up-front, no polling."""
+        remaining = self.expected_drain_at() - time.monotonic()
+        if remaining > 0.0:
+            await asyncio.sleep(remaining)

@@ -6,6 +6,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections import deque
 from enum import Enum
 
@@ -265,13 +266,13 @@ SYSTEM_INSTRUCTION = (
 # Earlier values: 5 s (defensive but felt like a 15-20 s dead zone
 # end-to-end once detector buffer warmup was added), 10 s (original,
 # pre-persistent-connection era when each wake cost a Live slot),
-# 0.7 s (May 2026). Even 0.7 s combined with POST_RESPONSE_IDLE_TIMEOUT_SEC
-# (1.5 s tail) produced a ~2.2 s total deadzone after the model finished
-# speaking — long enough that quick follow-ups got dropped silently.
-# The tail already drains the ALSA buffer fully by the time turn-end
-# fires, so the refractory was double-counting the safety margin.
-# 0.2 s is ~2.5x the 85 ms dmix buffer — still a margin, but won't
-# swallow conversational pacing.
+# 0.7 s (May 2026). Even 0.7 s combined with the old post-response
+# idle window produced a ~2.2 s total deadzone after the model
+# finished speaking — long enough that quick follow-ups got dropped
+# silently. The TtsPlayout drain primitive now anchors turn-end on
+# samples actually queued, so the refractory only needs to cover
+# the dmix tail itself. 0.2 s is ~2.5x the 85 ms dmix buffer —
+# still a margin, but won't swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
 
 
@@ -325,23 +326,8 @@ END_OF_UTTERANCE_SPEECH_THRESHOLD = 0.15
 # the duck out for too long.
 NO_SPEECH_ABORT_SEC = 5.0
 
-# Shorter idle timeout after the model has started responding. The
-# regular `cfg.idle_timeout_sec` (~10 s) is the time we wait for
-# the FIRST chunk to come back; once any chunk has arrived (or
-# turn_complete fired), we switch to this much shorter window so
-# the music un-ducks promptly after Gemini finishes speaking,
-# instead of holding the duck for ~10 s of dead air.
-#
-# Measured anchor is `last_chunk_played_at` — the consumer's dequeue
-# timestamp, which advances at real-time playback rate. After that
-# the only audio still in flight is whatever's in the 85 ms ALSA dmix
-# buffer; 0.5 s gives ~6x margin on buffer drain. Was 1.5 s; the
-# extra second was being eaten as deadzone after the model finished
-# speaking, swallowing quick follow-up wakes.
-POST_RESPONSE_IDLE_TIMEOUT_SEC = 0.5
-
-# Pad after _play_responses drains, covering the ~60 ms ALSA dmix buffer that outlives the last tts.write.
-TTS_ALSA_DRAIN_SEC = 0.3
+# End-of-turn timing — owned by TtsPlayout.expected_drain_at /
+# wait_drained. Drain tail configured via JASPER_TTS_DRAIN_TAIL_SEC.
 
 # Sustained-speech threshold for arming the end-of-utterance silence
 # detector. After wake fires, we wait for Silero to report ≥ THRESHOLD
@@ -1086,8 +1072,13 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
             # write_task is either in `done` (completed normally) or
             # was cancelled+awaited above; either way no cleanup left.
             write_task = None
-        # Drain ALSA buffer before the caller disengages the duck.
-        await asyncio.sleep(TTS_ALSA_DRAIN_SEC)
+        # Block until the last sample we wrote has cleared the OS
+        # audio stack — see TtsPlayout.wait_drained. Cheap if the ring
+        # is already empty; otherwise a single sleep for the residual.
+        # Anchors on samples queued (not network arrivals), so an
+        # OpenAI-style burst delivery and a Gemini-style real-time
+        # pacing both end the turn at the right moment.
+        await tts.wait_drained()
     finally:
         for t in (interrupt_task, write_task):
             if t is None or t.done():
@@ -1099,60 +1090,49 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
                 pass
 
 
-async def _idle_watchdog(turn: LiveTurn, timeout: int) -> None:
+async def _idle_watchdog(
+    turn: LiveTurn, tts: TtsPlayout, timeout: float,
+) -> None:
     """Close the turn based on explicit server-side signals where
     possible, falling back to a timer when the server stays silent.
 
     Three cases:
-      * `turn.server_turn_complete()` is True → the server has
-        explicitly told us "model is done speaking". Wait a short
-        TTS-tail window so the last chunks finish playing through
-        the speaker, then close. This is the canonical clean close
-        and the only reliable way to avoid cutting off the model
-        mid-response.
-      * No chunks received yet → the model hasn't started speaking;
+      * `turn.server_turn_complete()` is True → server says "model is
+        done speaking". Defer while audio remains in flight, anchored
+        on TtsPlayout's sample-counted drain deadline (see
+        ``expected_drain_at``). Canonical clean close.
+      * No chunks received yet → model hasn't started speaking;
         wait the full `timeout` for the first chunk to arrive (Live
         API can take 3-5 s, sometimes longer).
-      * Chunks arriving but turn_complete hasn't fired → don't
-        close; the model is mid-response. Mid-response chunk gaps
-        can be > 1.5 s during normal speech pauses, so a timer
-        here would race with real output. Wait until either
-        turn_complete arrives (case 1) or the connection drops.
+      * Chunks arriving but turn_complete hasn't fired → mid-response
+        chunk gaps can be > 1.5 s during normal speech pauses, so a
+        timer here would race with real output. Wait for either
+        turn_complete (case 1) or connection drop.
 
-    Also exits early if the underlying connection drops mid-turn — the
-    connection's reconnect supervisor will mark the turn as lost via
-    `turn_lost()` and there's nothing more to do here."""
+    Coordinates with ``_play_responses``: the consumer awaits
+    ``tts.wait_drained()`` after its final write, while this watchdog
+    polls ``expected_drain_at()`` cooperatively. Both consult the same
+    drain anchor, so whichever observes "drained" first triggers
+    ``_end_turn`` (via the bg-task done check at
+    ``_handle_session_frame``). End-of-turn drain timing is logged
+    by ``_end_turn`` itself so observability is symmetric across
+    whichever side wins the race."""
     while True:
         await asyncio.sleep(0.25)
         if turn.turn_lost():
             logger.warning("idle watchdog: connection lost mid-turn, ending turn")
             return
-        now = asyncio.get_event_loop().time()
+        now = time.monotonic()
         idle_for = now - turn.last_activity_at()
         if turn.server_turn_complete():
-            # Defer while chunks are still queued — a slow tts.write isn't "audio finished."
+            # Defer while chunks are still queued in the inter-task
+            # buffer — the consumer hasn't yet pushed them to TtsPlayout.
             pending_getter = getattr(turn, "audio_chunks_pending", None)
             if callable(pending_getter) and pending_getter() > 0:
                 continue
-            # `getattr` guard: protocol method is new; older implementations fall back to network-arrival anchor.
-            played_anchor = 0.0
-            getter = getattr(turn, "last_chunk_played_at", None)
-            if callable(getter):
-                played_anchor = getter() or 0.0
-            tail_anchor = (
-                played_anchor
-                or turn.last_chunk_at()
-                or turn.last_activity_at()
-            )
-            tail_idle = now - tail_anchor
-            if tail_idle > POST_RESPONSE_IDLE_TIMEOUT_SEC:
-                logger.info(
-                    "turn_complete + tail (%.1fs since last %s), ending turn",
-                    tail_idle,
-                    "chunk played" if played_anchor else "chunk received",
-                )
-                return
-            continue
+            if tts.expected_drain_at() > now:
+                continue
+            return
         any_chunk_received = turn.last_chunk_at() > 0
         if not any_chunk_received and idle_for > timeout:
             logger.info(
@@ -3036,7 +3016,7 @@ class WakeLoop:
             )
         playback = asyncio.create_task(_play_responses(self._turn, self._tts))
         idle = asyncio.create_task(
-            _idle_watchdog(self._turn, self._cfg.idle_timeout_sec)
+            _idle_watchdog(self._turn, self._tts, self._cfg.idle_timeout_sec)
         )
         self._bg_tasks = {playback, idle}
         if self._server_vad_this_turn:
@@ -3064,6 +3044,17 @@ class WakeLoop:
         self._refractory_until = asyncio.get_event_loop().time() + WAKE_REFRACTORY_SEC
 
     async def _end_turn(self, reason: str = "ended") -> None:
+        # Capture drain timing before any await adds latency. Measured
+        # as "time from last server activity to turn end" — meaningful
+        # only when audio was actually received (otherwise it's the
+        # abort timeout, which is logged separately by the path that
+        # called us). Same for both bg-task paths (consumer or
+        # watchdog), so observability is symmetric.
+        drain_wait_sec: float | None = None
+        if self._turn is not None and self._turn.last_chunk_at() > 0:
+            drain_wait_sec = max(
+                0.0, time.monotonic() - self._turn.last_activity_at(),
+            )
         # Wake-event telemetry: record the terminal state of the
         # in-flight event. `_user_speech_seen` tells us whether the
         # session got real user input — if not, the wake was likely
@@ -3185,9 +3176,13 @@ class WakeLoop:
                         "window without a pause.",
                         bytes_sent, model, model,
                     )
+            drain_part = (
+                f", drain wait {drain_wait_sec:.2f}s"
+                if drain_wait_sec is not None else ""
+            )
             logger.info(
-                "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s)",
-                tokens, cost, bytes_sent, chunks_received,
+                "turn ended: %s tokens, est $%.4f (sent=%dB, recv=%d chunks%s%s)",
+                tokens, cost, bytes_sent, chunks_received, drain_part,
                 ", turn_lost" if self._turn.turn_lost() else "",
             )
 
@@ -3673,6 +3668,7 @@ async def run() -> None:
             # before the tracker first applies (e.g. Camilla down at
             # boot) still has a sane fallback.
             gain_db=cfg.tts_gain_db,
+            drain_tail_sec=cfg.tts_drain_tail_sec,
         ) as tts:
             tts_volume_tracker = TtsVolumeTracker(
                 camilla, tts,
