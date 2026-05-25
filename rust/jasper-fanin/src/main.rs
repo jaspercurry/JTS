@@ -12,27 +12,30 @@
 //! This file is the entry point. Module layout:
 //!   - `config`   — JASPER_FANIN_* env var parsing.
 //!   - `watchdog` — progress-sentinel heartbeat (sd_notify pattern).
-//!   - `mixer`    — the actual ALSA read/sum/write loop. (Phase 2 chunk 2.)
+//!   - `mixer`    — ALSA read/sum/write loop.
 //!   - `state`    — UDS STATUS endpoint for /state aggregation. (Phase 2 chunk 3.)
 //!   - `handover` — cosine ramp on input transitions. (Phase 2 chunk 3.)
 //!   - `xrun_log` — append-only ring of xrun events. (Phase 2 chunk 3.)
 //!
-//! Today (Phase 2 chunk 1 — skeleton): main starts the heartbeat, idles
-//! with a 1 Hz progress bump so the watchdog sentinel stays fresh,
-//! exits cleanly on SIGTERM/SIGINT. No audio I/O yet — that lands in
-//! Phase 2 chunk 2.
+//! Today (Phase 2 chunk 2): main opens N capture PCMs (best-effort,
+//! per-renderer substreams) and one playback PCM (the summed-music
+//! substream), then enters the mixer's work loop. The work loop
+//! reads-sums-writes one period at a time, bumping the heartbeat
+//! sentinel after every successful frame. Exits cleanly on SIGTERM/
+//! SIGINT.
 
 mod config;
+mod mixer;
 mod watchdog;
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::atomic::AtomicBool;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use log::{error, info};
 
 use crate::config::Config;
+use crate::mixer::Mixer;
 use crate::watchdog::Heartbeat;
 
 fn main() -> Result<()> {
@@ -87,19 +90,35 @@ fn main() -> Result<()> {
     let shutdown = Arc::new(AtomicBool::new(false));
     install_signal_handlers(&shutdown)?;
 
-    // Phase 2 chunk 1 skeleton: the mixer doesn't exist yet, so the
-    // daemon idles. A 1 Hz progress bump keeps the watchdog sentinel
-    // fresh — enough to exercise the heartbeat without burning CPU.
-    // Phase 2 chunk 2 replaces this loop with the real mixer.
-    info!("event=fanin.idle reason=phase_2_chunk_1_skeleton");
-    while !shutdown.load(Ordering::Relaxed) {
-        heartbeat.bump_progress();
-        std::thread::sleep(Duration::from_secs(1));
-    }
+    // Open ALSA: N input PCMs + 1 output PCM. Best-effort on inputs
+    // (a missing substream is logged but doesn't kill the daemon);
+    // output is required (no output = nothing useful to do).
+    let mut mixer = Mixer::new(&config)
+        .context("opening ALSA PCMs")?;
+    info!(
+        "event=fanin.mixer.ready inputs_opened={} (of {} configured)",
+        mixer.input_count(),
+        config.input_pcms.len(),
+    );
 
-    info!("event=fanin.shutdown reason=signal graceful=true");
+    // Run the work loop. Returns Ok on graceful shutdown; Err on
+    // structural failure (which systemd's Restart=on-failure handles
+    // by bringing us back fresh).
+    let result = mixer.run(&shutdown, &heartbeat);
+
+    match &result {
+        Ok(_) => {
+            info!("event=fanin.shutdown reason=signal graceful=true");
+        }
+        Err(e) => {
+            // Log with the full anyhow context chain. systemd captures
+            // stderr to journald so the post-mortem evidence survives
+            // even if we're being reaped.
+            error!("event=fanin.shutdown reason=error detail={:#}", e);
+        }
+    }
     heartbeat.notify_stopping();
-    Ok(())
+    result
 }
 
 /// Pin the daemon's pages in RAM. mlockall(MCL_CURRENT | MCL_FUTURE)
