@@ -724,6 +724,19 @@ class _Handler(BaseHTTPRequestHandler):
             if action not in ("start", "stop"):
                 self._send_error_json(400, "action must be start or stop")
                 return
+            # Refuse to start jasper-voice while a recording is in
+            # progress: starting it would try to bind UDP ports the
+            # recording owns, sending the daemon into a restart loop
+            # while the operator wonders why their speaker is dead.
+            # Caller sees a clear error and knows to stop the
+            # recording first.
+            if action == "start" and self.backend.is_recording():
+                self._send_error_json(
+                    409,
+                    "stop the current recording first; jasper-voice "
+                    "can't bind UDP ports the recording is using",
+                )
+                return
             import subprocess
             try:
                 subprocess.run(
@@ -1013,12 +1026,17 @@ _INDEX_HTML = """<!DOCTYPE html>
           voiceEl.className = 'pill red';
           toggleEl.textContent = 'Stop jasper-voice';
           toggleEl.onclick = () => toggleVoice('stop');
+          toggleEl.disabled = false;
           $('record-btn').disabled = true;
         } else {
           voiceEl.textContent = 'stopped';
           voiceEl.className = 'pill green';
           toggleEl.textContent = 'Start jasper-voice';
           toggleEl.onclick = () => toggleVoice('start');
+          // Disable the start-jasper-voice button while a recording is
+          // in progress — starting it would try to bind UDP ports the
+          // recording owns, sending the daemon into a restart loop.
+          toggleEl.disabled = s.is_recording;
           $('record-btn').disabled = !s.session_id;
         }
         $('session-id').textContent = s.session_id
