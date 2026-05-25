@@ -608,6 +608,10 @@ reference. Currently:
   active-speaker DSP / crossover notes, preference-EQ vocabulary,
   house-curve notes, and the public schema for private runtime
   context.
+- [`docs/research/2026-05-25-calibration-agent/`](docs/research/2026-05-25-calibration-agent/README.md)
+  — Verbatim raw deep-research artifacts that seeded the
+  room-correction, FIR, and active-speaker DSP handoffs. Treat as
+  source material, not operational truth.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter

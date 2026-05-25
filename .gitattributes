@@ -1,0 +1,4 @@
+# Preserve raw LLM research exports verbatim. These files intentionally
+# keep source whitespace; canonical/distilled docs still use normal
+# whitespace checks.
+docs/research/2026-05-25-calibration-agent/raw/*.md -whitespace

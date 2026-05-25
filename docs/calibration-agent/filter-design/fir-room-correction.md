@@ -38,6 +38,20 @@ and shorter windows at high frequencies where direct sound should
 dominate interpretation. DRC-FIR and Acourate-style workflows both
 lean heavily on this idea.
 
+Concrete research-pass starting point, not yet validated on JTS:
+
+- roughly 15/15 cycles below 300 Hz;
+- transition toward 5/5 cycles by 1 kHz;
+- roughly 3/3 cycles above 4 kHz;
+- persist pre/post window settings in the bundle;
+- treat static full-range gates as a failure mode because they either
+  throw away low-frequency resolution or include too much high-frequency
+  room energy.
+
+The FDW goal is not "invert the room." It is psychoacoustic restraint:
+use enough low-frequency time support to see modal behavior, and
+enough high-frequency truncation to avoid correcting late reflections.
+
 ## Latency And Tap Budget
 
 CamillaDSP can run convolution on Raspberry Pi-class hardware, and
@@ -52,6 +66,20 @@ Initial JTS policy:
 - surface latency profile in the bundle and UI;
 - pause renderers/voice during expensive filter generation if needed;
 - keep generated FIR taps and CamillaDSP YAML together in the bundle.
+
+Operational math to keep visible:
+
+- CamillaDSP convolution latency and CPU depend on chunk size, FFT
+  segmentation, sample rate, and filter length. JTS still needs a
+  first-party Pi 5 benchmark before promising user-facing FIR limits.
+- At 48 kHz, chunk sizes of 1024 / 2048 / 4096 samples correspond to
+  about 21.3 / 42.7 / 85.3 ms of chunk duration.
+- A 16,384-tap FIR spans about 341 ms at 48 kHz.
+- A 65,536-tap FIR has about 0.73 Hz bin spacing at 48 kHz and, if
+  linear phase, about 682 ms of group delay.
+- Long linear-phase FIR may be fine for music-only playback, but it
+  is a poor default for interactive voice/TTS unless the full routing
+  and latency story is explicit.
 
 ## Staged Ladder
 
@@ -82,7 +110,11 @@ Initial JTS policy:
   region.
 - Refuse high-Q boosts in linear-phase or mixed-phase modes.
 - Audit pre-impulse energy / pre-ringing risk for non-minimum-phase
-  filters.
+  filters. First candidate metric from the reports: pre-impulse energy
+  at least roughly 20 dB below post-impulse energy in the relevant
+  window, with fallback to minimum phase or a warning when it fails.
+  Also account for backward masking around the first 10-20 ms rather
+  than treating every tiny pre-echo sample as equally audible.
 - Always reserve headroom before enabling a generated FIR.
 - Surface latency, headroom, max boost, and pre-ringing risk in the
   UI.
@@ -117,5 +149,8 @@ taps or unconstrained DSP syntax.
   target under real renderer load?
 - What exact pre-ringing metric is conservative enough for automated
   user-facing mixed-phase correction?
+- Is CamillaFIR a concrete dependency/workflow for JTS or only a
+  loose community reference? Reports conflicted; verify before relying
+  on it.
 
 Last verified: 2026-05-25

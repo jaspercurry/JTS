@@ -18,6 +18,11 @@ install-specific context belongs under `/var/lib/jasper/...`; the
 schema for that context lives in
 [`jts-specific/runtime-context-schema.md`](jts-specific/runtime-context-schema.md).
 
+Raw 2026-05-25 research inputs are archived separately at
+[`../research/2026-05-25-calibration-agent/README.md`](../research/2026-05-25-calibration-agent/README.md).
+Use those reports for traceability and re-review, but move only
+verified/distilled claims into this corpus.
+
 ## Source Quality
 
 Use this ranking when adding claims:
@@ -59,6 +64,8 @@ Every concept file should have:
   — subjective language mapped to safe reversible tuning moves.
 - [`targets/house-curves.md`](targets/house-curves.md)
   — target curves and taste.
+- [`references/prior-art.md`](references/prior-art.md)
+  — public/open/commercial tools and workflows JTS should learn from.
 - [`jts-specific/implementation-ladder.md`](jts-specific/implementation-ladder.md)
   — staged path from current PEQ to guarded FIR and LLM-guided
   preference tuning.
@@ -75,6 +82,14 @@ Every concept file should have:
   bundle reproducibility; add calibrated mic and multi-position flows;
   introduce FIR first as infrastructure, then as guarded
   minimum-phase / low-band mixed-phase correction; keep LLM behavior
-  advisory and parameter-bounded.
+  advisory and parameter-bounded. Raw archive:
+  [`docs/research/2026-05-25-calibration-agent/`](../research/2026-05-25-calibration-agent/README.md).
+- 2026-05-25: distilled three user-provided active speaker DSP /
+  crossover commissioning reports into
+  [`HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md)
+  and the active-speaker concept note. Consensus: treat active
+  crossover tuning as a speaker-baseline commissioning module with
+  separate safety gates, not as a room-correction extension. Same raw
+  archive as above.
 
 Last verified: 2026-05-25

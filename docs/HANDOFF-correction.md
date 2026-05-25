@@ -21,7 +21,7 @@
   Coordinator pauses renderers + voice loop via UDS; voice_daemon
   has `MEASURE_PAUSE` / `MEASURE_RESUME` with 2-min auto-clear
   safety timer. 37 new tests, all passing on synthetic data.
-- ✅ **Phase 2 — multi-position MMM + verify pass.** PR #42 merged
+- ✅ **Phase 2 — multi-position sweeps + verify pass.** PR #42 merged
   2026-05-09. Power-mean spatial averaging across 5 positions;
   post-Apply re-measurement with deviation metrics; target-curve
   choice (flat / warm / bright). 12 new tests, all passing.
@@ -294,7 +294,8 @@ measure peak memory before enabling mixed-phase or FDW generation in
 the user-facing flow.
 
 **Defaults that keep us safely on the safe side:**
-- Match range: 20-350 Hz (Toole-aligned modal range only)
+- Match range: 20-350 Hz (project-safe modal/transition-region
+  boundary; not a direct Toole magic number)
 - ≤5 PEQ filters
 - Cuts only by default (Floyd Toole's "first do no harm")
 - Max boost +3 dB (toggle in advanced drawer)
@@ -319,12 +320,16 @@ them trivial to discard. The shipped generator implements that
 synchronization directly so the runtime dependency surface stays
 small.
 
-### Decision 7 — Spatial averaging: 5-position MMM, vector below Schroeder, power above
+### Decision 7 — Spatial averaging: fixed multi-position sweeps, power mean
 
-**Decision:** Phase 1 ships single-position. Phase 2 adds 5-position
-MMM. Vector-average complex transfer functions below 350 Hz, power-
-average magnitudes above. (Standard Toole/Welti/Olive approach;
-unchanged since 2017.)
+**Decision:** Phase 1 ships single-position. Phase 2 adds fixed
+multi-position sweeps and power-mean magnitude averaging. This is not
+true MMM: moving-mic measurement usually means pink-noise/RTA-style
+averaging over a small listening volume and does not preserve IR/phase
+data. Strict future spatial analysis should retain complex H(f) per
+position and may vector-average below the transition region while
+power-averaging above, but the shipped code does power-mean
+everywhere.
 
 ### Decision 8 — Mic compensation: ship one curve, accept the inaccuracy
 
@@ -547,10 +552,11 @@ Concrete changes:
 6. **Manual A/B verification:** play a familiar bass-heavy track
    before/after; the modal peak audibly tightens.
 
-### Phase 2 — Multi-position MMM + verify pass (3 days)
+### Phase 2 — Multi-position sweeps + verify pass (3 days)
 
-- 5-position UI with diagrams (vector avg below 350 Hz, power avg
-  above; standard MMM).
+- 5-position UI with diagrams. Shipped implementation does
+  power-mean magnitude averaging everywhere; true moving-mic MMM and
+  vector-below-transition averaging are future refinements.
 - "Re-measure" step at end; before/after overlay on same chart.
 - Robust error states: mic permission denied, sample-rate mismatch
   (force-reject), sweep clipping detected (rerun with -3 dB lower),
@@ -594,7 +600,8 @@ Concrete changes:
   SciPy-based design and compare against proven tools before deciding
   the shipped generator.
 - Rung 4: frequency-dependent-windowed FIR after evaluating DRC-FIR,
-  rePhase, CamillaFIR, REW, and CamillaDSP-native workflows.
+  rePhase, REW, CamillaDSP-native workflows, and CamillaFIR if
+  verified as a concrete current reference.
 - Rung 5: mixed-phase / excess-phase correction. Opt-in only, guarded
   by measurement quality, latency profile, and pre-ringing audit.
 - If any rung needs expensive generation, run it under the existing
@@ -646,8 +653,8 @@ about to add one mid-phase, stop and re-read.
 From the engineering brief:
 - CamillaDSP `SetConfig` + `Reload` for atomic hot-swap.
 - PEQ-only as v1 default; FIR ladder for power users later.
-- 20-350 Hz match range, 5-position MMM, vector below / power above
-  Schroeder.
+- 20-350 Hz match range, fixed multi-position sweeps, and a future
+  Schroeder-aware vector/power averaging refinement.
 - Dual-audience principle: same engine, novice flow + power-user
   export buttons.
 - `.frd` export for REW round-trip.
@@ -664,8 +671,8 @@ From the sanity-check pass:
 - WiiM "rotate phone 180°, lay flat, no case" mic-placement UX.
 - Wake Lock during sweep window.
 - Reverse-proxy `camillagui-backend` at `/camilla/`.
-- Evaluate DRC-FIR, rePhase, CamillaFIR, REW, and CamillaDSP
-  convolution prior art before choosing a FIR generator; do not bind
+- Evaluate DRC-FIR, rePhase, REW, CamillaDSP convolution, and
+  CamillaFIR if verified before choosing a FIR generator; do not bind
   Phase 5 to one subprocess until a prototype proves the trade-off.
 - Drop fft.js — compute RMS in AudioWorklet (32 multiplies, no FFT
   needed for level meter).
@@ -961,8 +968,9 @@ External:
   not runtime dependencies today.
 - [camillagui-backend](https://github.com/HEnquist/camillagui-backend)
   — power-user pass-through (Phase 3).
-- [CamillaFIR](https://github.com/VilhoValittu/CamillaFIR) — FIR /
-  FDW workflow reference to evaluate for Phase 5.
+- [CamillaFIR](https://github.com/VilhoValittu/CamillaFIR) —
+  possible FIR / FDW workflow reference; verify current status before
+  relying on it for Phase 5.
 - [REW](https://roomeqwizard.com) — `.frd` format reference, REW
   YAML export workflow.
 - [HouseCurve file formats](https://housecurve.com/docs/manual/file_formats)

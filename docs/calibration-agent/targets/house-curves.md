@@ -30,6 +30,9 @@ until future FIR/preference layers exist.
 - B&K-style and Harman/Toole-style targets converge on some bass
   support plus a gentle downward slope, but no single slope is
   universal.
+- Toole/Harman-style guidance is a family of preferred in-room
+  responses, not one canonical slope. B&K slope numbers vary across
+  sources and should not be hard-coded without provenance.
 - Listener preference varies most in bass quantity and overall tilt;
   that makes bass shelf and tilt controls good first-class UI
   concepts.
@@ -57,6 +60,10 @@ until future FIR/preference layers exist.
 - Surface target choice separately from "room problems fixed."
 - Do not let an LLM describe one house curve as objectively correct
   for all listeners.
+- Do not import headphone-preference population statistics as if they
+  were loudspeaker-room statistics. Olive headphone percentages and
+  Sonarworks flat-target usage data are useful context, not proof of
+  what a JTS smart speaker listener will prefer.
 
 ## Open Questions
 

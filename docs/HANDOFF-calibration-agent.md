@@ -234,11 +234,18 @@ were captured against the same flat baseline.
 └── statefile.yml                            # current config_path:
 ```
 
-Bundles are **already enough** for an offline agent to reason about a
-calibration session — `info.json` + `result.json` + the WAVs are a
-self-contained handoff packet. This will matter: the simplest possible
-v0 of the agent is "feed a session bundle to a model, get a written
-critique back, no UI." That's how Phase A below works.
+Bundles are **useful but not yet complete** for offline agent or FIR
+replay. `info.json` + `result.json` + WAV captures are enough for a
+first PEQ critique, but the research pass calls for richer artifacts
+before treating a bundle as a full analysis packet: raw float capture
+where possible, raw/deconvolved impulse responses before smoothing,
+complex transfer functions, per-position IRs, spatial-average method,
+window/gate/FDW settings, target data, headroom, active speaker
+profile, measurement environment/noise notes, and an audit log. This
+will matter: the simplest possible v0 of the agent is still "feed a
+session bundle to a model, get a written critique back, no UI," but it
+should label missing artifacts rather than pretending the packet is
+FIR-ready.
 
 ### Constraints already baked in
 
@@ -775,10 +782,17 @@ measurement, separate target/preference layers, introduce FIR first
 as runtime/export substrate, and keep LLM guidance advisory and
 parameter-bounded.
 
+The raw reports are preserved for re-review under
+[`docs/research/2026-05-25-calibration-agent/`](research/2026-05-25-calibration-agent/README.md):
+[`room-correction-science-and-agent-foundation.md`](research/2026-05-25-calibration-agent/raw/room-correction-science-and-agent-foundation.md),
+[`fir-target-curves-and-preference-eq.md`](research/2026-05-25-calibration-agent/raw/fir-target-curves-and-preference-eq.md),
+and [`fir-room-correction-implementation-blueprint.md`](research/2026-05-25-calibration-agent/raw/fir-room-correction-implementation-blueprint.md).
+
 Before asking an LLM to opine about FIR, phase, target curves, or
 preference tuning, keep extending the source corpus and cite it:
 
-- Distill REW, Toole/Olive/Welti, Dirac, CamillaDSP, CamillaFIR,
+- Distill REW, Toole/Olive/Welti, Dirac, CamillaDSP convolution
+  workflows, CamillaFIR if verified as a concrete useful reference,
   HouseCurve, Genelec/Neumann, and other high-quality open or
   publicly readable sources into short markdown concept files.
 - Separate **facts and constraints** ("narrow nulls are not fixed by
@@ -943,6 +957,13 @@ Explicitly out of scope, to keep this from sprawling:
   "play music you love and tell JTS what you hear" flow is an
   explicit north-star feature, but it should build on the same
   target-curve and bundle substrate after room measurement is solid.
+- **No active-speaker commissioning inside the initial `/correction/`
+  chat loop.** Active crossover commissioning is a separate tool
+  family with safety gates for channel maps, tweeter protection,
+  timing references, and speaker-baseline profiles. Do not inherit
+  room-correction assumptions like "reset to identity," "single mic
+  magnitude trace is enough," or "apply PEQ only." Current planning:
+  [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
 - **No new measurement methodology** (e.g. MLS, log chirp variants,
   multitone). The Novak 2015 ESS substrate stays.
 - **No third-party room-correction engine integration** (REW headless,
@@ -1000,7 +1021,7 @@ Audio engineering:
 - [Dirac — On Room Correction and Equalization (PDF)](https://www.dirac.com/wp-content/uploads/2021/09/On-equalization-filters.pdf)
 - [REW Help — Why Can't I Fix All my Acoustic Problems with EQ?](https://www.roomeqwizard.com/help/help_en-GB/html/iseqtheanswer.html)
 - [CamillaDSP](https://www.camilladsp.com/) — real-time IIR/FIR engine already in JTS
-- [CamillaFIR](https://vilhovalittu.github.io/CamillaFIR/) — open FIR room-correction workflow reference
+- [CamillaFIR](https://vilhovalittu.github.io/CamillaFIR/) — possible FIR workflow reference; verify current status before relying on it
 - [HouseCurve — file formats](https://housecurve.com/docs/manual/file_formats) — practical curve/calibration text format
 - [HouseCurve — target curves](https://housecurve.github.io/docs/tuning/target_curve.html) — house curves and taste guidance
 - [Sonavyx — Schroeder Frequency Explained](https://sonavyx.com/en/insights/schroeder-frequency-explained)

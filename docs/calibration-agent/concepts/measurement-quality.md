@@ -39,6 +39,11 @@ designing filters from ambiguous data.
   orientation, and parser sign convention.
 - Windowing provenance: impulse window, smoothing, FDW settings where
   available, and whether phase/group-delay claims are supported.
+- Timing-reference provenance: electrical loopback, acoustic timing
+  reference, or magnitude-only capture. Mark magnitude-only data
+  unsafe for driver alignment or mixed-phase decisions.
+- Early-arrival / ETC warning when reflections arrive too close to
+  the direct sound for the intended analysis.
 
 ## Bundle Artifacts To Preserve
 
@@ -57,6 +62,10 @@ the user to re-measure:
 - applied headroom offset;
 - mic calibration record and input-device metadata;
 - audit log of deterministic decisions and any LLM-advisory request.
+- visualization-ready artifacts: impulse, ETC/early-arrival view,
+  step response, waterfall/spectrogram or decay view, excess group
+  delay, and THD-vs-frequency where ESS harmonic separation supports
+  it.
 
 ## Agent Guidance
 
@@ -69,6 +78,8 @@ The agent should say "measure again" when:
 - a narrow null appears at one position but not in the spatial average;
 - verify disagrees with design in a way consistent with position
   variance rather than a filter failure.
+- the requested advice depends on phase, delay, group delay, or
+  crossover alignment but the bundle lacks timing-reference proof.
 
 ## Sources
 
