@@ -560,6 +560,17 @@ reference. Currently:
   correction v2 at `/correction/`: iPhone-mic measurement flow,
   PEQ generation, CamillaDSP hot-swap. Active workstream — read
   the Status section first to see which phase is in flight.
+- [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
+  **Research only, no implementation yet** (2026-05-25). Proposal
+  for an LLM "audio engineer" layered on top of `/correction/`:
+  after the auto-PEQ is computed, an agent (Claude Opus 4.7 / GPT-5
+  / Gemini Pro) interprets the measurement, asks the user about
+  room shape, critiques the auto-filter, and iterates across
+  re-measurements. Surveys the four agent layers (markdown
+  knowledge base + provider-abstracted harness + tool registry +
+  chat panel), prior art (none in audio; closest analog is
+  LLM-driven spectroscopy), the Dayton USB-C calibration mic as a
+  prerequisite, and a phased build sequence.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter
