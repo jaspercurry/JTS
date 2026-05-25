@@ -155,6 +155,50 @@ pcm.jasper_renderer_in {
     slave.pcm "jasper_renderer_mix"
 }
 
+# Per-renderer substream aliases — defined 2026-05-25 as Phase 1 of
+# the Tier 2A audio architecture (see docs/HANDOFF-fan-in-daemon.md).
+#
+# Each renderer eventually gets its own snd-aloop substream pair,
+# replacing the shared `jasper_renderer_in` → `jasper_renderer_mix` dmix
+# with a substream-per-renderer + capture-side fan-in daemon. The aliases
+# are defined now (additive, no behavior change) so the renderer service
+# files can switch to them when the fan-in daemon ships in a later phase.
+#
+# Substream allocation (8 pairs per card, snd-aloop default):
+#   0 — librespot          (Spotify Connect)
+#   1 — shairport-sync     (AirPlay 2)
+#   2 — bluealsa-aplay     (Bluetooth A2DP)
+#   3 — jasper-usbsink     (USB audio input)
+#   4 — reserved for HDMI input (future)
+#   5 — reserved for debug "monitor" tap (offline AEC capture)
+#   6 — reserved
+#   7 — fan-in daemon's summed output → CamillaDSP/AEC bridge
+#
+# Each alias is a `plug:` wrapper, mirroring jasper_renderer_in's pattern,
+# so the renderer's native rate/format gets converted to the substream's
+# 48 kHz S16_LE via `samplerate_best`. The substream itself accepts
+# whatever the dmix declares (48 kHz S16_LE) and the kernel handles the
+# loopback transit.
+pcm.librespot_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,0"
+}
+
+pcm.shairport_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,1"
+}
+
+pcm.bluealsa_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,2"
+}
+
+pcm.usbsink_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,3"
+}
+
 pcm.jasper_capture {
     type dsnoop
     ipc_key 7778
