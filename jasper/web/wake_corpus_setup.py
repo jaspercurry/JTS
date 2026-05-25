@@ -1173,7 +1173,12 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .clip {
       display: grid;
-      grid-template-columns: 50px 80px 70px 60px 220px 36px;
+      /* minmax(0, …) on the audio column overrides grid's default
+         `min-width: auto` on grid items — without it the <audio>
+         element's intrinsic min-content (browser-determined, often
+         300px+) blows out the 220px column and pushes the trash
+         button off the right edge of the card. */
+      grid-template-columns: 50px 80px 70px 60px minmax(0, 1fr) 36px;
       gap: 0.6em;
       align-items: center;
       padding: 0.5em 0;
@@ -1182,6 +1187,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .clip .seq { font-variant-numeric: tabular-nums; color: #888; }
     .clip.deleted { opacity: 0.4; text-decoration: line-through; }
+    /* Belt-and-suspenders: also constrain the audio element itself
+       so it shrinks to fit its cell instead of forcing the grid
+       column to grow. */
+    .clip audio { width: 100%; min-width: 0; max-width: 320px; }
     button.icon {
       width: 32px;
       padding: 0.3em 0;
