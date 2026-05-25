@@ -522,7 +522,7 @@ def test_index_html_is_valid_shape() -> None:
     assert "api('GET', 'api/status')" in html_text or \
            'api("GET", "api/status")' in html_text
     # All three conditions + distances must be selectable
-    for c in ("quiet", "music"):
+    for c in ("quiet", "ambient", "music"):
         assert f'value="{c}"' in html_text
     for d in ("near", "mid", "far"):
         assert f'value="{d}"' in html_text
@@ -768,3 +768,284 @@ def test_start_recording_clears_sentinel_on_success(backend) -> None:
             assert backend._current_clip_id is not None
     finally:
         backend.stop_recording()
+
+
+# ---------------------------------------------------------------------------
+# Ambient condition — third quadrant for AC / HVAC / fridge noise
+# ---------------------------------------------------------------------------
+
+
+def test_conditions_includes_ambient() -> None:
+    """The CONDITIONS tuple must expose 'ambient' so the wizard's
+    radio button + the backend's validation both line up."""
+    assert "ambient" in wake_corpus_setup.CONDITIONS
+
+
+def test_start_recording_accepts_ambient(backend) -> None:
+    """A new third condition; previously rejected as 'unknown'."""
+    backend.begin_session("jasper")
+    result = backend.start_recording("ambient", "near")
+    assert "clip_id" in result
+    backend.stop_recording()
+
+
+def test_ambient_clips_land_in_ambient_quadrant(
+    backend, tmp_path: Path,
+) -> None:
+    """Files for condition=ambient land in aec_<leg>_ambient/ —
+    separate from both nomusic (quiet) and music quadrants so
+    downstream training can slice on the realistic-home condition."""
+    backend.begin_session("jasper")
+    backend.start_recording("ambient", "mid")
+    time.sleep(0.1)
+    backend.stop_recording()
+
+    out = tmp_path / "out"
+    assert (out / "aec_on_ambient").is_dir()
+    assert (out / "aec_off_ambient").is_dir()
+    assert (out / "aec_dtln_ambient").is_dir()
+    wavs = list((out / "aec_on_ambient").glob("*.aec-on.wav"))
+    assert len(wavs) == 1
+
+
+def test_quiet_clips_still_land_in_nomusic_quadrant(
+    backend, tmp_path: Path,
+) -> None:
+    """Backward compatibility: 'quiet' still maps to the historical
+    'nomusic' directory so existing recordings + downstream tools
+    (extract-wake-corpus.py) keep working unchanged."""
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.1)
+    backend.stop_recording()
+
+    out = tmp_path / "out"
+    # Quiet → 'nomusic' (NOT 'quiet')
+    assert (out / "aec_on_nomusic").is_dir()
+    assert not (out / "aec_on_quiet").exists()
+
+
+# ---------------------------------------------------------------------------
+# compute_rms_dbfs — pure helper for the live mic-level meter
+# ---------------------------------------------------------------------------
+
+
+def test_compute_rms_dbfs_silent_returns_floor() -> None:
+    """All-zeros frame returns the -100 dBFS floor (avoids -inf
+    from log(0); UI clamps below this anyway)."""
+    frame = np.zeros(1280, dtype=np.int16)
+    assert wake_corpus_setup.compute_rms_dbfs(frame) == -100.0
+
+
+def test_compute_rms_dbfs_empty_returns_floor() -> None:
+    """Zero-length frame returns the floor instead of NaN."""
+    frame = np.zeros(0, dtype=np.int16)
+    assert wake_corpus_setup.compute_rms_dbfs(frame) == -100.0
+
+
+def test_compute_rms_dbfs_full_scale_is_zero() -> None:
+    """A constant int16 max-amplitude frame is ~0 dBFS."""
+    frame = np.full(1280, 32767, dtype=np.int16)
+    dbfs = wake_corpus_setup.compute_rms_dbfs(frame)
+    # Within rounding of 0 dBFS
+    assert -0.01 < dbfs <= 0.0
+
+
+def test_compute_rms_dbfs_half_scale_is_about_minus_6() -> None:
+    """A constant int16 half-amplitude frame is ~-6 dBFS
+    (20*log10(0.5) ≈ -6.02)."""
+    frame = np.full(1280, 16384, dtype=np.int16)
+    dbfs = wake_corpus_setup.compute_rms_dbfs(frame)
+    assert -6.1 < dbfs < -5.9
+
+
+def test_compute_rms_dbfs_monotonic_with_amplitude() -> None:
+    """Louder frame → higher (less negative) dBFS. Sanity check
+    for the meter's color thresholds."""
+    quiet = np.full(1280, 100, dtype=np.int16)
+    medium = np.full(1280, 3000, dtype=np.int16)
+    loud = np.full(1280, 20000, dtype=np.int16)
+    assert (
+        wake_corpus_setup.compute_rms_dbfs(quiet)
+        < wake_corpus_setup.compute_rms_dbfs(medium)
+        < wake_corpus_setup.compute_rms_dbfs(loud)
+    )
+
+
+# ---------------------------------------------------------------------------
+# get_current_rms_dbfs — live level read by the SSE endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_get_current_rms_dbfs_none_when_idle(backend) -> None:
+    """No recording in flight → None. UI greys out the meter."""
+    assert backend.get_current_rms_dbfs() is None
+    backend.begin_session("jasper")
+    assert backend.get_current_rms_dbfs() is None
+
+
+def test_get_current_rms_dbfs_returns_float_while_recording(
+    backend,
+) -> None:
+    """While recording, returns a float in [-100, 0] reflecting
+    the AEC ON leg's RMS. The fake capture emits a constant value
+    so we can predict roughly where the RMS lands."""
+    _FakeUdpMicCapture.port_to_value = {9876: 16384, 9877: 0, 9878: 0}
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    try:
+        # Give the loop a few frames to populate the level
+        time.sleep(0.1)
+        rms = backend.get_current_rms_dbfs()
+        assert rms is not None
+        # Half-scale on the AEC ON leg → ~-6 dBFS
+        assert -6.5 < rms < -5.5
+    finally:
+        backend.stop_recording()
+
+
+def test_get_current_rms_dbfs_clears_after_stop(backend) -> None:
+    """After stop_recording, the level meter goes back to None."""
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+    assert backend.get_current_rms_dbfs() is None
+
+
+# ---------------------------------------------------------------------------
+# HTML — new UI affordances for ambient + mic-level + trash icon
+# ---------------------------------------------------------------------------
+
+
+def test_html_has_ambient_radio_button() -> None:
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'value="ambient"' in html_text
+
+
+def test_html_renders_ambient_in_counts_matrix() -> None:
+    """The per-cell counts table includes an ambient column so the
+    operator sees their progress in the third condition. We just
+    need the column label to appear in the JS literal that builds
+    the header row."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    # The renderCounts JS literal — header row + per-row keys
+    assert '">ambient<' in html_text
+    assert '`${d}-ambient`' in html_text
+
+
+def test_html_has_mic_level_bar_elements() -> None:
+    """The Record-a-clip card includes a visible mic-level meter
+    so the operator knows the mic is alive before they speak."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="mic-level"' in html_text
+    assert 'id="mic-level-fill"' in html_text
+    assert 'id="mic-level-readout"' in html_text
+
+
+def test_html_subscribes_to_level_sse() -> None:
+    """The JS opens an EventSource to the level endpoint on load."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert "EventSource('api/recording/level')" in html_text
+
+
+def test_html_delete_button_uses_trash_icon() -> None:
+    """Delete button is small + uses a trash icon (was previously
+    wide text 'delete', which overlapped the audio player)."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    # The icon character + the icon class
+    assert "🗑" in html_text
+    assert '"danger icon"' in html_text
+
+
+# ---------------------------------------------------------------------------
+# /api/recording/level SSE endpoint — read-only, no CSRF, streams
+# ---------------------------------------------------------------------------
+
+
+def _serve_in_thread(backend):
+    """Spin up the recorder HTTP server on a random port in a daemon
+    thread; return (server, thread, port)."""
+    server = wake_corpus_setup.make_server(
+        ("127.0.0.1", 0),
+        csrf_token="test-token",
+        backend=backend,
+    )
+    port = server.server_address[1]
+    th = threading.Thread(target=server.serve_forever, daemon=True)
+    th.start()
+    return server, th, port
+
+
+def test_level_sse_returns_event_stream_headers(backend) -> None:
+    """GET /api/recording/level must return 200 + correct SSE headers
+    (Content-Type, no-cache, X-Accel-Buffering: no for nginx). We
+    don't read the body — just confirm the headers, then close."""
+    import http.client
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/recording/level")
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            assert resp.getheader("Content-Type") == "text/event-stream"
+            assert resp.getheader("X-Accel-Buffering") == "no"
+            # Don't drain the stream — it's open-ended. Closing the
+            # connection cleanly exits the handler.
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_level_sse_streams_idle_payload_when_not_recording(
+    backend,
+) -> None:
+    """When no recording is in flight, the stream emits frames with
+    recording=false + rms_dbfs=null. Read one frame then disconnect."""
+    import http.client
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/recording/level")
+        resp = conn.getresponse()
+        try:
+            # SSE frames are 'data: <json>\n\n' — read up to the first
+            # blank line.
+            line = resp.fp.readline().decode()
+            assert line.startswith("data: "), f"unexpected: {line!r}"
+            payload = json.loads(line[len("data: "):].strip())
+            assert payload == {"recording": False, "rms_dbfs": None}
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_level_sse_does_not_require_csrf(backend) -> None:
+    """The SSE endpoint is read-only — like /api/status — and must
+    NOT 403 when the X-CSRF-Token header is absent. (Browsers can't
+    send custom headers on EventSource connections anyway.)"""
+    import http.client
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        # No X-CSRF-Token header — must still get 200
+        conn.request("GET", "/api/recording/level")
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
