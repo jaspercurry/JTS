@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
-# template at /etc/shairport-sync.conf.template, substituting the
-# disable_synchronization value based on
-# /var/lib/jasper/airplay_mode.env, the AirPlay device name based on
-# JASPER_AIRPLAY_DEVICE_NAME (in /etc/jasper/jasper.env), and the
-# fixed backend latency offset derived from the active CamillaDSP
-# config's samplerate/chunksize/target_level PLUS the
-# pcm.jasper_renderer_mix dmix buffer in /etc/asound.conf.
+# template at /etc/shairport-sync.conf.template, substituting:
+#   - disable_synchronization based on /var/lib/jasper/airplay_mode.env
+#   - AirPlay device name based on JASPER_AIRPLAY_DEVICE_NAME (in
+#     /etc/jasper/jasper.env)
+#   - audio_backend_latency_offset_in_seconds derived from the active
+#     CamillaDSP config's samplerate/chunksize/target_level PLUS the
+#     pcm.jasper_renderer_mix dmix buffer in /etc/asound.conf
+#   - output_device based on JASPER_AUDIO_TOPOLOGY (in
+#     /var/lib/jasper/audio_topology.env, owned by
+#     deploy/bin/jasper-audio-topology). Default `dmix` topology renders
+#     `jasper_renderer_in`; `fanin` topology renders `shairport_substream`.
 #
 # Invoked from three places:
 #   1. shairport-sync.service ExecStartPre (so every restart picks up
@@ -41,6 +45,7 @@ DERIVE_HELPER="${JASPER_DERIVE_DEVICE_NAME:-/usr/local/sbin/jasper-derive-device
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/v1.yml}"
 ASOUNDRC="${JASPER_ASOUNDRC:-/etc/asound.conf}"
+TOPOLOGY_ENV="${JASPER_AUDIO_TOPOLOGY_ENV:-/var/lib/jasper/audio_topology.env}"
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -215,6 +220,24 @@ if [[ -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$ENV_FILE" 2>/dev/null || true
 fi
+# Tier 2A topology switch: read JASPER_AUDIO_TOPOLOGY to pick the
+# shairport output_device. Absent file or unset value = dmix mode.
+if [[ -f "$TOPOLOGY_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$TOPOLOGY_ENV" 2>/dev/null || true
+fi
+case "${JASPER_AUDIO_TOPOLOGY:-dmix}" in
+    fanin)
+        renderer_device="shairport_substream"
+        ;;
+    dmix|"")
+        renderer_device="jasper_renderer_in"
+        ;;
+    *)
+        echo "jasper-apply-airplay-mode: invalid JASPER_AUDIO_TOPOLOGY='${JASPER_AUDIO_TOPOLOGY}'; defaulting to dmix" >&2
+        renderer_device="jasper_renderer_in"
+        ;;
+esac
 # Also source jasper.env (mode 0640, readable by root only — this
 # script runs with the leading `+` privilege escalation from
 # shairport-sync.service's ExecStartPre, so root-read is fine). Used
@@ -260,13 +283,14 @@ trap 'rm -f "$tmp"' EXIT
 sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
     -e "s/__AIRPLAY_NAME__/${airplay_name}/g" \
     -e "s/__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__/${latency_offset}/g" \
+    -e "s/__RENDERER_DEVICE__/${renderer_device}/g" \
     "$TEMPLATE" > "$tmp"
 
 # Validate the substitution actually happened — refuse to install a
 # conf that still contains a placeholder (something went wrong with
 # the template or the sed). shairport would otherwise fail to parse it
 # and crash-loop.
-if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__|__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" "$tmp"; then
+if grep -qE "__DISABLE_SYNCHRONIZATION__|__AIRPLAY_NAME__|__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__|__RENDERER_DEVICE__" "$tmp"; then
     echo "jasper-apply-airplay-mode: placeholder still present in rendered conf — refusing to install" >&2
     exit 2
 fi
@@ -275,4 +299,4 @@ chmod 0644 "$tmp"
 mv -f "$tmp" "$TARGET"
 trap - EXIT
 
-echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name', latency offset ${latency_offset}s" >&2
+echo "jasper-apply-airplay-mode: $TARGET rendered for mode $human, name '$airplay_name', renderer device '$renderer_device', latency offset ${latency_offset}s" >&2

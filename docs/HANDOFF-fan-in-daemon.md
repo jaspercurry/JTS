@@ -558,6 +558,47 @@ maintainability. Rust wins on all three.
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
 
+## Switching between topologies (Phase 3 testing)
+
+`deploy/bin/jasper-audio-topology` (installed at
+`/usr/local/sbin/jasper-audio-topology`) is the CLI that flips the
+chain between `dmix` and `fanin` atomically. It:
+
+- writes `/var/lib/jasper/audio_topology.env` (the single source of
+  truth for the active mode and the per-renderer device env vars)
+- swaps `/etc/asound.conf` between the dmix and fanin variants
+  (backing up the dmix version on first switch)
+- regenerates `/etc/shairport-sync.conf` via the existing
+  `jasper-apply-airplay-mode` (which now reads
+  `JASPER_AUDIO_TOPOLOGY`)
+- runs `systemctl daemon-reload` so each renderer's
+  `EnvironmentFile=-/var/lib/jasper/audio_topology.env` re-resolves
+- enables+starts `jasper-fanin.service` (fanin) or stops+disables
+  it (dmix)
+- restarts the renderer + DSP chain in dependency order
+- post-restart, verifies critical daemons came up
+
+Usage:
+
+```sh
+sudo jasper-audio-topology               # show status
+sudo jasper-audio-topology status        # same
+sudo jasper-audio-topology fanin         # switch to fanin
+sudo jasper-audio-topology dmix          # switch back
+sudo jasper-audio-topology fanin --dry-run   # preview without flipping
+```
+
+A jasper-doctor check (`check_audio_topology_state`) catches the
+"half-switched" failure mode where the env file declares one mode
+but the daemons disagree (e.g., env says `fanin` but
+`jasper-fanin.service` isn't running — that means the renderers
+are writing to per-renderer substreams with nobody reading them,
+i.e. the speaker is silent).
+
+The CLI is the migration tool for Phase 3 (operator opt-in
+testing). When Phase 4 ships default-on, this script becomes the
+"emergency revert to dmix" tool — still useful, narrower scope.
+
 ## Migration plan
 
 Phase ordering matters because each phase needs the previous one's

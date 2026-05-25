@@ -1,0 +1,119 @@
+# /etc/asound.conf — JTS audio topology: FANIN mode (Tier 2A).
+#
+# This file is installed by `jasper-audio-topology fanin`.
+# To switch back to the default `dmix` topology, run:
+#   sudo jasper-audio-topology dmix
+#
+# Diff against deploy/alsa/asoundrc.jasper (the dmix-mode default):
+#   - REMOVED: `pcm.jasper_renderer_mix` (the userspace dmix)
+#   - REMOVED: `pcm.jasper_renderer_in` (the plug wrapper)
+#   - CHANGED: `pcm.jasper_capture` dsnoop's slave shifts from
+#              `hw:Loopback,1,0` → `hw:Loopback,1,7`
+#
+# Renderers in this mode write to their per-renderer substream
+# aliases (librespot_substream, shairport_substream, ...). The
+# jasper-fanin daemon reads each substream's capture side, sums
+# them, and writes the summed-music stream to `hw:Loopback,0,7`.
+# CamillaDSP + AEC bridge dsnoop on `hw:Loopback,1,7` (this file's
+# `pcm.jasper_capture`).
+#
+# Everything else (the rate_converter default, the per-renderer
+# substream aliases, the pcm.jasper_out dongle dmix, the
+# pcm.jasper_ref plug wrapper) is identical to the dmix-mode
+# asoundrc. See deploy/alsa/asoundrc.jasper for the full rationale
+# on each block.
+
+defaults.pcm.rate_converter "samplerate_best"
+
+# Per-renderer substream aliases. Each renderer writes to its own
+# snd-aloop substream pair; jasper-fanin reads the capture sides.
+# Substream allocation:
+#   0 — librespot          (Spotify Connect)
+#   1 — shairport-sync     (AirPlay 2)
+#   2 — bluealsa-aplay     (Bluetooth A2DP)
+#   3 — jasper-usbsink     (USB audio input)
+#   4 — reserved for HDMI input (future)
+#   5 — reserved for debug "monitor" tap
+#   6 — reserved
+#   7 — jasper-fanin's summed output → CamillaDSP/AEC bridge
+pcm.librespot_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,0"
+}
+
+pcm.shairport_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,1"
+}
+
+pcm.bluealsa_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,2"
+}
+
+pcm.usbsink_substream {
+    type plug
+    slave.pcm "hw:Loopback,0,3"
+}
+
+# Capture-side dsnoop on substream 7 — the summed music stream
+# written by jasper-fanin. CamillaDSP opens `plug:jasper_capture`
+# (in v1.yml); AEC bridge opens `pcm.jasper_ref` (which wraps this
+# dsnoop). Both consumers see exactly the same shape as in dmix
+# mode — only the underlying substream-pair index shifts.
+pcm.jasper_capture {
+    type dsnoop
+    ipc_key 7778
+    ipc_perm 0666
+    slave {
+        pcm "hw:Loopback,1,7"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+# Plug-wrapped alias for the AEC bridge's reference capture.
+# Identical to the dmix-mode version — the AEC bridge code doesn't
+# care which substream pair carries the music signal, just that the
+# rate/format is what it opens at.
+pcm.jasper_ref {
+    type plug
+    slave.pcm "jasper_capture"
+}
+
+ctl.jasper_capture {
+    type hw
+    card Loopback
+}
+
+# Dongle dmix — unchanged from dmix-mode asoundrc. Music (from
+# CamillaDSP) + TTS (from jasper-voice) sum here before the DAC.
+pcm.jasper_out {
+    type dmix
+    ipc_key 7777
+    ipc_perm 0666
+    slave {
+        pcm "hw:CARD=__DONGLE_CARD__,DEV=0"
+        rate 48000
+        channels 2
+        format S16_LE
+        period_size 1024
+        buffer_size 4096
+    }
+    bindings {
+        0 0
+        1 1
+    }
+}
+
+ctl.jasper_out {
+    type hw
+    card __DONGLE_CARD__
+}
