@@ -101,7 +101,13 @@ DEFAULT_METADATA_SUBDIR = "metadata"
 # Validated input domains. Match the upstream extract/score/review
 # pipeline's expectations exactly so files land where downstream tools
 # look for them.
-CONDITIONS = ("quiet", "music")
+#
+# "ambient" added to capture the realistic-home condition (AC running,
+# fridge cycling, no music). Optional in practice — operator records
+# under whichever condition matches the moment. Maps to its own
+# quadrant directory aec_<leg>_ambient/ so downstream training can
+# slice on it.
+CONDITIONS = ("quiet", "ambient", "music")
 DISTANCES = ("near", "mid", "far")
 LEGS = ("on", "off", "dtln")
 
@@ -157,12 +163,34 @@ class ClipMetadata:
 # ---------------------------------------------------------------------------
 
 
+def compute_rms_dbfs(frame: np.ndarray) -> float:
+    """Return the RMS of an int16 PCM frame in dBFS.
+
+    -100.0 dBFS for near-silent or empty frames (avoids -inf from
+    log(0)). 0.0 dBFS = full-scale int16. Used by the SSE level-meter
+    endpoint so the UI can show a live "is your voice reaching the
+    mic?" bar while recording.
+    """
+    if len(frame) == 0:
+        return -100.0
+    mean_sq = float(np.mean(frame.astype(np.float64) ** 2))
+    if mean_sq < 1.0:
+        return -100.0
+    rms = mean_sq ** 0.5
+    return 20.0 * float(np.log10(rms / 32768.0))
+
+
 class RecordingTask:
     """Open-ended audio recording from multiple UDP captures.
 
     Constructed on each Start click; cancelled on Stop click. Background
     asyncio task streams frames into per-leg buffers. `stop()` cancels
     cleanly + returns the captured PCM bytes per leg.
+
+    Side effect: while recording, updates `current_rms_dbfs` on every
+    AEC-ON frame so the SSE level meter can read it. Only the AEC ON
+    leg is metered (it's the canonical wake-detection signal); cost
+    is one numpy reduction per ~80 ms.
 
     Memory bound: at 16 kHz mono int16 ≈ 32 KB/s per leg × 3 legs ≈
     96 KB/s. Capped to MAX_RECORDING_DURATION_SEC by the backend, so
@@ -176,6 +204,11 @@ class RecordingTask:
         self._task: asyncio.Task | None = None
         self._stack: AsyncExitStack | None = None
         self._start_monotonic: float = 0.0
+        # Live RMS of the most recent AEC ON frame, read by the SSE
+        # level-meter handler. Written from the asyncio loop thread,
+        # read from HTTP handler threads — single-float reads/writes
+        # are atomic in CPython so no lock needed.
+        self.current_rms_dbfs: float = -100.0
 
     async def start(self) -> None:
         # Lazy import — keeps this module importable on dev machines
@@ -204,8 +237,14 @@ class RecordingTask:
 
     async def _collect_all(self) -> None:
         async def _per_leg(leg: str, cap: Any) -> None:
+            is_aec_on = (leg == "on")
             async for frame in cap.frames():
                 self._buffers[leg].append(frame)
+                # Live-meter the AEC ON leg only — it's the canonical
+                # wake-detection signal. Single-float atomic write; no
+                # lock needed (CPython guarantee).
+                if is_aec_on:
+                    self.current_rms_dbfs = compute_rms_dbfs(frame)
 
         await asyncio.gather(*[
             _per_leg(leg, cap) for leg, cap in self._captures.items()
@@ -367,6 +406,18 @@ class RecordingBackend:
     def is_recording(self) -> bool:
         with self._lock:
             return self._current is not None
+
+    def get_current_rms_dbfs(self) -> float | None:
+        """Latest AEC-ON RMS in dBFS, or None if not recording.
+
+        Read by the /api/recording/level SSE endpoint, called ~12 Hz
+        (matches the frame rate). Returns None when no recording is
+        in flight; the UI grays out the level bar in that state.
+        """
+        with self._lock:
+            if self._current is None:
+                return None
+            return self._current.current_rms_dbfs
 
     # ----- crash recovery -------------------------------------------
 
@@ -564,7 +615,15 @@ class RecordingBackend:
             seq = sum(1 for c in self._clips if not c.deleted) + 1
 
         files: dict[str, str] = {}
-        condition_dir = "music" if meta["condition"] == "music" else "nomusic"
+        # Condition → directory mapping. "nomusic" preserved for
+        # backward compat with existing recordings + downstream tools
+        # (extract-wake-corpus.py emits the same name). "ambient" gets
+        # its own dir so training can slice on it explicitly.
+        condition_dir = {
+            "quiet": "nomusic",
+            "ambient": "ambient",
+            "music": "music",
+        }[meta["condition"]]
         for leg, pcm in pcm_per_leg.items():
             if not pcm:
                 continue
@@ -781,7 +840,56 @@ class _Handler(BaseHTTPRequestHandler):
             self._serve_wav(path, url)
             return
 
+        if path == "/api/recording/level":
+            self._serve_level_sse()
+            return
+
         self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
+
+    def _serve_level_sse(self) -> None:
+        """Server-Sent Events stream of the live AEC-ON RMS in dBFS.
+
+        Connects from the JS on page load, stays open for the lifetime
+        of the tab. When recording is active, pushes {"recording": true,
+        "rms_dbfs": <float>} every ~80 ms. When idle, pushes {"recording":
+        false, "rms_dbfs": null} less frequently so the connection
+        stays warm without burning CPU.
+
+        Exit paths:
+          - Client closes tab → wfile.write raises BrokenPipeError /
+            ConnectionResetError → we exit cleanly.
+          - Server shuts down → same.
+
+        NOT CSRF-protected: this is a read-only GET with no side
+        effects, like /api/status. The token requirement applies to
+        mutating endpoints only.
+        """
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("X-Accel-Buffering", "no")  # disable nginx buffering
+        self.end_headers()
+
+        idle_period_sec = 0.5  # slow when not recording
+        active_period_sec = 0.08  # ~12.5 Hz, matches frame rate
+        try:
+            while True:
+                rms = self.backend.get_current_rms_dbfs()
+                if rms is None:
+                    payload = json.dumps({
+                        "recording": False, "rms_dbfs": None,
+                    })
+                    sleep = idle_period_sec
+                else:
+                    payload = json.dumps({
+                        "recording": True, "rms_dbfs": rms,
+                    })
+                    sleep = active_period_sec
+                self.wfile.write(f"data: {payload}\n\n".encode())
+                self.wfile.flush()
+                time.sleep(sleep)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            return  # client gone
 
     def _serve_wav(self, path: str, url: Any) -> None:
         # /api/clip/<id>/wav?leg=<on|off|dtln>
@@ -1065,7 +1173,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .clip {
       display: grid;
-      grid-template-columns: 50px 80px 70px 60px 220px auto;
+      grid-template-columns: 50px 80px 70px 60px 220px 36px;
       gap: 0.6em;
       align-items: center;
       padding: 0.5em 0;
@@ -1074,6 +1182,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .clip .seq { font-variant-numeric: tabular-nums; color: #888; }
     .clip.deleted { opacity: 0.4; text-decoration: line-through; }
+    button.icon {
+      width: 32px;
+      padding: 0.3em 0;
+      font-size: 1em;
+      line-height: 1;
+      border-radius: 4px;
+    }
     .counter {
       display: inline-block;
       min-width: 30px;
@@ -1086,7 +1201,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
     .matrix {
       display: grid;
-      grid-template-columns: 60px repeat(3, 1fr);
+      grid-template-columns: 60px repeat(4, 1fr);
       gap: 0.3em;
       margin: 0.5em 0;
       font-size: 0.88em;
@@ -1104,6 +1219,46 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       color: #a31f1f;
       font-weight: 600;
       padding: 0.4em 0;
+    }
+    /* Live mic-level bar shown above the record button. Greyed out
+       while idle so the operator always knows the meter is alive +
+       knows what it'll look like once recording. */
+    .mic-level {
+      display: flex;
+      align-items: center;
+      gap: 0.6em;
+      margin: 0.4em 0 0.8em;
+    }
+    .mic-level-track {
+      flex: 1;
+      height: 14px;
+      background: #e6e6e0;
+      border: 1px solid #ccc;
+      border-radius: 7px;
+      overflow: hidden;
+      position: relative;
+    }
+    .mic-level-fill {
+      height: 100%;
+      width: 0%;
+      background: #999;
+      transition: width 80ms linear, background 200ms;
+    }
+    .mic-level.active .mic-level-fill { background: #1f7a1f; }
+    .mic-level.warning .mic-level-fill { background: #d2a000; }
+    .mic-level.danger .mic-level-fill { background: #d32d2d; }
+    .mic-level-readout {
+      min-width: 80px;
+      font-variant-numeric: tabular-nums;
+      color: #666;
+      font-size: 0.85em;
+      text-align: right;
+    }
+    .mic-level-label {
+      min-width: 60px;
+      font-weight: 600;
+      font-size: 0.86em;
+      color: #555;
     }
   </style>
 </head>
@@ -1137,6 +1292,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       <label>Condition:</label>
       <div class="conditions">
         <label><input type="radio" name="condition" value="quiet" checked><span>quiet</span></label>
+        <label><input type="radio" name="condition" value="ambient"><span>ambient (AC/fridge)</span></label>
         <label><input type="radio" name="condition" value="music"><span>music</span></label>
       </div>
     </div>
@@ -1152,6 +1308,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       Click the button (or press <kbd>Space</kbd>) to start. Say
       <strong>"Jarvis"</strong>. Click again to stop.
     </p>
+    <div class="mic-level" id="mic-level">
+      <span class="mic-level-label">Mic level:</span>
+      <div class="mic-level-track"><div id="mic-level-fill" class="mic-level-fill"></div></div>
+      <span id="mic-level-readout" class="mic-level-readout">—</span>
+    </div>
     <button id="record-btn" class="primary recordBtn" disabled>● RECORD</button>
     <div id="recording-info" style="display:none; margin-top:0.6em">
       <span class="pill red">RECORDING</span>
@@ -1322,7 +1483,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             <span>${c.distance}</span>
             <span>${c.duration_sec.toFixed(2)}s</span>
             <audio controls preload="none" src="api/clip/${c.clip_id}/wav?leg=on"></audio>
-            <button class="danger" data-id="${c.clip_id}">delete</button>
+            <button class="danger icon" data-id="${c.clip_id}" title="Delete clip">🗑</button>
           `;
           row.querySelector('button').onclick = async (ev) => {
             const id = ev.target.dataset.id;
@@ -1341,29 +1502,32 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     function renderCounts(counts) {
       const matrix = $('counts-matrix');
       matrix.innerHTML = '';
-      // Header row
+      // Header row — quiet / ambient / music / total
       matrix.innerHTML = `
         <div class="header"></div>
         <div class="header">quiet</div>
+        <div class="header">ambient</div>
         <div class="header">music</div>
         <div class="header">total</div>
       `;
       let grand = 0;
       for (const d of ['near', 'mid', 'far']) {
         const q = counts[`${d}-quiet`] || 0;
+        const a = counts[`${d}-ambient`] || 0;
         const m = counts[`${d}-music`] || 0;
-        const t = q + m;
+        const t = q + a + m;
         grand += t;
         matrix.innerHTML += `
           <div class="header">${d}</div>
           <div>${q}</div>
+          <div>${a}</div>
           <div>${m}</div>
           <div>${t}</div>
         `;
       }
       matrix.innerHTML += `
         <div class="header">total</div>
-        <div></div><div></div>
+        <div></div><div></div><div></div>
         <div>${grand}</div>
       `;
     }
@@ -1380,6 +1544,50 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       e.preventDefault();
       toggleRecord();
     });
+
+    // Live mic-level meter via Server-Sent Events. Connects on page
+    // load, stays open for the lifetime of the tab. Server pushes
+    // {recording: bool, rms_dbfs: float|null} ~12 Hz when recording,
+    // ~2 Hz when idle. Greys out when idle so the operator still
+    // sees the meter exists. Color thresholds:
+    //   green  >= -30 dBFS  (good)
+    //   yellow >= -45 dBFS  (quiet but audible)
+    //   red    >= -60 dBFS  (very quiet; reaching threshold of room noise)
+    //   grey   <  -60 dBFS  (basically silent — likely a problem)
+    function updateLevelBar(recording, dbfs) {
+      const wrap = $('mic-level');
+      const fill = $('mic-level-fill');
+      const out = $('mic-level-readout');
+      if (!recording || dbfs === null) {
+        wrap.className = 'mic-level';
+        fill.style.width = '0%';
+        out.textContent = '—';
+        return;
+      }
+      // Map -60 dBFS .. 0 dBFS → 0 .. 100% bar width.
+      const pct = Math.max(0, Math.min(100, (dbfs + 60) * 100 / 60));
+      fill.style.width = pct + '%';
+      out.textContent = dbfs.toFixed(1) + ' dBFS';
+      let cls = 'mic-level';
+      if (dbfs >= -30) cls += ' active';
+      else if (dbfs >= -45) cls += ' warning';
+      else if (dbfs >= -60) cls += ' danger';
+      wrap.className = cls;
+    }
+    try {
+      const es = new EventSource('api/recording/level');
+      es.onmessage = (ev) => {
+        try {
+          const d = JSON.parse(ev.data);
+          updateLevelBar(d.recording, d.rms_dbfs);
+        } catch (_) { /* ignore malformed frame */ }
+      };
+      es.onerror = () => {
+        // Browser auto-reconnects EventSource on its own. Just show
+        // the idle state in the meantime.
+        updateLevelBar(false, null);
+      };
+    } catch (_) { /* EventSource unsupported — skip the meter */ }
 
     refreshStatus();
     refreshClips();
