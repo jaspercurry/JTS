@@ -88,6 +88,31 @@ _EXTRA_STYLE = """
 }
 .cloud-table th, .nx-table th, .svc-table th { color: #666; font-weight: 600; font-size: 0.82em; }
 .svc-table td.num, .svc-table th.num { text-align: right; }
+.svc-table tr.totals td { border-top: 1px solid #ccc; border-bottom: 0;
+  font-weight: 600; padding-top: 0.45em; }
+.svc-table tr.totals td.muted { font-weight: 400; }
+
+.tile .footer { font-size: 0.72em; color: #aaa; margin-top: 0.25em;
+  font-style: italic; }
+
+.warn-banner { background: #fff7e6; border: 1px solid #f0c060;
+  border-radius: 4px; padding: 0.55em 0.7em; margin: 0 0 0.5em;
+  font-size: 0.85em; color: #6a4a10; }
+.warn-banner code { background: rgba(0,0,0,0.06); padding: 0.05em 0.3em;
+  border-radius: 3px; }
+
+/* Per-core CPU bars — htop-style mini bar chart inside a tile.
+   One column per logical CPU: bar above, label below. */
+.cpu-bars { display: flex; gap: 0.3em; margin-top: 0.4em; }
+.cpu-bar-cell { flex: 1; display: flex; flex-direction: column; gap: 0.15em; }
+.cpu-bar { height: 28px; background: #e8e8e8; border-radius: 2px;
+  position: relative; overflow: hidden; }
+.cpu-bar-fill { position: absolute; bottom: 0; left: 0; right: 0;
+  background: #1db954; transition: height 0.3s ease-out; }
+.tile.warn .cpu-bar-fill { background: #f0c060; }
+.tile.fail .cpu-bar-fill { background: #e08080; }
+.cpu-bar-label { font-size: 0.62em; text-align: center; color: #888;
+  font-variant-numeric: tabular-nums; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.5em; margin-top: 0.5em; }
 .actions button { background: #1db954; color: white; border: 0; padding: 0.55em 1em;
@@ -119,11 +144,18 @@ _PAGE_BODY = """
     <div class="sub"><span id="mem-sub">—</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-memory"></svg>
   </div>
-  <div class="tile" id="tile-load" title="Linux 1-minute load average: roughly the average number of processes in the run queue or running over the last 60 s. Not a percentage. On 4 cores: 4.0 = fully utilized, &gt;4 = oversubscribed.">
+  <div class="tile" id="tile-load" title="Linux 1-minute load average. Roughly: how many processes were running on a core or waiting in the run queue, averaged over the last 60s. Not a percentage. On 4 cores: 4.0 = fully utilized; &gt;4 = oversubscribed (queue forming). Includes processes in uninterruptible I/O wait, so a heavy-disk workload pushes it up even if CPUs are idle.">
     <div class="label">Load avg (1m)</div>
     <div class="value"><span id="load-value">—</span></div>
-    <div class="sub"><span id="load-sub">— / 4 cores</span></div>
+    <div class="sub"><span id="load-sub">—</span></div>
+    <div class="footer">queue depth (not %). &gt;400% = work queueing</div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-load"></svg>
+  </div>
+  <div class="tile" id="tile-cpu" title="Per-core CPU utilization over the last 5s, from /proc/stat. Each bar = one logical CPU (0-100%). Linux schedules threads across cores, so a single tall bar with the others idle usually means a single-threaded bottleneck (e.g. Python GIL on jasper-voice). Use alongside load avg: high CPU + low load = compute-bound; low CPU + high load = I/O wait.">
+    <div class="label">CPU (per core)</div>
+    <div class="value"><span id="cpu-value">—</span></div>
+    <div class="cpu-bars" id="cpu-bars"></div>
+    <div class="sub"><span id="cpu-sub">—</span></div>
   </div>
   <div class="tile" id="tile-temp">
     <div class="label">Temperature</div>
@@ -131,10 +163,11 @@ _PAGE_BODY = """
     <div class="sub"><span id="temp-sub">—</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-temp"></svg>
   </div>
-  <div class="tile hidden" id="tile-fan" title="PWM fan RPM (tachometer) and duty cycle. The pwm-fan kernel driver steps duty 0–255 in response to SoC temp trip points (50 / 60 / 67°C).">
+  <div class="tile hidden" id="tile-fan" title="Pi 5 pwm-fan kernel driver. The fan only ever runs at one of five discrete duty cycles wired into the device tree (0 / 75 / 125 / 175 / 250 out of 255), mapped to SoC temperature trip points: off below 50°C, low 50-60°C, medium 60-67.5°C, high 67.5-75°C, max above 75°C. So the value changes only when the SoC crosses a trip — it's not a continuous control loop.">
     <div class="label">Fan</div>
     <div class="value"><span id="fan-value">—</span></div>
     <div class="sub"><span id="fan-sub">—</span></div>
+    <div class="footer" id="fan-footer">—</div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-fan"></svg>
   </div>
   <div class="tile" id="tile-disk">
@@ -226,7 +259,11 @@ _PAGE_BODY = """
     <code>jasper-*</code> unit. CPU is per-core (100% = one fully
     saturated core; 400% = all four). New services show "—" for CPU
     until the next 5 s sample provides a delta. Sorted by CPU descending.
+    Totals row at the bottom compares the jasper subtotal against
+    total-system CPU so the gap (everything not in this table) is
+    visible.
   </p>
+  <div id="svc-warn" class="warn-banner" style="display:none"></div>
   <table class="svc-table">
     <thead><tr><th>Service</th><th class="num">CPU</th><th class="num">RSS</th></tr></thead>
     <tbody id="svc-rows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
@@ -271,6 +308,56 @@ _SCRIPT = r"""
   function fmtUSD(n) {
     if (n == null) return '—';
     return '$' + Number(n).toFixed(2);
+  }
+
+  // Pi 5 pwm-fan cooling-levels table — values come from the device
+  // tree (/sys/firmware/devicetree/base/cooling-fan/cooling-levels)
+  // and the thermal trip points from
+  // /sys/class/thermal/thermal_zone*/trip_point_*_temp. Mapping is
+  // hardcoded here because the kernel only writes one of these five
+  // PWM values; rendering '75/255' as 'Low (step 1 of 4)' is what
+  // physically happened.
+  const FAN_STEPS = [
+    { pwm: 0,   label: 'Off',    range: 'below 50°C' },
+    { pwm: 75,  label: 'Low',    range: '50–60°C' },
+    { pwm: 125, label: 'Medium', range: '60–67.5°C' },
+    { pwm: 175, label: 'High',   range: '67.5–75°C' },
+    { pwm: 250, label: 'Max',    range: 'above 75°C' },
+  ];
+  function fanStepInfo(pwm) {
+    // Snap to the closest known step — tolerates kernel/DTB drift
+    // (e.g. a hypothetical future board with slightly different
+    // cooling-levels values). In practice the read is exact.
+    let best = 0;
+    let bestDiff = Math.abs(pwm - FAN_STEPS[0].pwm);
+    for (let i = 1; i < FAN_STEPS.length; i++) {
+      const d = Math.abs(pwm - FAN_STEPS[i].pwm);
+      if (d < bestDiff) { best = i; bestDiff = d; }
+    }
+    return Object.assign({}, FAN_STEPS[best], {
+      index: best,
+      maxIndex: FAN_STEPS.length - 1,
+    });
+  }
+
+  // Per-core CPU bars renderer — htop-style mini bar chart. One bar
+  // per core; height proportional to %. Numeric label below each bar
+  // so the user can read the value without hovering.
+  function renderCpuBars(percents) {
+    const container = document.getElementById('cpu-bars');
+    if (!container) return;
+    if (!percents || !percents.length) {
+      container.innerHTML = '';
+      return;
+    }
+    container.innerHTML = percents.map((p, i) => {
+      const pct = Math.min(100, Math.max(0, p || 0));
+      return '<div class="cpu-bar-cell">' +
+             '<div class="cpu-bar"><div class="cpu-bar-fill" style="height:' +
+             pct.toFixed(1) + '%"></div></div>' +
+             '<div class="cpu-bar-label">' + Math.round(pct) + '%</div>' +
+             '</div>';
+    }).join('');
   }
 
   function sparkline(svgId, values, opts) {
@@ -338,16 +425,46 @@ _SCRIPT = r"""
     setTile('tile-memory', memStatus);
     sparkline('spark-memory', hist.mem_used_mb, { min: 0, max: memTotal });
 
-    // Load tile
+    // Load tile — load avg is a queue-depth measure, not a percent.
+    // We expose both: the raw number ("3.63") and the human "of 4
+    // cores" framing. The footer is the one-line explainer that
+    // replaces the hover-only tooltip; >100% on the saturation
+    // figure is intentional when load > cores (the queue is forming).
     const load = hist.load_1m[hist.load_1m.length - 1] || 0;
+    const loadPctOf4 = Math.round((load / 4) * 100);
     document.getElementById('load-value').textContent = load.toFixed(2);
     document.getElementById('load-sub').textContent =
-      load.toFixed(2) + ' / 4 cores · ~' + Math.round((load / 4) * 100) + '% saturated';
+      load.toFixed(2) + ' procs (1m) · ' + loadPctOf4 + '% of 4 cores';
     let loadStatus = 'ok';
     if (load > 4) loadStatus = 'fail';
     else if (load > 3) loadStatus = 'warn';
     setTile('tile-load', loadStatus);
     sparkline('spark-load', hist.load_1m, { min: 0, max: Math.max(4, ...hist.load_1m) });
+
+    // Per-core CPU tile — array of percents in cpuN order. Empty on
+    // the first tick (no delta yet); empty on non-Linux. The "value"
+    // shows total CPU% across all cores (sum, max 400 on a 4-core Pi)
+    // so the user can read this alongside load avg.
+    const cores = m.current.per_core_cpu_pct || [];
+    renderCpuBars(cores);
+    if (cores.length) {
+      const totalCpu = cores.reduce((a, b) => a + b, 0);
+      const maxCore = Math.max(...cores);
+      document.getElementById('cpu-value').textContent =
+        Math.round(totalCpu) + '% / ' + (cores.length * 100) + '%';
+      document.getElementById('cpu-sub').textContent =
+        cores.length + ' cores · hottest ' + Math.round(maxCore) + '%';
+      let cpuStatus = 'ok';
+      // Mirror the load thresholds: total = 3 cores ≈ warn, total = 4
+      // cores fully saturated = fail. Also flag a single pegged core.
+      if (totalCpu > 380 || maxCore >= 98) cpuStatus = 'fail';
+      else if (totalCpu > 300 || maxCore >= 90) cpuStatus = 'warn';
+      setTile('tile-cpu', cpuStatus);
+    } else {
+      document.getElementById('cpu-value').textContent = '—';
+      document.getElementById('cpu-sub').textContent = 'sampling…';
+      setTile('tile-cpu', 'ok');
+    }
 
     // Temp tile — show both Celsius and Fahrenheit. Pi-side reads
     // vcgencmd, which only emits °C; convert in the browser.
@@ -371,24 +488,31 @@ _SCRIPT = r"""
     // since temp samples at 30s not 5s) so just suppress it.
 
     // Fan tile — hidden entirely on hardware without a pwm-fan device
-    // (dev machines, Pi without an Active Cooler attached).
+    // (dev machines, Pi without an Active Cooler attached). The PWM
+    // value is mapped to one of the 5 discrete kernel cooling levels
+    // rather than shown as a raw 0-255 number; that's what's
+    // physically happening (the pwm-fan driver only writes those 5
+    // values) and 'Low (step 1 of 4)' is more legible than '75/255'.
     const fanTile = document.getElementById('tile-fan');
     if (cur.fan_present && cur.fan_rpm != null) {
       fanTile.classList.remove('hidden');
       const rpm = cur.fan_rpm;
       const pwm = cur.fan_pwm || 0;
       const pwmMax = cur.fan_pwm_max || 255;
-      const pct = Math.round((pwm / pwmMax) * 100);
+      const step = fanStepInfo(pwm);
       document.getElementById('fan-value').textContent = rpm + ' RPM';
       document.getElementById('fan-sub').textContent =
-        'PWM ' + pct + '% · ' + pwm + '/' + pwmMax;
+        step.label + ' · step ' + step.index + ' of ' + step.maxIndex +
+        ' · ' + step.range;
+      document.getElementById('fan-footer').textContent =
+        'PWM ' + pwm + '/' + pwmMax +
+        ' (kernel-discrete; only steps at temp trip crossings)';
       // Fail if the fan reports no RPM while the kernel is commanding
       // it on (4-pin disconnected, stalled blades, dead tachometer).
-      // Warn at >=90% duty — usually means the SoC is approaching the
-      // top thermal trip and the kernel is asking for max airflow.
+      // Warn at step 4 (max) — SoC is at the top thermal trip.
       let fanStatus = 'ok';
       if (pwm > 0 && rpm === 0) fanStatus = 'fail';
-      else if (pct >= 90) fanStatus = 'warn';
+      else if (step.index >= step.maxIndex) fanStatus = 'warn';
       setTile('tile-fan', fanStatus);
       sparkline('spark-fan', hist.fan_rpm, {
         min: 0,
@@ -494,21 +618,82 @@ _SCRIPT = r"""
     // Per-service usage. Sort CPU% desc with null/unknown last so the
     // heavy hitters surface at the top — useful during experimental-
     // branch shakedowns where you want to know which daemon spiked.
+    // The totals row at the bottom shows jasper sum vs total-system
+    // CPU (from per-core sampler), making "where's the rest of the
+    // load coming from?" answerable at a glance.
     const services = m.services || [];
     const svcRows = document.getElementById('svc-rows');
+    const svcWarn = document.getElementById('svc-warn');
+    // Memory-cgroup-controller availability warning. Surfaces the
+    // running-kernel-vs-cmdline.txt gap so the next person doesn't
+    // ask why every service's RSS column reads '—'.
+    if (m.current.memory_cgroup_enabled === false) {
+      svcWarn.style.display = '';
+      svcWarn.innerHTML =
+        '<strong>RSS unavailable:</strong> the running kernel was ' +
+        'booted with <code>cgroup_disable=memory</code> (Pi 5 default) ' +
+        'and the memory cgroup controller is off, so ' +
+        '<code>/sys/fs/cgroup/system.slice/*/memory.current</code> ' +
+        "doesn't exist. <code>install.sh</code> has already added " +
+        '<code>cgroup_enable=memory</code> to ' +
+        '<code>/boot/firmware/cmdline.txt</code>; ' +
+        '<strong>reboot the speaker</strong> to apply.';
+    } else {
+      svcWarn.style.display = 'none';
+    }
     if (services.length) {
       const sorted = services.slice().sort((a, b) => {
         const ac = a.cpu_pct == null ? -1 : a.cpu_pct;
         const bc = b.cpu_pct == null ? -1 : b.cpu_pct;
         return bc - ac;
       });
-      svcRows.innerHTML = sorted.map(s => {
+      const rows = sorted.map(s => {
         const cpu = s.cpu_pct == null ? '—' : s.cpu_pct.toFixed(1) + '%';
         const rss = s.rss_mb == null ? '—' : Math.round(s.rss_mb) + ' MB';
         return '<tr><td>' + s.name + '</td>' +
                '<td class="num">' + cpu + '</td>' +
                '<td class="num">' + rss + '</td></tr>';
-      }).join('');
+      });
+      // Totals row. Jasper subtotal is the sum of known cpu_pct's
+      // (skips first-tick None values). System total comes from
+      // per-core CPU (sum of all cores, max 4*100=400 on a 4-core
+      // Pi). Headroom is the gap; "not in this table" is everything
+      // else (kernel threads, audio renderers, etc.).
+      const jasperCpu = sorted.reduce((acc, s) =>
+        acc + (s.cpu_pct == null ? 0 : s.cpu_pct), 0);
+      const jasperRss = sorted.reduce((acc, s) =>
+        acc + (s.rss_mb == null ? 0 : s.rss_mb), 0);
+      const anyRss = sorted.some(s => s.rss_mb != null);
+      const corePcts = m.current.per_core_cpu_pct || [];
+      let totalsLine = '';
+      if (corePcts.length) {
+        const systemCpu = corePcts.reduce((a, b) => a + b, 0);
+        const maxScale = corePcts.length * 100;
+        const headroom = Math.max(0, maxScale - systemCpu);
+        const nonJasper = Math.max(0, systemCpu - jasperCpu);
+        totalsLine =
+          '<tr class="totals">' +
+          '<td>System total · jasper / non-jasper / free</td>' +
+          '<td class="num">' +
+            Math.round(systemCpu) + '% (' +
+            Math.round(jasperCpu) + ' + ' + Math.round(nonJasper) +
+            ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)' +
+          '</td>' +
+          '<td class="num">' +
+            (anyRss ? Math.round(jasperRss) + ' MB' : '—') +
+          '</td></tr>';
+      } else {
+        // Per-core sampler hasn't produced a delta yet (first tick
+        // after boot or non-Linux). Show jasper-only totals.
+        totalsLine =
+          '<tr class="totals">' +
+          '<td>Jasper subtotal</td>' +
+          '<td class="num">' + Math.round(jasperCpu) + '%</td>' +
+          '<td class="num">' +
+            (anyRss ? Math.round(jasperRss) + ' MB' : '—') +
+          '</td></tr>';
+      }
+      svcRows.innerHTML = rows.join('') + totalsLine;
     } else {
       svcRows.innerHTML =
         '<tr><td colspan="3" class="muted">No jasper-* cgroups visible (cgroup-v2 unavailable, or dev env).</td></tr>';

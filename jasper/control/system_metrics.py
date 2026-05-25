@@ -63,6 +63,21 @@ SYS_SLICE_CGROUP = "/sys/fs/cgroup/system.slice"
 SERVICE_PREFIX = "jasper-"
 SERVICE_SUFFIX = ".service"
 
+# Memory cgroup controller probe. The Pi 5 device-tree blob injects
+# `cgroup_disable=memory` into the kernel cmdline by default; install.sh
+# overrides with `cgroup_enable=memory` in /boot/firmware/cmdline.txt
+# (reboot required). When the override hasn't taken effect, the
+# per-service memory.current files don't exist and RSS reports blank.
+# The dashboard surfaces this state so the next person doesn't have
+# to ask why.
+CGROUP_CONTROLLERS_FILE = "/sys/fs/cgroup/cgroup.controllers"
+
+# /proc/stat per-core lines. Each "cpuN" line reports cumulative
+# jiffies in user/nice/system/idle/iowait/irq/softirq/steal/guest/
+# guest_nice columns; the dashboard wants active vs total to compute
+# a per-core utilization percentage.
+PROC_STAT = "/proc/stat"
+
 
 class SystemSampler:
     """Background thread that snapshots /proc + vcgencmd into ring
@@ -107,6 +122,16 @@ class SystemSampler:
         #   _services_snapshot — public: list of dicts for snapshot().
         self._service_samples: dict[str, tuple[int, float]] = {}
         self._services_snapshot: list[dict[str, Any]] = []
+        # Per-core CPU state. Same delta pattern as per-service: first
+        # tick yields [] because we have no baseline.
+        #   _per_core_prev — internal: list of (active_jiffies, total_jiffies)
+        #     one entry per core, indexed by cpuN order in /proc/stat
+        #   _per_core_pct — public: list of floats, 0-100 per core
+        self._per_core_prev: list[tuple[int, int]] = []
+        self._per_core_pct: list[float] = []
+        # Memory-cgroup-controller state. None on non-Linux; True/False
+        # on Linux based on /sys/fs/cgroup/cgroup.controllers.
+        self._memory_cgroup_enabled: bool | None = None
         self._last_sample_at: float | None = None
         self._stopped = False
         self._thread = threading.Thread(
@@ -162,6 +187,18 @@ class SystemSampler:
                         else None
                     ),
                     "fan_pwm_max": PWMFAN_DUTY_MAX,
+                    # Per-core CPU utilization, one entry per logical
+                    # CPU in cpuN order from /proc/stat. Each value
+                    # 0-100 (%). Empty list on the first tick (no
+                    # baseline yet) and on non-Linux systems.
+                    "per_core_cpu_pct": list(self._per_core_pct),
+                    # Memory cgroup controller availability — surfaces
+                    # the "RSS shows '—' for every service" case. None
+                    # on non-Linux; False if the running kernel was
+                    # booted with `cgroup_disable=memory` and no
+                    # override; True when /sys/fs/cgroup/cgroup.controllers
+                    # lists "memory".
+                    "memory_cgroup_enabled": self._memory_cgroup_enabled,
                 },
                 # Per-service cgroup stats. List of
                 #   {"name": "jasper-voice", "cpu_pct": 43.5, "rss_mb": 256.0}
@@ -204,6 +241,8 @@ class SystemSampler:
         # (dev machines, Pi without an Active Cooler attached).
         fan = self._read_fan()
         services = self._tick_services()
+        per_core = self._tick_per_core()
+        memory_cgroup = self._read_memory_cgroup_enabled()
         with self._lock:
             self._append(self._t, time.time())
             self._append(self._mem_available_mb, mem["available_mb"])
@@ -228,6 +267,8 @@ class SystemSampler:
             self._disk_total_gb = disk_total_gb
             self._uptime_sec = uptime
             self._services_snapshot = services
+            self._per_core_pct = per_core
+            self._memory_cgroup_enabled = memory_cgroup
             self._last_sample_at = time.time()
 
     def _tick_vcgencmd(self) -> None:
@@ -447,6 +488,111 @@ class SystemSampler:
                 return int(f.read().strip())
         except (OSError, ValueError):
             return None
+
+    @staticmethod
+    def _read_memory_cgroup_enabled(
+        controllers_file: str = CGROUP_CONTROLLERS_FILE,
+    ) -> bool | None:
+        """Return True if the kernel's cgroup-v2 memory controller is
+        enabled, False if Linux + cgroup-v2 are present but memory is
+        disabled, None if /sys/fs/cgroup isn't there (non-Linux, or
+        cgroup-v1 system).
+
+        On the Pi 5, this surfaces the install.sh ↔ reboot gap: a
+        recent install.sh run will have appended `cgroup_enable=memory`
+        to /boot/firmware/cmdline.txt, but the running kernel honors
+        whatever it was booted with — so the dashboard can correctly
+        say "reboot to apply" instead of silently rendering "—" for
+        every service's RSS column."""
+        try:
+            with open(controllers_file) as f:
+                controllers = f.read().split()
+        except OSError:
+            return None
+        return "memory" in controllers
+
+    def _tick_per_core(
+        self, stat_path: str = PROC_STAT,
+    ) -> list[float]:
+        """Per-core CPU utilization (%) computed as a delta of active
+        vs total jiffies between the previous tick and this one. One
+        entry per logical CPU in /proc/stat order; empty list on the
+        first tick (no baseline) and on non-Linux systems.
+
+        Pi 5 has 4 cores; htop-style per-core bars in the dashboard
+        let the user tell whether 'load 3.6' means 'four cores ~90%
+        busy' or 'one core pegged + others idle' (single-threaded
+        bottleneck — common shape for jasper-voice's Python GIL)."""
+        samples = self._read_per_core_jiffies(stat_path)
+        if not samples:
+            self._per_core_prev = []
+            return []
+        prev = self._per_core_prev
+        out: list[float] = []
+        # If core count changed (kernel hot-plug, very rare on a Pi)
+        # OR we have no baseline yet, reset and yield empty — next
+        # tick will produce real values.
+        if len(prev) != len(samples):
+            self._per_core_prev = samples
+            return []
+        for (a_now, t_now), (a_prev, t_prev) in zip(samples, prev):
+            active_delta = a_now - a_prev
+            total_delta = t_now - t_prev
+            if total_delta <= 0:
+                # Clock skew or counter reset — fall back to 0 rather
+                # than a nonsense negative.
+                out.append(0.0)
+                continue
+            pct = (active_delta / total_delta) * 100.0
+            out.append(round(max(0.0, min(100.0, pct)), 1))
+        self._per_core_prev = samples
+        return out
+
+    @staticmethod
+    def _read_per_core_jiffies(
+        stat_path: str = PROC_STAT,
+    ) -> list[tuple[int, int]]:
+        """Read /proc/stat per-core lines, return list of
+        (active_jiffies, total_jiffies) per core in cpuN order.
+
+        /proc/stat columns: user nice system idle iowait irq softirq
+        steal guest guest_nice. Total = all of them. Active = total -
+        idle - iowait (iowait is idle-with-pending-IO; counts as
+        non-busy for utilization purposes — matches `top`'s
+        convention). Returns [] on non-Linux."""
+        try:
+            with open(stat_path) as f:
+                lines = f.readlines()
+        except OSError:
+            return []
+        out: list[tuple[int, int]] = []
+        for line in lines:
+            parts = line.split()
+            # Per-core lines start with "cpuN" where N is a digit.
+            # The bare "cpu" aggregate line (no digit) is skipped so
+            # we don't double-count.
+            if not parts or not parts[0].startswith("cpu"):
+                continue
+            if parts[0] == "cpu":
+                continue
+            if not parts[0][3:].isdigit():
+                continue
+            try:
+                fields = [int(x) for x in parts[1:11]]
+            except ValueError:
+                continue
+            # Pad short lines (older kernels lacked guest fields).
+            while len(fields) < 10:
+                fields.append(0)
+            user, nice, system, idle, iowait = fields[:5]
+            irq, softirq, steal, guest, guest_nice = fields[5:10]
+            # guest / guest_nice are ALREADY included in user / nice
+            # (kernel accounting quirk — see kernel/sched/cputime.c).
+            # Don't double-count.
+            total = user + nice + system + idle + iowait + irq + softirq + steal
+            active = total - idle - iowait
+            out.append((active, total))
+        return out
 
     @staticmethod
     def _read_throttled() -> tuple[int, int]:
