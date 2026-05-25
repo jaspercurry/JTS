@@ -16,14 +16,20 @@ SCRIPT = REPO / "deploy" / "bin" / "jasper-apply-airplay-mode"
 NO_ASOUNDRC = object()
 
 
-def _default_asoundrc(dmix_buffer_size: int = 4096) -> str:
+def _default_asoundrc(
+    dmix_buffer_size: int = 4096,
+    output_dmix_buffer_size: int = 4096,
+) -> str:
     """Production-shape asoundrc fixture.
 
     Mirrors `deploy/alsa/asoundrc.jasper` enough that the script's
-    `awk` parser locates `buffer_size` inside the
-    `pcm.jasper_renderer_mix` block. Other PCM definitions are
-    included so the parser's "exit on next pcm.* definition" guard
-    also gets exercised.
+    `awk` parsers locate `buffer_size` inside both the
+    `pcm.jasper_renderer_mix` block (renderer-side dmix) AND the
+    `pcm.jasper_out` block (output-side dmix between CamillaDSP and
+    the dongle). Both are invisible to shairport's snd_pcm_delay()
+    and need to be added to the AirPlay backend-latency offset.
+    Other PCM definitions are included so the parsers' "exit on next
+    pcm.* definition" guard also gets exercised.
     """
     return textwrap.dedent(
         f"""
@@ -46,6 +52,19 @@ def _default_asoundrc(dmix_buffer_size: int = 4096) -> str:
             slave {{
                 pcm "hw:Loopback,1,0"
                 buffer_size 4096
+            }}
+        }}
+
+        pcm.jasper_out {{
+            type dmix
+            ipc_key 7777
+            slave {{
+                pcm "hw:CARD=A,DEV=0"
+                rate 48000
+                channels 2
+                format S16_LE
+                period_size 1024
+                buffer_size {output_dmix_buffer_size}
             }}
         }}
         """
@@ -147,8 +166,9 @@ def _render(
 
 def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: Path):
     # Default fixture: CamillaDSP target_level=4096, chunksize=1024
-    # → 3072 frames; renderer dmix buffer=4096 → 4096 frames.
-    # Total invisible = 7168 frames / 48000 = 0.149333 s.
+    # → 3072 frames; renderer dmix=4096 → 4096 frames; output dmix
+    # (pcm.jasper_out) = 4096 → 4096 frames.
+    # Total invisible = 11264 frames / 48000 = 0.234667 s.
     rendered, result = _render(
         tmp_path,
         """
@@ -162,14 +182,14 @@ def test_airplay_renderer_derives_latency_offset_from_camilla_target(tmp_path: P
 
     assert 'name = "Unit Test";' in rendered
     assert 'disable_synchronization = "no";' in rendered
-    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.234667;" in rendered
     assert "__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__" not in rendered
-    assert "latency offset -0.149333s" in result.stderr
+    assert "latency offset -0.234667s" in result.stderr
 
 
 def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Path):
-    # CamillaDSP target=2048 → 1024 frames; dmix=4096 → 4096 frames.
-    # Total = 5120 / 48000 = 0.106667 s.
+    # CamillaDSP target=2048 → 1024 frames; renderer dmix 4096 +
+    # output dmix 4096 = 8192. Total = 9216 / 48000 = 0.192 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -181,12 +201,13 @@ def test_airplay_renderer_updates_offset_when_target_level_changes(tmp_path: Pat
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.192000;" in rendered
 
 
 def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path: Path):
-    # CamillaDSP target_level absent → defaults to chunksize → 0 frames
-    # from CamillaDSP. Dmix contributes 4096 frames / 48000 = 0.085333 s.
+    # target_level absent → defaults to chunksize → 0 Camilla frames.
+    # Both dmix buffers contribute 4096 each. Total = 8192 / 48000 =
+    # 0.170667 s.
     rendered, _ = _render(
         tmp_path,
         """
@@ -197,13 +218,15 @@ def test_airplay_renderer_missing_target_level_matches_camilla_default(tmp_path:
         """,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.085333;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.170667;" in rendered
 
 
 def test_airplay_renderer_falls_back_when_asoundrc_missing(tmp_path: Path):
-    # Pre-PR-#214 topology (no renderer-side dmix in front of
-    # snd-aloop). Script should treat the dmix contribution as 0 and
-    # return only the CamillaDSP component: -(3072 / 48000) = -0.064.
+    # No asoundrc → both dmix lookups return empty → both contribute
+    # 0 to the offset. Only CamillaDSP component remains: -(3072 / 48000)
+    # = -0.064. Matches a pre-PR-#214 host where the renderer-side
+    # dmix didn't exist; the output dmix did exist on such hosts but
+    # if the asoundrc is unreachable we can't see either.
     rendered, _ = _render(
         tmp_path,
         """
@@ -220,8 +243,12 @@ def test_airplay_renderer_falls_back_when_asoundrc_missing(tmp_path: Path):
 
 
 def test_airplay_renderer_falls_back_when_renderer_mix_block_missing(tmp_path: Path):
-    # asoundrc exists but defines other PCMs only — no
-    # pcm.jasper_renderer_mix block. Same fallback behavior as above.
+    # asoundrc exists with pcm.jasper_out (output dmix) but no
+    # pcm.jasper_renderer_mix (renderer dmix). This is the actual
+    # pre-PR-#214 shape — renderers wrote directly to the loopback,
+    # dongle dmix was already there. New formula picks up the output
+    # dmix (4096) and skips the missing renderer dmix:
+    # (3072 + 0 + 4096) / 48000 = 0.149333 s.
     asoundrc_without_renderer_mix = textwrap.dedent(
         """
         pcm.jasper_capture {
@@ -254,13 +281,12 @@ def test_airplay_renderer_falls_back_when_renderer_mix_block_missing(tmp_path: P
         asoundrc=asoundrc_without_renderer_mix,
     )
 
-    assert "audio_backend_latency_offset_in_seconds = -0.064000;" in rendered
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
-def test_airplay_renderer_picks_up_alternate_dmix_buffer_size(tmp_path: Path):
-    # Future-proof for Tier 1B (shrink the dmix buffer to 2048 etc):
-    # ensure the script reads the actual value from asoundrc rather
-    # than hardcoding 4096.
+def test_airplay_renderer_picks_up_alternate_dmix_buffer_sizes(tmp_path: Path):
+    # Sanity-check that both dmix buffers are read independently
+    # from the asoundrc rather than being hardcoded.
     rendered, _ = _render(
         tmp_path,
         """
@@ -270,12 +296,47 @@ def test_airplay_renderer_picks_up_alternate_dmix_buffer_size(tmp_path: Path):
           queuelimit: 4
           target_level: 4096
         """,
-        asoundrc=_default_asoundrc(dmix_buffer_size=2048),
+        asoundrc=_default_asoundrc(
+            dmix_buffer_size=2048,
+            output_dmix_buffer_size=1024,
+        ),
     )
 
-    # CamillaDSP contributes 3072 frames; dmix contributes 2048.
-    # Total = 5120 / 48000 = 0.106667 s.
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+    # CamillaDSP 3072 + renderer dmix 2048 + output dmix 1024 = 6144.
+    # 6144 / 48000 = 0.128 s.
+    assert "audio_backend_latency_offset_in_seconds = -0.128000;" in rendered
+
+
+def test_airplay_renderer_skips_output_dmix_when_block_absent(tmp_path: Path):
+    # Backward-compat: if for some reason the asoundrc has a
+    # renderer dmix but no output dmix, the offset should still
+    # render — just without the output-side contribution.
+    asoundrc_only_renderer = textwrap.dedent(
+        """
+        pcm.jasper_renderer_mix {
+            type dmix
+            slave {
+                pcm "hw:Loopback,0,0"
+                buffer_size 4096
+            }
+        }
+        """
+    ).strip()
+    rendered, _ = _render(
+        tmp_path,
+        """
+        devices:
+          samplerate: 48000
+          chunksize: 1024
+          queuelimit: 4
+          target_level: 4096
+        """,
+        asoundrc=asoundrc_only_renderer,
+    )
+    # (3072 + 4096 + 0) / 48000 = 0.149333 s (the same offset that
+    # Tier 1A's PR #308 originally shipped, before the output-dmix
+    # discovery on 2026-05-25).
+    assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
 
 
 # ---------- Tier 2A topology substitution (__RENDERER_DEVICE__) -----
