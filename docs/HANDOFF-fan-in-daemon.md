@@ -1,11 +1,14 @@
 # Handoff: Tier 2A fan-in daemon — design
 
-> **Status: design (no code yet).** This doc captures the design decisions
-> for the per-renderer substream + Rust fan-in daemon architecture, before
-> any code lands. Read this first if you're picking up the Tier 2A
-> implementation. It will evolve into the operational reference as code
-> ships; the "Status" line moves to operational once Phase 4 (soak +
-> default-on) lands.
+> **Status: shipped (Phase 1 + Phase 2 chunks 1-4 landed in PR #308,
+> 2026-05-25). Disabled by default.** The daemon source, the systemd
+> unit, the install.sh build wiring, the jasper-doctor checks, and the
+> `/state` aggregation are all in place. Activating the topology (Phase
+> 3) still requires explicit operator opt-in — set
+> `JASPER_AUDIO_TOPOLOGY=fanin` and `systemctl enable --now
+> jasper-fanin.service`, then complete the 72-hour soak before Phase 4
+> (default-on). The "Status" line moves to operational once Phase 4
+> lands.
 
 ## TL;DR
 

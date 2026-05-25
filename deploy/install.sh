@@ -62,7 +62,12 @@ install_deps() {
         dfu-util \
         libwebrtc-audio-processing-dev pkg-config \
         meson ninja-build \
-        nginx-light openssl
+        nginx-light openssl \
+        rustc cargo
+    # rustc + cargo are required to build the jasper-fanin Rust daemon
+    # (rust/jasper-fanin/). Trixie ships rustc 1.85, comfortably above
+    # our crate's rust-version=1.75 floor. See
+    # docs/HANDOFF-fan-in-daemon.md "Why Rust" for the language choice.
     # meson + ninja-build are needed by build_webrtc_v2_for_aec3() to
     # compile webrtc-audio-processing v2.1 statically from source. The
     # resulting static archive is what jasper_aec3/setup.py links the
@@ -156,6 +161,60 @@ build_webrtc_v2_for_aec3() {
 
     echo "  → static archive: ${static_archive} ($(du -h "${static_archive}" | cut -f1))"
     export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
+}
+
+build_install_jasper_fanin() {
+    # Build the jasper-fanin Rust daemon (rust/jasper-fanin/) and
+    # install the release binary to /opt/jasper/bin/jasper-fanin.
+    #
+    # See docs/HANDOFF-fan-in-daemon.md for the daemon's design,
+    # resilience contract, and 4-phase migration plan. As of Phase
+    # 2 chunk 4 (this commit), the daemon is INSTALLED but NOT
+    # ENABLED — the dmix-based renderer path is still the active
+    # topology. Phase 3 (a future PR) flips the JASPER_AUDIO_TOPOLOGY
+    # feature flag to opt-in operators onto the fanin path.
+    #
+    # Build is done as the `pi` user in a persistent cache dir at
+    # /var/cache/jasper-fanin-build so cargo's incremental compilation
+    # keeps re-runs fast (~5 s on no source change, ~20 s incremental,
+    # ~90 s first run). Target/ directory stays in the cache; only
+    # the release binary is copied to /opt/jasper/bin.
+    local src_dir="${REPO_DIR}/rust/jasper-fanin"
+    local cache_dir="/var/cache/jasper-fanin-build"
+    local bin_dest="/opt/jasper/bin/jasper-fanin"
+
+    if [[ ! -d "${src_dir}" ]]; then
+        echo "  jasper-fanin source missing at ${src_dir}; skipping build"
+        return 0
+    fi
+
+    echo "  building jasper-fanin (Rust daemon)..."
+    mkdir -p "${cache_dir}"
+    chown pi:pi "${cache_dir}"
+
+    # rsync the source tree into the cache dir, preserving cargo's
+    # incremental compile state in target/ between runs. --delete
+    # removes stale source files (e.g., a renamed module).
+    rsync -a --delete \
+        --exclude='target/' \
+        "${src_dir}/" "${cache_dir}/"
+    chown -R pi:pi "${cache_dir}"
+
+    # Build as pi so cargo's user cache (~pi/.cargo) is used and the
+    # generated artifacts under target/ are pi-owned (operator can
+    # clean up without sudo).
+    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --quiet" \
+        || { echo "  jasper-fanin build failed; see cargo output above"; return 1; }
+
+    local built_bin="${cache_dir}/target/release/jasper-fanin"
+    if [[ ! -x "${built_bin}" ]]; then
+        echo "  ERROR: cargo build finished but ${built_bin} is missing" >&2
+        return 1
+    fi
+
+    mkdir -p /opt/jasper/bin
+    install -m 0755 -o root -g root "${built_bin}" "${bin_dest}"
+    echo "  → installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1))"
 }
 
 install_camilladsp() {
@@ -1645,6 +1704,15 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
 
+    # jasper-fanin: per-renderer snd-aloop substream fan-in daemon
+    # (Tier 2A audio architecture). Installed but NOT enabled by
+    # default — operator opts in via the JASPER_AUDIO_TOPOLOGY=fanin
+    # feature flag in /etc/jasper/jasper.env once their hardware is
+    # ready. See docs/HANDOFF-fan-in-daemon.md migration plan.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
+        "${SYSTEMD_DIR}/jasper-fanin.service"
+
     # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
     # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
     # the wizard-owned stash at /var/lib/jasper/wifi_guardian.env. See
@@ -2267,6 +2335,7 @@ main() {
     set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
+    build_install_jasper_fanin   # Rust daemon binary; installed but not enabled
     install_systemd_units
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
