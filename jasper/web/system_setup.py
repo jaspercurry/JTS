@@ -148,7 +148,6 @@ _PAGE_BODY = """
     <div class="label">Load avg (1m)</div>
     <div class="value"><span id="load-value">—</span></div>
     <div class="sub"><span id="load-sub">—</span></div>
-    <div class="footer">queue depth (not %). &gt;400% = work queueing</div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-load"></svg>
   </div>
   <div class="tile" id="tile-cpu" title="Per-core CPU utilization over the last 5s, from /proc/stat. Each bar = one logical CPU (0-100%). Linux schedules threads across cores, so a single tall bar with the others idle usually means a single-threaded bottleneck (e.g. Python GIL on jasper-voice). Use alongside load avg: high CPU + low load = compute-bound; low CPU + high load = I/O wait.">
