@@ -1851,6 +1851,85 @@ def check_fanin_binary_installed() -> CheckResult:
     )
 
 
+def check_audio_topology_state() -> CheckResult:
+    """The audio topology env file
+    (/var/lib/jasper/audio_topology.env) declares which renderer/DSP
+    chain shape is active: `dmix` (default) or `fanin` (Tier 2A).
+    This check catches a "half-switched" state where the env file
+    and the daemons disagree:
+
+      - env says `fanin` but jasper-fanin.service is inactive →
+        renderers are writing to per-renderer substreams but nothing
+        is reading them; output is silence. Hard fail with the fix.
+      - env says `dmix` but jasper-fanin.service is active →
+        jasper-fanin is running but the renderers aren't feeding
+        it; harmless but wasteful. Warn.
+      - env absent → dmix mode by default; ok.
+
+    Switch with:  sudo jasper-audio-topology [dmix|fanin]
+    See docs/HANDOFF-fan-in-daemon.md.
+    """
+    env_path = Path("/var/lib/jasper/audio_topology.env")
+    declared_mode = "dmix"  # default when file is absent
+    if env_path.exists():
+        try:
+            for line in env_path.read_text().splitlines():
+                line = line.strip()
+                if line.startswith("JASPER_AUDIO_TOPOLOGY="):
+                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if value:
+                        declared_mode = value
+                    break
+        except OSError as e:
+            return CheckResult(
+                "audio topology",
+                "warn",
+                f"could not read {env_path}: {e}",
+            )
+
+    if declared_mode not in ("dmix", "fanin"):
+        return CheckResult(
+            "audio topology",
+            "fail",
+            f"unknown JASPER_AUDIO_TOPOLOGY={declared_mode!r} in "
+            f"{env_path}. Valid values: dmix, fanin. Reset with: "
+            f"sudo jasper-audio-topology dmix",
+        )
+
+    fanin_active = (
+        _run(["systemctl", "is-active", "jasper-fanin.service"])
+        .stdout.strip()
+        == "active"
+    )
+
+    if declared_mode == "fanin" and not fanin_active:
+        return CheckResult(
+            "audio topology",
+            "fail",
+            f"declared mode is 'fanin' but jasper-fanin.service is "
+            f"not active. Renderers are writing to per-renderer "
+            f"substreams with nothing reading them — output is "
+            f"silence. Either start the daemon "
+            f"(sudo systemctl start jasper-fanin) or revert with: "
+            f"sudo jasper-audio-topology dmix",
+        )
+    if declared_mode == "dmix" and fanin_active:
+        return CheckResult(
+            "audio topology",
+            "warn",
+            f"declared mode is 'dmix' but jasper-fanin.service is "
+            f"active. Daemon is running but unused; stop with: "
+            f"sudo systemctl stop jasper-fanin",
+        )
+
+    return CheckResult(
+        "audio topology",
+        "ok",
+        f"mode={declared_mode} (jasper-fanin "
+        f"{'active' if fanin_active else 'stopped'})",
+    )
+
+
 def check_fanin_service() -> CheckResult:
     """The jasper-fanin systemd unit is INSTALLED but NOT ENABLED by
     default. The dmix-based renderer path is still the active topology
@@ -2924,6 +3003,10 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # not making progress" — the same shape Tier 5.2's
         # SystemSupervisor protects against at the global level).
         check_fanin_binary_installed,
+        # Topology/daemon consistency: catches "env says fanin but
+        # jasper-fanin isn't running" (= silence) or its mirror.
+        # docs/HANDOFF-fan-in-daemon.md.
+        check_audio_topology_state,
         check_fanin_service,
         # Reports which additive wake-detection legs the user has
         # armed via the /system Wake detection card (raw + DTLN).

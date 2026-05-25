@@ -40,6 +40,12 @@ TimeoutStopSec=5s
 # Leading `-` makes systemd skip silently if the file isn't there.
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
+# Tier 2A topology switch (deploy/bin/jasper-audio-topology). Default
+# playback device for jasper-usbsink is set in jasper/usbsink/daemon.py
+# to `jasper_renderer_in`; this EnvironmentFile sets
+# JASPER_USBSINK_PLAYBACK_DEVICE to `usbsink_substream` in fanin
+# topology. Optional (`-` prefix) so absence = dmix mode = default used.
+EnvironmentFile=-/var/lib/jasper/audio_topology.env
 ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
 Restart=on-failure
 RestartSec=2s
