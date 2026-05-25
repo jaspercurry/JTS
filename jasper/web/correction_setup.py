@@ -49,7 +49,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE, send_html_response
 
@@ -168,6 +168,14 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
                 border-radius: 6px; padding: 0.7em 0.9em;
                 margin: 1em 0; color: #800; }
   .err-banner.hidden { display: none; }
+  .quality-banner { border-radius: 6px; padding: 0.7em 0.9em;
+                    margin: 0.5em 0; font-size: 0.94em; }
+  .quality-banner.warn { background: #fff8e1; border: 1px solid #d6b656;
+                         color: #5f4500; }
+  .quality-banner.fail { background: #ffe8e8; border: 1px solid #d99;
+                         color: #800; }
+  .quality-banner ul { margin: 0.4em 0 0; padding-left: 1.2em; }
+  .quality-banner.hidden { display: none; }
 
   .mic-panel { background:#f7f7f7; border:1px solid #ddd;
                border-radius:6px; padding:0.8em 0.9em; margin:1em 0; }
@@ -353,6 +361,7 @@ __NAV_BACK__
 
   <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
     <span id="state-detail" class="hint"></span></p>
+  <div id="quality-banner" class="quality-banner hidden"></div>
 
   <div id="position-prompt" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
     <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
@@ -434,6 +443,7 @@ __NAV_BACK__
   var measureSection = document.getElementById('measure-section');
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
+  var qualityBanner = document.getElementById('quality-banner');
   var autolevelBtn = document.getElementById('autolevel');
   var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
@@ -842,6 +852,47 @@ __NAV_BACK__
     stateDetail.textContent = detail || '';
   }
 
+  function qualityReports(payload) {
+    var reports = [];
+    if (payload && Array.isArray(payload.capture_quality)) {
+      reports = reports.concat(payload.capture_quality);
+    }
+    if (payload && payload.verify_quality) {
+      reports.push(payload.verify_quality);
+    }
+    return reports;
+  }
+
+  function renderQuality(payload) {
+    var seen = {};
+    var issues = [];
+    qualityReports(payload).forEach(function (report) {
+      (report && report.issues || []).forEach(function (issue) {
+        var key = [issue.severity, issue.code, issue.message].join('|');
+        if (!seen[key]) {
+          seen[key] = true;
+          issues.push(issue);
+        }
+      });
+    });
+    if (!issues.length) {
+      qualityBanner.className = 'quality-banner hidden';
+      qualityBanner.innerHTML = '';
+      return;
+    }
+    var hasFail = issues.some(function (issue) {
+      return issue.severity === 'fail';
+    });
+    qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
+    qualityBanner.innerHTML =
+      '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
+      '</strong><ul>' +
+      issues.map(function (issue) {
+        return '<li>' + escapeText(issue.message || issue.code) + '</li>';
+      }).join('') +
+      '</ul>';
+  }
+
   function formatAppliedAt(epoch) {
     if (!epoch) return '';
     var d = new Date(epoch * 1000);
@@ -1056,6 +1107,8 @@ __NAV_BACK__
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
     verifySummary.classList.add('hidden');
+    qualityBanner.className = 'quality-banner hidden';
+    qualityBanner.innerHTML = '';
     lastVerify = null;
     inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
@@ -1366,6 +1419,7 @@ __NAV_BACK__
         detail = 'position ' + (s.current_position + 1) + ' of ' + s.total_positions;
       }
       setStateBadge(s.state, detail);
+      renderQuality(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
       if (s.state === 'needs_next_position') {
@@ -1439,6 +1493,7 @@ __NAV_BACK__
       if (data.peqs) {
         renderPEQs(data.peqs);
       }
+      renderQuality(data);
       resultSection.classList.remove('hidden');
       if (data.measured) {
         // Force a layout flush so getBoundingClientRect returns
@@ -1454,6 +1509,9 @@ __NAV_BACK__
     } catch (e) {
       setStateBadge('failed', e.message);
       runBtn.disabled = false;
+      try {
+        renderQuality(await fetchStatus());
+      } catch (ignored) {}
     }
   }
 
@@ -2064,30 +2122,10 @@ def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sorted by started_at desc; capped at 20. Bundles without a
     parseable info.json (in-progress writes, crashed mid-state) are
     skipped silently."""
+    from jasper.correction.bundles import list_bundles
+
     sess = _get_or_create_session()
-    sessions_dir: Path = sess.cfg.sessions_dir
-    if not sessions_dir.exists():
-        return {"sessions": []}
-    entries: list[dict[str, Any]] = []
-    for sub in sessions_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        info_path = sub / "info.json"
-        if not info_path.exists():
-            continue
-        try:
-            info = json.loads(info_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        # Decorate with derived flags the UI cares about without
-        # having to re-stat each bundle.
-        info["bundle_dir"] = str(sub)
-        info["has_result"] = (sub / "result.json").exists()
-        info["has_applied_yml"] = (sub / "applied.yml").exists()
-        info["has_verify_wav"] = (sub / "verify.wav").exists()
-        entries.append(info)
-    entries.sort(key=lambda e: e.get("started_at", 0), reverse=True)
-    return {"sessions": entries[:20]}
+    return {"sessions": list_bundles(sess.cfg.sessions_dir, limit=20)}
 
 
 def _handle_upload_capture(
@@ -2140,6 +2178,8 @@ def _handle_upload_capture(
             sess.verify_curve.__dict__ if sess.verify_curve else None
         ),
         "verify_metrics": sess.verify_metrics,
+        "capture_quality": sess.capture_quality,
+        "verify_quality": sess.verify_quality,
         "peqs": [p.__dict__ for p in sess.peqs],
     }
 
@@ -2308,7 +2348,23 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_autolevel_cancel(self))
                     return
                 if path == "/upload-capture":
-                    self._send_json(_handle_upload_capture(self))
+                    from jasper.correction import quality
+
+                    try:
+                        self._send_json(_handle_upload_capture(self))
+                    except quality.CaptureQualityError as e:
+                        sess = _get_or_create_session()
+                        self._send_json({
+                            "error": str(e),
+                            "session_id": sess.session_id,
+                            "state": sess.state.value,
+                            "current_position": sess.current_position,
+                            "total_positions": sess.total_positions,
+                            "capture_quality": sess.capture_quality,
+                            "verify_quality": sess.verify_quality,
+                        }, status=422)
+                    except ValueError as e:
+                        self._send_client_error(str(e))
                     return
                 if path == "/calibration/fetch":
                     try:

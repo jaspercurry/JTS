@@ -2874,6 +2874,162 @@ def check_wifi_guardian() -> CheckResult:
     )
 
 
+def _correction_root() -> Path:
+    return Path(
+        os.environ.get("JASPER_CORRECTION_ROOT", "/var/lib/jasper/correction")
+    )
+
+
+def check_correction_web_service() -> CheckResult:
+    """Socket activation is the liveness contract for /correction/.
+
+    The service itself is expected to be inactive after its idle
+    timeout; the socket must remain active so nginx can spawn the
+    wizard on demand.
+    """
+    socket_state = _run(
+        ["systemctl", "is-active", "jasper-correction-web.socket"]
+    ).stdout.strip()
+    service_state = _run(
+        ["systemctl", "is-active", "jasper-correction-web.service"]
+    ).stdout.strip()
+    if socket_state == "active":
+        return CheckResult(
+            "correction web", "ok",
+            f"socket active; service={service_state or 'unknown'}",
+        )
+    if service_state == "active":
+        return CheckResult(
+            "correction web", "warn",
+            "service active but socket inactive — current session may work, "
+            "but /correction/ will not restart after idle exit",
+        )
+    return CheckResult(
+        "correction web", "warn",
+        f"socket={socket_state or 'unknown'}, service={service_state or 'unknown'}. "
+        "Run `sudo systemctl enable --now jasper-correction-web.socket` "
+        "or redeploy.",
+    )
+
+
+def check_correction_state_dirs() -> CheckResult:
+    root = _correction_root()
+    expected = [
+        root,
+        root / "sweeps",
+        root / "captures",
+        root / "sessions",
+        root / "calibration_mics",
+    ]
+    missing = [str(p) for p in expected if not p.exists()]
+    not_dirs = [str(p) for p in expected if p.exists() and not p.is_dir()]
+    not_writable = [str(p) for p in expected if p.is_dir() and not os.access(p, os.W_OK)]
+    if not_dirs:
+        return CheckResult(
+            "correction state dirs", "fail",
+            "expected directories but found files: " + ", ".join(not_dirs),
+        )
+    if not_writable:
+        return CheckResult(
+            "correction state dirs", "fail",
+            "not writable: " + ", ".join(not_writable),
+        )
+    if missing:
+        return CheckResult(
+            "correction state dirs", "warn",
+            "missing: " + ", ".join(missing) + " — redeploy to create them",
+        )
+    return CheckResult("correction state dirs", "ok", str(root))
+
+
+def _parse_camilla_statefile_config_path(path: Path) -> str | None:
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    match = re.search(r"^\s*config_path:\s*(.+?)\s*$", text, flags=re.MULTILINE)
+    if not match:
+        return None
+    return match.group(1).strip().strip("'\"") or None
+
+
+def check_correction_current_config() -> CheckResult:
+    from jasper.correction.session import parse_current_correction
+
+    statefile = Path(
+        os.environ.get(
+            "JASPER_CAMILLA_STATEFILE",
+            "/var/lib/camilladsp/statefile.yml",
+        )
+    )
+    config_path = _parse_camilla_statefile_config_path(statefile)
+    if config_path is None:
+        return CheckResult(
+            "current correction", "warn",
+            f"could not read config_path from {statefile}",
+        )
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(
+            "current correction", "fail",
+            f"CamillaDSP statefile points at missing config {config_path}",
+        )
+    parsed = parse_current_correction(path.name, config_dir=path.parent)
+    if parsed is None:
+        if path == Path("/etc/camilladsp/v1.yml"):
+            return CheckResult("current correction", "ok", "flat base config")
+        return CheckResult(
+            "current correction", "warn",
+            f"custom/non-JTS config loaded: {config_path}",
+        )
+    return CheckResult(
+        "current correction", "ok",
+        f"session={parsed['session_id']} peqs={parsed['peq_count']} "
+        f"({config_path})",
+    )
+
+
+def check_correction_latest_bundle() -> CheckResult:
+    from jasper.correction import bundles
+
+    sessions_dir = Path(
+        os.environ.get(
+            "JASPER_CORRECTION_SESSIONS_DIR",
+            str(_correction_root() / "sessions"),
+        )
+    )
+    latest = bundles.latest_bundle(sessions_dir)
+    if latest is None:
+        return CheckResult(
+            "latest correction bundle", "ok",
+            f"no bundles under {sessions_dir} yet",
+        )
+    bundle_dir = Path(str(latest["bundle_dir"]))
+    issues = bundles.validate_bundle(bundle_dir)
+    fail_issues = [i for i in issues if i.severity == "fail"]
+    warn_issues = [i for i in issues if i.severity == "warn"]
+    summary = (
+        f"session={latest.get('session_id')} state={latest.get('state')} "
+        f"schema={latest.get('bundle_schema_version')}"
+    )
+    if fail_issues:
+        return CheckResult(
+            "latest correction bundle", "fail",
+            summary + "; " + "; ".join(i.message for i in fail_issues[:3]),
+        )
+    if warn_issues:
+        return CheckResult(
+            "latest correction bundle", "warn",
+            summary + "; " + "; ".join(i.message for i in warn_issues[:3]),
+        )
+    if not latest.get("mic_calibration"):
+        return CheckResult(
+            "latest correction bundle", "warn",
+            summary + "; last completed measurement used no calibrated mic",
+        )
+    return CheckResult("latest correction bundle", "ok", summary)
+
+
 def check_spend_cap(cfg: Config) -> CheckResult:
     try:
         from ..usage import SpendCap, UsageStore
@@ -2968,6 +3124,15 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
         lambda: check_state_dir(cfg),
+        # Room-correction observability: socket-activated service
+        # health, state-dir drift, currently-loaded correction profile,
+        # and the newest replay/debug bundle. These are deliberately
+        # lightweight so `jasper-doctor` remains safe to run before a
+        # correction session.
+        check_correction_web_service,
+        check_correction_state_dirs,
+        check_correction_current_config,
+        check_correction_latest_bundle,
         check_ram,
         # Stage 1 memory-pressure resilience (docs/HANDOFF-resilience.md
         # "Memory-pressure resilience"). All five checks are drift
