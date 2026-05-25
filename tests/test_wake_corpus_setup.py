@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 import time
 import wave
@@ -450,18 +451,245 @@ def test_voice_daemon_start_refused_during_recording(
 def test_index_html_is_valid_shape() -> None:
     """Not a full HTML validator — just enough to catch obvious
     breakage like missing </body>, unmatched template strings, etc."""
-    html = wake_corpus_setup._render_index_html()
-    assert "<!DOCTYPE html>" in html
-    assert "<title>JTS Wake-Word Corpus Recorder</title>" in html
-    assert "</body>" in html
-    assert "</html>" in html
+    html_text = wake_corpus_setup._render_index_html("token123")
+    assert "<!DOCTYPE html>" in html_text
+    assert "<title>JTS Wake-Word Corpus Recorder</title>" in html_text
+    assert "</body>" in html_text
+    assert "</html>" in html_text
     # Key API paths must be referenced
-    assert "/api/status" in html
-    assert "/api/session" in html
-    assert "/api/clip/start" in html
-    assert "/api/clip/stop" in html
+    assert "/api/status" in html_text
+    assert "/api/session" in html_text
+    assert "/api/clip/start" in html_text
+    assert "/api/clip/stop" in html_text
     # All three conditions + distances must be selectable
     for c in ("quiet", "music"):
-        assert f'value="{c}"' in html
+        assert f'value="{c}"' in html_text
     for d in ("near", "mid", "far"):
-        assert f'value="{d}"' in html
+        assert f'value="{d}"' in html_text
+
+
+# ---------------------------------------------------------------------------
+# CSRF — token embedded in HTML + required on mutating requests
+# ---------------------------------------------------------------------------
+
+
+def test_render_index_embeds_csrf_token() -> None:
+    """The CSRF token must appear in a meta tag so the JS can read it.
+    Token is HTML-escaped defensively (even though secrets.token_hex
+    only produces hex chars)."""
+    html_text = wake_corpus_setup._render_index_html("abc123def")
+    assert 'name="csrf-token"' in html_text
+    assert 'content="abc123def"' in html_text
+
+
+def test_render_index_escapes_csrf_token() -> None:
+    """A pathological token with HTML metachars must be escaped so
+    it can't break out of the meta tag's content attribute."""
+    html_text = wake_corpus_setup._render_index_html('"><script>x</script>')
+    assert "<script>x</script>" not in html_text
+    assert "&lt;script&gt;" in html_text or "&quot;&gt;" in html_text
+
+
+def test_csrf_header_name_constant_matches_html() -> None:
+    """The HTML's hardcoded X-CSRF-Token must match the server's
+    CSRF_HEADER constant — otherwise the JS sends a header the
+    server doesn't check."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert wake_corpus_setup.CSRF_HEADER == "X-CSRF-Token"
+    assert "'X-CSRF-Token'" in html_text or '"X-CSRF-Token"' in html_text
+
+
+# ---------------------------------------------------------------------------
+# RecordingTask.stop() idempotency
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recording_task_stop_idempotent() -> None:
+    """Calling stop() twice must not crash on double __aexit__ or
+    double-await of a cancelled task. Defensive against state-machine
+    bugs in callers."""
+    _FakeUdpMicCapture.port_to_value = {9876: 7}
+    task = wake_corpus_setup.RecordingTask(ports={"on": 9876})
+    await task.start()
+    await asyncio.sleep(0.05)
+    pcm_first = await task.stop()
+    pcm_second = await task.stop()  # must not raise
+
+    assert len(pcm_first["on"]) > 0
+    # Second call returns the buffered bytes unchanged (no new frames
+    # since cleanup), but doesn't crash. Either same bytes or empty
+    # is acceptable — what matters is no exception.
+    assert "on" in pcm_second
+
+
+# ---------------------------------------------------------------------------
+# Session recovery on backend start
+# ---------------------------------------------------------------------------
+
+
+def test_recovery_loads_recent_session(tmp_path: Path) -> None:
+    """A fresh backend on a corpus dir with a recent metadata file
+    must load the session into memory so the UI can pick up where
+    the operator left off after a crash."""
+    out = tmp_path / "out"
+    md_dir = out / "metadata"
+    md_dir.mkdir(parents=True)
+    # Write a metadata file mimicking a previous session
+    session_data = {
+        "session_id": "20260525T120000Z",
+        "member": "jasper",
+        "ports": {"on": 9876, "off": 9877, "dtln": 9878},
+        "clips": [
+            {
+                "clip_id": "abc-123", "member": "jasper",
+                "condition": "quiet", "distance": "near",
+                "session_id": "20260525T120000Z", "seq": 1,
+                "start_ts": "2026-05-25T12:00:00.000+00:00",
+                "stop_ts": "2026-05-25T12:00:03.000+00:00",
+                "duration_sec": 3.0,
+                "files": {"on": "/tmp/x.wav"},
+                "deleted": False, "auto_stopped": False, "notes": "",
+            },
+        ],
+    }
+    md_file = md_dir / "enroll_jasper_20260525T120000Z.json"
+    md_file.write_text(json.dumps(session_data))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.session_id() == "20260525T120000Z"
+        assert b.member() == "jasper"
+        clips = b.list_clips()
+        assert len(clips) == 1
+        assert clips[0].clip_id == "abc-123"
+    finally:
+        b.shutdown()
+
+
+def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
+    """A metadata file older than RESUME_WINDOW_SEC must NOT be
+    loaded — operator opens the UI tomorrow shouldn't see clips
+    from a session they abandoned overnight."""
+    out = tmp_path / "out"
+    md_dir = out / "metadata"
+    md_dir.mkdir(parents=True)
+    md_file = md_dir / "enroll_jasper_old.json"
+    md_file.write_text(json.dumps({
+        "session_id": "old", "member": "jasper", "ports": {}, "clips": [],
+    }))
+    # Force mtime to be old
+    old_mtime = time.time() - (wake_corpus_setup.RESUME_WINDOW_SEC + 60)
+    os.utime(md_file, (old_mtime, old_mtime))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.session_id() is None
+        assert b.member() is None
+    finally:
+        b.shutdown()
+
+
+def test_recovery_ignores_corrupt_json(tmp_path: Path) -> None:
+    """A corrupt metadata file must not crash startup — just skip
+    recovery + log + start with a fresh state."""
+    out = tmp_path / "out"
+    md_dir = out / "metadata"
+    md_dir.mkdir(parents=True)
+    (md_dir / "enroll_jasper_corrupt.json").write_text("{not json")
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.session_id() is None
+    finally:
+        b.shutdown()
+
+
+def test_recovery_handles_missing_metadata_dir(tmp_path: Path) -> None:
+    """No metadata dir → no crash, no session loaded."""
+    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b.start()
+    try:
+        assert b.session_id() is None
+    finally:
+        b.shutdown()
+
+
+def test_begin_session_after_recovery_starts_fresh(
+    tmp_path: Path,
+) -> None:
+    """After recovery, calling begin_session() with a different (or
+    same) member must replace the recovered state with a fresh
+    session — recovery is a one-shot, not a permanent re-attach."""
+    out = tmp_path / "out"
+    md_dir = out / "metadata"
+    md_dir.mkdir(parents=True)
+    (md_dir / "enroll_jasper_old.json").write_text(json.dumps({
+        "session_id": "recovered", "member": "jasper",
+        "ports": {}, "clips": [],
+    }))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        # Recovery loaded the old session
+        assert b.session_id() == "recovered"
+        # Beginning a new session replaces it
+        new_id = b.begin_session("brittany")
+        assert new_id != "recovered"
+        assert b.member() == "brittany"
+        assert b.list_clips() == []
+    finally:
+        b.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# start_recording race-window fix — concurrent attempts refuse cleanly
+# ---------------------------------------------------------------------------
+
+
+def test_start_recording_refuses_during_starting_window(backend) -> None:
+    """If a second start_recording call arrives while the first is in
+    the middle of its slow `_submit`, the second must see the
+    `_starting_clip_id` sentinel and refuse with the right error
+    (not race into a UDP-bind failure).
+
+    We simulate the race deterministically by manually setting the
+    sentinel + verifying the next start refuses, then clearing +
+    verifying it's allowed again.
+    """
+    backend.begin_session("jasper")
+    # Manually set the starting sentinel as if a concurrent start is
+    # in flight.
+    with backend._lock:
+        backend._starting_clip_id = "concurrent-fake-id"
+    try:
+        with pytest.raises(
+            wake_corpus_setup.StateError, match="in progress",
+        ):
+            backend.start_recording("quiet", "near")
+    finally:
+        with backend._lock:
+            backend._starting_clip_id = None
+
+    # Sentinel cleared → next start is allowed.
+    backend.start_recording("quiet", "near")
+    backend.stop_recording()
+
+
+def test_start_recording_clears_sentinel_on_success(backend) -> None:
+    """After a successful start, the sentinel must be cleared (it
+    moves to `_current_clip_id`). Otherwise a leftover sentinel would
+    block all future recordings until process restart."""
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    try:
+        # Sentinel should be cleared after successful transition
+        with backend._lock:
+            assert backend._starting_clip_id is None
+            assert backend._current_clip_id is not None
+    finally:
+        backend.stop_recording()
