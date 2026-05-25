@@ -40,6 +40,7 @@
 //! contract documented in `src/watchdog.rs`.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
 use alsa::pcm::{Access, Format, HwParams, State, PCM};
@@ -49,6 +50,7 @@ use log::{info, warn};
 
 use crate::config::Config;
 use crate::watchdog::Heartbeat;
+use crate::xrun_log::{XrunEvent, XrunSource};
 
 /// Stereo. The CamillaDSP capture + AEC bridge tap both expect 2
 /// channels (matches the dmix's declared shape). Not configurable.
@@ -71,10 +73,17 @@ pub struct Mixer {
     /// sum_buf.
     output_buf: Vec<i16>,
     /// Cumulative output frames written since startup. Surfaced via
-    /// the STATUS endpoint (chunk 3).
+    /// the STATUS endpoint.
     pub frames_written: Arc<AtomicU64>,
     /// Cumulative output xrun events.
     pub output_xrun_count: Arc<AtomicU64>,
+    /// Channel for forwarding xrun events to the off-thread log
+    /// writer. `try_send` is non-blocking on an unbounded channel
+    /// (std::sync::mpsc::Sender::send only fails when the receiver
+    /// is dropped, which happens at shutdown). Keeps the work loop's
+    /// hot path off of disk I/O — the writer thread is the one
+    /// stuck on fdatasync.
+    xrun_tx: Sender<XrunEvent>,
     period_frames: u32,
 }
 
@@ -90,8 +99,12 @@ pub struct Input {
 
 impl Mixer {
     /// Open all inputs (best-effort: log + skip individual failures)
-    /// and the output (must succeed; fatal if not).
-    pub fn new(config: &Config) -> Result<Self> {
+    /// and the output (must succeed; fatal if not). `xrun_tx` is the
+    /// non-blocking channel to the off-thread xrun log writer.
+    pub fn new(
+        config: &Config,
+        xrun_tx: Sender<XrunEvent>,
+    ) -> Result<Self> {
         let period_samples =
             (config.period_frames as usize) * (CHANNELS as usize);
 
@@ -146,6 +159,7 @@ impl Mixer {
             output_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
+            xrun_tx,
             period_frames: config.period_frames,
         })
     }
@@ -183,6 +197,7 @@ impl Mixer {
             &self.output,
             &self.output_buf,
             &self.output_xrun_count,
+            &self.xrun_tx,
         )?;
 
         // Start the output stream now that it's primed. (PCM::new
@@ -219,7 +234,7 @@ impl Mixer {
         // 2. Read from each input, accumulate into sum_buf.
         let period_frames = self.period_frames as usize;
         for input in &mut self.inputs {
-            let frames = read_input(input, period_frames)?;
+            let frames = read_input(input, period_frames, &self.xrun_tx)?;
             // Only sum the samples we actually got. `read_input`
             // zero-pads the tail of input.read_buf so reading the
             // full period is also safe; explicit bounds save a few
@@ -237,6 +252,7 @@ impl Mixer {
             &self.output,
             &self.output_buf,
             &self.output_xrun_count,
+            &self.xrun_tx,
         )?;
 
         self.frames_written
@@ -336,7 +352,11 @@ fn configure_pcm(pcm: &PCM, config: &Config) -> Result<()> {
 /// All other errors propagate up — they indicate a structural
 /// problem (PCM closed, driver fault) that the daemon can't handle
 /// at this layer.
-fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
+fn read_input(
+    input: &mut Input,
+    requested_frames: usize,
+    xrun_tx: &Sender<XrunEvent>,
+) -> Result<usize> {
     let io = input
         .pcm
         .io_i16()
@@ -349,9 +369,8 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
             // Zero the tail of read_buf if we got less than a full
             // period. The mixer's sum loop bounds the read region by
             // `frames`, but defense-in-depth: future code paths that
-            // read the whole buffer (e.g., RMS for active detection
-            // in chunk 3) should see zeros, not stale data, in the
-            // unfilled tail.
+            // read the whole buffer (e.g., RMS for active detection)
+            // should see zeros, not stale data, in the unfilled tail.
             if frames < requested_frames {
                 let active = frames * (CHANNELS as usize);
                 for s in &mut input.read_buf[active..] {
@@ -371,11 +390,21 @@ fn read_input(input: &mut Input, requested_frames: usize) -> Result<usize> {
             } else if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                 // Input overrun: renderer produced faster than we
                 // drained. snd_pcm_recover restarts the stream.
-                let count = input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
+                let count =
+                    input.xrun_count.fetch_add(1, Ordering::Relaxed) + 1;
                 warn!(
                     "event=fanin.xrun source=input label={} count={}",
                     input.label, count,
                 );
+                // Best-effort forward to the off-thread xrun log
+                // writer. Send error means the receiver was dropped
+                // (shutdown in progress); fine to ignore.
+                let _ = xrun_tx.send(XrunEvent {
+                    source: XrunSource::Input,
+                    label: input.label.clone(),
+                    frames: requested_frames as u32,
+                    count,
+                });
                 input
                     .pcm
                     .try_recover(e, true)
@@ -398,6 +427,7 @@ fn write_output(
     pcm: &PCM,
     buf: &[i16],
     xrun_counter: &Arc<AtomicU64>,
+    xrun_tx: &Sender<XrunEvent>,
 ) -> Result<()> {
     let io = pcm
         .io_i16()
@@ -431,11 +461,17 @@ fn write_output(
                 if errno == libc::EPIPE || errno == libc::ESTRPIPE {
                     let count =
                         xrun_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                    let pending = frames_total - frames_done;
                     warn!(
                         "event=fanin.xrun source=output count={} frames_pending={}",
-                        count,
-                        frames_total - frames_done,
+                        count, pending,
                     );
+                    let _ = xrun_tx.send(XrunEvent {
+                        source: XrunSource::Output,
+                        label: "output".to_string(),
+                        frames: pending as u32,
+                        count,
+                    });
                     pcm.try_recover(e, true)
                         .context("recovering output xrun")?;
                     recoveries += 1;
@@ -445,8 +481,7 @@ fn write_output(
                             MAX_RECOVERIES_PER_PERIOD,
                         );
                     }
-                    // Loop continues; retry the write from
-                    // `frames_done`.
+                    // Loop continues; retry the write from `frames_done`.
                 } else {
                     return Err(e).context("writing to output PCM");
                 }
