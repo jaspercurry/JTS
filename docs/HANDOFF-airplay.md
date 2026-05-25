@@ -14,15 +14,16 @@ shairport-sync path. It bundles:
 The target shipped path is **green** as of 2026-05-25 — synced mode is
 glitch-free on the Apple USB-C dongle with
 [PR #83](https://github.com/jaspercurry/JTS/pull/83)'s shairport fix,
-CamillaDSP `target_level: 4096` on the dsnoop/dmix path, and
+CamillaDSP `target_level: 2048` on the dsnoop/dmix path (trimmed from
+the original 4096 on 2026-05-25 — see Pattern A2 below), and
 shairport's derived `audio_backend_latency_offset_in_seconds` to keep
-AirPlay video/multi-room timing honest after the larger DSP buffer AND
-the renderer-side dmix (the latter added 2026-05-22 by PR #214; the
-latency-offset derivation was updated 2026-05-25 to include it). With the
-current values, the rendered offset is `-0.149333`. If you're hearing
-artifacts, something has changed (active correction profile, DAC swap,
-software update, network change, hardware fault). This doc helps you
-find what.
+AirPlay video/multi-room timing honest after the DSP buffer AND the
+renderer-side dmix (the latter added 2026-05-22 by PR #214; the
+latency-offset derivation was updated 2026-05-25 to include both). With
+the current values, the rendered offset is `-0.106667`. If you're
+hearing artifacts, something has changed (active correction profile,
+DAC swap, software update, network change, hardware fault). This doc
+helps you find what.
 
 ---
 
@@ -355,23 +356,29 @@ Interpretation: dsnoop itself is still the right architecture because it
 lets CamillaDSP and the optional AEC bridge share the music reference.
 The missing piece was playback-buffer margin, not removing dsnoop.
 
-Latency implication: `target_level: 4096` is intentionally larger than
-the old implicit one-chunk target, so it adds a fixed downstream delay of
-3072 samples. At CamillaDSP's 48 kHz runtime rate, that is 64 ms. That
-amount is large enough to matter for video, but it is also exactly the
+Latency implication: any `target_level > chunksize` adds a fixed
+downstream delay of `(target_level - chunksize)` samples. At CamillaDSP's
+48 kHz runtime rate the original 2026-05-14 setting (`target_level: 4096`)
+cost 64 ms; the 2026-05-25 trim to `target_level: 2048` brings that down
+to 21 ms. Either is large enough to matter for video sync but exactly the
 kind of fixed backend delay shairport-sync can compensate.
 
 ### Fix
-Set `target_level: 4096` in every music-path CamillaDSP config, including
+Set `target_level: 2048` in every music-path CamillaDSP config, including
 generated room-correction profiles. With `chunksize: 1024` and
-`queuelimit: 4`, this is four chunks (~85 ms), below the documented max
-of 6144 samples and still modest for whole-room speaker playback.
+`queuelimit: 4`, this is two chunks (~43 ms) — `2 × chunksize` is the
+documented floor for stable operation (jitter absorption convention).
+The original 2026-05-14 fix shipped at `target_level: 4096` (~85 ms,
+generous margin); the 2026-05-25 trim halved it as an independent
+latency optimization with a 24-hour zero-xrun soak gating the change.
+Revert to 4096 if `event=camilla.playback_underrun` lines appear at any
+rate above zero.
 
 Pair that buffer change with the rendered shairport latency offset:
 
 ```libconfig
 general = {
-    audio_backend_latency_offset_in_seconds = -0.149333;  // current rendered value
+    audio_backend_latency_offset_in_seconds = -0.106667;  // current rendered value
 };
 ```
 
@@ -496,8 +503,11 @@ buffer **plus** the dmix buffer:
 
 ```
 new: offset = -((target_level - chunksize + dmix_buffer_size) / samplerate)
-     = -((3072 + 4096) / 48000)
-     = -0.149 s
+     = -((1024 + 4096) / 48000)     # with target_level=2048 (2026-05-25)
+     = -0.107 s
+
+(historical: with target_level=4096 the value was -0.149 s; the
+2026-05-25 target_level trim reduced it.)
 ```
 
 The 85 ms gap meant packets arrived at shairport's "is this packet still
@@ -534,7 +544,8 @@ If you ever change either `target_level` or the dmix `buffer_size`
 ```sh
 # 1. Confirm rendered offset matches expected
 grep audio_backend_latency_offset /etc/shairport-sync.conf
-# Expected with production config: -0.149333
+# Expected with production config (target_level=2048, dmix buffer=4096):
+#   audio_backend_latency_offset_in_seconds = -0.106667;
 
 # 2. 5-min log scan during AirPlay playback should show zero drops
 sleep 300  # 5 min of actual playback
@@ -952,7 +963,7 @@ shairport-sync (AirPlay 2 receiver, source-built v4.3.7)
 snd-aloop kernel module (Card 6 "Loopback", 8 substreams)
         │  pcm.jasper_capture (dsnoop on Loopback,1,0 @ 48 kHz S16_LE)
         ▼
-CamillaDSP (Rust, enable_rate_adjust=true, target_level=4096, NO resampler)
+CamillaDSP (Rust, enable_rate_adjust=true, target_level=2048, NO resampler)
         │  48 kHz S16_LE → pcm.jasper_out (dmix on Apple USB-C dongle)
         ▼
 Apple USB-C → 3.5mm dongle (USB 1.1, 12 Mbit/s, async UAC2)
@@ -997,11 +1008,11 @@ real audio clock.
 | `deploy/shairport-sync.conf.template` | `resync_threshold_in_seconds = 0.2` | THE fix — keeps shairport in continuous path |
 | `deploy/shairport-sync.conf.template` | `drift_tolerance_in_seconds = 0.1` | Gates the continuous path; lets ±1-sample stuffing work |
 | `deploy/shairport-sync.conf.template` | `audio_backend_buffer_desired_length_in_seconds = 0.5` | Steady-state buffer level |
-| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + dmix_buffer_size) / samplerate)` | Compensates the fixed downstream-delay invisible to shairport's `snd_pcm_delay()`: CamillaDSP's target buffer above its one-chunk baseline PLUS the `pcm.jasper_renderer_mix` dmix buffer between shairport and the loopback slave. Currently renders as `-0.149333`. |
+| `deploy/shairport-sync.conf.template` + `jasper-apply-airplay-mode` | `audio_backend_latency_offset_in_seconds = -((target_level - chunksize + dmix_buffer_size) / samplerate)` | Compensates the fixed downstream-delay invisible to shairport's `snd_pcm_delay()`: CamillaDSP's target buffer above its one-chunk baseline PLUS the `pcm.jasper_renderer_mix` dmix buffer between shairport and the loopback slave. Currently renders as `-0.106667`. |
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"` | soxr when CPU has slack, basic when buffer shallow |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10, IOSchedulingClass=realtime` | Matches CamillaDSP priority — shairport doesn't lose scheduler races |
 | `deploy/camilladsp/v1.yml` | `enable_rate_adjust=true`, no resampler block | Canonical 1:1 config — no double-correction oscillation |
-| `deploy/camilladsp/v1.yml` | `target_level: 4096` | Four-chunk playback target; avoids dsnoop/dmix underruns without abandoning the AEC-compatible capture path |
+| `deploy/camilladsp/v1.yml` | `target_level: 2048` | Two-chunk playback target — the documented floor for stable operation. Avoids dsnoop/dmix underruns; saves ~21 ms vs the original 4096 (2026-05-25 trim). Revert to 4096 if underruns reappear. |
 | `deploy/modprobe.d/snd-aloop.conf` | Default (no `timer_source`) | Ruled out as load-bearing; default keeps DAC-agnostic |
 | `deploy/install.sh` | Disables NM WiFi power-save | brcmfmac default-ON would micro-stall AP2 RX |
 | Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` (synced) | Synced is glitch-free, works for video + multi-room |
@@ -1029,9 +1040,12 @@ classes of problem:
   produce playback underruns even if long-term drift correction is working.
 
 CamillaDSP defaults `target_level` to `chunksize`. With our
-`chunksize: 1024`, that is ~21 ms at 48 kHz. The shipped target is 4096
-samples (~85 ms), still below CamillaDSP's documented ceiling of
-`(2 + queuelimit) * chunksize` = 6144 samples for our `queuelimit: 4`.
+`chunksize: 1024`, that is ~21 ms at 48 kHz. The shipped target is 2048
+samples (~43 ms) — `2 × chunksize`, the documented floor for stable
+operation. The original Pattern A2 fix shipped at 4096 (~85 ms,
+generous margin); 2026-05-25 trim halved it as an independent latency
+optimization. The documented ceiling is `(2 + queuelimit) * chunksize`
+= 6144 samples for our `queuelimit: 4`.
 
 Practical implication: if shairport logs are clean but Camilla logs
 `PB: Prepare playback after buffer underrun`, do not touch
@@ -1060,20 +1074,25 @@ not the deprecated per-source AirPlay latency settings and not
 `disable_synchronization`. JTS renders this value programmatically from
 the active CamillaDSP config instead of keeping a second hard-coded copy.
 
-For the 2026-05-14 target-level fix, compensate only the delay we newly
-introduced:
+The 2026-05-14 fix introduced the CamillaDSP target-level delay; the
+2026-05-22 PR #214 introduced the renderer-side dmix delay; the
+2026-05-25 trim reduced the target_level. The worked-example math with
+the current production values:
 
 ```text
-old implicit target = 1024 samples
-new target          = 4096 samples
-extra delay         = 3072 / 48000 = 0.064 seconds
-offset              = -0.064
+chunksize            = 1024 samples (CamillaDSP's implicit baseline)
+target_level         = 2048 samples (2026-05-25 trim from 4096)
+dmix buffer_size     = 4096 samples (jasper_renderer_mix)
+extra delay (camilla)= (2048 - 1024) / 48000 = 0.021333 s
+extra delay (dmix)   =          4096 / 48000 = 0.085333 s
+combined extra delay =                          0.106666 s
+offset               = -0.106667
 ```
 
 The negative sign is intentional. Upstream's own example says a backend
 that takes 100 ms to process audio should use `-0.1`, so shairport feeds
 the backend 100 ms early. We use the same principle for CamillaDSP's
-hidden fixed buffer.
+hidden fixed buffer and the dmix's invisible internal queue.
 
 ### What shairport logs actually mean
 

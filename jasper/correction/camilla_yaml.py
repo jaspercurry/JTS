@@ -38,7 +38,7 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
-DEFAULT_TARGET_LEVEL = 4096
+DEFAULT_TARGET_LEVEL = 2048  # 2× chunksize — see comment in deploy/camilladsp/v1.yml (2026-05-25 latency trim from 4096)
 
 
 def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
