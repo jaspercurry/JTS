@@ -71,7 +71,17 @@ class _AlwaysEmptyQ:
 class _ScriptedMicQ:
     """Mic-queue stub driven by a list of (Empty | bytes) items.
     When the script is exhausted, sets `_shutdown` and raises Empty
-    so the loop exits cleanly (no BridgeStalled needed)."""
+    so the loop exits cleanly (no BridgeStalled needed).
+
+    Looks up the bridge module's `_shutdown` at call time (not at
+    import) — `test_raw_port_overridable_via_env` calls
+    `importlib.reload(aec_bridge)`, which rebinds the module's
+    `_shutdown` to a fresh Event. The top-of-file import in this
+    test file still holds the OLD Event; `_aec_loop` (whose
+    `__globals__` IS the module dict) looks up the NEW one. A
+    stale-import `_shutdown.set()` would set the wrong Event and
+    the loop would never exit.
+    """
 
     def __init__(self, script):
         self._script = list(script)
@@ -79,13 +89,21 @@ class _ScriptedMicQ:
 
     def get(self, timeout=None):
         if self._i >= len(self._script):
-            _shutdown.set()
+            aec_bridge._shutdown.set()  # live module ref, reload-safe
             raise Empty
         item = self._script[self._i]
         self._i += 1
         if item is Empty:
             raise Empty
         return item
+
+    def get_nowait(self):
+        # Same semantics as get() but never blocks. Used by the
+        # raw0_q drain in _aec_loop.
+        return self.get(timeout=0)
+
+    def qsize(self):
+        return max(0, len(self._script) - self._i)
 
     def qsize(self):
         return 0
@@ -94,13 +112,23 @@ class _ScriptedMicQ:
 @pytest.fixture(autouse=True)
 def _reset_shutdown_and_stub_sd(monkeypatch):
     """Each test gets a clean `_shutdown` and a no-op
-    `sd.RawOutputStream` (the loop opens one on entry)."""
+    `sd.RawOutputStream` (the loop opens one on entry).
+
+    Clears the LIVE `aec_bridge._shutdown` (not the top-of-file
+    import) so a prior test's `importlib.reload(aec_bridge)`
+    doesn't leave a stale Event set in the freshly-loaded module.
+    The top-of-file `_shutdown` is the OLD Event; cleared too for
+    completeness, but the loop's actual check goes through the
+    module-dict lookup.
+    """
+    aec_bridge._shutdown.clear()
     _shutdown.clear()
     out_stream = MagicMock()
     sd_mod = MagicMock()
     sd_mod.RawOutputStream = MagicMock(return_value=out_stream)
     monkeypatch.setattr(aec_bridge, "sd", sd_mod)
     yield
+    aec_bridge._shutdown.clear()
     _shutdown.clear()
 
 
@@ -217,7 +245,13 @@ def test_aec_loop_emits_both_streams(monkeypatch):
 
     aec_sock = _mock_socket()
     raw_sock = _mock_socket()
-    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock])
+    # 3rd socket for the raw mic 0 leg (OUT_PORT_RAW0). The bridge
+    # creates it unconditionally even when raw0_q is None (matches
+    # the always-create-raw pattern). Not exercised in this test
+    # since we don't pass a raw0_q; just needs to exist so the
+    # socket() factory doesn't StopIteration.
+    raw0_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
     # 8 frames of 320 samples each = 16 ms × 8 = 2 full 1280-sample
@@ -236,10 +270,13 @@ def test_aec_loop_emits_both_streams(monkeypatch):
 
     _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine)
 
-    # Two sockets created — primary AEC, then raw mic.
-    assert socket_factory.call_count == 2
+    # Three sockets created — AEC, chip-direct raw, truly-raw mic 0.
+    assert socket_factory.call_count == 3
     aec_sock.setblocking.assert_called_once_with(False)
     raw_sock.setblocking.assert_called_once_with(False)
+    raw0_sock.setblocking.assert_called_once_with(False)
+    # raw0_sock isn't fed (no raw0_q passed) — must NOT emit.
+    raw0_sock.sendto.assert_not_called()
 
     # Each leg emitted exactly 2 packets (8 frames / 4 per packet).
     assert aec_sock.sendto.call_count == 2
@@ -261,9 +298,10 @@ def test_aec_loop_emits_both_streams(monkeypatch):
     assert raw_call_2.args == (expected_raw_p2, (OUT_HOST, OUT_PORT_RAW))
     assert len(raw_call_1.args[0]) == OUT_FRAME_BYTES
 
-    # Both sockets closed on exit (finally block).
+    # All sockets closed on exit (finally block).
     aec_sock.close.assert_called_once()
     raw_sock.close.assert_called_once()
+    raw0_sock.close.assert_called_once()
 
 
 def test_raw_sendto_failure_does_not_affect_aec_stream(monkeypatch):
@@ -279,7 +317,9 @@ def test_raw_sendto_failure_does_not_affect_aec_stream(monkeypatch):
     raw_sock.sendto.side_effect = BlockingIOError(
         "simulated kernel UDP send buffer full"
     )
-    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock])
+    # 3rd socket for raw mic 0 (always created, never fed in this test).
+    raw0_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
     monkeypatch.setattr(real_socket, "socket", socket_factory)
 
     mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
@@ -316,3 +356,54 @@ def test_raw_port_overridable_via_env(monkeypatch):
         # Restore defaults so subsequent tests see canonical ports.
         monkeypatch.delenv("JASPER_AEC_UDP_PORT_RAW", raising=False)
         importlib.reload(bridge_mod)
+
+
+def test_raw0_port_default_9879():
+    """Default raw mic 0 UDP port is the canonical 9879. wake-corpus
+    recorder + wake_enroll CLI both subscribe to this port; if it
+    drifts from the bridge's default they'd silently get no audio."""
+    import jasper.cli.aec_bridge as bridge_mod
+    from jasper.cli.wake_enroll import DEFAULT_AEC_RAW0_PORT
+    assert bridge_mod.OUT_PORT_RAW0 == 9879
+    assert DEFAULT_AEC_RAW0_PORT == 9879
+
+
+def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
+    """When raw0_q is provided, 4 raw0 frames in → one packet out on
+    OUT_PORT_RAW0. Byte-distinct from the mic_q frames so we can
+    verify the right bytes landed on the right port.
+
+    Uses the top-of-file `_aec_loop` and `_ScriptedMicQ` to share
+    the same `_shutdown` Event the autouse fixture manages —
+    avoids the "prior reload-test left module-state diverged"
+    failure mode.
+    """
+    import socket as real_socket
+    from jasper.cli.aec_bridge import OUT_PORT_RAW0
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    socket_factory = MagicMock(side_effect=[aec_sock, raw_sock, raw0_sock])
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    # 4 mic frames + 4 distinct raw0 frames → exactly 1 packet per leg.
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    raw0_frames = [bytes([i + 200]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+
+    _aec_loop(
+        _AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine,
+        raw0_q=_ScriptedMicQ(raw0_frames),
+    )
+
+    # raw0 emitted exactly its 1280-sample packet to OUT_PORT_RAW0.
+    raw0_sock.sendto.assert_called_once()
+    call = raw0_sock.sendto.call_args
+    assert call.args[0] == b"".join(raw0_frames)
+    assert call.args[1] == (OUT_HOST, OUT_PORT_RAW0)
+    assert len(call.args[0]) == OUT_FRAME_BYTES

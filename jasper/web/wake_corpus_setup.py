@@ -72,6 +72,7 @@ from jasper.cli.wake_enroll import (
     DEFAULT_AEC_DTLN_PORT,
     DEFAULT_AEC_OFF_PORT,
     DEFAULT_AEC_ON_PORT,
+    DEFAULT_AEC_RAW0_PORT,
     SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
     VOICE_UNIT,
@@ -109,7 +110,11 @@ DEFAULT_METADATA_SUBDIR = "metadata"
 # slice on it.
 CONDITIONS = ("quiet", "ambient", "music")
 DISTANCES = ("near", "mid", "far")
-LEGS = ("on", "off", "dtln")
+# Legs the recorder knows about. "raw0" is the truly-raw mic 0 leg
+# (chip channel 2 — no chip DSP), opt-in per session via the
+# include_raw_mic_0 flag. The base 3 legs are always captured.
+LEGS = ("on", "off", "dtln", "raw0")
+BASE_LEGS = ("on", "off", "dtln")
 
 # Hard cap so a forgotten "stop" doesn't fill memory with a 1-hour
 # buffer. The server auto-stops at this duration with a flag in the
@@ -323,10 +328,14 @@ class RecordingBackend:
     ) -> None:
         self._output_dir = output_dir
         self._metadata_dir = output_dir / DEFAULT_METADATA_SUBDIR
+        # All 4 known ports. The recorder subscribes to a subset per
+        # recording based on the session's include_raw_mic_0 flag —
+        # base 3 legs always, raw0 only when the session opted in.
         self._ports = ports or {
             "on": DEFAULT_AEC_ON_PORT,
             "off": DEFAULT_AEC_OFF_PORT,
             "dtln": DEFAULT_AEC_DTLN_PORT,
+            "raw0": DEFAULT_AEC_RAW0_PORT,
         }
         self._max_duration_sec = max_duration_sec
 
@@ -336,6 +345,13 @@ class RecordingBackend:
         self._lock = threading.Lock()
         self._session_id: str | None = None
         self._member: str | None = None
+        # Whether THIS session includes the truly-raw mic 0 leg. Set
+        # by begin_session(include_raw_mic_0=…); read by
+        # start_recording to decide which UDP ports to subscribe to.
+        # Per-session (not per-clip) so a session's clips all share
+        # the same leg set and downstream training tools can rely on
+        # "session contains raw0 → every clip has it."
+        self._include_raw_mic_0: bool = False
         self._clips: list[ClipMetadata] = []
         self._current: RecordingTask | None = None
         self._current_clip_id: str | None = None
@@ -478,19 +494,31 @@ class RecordingBackend:
             )
             return
 
+        # include_raw_mic_0 is optional in older session JSONs; default
+        # False for any pre-raw0 session being recovered.
+        include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         with self._lock:
             self._session_id = session_id
             self._member = member
             self._clips = clips
+            self._include_raw_mic_0 = include_raw_mic_0
         logger.info(
-            "recovered session %s for %s with %d clip(s) (%d non-deleted)",
+            "recovered session %s for %s with %d clip(s) (%d non-deleted) "
+            "include_raw_mic_0=%s",
             session_id, member, len(clips),
-            sum(1 for c in clips if not c.deleted),
+            sum(1 for c in clips if not c.deleted), include_raw_mic_0,
         )
 
-    def begin_session(self, member: str) -> str:
+    def begin_session(
+        self, member: str, include_raw_mic_0: bool = False,
+    ) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
+
+        `include_raw_mic_0` (default False) — when True, clips in this
+        session also capture the truly-raw mic 0 leg (chip channel 2)
+        into `aec_raw0_<condition>/`. Per-session, not per-clip, so
+        downstream tools can rely on session-wide consistency.
 
         Returns the new session_id (UTC timestamp).
         """
@@ -502,13 +530,25 @@ class RecordingBackend:
                 raise StateError(
                     "can't begin session: recording in progress",
                 )
-            self._session_id = datetime.now(timezone.utc).strftime(
-                "%Y%m%dT%H%M%SZ",
-            )
+            # session_id = UTC second-resolution timestamp + a 4-hex
+            # suffix. The suffix avoids a collision when an operator
+            # (or a test) calls begin_session() twice within the same
+            # second — without it, two sessions would share both the
+            # in-memory id AND the on-disk metadata filename, and the
+            # second would silently overwrite the first.
+            ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            self._session_id = f"{ts}-{secrets.token_hex(2)}"
             self._member = safe_member
             self._clips = []
+            self._include_raw_mic_0 = include_raw_mic_0
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
+        self._save_metadata()  # write the per-session flag before clips arrive
         return self._session_id
+
+    def include_raw_mic_0(self) -> bool:
+        """Whether the active session captures the raw-mic-0 leg."""
+        with self._lock:
+            return self._include_raw_mic_0
 
     def start_recording(self, condition: str, distance: str) -> dict[str, str]:
         """Begin recording on the backend loop. Returns {clip_id, start_ts}.
@@ -537,8 +577,19 @@ class RecordingBackend:
             # Reserve the slot — concurrent calls now see this and
             # refuse cleanly.
             self._starting_clip_id = clip_id
+            # Per-session leg selection: BASE_LEGS always, plus raw0
+            # iff this session opted in. Built under the lock against
+            # the per-session flag so a mid-session toggle (which the
+            # UI doesn't allow today, but might tomorrow) doesn't race.
+            active_legs = list(BASE_LEGS)
+            if self._include_raw_mic_0:
+                active_legs.append("raw0")
 
-        task = RecordingTask(self._ports)
+        ports_for_task = {
+            leg: self._ports[leg]
+            for leg in active_legs if leg in self._ports
+        }
+        task = RecordingTask(ports_for_task)
         # Start on the backend loop. If the UDP bind fails (jasper-voice
         # is still up, port already in use), this raises and we never
         # transition into the recording state.
@@ -720,12 +771,174 @@ class RecordingBackend:
                 "session_id": self._session_id,
                 "member": self._member,
                 "ports": self._ports,
+                "include_raw_mic_0": self._include_raw_mic_0,
                 "clips": [c.to_json() for c in self._clips],
             }
         tmp = path.with_suffix(path.suffix + ".tmp")
         with open(tmp, "w") as f:
             json.dump(data, f, indent=2)
         tmp.replace(path)
+
+    # ----- sessions management --------------------------------------
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        """Scan the metadata dir, return one summary per session.
+
+        Each summary: {session_id, member, mtime, clip_count,
+        deleted_count, include_raw_mic_0, conditions: {<cond>: n, ...}}.
+        Sorted newest-first by mtime.
+
+        Failure-soft: corrupt JSON files are skipped + logged, not
+        raised — one bad file shouldn't black out the whole list.
+        """
+        if not self._metadata_dir.is_dir():
+            return []
+        out: list[dict[str, Any]] = []
+        for p in sorted(
+            self._metadata_dir.glob("enroll_*.json"),
+            key=lambda f: f.stat().st_mtime, reverse=True,
+        ):
+            try:
+                data = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError) as e:
+                logger.warning("skip corrupt session %s: %s", p.name, e)
+                continue
+            clips = data.get("clips", [])
+            alive = [c for c in clips if not c.get("deleted")]
+            conds: dict[str, int] = {}
+            for c in alive:
+                k = c.get("condition", "?")
+                conds[k] = conds.get(k, 0) + 1
+            out.append({
+                "session_id": data.get("session_id", "?"),
+                "member": data.get("member", "?"),
+                "mtime": p.stat().st_mtime,
+                "clip_count": len(alive),
+                "deleted_count": len(clips) - len(alive),
+                "include_raw_mic_0": bool(data.get("include_raw_mic_0", False)),
+                "conditions": conds,
+                "is_active": (
+                    self._session_id is not None
+                    and data.get("session_id") == self._session_id
+                ),
+            })
+        return out
+
+    def load_session(self, session_id: str) -> dict[str, Any]:
+        """Switch the in-memory active session to an existing one on
+        disk. Returns the loaded session's metadata.
+
+        Refuses if a recording is in progress (would orphan the clip).
+        Refuses if the target session doesn't exist.
+        """
+        with self._lock:
+            if self._current is not None:
+                raise StateError(
+                    "can't load session: recording in progress",
+                )
+        # Find by session_id, not by filename — operator-pasted IDs
+        # should work even if the filename format ever changes.
+        target: Path | None = None
+        for p in self._metadata_dir.glob("enroll_*.json"):
+            try:
+                data = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("session_id") == session_id:
+                target = p
+                break
+        if target is None:
+            raise ValueError(f"session not found: {session_id}")
+
+        data = json.loads(target.read_text())
+        try:
+            member = data["member"]
+            clips = [
+                ClipMetadata(**c) for c in data.get("clips", [])
+            ]
+        except (KeyError, TypeError) as e:
+            raise ValueError(
+                f"session {session_id} schema mismatch: {e}",
+            ) from e
+        include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
+        with self._lock:
+            self._session_id = session_id
+            self._member = member
+            self._clips = clips
+            self._include_raw_mic_0 = include_raw_mic_0
+        logger.info(
+            "loaded session %s for %s with %d clip(s) include_raw_mic_0=%s",
+            session_id, member,
+            sum(1 for c in clips if not c.deleted),
+            include_raw_mic_0,
+        )
+        return {
+            "session_id": session_id, "member": member,
+            "clip_count": sum(1 for c in clips if not c.deleted),
+            "include_raw_mic_0": include_raw_mic_0,
+        }
+
+    def delete_session(self, session_id: str) -> dict[str, int]:
+        """Hard-delete every WAV referenced by a session + remove the
+        JSON sidecar. Returns {wavs_deleted, wavs_missing}.
+
+        Refuses if a recording is in progress (covers the case where
+        the operator tries to delete the session they're recording
+        into).
+
+        If the deleted session was the active in-memory one, clears
+        the in-memory state (operator now needs to begin a new
+        session or load another).
+        """
+        with self._lock:
+            if self._current is not None:
+                raise StateError(
+                    "can't delete session: recording in progress",
+                )
+        target: Path | None = None
+        for p in self._metadata_dir.glob("enroll_*.json"):
+            try:
+                data = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("session_id") == session_id:
+                target = p
+                break
+        if target is None:
+            raise ValueError(f"session not found: {session_id}")
+
+        data = json.loads(target.read_text())
+        wavs_deleted = 0
+        wavs_missing = 0
+        for c in data.get("clips", []):
+            if c.get("deleted"):
+                # Already-deleted clips have already had their WAVs
+                # removed by delete_clip(); skip + don't count.
+                continue
+            for path_str in (c.get("files") or {}).values():
+                p_wav = Path(path_str)
+                try:
+                    p_wav.unlink()
+                    wavs_deleted += 1
+                except FileNotFoundError:
+                    wavs_missing += 1
+                except OSError as e:
+                    logger.warning("failed to delete %s: %s", p_wav, e)
+                    wavs_missing += 1
+        target.unlink()
+
+        # If we just deleted the in-memory active session, clear state.
+        with self._lock:
+            if self._session_id == session_id:
+                self._session_id = None
+                self._member = None
+                self._clips = []
+                self._include_raw_mic_0 = False
+        logger.info(
+            "deleted session %s: %d wavs removed, %d missing",
+            session_id, wavs_deleted, wavs_missing,
+        )
+        return {"wavs_deleted": wavs_deleted, "wavs_missing": wavs_missing}
 
 
 # ---------------------------------------------------------------------------
@@ -824,6 +1037,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "voice_daemon_active": voice_daemon_active(),
                 "session_id": self.backend.session_id(),
                 "member": self.backend.member(),
+                "include_raw_mic_0": self.backend.include_raw_mic_0(),
                 "is_recording": self.backend.is_recording(),
                 "elapsed_sec": self.backend.elapsed_recording_sec(),
                 "clip_count": len(self.backend.list_clips()),
@@ -834,6 +1048,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "clips": [c.to_json() for c in self.backend.list_clips()],
             })
+            return
+
+        if path == "/api/sessions":
+            self._send_json({"sessions": self.backend.list_sessions()})
             return
 
         if path.startswith("/api/clip/") and path.endswith("/wav"):
@@ -946,15 +1164,37 @@ class _Handler(BaseHTTPRequestHandler):
 
         if path == "/api/session":
             member = (body.get("member") or "").strip()
+            include_raw_mic_0 = bool(body.get("include_raw_mic_0", False))
             if not member:
                 self._send_error_json(400, "member is required")
                 return
             try:
-                session_id = self.backend.begin_session(member)
+                session_id = self.backend.begin_session(
+                    member, include_raw_mic_0=include_raw_mic_0,
+                )
             except (ValueError, StateError) as e:
                 self._send_error_json(400, str(e))
                 return
-            self._send_json({"session_id": session_id, "member": member})
+            self._send_json({
+                "session_id": session_id, "member": member,
+                "include_raw_mic_0": include_raw_mic_0,
+            })
+            return
+
+        if path == "/api/session/load":
+            sid = (body.get("session_id") or "").strip()
+            if not sid:
+                self._send_error_json(400, "session_id is required")
+                return
+            try:
+                result = self.backend.load_session(sid)
+            except ValueError as e:
+                self._send_error_json(404, str(e))
+                return
+            except StateError as e:
+                self._send_error_json(409, str(e))
+                return
+            self._send_json(result)
             return
 
         if path == "/api/clip/start":
@@ -1017,8 +1257,8 @@ class _Handler(BaseHTTPRequestHandler):
         if not self._check_csrf():
             return
         path = urlparse(self.path).path.rstrip("/") or "/"
-        # /api/clip/<id>
         parts = path.split("/")
+        # /api/clip/<id>
         if len(parts) == 4 and parts[1] == "api" and parts[2] == "clip":
             clip_id = parts[3]
             ok = self.backend.delete_clip(clip_id)
@@ -1026,6 +1266,19 @@ class _Handler(BaseHTTPRequestHandler):
                 self._send_error_json(404, "clip not found")
                 return
             self._send_json({"deleted": clip_id})
+            return
+        # /api/session/<id> — hard-delete a whole session (WAVs + JSON)
+        if len(parts) == 4 and parts[1] == "api" and parts[2] == "session":
+            session_id = parts[3]
+            try:
+                result = self.backend.delete_session(session_id)
+            except ValueError as e:
+                self._send_error_json(404, str(e))
+                return
+            except StateError as e:
+                self._send_error_json(409, str(e))
+                return
+            self._send_json({"deleted_session": session_id, **result})
             return
         self.send_error(HTTPStatus.NOT_FOUND, f"not found: {path}")
 
@@ -1269,6 +1522,28 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       font-size: 0.86em;
       color: #555;
     }
+    /* Sessions list — one row per session with actions on the right. */
+    .session-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.6em;
+      align-items: center;
+      padding: 0.6em 0;
+      border-bottom: 1px solid #eee;
+    }
+    .session-row:last-child { border-bottom: none; }
+    .session-row.active { background: #f7fff0; padding-left: 0.4em; border-left: 3px solid #1f7a1f; }
+    .session-meta { font-size: 0.92em; color: #444; }
+    .session-meta .id { font-variant-numeric: tabular-nums; color: #888; font-size: 0.84em; }
+    .session-meta .breakdown { color: #666; font-size: 0.86em; }
+    .session-actions { display: flex; gap: 0.3em; }
+    .session-actions button { padding: 0.3em 0.7em; font-size: 0.85em; }
+    .pill.purple { background: #ede3f7; color: #5a2da3; }
+    .pill.tiny { font-size: 0.75em; padding: 0.1em 0.5em; }
+    /* Checkbox row for the per-session raw-mic-0 toggle. */
+    .row.checkbox label { min-width: 0; font-weight: 500; cursor: pointer; }
+    .row.checkbox input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
+    .row.checkbox .hint { color: #888; font-size: 0.85em; }
   </style>
 </head>
 <body>
@@ -1287,11 +1562,29 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
+  <div class="card" id="sessions-card">
+    <h2 style="margin-top:0">Sessions</h2>
+    <div id="sessions-list">(loading…)</div>
+    <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
+      Tap <strong>Load</strong> to resume an existing session, or
+      <strong>Delete</strong> to remove its WAVs + metadata permanently.
+    </p>
+  </div>
+
   <div class="card" id="session-card">
+    <h2 style="margin-top:0">Begin a new session</h2>
     <div class="row">
       <label for="member">Member:</label>
       <input type="text" id="member" value="jasper" maxlength="20">
       <button id="session-begin">Begin session</button>
+    </div>
+    <div class="row checkbox">
+      <input type="checkbox" id="include-raw-mic-0">
+      <label for="include-raw-mic-0">
+        Also capture <strong>raw mic 0</strong>
+        <span class="hint">— chip channel 2, no DSP. Useful for
+        future-proofing against cheaper mics; adds one WAV per clip.</span>
+      </label>
     </div>
   </div>
 
@@ -1404,8 +1697,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           toggleEl.disabled = s.is_recording;
           $('record-btn').disabled = !s.session_id;
         }
-        $('session-id').textContent = s.session_id
-          ? `${s.member} / ${s.session_id}` : '(no session)';
+        const sessionLabel = s.session_id
+          ? `${s.member} / ${s.session_id}`
+            + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
+          : '(no session)';
+        $('session-id').textContent = sessionLabel;
         if (s.session_id) {
           $('record-card').style.display = 'block';
           $('counts-card').style.display = 'block';
@@ -1435,13 +1731,84 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
     async function beginSession() {
       const member = $('member').value.trim();
+      const includeRawMic0 = $('include-raw-mic-0').checked;
       if (!member) { showErr('member is required'); return; }
       try {
-        await api('POST', 'api/session', {member});
+        await api('POST', 'api/session', {
+          member, include_raw_mic_0: includeRawMic0,
+        });
         showErr('');
         await refreshStatus();
         await refreshClips();
+        await refreshSessions();
       } catch (e) { showErr(`begin session: ${e.message}`); }
+    }
+
+    async function refreshSessions() {
+      try {
+        const r = await api('GET', 'api/sessions');
+        const wrap = $('sessions-list');
+        if (!r.sessions.length) {
+          wrap.innerHTML = '<p style="color:#888;margin:0">No sessions yet — begin one below.</p>';
+          return;
+        }
+        wrap.innerHTML = '';
+        for (const s of r.sessions) {
+          const row = document.createElement('div');
+          row.className = 'session-row' + (s.is_active ? ' active' : '');
+          const condText = Object.entries(s.conditions)
+            .map(([k, v]) => `${k}=${v}`).join(' · ') || 'no clips';
+          const rawPill = s.include_raw_mic_0
+            ? '<span class="pill tiny purple">raw mic 0</span>'
+            : '';
+          const activeMark = s.is_active
+            ? '<span class="pill tiny green">active</span> ' : '';
+          const date = new Date(s.mtime * 1000).toLocaleString();
+          row.innerHTML = `
+            <div class="session-meta">
+              <div>${activeMark}<strong>${s.member}</strong>
+                ${rawPill}
+                <span class="id">${s.session_id}</span></div>
+              <div class="breakdown">${s.clip_count} clip(s) · ${condText} · ${date}</div>
+            </div>
+            <div class="session-actions">
+              <button data-load="${s.session_id}" ${s.is_active ? 'disabled' : ''}>Load</button>
+              <button class="danger" data-delete="${s.session_id}" data-summary="${s.clip_count} clip(s)">Delete</button>
+            </div>
+          `;
+          row.querySelector('[data-load]').onclick = (ev) => loadSession(
+            ev.target.dataset.load,
+          );
+          row.querySelector('[data-delete]').onclick = (ev) => deleteSession(
+            ev.target.dataset.delete, ev.target.dataset.summary,
+          );
+          wrap.appendChild(row);
+        }
+      } catch (e) { showErr(`sessions: ${e.message}`); }
+    }
+
+    async function loadSession(sessionId) {
+      try {
+        await api('POST', 'api/session/load', {session_id: sessionId});
+        showErr('');
+        await refreshStatus();
+        await refreshClips();
+        await refreshSessions();
+      } catch (e) { showErr(`load: ${e.message}`); }
+    }
+
+    async function deleteSession(sessionId, summary) {
+      if (!confirm(
+        `Permanently delete session ${sessionId}? This removes ${summary} ` +
+        `and the session metadata. Cannot be undone.`,
+      )) return;
+      try {
+        await api('DELETE', `api/session/${sessionId}`);
+        showErr('');
+        await refreshStatus();
+        await refreshClips();
+        await refreshSessions();
+      } catch (e) { showErr(`delete: ${e.message}`); }
     }
 
     function selectedRadio(name) {
@@ -1457,6 +1824,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
           await refreshStatus();
           await refreshClips();
+          await refreshSessions();  // count++
         } catch (e) { showErr(`stop: ${e.message}`); }
       } else {
         const condition = selectedRadio('condition');
@@ -1500,6 +1868,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             try {
               await api('DELETE', `api/clip/${id}`);
               await refreshClips();
+              await refreshSessions();  // count--
             } catch (e) { showErr(`delete: ${e.message}`); }
           };
           list.prepend(row);  // newest first
@@ -1600,7 +1969,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
     refreshStatus();
     refreshClips();
+    refreshSessions();
     setInterval(refreshStatus, 2000);
+    // Sessions list changes slowly (only on begin/load/delete) — refresh
+    // every 30 s so external SSH edits show up without being chatty.
+    setInterval(refreshSessions, 30000);
   </script>
 </body>
 </html>

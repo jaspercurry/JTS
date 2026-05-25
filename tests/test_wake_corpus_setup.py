@@ -119,10 +119,12 @@ async def test_recording_task_elapsed_grows() -> None:
 @pytest.fixture
 def backend(tmp_path: Path):
     """Construct + start a backend rooted in a tmp dir, tear down on
-    test exit."""
+    test exit. All 4 leg ports configured — matches the production
+    default. Tests that exercise 3-leg mode just don't opt into
+    include_raw_mic_0."""
     b = wake_corpus_setup.RecordingBackend(
         output_dir=tmp_path / "out",
-        ports={"on": 9876, "off": 9877, "dtln": 9878},
+        ports={"on": 9876, "off": 9877, "dtln": 9878, "raw0": 9879},
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
     )
     b.start()
@@ -1070,6 +1072,479 @@ def test_level_sse_does_not_require_csrf(backend) -> None:
         resp = conn.getresponse()
         try:
             assert resp.status == 200
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+# ---------------------------------------------------------------------------
+# Raw mic 0 leg — 4th capture leg, opt-in per session
+# ---------------------------------------------------------------------------
+
+
+def test_legs_includes_raw0_in_tuple() -> None:
+    """The LEGS tuple must include raw0 so downstream tools that
+    iterate over it pick up the new quadrant directories."""
+    assert "raw0" in wake_corpus_setup.LEGS
+    assert wake_corpus_setup.BASE_LEGS == ("on", "off", "dtln")
+
+
+def test_default_aec_raw0_port_constant_exposed() -> None:
+    """Recorder re-exports the shared default port so socket-activation
+    + CLI both see the same number."""
+    from jasper.cli.wake_enroll import DEFAULT_AEC_RAW0_PORT
+    assert DEFAULT_AEC_RAW0_PORT == 9879
+
+
+def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
+    """A backend constructed without explicit ports defaults to all
+    four leg ports (recorder subscribes to a subset based on the
+    session flag)."""
+    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    assert set(b._ports.keys()) == {"on", "off", "dtln", "raw0"}
+
+
+def test_begin_session_default_excludes_raw0(backend) -> None:
+    """Default begin_session() does NOT opt into raw0 — historical
+    pre-flag sessions shouldn't suddenly start capturing 4 legs."""
+    backend.begin_session("jasper")
+    assert backend.include_raw_mic_0() is False
+
+
+def test_begin_session_with_raw0_records_4_legs(
+    backend, tmp_path: Path,
+) -> None:
+    """A session opened with include_raw_mic_0=True captures all 4
+    legs per clip into aec_<leg>_<condition_dir>/ quadrants."""
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    assert backend.include_raw_mic_0() is True
+    backend.start_recording("ambient", "near")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    # All 4 quadrants exist with 1 file each
+    for leg in ("on", "off", "dtln", "raw0"):
+        d = out / f"aec_{leg}_ambient"
+        assert d.is_dir(), f"missing dir: {d}"
+        wavs = list(d.glob("*.aec-*.wav"))
+        assert len(wavs) == 1, f"expected 1 wav in {d}, got {len(wavs)}"
+    # ClipMetadata.files maps all 4 legs
+    assert set(clip.files.keys()) == {"on", "off", "dtln", "raw0"}
+
+
+def test_begin_session_without_raw0_records_3_legs(
+    backend, tmp_path: Path,
+) -> None:
+    """Without the flag, only the 3 base legs are captured — the
+    raw0 quadrant directories should NOT be created (keeps the
+    on-disk layout clean for non-raw0 sessions)."""
+    backend.begin_session("jasper", include_raw_mic_0=False)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    for leg in ("on", "off", "dtln"):
+        assert (out / f"aec_{leg}_nomusic").is_dir()
+    # raw0 dir absent
+    assert not (out / "aec_raw0_nomusic").exists()
+    # ClipMetadata.files has 3 keys
+    assert set(clip.files.keys()) == {"on", "off", "dtln"}
+
+
+def test_metadata_persists_include_raw_mic_0_flag(
+    backend, tmp_path: Path,
+) -> None:
+    """The session JSON sidecar must persist include_raw_mic_0 so
+    recovery + list_sessions can show it."""
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    data = json.loads(json_files[0].read_text())
+    assert data["include_raw_mic_0"] is True
+
+
+def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
+    """A recovered session must restore the include_raw_mic_0 flag
+    so a follow-up clip inherits the original session's leg set
+    (not silently degraded to the 3-base default)."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_x.json").write_text(json.dumps({
+        "session_id": "x", "member": "jasper",
+        "ports": {"on": 9876, "off": 9877, "dtln": 9878, "raw0": 9879},
+        "include_raw_mic_0": True,
+        "clips": [],
+    }))
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.include_raw_mic_0() is True
+    finally:
+        b.shutdown()
+
+
+def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
+    """Sessions recorded BEFORE this feature don't have the
+    include_raw_mic_0 key. Recovery must treat the missing key as
+    False (backward compat with existing on-disk corpora)."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_old.json").write_text(json.dumps({
+        "session_id": "old", "member": "jasper",
+        "ports": {"on": 9876, "off": 9877, "dtln": 9878},
+        "clips": [],
+        # NO include_raw_mic_0 key
+    }))
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.include_raw_mic_0() is False
+    finally:
+        b.shutdown()
+
+
+# ---------------------------------------------------------------------------
+# Sessions management — list / load / delete
+# ---------------------------------------------------------------------------
+
+
+def test_list_sessions_empty_dir(tmp_path: Path) -> None:
+    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    assert b.list_sessions() == []
+
+
+def test_list_sessions_returns_summaries_newest_first(
+    tmp_path: Path,
+) -> None:
+    """list_sessions scans the metadata dir + summarizes each
+    session. Sort order is newest-first by mtime."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    # Two sessions, the second one newer
+    (md / "enroll_jasper_old.json").write_text(json.dumps({
+        "session_id": "old", "member": "jasper",
+        "ports": {}, "include_raw_mic_0": False,
+        "clips": [
+            {"clip_id": "1", "member": "jasper", "condition": "quiet",
+             "distance": "near", "session_id": "old", "seq": 1,
+             "start_ts": "x", "stop_ts": "y", "duration_sec": 1.0,
+             "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
+        ],
+    }))
+    (md / "enroll_jasper_new.json").write_text(json.dumps({
+        "session_id": "new", "member": "jasper",
+        "ports": {}, "include_raw_mic_0": True,
+        "clips": [
+            {"clip_id": "2", "member": "jasper", "condition": "ambient",
+             "distance": "far", "session_id": "new", "seq": 1,
+             "start_ts": "x", "stop_ts": "y", "duration_sec": 1.0,
+             "files": {}, "deleted": False, "auto_stopped": False, "notes": ""},
+        ],
+    }))
+    import os as _os
+    # Force the "new" file's mtime to be later than the "old" file's
+    now = time.time()
+    _os.utime(md / "enroll_jasper_old.json", (now - 10, now - 10))
+    _os.utime(md / "enroll_jasper_new.json", (now, now))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    sessions = b.list_sessions()
+    assert len(sessions) == 2
+    assert sessions[0]["session_id"] == "new"  # newest first
+    assert sessions[1]["session_id"] == "old"
+    assert sessions[0]["include_raw_mic_0"] is True
+    assert sessions[1]["include_raw_mic_0"] is False
+    assert sessions[0]["clip_count"] == 1
+    assert sessions[0]["conditions"] == {"ambient": 1}
+
+
+def test_list_sessions_marks_active(tmp_path: Path) -> None:
+    """The session currently loaded in memory is flagged is_active so
+    the UI can render the row differently (and disable Load)."""
+    b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
+    b.start()
+    try:
+        b.begin_session("jasper")
+        active_id = b.session_id()
+        sessions = b.list_sessions()
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == active_id
+        assert sessions[0]["is_active"] is True
+    finally:
+        b.shutdown()
+
+
+def test_list_sessions_skips_corrupt_files(tmp_path: Path) -> None:
+    """A single corrupt JSON file must not break the whole list."""
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_good.json").write_text(json.dumps({
+        "session_id": "good", "member": "jasper",
+        "ports": {}, "clips": [],
+    }))
+    (md / "enroll_jasper_bad.json").write_text("{not valid json")
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    sessions = b.list_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["session_id"] == "good"
+
+
+def test_load_session_switches_active(backend, tmp_path: Path) -> None:
+    """load_session swaps the in-memory active session to an
+    existing one on disk."""
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    first_id = backend.session_id()
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    backend.begin_session("jasper")  # creates a 2nd session (sleeps to differ ts)
+    time.sleep(0.05)
+    second_id = backend.session_id()
+    assert first_id != second_id
+
+    # Switch back to the first session
+    result = backend.load_session(first_id)
+    assert result["session_id"] == first_id
+    assert result["include_raw_mic_0"] is True
+    assert backend.session_id() == first_id
+    assert backend.include_raw_mic_0() is True
+    # And the loaded session's clips are now visible
+    assert len(backend.list_clips()) == 1
+
+
+def test_load_session_refuses_during_recording(backend) -> None:
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    try:
+        with pytest.raises(wake_corpus_setup.StateError):
+            backend.load_session("anything")
+    finally:
+        backend.stop_recording()
+
+
+def test_load_session_unknown_raises(backend) -> None:
+    backend.begin_session("jasper")
+    with pytest.raises(ValueError, match="not found"):
+        backend.load_session("nonexistent-id")
+
+
+def test_delete_session_removes_wavs_and_json(
+    backend, tmp_path: Path,
+) -> None:
+    """delete_session hard-removes the WAV files and the JSON
+    sidecar. The session is no longer listable."""
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    clip = backend.stop_recording()
+    sid = backend.session_id()
+
+    # WAVs and JSON present
+    assert all(Path(p).is_file() for p in clip.files.values())
+    md_path = tmp_path / "out" / "metadata" / f"enroll_jasper_{sid}.json"
+    assert md_path.is_file()
+
+    result = backend.delete_session(sid)
+    assert result["wavs_deleted"] >= 1  # at least one per leg
+    assert all(not Path(p).is_file() for p in clip.files.values())
+    assert not md_path.is_file()
+    # No longer in list_sessions
+    assert sid not in {s["session_id"] for s in backend.list_sessions()}
+
+
+def test_delete_active_session_clears_in_memory_state(
+    backend,
+) -> None:
+    """When the operator deletes the session they have open in
+    memory, the in-memory active state must be cleared so the UI
+    doesn't show 'phantom' clips with broken WAV links."""
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+    sid = backend.session_id()
+
+    backend.delete_session(sid)
+    assert backend.session_id() is None
+    assert backend.member() is None
+    assert backend.list_clips() == []
+    assert backend.include_raw_mic_0() is False
+
+
+def test_delete_session_refuses_during_recording(backend) -> None:
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    sid = backend.session_id()
+    try:
+        with pytest.raises(wake_corpus_setup.StateError):
+            backend.delete_session(sid)
+    finally:
+        backend.stop_recording()
+
+
+def test_delete_session_unknown_raises(backend) -> None:
+    with pytest.raises(ValueError, match="not found"):
+        backend.delete_session("nonexistent-id")
+
+
+# ---------------------------------------------------------------------------
+# HTML — Sessions card + raw-mic-0 toggle wiring
+# ---------------------------------------------------------------------------
+
+
+def test_html_has_sessions_card() -> None:
+    """The wizard's top-of-page Sessions card must exist."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="sessions-card"' in html_text
+    assert 'id="sessions-list"' in html_text
+
+
+def test_html_has_include_raw_mic_0_checkbox() -> None:
+    """Begin-a-new-session form has the raw-mic-0 toggle."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="include-raw-mic-0"' in html_text
+    assert 'raw mic 0' in html_text
+
+
+def test_html_js_calls_sessions_endpoints() -> None:
+    """JS must call the right relative API paths (not absolute —
+    nginx prefix-strip would 502 those)."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert "'api/sessions'" in html_text or '"api/sessions"' in html_text
+    assert "'api/session/load'" in html_text or '"api/session/load"' in html_text
+    assert "api/session/${" in html_text  # DELETE template literal
+
+
+# ---------------------------------------------------------------------------
+# /api/sessions HTTP endpoint
+# ---------------------------------------------------------------------------
+
+
+def test_api_sessions_returns_empty_list(backend) -> None:
+    import http.client
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/sessions")
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body == {"sessions": []}
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_load_round_trip(backend) -> None:
+    """POST /api/session/load with a valid session_id switches the
+    active session. Use the same backend's begin_session to create
+    the target so we don't need a separate disk fixture."""
+    import http.client
+
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    first_id = backend.session_id()
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+    backend.begin_session("brittany")  # second session, now active
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session/load",
+            json.dumps({"session_id": first_id}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body["session_id"] == first_id
+            assert body["include_raw_mic_0"] is True
+        finally:
+            conn.close()
+        # Backend's active session swapped
+        assert backend.session_id() == first_id
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_delete_round_trip(backend) -> None:
+    import http.client
+
+    backend.begin_session("jasper")
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+    sid = backend.session_id()
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "DELETE", f"/api/session/{sid}",
+            headers={"X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body["deleted_session"] == sid
+        finally:
+            conn.close()
+        # Active state cleared
+        assert backend.session_id() is None
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_status_includes_include_raw_mic_0(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """status payload must surface include_raw_mic_0 so the UI's
+    session-id label can show the raw-mic-0 marker.
+
+    voice_daemon_active() shells out to systemctl which doesn't exist
+    on dev macs — monkeypatch it so the test runs hardware-free.
+    """
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert body["include_raw_mic_0"] is True
         finally:
             conn.close()
     finally:
