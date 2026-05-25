@@ -1,0 +1,855 @@
+# HANDOFF: LLM-driven calibration agent
+
+> **Status: research only, no implementation yet (2026-05-25).** This is
+> a design-space document — survey of the problem, options, and a
+> recommended build sequence — modelled on
+> [`HANDOFF-remote-updates.md`](HANDOFF-remote-updates.md) and
+> [`HANDOFF-barge-in.md`](HANDOFF-barge-in.md). Nothing in here ships
+> until a follow-up PR (or several) implements it.
+>
+> **What this proposes:** layer an LLM "audio engineer" on top of the
+> existing `/correction/` wizard. After the auto-PEQ is computed, an
+> agent (Claude Opus 4.7 / GPT-5 / Gemini Pro — whichever the user has
+> a key for) interprets the measurement, asks the user about room
+> shape and listening position, critiques the auto-filter, suggests
+> alternatives, and iterates across re-measurements. Restraint-first
+> philosophy: the agent's job is to talk users *out* of over-EQ at
+> least as often as into adjustments.
+>
+> **What this does NOT propose:** any change to the measurement
+> pipeline, the PEQ designer, the CamillaDSP hot-swap path, or any
+> other shipped subsystem in
+> [`HANDOFF-correction.md`](HANDOFF-correction.md). The agent sits
+> *above* that surface and calls into it via tools — same arms-length
+> shape as the voice tools.
+
+---
+
+## TL;DR
+
+1. The shipped `/correction/` substrate is good (Phase 0–2.2 in
+   [`HANDOFF-correction.md`](HANDOFF-correction.md), 102 tests
+   green on synthetic data). What it lacks is the **judgment layer**:
+   today's UX is "auto-PEQ proposes ≤5 cuts, you tap Apply" with no
+   coaching, no room-shape context, no critique of the proposal.
+2. **No existing product fills that gap.** Sonos Trueplay, Dirac,
+   Sonarworks, Genelec GLM, Audyssey, Neumann MA 1 — every commercial
+   room-correction tool is a closed-loop one-shot batch process. None
+   are agentic. The closest architectural prior art is in *
+   spectroscopy* — LUMIR / IR-Agent / EIS-LLM — where the same
+   measure → interpret → propose → iterate pattern was built in 2025.
+3. Substrate to graft: ~30–50 pages of distilled audio-engineering
+   knowledge as markdown, a provider-abstracted agent harness (mirror
+   [`jasper/voice/`](../jasper/voice/)'s `LiveConnection` shape), a
+   small tool registry that calls into the existing
+   [`MeasurementSession`](../jasper/correction/session.py), and a chat
+   panel in the existing wizard.
+4. The user has a **Dayton USB-C calibration microphone** (works
+   plugged into the iPhone or an Android phone). This is a meaningful
+   upgrade over the bundled-curve iPhone-built-in compensation
+   acknowledged as approximate in
+   [`HANDOFF-correction.md`](HANDOFF-correction.md). Calibrated input
+   is a prerequisite for the agent's recommendations to be
+   trustworthy — bad inputs + confident model = bad advice delivered
+   with authority. Calibration-mic ingest should land *before* or
+   *with* the agent, not after.
+5. Provider posture: **add Anthropic Opus 4.7 as a first-class
+   option** alongside the existing Gemini / OpenAI keys reused from
+   `/var/lib/jasper/voice_provider.env`. Opus is genuinely well-suited
+   to expert-reasoning + tool-use tasks like this. xAI Grok stays
+   voice-only for now (its strongest model lineage isn't matched in
+   the chat surface).
+
+---
+
+## Why this is worth building
+
+The honest answer: because the auto-correction UX has a measurable
+ceiling, and judgment is what gets you above it.
+
+The shipped greedy peak-fit PEQ designer
+([`jasper/correction/peq.py`](../jasper/correction/peq.py)) is good
+at the easy cases — a single dominant modal peak in the bass — and
+applies the right constraints (cuts-only, 20–350 Hz, Q ≤ 8,
+≤5 filters, max -10 dB cut). But it can't tell you:
+
+- *Why* the 80 Hz peak is there (modal? SBIR? a sub crossover quirk?)
+- Whether the -14 dB notch at 240 Hz is a real cancellation (don't
+  EQ) or a measurement artefact (move the mic and re-sweep)
+- Whether the user should move the speaker before reaching for EQ
+- How much of the response above the Schroeder frequency
+  (~100–300 Hz domestically) is the speaker, the room, or the
+  measurement mic — and which of those EQ can fix
+- What a *good* in-room target slope looks like for *this* room
+  (Harman / Olive-Welti is roughly -1 dB/octave from 20 Hz to
+  20 kHz, but the exact slope depends on speaker directivity and
+  room liveness)
+- Whether two measurements taken at the same listening position 30
+  minutes apart agree well enough to trust the resulting filter
+
+Every one of those is a judgment call. An LLM with the right knowledge
+base and the right tools is well-suited to making them out loud, with
+the user, in a way that the user can push back on.
+
+The deeper point is **restraint**. Toole's central thesis (*Sound
+Reproduction*, 3rd ed., 2017) is that good loudspeakers in reasonable
+rooms need very little correction above the Schroeder frequency, and
+aggressive auto-EQ *degrades* perceived sound by flattening
+peaks-and-dips that are spaciousness cues from lateral reflections.
+Every commercial auto-correction product violates this principle by
+default because "more correction" is a better sales pitch than "less".
+A self-hosted, hobbyist-priorities speaker has no such constraint —
+the agent's first instinct can and should be "actually, your room
+sounds fine, let's not touch anything below 150 Hz."
+
+---
+
+## What we already have (the substrate)
+
+Re-read [`HANDOFF-correction.md`](HANDOFF-correction.md) for the
+full picture. The bits that matter for this proposal:
+
+### Web wizard — `jasper-correction-web`
+
+- **Socket-activated** (zero RAM idle; spawns on first request to
+  `https://jts.local/correction/`, 10-min idle timeout). Unit files
+  at [`deploy/jasper-correction-web.service`](../deploy/jasper-correction-web.service)
+  and [`.socket`](../deploy/jasper-correction-web.socket).
+- stdlib [`ThreadingHTTPServer`](../jasper/web/correction_setup.py) on
+  127.0.0.1:8770 behind nginx → `https://jts.local/correction/`.
+  HTTPS is mandatory because `getUserMedia` requires a secure
+  context; the page documents the iOS trust dance.
+- Routes (all in [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)):
+  `GET /`, `GET /healthz`, `GET /status`, `GET /sessions`,
+  `POST /start`, `POST /next-position`, `POST /verify`,
+  `POST /upload-capture`, `POST /apply`, `POST /reset`,
+  `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
+  `POST /autolevel/cancel`.
+- Frontend is a single-page Preact app embedded as inline HTML via
+  the `_PAGE_HTML` template with `__HOSTNAME__` / `__REQUIRED_SR__` /
+  navigation substitutions in `_render_page()`. uPlot for the chart,
+  AudioWorklet for mic capture at 48 kHz (constraint-pinned;
+  the page hard-rejects sample-rate / EC / NS / AGC overrides per
+  WebKit Bug 179411 mitigation).
+- Browser polls `GET /status` every 500 ms for state snapshots; no
+  SSE today.
+
+### DSP pipeline — [`jasper/correction/`](../jasper/correction/)
+
+| Module | Responsibility |
+|---|---|
+| `sweep.py` | Novak 2015 synchronized ESS, 20 Hz – 20 kHz, 10 s, -12 dBFS, 48 kHz, deterministic + on-disk cache under `/var/lib/jasper/correction/sweeps/`. |
+| `playback.py` | `aplay -D plughw:Loopback,0,0` (the music chain entry point — sweep traverses the same pipeline real music does); 1 kHz test-tone cache under `/var/lib/jasper/correction/tones/`. |
+| `deconv.py` | FFT + Tikhonov-regularized inversion (`H(f) = Y(f) conj(X(f)) / (\|X(f)\|² + ε)`), IR window 5 ms pre / 500 ms post direct arrival. |
+| `analysis.py` | 1/48-octave power-mean smoothing, log-spaced 480-point resampling, multi-position power-mean spatial averaging. |
+| `peq.py` | Greedy peak-fit: residual = measured − target → find max peak → estimate Q from -3 dB bandwidth → add peaking biquad → repeat. Cuts-only by default, 20–350 Hz, ≤5 filters, Q ∈ [1.0, 8.0], max -10 dB. |
+| `target.py` | Named targets: `flat` / `neutral` / `warm` / `bright` (interpolations over a Harman-shaped base). |
+| `camilla_yaml.py` | YAML emission by string concatenation (no pyyaml dep, keeps output reviewable). Preserves `master_gain` mixer; inserts `peq_1 … peq_N` biquads in front of the existing `flat` filter. |
+| `coordinator.py` | `measurement_window()` async context manager — preconditions (no active voice session), pauses renderers via `systemctl stop`, sends UDS `MEASURE_PAUSE` to `jasper-voice`, restores in `finally`. |
+| `session.py` (1,211 lines) | `MeasurementSession` + `SessionState` enum + `AutolevelStatus` + bundle writers. The big one. |
+
+### Critical correctness property: `/start` always resets to flat
+
+[`_handle_start()`](../jasper/web/correction_setup.py) hard-resets
+the CamillaDSP config to `/etc/camilladsp/v1.yml` (identity) *before*
+playing the sweep. This means every measurement captures the raw room,
+never the corrected pipeline. The agent must understand this — its
+"compare verify against measured" reasoning only works because both
+were captured against the same flat baseline.
+
+### Storage layout
+
+```
+/var/lib/jasper/correction/
+├── sweeps/              # Deterministic sweep cache (one per param tuple)
+├── tones/               # 1 kHz test-tone cache (for auto-level)
+├── captures/            # Fallback per-position WAVs (when bundle save fails)
+└── sessions/<id>/       # Per-session debug bundle
+    ├── info.json        # state, params, peqs, sweep_meta, autolevel snapshot
+    ├── result.json      # measured / target / predicted / verify curves
+    ├── captures/        # p0.wav, p1.wav, …, p4.wav (per-position mono WAVs)
+    ├── verify.wav       # post-Apply re-measurement
+    └── applied.yml      # copy of the CamillaDSP config that was applied
+
+/var/lib/camilladsp/
+├── configs/correction_<id>_<unixtime>.yml   # never deleted; history
+└── statefile.yml                            # current config_path:
+```
+
+Bundles are **already enough** for an offline agent to reason about a
+calibration session — `info.json` + `result.json` + the WAVs are a
+self-contained handoff packet. This will matter: the simplest possible
+v0 of the agent is "feed a session bundle to a model, get a written
+critique back, no UI." That's how Phase A below works.
+
+### Constraints already baked in
+
+The agent should treat these as *floors*, not ceilings — its
+recommendations should keep or tighten them, never loosen:
+
+- cuts-only (no boosts in Phase 1–2.2)
+- 20–350 Hz band only (modal region)
+- ≤5 filters
+- max -10 dB per filter
+- Q ∈ [1.0, 8.0]
+- `master_gain` mixer preserved (it's the ducking knob — see
+  [`HANDOFF-volume.md`](HANDOFF-volume.md))
+
+### Tests
+
+102 hardware-free pytest functions across 9 files (~2,560 lines),
+all green on synthetic data. **Hardware verification — actually
+running a sweep, taking the mic to multiple positions, applying the
+filter, listening — is the gating step before this agent makes sense.**
+The agent's recommendations are bounded by the measurement quality.
+If the measurement pipeline is silently wrong end-to-end on real
+hardware, the agent will confidently tell you to apply a filter that
+makes the room sound worse.
+
+---
+
+## Measurement hardware — Dayton USB-C calibration mic
+
+The user has a **Dayton USB-C calibration microphone** (the
+USB-C-native sibling of the Dayton iMM-6 family) that plugs into
+either an iPhone (Lightning-to-USB-C or USB-C-native depending on
+generation) or an Android phone. This matters for the agent in three
+ways:
+
+1. **Accuracy floor.** Today's iPhone-built-in capture is
+   compensation-curve approximate (HouseCurve / Faber-style bundled
+   curve; the inaccuracy is acknowledged in
+   [`HANDOFF-correction.md`](HANDOFF-correction.md) as the rationale
+   for the Phase 4 UMIK-2 escape hatch). A Dayton USB-C mic with its
+   published per-unit calibration `.txt` file replaces a ~±3 dB
+   smoothed curve with a ~±0.5 dB measured one. **An LLM agent's
+   recommendations inherit the measurement's accuracy** — at ±3 dB
+   you can't reliably distinguish a 2 dB modal peak from a 4 dB one,
+   which is the difference between "ignore it" and "cut it 3 dB."
+2. **iOS/Android plumbing.** Web Audio's `getUserMedia` on both iOS
+   Safari (16+) and Chrome on Android exposes a connected USB-C
+   audio class device as a selectable input. The current page
+   constraint set
+   (`{sampleRate: {exact: 48000}, echoCancellation: false,
+   noiseSuppression: false, autoGainControl: false}`) should be
+   compatible — but the constraint-verify table in the page will
+   need to be re-read to confirm the device that actually gets
+   selected is the calibration mic, not the phone's built-in.
+   Worth surfacing a device-picker in the page if there are
+   multiple inputs.
+3. **Cal-file ingest.** Dayton ships per-unit `.txt` calibration
+   files (frequency, dB-offset pairs, similar to UMIK-2's format).
+   The wizard needs a one-time "upload your cal file" step — this
+   is the cleanest place to make the existing `iphone_mic_correction`
+   bundled curve a fallback instead of the default.
+
+**Recommendation:** treat calibration-mic ingest as **Phase 0a** —
+prerequisite work, sequenced before or alongside the agent. The
+agent's quality is bounded by the measurement; shipping the agent
+on top of uncalibrated input is a recipe for confidently bad advice.
+The work needed is small enough (cal-file parser, device-picker in
+the page, fallback chain in `analysis.py`) to fit cleanly in front
+of Phase A.
+
+---
+
+## The four agent layers
+
+```
+[ Browser chat panel inside /correction/ ]
+        │ POST {user_message, session_id}
+        ▼
+[ jasper-correction-web — existing wizard ]
+        │ delegates to
+        ▼
+[ CalibrationAgent — provider-abstracted, mirrors LiveConnection/LiveTurn ]
+        ├─ system prompt: assembled from docs/calibration-agent/*.md
+        ├─ tools: get_measurement / propose_peq / apply_peq /
+        │         request_remeasurement / compute_schroeder /
+        │         analyze_peaks_nulls / look_up
+        └─ provider adapters: anthropic_agent.py / openai_agent.py /
+                              gemini_agent.py
+                ▼
+[ Frontier text model — user-chosen ]
+```
+
+### Layer 1 — Knowledge base (markdown files)
+
+Live in a new `docs/calibration-agent/` directory:
+
+```
+docs/calibration-agent/
+├── README.md                    # how the loader assembles the prompt
+├── concepts/
+│   ├── schroeder-frequency.md   # fs ≈ 2000 √(RT60/V); regime divider
+│   ├── modal-response.md        # peaks (EQ-able) vs nulls (not)
+│   ├── sbir-and-placement.md    # boundary interference; move the speaker
+│   ├── baffle-step.md
+│   ├── comb-filtering.md
+│   └── rt60-and-room-treatment.md
+├── targets/
+│   ├── flat.md
+│   ├── harman-olive-welti.md    # ~-1 dB/octave in-room slope
+│   └── house-curves.md          # neutral / warm / bright; user taste
+├── filter-design/
+│   ├── peq-constraints.md       # Q ranges, gain limits, headroom
+│   ├── fir-vs-iir.md            # latency + pre-ringing trade-offs
+│   └── phase-and-group-delay.md
+├── philosophy/
+│   ├── restraint.md             # Toole; less is more above fs
+│   ├── when-eq-fails.md         # nulls, SBIR, ringing modes
+│   └── common-diy-mistakes.md
+└── jts-specific/
+    ├── what-our-pipeline-does.md     # describe the tools the agent has
+    ├── what-our-pipeline-cannot-do.md # mono, 20-350 Hz, no FIR yet
+    └── house-conventions.md          # household taste, gear, room (per-install)
+```
+
+Each concept file is ~500–2000 words. Total corpus targets
+30–50 pages → ~25–40K tokens, which fits comfortably in any frontier
+model's context window. **No RAG / retrieval — concatenate the whole
+corpus into the system prompt at agent startup.** Revisit retrieval
+only if the corpus grows past ~150K tokens, which it shouldn't.
+
+The `jts-specific/` directory is the bit that makes the agent's
+advice grounded in *our* pipeline rather than general audio theory.
+`what-our-pipeline-cannot-do.md` is particularly important — it
+prevents the agent from confidently suggesting FIR phase correction
+that the implementation can't actually deliver.
+
+`house-conventions.md` is the household-customization slot — gear,
+room dimensions, taste preferences, "the speaker sits 60 cm from the
+back wall behind the desk." This file gets edited by the user (or by
+the agent, with confirmation) over time as the system learns the
+context.
+
+**Source bibliography** (each cited in the markdown corpus, not
+loaded verbatim):
+
+- Toole, *Sound Reproduction: The Acoustics and Psychoacoustics of
+  Loudspeakers and Rooms*, 3rd ed., Routledge / AES Presents (2017)
+- Linkwitz Lab — first-principles speaker/room design
+- Genelec GLM 4.x whitepapers, Neumann MA 1 documentation
+- Dirac Research, "On Room Correction and Equalization of Sound
+  Systems" (PDF)
+- REW Help — "Why Can't I Fix All my Acoustic Problems with EQ?"
+- Welti & Devantier, AES papers on bass / multi-sub optimization
+- GIK Acoustics + Acoustic Frontiers SBIR explainers
+- Sean Olive / Todd Welti, AES papers on in-room target curves
+  (the "Harman target")
+
+### Layer 2 — Agent harness
+
+Mirror the [`jasper/voice/`](../jasper/voice/) pattern — protocol +
+adapters + shared helpers:
+
+```
+jasper/calibration_agent/
+├── __init__.py
+├── agent.py            # CalibrationAgent protocol: send_message, tools
+├── prompt.py           # assemble_system_prompt() reads the markdowns
+├── tools.py            # tool registry + per-tool implementations
+├── anthropic_agent.py  # Claude Opus 4.7 (claude-opus-4-7-20251022)
+├── openai_agent.py     # GPT-5 (gpt-5-2026-xx-xx)
+├── gemini_agent.py     # Gemini 2.5 / 3.x Pro (text)
+└── session.py          # ChatSession — history, tool-call loop, budget cap
+```
+
+Reuse the existing `voice_provider.env` keys for OpenAI / Gemini.
+Add **`ANTHROPIC_API_KEY` as a net-new variable** in the same file
+(`/var/lib/jasper/voice_provider.env`) — there's no Anthropic key in
+the project today (`grep -r anthropic jasper/` returns nothing). The
+existing `/voice/` wizard at
+[`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py) gains a
+fourth card for the Anthropic key, but Anthropic is not selectable
+as a *voice* provider (there's no Claude Realtime Audio API).
+
+`xAI Grok` stays voice-only — its strongest model lineage
+(`grok-voice-think-fast-1.0`) is realtime; the chat-surface models
+are weaker than the others for expert-reasoning tasks. Worth
+revisiting later, not on day one.
+
+### Layer 3 — Tools
+
+Read-mostly, with side-effecting tools always gated on explicit user
+confirmation. All tools are thin wrappers around existing
+`MeasurementSession` / `CamillaController` methods:
+
+| Tool | Side-effecting? | What it does |
+|---|---|---|
+| `get_measurement_summary()` | no | Returns FR peaks/nulls list, RT60 by octave band (computed from windowed IR), Schroeder freq estimate, target curve choice, current PEQ proposal, applied-yet bool |
+| `get_measurement_plot(format='png')` | no | Renders the FR chart as a PNG byte stream for multimodal models |
+| `analyze_peaks_nulls(f_low, f_high, threshold_db)` | no | Filtered peak list with frequency, Q estimate, gain dB |
+| `compute_schroeder(rt60_seconds, volume_m3=None)` | no | Returns fs estimate; volume can be user-supplied or estimated |
+| `propose_alternative_peq(filters)` | no | Simulate user/agent-suggested filter set; returns predicted post-correction curve overlay |
+| `look_up(topic)` | no | Keyword lookup into the markdown corpus; lets the agent cite specific guidance back at the user |
+| `apply_peq(filters)` | YES (with confirm) | Write YAML + `set_config_file_path` + `reload`. Requires explicit `confirm: true` in the tool args + `confirmed_at` timestamp; daemon re-confirms via the UI |
+| `request_remeasurement(reason, position_hint)` | indirect | Posts a "the agent wants another measurement" message into the wizard; user has to act on it; **does not** itself trigger a sweep |
+
+The `apply_peq` confirmation gate matters: the agent should never
+apply a filter without the user clicking "Yes, apply this." Same
+posture as the voice tools' `confirm` field (see
+[`HANDOFF-prompting.md`](HANDOFF-prompting.md)). Agency lives with
+the user.
+
+`request_remeasurement` is intentionally indirect — the agent can
+*ask*, but the user has to walk to the listening position with the
+phone and tap `Start`. No "the agent took over your speaker" energy.
+
+### Layer 4 — Chat panel in the existing wizard
+
+A new panel added to
+[`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)
+that appears once `state == READY` (measurement done, PEQ computed,
+not yet applied). The panel shows:
+
+- The agent's **opening read** of the measurement, with citations
+  ("the 8 dB peak at ~92 Hz looks like a length-mode resonance for a
+  ~6 m room dimension; the -14 dB notch at 240 Hz looks like SBIR
+  from a wall ~70 cm behind the speaker — let's check that")
+- Conversational input box (markdown-rendered output)
+- A "**context the agent has**" disclosure: room shape, listening
+  position, taste preferences — pre-filled from
+  `house-conventions.md` if present, editable inline
+- **Filter-diff visualization** when the agent proposes alternatives:
+  predicted-curve overlay alongside the auto-PEQ's, side-by-side
+  filter table
+- **"Apply this filter set"** button when the user is ready;
+  surfaces both the auto-PEQ and any agent-proposed alternatives as
+  selectable options
+
+Frontend stays Preact + stdlib HTTP. Chat is naturally
+polling-friendly; the existing 500 ms `/status` poll can grow a
+`chat` sub-section. No SSE / WebSocket needed for v1 — revisit only
+if turn latency feels bad.
+
+New routes on `jasper-correction-web`:
+
+- `POST /chat` — body: `{message: str}`. Posts a user turn into the
+  active session's `ChatSession`, returns the agent's reply
+  (synchronous; ~3–10 s latency for a frontier text model).
+- `GET /chat` — returns the chat history for the active session
+  (folded into `/status` if simpler).
+- `POST /chat/reset` — clear the chat history (start a fresh
+  conversation against the same measurement).
+- `POST /chat/context` — update `house-conventions.md` from the UI
+  disclosure.
+
+---
+
+## Architectural fit
+
+Where the agent slots into the existing flow (additions in bold):
+
+```
+IDLE
+  ↓ POST /start
+PREPARING → SWEEPING → AWAITING_CAPTURE
+  ↓ multi-position iteration
+  ↓ all positions captured
+ANALYZING
+  ↓ smoothing + spatial-avg + auto-PEQ design
+READY                              ← agent kicks in here
+  │
+  │ [NEW] POST /chat → ChatSession opens, agent reads
+  │       the session bundle, posts opening analysis
+  │ [NEW] user converses; agent calls tools, proposes
+  │       alternative PEQs, requests re-measurements
+  │
+  ↓ POST /apply (auto-PEQ OR agent-proposed set)
+APPLIED
+  ↓ optional POST /verify
+VERIFYING → VERIFIED               ← agent re-reads verify curve,
+                                     comments on whether the filter
+                                     achieved what it claimed
+```
+
+Two key constraints from existing architecture:
+
+1. **`/start` always resets to flat** ([`_handle_start`](../jasper/web/correction_setup.py)).
+   The agent must never bypass this — fresh measurements always
+   capture raw room. If the agent wants to know how the *corrected*
+   pipeline measures, it goes through `/verify` (which deliberately
+   doesn't reset).
+2. **`measurement_window()` precondition: no active voice session.**
+   ([`jasper/correction/coordinator.py`](../jasper/correction/coordinator.py))
+   The agent cannot trigger a re-measurement while "Jarvis" is in a
+   live session. `request_remeasurement` surfaces a "user should
+   trigger another sweep" message — it doesn't itself open a
+   measurement window.
+
+### What the agent does NOT touch
+
+- The PEQ designer (`peq.py`) — agent proposes filter *values*, not
+  algorithm changes
+- The CamillaDSP pipeline topology — `master_gain` mixer stays where
+  it is; PEQs slot in front of `flat` as today
+- The renderer pause/resume sequence — `measurement_window()` is the
+  one true gate
+- Voice-loop tool routing — the calibration agent is its own surface,
+  not a voice tool
+
+This keeps the blast radius narrow. If the agent is wrong, the worst
+outcome is the user applies a bad filter, which they can revert with
+`POST /reset` in two seconds. No other subsystem can be corrupted
+because the agent has no other reach.
+
+---
+
+## Provider selection
+
+### The shape of the choice
+
+Today's voice loop runs against one of three real-time speech-to-speech
+APIs (`gemini` / `openai` / `grok`) via the `LiveConnection` /
+`LiveTurn` abstraction in
+[`jasper/voice/`](../jasper/voice/). The calibration agent is a
+**different surface** — it needs a text/chat model with tool use,
+not a realtime audio one. So it gets its own provider abstraction +
+its own model picker, even when it reuses the same API key.
+
+### Recommended: add Anthropic Opus 4.7 as a first-class option
+
+Claude Opus 4.7 (`claude-opus-4-7-20251022`) is widely regarded as
+the strongest frontier model for the kind of structured-reasoning +
+tool-use task this agent does. The user has explicitly said: *open
+to allowing users to add their Anthropic key and use that frontier
+model if we thought that would get them a meaningfully better
+result.* The judgement here is: yes, meaningfully better, **because:**
+
+- This task is reasoning-heavy, not throughput-heavy. A single
+  calibration session is maybe 15–30 turns. The unit cost difference
+  (~$0.30–1.00 with Opus vs ~$0.05–0.15 with Gemini Pro) is real but
+  small in absolute terms.
+- Anthropic's tool-use semantics are clean and well-documented; the
+  agent's tool-call loop is simpler against the Anthropic SDK than
+  against either OpenAI Assistants or Gemini Function Calling.
+- Opus is particularly strong at "I don't have enough information,
+  let me ask the user a clarifying question" — the *right* mode for
+  this agent, vs the "confidently assert and apply" failure mode
+  every commercial auto-correction product falls into.
+
+So the order of operations is:
+
+1. **Day 1 of Phase A: write the Anthropic adapter first.** It's the
+   reference implementation; the other adapters port to its shape.
+2. Add OpenAI (`responses` API + tool use) and Gemini (text-side
+   function calling) adapters in Phase B for users who don't want a
+   fourth API account.
+3. xAI Grok: defer indefinitely. Re-evaluate when Grok's chat-surface
+   model lineage catches up to its voice one.
+
+### Selection logic at runtime
+
+`MeasurementSession` consults the configured keys + an explicit user
+preference (settable in the `/correction/` wizard):
+
+```python
+# Effective model resolver
+def pick_model() -> tuple[str, str]:  # (provider, model)
+    pref = config.get("JASPER_CALIBRATION_AGENT_PROVIDER")
+    if pref and key_present(pref):
+        return pref, default_model(pref)
+    # Fallback: smartest-available, in this priority order
+    for p in ("anthropic", "openai", "gemini"):
+        if key_present(p):
+            return p, default_model(p)
+    raise NoProviderConfigured(
+        "Add a key at https://jts.local/voice/ to enable the "
+        "calibration agent."
+    )
+```
+
+`/correction/` wizard shows the effective provider/model in the
+chat-panel header. Picker is optional; default to smartest-available
+so the household doesn't have to think about it.
+
+### Cost discipline
+
+Realistic per-session cost ranges (15–30 turns, ~5K–20K context):
+
+| Provider | Model | Range |
+|---|---|---|
+| Anthropic | Claude Opus 4.7 | $0.30 – $1.00 |
+| OpenAI | GPT-5 (assumed text-side flagship) | $0.20 – $0.60 |
+| Google | Gemini 2.5 / 3.x Pro | $0.05 – $0.15 |
+
+Add a `JASPER_CALIBRATION_AGENT_MAX_USD_PER_SESSION` cap (default
+~$2.00, soft warning at $1.00). The agent's tool-call loop checks
+the running session cost before each model call; refuses to continue
+when capped, posts an audible cue / chat message ("we've spent $X on
+this calibration session, raise the cap to continue"). Same pattern
+as the voice-eval harness, just per-session instead of per-test-run.
+
+There's no provider lock-in: switch provider mid-session is
+**permitted but starts a fresh chat** (different model = different
+tokenizer + different system-prompt cache). The chat history doesn't
+transfer.
+
+---
+
+## Design decisions to settle before building
+
+1. **Multimodal: send the FR plot as PNG, JSON sidecar, or both?**
+   **Recommend both.** OpenAI cookbook + the spectroscopy-agent
+   literature converge here: images for gestalt pattern recognition
+   ("is there a deep narrow notch around 80 Hz?"), JSON for precise
+   quantitative reasoning. Token-cheap to include both. The PNG
+   render path needs a new tool (`get_measurement_plot`) that
+   produces a clean matplotlib chart sized for the model's image
+   pipeline.
+2. **Where does the agent kick in?** **Recommend after auto-PEQ is
+   computed, before user applies.** That's where human judgment adds
+   the most value — auto-filter is the starting point, agent's job
+   is critique + refinement. Pre-measurement (walk a first-timer
+   through positioning) is a nice-to-have for later phases.
+3. **Agent autonomy.** **Recommend propose-only.** Agent never
+   applies a filter without explicit user confirmation. Matches the
+   voice tools' `confirm` posture, matches the project's restraint
+   philosophy, keeps blast radius tiny.
+4. **Chain-of-thought visibility.** **Recommend yes — show the
+   reasoning, marked clearly as such.** Audio engineering is one of
+   those domains where the *reasoning* is half the value. The user
+   should be able to read "I think this is SBIR because the dip
+   frequency matches a path-length of ~70 cm and you mentioned the
+   speaker is on a desk near a wall" and either agree or push back.
+   Don't hide the chain — surface it in a collapsed expander.
+5. **Voice-loop integration.** **Recommend defer.** The natural
+   "Jarvis, help me tune my speakers" handoff is appealing but adds
+   significant complexity (voice tool that opens a chat session,
+   bridging two LLM surfaces). Ship the chat UI first; revisit voice
+   handoff as Phase E once chat is proven out.
+6. **History across sessions.** Multiple calibration sessions over
+   weeks/months — should the agent remember? **Recommend a
+   conservative yes:** `house-conventions.md` is the persistent
+   memory slot, edited by user or by agent-with-confirmation.
+   Individual chat transcripts persist in the session bundle
+   (`agent_transcript.json`) but aren't loaded into context for
+   future sessions unless explicitly referenced. Same shape as
+   Claude Code's CLAUDE.md → memory split.
+
+---
+
+## Proposed phased build
+
+Each phase is independently shippable, each ends in a measurable
+user-visible improvement, each is small enough that a stall doesn't
+strand the work.
+
+### Phase 0a — Calibration mic + N10 hardware verification (PRECONDITION)
+
+Before any LLM work:
+
+- Wire the Dayton USB-C calibration mic into the page's
+  `getUserMedia` constraint set (likely just a device picker; the
+  audio constraint set should be compatible).
+- Add a "upload your cal file" step (Dayton ships per-unit
+  frequency-response `.txt` files). Parse → resample to the analysis
+  log grid → apply as an additive offset in `analysis.py` after
+  smoothing, before PEQ design.
+- Make the existing iPhone-built-in compensation curve a **fallback**
+  rather than the default.
+- **Actually run the full Phase 0–2.2 pipeline on a real room** with
+  the calibrated mic. This is the N10 hardware verification the user
+  flagged as missing. Document what you find in
+  [`HANDOFF-correction.md`](HANDOFF-correction.md) — known
+  failure modes, surprises, "the auto-PEQ usually wants X, but in
+  reality you want Y."
+
+**Sequencing rationale:** the agent's recommendations inherit the
+measurement quality. Shipping the agent on top of uncalibrated input
+is a confidence-amplifier on bad data. Phase 0a should land first;
+ideally several real calibration sessions are run before Phase A so
+the author has lived experience of what the agent should be saying.
+
+### Phase A — Knowledge base + agent scaffold (CLI-testable, no UI)
+
+- Write the markdown corpus under `docs/calibration-agent/`.
+- Build `jasper/calibration_agent/` with the Anthropic adapter as
+  reference.
+- Implement the read-only tools first
+  (`get_measurement_summary`, `analyze_peaks_nulls`, `compute_schroeder`,
+  `look_up`).
+- CLI tool: `sudo /opt/jasper/.venv/bin/jasper-calibration-agent
+  <session_id>` → loads the session bundle from
+  `/var/lib/jasper/correction/sessions/<id>/`, sends to the model,
+  prints the agent's analysis. No chat loop yet — single-shot
+  "interpret this session" output.
+- Tests against synthetic + recorded bundle fixtures. Don't burn API
+  budget in CI; the harness gets `pytest.mark.requires_api_key` so
+  CI skips it by default and a human runs it during PR review.
+- Validates the knowledge base + the tool design + the prompt
+  template before any UI investment.
+
+### Phase B — Multi-provider + tool-call loop
+
+- Add OpenAI (Responses + tool use) and Gemini (function calling)
+  adapters.
+- Implement `propose_alternative_peq` (simulate a filter set,
+  return predicted curve) and `get_measurement_plot` (PNG render).
+- Provider picker in
+  [`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py) gains
+  the Anthropic key card + the calibration-agent provider selector.
+- Wire `apply_peq` with explicit `confirm` gating.
+
+### Phase C — Chat panel in `/correction/`
+
+- New `POST /chat` + `GET /chat` + `POST /chat/reset` +
+  `POST /chat/context` routes.
+- Chat-panel UI inside the existing Preact app — appears on
+  `state == READY`, persists through `APPLIED` and `VERIFIED`.
+- Filter-diff visualization: predicted-curve overlay, side-by-side
+  filter table.
+- House-conventions disclosure (read/write `house-conventions.md`
+  inline).
+- Bundle gets `agent_transcript.json` alongside `info.json`.
+
+### Phase D — Iterative re-measurement loop
+
+- `request_remeasurement` end-to-end (agent asks → user prompted in
+  UI → user taps `Start` → session continues with new data folded in).
+- Multi-position guidance from the agent ("now move 30 cm to the
+  left of the listening position"); agent reads each new bundle as
+  it lands.
+- "Tune until we agree it's done" closes-the-loop UX.
+
+### Phase E — Optional voice handoff (DEFERRED)
+
+- `start_calibration_session` voice tool: "Jarvis, help me tune my
+  speakers" opens the wizard on the user's phone (push notification
+  / pre-built URL).
+- Re-evaluate after Phase D ships. Voice doesn't add much here;
+  calibration is inherently visual.
+
+---
+
+## Open questions
+
+Things I'd want to settle in conversation before any code lands:
+
+1. **Anthropic SDK as a net-new dependency.** Today's
+   [`pyproject.toml`](../pyproject.toml) doesn't list `anthropic`.
+   Adding it is fine but it's a real ~10 MB RAM cost at agent
+   startup (lazy-imported, so zero idle). Worth confirming the
+   household is happy with that cost in exchange for Opus 4.7
+   access.
+2. **Where does the Dayton cal file get stored?** Most-likely:
+   `/var/lib/jasper/correction/calibration_mics/<serial>.txt`. The
+   page lets the user upload + name; the parser writes it under that
+   slug. Should the file be considered household-private (don't ship
+   in debug bundles) or measurement-context (do ship)? My instinct:
+   include in bundles so the agent can read it.
+3. **Per-room vs per-listening-position calibrations.** The agent
+   probably wants to know "the lounge calibration" vs "the kitchen
+   calibration" — same speaker, different rooms. Today's session
+   bundles are flat under `sessions/<id>/`. Worth a folder
+   hierarchy? My instinct: defer, let `house-conventions.md` carry
+   the context for now.
+4. **"Reasoning visibility" in chat.** Anthropic's `extended_thinking`
+   feature exposes the model's pre-response reasoning. Should we
+   show it in the chat panel (collapsed by default)? My instinct:
+   yes, behind a "Show the agent's reasoning" disclosure. The user
+   audience for this feature already wants to peek under the hood.
+5. **Knowledge-base versioning.** The markdown corpus will evolve.
+   How does the bundle record *which version of the corpus* the
+   agent was running against? My instinct: include the corpus
+   git-SHA in `agent_transcript.json`, so a later reader knows what
+   the agent was reading when it gave the advice.
+6. **Cost cap UX.** When the cap is hit mid-session, do we (a)
+   refuse to continue, (b) auto-fall-back to a cheaper provider, or
+   (c) just warn? My instinct: (a) refuse + post a chat message
+   ("we've spent $X, the cap is $Y, raise it at
+   `JASPER_CALIBRATION_AGENT_MAX_USD_PER_SESSION` to continue").
+   No silent provider switch — the user picked Opus for a reason.
+
+---
+
+## What we are NOT doing
+
+Explicitly out of scope, to keep this from sprawling:
+
+- **No new voice provider for calibration.** Voice and chat surfaces
+  are intentionally separate.
+- **No FIR / phase correction** in this proposal. Phase 5 of
+  [`HANDOFF-correction.md`](HANDOFF-correction.md) covers FIR; the
+  agent can *recommend* it conditionally ("once Phase 5 ships, this
+  notch would benefit from a min-phase FIR cut") but can't apply it.
+- **No new measurement methodology** (e.g. MLS, log chirp variants,
+  multitone). The Novak 2015 ESS substrate stays.
+- **No third-party room-correction engine integration** (REW headless,
+  Dirac Live, etc.). The REW interop path in
+  [`HANDOFF-correction.md`](HANDOFF-correction.md) Phase 4 is
+  separate and orthogonal.
+- **No autonomous "the agent ran a calibration overnight" mode.**
+  The user is always in the loop. No "agent applied 5 filters at
+  3am" energy.
+- **No multi-user contention.** One calibration session at a time;
+  the existing `MeasurementSession` is a singleton and the chat
+  surface inherits that constraint.
+
+---
+
+## Prior art summary
+
+Detailed survey is in the proposal-conversation log. Headlines:
+
+- **No agentic / conversational room-correction product exists** as
+  of May 2026. Every commercial system (Sonos Trueplay, Dirac
+  Live, Sonarworks SoundID, Genelec GLM, Neumann MA 1, Audyssey,
+  IK ARC Studio, Apple HomePod auto-cal) is a closed-loop one-shot
+  batch process with no per-decision rationale and no user dialogue.
+- **Closest architectural prior art is in spectroscopy:** LUMIR
+  ([Sci.Direct, 2025](https://www.sciencedirect.com/science/article/abs/pii/S0003267025012516)),
+  IR-Agent ([arXiv 2508.16112](https://arxiv.org/html/2508.16112v1)),
+  EIS-LLM ([Battery Design, 2025](https://www.batterydesign.net/how-well-can-an-llm-interpret-electrochemical-impedance-spectroscopy-eis-data/)).
+  Same shape: measurement → interpret → propose action → iterate.
+  These are barely a year old; the pattern is fresh.
+- **REW API automation exists** ([AV NIRVANA project,
+  2026](https://www.avnirvana.com/threads/i-made-a-free-easy-to-use-open-source-advanced-room-correction-software-that-leverages-rews-api.16552/))
+  — pure scripting, no LLM. Useful as a "tool surface" reference
+  for what an LLM could call into, but the project itself is
+  agent-less.
+- **Multimodal pattern (chart-as-image + JSON sidecar) is best
+  practice.** OpenAI cookbook + GPT-4o vision benchmarks converge
+  on "both, for different sub-tasks." Single-modality (JSON-only
+  or image-only) measurably underperforms.
+
+This is largely **greenfield in the LLM-room-correction space** —
+opportunity, also risk. There are no proven prompting patterns to
+copy; expect prompt-engineering iteration to be real work, especially
+around restraint ("the agent shouldn't be eager to suggest more EQ,
+which is its training-set instinct").
+
+---
+
+## References
+
+Audio engineering:
+- Toole, *Sound Reproduction*, 3rd ed., Routledge (2017)
+- [Dirac — On Room Correction and Equalization (PDF)](https://www.dirac.com/wp-content/uploads/2021/09/On-equalization-filters.pdf)
+- [REW Help — Why Can't I Fix All my Acoustic Problems with EQ?](https://www.roomeqwizard.com/help/help_en-GB/html/iseqtheanswer.html)
+- [Sonavyx — Schroeder Frequency Explained](https://sonavyx.com/en/insights/schroeder-frequency-explained)
+- [GIK Acoustics — What is SBIR?](https://www.gikacoustics.com/blogs/knowledge-base/speaker-boundary-interference-response-sbir)
+- [Audiosolace — Harman Target Curve Explained](https://audiosolace.com/harman-target-curve-explained/)
+- [PS Audio — Using EQ With Speakers: Some Limitations](https://www.psaudio.com/blogs/copper/using-eq-with-speakers-some-limitations)
+
+LLM-agent prior art:
+- [LUMIR — LLM agent for IR spectroscopy](https://www.sciencedirect.com/science/article/abs/pii/S0003267025012516)
+- [IR-Agent — Expert-inspired LLM agents](https://arxiv.org/html/2508.16112v1)
+- [EIS + LLM (Battery Design, 2025)](https://www.batterydesign.net/how-well-can-an-llm-interpret-electrochemical-impedance-spectroscopy-eis-data/)
+- [Snakemake + LLM supervisor agent](https://arxiv.org/pdf/2510.14846)
+- [OpenAI Cookbook — GPT-5 vision tips](https://developers.openai.com/cookbook/examples/multimodal/document_and_multimodal_understanding_tips)
+- [Acoustic Room Compensation Using Local PCA (arXiv 2206.15356)](https://arxiv.org/pdf/2206.15356)
+- [AV NIRVANA — Open-source REW API automation](https://www.avnirvana.com/threads/i-made-a-free-easy-to-use-open-source-advanced-room-correction-software-that-leverages-rews-api.16552/)
+
+Codebase:
+- [`HANDOFF-correction.md`](HANDOFF-correction.md) — the existing substrate this sits on
+- [`jasper/correction/`](../jasper/correction/) — DSP pipeline
+- [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py) — wizard
+- [`jasper/voice/`](../jasper/voice/) — `LiveConnection`/`LiveTurn` pattern to mirror
+- [`HANDOFF-voice-providers.md`](HANDOFF-voice-providers.md) — provider-abstraction precedent
+- [`HANDOFF-prompting.md`](HANDOFF-prompting.md) — playbook for LLM prompts (cross-provider principles, conditional vs absolute rules, `confirm` field handling) that this agent should respect
+
+---
+
+Last verified: 2026-05-25
