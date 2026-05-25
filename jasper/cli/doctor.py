@@ -3246,6 +3246,61 @@ def _systemd_user_for(unit: str) -> Optional[str]:
     return u or None
 
 
+def _resolve_systemd_env_vars(device: str, unit: str) -> str:
+    """Expand `${VAR}` references in a device string using the
+    systemd unit's resolved environment.
+
+    The renderer service files now reference ALSA devices via
+    systemd env vars (e.g., `--device ${JASPER_LIBRESPOT_DEVICE}`)
+    so the audio-topology switch can flip them without rewriting
+    every ExecStart line. systemd expands those references at
+    daemon-start time, but when this doctor check reads the unit
+    file directly it sees the literal `${VAR}` string. Passing
+    that to aplay would fail with "Unknown PCM ${VAR}" — a false
+    positive.
+
+    We ask systemd for the unit's resolved environment
+    (`systemctl show -p Environment`), which already accounts for
+    both `Environment=` directives and `EnvironmentFile=` lookups
+    (with the leading-`-` "optional file" semantics). Whatever
+    value systemd would substitute at ExecStart time is what we
+    pass to aplay.
+
+    Returns the original string unchanged if it contains no
+    `${VAR}` references or if resolution fails (best-effort — the
+    caller's aplay probe will then fail loudly with a clear
+    error, which is the right behavior).
+    """
+    if "${" not in device:
+        return device
+    try:
+        r = subprocess.run(
+            ["systemctl", "show", unit, "-p", "Environment", "--value"],
+            capture_output=True, text=True, timeout=2,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return device
+    if r.returncode != 0:
+        return device
+    # systemd's `Environment` output is a single line of
+    # space-separated KEY=VALUE pairs (after merging Environment=
+    # directives and any EnvironmentFile= files). Values that
+    # contain spaces are quoted, but ALSA PCM names never do, so
+    # naive splitting is safe for our use case.
+    env_map: dict[str, str] = {}
+    for token in r.stdout.split():
+        if "=" in token:
+            key, _, value = token.partition("=")
+            # Strip surrounding quotes systemd may add.
+            env_map[key] = value.strip().strip('"').strip("'")
+
+    def _sub(match: re.Match[str]) -> str:
+        name = match.group(1)
+        return env_map.get(name, match.group(0))
+
+    return re.sub(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", _sub, device)
+
+
 def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     """Attempt to open `device` for ~0.1 s of silence playback AS `user`.
     Returns (success, detail). success=True means snd_pcm_open and a
@@ -3334,13 +3389,28 @@ def check_renderer_device_resolvable() -> CheckResult:
         if device is None:
             incomplete.append(f"{name}: config not found (not installed?)")
             continue
+        # If the parsed device contains a ${VAR} reference (per the
+        # 2026-05-25 audio-topology-switch work — see deploy/bin/
+        # jasper-audio-topology), ask systemd what value it would
+        # substitute at ExecStart time. Otherwise the aplay probe
+        # below will fail with "Unknown PCM ${VAR}" — a false
+        # positive, since the running daemon HAS resolved it.
+        resolved_device = _resolve_systemd_env_vars(device, unit)
         user = _systemd_user_for(unit)
-        ok, detail = _probe_open_as_user(device, user)
+        ok, detail = _probe_open_as_user(resolved_device, user)
         who = user or "root"
+        # Show both the literal-parsed and resolved values when they
+        # differ, so the operator can spot a misconfigured env file
+        # without re-reading the unit themselves.
+        display = (
+            f"{resolved_device}"
+            if resolved_device == device
+            else f"{resolved_device} (from {device})"
+        )
         if ok:
-            successes.append(f"{name}({who})→{device}")
+            successes.append(f"{name}({who})→{display}")
         else:
-            failures.append(f"{name}({who})→{device}: {detail}")
+            failures.append(f"{name}({who})→{display}: {detail}")
     if failures:
         return CheckResult(
             label, "fail",

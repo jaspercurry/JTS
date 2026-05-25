@@ -941,6 +941,98 @@ def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
     assert r.status == "warn"
 
 
+def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
+    """Regression for the 2026-05-25 audio-topology-switch deploy:
+    the renderer service files now use `${JASPER_<RENDERER>_DEVICE}`
+    instead of a literal `jasper_renderer_in`, so the topology switch
+    can flip them without rewriting ExecStart. The doctor's check
+    must resolve those env vars via `systemctl show -p Environment`
+    before probing — otherwise it false-positives with 'Unknown PCM
+    ${JASPER_LIBRESPOT_DEVICE}'."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "jasper_renderer_in")  # already literal
+    monkeypatch.setattr(doctor, "_renderer_device_librespot",
+                        lambda: "${JASPER_LIBRESPOT_DEVICE}")
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
+                        lambda: "${JASPER_BLUEALSA_DEVICE}")
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: {
+                            "shairport-sync.service": "shairport-sync",
+                            "librespot.service": "pi",
+                            "bluealsa-aplay.service": None,
+                        }[unit])
+
+    # Mock _resolve_systemd_env_vars to simulate systemd returning
+    # the dmix-mode defaults for each unit (= what
+    # /var/lib/jasper/audio_topology.env would set when absent).
+    def fake_resolve(device, unit):
+        env = {
+            "librespot.service": {
+                "JASPER_LIBRESPOT_DEVICE": "jasper_renderer_in",
+            },
+            "bluealsa-aplay.service": {
+                "JASPER_BLUEALSA_DEVICE": "jasper_renderer_in",
+            },
+        }.get(unit, {})
+        import re
+        return re.sub(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}",
+            lambda m: env.get(m.group(1), m.group(0)),
+            device,
+        )
+    monkeypatch.setattr(doctor, "_resolve_systemd_env_vars", fake_resolve)
+
+    # Probe sees the RESOLVED device — record what it gets called with.
+    received: list[str] = []
+
+    def fake_probe(device, user):
+        received.append(device)
+        return (True, "")
+    monkeypatch.setattr(doctor, "_probe_open_as_user", fake_probe)
+
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    # Probe must have been called with the RESOLVED value, not the
+    # literal ${VAR} string.
+    assert "jasper_renderer_in" in received
+    assert "${JASPER_LIBRESPOT_DEVICE}" not in received
+    assert "${JASPER_BLUEALSA_DEVICE}" not in received
+    # Detail should show both literal and resolved when they differ,
+    # so the operator can see env-var resolution at a glance.
+    assert "from ${JASPER_LIBRESPOT_DEVICE}" in r.detail
+    assert "from ${JASPER_BLUEALSA_DEVICE}" in r.detail
+    # And the shairport literal (no `${`) is shown unchanged.
+    assert "(shairport-sync)→jasper_renderer_in" in r.detail
+    assert "(from " not in r.detail.split("shairport-sync(")[1].split(";")[0]
+
+
+def test_resolve_systemd_env_vars_no_op_when_no_placeholder():
+    """Strings without ${VAR} pass through unchanged — avoids the
+    subprocess call entirely."""
+    assert doctor._resolve_systemd_env_vars(
+        "jasper_renderer_in", "librespot.service"
+    ) == "jasper_renderer_in"
+    assert doctor._resolve_systemd_env_vars(
+        "hw:Loopback,0,0", "any.service"
+    ) == "hw:Loopback,0,0"
+
+
+def test_resolve_systemd_env_vars_returns_original_on_failure(monkeypatch):
+    """If systemctl is unavailable / errors, return the original
+    string unchanged. The caller's aplay probe will then fail with
+    a clear 'Unknown PCM ${VAR}' message — explicit failure beats
+    silent wrong-value substitution."""
+    import subprocess as sp
+
+    def fake_run(*args, **kwargs):
+        raise FileNotFoundError("systemctl missing")
+    monkeypatch.setattr(sp, "run", fake_run)
+    # The function should swallow the error and return the input.
+    assert doctor._resolve_systemd_env_vars(
+        "${JASPER_LIBRESPOT_DEVICE}", "librespot.service"
+    ) == "${JASPER_LIBRESPOT_DEVICE}"
+
+
 # ---- renderer device parsers ----------------------------------------
 
 def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
