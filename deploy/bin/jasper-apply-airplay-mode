@@ -5,8 +5,9 @@
 #   - AirPlay device name based on JASPER_AIRPLAY_DEVICE_NAME (in
 #     /etc/jasper/jasper.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
-#     CamillaDSP config's samplerate/chunksize/target_level PLUS the
-#     pcm.jasper_renderer_mix dmix buffer in /etc/asound.conf
+#     CamillaDSP config's samplerate/chunksize/target_level PLUS BOTH
+#     dmix buffers in /etc/asound.conf (pcm.jasper_renderer_mix on
+#     the renderer side and pcm.jasper_out on the dongle side)
 #   - output_device based on JASPER_AUDIO_TOPOLOGY (in
 #     /var/lib/jasper/audio_topology.env, owned by
 #     deploy/bin/jasper-audio-topology). Default `dmix` topology renders
@@ -144,12 +145,54 @@ asoundrc_renderer_dmix_buffer_frames() {
     ' "$asoundrc"
 }
 
+# Output-side dmix (pcm.jasper_out) buffer. Same shape, same
+# invisibility-to-snd_pcm_delay() story as the renderer-side dmix —
+# but on the FAR side of CamillaDSP, between Camilla and the DAC.
+#
+# Symmetric topology, symmetric oversight: when this script first
+# learned about the renderer-side dmix (PR #308, the Tier 1A fix),
+# the output-side dmix was overlooked, so the rendered latency offset
+# still under-compensated by ~85 ms. Post-Tier-1A on-Pi measurement
+# (2026-05-25) showed shairport's `player.c:1130 "Dropping out of
+# date packet"` events surviving at lead times of ~0.115 s — matching
+# this buffer's invisible delay almost exactly. Adding the output-side
+# dmix to the offset closes the gap.
+#
+# Returns the integer frame count on stdout, or empty if the file
+# isn't readable or the block can't be found (callers must treat
+# empty as 0).
+asoundrc_output_dmix_buffer_frames() {
+    local asoundrc="$1"
+    [[ -r "$asoundrc" ]] || return 0
+    awk '
+        /^pcm\.jasper_out[[:space:]]*\{/ {
+            in_block = 1
+            next
+        }
+        in_block && /^pcm\./ {
+            exit
+        }
+        in_block {
+            for (i = 1; i <= NF; i++) {
+                if ($i == "buffer_size") {
+                    val = $(i + 1)
+                    if (val ~ /^[0-9]+$/) {
+                        print val
+                        exit
+                    }
+                }
+            }
+        }
+    ' "$asoundrc"
+}
+
 derive_audio_backend_latency_offset() {
     local config
     local sample_rate
     local chunksize
     local target_level
     local renderer_dmix_buffer
+    local output_dmix_buffer
 
     config="$(camilla_config_path)"
     if [[ ! -r "$config" ]]; then
@@ -185,10 +228,20 @@ derive_audio_backend_latency_offset() {
         renderer_dmix_buffer=0
     fi
 
+    # Output-side dmix buffer (pcm.jasper_out, the dongle dmix between
+    # CamillaDSP and the DAC). Also invisible to shairport's
+    # snd_pcm_delay() because it sits downstream of CamillaDSP. Same
+    # fallback convention as the renderer-side dmix.
+    output_dmix_buffer="$(asoundrc_output_dmix_buffer_frames "$ASOUNDRC" || true)"
+    if [[ -z "$output_dmix_buffer" ]]; then
+        output_dmix_buffer=0
+    fi
+
     awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
-        -v renderer_dmix_buffer="$renderer_dmix_buffer" '
+        -v renderer_dmix_buffer="$renderer_dmix_buffer" \
+        -v output_dmix_buffer="$output_dmix_buffer" '
         BEGIN {
             if (sample_rate <= 0) {
                 printf "0.000000"
@@ -198,12 +251,24 @@ derive_audio_backend_latency_offset() {
             #   (target_level - chunksize)   ← CamillaDSP playback buffer
             #                                   above its implicit one-chunk
             #                                   baseline.
-            #   + renderer_dmix_buffer       ← jasper_renderer_mix dmix
+            #   + renderer_dmix_buffer       ← pcm.jasper_renderer_mix dmix
             #                                   queue between shairport and
             #                                   the snd-aloop slave.
+            #   + output_dmix_buffer         ← pcm.jasper_out dmix queue
+            #                                   between CamillaDSP and the
+            #                                   DAC. Discovered 2026-05-25
+            #                                   when post-Tier-1A drops
+            #                                   persisted at ~0.115 s lead
+            #                                   time, matching the dmix
+            #                                   invisible delay almost
+            #                                   exactly.
+            #
+            # NB: any single-quote (apostrophe) in this comment block would
+            # close the surrounding awk single-quoted string and break
+            # the script — bash 2026-05-25 lesson, do not paraphrase.
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
-            invisible_frames = (target_level - chunksize) + renderer_dmix_buffer
+            invisible_frames = (target_level - chunksize) + renderer_dmix_buffer + output_dmix_buffer
             offset = -(invisible_frames / sample_rate)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0
