@@ -54,6 +54,10 @@ def test_snapshot_shape_with_no_samples_yet() -> None:
     assert cur["fan_pwm_max"] == 255
     # Per-service cgroup list: present but empty until first tick.
     assert snap["services"] == []
+    # Per-core CPU and memory-cgroup-enabled: present in current,
+    # both inert until first tick has run.
+    assert cur["per_core_cpu_pct"] == []
+    assert cur["memory_cgroup_enabled"] is None
 
 
 def test_append_rotates_after_history_points() -> None:
@@ -498,6 +502,186 @@ def test_tick_services_partial_read_skipped(tmp_path) -> None:
     names = [s["name"] for s in out]
     assert "jasper-empty" not in names
     assert "jasper-partial" in names
+
+
+# ---------- per-core CPU sampler ----------------------------------------
+
+
+def _write_proc_stat(path, per_core: list[tuple[int, int, int, int, int]]) -> None:
+    """Write a fake /proc/stat with `per_core` entries. Each entry is
+    (user, nice, system, idle, iowait) — the five fields _read_per_core_jiffies
+    cares about. Pads the remaining columns with zeros so the file
+    parses cleanly."""
+    lines = ["cpu 0 0 0 0 0 0 0 0 0 0\n"]  # aggregate, ignored by reader
+    for i, (user, nice, system, idle, iowait) in enumerate(per_core):
+        lines.append(
+            f"cpu{i} {user} {nice} {system} {idle} {iowait} 0 0 0 0 0\n",
+        )
+    lines.append("intr 0\nctxt 0\nbtime 0\n")
+    with open(path, "w") as f:
+        f.writelines(lines)
+
+
+def test_read_per_core_jiffies_parses_each_cpu_line(tmp_path) -> None:
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [
+        (100, 0, 50, 800, 50),   # cpu0: active = 100+50 = 150, total = 1000
+        (200, 10, 100, 600, 90), # cpu1: active = 300, total = 1000
+    ])
+    out = SystemSampler._read_per_core_jiffies(str(p))
+    # active = user + nice + system + irq + softirq + steal
+    # total = user + nice + system + idle + iowait + irq + softirq + steal
+    # iowait is idle-with-pending-IO so it's NOT in active
+    assert out == [(150, 1000), (310, 1000)]
+
+
+def test_read_per_core_jiffies_skips_aggregate_cpu_line(tmp_path) -> None:
+    """The bare 'cpu' line is a sum of cpuN; if we double-counted it
+    the percentages would all be wrong."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(100, 0, 50, 800, 50)])
+    out = SystemSampler._read_per_core_jiffies(str(p))
+    assert len(out) == 1  # cpu0 only, not cpu+cpu0
+
+
+def test_read_per_core_jiffies_returns_empty_when_file_missing(tmp_path) -> None:
+    assert SystemSampler._read_per_core_jiffies(
+        str(tmp_path / "no-such-file"),
+    ) == []
+
+
+def test_tick_per_core_first_sample_returns_empty(tmp_path) -> None:
+    """First tick can't compute a delta (no baseline) and must return
+    an empty list rather than nonsense or a crash."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(100, 0, 50, 800, 50), (200, 0, 100, 600, 100)])
+    s = SystemSampler()
+    assert s._tick_per_core(str(p)) == []
+    # Baseline stored for next call.
+    assert len(s._per_core_prev) == 2
+
+
+def test_tick_per_core_second_sample_computes_percentages(tmp_path) -> None:
+    """Two samples 1000 jiffies apart, 500 active jiffies elapsed →
+    50% utilization."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(100, 0, 0, 900, 0)])  # active=100, total=1000
+    s = SystemSampler()
+    s._tick_per_core(str(p))  # baseline
+
+    # Bump active by 500, total by 1000 → 50% of the window was busy.
+    _write_proc_stat(p, [(600, 0, 0, 1400, 0)])  # active=600, total=2000
+    out = s._tick_per_core(str(p))
+    assert out == [50.0]
+
+
+def test_tick_per_core_handles_negative_delta(tmp_path) -> None:
+    """If counters go backwards (kernel quirk, container reset) we
+    return 0 for that core rather than a negative."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(500, 0, 0, 500, 0)])
+    s = SystemSampler()
+    s._tick_per_core(str(p))
+    _write_proc_stat(p, [(100, 0, 0, 200, 0)])  # went backwards
+    out = s._tick_per_core(str(p))
+    assert out == [0.0]
+
+
+def test_tick_per_core_resets_when_core_count_changes(tmp_path) -> None:
+    """A core count change (very rare on a Pi, but possible via
+    hot-plug) must reset the baseline rather than crash on len
+    mismatch."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(100, 0, 0, 900, 0), (100, 0, 0, 900, 0)])
+    s = SystemSampler()
+    s._tick_per_core(str(p))  # baseline at 2 cores
+    # Now only 1 core visible.
+    _write_proc_stat(p, [(100, 0, 0, 900, 0)])
+    out = s._tick_per_core(str(p))
+    assert out == []  # reset, no delta this tick
+    assert len(s._per_core_prev) == 1  # new baseline
+
+
+def test_tick_per_core_clamps_percentages_to_100(tmp_path) -> None:
+    """active > total shouldn't be possible, but if floating-point
+    drift or a kernel bug ever produces it we clamp at 100 not 9999."""
+    p = tmp_path / "stat"
+    _write_proc_stat(p, [(0, 0, 0, 1000, 0)])
+    s = SystemSampler()
+    s._tick_per_core(str(p))
+    # active increased by 2000, total only by 1000 — impossible, but
+    # the floor/ceil keeps us sane.
+    _write_proc_stat(p, [(2000, 0, 0, 1000, 0)])
+    out = s._tick_per_core(str(p))
+    assert out[0] == 100.0
+
+
+# ---------- memory cgroup detection -------------------------------------
+
+
+def test_read_memory_cgroup_enabled_returns_true_when_memory_listed(tmp_path) -> None:
+    p = tmp_path / "cgroup.controllers"
+    p.write_text("cpuset cpu io memory hugetlb pids rdma misc\n")
+    assert SystemSampler._read_memory_cgroup_enabled(str(p)) is True
+
+
+def test_read_memory_cgroup_enabled_returns_false_when_memory_absent(tmp_path) -> None:
+    """Pi 5 default: cmdline carries `cgroup_disable=memory` so the
+    memory controller doesn't appear in cgroup.controllers even
+    though the file exists. This is the dashboard-warning trigger."""
+    p = tmp_path / "cgroup.controllers"
+    p.write_text("cpuset cpu io hugetlb pids rdma misc\n")
+    assert SystemSampler._read_memory_cgroup_enabled(str(p)) is False
+
+
+def test_read_memory_cgroup_enabled_returns_none_when_file_missing(tmp_path) -> None:
+    """Non-Linux or cgroup-v1 system — file simply isn't there.
+    Distinct from 'memory not in controllers' so the dashboard can
+    differentiate (and only show the reboot warning on Linux)."""
+    assert SystemSampler._read_memory_cgroup_enabled(
+        str(tmp_path / "no-such-file"),
+    ) is None
+
+
+# ---------- snapshot integration of new fields --------------------------
+
+
+def test_tick_populates_per_core_and_cgroup_in_snapshot(tmp_path) -> None:
+    """End-to-end through _tick — per_core_cpu_pct and
+    memory_cgroup_enabled appear in current{} via the same lock that
+    protects the other fields."""
+    stat_p = tmp_path / "stat"
+    cgroup_p = tmp_path / "cgroup.controllers"
+    _write_proc_stat(stat_p, [(100, 0, 0, 900, 0)])
+    cgroup_p.write_text("cpuset cpu io memory pids\n")
+
+    s = SystemSampler(history_points=5)
+    with patch.object(
+        SystemSampler, "_read_meminfo",
+        return_value={"total_mb": 2048, "available_mb": 1024,
+                      "used_mb": 1024, "swap_used_mb": 0},
+    ), patch.object(
+        SystemSampler, "_read_loadavg_1m", return_value=0.5,
+    ), patch.object(
+        SystemSampler, "_read_net_dev",
+        return_value={"rx_bytes": 0, "tx_bytes": 0},
+    ), patch.object(
+        SystemSampler, "_read_disk", return_value=(50.0, 30.0),
+    ), patch.object(
+        SystemSampler, "_read_uptime", return_value=3600.0,
+    ), patch.object(
+        SystemSampler, "_read_fan", return_value=None,
+    ), patch.object(
+        SystemSampler, "_tick_per_core",
+        return_value=[12.5, 87.5, 33.0, 50.0],
+    ), patch.object(
+        SystemSampler, "_read_memory_cgroup_enabled", return_value=False,
+    ):
+        s._tick()
+    snap = s.snapshot()
+    cur = snap["current"]
+    assert cur["per_core_cpu_pct"] == [12.5, 87.5, 33.0, 50.0]
+    assert cur["memory_cgroup_enabled"] is False
 
 
 # ---------- build manifest ----------------------------------------------
