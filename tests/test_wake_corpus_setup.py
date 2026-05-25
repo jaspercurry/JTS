@@ -269,8 +269,11 @@ def test_sequential_clips_get_incrementing_seq(backend) -> None:
 
 
 def test_sequence_excludes_deleted_clips(backend) -> None:
-    """Deleting clip 1 means the next new clip becomes seq=2
-    (count of non-deleted + 1)."""
+    """Deleting clip 1 must not let the next clip reuse seq=2.
+
+    Filenames include the per-session sequence number, so reusing a
+    sequence can overwrite a later good take in the same condition.
+    """
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near"); time.sleep(0.05)
     clip1 = backend.stop_recording()
@@ -283,8 +286,8 @@ def test_sequence_excludes_deleted_clips(backend) -> None:
 
     backend.start_recording("quiet", "near"); time.sleep(0.05)
     clip3 = backend.stop_recording()
-    # 1 deleted, 1 alive (clip2) → next seq = 2 (count + 1)
-    assert clip3.seq == 2
+    # Sequence is monotonic across the session, including deleted clips.
+    assert clip3.seq == 3
 
 
 # ---------------------------------------------------------------------------
@@ -951,6 +954,14 @@ def test_html_subscribes_to_level_sse() -> None:
     assert "EventSource('api/recording/level')" in html_text
 
 
+def test_html_count_guidance_matches_two_session_protocol() -> None:
+    """The UI copy should match Phase 0b's Session A/B targets."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert "Session A: ~7-9 per cell" in html_text
+    assert "Session B: ~2-3 per cell" in html_text
+    assert "~13-14 utterances per cell" not in html_text
+
+
 def test_html_delete_button_uses_trash_icon() -> None:
     """Delete button is small + uses a trash icon (was previously
     wide text 'delete', which overlapped the audio player)."""
@@ -1105,6 +1116,55 @@ def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
     session flag)."""
     b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
     assert set(b._ports.keys()) == {"on", "off", "dtln", "raw0"}
+
+
+def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
+    """Low-RAM installs can skip DTLN without losing the raw0 corpus leg."""
+    ports = wake_corpus_setup.build_ports(
+        aec_on_port=1111,
+        aec_off_port=2222,
+        aec_dtln_port=3333,
+        aec_raw0_port=4444,
+        include_dtln=False,
+    )
+    assert ports == {"on": 1111, "off": 2222, "raw0": 4444}
+
+
+def test_combined_web_entrypoint_includes_raw0_port(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The socket-activated jasper-web path must also pass raw0.
+
+    Regression guard for the production path: RecordingBackend defaults
+    included raw0, but jasper.web.__main__ supplied an explicit 3-leg
+    map, so raw0-enabled sessions could silently produce only 3 WAVs.
+    """
+    from jasper.web import __main__ as web_main
+
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_ON_PORT", "1100")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_OFF_PORT", "2200")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_DTLN_PORT", "3300")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_RAW0_PORT", "4400")
+
+    assert web_main._wake_corpus_ports_from_env() == {
+        "on": 1100,
+        "off": 2200,
+        "dtln": 3300,
+        "raw0": 4400,
+    }
+
+
+def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jasper.web import __main__ as web_main
+
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_DTLN", "0")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_RAW0_PORT", "4400")
+
+    ports = web_main._wake_corpus_ports_from_env()
+    assert "dtln" not in ports
+    assert ports["raw0"] == 4400
 
 
 def test_begin_session_default_excludes_raw0(backend) -> None:

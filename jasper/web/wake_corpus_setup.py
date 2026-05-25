@@ -134,6 +134,30 @@ RESUME_WINDOW_SEC = 3600.0
 CSRF_HEADER = "X-CSRF-Token"
 
 
+def build_ports(
+    *,
+    aec_on_port: int = DEFAULT_AEC_ON_PORT,
+    aec_off_port: int = DEFAULT_AEC_OFF_PORT,
+    aec_dtln_port: int = DEFAULT_AEC_DTLN_PORT,
+    aec_raw0_port: int = DEFAULT_AEC_RAW0_PORT,
+    include_dtln: bool = True,
+) -> dict[str, int]:
+    """Return the UDP port map for the corpus recorder.
+
+    Raw mic 0 is always present in the map so a raw0-enabled session
+    can subscribe to it. DTLN remains optional because some low-RAM
+    installs deliberately keep that bridge leg disabled.
+    """
+    ports = {
+        "on": aec_on_port,
+        "off": aec_off_port,
+    }
+    if include_dtln:
+        ports["dtln"] = aec_dtln_port
+    ports["raw0"] = aec_raw0_port
+    return ports
+
+
 # ---------------------------------------------------------------------------
 # Data shapes
 # ---------------------------------------------------------------------------
@@ -331,12 +355,7 @@ class RecordingBackend:
         # All 4 known ports. The recorder subscribes to a subset per
         # recording based on the session's include_raw_mic_0 flag —
         # base 3 legs always, raw0 only when the session opted in.
-        self._ports = ports or {
-            "on": DEFAULT_AEC_ON_PORT,
-            "off": DEFAULT_AEC_OFF_PORT,
-            "dtln": DEFAULT_AEC_DTLN_PORT,
-            "raw0": DEFAULT_AEC_RAW0_PORT,
-        }
+        self._ports = ports or build_ports()
         self._max_duration_sec = max_duration_sec
 
         # State guarded by _lock. Touched from HTTP handler threads
@@ -659,11 +678,13 @@ class RecordingBackend:
         stop_ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         duration_sec = task.elapsed_sec()
 
-        # Pick the next sequence number — count of non-deleted clips
-        # this session. Sequence is per-session, not per-condition,
-        # so filenames stay unique across the whole session.
+        # Pick the next sequence number. Sequence is per-session, not
+        # per-condition, so filenames stay unique across the whole
+        # session. Include deleted clips in the max() so a later clip
+        # never reuses a previous filename after the operator deletes
+        # one bad take.
         with self._lock:
-            seq = sum(1 for c in self._clips if not c.deleted) + 1
+            seq = max((c.seq for c in self._clips), default=0) + 1
 
         files: dict[str, str] = {}
         # Condition → directory mapping. "nomusic" preserved for
@@ -1627,7 +1648,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <h2 style="margin-top:0">Per-cell counts</h2>
     <div id="counts-matrix" class="matrix"></div>
     <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
-      Recommended per Phase 0b: ~13-14 utterances per cell across two sessions.
+      Session A: ~7-9 per cell. Session B: ~2-3 per cell.
     </p>
   </div>
 
@@ -2032,6 +2053,10 @@ def main(argv: list[str] | None = None) -> int:
         help=f"UDP port for DTLN leg (default {DEFAULT_AEC_DTLN_PORT}).",
     )
     parser.add_argument(
+        "--aec-raw0-port", type=int, default=DEFAULT_AEC_RAW0_PORT,
+        help=f"UDP port for raw mic 0 leg (default {DEFAULT_AEC_RAW0_PORT}).",
+    )
+    parser.add_argument(
         "--no-dtln", action="store_true",
         help="Skip the DTLN leg entirely (for 2-stream Pis or "
              "JASPER_WAKE_LEG_DTLN=0).",
@@ -2056,12 +2081,13 @@ def main(argv: list[str] | None = None) -> int:
     if not args.no_require_root:
         require_root()
 
-    ports: dict[str, int] = {
-        "on": args.aec_on_port,
-        "off": args.aec_off_port,
-    }
-    if not args.no_dtln:
-        ports["dtln"] = args.aec_dtln_port
+    ports = build_ports(
+        aec_on_port=args.aec_on_port,
+        aec_off_port=args.aec_off_port,
+        aec_dtln_port=args.aec_dtln_port,
+        aec_raw0_port=args.aec_raw0_port,
+        include_dtln=not args.no_dtln,
+    )
 
     backend = RecordingBackend(args.output, ports=ports)
     backend.start()

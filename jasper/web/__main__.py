@@ -65,6 +65,29 @@ def _serve_forever(server, label: str) -> None:
         logger.exception("jasper-web %s worker crashed", label)
 
 
+def _wake_corpus_ports_from_env() -> dict[str, int]:
+    """Resolve wake-corpus UDP ports for the combined jasper-web unit."""
+    return wake_corpus_setup.build_ports(
+        aec_on_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_ON_PORT",
+            wake_corpus_setup.DEFAULT_AEC_ON_PORT,
+        )),
+        aec_off_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_OFF_PORT",
+            wake_corpus_setup.DEFAULT_AEC_OFF_PORT,
+        )),
+        aec_dtln_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_DTLN_PORT",
+            wake_corpus_setup.DEFAULT_AEC_DTLN_PORT,
+        )),
+        aec_raw0_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_RAW0_PORT",
+            wake_corpus_setup.DEFAULT_AEC_RAW0_PORT,
+        )),
+        include_dtln=os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0",
+    )
+
+
 def main() -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -206,7 +229,8 @@ def main() -> int:
     # Wake-word corpus recorder — browser-driven recording UI for the
     # Phase 0b gold-corpus protocol. Owns its own RecordingBackend
     # with an asyncio loop in a background daemon thread (for UDP
-    # capture from jasper-aec-bridge's :9876 / :9877 / :9878 streams).
+    # capture from jasper-aec-bridge's :9876 / :9877 / :9878 / :9879
+    # streams).
     # Per-session CSRF token regenerated each daemon start. See
     # docs/HANDOFF-wake-training-experiment.md Phase 0b.
     from pathlib import Path
@@ -216,21 +240,7 @@ def main() -> int:
             "/var/lib/jasper/enrollment_positives",
         )
     )
-    wake_corpus_ports = {
-        "on": int(os.environ.get(
-            "JASPER_WAKE_CORPUS_AEC_ON_PORT",
-            wake_corpus_setup.DEFAULT_AEC_ON_PORT,
-        )),
-        "off": int(os.environ.get(
-            "JASPER_WAKE_CORPUS_AEC_OFF_PORT",
-            wake_corpus_setup.DEFAULT_AEC_OFF_PORT,
-        )),
-    }
-    if os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0":
-        wake_corpus_ports["dtln"] = int(os.environ.get(
-            "JASPER_WAKE_CORPUS_AEC_DTLN_PORT",
-            wake_corpus_setup.DEFAULT_AEC_DTLN_PORT,
-        ))
+    wake_corpus_ports = _wake_corpus_ports_from_env()
     wake_corpus_backend = wake_corpus_setup.RecordingBackend(
         output_dir=wake_corpus_output, ports=wake_corpus_ports,
     )
