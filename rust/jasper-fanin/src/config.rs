@@ -24,11 +24,18 @@ pub struct Config {
     /// dedicated snd-aloop substream. Order matters: the STATUS
     /// endpoint reports inputs in this order, and `input_renderers`
     /// labels align positionally.
+    ///
+    /// The list is **pipe-delimited** in the env var
+    /// (`JASPER_FANIN_INPUT_PCMS`). Pipe rather than comma because
+    /// ALSA hw PCM names contain commas (`hw:Loopback,1,0`); the
+    /// previous comma-delimited shape silently split one PCM name
+    /// into three entries.
     pub input_pcms: Vec<String>,
 
     /// Human-readable labels for each input PCM, in the same order.
     /// Surfaced via the STATUS endpoint and the structured event=
-    /// log lines. Doesn't affect audio behavior.
+    /// log lines. Doesn't affect audio behavior. Pipe-delimited in
+    /// the env var to match `input_pcms`.
     pub input_renderers: Vec<String>,
 
     /// PCM sample rate. All inputs and the output use this rate
@@ -75,7 +82,7 @@ impl Config {
     /// PCM list length != renderer label list length).
     pub fn from_env() -> Result<Self> {
         let output_pcm = env_str("JASPER_FANIN_OUTPUT_PCM", "hw:Loopback,0,7");
-        let input_pcms = env_csv(
+        let input_pcms = env_list(
             "JASPER_FANIN_INPUT_PCMS",
             &[
                 "hw:Loopback,1,0",
@@ -84,7 +91,7 @@ impl Config {
                 "hw:Loopback,1,3",
             ],
         );
-        let input_renderers = env_csv(
+        let input_renderers = env_list(
             "JASPER_FANIN_INPUT_RENDERERS",
             &["spotify", "airplay", "bluealsa", "usbsink"],
         );
@@ -151,11 +158,17 @@ fn env_str(name: &str, default: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| default.to_string())
 }
 
-fn env_csv(name: &str, default: &[&str]) -> Vec<String> {
+/// Parse a pipe-delimited list env var. Pipe rather than comma
+/// because ALSA hw PCM names contain commas (`hw:Loopback,1,0`);
+/// a comma-delimited shape would silently split one PCM name into
+/// three entries.
+fn env_list(name: &str, default: &[&str]) -> Vec<String> {
     match std::env::var(name) {
-        Ok(s) if !s.trim().is_empty() => {
-            s.split(',').map(|e| e.trim().to_string()).collect()
-        }
+        Ok(s) if !s.trim().is_empty() => s
+            .split('|')
+            .map(|e| e.trim().to_string())
+            .filter(|e| !e.is_empty())
+            .collect(),
         _ => default.iter().map(|s| s.to_string()).collect(),
     }
 }
@@ -271,11 +284,11 @@ mod tests {
             &[
                 (
                     "JASPER_FANIN_INPUT_PCMS",
-                    Some("hw:Loopback,1,0,hw:Loopback,1,1"),
+                    Some("hw:Loopback,1,0|hw:Loopback,1,1"),
                 ),
                 (
                     "JASPER_FANIN_INPUT_RENDERERS",
-                    Some("spotify,airplay,bluealsa"),
+                    Some("spotify|airplay|bluealsa"),
                 ),
             ],
             || {
@@ -291,37 +304,56 @@ mod tests {
         );
     }
 
+    /// Regression test: smoke-test caught this in Phase 2 chunk 2 dev.
+    /// hw PCM names contain commas (`hw:Loopback,1,0`); the previous
+    /// comma-delimited parser silently split one PCM name into three
+    /// entries, then erroneously failed length validation against a
+    /// 4-entry renderer list. Pipe delimiter avoids the collision.
     #[test]
-    fn empty_input_pcms_errors() {
+    fn pipe_delimiter_preserves_commas_inside_hw_pcm_names() {
         with_env(
             &[
-                ("JASPER_FANIN_INPUT_PCMS", Some(",")),
-                ("JASPER_FANIN_INPUT_RENDERERS", Some(",")),
+                (
+                    "JASPER_FANIN_INPUT_PCMS",
+                    Some("hw:Loopback,1,5|hw:Loopback,1,6"),
+                ),
+                (
+                    "JASPER_FANIN_INPUT_RENDERERS",
+                    Some("test_a|test_b"),
+                ),
             ],
             || {
-                // Splitting "," yields ["", ""] — non-empty list but
-                // empty strings. The current `is_empty()` check fires
-                // when the env var IS empty; a list of two empties
-                // currently passes. Document and tighten: if every
-                // entry is whitespace, treat as empty.
-                let cfg = Config::from_env();
-                // For now this case parses to 2 empty-string PCMs and
-                // 2 empty-string renderers, which is dysfunctional
-                // but not a length mismatch. Phase 2 chunk 2 (ALSA
-                // open) will catch it when trying to open "". We
-                // accept that here — open-time errors are clearer
-                // than config-time errors for "this PCM name is
-                // garbage".
-                let _ = cfg;
+                let cfg = Config::from_env()
+                    .expect("pipe-delimited hw names must parse");
+                assert_eq!(cfg.input_pcms.len(), 2);
+                assert_eq!(cfg.input_pcms[0], "hw:Loopback,1,5");
+                assert_eq!(cfg.input_pcms[1], "hw:Loopback,1,6");
+                assert_eq!(cfg.input_renderers.len(), 2);
             },
         );
+    }
 
-        // The genuinely-empty case (env var unset → defaults used,
-        // which are non-empty) is covered by from_env_uses_documented_defaults.
-        // An explicitly empty env var falls back to default (env_csv
-        // is_empty() check), also non-empty. So `is_empty()` only
-        // fires if defaults themselves are empty — defensive against
-        // a future refactor that empties them.
+    #[test]
+    fn whitespace_only_input_pcms_errors() {
+        // env_list filters out empty/whitespace entries, so a string
+        // of only delimiters parses to an empty Vec — caught by the
+        // is_empty() guard with a clear error message.
+        with_env(
+            &[
+                ("JASPER_FANIN_INPUT_PCMS", Some("||")),
+                ("JASPER_FANIN_INPUT_RENDERERS", Some("||")),
+            ],
+            || {
+                let err = Config::from_env()
+                    .expect_err("whitespace-only PCM list must error");
+                let msg = format!("{:#}", err);
+                assert!(
+                    msg.contains("empty") || msg.contains("at least one"),
+                    "expected empty-list error, got: {}",
+                    msg,
+                );
+            },
+        );
     }
 
     #[test]

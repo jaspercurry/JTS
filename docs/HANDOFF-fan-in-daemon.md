@@ -395,14 +395,21 @@ works without any wizard interaction.
 ```sh
 # Default values shown — operator override via /etc/jasper/jasper.env
 JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
-JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0,hw:Loopback,1,1,hw:Loopback,1,2,hw:Loopback,1,3
-JASPER_FANIN_INPUT_RENDERERS=spotify,airplay,bluealsa,usbsink   # informational, surfaces in /state
+JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3
+JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
 JASPER_FANIN_BUFFER_FRAMES=1024                                 # ~21 ms — well below current dmix
 JASPER_FANIN_HANDOVER_RAMP_MS=10
 JASPER_FANIN_SILENCE_THRESHOLD_DBFS=-90
 ```
+
+The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
+`JASPER_FANIN_INPUT_RENDERERS`) are **pipe-delimited**, not comma-
+delimited. ALSA hw PCM names contain commas (`hw:Loopback,1,0`), so
+a comma-delimited shape silently splits one PCM name into three
+entries. Discovered via the chunk 2 smoke test; regression-tested
+in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
 
 Reasoning on the period/buffer: 1024-frame buffer (~21 ms) is half the
 old dmix's 4096; matches the documented floor for stable dmix-replacement
