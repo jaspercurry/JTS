@@ -448,6 +448,57 @@ def test_voice_daemon_start_refused_during_recording(
             backend.stop_recording()
 
 
+# ---------------------------------------------------------------------------
+# make_server — socket-activation support
+# ---------------------------------------------------------------------------
+
+
+def test_make_server_accepts_host_port_tuple(backend) -> None:
+    """The (host, port) tuple form is what main()'s direct-bind path
+    uses. make_server must construct a ThreadingHTTPServer correctly."""
+    from http.server import ThreadingHTTPServer
+    server = wake_corpus_setup.make_server(
+        ("127.0.0.1", 0),  # port=0 → OS picks a free port (no clash in CI)
+        csrf_token="test-token",
+        backend=backend,
+    )
+    try:
+        assert isinstance(server, ThreadingHTTPServer)
+        # Handler must have backend + csrf_token bound for request handling
+        handler_cls = server.RequestHandlerClass
+        assert handler_cls.backend is backend
+        assert handler_cls.csrf_token == "test-token"
+    finally:
+        server.server_close()
+
+
+def test_make_server_accepts_prebound_socket(backend) -> None:
+    """The socket form is what __main__.py's socket-activation path
+    uses (systemd-passed fds). make_server must adopt the socket
+    without re-binding (or it'd EADDRINUSE the systemd fd)."""
+    import socket
+    from http.server import ThreadingHTTPServer
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("127.0.0.1", 0))
+    s.listen(5)
+    try:
+        server = wake_corpus_setup.make_server(
+            s, csrf_token="test-token", backend=backend,
+        )
+        try:
+            assert isinstance(server, ThreadingHTTPServer)
+            # The server adopted our pre-bound socket — same fd, same address
+            assert server.socket.fileno() == s.fileno()
+            assert server.server_address == s.getsockname()
+        finally:
+            server.server_close()
+    except Exception:
+        s.close()
+        raise
+
+
 def test_index_html_is_valid_shape() -> None:
     """Not a full HTML validator — just enough to catch obvious
     breakage like missing </body>, unmatched template strings, etc."""
@@ -456,11 +507,20 @@ def test_index_html_is_valid_shape() -> None:
     assert "<title>JTS Wake-Word Corpus Recorder</title>" in html_text
     assert "</body>" in html_text
     assert "</html>" in html_text
-    # Key API paths must be referenced
-    assert "/api/status" in html_text
-    assert "/api/session" in html_text
-    assert "/api/clip/start" in html_text
-    assert "/api/clip/stop" in html_text
+    # Key API paths must be referenced. The JS uses RELATIVE paths
+    # ('api/status' not '/api/status') so the same page works both
+    # standalone (http://host:8782/) and behind nginx
+    # (http://host/wake-corpus/). Absolute paths would 502 under nginx.
+    assert "api/status" in html_text
+    assert "api/session" in html_text
+    assert "api/clip/start" in html_text
+    assert "api/clip/stop" in html_text
+    # Defensive: ensure we don't regress to absolute paths in the JS.
+    # The server-side route definitions (handlers) DO use leading
+    # slashes, so we check for the leading-slash variants in the
+    # specific JS-call contexts.
+    assert "api('GET', 'api/status')" in html_text or \
+           'api("GET", "api/status")' in html_text
     # All three conditions + distances must be selectable
     for c in ("quiet", "music"):
         assert f'value="{c}"' in html_text

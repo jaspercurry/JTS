@@ -38,6 +38,8 @@ import logging
 import os
 import threading
 
+import secrets
+
 from . import (
     _systemd,
     airplay_setup,
@@ -48,6 +50,7 @@ from . import (
     spotify_setup,
     transit_setup,
     voice_setup,
+    wake_corpus_setup,
     wake_setup,
     wifi_setup,
 )
@@ -83,6 +86,7 @@ def main() -> int:
     peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
     transit_port = int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777"))
     ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
+    wake_corpus_port = int(os.environ.get("JASPER_WAKE_CORPUS_WEB_PORT", "8782"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -199,6 +203,45 @@ def main() -> int:
         target_for(ha_port), state_path=ha_state,
     )
 
+    # Wake-word corpus recorder — browser-driven recording UI for the
+    # Phase 0b gold-corpus protocol. Owns its own RecordingBackend
+    # with an asyncio loop in a background daemon thread (for UDP
+    # capture from jasper-aec-bridge's :9876 / :9877 / :9878 streams).
+    # Per-session CSRF token regenerated each daemon start. See
+    # docs/HANDOFF-wake-training-experiment.md Phase 0b.
+    from pathlib import Path
+    wake_corpus_output = Path(
+        os.environ.get(
+            "JASPER_WAKE_CORPUS_OUTPUT",
+            "/var/lib/jasper/enrollment_positives",
+        )
+    )
+    wake_corpus_ports = {
+        "on": int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_ON_PORT",
+            wake_corpus_setup.DEFAULT_AEC_ON_PORT,
+        )),
+        "off": int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_OFF_PORT",
+            wake_corpus_setup.DEFAULT_AEC_OFF_PORT,
+        )),
+    }
+    if os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0":
+        wake_corpus_ports["dtln"] = int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_DTLN_PORT",
+            wake_corpus_setup.DEFAULT_AEC_DTLN_PORT,
+        ))
+    wake_corpus_backend = wake_corpus_setup.RecordingBackend(
+        output_dir=wake_corpus_output, ports=wake_corpus_ports,
+    )
+    wake_corpus_backend.start()  # spawns the asyncio loop thread
+    wake_corpus_csrf = secrets.token_hex(16)
+    wake_corpus_server = wake_corpus_setup.make_server(
+        target_for(wake_corpus_port),
+        csrf_token=wake_corpus_csrf,
+        backend=wake_corpus_backend,
+    )
+
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
@@ -215,6 +258,7 @@ def main() -> int:
         peers_server.RequestHandlerClass,
         transit_server.RequestHandlerClass,
         ha_server.RequestHandlerClass,
+        wake_corpus_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
     tracker.start()
@@ -230,6 +274,7 @@ def main() -> int:
         ("/peers", peers_port),
         ("/transit", transit_port),
         ("/ha", ha_port),
+        ("/wake-corpus", wake_corpus_port),
     ):
         if port in by_port:
             logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
@@ -250,6 +295,7 @@ def main() -> int:
         ("/peers", peers_server),
         ("/transit", transit_server),
         ("/ha", ha_server),
+        ("/wake-corpus", wake_corpus_server),
     ):
         threading.Thread(
             target=_serve_forever,
