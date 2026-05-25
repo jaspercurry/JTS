@@ -56,6 +56,7 @@ def _render(
     tmp_path: Path,
     camilla_yaml: str,
     asoundrc: object = None,
+    topology: str | None = None,
 ) -> tuple[str, subprocess.CompletedProcess[str]]:
     """Render the shairport conf via the script under test.
 
@@ -65,6 +66,15 @@ def _render(
       - str                 → write the given content as the asoundrc.
       - NO_ASOUNDRC         → point JASPER_ASOUNDRC at a non-existent
                                file, simulating a pre-dmix host.
+
+    `topology` controls the JASPER_AUDIO_TOPOLOGY_ENV fixture:
+      - None (default)      → no file at the topology env path (=
+                               dmix mode default behavior).
+      - "dmix" or "fanin"   → write the corresponding value to the
+                               topology env file; the script reads
+                               JASPER_AUDIO_TOPOLOGY from it.
+      - other string        → write that literal value (tests of
+                               the invalid-fallback path).
     """
     template = tmp_path / "shairport-sync.conf.template"
     target = tmp_path / "shairport-sync.conf"
@@ -81,6 +91,7 @@ def _render(
                 audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
             };
             alsa = {
+                output_device = "__RENDERER_DEVICE__";
                 disable_synchronization = "__DISABLE_SYNCHRONIZATION__";
             };
             """
@@ -98,6 +109,16 @@ def _render(
         asoundrc_content = asoundrc if isinstance(asoundrc, str) else _default_asoundrc()
         asoundrc_path.write_text(asoundrc_content + "\n")
 
+    # Topology env fixture: point at a non-existent file by default so
+    # the script falls back to dmix mode (the JTS-default topology).
+    # An explicit `topology=` value writes the env file with that
+    # JASPER_AUDIO_TOPOLOGY setting.
+    topology_env_path = tmp_path / "audio_topology.env"
+    if topology is not None:
+        topology_env_path.write_text(
+            f"JASPER_AUDIO_TOPOLOGY={topology}\n"
+        )
+
     env = os.environ.copy()
     env.update(
         {
@@ -108,6 +129,7 @@ def _render(
             "JASPER_CAMILLA_STATEFILE": str(statefile),
             "JASPER_CAMILLA_DEFAULT_CONFIG": str(camilla),
             "JASPER_ASOUNDRC": str(asoundrc_path),
+            "JASPER_AUDIO_TOPOLOGY_ENV": str(topology_env_path),
             "JASPER_DERIVE_DEVICE_NAME": str(tmp_path / "missing-helper"),
         }
     )
@@ -254,3 +276,75 @@ def test_airplay_renderer_picks_up_alternate_dmix_buffer_size(tmp_path: Path):
     # CamillaDSP contributes 3072 frames; dmix contributes 2048.
     # Total = 5120 / 48000 = 0.106667 s.
     assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
+
+
+# ---------- Tier 2A topology substitution (__RENDERER_DEVICE__) -----
+
+
+_CAMILLA_PRODUCTION_YAML = """
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 4096
+"""
+
+
+def test_renderer_device_defaults_to_dmix_when_topology_env_absent(
+    tmp_path: Path,
+):
+    """No /var/lib/jasper/audio_topology.env → dmix mode → shairport
+    output_device is `jasper_renderer_in`. This is the default
+    behavior on every fresh install."""
+    rendered, result = _render(tmp_path, _CAMILLA_PRODUCTION_YAML)
+    assert 'output_device = "jasper_renderer_in";' in rendered
+    assert "renderer device 'jasper_renderer_in'" in result.stderr
+
+
+def test_renderer_device_dmix_explicit(tmp_path: Path):
+    """Explicit JASPER_AUDIO_TOPOLOGY=dmix produces the same
+    output_device as the default (matches when the operator
+    explicitly pins the topology back to dmix after testing fanin)."""
+    rendered, _ = _render(
+        tmp_path, _CAMILLA_PRODUCTION_YAML, topology="dmix",
+    )
+    assert 'output_device = "jasper_renderer_in";' in rendered
+
+
+def test_renderer_device_fanin_topology(tmp_path: Path):
+    """JASPER_AUDIO_TOPOLOGY=fanin → shairport_substream. The
+    `jasper-audio-topology fanin` command writes this env value and
+    re-runs the apply script to regenerate /etc/shairport-sync.conf."""
+    rendered, result = _render(
+        tmp_path, _CAMILLA_PRODUCTION_YAML, topology="fanin",
+    )
+    assert 'output_device = "shairport_substream";' in rendered
+    assert "renderer device 'shairport_substream'" in result.stderr
+
+
+def test_renderer_device_invalid_topology_falls_back_to_dmix(
+    tmp_path: Path,
+):
+    """An invalid JASPER_AUDIO_TOPOLOGY value emits a warning to
+    stderr and falls back to dmix mode. This defends against typos
+    in the env file ('JASPER_AUDIO_TOPOLOGY=FANIN' instead of fanin,
+    etc.) — the speaker keeps working at the default topology rather
+    than silently breaking."""
+    rendered, result = _render(
+        tmp_path, _CAMILLA_PRODUCTION_YAML, topology="bogus",
+    )
+    assert 'output_device = "jasper_renderer_in";' in rendered
+    assert "invalid JASPER_AUDIO_TOPOLOGY='bogus'" in result.stderr
+
+
+def test_renderer_device_placeholder_validated(tmp_path: Path):
+    """The renderer-device placeholder gets the same anti-typo guard
+    as the other placeholders: if substitution silently fails (e.g.,
+    a malformed sed pattern leaves __RENDERER_DEVICE__ literal in
+    the rendered conf), the script refuses to install it. shairport
+    would otherwise fail to parse the conf and crash-loop."""
+    # Sanity: the rendered conf should not contain any leftover
+    # placeholder tokens. Covered by `assert ... not in rendered`
+    # in every successful render — explicit here for completeness.
+    rendered, _ = _render(tmp_path, _CAMILLA_PRODUCTION_YAML)
+    assert "__RENDERER_DEVICE__" not in rendered

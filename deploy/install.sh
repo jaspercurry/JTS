@@ -483,6 +483,23 @@ install_renderers() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
         /usr/local/sbin/jasper-apply-airplay-mode
+    # jasper-audio-topology: switch the renderer/DSP chain between the
+    # default `dmix` topology and the Tier 2A `fanin` topology. The
+    # active mode is recorded in /var/lib/jasper/audio_topology.env;
+    # each renderer's service unit reads its device flag from there
+    # via EnvironmentFile=-. shairport reads its output_device from
+    # /etc/shairport-sync.conf, which jasper-apply-airplay-mode
+    # regenerates based on the same env file. See
+    # docs/HANDOFF-fan-in-daemon.md.
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-audio-topology" \
+        /usr/local/sbin/jasper-audio-topology
+    # Fanin-mode asoundrc template. Installed but inert in dmix mode
+    # (the topology script picks it up only when switching to fanin).
+    mkdir -p /etc/jasper/audio-topology/fanin
+    install -m 0644 \
+        "${REPO_DIR}/deploy/audio-topology/fanin/asound.conf.template" \
+        /etc/jasper/audio-topology/fanin/asound.conf.template
     # jasper-derive-device-name maps the system hostname to a display
     # name shown in Spotify Connect / AirPlay device pickers. Called
     # by jasper-apply-airplay-mode (and by the jasper.env seeding

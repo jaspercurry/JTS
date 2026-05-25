@@ -54,45 +54,79 @@ def test_asoundrc_renderer_dmix_uses_unique_ipc_key():
 
 
 def test_librespot_writes_to_renderer_mix():
-    """librespot's systemd unit must target jasper_renderer_in, not
-    plughw:Loopback,0,0 directly. Direct-loopback write was the
-    EBUSY-crash-loop pattern fixed 2026-05-22."""
+    """librespot's systemd unit must default-target jasper_renderer_in
+    (the dmix-mode value). In Tier 2A's fanin mode the topology switch
+    flips ${JASPER_LIBRESPOT_DEVICE} to librespot_substream via
+    /var/lib/jasper/audio_topology.env — but the unit's Environment=
+    default has to be jasper_renderer_in so the absence of that
+    file (= fresh install) lands on dmix mode.
+
+    Direct-loopback write was the EBUSY-crash-loop pattern fixed
+    2026-05-22 (PR #214); the env-var indirection ships in the
+    Tier 2A topology-switch work."""
     unit = (REPO / "deploy" / "systemd" / "librespot.service").read_text()
-    assert "--device jasper_renderer_in" in unit
-    # Defensive: the old path should NOT appear in an active ExecStart.
-    # (Historical comments are fine; ExecStart lines are checked
-    # explicitly.)
-    exec_lines = [
-        line for line in unit.splitlines()
-        if line.strip().startswith("ExecStart=")
-        and not line.strip().startswith("ExecStart=")  # noqa: E501
-        is False
-    ]
-    for line in exec_lines:
-        assert "plughw:Loopback,0,0" not in line, (
-            f"librespot ExecStart still points at plughw:Loopback,0,0: {line}"
-        )
+    # ExecStart must reference the env var, not the literal device.
+    assert "--device ${JASPER_LIBRESPOT_DEVICE}" in unit, (
+        "librespot ExecStart must use ${JASPER_LIBRESPOT_DEVICE} "
+        "(the env var the topology switch flips) — not a literal "
+        "device name. See deploy/bin/jasper-audio-topology."
+    )
+    # And the Environment= default must be jasper_renderer_in so that
+    # the absence of /var/lib/jasper/audio_topology.env = dmix mode.
+    assert 'Environment="JASPER_LIBRESPOT_DEVICE=jasper_renderer_in"' in unit, (
+        "librespot.service must declare a default of "
+        "JASPER_LIBRESPOT_DEVICE=jasper_renderer_in so dmix mode is "
+        "the default behavior when audio_topology.env is absent."
+    )
+    # Defensive: the old direct-loopback path should NOT appear in an
+    # active ExecStart. (Historical comments are fine; ExecStart lines
+    # are checked explicitly.)
+    for line in unit.splitlines():
+        if line.strip().startswith("ExecStart=") and "/usr/bin/librespot" in line:
+            assert "plughw:Loopback,0,0" not in line, (
+                f"librespot ExecStart still references plughw:Loopback,0,0: {line}"
+            )
 
 
 def test_shairport_writes_to_renderer_mix():
-    """shairport-sync's config template must target jasper_renderer_in.
-    output_rate stays at 44100 (shairport-only constraint); the plug
-    layer above the dmix handles the 44.1 -> 48 conversion."""
+    """shairport-sync's conf template uses the __RENDERER_DEVICE__
+    placeholder, which jasper-apply-airplay-mode substitutes based
+    on JASPER_AUDIO_TOPOLOGY. Default (dmix) substitutes
+    `jasper_renderer_in`; fanin substitutes `shairport_substream`.
+
+    Validating the *substitution* lives in tests/test_airplay_render.py
+    (which actually invokes the render script). Here we just lock
+    the template into the placeholder-based shape — a future edit
+    that hard-codes the device name would break the topology switch."""
     conf = (REPO / "deploy" / "shairport-sync.conf.template").read_text()
-    assert 'output_device = "jasper_renderer_in"' in conf
+    assert 'output_device = "__RENDERER_DEVICE__"' in conf, (
+        "shairport conf template must use __RENDERER_DEVICE__ "
+        "(substituted by jasper-apply-airplay-mode from "
+        "JASPER_AUDIO_TOPOLOGY) — not a hard-coded device name."
+    )
     # output_rate must stay 44100 — shairport rejects non-multiples
-    # of 44100. The resampling happens in the plug layer.
+    # of 44100. The resampling happens in the plug layer above the
+    # output device.
     assert "output_rate = 44100" in conf
 
 
 def test_bluealsa_aplay_writes_to_renderer_mix():
-    """bluealsa-aplay's drop-in unit must target jasper_renderer_in.
-    The drop-in clears the default ExecStart and re-sets it."""
+    """bluealsa-aplay's drop-in unit must default-target
+    jasper_renderer_in via ${JASPER_BLUEALSA_DEVICE} (same env-var
+    indirection as librespot, for the topology switch). The drop-in
+    clears the default ExecStart and re-sets it."""
     unit = (
         REPO / "deploy" / "systemd" / "bluealsa-aplay.service.d"
         / "jts-output.conf"
     ).read_text()
-    assert "--pcm=jasper_renderer_in" in unit
+    assert "--pcm=${JASPER_BLUEALSA_DEVICE}" in unit, (
+        "bluealsa-aplay drop-in must use ${JASPER_BLUEALSA_DEVICE} "
+        "(env var the topology switch flips)"
+    )
+    assert 'Environment="JASPER_BLUEALSA_DEVICE=jasper_renderer_in"' in unit, (
+        "bluealsa-aplay drop-in must declare a default of "
+        "JASPER_BLUEALSA_DEVICE=jasper_renderer_in (= dmix mode)."
+    )
     # Same defensive check: the active ExecStart should NOT point
     # at the bare loopback device.
     for line in unit.splitlines():
