@@ -752,11 +752,12 @@ def test_audio_path_no_swap_happy_path():
     def fake_run(cmd, **kwargs):
         unit = cmd[5].rsplit(".", 1)[0]
         pid_map = {
-            "jasper-camilla": "2001",
-            "jasper-aec-bridge": "2002",
-            "shairport-sync": "2003",
-            "librespot": "2004",
-            "bluealsa-aplay": "2005",
+            "jasper-fanin": "2001",
+            "jasper-camilla": "2002",
+            "jasper-aec-bridge": "2003",
+            "shairport-sync": "2004",
+            "librespot": "2005",
+            "bluealsa-aplay": "2006",
         }
         result = MagicMock()
         result.stdout = pid_map.get(unit, "0") + "\n"
@@ -784,11 +785,12 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
     def fake_run(cmd, **kwargs):
         unit = cmd[5].rsplit(".", 1)[0]
         pid_map = {
-            "jasper-camilla": "2001",
-            "jasper-aec-bridge": "2002",
-            "shairport-sync": "2003",
-            "librespot": "2004",
-            "bluealsa-aplay": "2005",
+            "jasper-fanin": "2001",
+            "jasper-camilla": "2002",
+            "jasper-aec-bridge": "2003",
+            "shairport-sync": "2004",
+            "librespot": "2005",
+            "bluealsa-aplay": "2006",
         }
         result = MagicMock()
         result.stdout = pid_map.get(unit, "0") + "\n"
@@ -796,9 +798,9 @@ def test_audio_path_no_swap_warns_on_42mb_swap():
 
     def fake_read(self):
         pid_str = str(self).split("/")[2]
-        # jasper-aec-bridge (pid 2002) has 42 MB swapped (the
+        # jasper-aec-bridge (pid 2003) has 42 MB swapped (the
         # 2026-05-24 signature). Others are clean.
-        if pid_str == "2002":
+        if pid_str == "2003":
             return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t43056 kB\n"
         return "Name:\tfoo\nVmRSS:\t100000 kB\nVmSwap:\t0 kB\n"
 

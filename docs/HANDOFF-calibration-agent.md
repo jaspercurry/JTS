@@ -200,7 +200,7 @@ full picture. The bits that matter for this proposal:
 | Module | Responsibility |
 |---|---|
 | `sweep.py` | Novak 2015 synchronized ESS, 20 Hz – 20 kHz, 10 s, -12 dBFS, 48 kHz, deterministic + on-disk cache under `/var/lib/jasper/correction/sweeps/`. |
-| `playback.py` | `aplay -D plughw:Loopback,0,0` (the music chain entry point — sweep traverses the same pipeline real music does); 1 kHz test-tone cache under `/var/lib/jasper/correction/tones/`. |
+| `playback.py` | `aplay -D correction_substream` (dedicated fan-in lane; sweep traverses the same pipeline real music does); 1 kHz test-tone cache under `/var/lib/jasper/correction/tones/`. |
 | `deconv.py` | FFT + Tikhonov-regularized inversion (`H(f) = Y(f) conj(X(f)) / (\|X(f)\|² + ε)`), IR window 5 ms pre / 500 ms post direct arrival. |
 | `analysis.py` | 1/48-octave power-mean smoothing, log-spaced 480-point resampling, multi-position power-mean spatial averaging. |
 | `peq.py` | Greedy peak-fit: residual = measured − target → find max peak → estimate Q from -3 dB bandwidth → add peaking biquad → repeat. Cuts-only by default, 20–350 Hz, ≤5 filters, Q ∈ [1.0, 8.0], max -10 dB. |

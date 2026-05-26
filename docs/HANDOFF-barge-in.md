@@ -175,9 +175,14 @@ The current topology, for reference. Full details in
 
 ```
 MUSIC chain (gets CamillaDSP + main_volume ducking)
-    renderers → pcm.jasper_renderer_in (plug)
-              → pcm.jasper_renderer_mix (dmix; multi-writer)
-              → hw:Loopback,0,0 → snd-aloop → CamillaDSP
+    renderers → private fan-in lanes:
+                  librespot_substream   → hw:Loopback,0,0
+                  shairport_substream   → hw:Loopback,0,1
+                  bluealsa_substream    → hw:Loopback,0,2
+                  usbsink_substream     → hw:Loopback,0,3
+              → jasper-fanin sums lanes to hw:Loopback,0,7
+              → snd-aloop capture side hw:Loopback,1,7
+              → CamillaDSP
               → pcm.jasper_out (dmix on dongle)
               → dongle → amp → speakers
 
@@ -189,14 +194,16 @@ TTS chain (bypasses CamillaDSP)
 The renderer-side dmix (`pcm.jasper_renderer_mix`, fronted by
 `pcm.jasper_renderer_in`) was added in PR #214 (2026-05-22) to
 let the three renderers hold the loopback simultaneously —
-resolving the Spotify Connect handover bug. **That dmix is
-prior art for the convergence sink pattern Option A below
-proposes — same idiom, different location in the chain.**
+resolving the Spotify Connect handover bug. It was retired on
+2026-05-26 after AirPlay validation showed the fan-in topology was
+both cleaner and more reliable. **That retired dmix remains prior art
+for the convergence sink pattern Option A below proposes — same idiom,
+different location in the chain.**
 
 The two chains converge at `pcm.jasper_out`, which is a dmix on
 the Apple USB-C dongle. The AEC bridge's reference tap is
 `pcm.jasper_ref` → `pcm.jasper_capture` → dsnoop on
-`hw:Loopback,1,0` — the music chain, *upstream* of CamillaDSP
+`hw:Loopback,1,7` — the summed music chain, *upstream* of CamillaDSP
 and *upstream* of the music↔TTS convergence point. So:
 
 - AEC reference today contains music only.
@@ -729,10 +736,10 @@ Option B lands, these need answers:
 
 ## Recommendation
 
-The renderer-side dmix from PR #214 already resolved the librespot
-ALSA contention that was the easiest piece of the picture. What
-remains is the barge-in question itself. The path that stays inside
-the standing policy is:
+The production fan-in topology resolved the renderer contention and
+retired the renderer-side dmix from PR #214. What remains is the
+barge-in question itself. The path that stays inside the standing
+policy is:
 
 1. **Build Option C instrumentation.** ~1 day. Extends the
    mic-quality-v2 measurement substrate ([HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md))
@@ -806,4 +813,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-23 (re-verified after the AGENTS.md / CONTRIBUTING.md "Architecture is fixed" policy landed)
+Last verified: 2026-05-26.

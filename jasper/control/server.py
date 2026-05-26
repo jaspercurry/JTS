@@ -708,21 +708,16 @@ async def _get_state(
         """Probe the jasper-fanin daemon's UDS STATUS endpoint.
 
         Returns None when:
-          - the daemon isn't running (default; Tier 2A not opted in)
+          - the daemon isn't running yet or is unhealthy
           - the socket doesn't exist (daemon not yet bound)
           - the probe times out (work loop wedged, ALSA blocked)
           - the response isn't valid JSON
 
-        Distinguishes 'opted out / default' (returns None silently)
-        from 'opted in but broken' (jasper-doctor's
-        check_fanin_service handles the latter with actionable
-        diagnostics). Same fail-soft pattern as _voice_status.
+        Fan-in is mandatory for renderer audio, but /state is fail-soft
+        like _voice_status. jasper-doctor owns the actionable failure.
         See docs/HANDOFF-fan-in-daemon.md for the daemon design.
         """
-        socket_path = os.environ.get(
-            "JASPER_FANIN_CONTROL_SOCKET",
-            "/run/jasper-fanin/control.sock",
-        )
+        socket_path = "/run/jasper-fanin/control.sock"
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_unix_connection(socket_path),
@@ -855,12 +850,10 @@ async def _get_state(
             "usbsink": usbsink_state,
         },
         "active_source": active_source,
-        # Tier 2A fan-in daemon. null when the daemon isn't running
-        # (default — operator hasn't opted into the fanin topology
-        # yet; the dmix-based renderer path is still active). When
-        # running, the daemon's UDS STATUS endpoint emits a JSON
-        # snapshot with per-input frame counts, output xrun counts,
-        # and watchdog metrics — surfaced verbatim here. See
+        # Fan-in daemon. null only when the daemon/socket is unavailable.
+        # When running, the UDS STATUS endpoint emits a JSON snapshot
+        # with per-input frame counts, output xrun counts, and watchdog
+        # metrics — surfaced verbatim here. See
         # docs/HANDOFF-fan-in-daemon.md.
         "fanin": fanin_st,
         "satellites": {

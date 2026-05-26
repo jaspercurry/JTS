@@ -74,12 +74,20 @@ class _BoundedThreadingHTTPServer(HTTPServer):
         request_timeout_sec: float = PREEMPT_REQUEST_TIMEOUT_SEC,
         **kwargs: Any,
     ) -> None:
-        super().__init__(*args, **kwargs)
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=max_workers,
             thread_name_prefix="usbsink-preempt",
         )
         self._request_timeout_sec = request_timeout_sec
+        try:
+            super().__init__(*args, **kwargs)
+        except Exception:
+            # HTTPServer.__init__ calls server_close() if bind/activate
+            # fails. Since this subclass owns an executor, make sure a
+            # bind error reports the original OSError rather than being
+            # masked by cleanup.
+            self._executor.shutdown(wait=False, cancel_futures=True)
+            raise
 
     def process_request(self, request: Any, client_address: Any) -> None:
         # Apply read timeout BEFORE submitting to the pool so a slow
@@ -105,7 +113,8 @@ class _BoundedThreadingHTTPServer(HTTPServer):
         super().server_close()
         # Don't wait — daemon threads exit when the process does; we
         # don't want stop() to block on a slow client.
-        self._executor.shutdown(wait=False, cancel_futures=True)
+        if hasattr(self, "_executor"):
+            self._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _read_persisted_preempt(state_path: Path) -> bool:

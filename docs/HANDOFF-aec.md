@@ -75,7 +75,8 @@ instead of leaving wake-word on an unfed UDP socket.
 > bridge shipped. All are fixed in current production. Briefly:
 >
 > 1. **ALSA linear resampler** (PR #150) — `libasound2-plugins` +
->    `defaults.pcm.rate_converter "samplerate_best"` on `/root/.asoundrc`.
+>    `defaults.pcm.rate_converter "samplerate_best"` in `/etc/asound.conf`
+>    (legacy location was `/root/.asoundrc` before PR #223).
 >    Without these, the plug-layer 44.1→48 conversion lost ~12 dB
 >    of 4-8 kHz content.
 > 2. **Silence fallback on empty ref_q** (PR #154) — replaced
@@ -307,7 +308,7 @@ somewhere in the chain:
 
 | Source | Native rate | Resampling site |
 |---|---|---|
-| AirPlay (shairport-sync) | 44.1 kHz | shairport writes `plughw:Loopback,0,0` → ALSA plug |
+| AirPlay (shairport-sync) | 44.1 kHz | shairport writes `shairport_substream` → ALSA plug |
 | Spotify Connect (librespot) | 44.1 / 48 kHz | librespot → snd-aloop, plug if mismatch |
 | Bluetooth A2DP (bluealsa-aplay) | 44.1 / 48 kHz | bluealsa-aplay → snd-aloop, plug if mismatch |
 | AEC bridge ref read | 16 kHz (internal) | `pcm.jasper_ref` plug → bridge requests 48k from 48k loopback (no-op normally); but the upstream 44.1→48 conversion happens via the same plug |
@@ -346,7 +347,7 @@ before any measurement was done — "this sounds pixel-crushed."
 ### The fix (current production)
 
 Installed `libasound2-plugins`, added one line at the top of
-`/root/.asoundrc`:
+`/etc/asound.conf`:
 
 ```
 defaults.pcm.rate_converter "samplerate_best"
@@ -1521,7 +1522,7 @@ Captured here so future sessions don't repeat the mistakes.
     `jasper/cli/doctor.py`.
 
     The same investigation produced `jasper-doctor --probe-aec`,
-    which actively plays a quiet sine into `plughw:Loopback,0,0`
+    which actively plays a quiet sine into `correction_substream`
     and verifies the bridge sees ref signal — useful when the
     bridge's recent journal has no music for the passive check to
     learn from.
@@ -1789,47 +1790,37 @@ just changed what it does internally.
 ### The architecture
 
 ```
-renderers (shairport-sync, librespot, bluealsa-aplay)
+renderers / internal producers
     │
-    │  each writes directly to hw:Loopback,0,0
-    ▼
-hw:Loopback,0,sub0  ← snd-aloop card 6, kernel-clocked
-    │  cross-wired by snd-aloop
-    ▼
-hw:Loopback,1,sub0
-    │
-    ▼
-pcm.jasper_capture  ← type dsnoop on Loopback,1,sub0
-    │  dsnoop allows multiple readers each to get an independent
-    │  copy of the audio; the slave's rate is whatever the loopback
-    │  is currently locked at (snd-aloop is first-opener-wins; with
-    │  shairport native 44.1k since PR #75 (2026-05-11), that's
-    │  typically 44.1 kHz today)
-    │
-    ├──► reader A: jasper-camilla, via plug:jasper_capture
-    │       plug layer resamples to camilla's expected rate
-    │       main_volume ducking + flat passthrough
-    │       writes to → pcm.jasper_out (dmix on Apple dongle)
-    │       → speaker (audible path)
-    │
-    └──► reader B: jasper-aec-bridge, via pcm.jasper_ref
-            pcm.jasper_ref = plug-wrapped jasper_capture, so
-            the bridge sees REF_RATE=48000 regardless of the
-            loopback's actual locked rate (the regression-
-            survival path added 2026-05-15)
-            captures jasper_ref (48k stereo) for FAR-END REFERENCE
-            captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
-            takes channel 1 (ASR beam, chip BF+NS+AGC+HPF applied,
-              chip AEC disabled via SHF_BYPASS=1). Was channel 2
-              (raw mic 0) until 2026-05-15 — see HANDOFF-xvf3800.md §3.
-            downsamples ref 48k → 16k mono on left, HPF at 125 Hz
-            runs WebRTC AEC3 (10ms windows) frame by frame
-            sends AEC'd mono 16k via UDP → 127.0.0.1:9876
+    ├─ librespot          → librespot_substream  → hw:Loopback,0,0
+    ├─ shairport-sync     → shairport_substream  → hw:Loopback,0,1
+    ├─ bluealsa-aplay     → bluealsa_substream   → hw:Loopback,0,2
+    ├─ jasper-usbsink     → usbsink_substream    → hw:Loopback,0,3
+    └─ correction/probes  → correction_substream → hw:Loopback,0,4
                                               │
                                               ▼
-                                           jasper-voice
-                                              UdpMicCapture binds the same port
-                                              openWakeWord + Gemini Live
+                         hw:Loopback,1,0..4 → jasper-fanin
+                                              │ sums private lanes
+                                              ▼
+                                      hw:Loopback,0,7
+                                              │
+                                              ▼
+                         pcm.jasper_capture  ← dsnoop on Loopback,1,7
+                                              │
+                    ┌─────────────────────────┴─────────────────────────┐
+                    │                                                   │
+                    ▼                                                   ▼
+        reader A: jasper-camilla, via plug:jasper_capture   reader B: jasper-aec-bridge, via pcm.jasper_ref
+          main_volume ducking + flat passthrough              captures jasper_ref (48k stereo) for FAR-END REFERENCE
+          writes to → pcm.jasper_out (dmix on dongle)         captures hw:Array,0 (XVF, 16k 6ch) for NEAR-END MIC
+          → speaker (audible path)                            takes channel 1 (ASR beam; chip AEC disabled via SHF_BYPASS=1)
+                                                               downsamples ref 48k → 16k mono on left, HPF at 125 Hz
+                                                               runs WebRTC AEC3 (10ms windows)
+                                                               sends AEC'd mono 16k via UDP → 127.0.0.1:9876
+                                                                                                   │
+                                                                                                   ▼
+                                                                                                jasper-voice
+                                                                                                   UdpMicCapture
 ```
 
 One snd-aloop card. "Loopback" (card 6) carries the music chain —
@@ -1890,7 +1881,7 @@ are now:
 ### Why alsaaudio for the reference capture
 
 The reference signal lives at `pcm.jasper_capture` — a
-custom-named PCM defined in `/root/.asoundrc`. PortAudio's device
+custom-named PCM defined in `/etc/asound.conf`. PortAudio's device
 enumeration only sees `hw:N,M` style devices and a few standard
 aliases (`default`, `sysdefault`, `pulse`); custom asoundrc PCMs
 aren't enumerated. The Python `pyalsaaudio` library calls
@@ -1899,9 +1890,11 @@ so we use it for the ref capture path. The mic capture and AEC
 output paths use sounddevice/PortAudio (existing daemon
 convention) since they go through plain `hw:N,M` devices.
 
-The bridge runs as root (no `User=` in the systemd unit) because
-`/root/.asoundrc` is mode 0600. This matches the existing
-jasper-camilla/jasper-voice pattern.
+The bridge runs as root (no `User=` in the systemd unit), matching the
+existing jasper-camilla/jasper-voice daemon posture for realtime audio
+and `/dev/snd` access. The ALSA graph itself now lives in
+`/etc/asound.conf` at mode 0644 so non-root renderers resolve the same
+named PCMs.
 
 ### Why 6-channel firmware
 
@@ -2430,3 +2423,5 @@ build, with reasoning so we don't keep re-litigating:
   software AEC limitations and SpeexDSP-vs-WebRTC tradeoffs
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
+
+Last verified: 2026-05-26.

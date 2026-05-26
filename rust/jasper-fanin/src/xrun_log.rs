@@ -21,7 +21,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -160,14 +160,6 @@ impl XrunLog {
         Ok(())
     }
 
-    /// Current cached file size — informational, may be stale.
-    pub fn size_bytes(&self) -> u64 {
-        self.cached_size
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
 }
 
 #[derive(Debug, Clone)]

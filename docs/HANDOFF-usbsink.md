@@ -6,20 +6,17 @@
 **Predecessor project**: [PiCorrect](https://github.com/jaspercurry/PiCorrect) — proves the
 UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
-> ### Post-merge rebase note (2026-05-23)
+> ### Current audio-topology note (updated 2026-05-26)
 >
-> This document describes the daemon as designed on 2026-05-16. Between
-> design and merge, **PR #214 (2026-05-22)** introduced a multi-writer
-> dmix (`pcm.jasper_renderer_mix`, ipc_key 7779) in front of
-> `hw:Loopback,0,0`. All renderers — librespot, shairport-sync,
-> bluealsa-aplay, and now **jasper-usbsink** — write to
-> `pcm.jasper_renderer_in` (the `plug:` front-end), which dmix-sums
-> into the loopback. The audio-path diagrams in §3 below show direct
-> writes to `hw:Loopback,0,0`; the current code writes to
-> `jasper_renderer_in` (default of `JASPER_USBSINK_PLAYBACK_DEVICE`).
-> Functionally identical from the user's perspective; architecturally
-> usbsink is now a peer renderer rather than a special case. See
-> `deploy/alsa/asoundrc.jasper` for the dmix definition.
+> This document describes the daemon as designed on 2026-05-16. The
+> current production topology is fan-in: all renderers — librespot,
+> shairport-sync, bluealsa-aplay, and **jasper-usbsink** — write to
+> private snd-aloop lanes. usbsink writes `usbsink_substream`
+> (`JASPER_USBSINK_PLAYBACK_DEVICE` default), and `jasper-fanin` sums
+> the capture sides into substream 7 for CamillaDSP/AEC. Diagrams in
+> §3 that show direct writes to `hw:Loopback,0,0` are historical.
+> Architecturally usbsink is a peer renderer, not a special case. See
+> `deploy/alsa/asoundrc.jasper` and `docs/HANDOFF-fan-in-daemon.md`.
 >
 > Two other Tier 1 fixes applied at rebase time:
 >
@@ -33,8 +30,8 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 > 2. **Asoundrc path migration.** The codebase moved
 >    `/root/.asoundrc` → `/etc/asound.conf` (mode 0644, world-readable)
 >    in PR #223. usbsink doesn't reference asoundrc by path; the
->    `pcm.jasper_renderer_in` name resolves through whichever location
->    `install.sh` writes.
+>    `usbsink_substream` name resolves through the system-wide
+>    `/etc/asound.conf` that `install.sh` writes.
 
 ## Status & scope
 
@@ -61,8 +58,9 @@ a quick verification on Trixie's current kernel before we commit — see
 - Disabled by default
 - Zero RAM cost when disabled (no kernel modules loaded, no daemon
   running, no ALSA card present)
-- AEC works transparently (USB audio sums into the existing music chain;
-  `pcm.jasper_capture` taps the post-CamillaDSP reference)
+- AEC works transparently (USB audio enters `usbsink_substream`;
+  `jasper-fanin` sums it into substream 7, which `pcm.jasper_capture`
+  exposes as the music reference)
 
 **Out of scope (explicit non-goals)**
 - USB-side capture (host recording from JTS mic over USB) — would
@@ -86,8 +84,8 @@ pattern. A new oneshot service `jasper-usbsink-init.service` performs the
 ConfigFS gadget setup at start; a small Python daemon
 `jasper-usbsink.service` does three things:
 
-1. Loops audio from the gadget capture endpoint into `hw:Loopback,0,0`
-   so it joins the existing CamillaDSP chain
+1. Loops audio from the gadget capture endpoint into `usbsink_substream`
+   so it joins the fan-in music chain
 2. Subscribes to ALSA mixer events on the gadget's `PCM Capture Volume`
    and forwards them to `VolumeCoordinator.observe_source_volume()`
 3. Computes RMS-based playing state and publishes it to a state file
@@ -219,10 +217,11 @@ hw:CARD=UAC2Gadget,DEV=0  (gadget capture endpoint, Pi-side)
    │   (sounddevice InputStream, callback-driven)
    │
    ▼ writes here when not preempted; writes silence when preempted
-hw:Loopback,0,0   ── (joins the existing music chain) ──►
+pcm.usbsink_substream ──► hw:Loopback,0,3
+                                          ▼ (loop)
+                              hw:Loopback,1,3 ──► jasper-fanin
                                           ▼
-                              plughw:Loopback,1,0
-                                          │
+                              pcm.jasper_capture (summed substream 7)
                                           ▼
                                   jasper-camilla
                                   (main_volume — the dial knob)
@@ -246,17 +245,17 @@ gadget (as PiCorrect does):
 
 PiCorrect's topology is single-source — the host is the *only* audio
 input. JTS is multi-source — AirPlay, Spotify Connect, Bluetooth, and
-now USB must all sum at the dongle. The existing snd-aloop setup is
-the mixing point, and the easiest way to add a fourth source is to
-make it a fourth writer into `hw:Loopback,0,0`. Bridging UAC2Gadget →
-Loopback is a tiny daemon (~80 lines of sounddevice code) and keeps
-CamillaDSP's capture configuration unchanged.
+now USB must all sum before CamillaDSP/AEC. The fan-in topology is the
+mixing point, and the clean way to add USB is to make it a peer writer
+into `usbsink_substream`. Bridging UAC2Gadget → fan-in is a tiny daemon
+(~80 lines of sounddevice code) and keeps CamillaDSP's capture
+configuration unchanged.
 
 Latency budget (rough, measured during implementation):
 - Host → gadget USB endpoint: ~3-5 ms
 - sounddevice ring buffer: ~10 ms (configurable; default ~chunksize)
 - snd-aloop loopback: ~10 ms (Loopback,0 → Loopback,1)
-- CamillaDSP chunksize=4096 @ 48k: ~85 ms
+- fan-in output + CamillaDSP target above chunksize: ~85 ms
 - dmix → dongle: ~10 ms
 - **Total**: ~120-150 ms end-to-end
 
@@ -338,7 +337,7 @@ reads the current volume value and sets that as `listening_level`.
 
 Mux integration follows the AirPlay pattern with one wrinkle: we
 can't tell the host to pause. So when USB is preempted, the daemon
-silences its own output (writes zeros to `hw:Loopback,0,0`) until
+silences its own output (writes zeros to `usbsink_substream`) until
 the host transitions in a way that mux recognizes.
 
 #### Playing-state detection: RMS-based
@@ -1337,9 +1336,10 @@ in `BRINGUP.md`:
 
 ### AEC test
 
-USB audio sums into `hw:Loopback,0,0`, which feeds CamillaDSP, whose
-output is tapped by `pcm.jasper_capture` for the AEC reference. So
-AEC sees USB audio in the reference signal automatically. Verify:
+USB audio enters `usbsink_substream`; `jasper-fanin` sums it into
+substream 7, and `pcm.jasper_capture` exposes that summed music stream
+as the AEC reference. So AEC sees USB audio in the reference signal
+automatically. Verify:
 
 1. Mac plays music loud (75 dB at speaker)
 2. Wake word triggered → AEC kicks in
@@ -1468,7 +1468,7 @@ What happens:
    - Reads ~480 frames (10 ms @ 48k stereo) from the gadget
    - Computes RMS, updates `last_rms_db`
    - If `preempted` is False: writes the same frames into
-     `hw:Loopback,0,0`
+    `usbsink_substream`
    - If `preempted` is True: writes zeros
 
 5. **State publisher** (1 Hz tick or on RMS-state transition):
@@ -1504,9 +1504,9 @@ What happens:
      writes `main_volume = -10.5 dB` via the pycamilladsp websocket.
 
 8. **CamillaDSP**:
-   - Reads frames from `plug:jasper_capture` (which dsnoops
-     `hw:Loopback,1,0`). These are the same frames usbsink wrote
-     into `hw:Loopback,0,0`.
+   - Reads frames from `plug:jasper_capture` (which dsnoops fan-in's
+     summed output on `hw:Loopback,1,7`). These include the frames
+     usbsink wrote into `usbsink_substream` when USB-in is active.
    - Applies main_volume attenuation. Passes through the (currently
      identity) master_gain mixer.
    - Writes to `pcm.jasper_out` (dmix on the Apple dongle).
@@ -1519,7 +1519,7 @@ What happens:
     - Reads from `pcm.jasper_capture` (the same dsnoop as
       CamillaDSP). Sees the same audio CamillaDSP is processing
       *before* it hits the speaker.
-    - Reads from the XVF3800 raw mic 0 (the chip side).
+    - Reads from the XVF3800 ASR beam on channel 1 (the chip side).
     - Computes echo cancellation. The music in the reference IS the
       music CamillaDSP is about to play, so the reference perfectly
       tracks what comes back through the air to the mic. AEC works
@@ -1554,9 +1554,9 @@ Pros: simpler — no bridge daemon, CamillaDSP captures directly from
 UAC2Gadget.
 
 Cons: breaks AirPlay, Spotify, and Bluetooth. They all need to write
-into the music chain, and the simplest place to do that is
-`hw:Loopback,0,0`. Routing them through the gadget capture endpoint
-is not possible (UAC2 endpoint is host-driven).
+into the music chain through private fan-in lanes. Routing them through
+the gadget capture endpoint is not possible (UAC2 endpoint is
+host-driven).
 
 Rejected: makes JTS single-source.
 
@@ -1611,4 +1611,4 @@ Rejected: violates ducker semantics.
 updated with the rebase note above, but the §3 body still describes
 the as-designed architecture for historical reference.
 
-Last verified: 2026-05-23
+Last verified: 2026-05-26

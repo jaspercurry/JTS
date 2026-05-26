@@ -6,6 +6,12 @@ sequenced build plan for adding Apple Music as a voice-controllable
 music source alongside the existing Spotify / AirPlay / Bluetooth /
 USB Audio sources.
 
+> **Audio topology note (updated 2026-05-26):** JTS now uses the
+> fan-in renderer topology. Any future native Apple Music player should
+> write to its own private fan-in lane, not directly to
+> `hw:Loopback,0,0`. The older raw-loopback examples below have been
+> updated where they describe the planned implementation path.
+
 ## TL;DR
 
 Apple Music has no Spotify Connect equivalent (no librespot, no
@@ -55,8 +61,8 @@ shairport-sync IS the Apple Music renderer today. When someone
 AirPlays Apple Music from their iPhone, the audio path is:
 
 ```
-iPhone → AirPlay 2 → shairport-sync → hw:Loopback,0,0
-       → CamillaDSP → dongle → speakers
+iPhone → AirPlay 2 → shairport-sync → shairport_substream
+       → jasper-fanin → CamillaDSP → dongle → speakers
 ```
 
 Transport (next/prev/pause) already works via DACP/MPRIS. Volume
@@ -232,9 +238,9 @@ device's L3 Widevine implementation.
 
 ## Architecture — where Apple Music fits in JTS
 
-Apple Music audio goes through `hw:Loopback,0,0` → CamillaDSP →
-dongle — the **same ALSA path as librespot**. Mux, volume, ducking,
-AEC all work unchanged.
+Apple Music audio should go through a dedicated private fan-in lane
+→ `jasper-fanin` → CamillaDSP → dongle — the **same architecture as
+librespot**. Mux, volume, ducking, AEC all work unchanged.
 
 ```
 jasper-voice
@@ -250,9 +256,9 @@ jasper-voice
     ffmpeg -decryption_key <hex> -i <url> -f s24le -ar 48000 -ac 2 pipe:1
          │
          ▼
-    hw:Loopback,0,0  ──  snd-aloop  ──  plughw:Loopback,1,0
-         │
-         ▼
+    apple_music_substream  ──  snd-aloop  ──►  jasper-fanin
+                                                     │
+                                                     ▼
     jasper-camilla (CamillaDSP, main_volume ducking)
          │
          ▼
@@ -327,7 +333,7 @@ sync with upstream, not as JTS code to be refactored.
 
 ### Step 2: Library-track MVP
 
-Search user library → unencrypted URL → ffmpeg → `hw:Loopback,0,0`.
+Search user library → unencrypted URL → ffmpeg → private fan-in lane.
 No CDM needed. Proves the full audio chain end-to-end: MusicKit JS
 auth → Apple Music API search → `webPlayback` → ffmpeg → ALSA →
 CamillaDSP → speakers. This is the cheapest possible validation of
@@ -456,7 +462,7 @@ Investigation against MA's actual source code:
 | "Missing dep: `m3u8` PyPI package" | **Wrong.** MA uses custom string parsing. | `helpers/playlists.py`: `PlaylistItem` dataclass, `.split()`/`.strip()` parsing, no `import m3u8`. ~50 lines. |
 | "Library tracks are unencrypted — start there for MVP" | **Correct.** | MA code: `if is_library_id(item_id): return StreamDetails(stream_type=StreamType.HTTP, ...)` — no `decryption_key`. |
 | "Queue management is ~600-800 lines, not ~300" | **Correct.** | Track-end detection, context-aware next, gapless pre-fetch, mixed catalog+library, mid-playback add-to-queue. Budget ~700 lines. |
-| "44.1/16 → 24/48 is zero-pad" | **Correct but irrelevant.** | Matches librespot's behavior (OGG → S24_3 at 48 kHz through the same dmix). Consistency across sources > bit-perfect. |
+| "44.1/16 → 24/48 is zero-pad" | **Correct but irrelevant.** | Matches librespot's behavior (source-native decode → 48 kHz fan-in lane → output dmix). Consistency across sources > bit-perfect. |
 | "Run MA spike first" | **Correct.** | Cheapest possible validation of the full chain on aarch64. Do before any code. |
 
-Last verified: 2026-05-24
+Last verified: 2026-05-26

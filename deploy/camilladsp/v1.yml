@@ -1,22 +1,15 @@
 ---
 # JTS CamillaDSP config.
 #
-# Bridges snd-aloop card "Loopback" (where librespot, shairport-sync,
-# and bluealsa-aplay all write their audio) to the Apple USB-C dongle
-# (the speaker output). plughw on the capture side absorbs renderer
-# rate/format mismatches (Spotify FLOAT_LE/44.1, AirPlay/BT S16/44.1
-# all converge here); CamillaDSP resamples internally to 48 kHz which
-# is the dongle's native rate.
+# Bridges snd-aloop card "Loopback" to the Apple USB-C dongle (the
+# speaker output). Renderers write private fan-in lanes; jasper-fanin
+# sums those lanes and writes the combined music stream to substream 7,
+# which CamillaDSP captures through `plug:jasper_capture`.
 #
 # Capture goes through `pcm.jasper_capture` (a dsnoop wrapper defined
-# in /root/.asoundrc), wrapped in `plug:` so renderer rate/format
-# mismatches still get absorbed. Why dsnoop unconditionally rather
-# than direct hw: dsnoop has to be the only opener of the underlying
-# Loopback,1,0 substream, so if the AEC bridge gets enabled later it
-# can also tap the same stream — direct hw access here would deny
-# dsnoop the slave and the bridge would fail to open. With camilla
-# as the only client, dsnoop is functionally equivalent to a direct
-# hw open at zero cost.
+# in /etc/asound.conf), wrapped in `plug:` so Camilla and the AEC bridge
+# can both tap the same summed music stream. Direct hw access would deny
+# dsnoop the slave and make the bridge fail to open.
 #
 # Ducking on wake is via main_volume (set_main_volume websocket call,
 # see jasper/camilla.py Ducker), NOT the master_gain mixer below —
@@ -37,10 +30,10 @@ devices:
   # operation (target_level >= chunksize is hard-required; ≥2× is the
   # convention for jitter absorption). Still well above the dsnoop/dmix
   # scheduling-jitter floor we measured at chunksize back in 2026-05-14.
-  # Saves ~21 ms of music latency that survives Tier 2A (the dmix
-  # restructure that follows). Operator gate: 24-hour zero-xrun soak under
-  # realistic load (Spotify + BT phone + TTS) before considering this
-  # stable; revert to 4096 if `event=camilla.playback_underrun` lines
+  # Saves ~21 ms of music latency in the fan-in topology. Operator
+  # gate: 24-hour zero-xrun soak under realistic load (Spotify + BT
+  # phone + TTS) before considering this stable; revert to 4096 if
+  # `event=camilla.playback_underrun` lines
   # appear at any rate above zero.
   target_level: 2048
   # Capture rate (48 kHz, from snd-aloop) equals playback rate
@@ -61,9 +54,9 @@ devices:
     device: "plug:jasper_capture"
     format: S32_LE
   playback:
-    # jasper_out is the dmix defined in /root/.asoundrc that fans the
+    # jasper_out is the dmix defined in /etc/asound.conf that fans the
     # CamillaDSP-processed music AND jasper-voice TTS into one stream
-    # before the dongle. install.sh writes /root/.asoundrc with the
+    # before the dongle. install.sh writes /etc/asound.conf with the
     # detected dongle card name substituted in. CamillaDSP just
     # opens the named PCM here — no card detection needed in this
     # config.

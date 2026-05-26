@@ -5,8 +5,9 @@
 # crushed" music playback because aec-bridge's pages were swapped to
 # zram and audio-frame access triggered decompression jitter).
 #
-# Daemons in this slice handle audio output: CamillaDSP, the three
-# music renderers (shairport-sync, librespot, bluealsa-aplay).
+# Daemons in this slice handle audio output: jasper-fanin, CamillaDSP,
+# and the three music renderers (shairport-sync, librespot,
+# bluealsa-aplay).
 #
 # **The load-bearing directive is `MemorySwapMax=0`.** It tells the
 # kernel: pages owned by processes in this cgroup MUST NEVER be

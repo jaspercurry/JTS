@@ -5,7 +5,7 @@
 # that produced ~12 dB of 4-8 kHz loss in shairport's 44.1→48 plug,
 # crippling AEC speech-band performance (May 2026 investigation in
 # docs/HANDOFF-aec.md). Affects:
-#   - shairport-sync writing plughw:Loopback,0,0 (44.1k → 48k)
+#   - shairport-sync writing shairport_substream (44.1k → 48k)
 #   - bluealsa-aplay's plug operations
 #   - jasper-aec-bridge reading pcm.jasper_ref (a `plug:` wrapper)
 # Pi 5 cost: ~3-5% of one A76 core on the resampler thread. Plenty
@@ -28,80 +28,68 @@ defaults.pcm.rate_converter "samplerate_best"
 # version of that probe.
 #
 # Why this file exists:
-#   - jasper-voice's TTS needs a path to the speakers that's separate
-#     from the CamillaDSP music chain. Without a shared destination,
-#     TTS would have to either go through the loopback (mixing with
-#     music in unhelpful ways) or directly to the dongle (locked
-#     while CamillaDSP holds it).
-#   - dmix (`jasper_out`) is that shared destination: CamillaDSP's
-#     processed music + jasper-voice's TTS both write here; dmix sums
-#     them sample-wise; one stream goes to the dongle.
+#   - Each music renderer gets a private snd-aloop substream. That keeps
+#     renderer startup and handoff independent: AirPlay, Spotify,
+#     Bluetooth, and USB-in no longer contend for the same playback PCM.
+#   - jasper-fanin reads those per-renderer capture substreams, sums
+#     them sample-wise, and writes the single "summed music" stream to
+#     substream 7.
+#   - CamillaDSP and the AEC bridge both read that summed stream via
+#     `pcm.jasper_capture` / `pcm.jasper_ref`.
+#   - jasper-voice's TTS still needs a path to the speakers separate
+#     from the CamillaDSP music chain. `pcm.jasper_out` is the dongle
+#     dmix where CamillaDSP's processed music and TTS sum before the DAC.
 #
 # Topology:
 #
-#   renderers (librespot, shairport-sync, bluealsa-aplay)
-#     → pcm.jasper_renderer_in  (plug wrapping the dmix below)
-#                   │
-#                   ▼
-#         pcm.jasper_renderer_mix  ── dmix ──┐
-#                                            │
-#                                            ▼
-#                  hw:Loopback,0,0  (snd-aloop playback)
-#                                            │
-#                                            ▼ (loop)
-#                  hw:Loopback,1,0  (snd-aloop capture)
-#                                            │
-#                                            ▼ (plughw, rate-converts)
-#                                  jasper-camilla (CamillaDSP)
-#                                            │
-#                                            ▼ (writes to dmix below)
-#                                  pcm.jasper_out  ─── dmix ──┐
-#                                                             │
-#                  jasper-voice TTS  ─────────────────────────┤  (also writes to dmix)
-#                                                             │
-#                                                             ▼
-#                                                  hw:CARD=__DONGLE_CARD__,DEV=0
-#                                                       Apple USB-C dongle → speakers
+#   librespot          → pcm.librespot_substream   → hw:Loopback,0,0
+#   shairport-sync     → pcm.shairport_substream   → hw:Loopback,0,1
+#   bluealsa-aplay     → pcm.bluealsa_substream    → hw:Loopback,0,2
+#   jasper-usbsink     → pcm.usbsink_substream     → hw:Loopback,0,3
+#   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
+#                                                       │
+#                                                       ▼ (loop)
+#   jasper-fanin reads        hw:Loopback,1,0..4
+#       sums sample-wise
+#       writes summed music → hw:Loopback,0,7
+#                                                       │
+#                                                       ▼ (loop)
+#                         pcm.jasper_capture dsnoop on hw:Loopback,1,7
+#                                                       │
+#                                                       └── jasper-camilla
+#                                                               │
+#                                                               ▼
+#                                                           pcm.jasper_out ─ dmix ─┐
+#                                                                                  │
+#                         jasper-voice TTS ────────────────────────────────────────┤
+#                                                                                   ▼
+#                                                                    hw:CARD=__DONGLE_CARD__,DEV=0
+#                                                                    Apple USB-C dongle → speakers
 #
-# Why the renderer-side dmix (added 2026-05-22): snd-aloop's
-# `hw:Loopback,0,0` is single-writer. Before this layer existed, any
-# attempt by a second renderer to open the loopback while another
-# held it returned ALSA -EBUSY (16). The user-visible symptoms:
-#   - librespot crash-looped 3-5× on EBUSY when shairport had the
-#     loopback open during a phantom AirPlay SETUP (45 s of stall).
-#   - "latest source wins" handover from AirPlay → Spotify Connect
-#     silently failed because librespot couldn't take the device.
-# Inserting a dmix in front lets all three renderers hold the FD
-# simultaneously; the dmix sums their streams sample-wise and writes
-# one stream to snd-aloop. Mux's job (latest-source-wins) shifts from
-# implicit-via-EBUSY to explicit-via-MPRIS/Web-API pauses — see
-# jasper.mux for the contract. dmix's own format/rate is fixed
-# (48 kHz S16_LE 2ch); renderers reach it through `pcm.jasper_renderer_in`
-# (a `plug:` wrapper) so each can write its native format / rate and
-# `samplerate_best` (set at the top of this file) handles conversion.
+# The pre-2026-05-26 renderer-side dmix topology was retired after
+# measurements showed it caused periodic AirPlay drops via a WiFi
+# A-MPDU burst × dmix per-write timing interaction. The fan-in topology
+# preserves the good part of that work (multi-renderer safety) without
+# a shared userspace dmix write lock in front of the renderer path.
 #
-# When the AEC bridge is enabled (see CLAUDE.md "Acoustic echo
+# When the AEC bridge is enabled (see AGENTS.md "Acoustic echo
 # cancellation"), the `pcm.jasper_capture` dsnoop tap below lets
-# CamillaDSP and the AEC bridge share the loopback capture side as
+# CamillaDSP and the AEC bridge share the summed capture side as
 # multiple readers. dsnoop is the multi-reader-safe ALSA primitive
 # (the dual of dmix on the playback side). The dsnoop slave is
 # configured for 48 kHz S16_LE stereo — the rate the bridge and
 # CamillaDSP both target internally.
 #
-# RATE LOCK (former footgun, now neutralised by jasper_renderer_mix):
-# snd-aloop's parameters are set by whichever process opens
-# hw:Loopback,0,0 first (Matrix:Module-aloop on the ALSA wiki). Before
-# 2026-05-22, that was whichever renderer started first — typically
-# shairport at 44.1 kHz, which locked the loopback to 44.1 until
-# every consumer closed it. After 2026-05-22 the renderer-side dmix
-# opens the loopback at its declared rate (48 kHz S16_LE) and holds
-# it open for the lifetime of any renderer process; the rate is now
-# fully deterministic and downstream consumers can rely on 48 kHz.
+# RATE LOCK: snd-aloop's parameters are set per substream pair, not for
+# the whole card. Each renderer writes through a `plug:` wrapper to its
+# assigned substream; jasper-fanin opens every capture side at 48 kHz
+# S16_LE and publishes the summed output at the same shape. A renderer's
+# native rate cannot lock another renderer or the AEC/Camilla reference.
 #
 # Two readers, two access paths:
 #   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in
-#     v1.yml. plug auto-converts rate/format, so camilla is rate-
-#     tolerant: works whether the loopback is 44.1 or 48.
+#     v1.yml. plug keeps the consumer tolerant of operator mistakes,
+#     but the intended fan-in output shape is fixed at 48 kHz S16_LE.
 #   - AEC bridge opens `jasper_ref` (defined below) — a plug-wrapped
 #     alias of jasper_capture. Mirrors the same pattern. The bridge
 #     gets samples at whatever rate it requests via alsaaudio,
@@ -112,91 +100,73 @@ defaults.pcm.rate_converter "samplerate_best"
 # the kernel produced, while `pcm.jasper_ref` advertises its
 # intent ("AEC reference, rate-agnostic") at the call site.
 #
-# We never want camilla to read `hw:Loopback,1,0` directly — that
-# would deny dsnoop the slave, and the bridge would fail to open
-# with `unable to open slave`.
+# We never want camilla to read a raw `hw:Loopback,1,N` capture
+# directly — that would deny dsnoop the slave, and the bridge would
+# fail to open with `unable to open slave`. In particular,
+# `hw:Loopback,1,0` is now a private fan-in input lane; the summed
+# music reference is `pcm.jasper_capture` on substream 7.
 
-# Renderer-side dmix: all three renderers (librespot, shairport-sync,
-# bluealsa-aplay) write here instead of opening hw:Loopback,0,0
-# directly. Multi-writer-safe; sums sample-wise; writes one stream to
-# snd-aloop. See the comment block at the top of this file for the
-# why-this-exists rationale. Parameters mirror jasper_out (the dongle
-# dmix) for consistency: 48 kHz S16_LE stereo, period 1024 / buffer
-# 4096. ipc_key 7779 (unique vs 7777=jasper_out, 7778=jasper_capture).
-pcm.jasper_renderer_mix {
-    type dmix
-    ipc_key 7779
-    ipc_perm 0666
+# Per-renderer substream aliases. Substream allocation (8 pairs per
+# card, pinned in deploy/modprobe.d/snd-aloop.conf):
+#   0 — librespot          (Spotify Connect)
+#   1 — shairport-sync     (AirPlay 2)
+#   2 — bluealsa-aplay     (Bluetooth A2DP)
+#   3 — jasper-usbsink     (USB audio input)
+#   4 — correction/test sweeps
+#   5 — reserved for debug "monitor" tap (offline AEC capture)
+#   6 — reserved
+#   7 — fan-in daemon's summed output → CamillaDSP/AEC bridge
+#
+# Each alias is a `plug:` wrapper so the renderer's native rate/format
+# gets converted to the substream's 48 kHz S16_LE via `samplerate_best`.
+pcm.librespot_substream {
+    type plug
     slave {
         pcm "hw:Loopback,0,0"
         rate 48000
         channels 2
         format S16_LE
-        period_size 1024
-        buffer_size 4096
     }
-    bindings {
-        0 0
-        1 1
-    }
-}
-
-# Plug-wrapped front-end for renderers. Each renderer references
-# `jasper_renderer_in` in its service unit / config file; plug
-# handles rate + format conversion from the renderer's native shape
-# (e.g. librespot S24_3 44.1 kHz, shairport-sync S32 44.1 kHz,
-# bluez-alsa S16 48 kHz) down to the dmix's fixed 48 kHz S16_LE.
-# Resampling quality is governed by `defaults.pcm.rate_converter`
-# at the top of this file (samplerate_best — same libsamplerate
-# library that the rest of the chain uses, ~3-5% of one Pi 5 core
-# per active resampling renderer).
-pcm.jasper_renderer_in {
-    type plug
-    slave.pcm "jasper_renderer_mix"
-}
-
-# Per-renderer substream aliases — defined 2026-05-25 as Phase 1 of
-# the Tier 2A audio architecture (see docs/HANDOFF-fan-in-daemon.md).
-#
-# Each renderer eventually gets its own snd-aloop substream pair,
-# replacing the shared `jasper_renderer_in` → `jasper_renderer_mix` dmix
-# with a substream-per-renderer + capture-side fan-in daemon. The aliases
-# are defined now (additive, no behavior change) so the renderer service
-# files can switch to them when the fan-in daemon ships in a later phase.
-#
-# Substream allocation (8 pairs per card, snd-aloop default):
-#   0 — librespot          (Spotify Connect)
-#   1 — shairport-sync     (AirPlay 2)
-#   2 — bluealsa-aplay     (Bluetooth A2DP)
-#   3 — jasper-usbsink     (USB audio input)
-#   4 — reserved for HDMI input (future)
-#   5 — reserved for debug "monitor" tap (offline AEC capture)
-#   6 — reserved
-#   7 — fan-in daemon's summed output → CamillaDSP/AEC bridge
-#
-# Each alias is a `plug:` wrapper, mirroring jasper_renderer_in's pattern,
-# so the renderer's native rate/format gets converted to the substream's
-# 48 kHz S16_LE via `samplerate_best`. The substream itself accepts
-# whatever the dmix declares (48 kHz S16_LE) and the kernel handles the
-# loopback transit.
-pcm.librespot_substream {
-    type plug
-    slave.pcm "hw:Loopback,0,0"
 }
 
 pcm.shairport_substream {
     type plug
-    slave.pcm "hw:Loopback,0,1"
+    slave {
+        pcm "hw:Loopback,0,1"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
 }
 
 pcm.bluealsa_substream {
     type plug
-    slave.pcm "hw:Loopback,0,2"
+    slave {
+        pcm "hw:Loopback,0,2"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
 }
 
 pcm.usbsink_substream {
     type plug
-    slave.pcm "hw:Loopback,0,3"
+    slave {
+        pcm "hw:Loopback,0,3"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+
+pcm.correction_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,4"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
 }
 
 pcm.jasper_capture {
@@ -204,7 +174,7 @@ pcm.jasper_capture {
     ipc_key 7778
     ipc_perm 0666
     slave {
-        pcm "hw:Loopback,1,0"
+        pcm "hw:Loopback,1,7"
         rate 48000
         channels 2
         format S16_LE

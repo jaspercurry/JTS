@@ -50,7 +50,7 @@ sudo JASPER_AEC_ENGINE=webrtc3 JASPER_AEC_REF_GAIN_DB=${REF_GAIN_DB} \\
     > /tmp/aec-probe-bridge.log 2>&1 &
 BG=\$!
 sleep 3  # bridge warmup
-sudo aplay -D plughw:Loopback,0,0 /tmp/aec-probe-pink.wav 2>&1 | tail -2
+sudo aplay -D correction_substream /tmp/aec-probe-pink.wav 2>&1 | tail -2
 wait \$BG
 echo '---bridge RMS log---'
 grep -E 'rms|engine|ref capture' /tmp/aec-probe-bridge.log

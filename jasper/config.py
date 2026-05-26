@@ -455,10 +455,10 @@ class Config:
                 1024 * 1024 * 1024,
             ),
             # JASPER_TTS_DEVICE: PortAudio device name (bare ALSA pcm
-            # name from /root/.asoundrc — `plug:` aliases aren't
-            # enumerated by PortAudio). `jasper_out` is the fan-out PCM
-            # that duplicates writes to BOTH the Apple dongle (speaker)
-            # AND the XVF3800 USB-IN (AEC reference).
+            # name from /etc/asound.conf — `plug:` aliases aren't
+            # enumerated by PortAudio). `jasper_out` is the dongle dmix
+            # where TTS and CamillaDSP's processed renderer stream sum
+            # before the speaker.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
             # Top-level pcm.jasper_out runs at 48 kHz (matches the
             # dongle's native rate and CamillaDSP's chunk rate).

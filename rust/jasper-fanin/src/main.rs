@@ -2,9 +2,9 @@
 //!
 //! Reads N snd-aloop substream pairs (one per music renderer), sums
 //! them sample-wise, writes to a single dedicated "summed music"
-//! substream that CamillaDSP and the AEC bridge dsnoop on. Replaces
-//! the renderer-side dmix (`pcm.jasper_renderer_mix`) and its ~85 ms
-//! of buffering invisible to shairport's `snd_pcm_delay()`.
+//! substream that CamillaDSP and the AEC bridge dsnoop on. This is
+//! the production renderer topology; the old renderer-side dmix path
+//! was retired after AirPlay burst testing exposed timing drops.
 //!
 //! Read `docs/HANDOFF-fan-in-daemon.md` for the full architecture,
 //! resilience contract, and observability contract before modifying.
@@ -16,14 +16,9 @@
 //!   - `state`    — UDS STATUS endpoint for /state aggregation.
 //!   - `xrun_log` — append-only ring of xrun events at
 //!                  /var/lib/jasper/fanin/xrun_history.jsonl.
-//!   - `handover` — cosine ramp on input transitions. (Phase 3
-//!                  follow-on if soak shows audible handover clicks.
-//!                  The mux preempt path means simultaneous sources
-//!                  shouldn't happen in steady state, so this is
-//!                  deferred until measurement shows it's needed.)
-//!
-//! Today (Phase 2 chunk 3): adds the UDS STATUS endpoint + xrun log
-//! to chunk 2's mixer.
+//! The mux preempt path means simultaneous sources should not happen
+//! in steady state. If future measurement shows audible source-handover
+//! clicks, add ramping in the mixer with tests and doctor visibility.
 
 mod config;
 mod mixer;
@@ -66,20 +61,21 @@ fn main() -> Result<()> {
     // will retry on a 5 s backoff per the unit's RestartSec.
     let config = Config::from_env()?;
     info!(
-        "event=fanin.config_loaded inputs={} output={} sample_rate={} period_frames={} buffer_frames={} handover_ramp_ms={}",
+        "event=fanin.config_loaded inputs={} output={} sample_rate={} period_frames={} input_buffer_frames={} output_buffer_frames={}",
         config.input_pcms.len(),
         config.output_pcm,
         config.sample_rate,
         config.period_frames,
-        config.buffer_frames,
-        config.handover_ramp_ms,
+        config.input_buffer_frames,
+        config.output_buffer_frames,
     );
 
     // Heartbeat. The work loop calls `bump_progress()` after every
     // successful unit of work. A background thread pings
     // sd_notify WATCHDOG=1 every 10 s only if the sentinel is fresh.
     // This catches the failure mode that matters most — a deadlocked
-    // work loop. See watchdog.rs comment block for the full rationale.
+    // work loop. READY=1 is sent later, after ALSA PCMs and the STATUS
+    // endpoint are initialized.
     //
     // ORDER MATTERS: spawn this BEFORE mlockall. Thread creation
     // mmaps a stack; with MCL_FUTURE active, that mmap is locked,
@@ -124,9 +120,10 @@ fn main() -> Result<()> {
         })
         .context("spawning xrun-log writer thread")?;
 
-    // Open ALSA: N input PCMs + 1 output PCM. Best-effort on inputs
-    // (a missing substream is logged but doesn't kill the daemon);
-    // output is required (no output = nothing useful to do).
+    // Open ALSA: N input PCMs + 1 output PCM. Every configured input is
+    // required in the production fan-in topology; a missing lane means
+    // one renderer can silently play without entering the summed music
+    // reference.
     let mut mixer =
         Mixer::new(&config, xrun_tx).context("opening ALSA PCMs")?;
     info!(
@@ -151,7 +148,7 @@ fn main() -> Result<()> {
     // (Continued below.)
 
     // UDS STATUS endpoint — surfaces daemon state for jasper-control's
-    // /state aggregator and for jasper-doctor's check_fanin_running.
+    // /state aggregator and for jasper-doctor's check_fanin_service.
     // The server moves into its own thread; we share `shutdown` via
     // Arc clone.
     let state_server = StateServer::new(
@@ -160,7 +157,8 @@ fn main() -> Result<()> {
         PathBuf::from(&config.control_socket_path),
         config.sample_rate,
         config.period_frames,
-        config.buffer_frames,
+        config.input_buffer_frames,
+        config.output_buffer_frames,
         config.output_pcm.clone(),
     );
     let state_server_shutdown = Arc::clone(&shutdown);
@@ -175,6 +173,8 @@ fn main() -> Result<()> {
             }
         })
         .context("spawning state-server thread")?;
+
+    heartbeat.notify_ready();
 
     // All threads spawned; now safe to mlockall. See the multi-line
     // comment above for why this can't go earlier under default ulimit.
@@ -218,8 +218,9 @@ fn main() -> Result<()> {
 /// (which is the load-bearing protection anyway).
 fn lock_memory() {
     // SAFETY: mlockall is a single syscall with no aliasing concerns.
-    // We're calling it once at startup with no concurrent threads
-    // (heartbeat hasn't spawned yet).
+    // It does not dereference Rust pointers or create aliases. We call
+    // it after helper threads are spawned so MCL_FUTURE does not try to
+    // lock pthread stack mmaps under a small local-dev RLIMIT_MEMLOCK.
     let rc = unsafe {
         libc::mlockall(libc::MCL_CURRENT | libc::MCL_FUTURE)
     };

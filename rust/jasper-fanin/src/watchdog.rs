@@ -90,8 +90,8 @@ impl Heartbeat {
     }
 
     /// Returns the age of the last progress bump in milliseconds.
-    /// Used by the UDS STATUS endpoint (Phase 2 chunk 3) for
-    /// observability — a value above ~30 ms in steady state is
+    /// Used by the UDS STATUS endpoint for observability — a value
+    /// above ~30 ms in steady state is
     /// suspicious; above 5 s means we're about to be reaped by
     /// systemd.
     pub fn last_progress_age_ms(&self) -> u64 {
@@ -108,27 +108,29 @@ impl Heartbeat {
         self.pings_skipped.load(Ordering::Relaxed)
     }
 
-    /// Send READY=1 to systemd (Type=notify contract), then spawn the
-    /// heartbeat thread. The thread is detached — on process exit it
-    /// goes with the process; we don't bother joining.
+    /// Spawn the heartbeat thread. The thread is detached — on process
+    /// exit it goes with the process; we don't bother joining.
     ///
     /// `&Arc<Self>` parameter so the spawned thread can hold its own
     /// reference, keeping the Heartbeat alive for the daemon's
     /// lifetime even if main drops its handle.
     pub fn spawn(self: &Arc<Self>) {
-        // READY=1: systemd considers us up. Without this, systemd's
-        // Type=notify times out and the daemon gets killed during
-        // startup.
-        match sd_notify::notify(false, &[NotifyState::Ready]) {
-            Ok(_) => info!("event=fanin.sd_notify_ready_sent"),
-            Err(e) => warn!("event=fanin.sd_notify_ready_failed detail={}", e),
-        }
-
         let me = Arc::clone(self);
         std::thread::Builder::new()
             .name("fanin-heartbeat".into())
             .spawn(move || me.run())
             .expect("heartbeat thread spawn failed");
+    }
+
+    /// Send READY=1 to systemd once ALSA PCMs are initialized and the
+    /// STATUS server thread has been spawned. Sending READY before
+    /// then lets dependent units race a daemon that cannot yet mix
+    /// audio.
+    pub fn notify_ready(&self) {
+        match sd_notify::notify(false, &[NotifyState::Ready]) {
+            Ok(_) => info!("event=fanin.sd_notify_ready_sent"),
+            Err(e) => warn!("event=fanin.sd_notify_ready_failed detail={}", e),
+        }
     }
 
     /// The heartbeat thread's main loop. Wakes every

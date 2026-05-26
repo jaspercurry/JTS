@@ -167,12 +167,10 @@ build_install_jasper_fanin() {
     # Build the jasper-fanin Rust daemon (rust/jasper-fanin/) and
     # install the release binary to /opt/jasper/bin/jasper-fanin.
     #
-    # See docs/HANDOFF-fan-in-daemon.md for the daemon's design,
-    # resilience contract, and 4-phase migration plan. As of Phase
-    # 2 chunk 4 (this commit), the daemon is INSTALLED but NOT
-    # ENABLED — the dmix-based renderer path is still the active
-    # topology. Phase 3 (a future PR) flips the JASPER_AUDIO_TOPOLOGY
-    # feature flag to opt-in operators onto the fanin path.
+    # See docs/HANDOFF-fan-in-daemon.md for the daemon's design and
+    # resilience contract. Fan-in is the production renderer topology;
+    # install_systemd_units enables the daemon and install_alsa writes
+    # the matching /etc/asound.conf directly.
     #
     # Build is done as the `pi` user in a persistent cache dir at
     # /var/cache/jasper-fanin-build so cargo's incremental compilation
@@ -278,10 +276,10 @@ EOF
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
 
-    # CamillaDSP captures plughw:Loopback,1,0 and writes to
-    # pcm.jasper_out (defined in /root/.asoundrc with __DONGLE_CARD__
-    # substituted). The yaml itself doesn't need substitution —
-    # install_alsa() handles the dongle name in /root/.asoundrc.
+    # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7)
+    # and writes to pcm.jasper_out. The yaml itself doesn't need
+    # substitution — install_alsa() handles the dongle name in
+    # /etc/asound.conf.
     install -m 0644 \
         "${REPO_DIR}/deploy/camilladsp/v1.yml" \
         "${CAMILLA_CONF}/v1.yml"
@@ -290,8 +288,8 @@ EOF
     # now a Python software AEC daemon (jasper-aec-bridge, see
     # jasper/cli/aec_bridge.py). The chip's on-chip AEC turned out
     # to be incompatible with our external-DAC topology, so we run
-    # WebRTC AEC3 on the host using the XVF chip's raw mic 0
-    # (channel 2 of 6-ch firmware) + the dsnoop-tapped music
+    # WebRTC AEC3 on the host using the XVF chip's ASR beam
+    # (channel 1 of 6-ch firmware) + the dsnoop-tapped music
     # reference. Old aec-bridge.yml is removed if present from a
     # prior install.
     rm -f "${CAMILLA_CONF}/aec-bridge.yml"
@@ -335,17 +333,17 @@ install_alsa() {
     export DONGLE_CARD
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions
-    # (jasper_out, jasper_capture, jasper_renderer_in, etc.).
+    # (per-renderer fan-in lanes, jasper_capture, jasper_out, etc.).
     #
     # Location matters: this file MUST be world-readable so that
     # renderer processes running as non-root users (shairport-sync as
     # `shairport-sync`, librespot as `pi`) can resolve the user-space
     # PCM names declared in it. The pre-2026-05-23 location
     # (/root/.asoundrc, mode 0600) was visible only to root, which
-    # was fine while renderers wrote to plughw:Loopback,0,0 (a
-    # kernel-built-in name needing no asoundrc to resolve) but broke
-    # AirPlay and Spotify Connect after PR #214 switched them to
-    # user-space PCM names. /etc/asound.conf at mode 0644 is the
+    # was fine while renderers wrote to raw/plughw Loopback names (a
+    # kernel-built-in shape needing no asoundrc to resolve) but broke
+    # AirPlay and Spotify Connect once renderers switched to user-space
+    # PCM names. /etc/asound.conf at mode 0644 is the
     # canonical Linux pattern for "ALSA config visible to all users."
     #
     # Migration: any existing /root/.asoundrc gets backed up
@@ -361,12 +359,12 @@ install_alsa() {
     # apt-installed /etc/asound.conf files (rare on JTS, but possible)
     # shouldn't be silently overwritten. The grep guard makes this
     # idempotent — once our content is in place, subsequent deploys
-    # see `jasper_renderer_in` and skip the backup (no .pre-jasper
+    # see `shairport_substream` and skip the backup (no .pre-jasper
     # spam). Symlinks are skipped (some setups symlink /etc/asound.conf
     # to /etc/alsa/asound.conf; back-up-then-overwrite would still
     # mutate the target).
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
-            && ! grep -q "jasper_renderer_in" /etc/asound.conf 2>/dev/null; then
+            && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
         echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*); see PR #223."
     fi
@@ -374,7 +372,7 @@ install_alsa() {
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
         > /etc/asound.conf
     chmod 0644 /etc/asound.conf
-    echo "  Wrote /etc/asound.conf with jasper_renderer_in + jasper_out"
+    echo "  Wrote /etc/asound.conf with fan-in lanes + jasper_out"
 }
 
 # Source-build / fetch librespot, nqptp, shairport-sync (AirPlay 2).
@@ -489,23 +487,12 @@ install_renderers() {
     install -m 0755 \
         "${REPO_DIR}/deploy/bin/jasper-apply-airplay-mode" \
         /usr/local/sbin/jasper-apply-airplay-mode
-    # jasper-audio-topology: switch the renderer/DSP chain between the
-    # default `dmix` topology and the Tier 2A `fanin` topology. The
-    # active mode is recorded in /var/lib/jasper/audio_topology.env;
-    # each renderer's service unit reads its device flag from there
-    # via EnvironmentFile=-. shairport reads its output_device from
-    # /etc/shairport-sync.conf, which jasper-apply-airplay-mode
-    # regenerates based on the same env file. See
-    # docs/HANDOFF-fan-in-daemon.md.
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-audio-topology" \
-        /usr/local/sbin/jasper-audio-topology
-    # Fanin-mode asoundrc template. Installed but inert in dmix mode
-    # (the topology script picks it up only when switching to fanin).
-    mkdir -p /etc/jasper/audio-topology/fanin
-    install -m 0644 \
-        "${REPO_DIR}/deploy/audio-topology/fanin/asound.conf.template" \
-        /etc/jasper/audio-topology/fanin/asound.conf.template
+    # The old dmix/fanin topology switcher was retired when fan-in
+    # became the only supported renderer path. Remove stale installed
+    # copies so operators do not accidentally reintroduce split-brain
+    # audio state after an upgrade.
+    rm -f /usr/local/sbin/jasper-audio-topology
+    rm -rf /etc/jasper/audio-topology
     # jasper-derive-device-name maps the system hostname to a display
     # name shown in Spotify Connect / AirPlay device pickers. Called
     # by jasper-apply-airplay-mode (and by the jasper.env seeding
@@ -1301,65 +1288,20 @@ migrate_voice_provider() {
 # in it because NM's own keyfile is also plaintext at 0600 — encrypting
 # our copy while NM's stays plaintext is theatre against a root-equiv
 # attacker. The PSK does NOT appear in any `echo` from this function.
-migrate_audio_topology() {
-    # Make `fanin` the default audio topology on fresh installs.
-    #
-    # Background — why fanin is the default now:
-    #   - PR #214 (2026-05-22) inserted a userspace dmix layer
-    #     (pcm.jasper_renderer_mix) between renderers and snd-aloop to
-    #     fix a multi-renderer -EBUSY crash-loop. Worked, but the
-    #     dmix's 4096-frame buffer was *incidentally* the WiFi-burst
-    #     absorption layer for AirPlay 2 (802.11 A-MPDU delivers
-    #     ~4 packets every ~30 ms; shairport needs ≥40 ms of buffer
-    #     between renderer and DSP to survive the inter-burst gap).
-    #   - On 2026-05-26 we measured ~5-7 audible drops/min on the
-    #     dmix topology that turned out to be the dmix's own per-write
-    #     mutex slipping shairport's player thread by ~5 ms — just
-    #     enough to push burst-head packets past the
-    #     `desired_lead_time=0.120 s` threshold in
-    #     `shairport-sync/player.c:1130`.
-    #   - fanin replaces the dmix with per-renderer snd-aloop
-    #     substreams + a Rust summing daemon. Validated 2026-05-26:
-    #     **zero drops** over 5 min vs dmix's 55 drops/10 min on
-    #     identical music + WiFi link.
-    #   - The fanin daemon ships with JASPER_FANIN_BUFFER_FRAMES=4096
-    #     (set in deploy/systemd/jasper-fanin.service) so it provides
-    #     the same WiFi-burst absorption capacity the dmix had.
-    #
-    # Behavior:
-    #   - State file already exists  → respect operator's choice.
-    #     A pre-existing /var/lib/jasper/audio_topology.env means the
-    #     operator (or a prior install.sh) has already chosen a
-    #     topology. Don't override.
-    #   - State file absent          → switch to fanin. This catches
-    #     the fresh-install case AND any upgrade from a pre-fanin
-    #     release that never ran the CLI.
-    #
-    # To opt out: after install completes, run
-    #   `sudo jasper-audio-topology dmix`
-    # which writes the state file with JASPER_AUDIO_TOPOLOGY=dmix
-    # and this migration will leave it alone on subsequent runs.
-    #
-    # Calls the same CLI an operator would use — single code path for
-    # state-file write + asoundrc swap + shairport conf re-render +
-    # daemon orchestration. See deploy/bin/jasper-audio-topology.
+retire_audio_topology_switch() {
+    # Fan-in is now the only supported renderer topology. Older builds
+    # persisted mutable topology intent in /var/lib/jasper/audio_topology.env
+    # and could leave that file saying `fanin` while install_alsa had just
+    # re-rendered a dmix-era /etc/asound.conf. Remove the stale state and
+    # backup files so deploy has one source of truth again: the shipped
+    # fan-in asoundrc plus fixed renderer unit devices.
     local state="${STATE_DIR}/audio_topology.env"
-
     if [[ -f "${state}" ]]; then
-        local current
-        current=$(grep -E '^JASPER_AUDIO_TOPOLOGY=' "${state}" 2>/dev/null \
-                  | head -1 | cut -d= -f2)
-        echo "  migrate_audio_topology: existing state mode=${current:-unknown} (preserved)"
-        return 0
+        cp "${state}" "${state}.retired.$(date +%s)"
+        rm -f "${state}"
+        echo "  retire_audio_topology_switch: removed stale ${state} (backup kept with .retired.* suffix)"
     fi
-
-    if [[ ! -x /usr/local/sbin/jasper-audio-topology ]]; then
-        echo "  migrate_audio_topology: CLI not installed yet — skipping (re-run install.sh)"
-        return 0
-    fi
-
-    echo "  migrate_audio_topology: no existing state file — defaulting fresh install to fanin"
-    /usr/local/sbin/jasper-audio-topology fanin
+    rm -f /etc/asound.conf.dmix-mode-backup
 }
 
 migrate_wifi_guardian() {
@@ -1788,15 +1730,12 @@ install_systemd_units() {
         "${REPO_DIR}/deploy/bin/jasper-aec-reconcile" \
         /usr/local/sbin/jasper-aec-reconcile
 
-    # jasper-fanin: per-renderer snd-aloop substream fan-in daemon
-    # (Tier 2A audio architecture). **Production default** as of
-    # 2026-05-26 — replaces the dmix-based topology that PR #214
-    # introduced and that turned out to cause periodic AirPlay drops
-    # via WiFi-burst + dmix-write-timing interaction. The actual
-    # enable + start happens via migrate_audio_topology below (which
-    # invokes the jasper-audio-topology CLI). On a fresh install this
-    # ends up active; on existing speakers it preserves whatever
-    # topology the operator already chose. See
+    # jasper-fanin: per-renderer snd-aloop substream fan-in daemon.
+    # **Production default** as of 2026-05-26 — replaces the
+    # dmix-based topology that PR #214 introduced and that turned out
+    # to cause periodic AirPlay drops via WiFi-burst + dmix-write-
+    # timing interaction. This unit is mandatory for renderer audio;
+    # enable/start happens below after daemon-reload. See
     # docs/HANDOFF-fan-in-daemon.md for the design + 2026-05-26
     # validation; docs/HANDOFF-airplay.md Pattern A3 for the dmix
     # failure mode that motivated the cutover.
@@ -1819,7 +1758,7 @@ install_systemd_units() {
     # jasper-usbsink: fourth music source (USB gadget audio in). The
     # init unit owns the ConfigFS gadget descriptor lifecycle; the
     # main service is the Python daemon that bridges gadget capture
-    # into hw:Loopback,0,0. Both ship DISABLED — the /sources/ wizard
+    # into usbsink_substream. Both ship DISABLED — the /sources/ wizard
     # toggle owns enable/disable, and the dtoverlay must be set + Pi
     # rebooted first (handled by set_usb_gadget_mode above).
     install -m 0644 \
@@ -2002,7 +1941,8 @@ install_systemd_units() {
         systemctl restart "${unit}.socket" 2>/dev/null || true
     done
 
-    systemctl enable jasper-camilla.service jasper-voice.service \
+    systemctl enable jasper-camilla.service jasper-fanin.service \
+        jasper-voice.service \
         jasper-control.service \
         jasper-dac-init.service jasper-headphone-monitor.service \
         jasper-input.service
@@ -2014,6 +1954,12 @@ install_systemd_units() {
 Will retry on next boot."
     # Restart the headphone monitor so it picks up post-init state.
     systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
+
+    systemctl restart jasper-fanin.service 2>/dev/null || true
+    # CamillaDSP captures the fan-in output (`pcm.jasper_capture`).
+    # Restart it after fan-in/asound wiring changes so it cannot keep
+    # an old capture fd across topology updates.
+    systemctl try-restart jasper-camilla.service 2>/dev/null || true
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
@@ -2047,7 +1993,7 @@ Will retry on next boot."
     # ensure_env_file above) for the SSH-driven-setup seed path.
     systemctl enable jasper-wifi-guardian.service
     echo
-    echo "Units enabled. Start with: systemctl start jasper-camilla jasper-voice"
+    echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-voice"
 }
 
 install_journald_persistent_storage() {
@@ -2426,9 +2372,9 @@ main() {
     set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
-    build_install_jasper_fanin   # Rust daemon binary; installed but not enabled
+    build_install_jasper_fanin   # Rust daemon binary; enabled by install_systemd_units
     install_systemd_units
-    migrate_audio_topology       # Default fresh installs to fanin (PR #XXX)
+    retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage

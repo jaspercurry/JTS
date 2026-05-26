@@ -285,11 +285,10 @@ def main() -> int:
     else:
         logger.info("passive mode: no test signal injected; ducking unchanged")
 
-    # We capture from hw:Loopback,1,sub2 (the passive tap defined in
-    # /root/.asoundrc — the multi fans there in parallel with sub1) and
-    # hw:Array,0 (held by jasper-voice). The bridge keeps running
-    # uninterrupted (sub1 is its own substream pair, untouched). We
-    # do still need to stop jasper-voice to grab the XVF capture EP.
+    # We capture from the loopback reference tap defined in
+    # /etc/asound.conf and hw:Array,0 (held by jasper-voice). The
+    # bridge keeps running uninterrupted; we do still need to stop
+    # jasper-voice to grab the XVF capture EP.
     voice_was_active = False
     if not args.keep_voice_running:
         voice_was_active = _stop_service_if_running(

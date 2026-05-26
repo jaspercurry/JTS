@@ -225,22 +225,41 @@ def test_input_buffer_frames_sized_for_wifi_burst_absorption():
     # — it's the production default, even though operators can
     # override via /var/lib/jasper/fanin.env.
     match = re.search(
-        r'^\s*Environment\s*=\s*"?JASPER_FANIN_BUFFER_FRAMES=(\d+)"?',
+        r'^\s*Environment\s*=\s*"?JASPER_FANIN_INPUT_BUFFER_FRAMES=(\d+)"?',
         unit,
         re.MULTILINE,
     )
     assert match is not None, (
-        "jasper-fanin.service must set Environment=\"JASPER_FANIN_BUFFER_FRAMES=...\" "
+        "jasper-fanin.service must set Environment=\"JASPER_FANIN_INPUT_BUFFER_FRAMES=...\" "
         "(production default for per-input ALSA buffer sizing). "
         "See docs/HANDOFF-fan-in-daemon.md 'Buffer sizing'."
     )
     val = int(match.group(1))
     assert val >= 4096, (
-        f"JASPER_FANIN_BUFFER_FRAMES={val} is below 4096 (~85 ms). "
+        f"JASPER_FANIN_INPUT_BUFFER_FRAMES={val} is below 4096 (~85 ms). "
         f"Below 4096, WiFi A-MPDU burst delivery overruns the input "
         f"ring at ~2 xruns/min on AirPlay. See HANDOFF-airplay.md "
         f"Pattern A3 + HANDOFF-fan-in-daemon.md 'Buffer sizing'."
     )
+
+
+def test_output_buffer_frames_stays_latency_bounded():
+    """Output ALSA ring should not inherit the large input burst
+    absorber. 3072 frames (~64 ms at 48 kHz) gives CamillaDSP enough
+    read margin without turning the fanin→CamillaDSP/AEC leg into a
+    large hidden queue; WiFi burst absorption belongs on input lanes."""
+    unit = _read_unit()
+    match = re.search(
+        r'^\s*Environment\s*=\s*"?JASPER_FANIN_OUTPUT_BUFFER_FRAMES=(\d+)"?',
+        unit,
+        re.MULTILINE,
+    )
+    assert match is not None, (
+        "jasper-fanin.service must set JASPER_FANIN_OUTPUT_BUFFER_FRAMES "
+        "separately from the input burst absorber"
+    )
+    val = int(match.group(1))
+    assert val == 3072
 
 
 def test_hardening_directives_present():
@@ -280,60 +299,64 @@ def test_read_write_paths_include_jasper_state_dirs():
 
 def test_install_target_is_multi_user():
     """`WantedBy=multi-user.target` matches the conventions of
-    other jasper-* daemons. Critically, the daemon ships
-    INSTALLED but NOT ENABLED — install.sh doesn't call
-    `systemctl enable jasper-fanin.service`. Operators opt in
-    by setting JASPER_AUDIO_TOPOLOGY=fanin and explicitly
-    enabling the service."""
+    other jasper-* daemons."""
     unit = _read_unit()
     val = _value_for(unit, "WantedBy")
     assert val == "multi-user.target"
 
 
-def test_install_sh_defaults_fresh_installs_to_fanin():
-    """install.sh's `migrate_audio_topology` helper defaults fresh
-    installs (no existing /var/lib/jasper/audio_topology.env) to the
-    fanin topology. Pre-existing state files are preserved so
-    operators who chose dmix keep their choice.
+def test_fanin_starts_before_hot_path_consumers():
+    """Fan-in must be initialized before Camilla/renderer consumers try
+    to open the summed-reference graph."""
+    unit = _read_unit()
+    before = _value_for(unit, "Before")
+    assert before is not None
+    for dep in (
+        "jasper-camilla.service",
+        "shairport-sync.service",
+        "librespot.service",
+        "bluealsa-aplay.service",
+        "jasper-usbsink.service",
+        "jasper-aec-bridge.service",
+    ):
+        assert dep in before
 
-    This inverted the 2026-05-25 opt-in posture on 2026-05-26 after
-    measurement confirmed that the dmix topology was producing
-    ~5-7 audible drops per minute on AirPlay (see
-    docs/HANDOFF-airplay.md Pattern A3 and
-    docs/HANDOFF-fan-in-daemon.md "Why the cutover").
 
-    The systemctl-enable of jasper-fanin happens INSIDE the
-    jasper-audio-topology CLI (which install.sh invokes via
-    migrate_audio_topology), not as a literal `systemctl enable
-    jasper-fanin` line in install.sh itself.
-    """
+def test_install_sh_enables_fanin_and_retires_topology_switch():
+    """Fan-in is mandatory now: install.sh enables the daemon directly
+    and removes the retired dmix/fanin switch state."""
     install_sh = (REPO / "deploy" / "install.sh").read_text()
-    assert "migrate_audio_topology()" in install_sh, (
-        "install.sh must define migrate_audio_topology helper"
+    assert "retire_audio_topology_switch()" in install_sh, (
+        "install.sh must define retire_audio_topology_switch helper"
     )
-    # The helper must be called from main(). Look for the function
-    # name appearing as a bare command — `migrate_audio_topology`
-    # at start-of-line (after indent) optionally followed by a
-    # trailing `#` comment. Excludes the function definition line
-    # (which has `()` after the name) and comment-only mentions.
     call_site = re.search(
-        r"^\s*migrate_audio_topology(?:\s|$|\s*#)",
+        r"^\s*retire_audio_topology_switch(?:\s|$|\s*#)",
         install_sh,
         re.MULTILINE,
     )
     assert call_site is not None, (
-        "main() must call migrate_audio_topology (otherwise fresh "
-        "installs silently stay on dmix despite the helper existing). "
-        "See docs/HANDOFF-airplay.md Pattern A3."
+        "main() must call retire_audio_topology_switch so stale "
+        "/var/lib/jasper/audio_topology.env cannot keep misleading "
+        "operators after fan-in became canonical."
     )
-    # The helper must invoke `jasper-audio-topology fanin` when the
-    # state file is absent. The CLI does the actual systemctl
-    # orchestration.
-    assert "/usr/local/sbin/jasper-audio-topology fanin" in install_sh, (
-        "migrate_audio_topology must call the topology CLI with the "
-        "fanin argument when no state file exists. Single source of "
-        "truth — same code path as an operator's manual switch."
+    assert "systemctl enable jasper-camilla.service jasper-fanin.service" in install_sh, (
+        "install.sh must enable jasper-fanin.service directly; renderer "
+        "audio depends on it."
     )
+    assert "rm -f /usr/local/sbin/jasper-audio-topology" in install_sh
+    assert "/usr/local/sbin/jasper-audio-topology fanin" not in install_sh
+
+
+def test_install_sh_restarts_camilla_after_fanin():
+    """Camilla captures fan-in's summed output; deploy must not leave it
+    holding a stale capture fd after asound/fan-in updates."""
+    install_sh = (REPO / "deploy" / "install.sh").read_text()
+    assert re.search(
+        r"systemctl restart jasper-fanin\.service.*?"
+        r"systemctl try-restart jasper-camilla\.service",
+        install_sh,
+        re.DOTALL,
+    ), "install.sh must try-restart jasper-camilla after jasper-fanin"
 
 
 def test_install_sh_builds_and_installs_binary():

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Measure end-to-end ref-to-mic delay through the music chain.
 #
-# Plays a 200 ms log chirp via plughw:Loopback,0,0 (so it travels
-# through the same path music does: snd-aloop → CamillaDSP → dmix
-# → dongle → speakers → mic), captures both the digital reference
-# (via pcm.jasper_capture dsnoop) and the chip's raw mic 0
+# Plays a 200 ms log chirp via correction_substream (the private
+# correction/probe fan-in lane, so it travels through the same path
+# music does: snd-aloop → jasper-fanin → CamillaDSP → dmix → dongle
+# → speakers → mic), captures both the digital reference
+# (via pcm.jasper_capture dsnoop) and the chip's ASR beam mic channel
 # simultaneously, then cross-correlates to find the peak lag.
 #
 # Result is the delay AEC3 should be hinted with (set as the
@@ -47,14 +48,14 @@ with wave.open("/tmp/aec-probe-chirp.wav", "wb") as w:
     w.writeframes(stereo.tobytes())
 
 # Capture for 1.5 sec, both ref (jasper_capture, 48k stereo
-# downsampled to 16k mono left) and mic (chip ch 2, 16k raw mic 0).
+# downsampled to 16k mono left) and mic (chip ch 1, 16k ASR beam).
 fs = 16000
 cap_dur = 1.5
 ref_buf, mic_buf = [], []
 
 def mic_th():
     def cb(indata, frames, ti, status):
-        mic_buf.append(indata[:, 2].copy())
+        mic_buf.append(indata[:, 1].copy())
     with sd.InputStream(device="Array", samplerate=fs, channels=6,
                        dtype="int16", blocksize=320, callback=cb):
         time.sleep(cap_dur)
@@ -79,7 +80,7 @@ def ref_th():
 mt = threading.Thread(target=mic_th, daemon=True); mt.start()
 rt = threading.Thread(target=ref_th, daemon=True); rt.start()
 time.sleep(0.3)  # warmup before chirp
-subprocess.run(["aplay", "-D", "plughw:Loopback,0,0", "/tmp/aec-probe-chirp.wav"],
+subprocess.run(["aplay", "-D", "correction_substream", "/tmp/aec-probe-chirp.wav"],
               check=True, capture_output=True)
 mt.join(); rt.join()
 

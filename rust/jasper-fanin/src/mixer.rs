@@ -98,8 +98,9 @@ pub struct Input {
 }
 
 impl Mixer {
-    /// Open all inputs (best-effort: log + skip individual failures)
-    /// and the output (must succeed; fatal if not). `xrun_tx` is the
+    /// Open all configured inputs and the output. Every configured input
+    /// is required: a missing lane means one renderer silently drops out
+    /// of the summed music reference. `xrun_tx` is the
     /// non-blocking channel to the off-thread xrun log writer.
     pub fn new(
         config: &Config,
@@ -119,17 +120,16 @@ impl Mixer {
                         label,
                         pcm_name,
                         config.period_frames,
-                        config.buffer_frames,
+                        config.input_buffer_frames,
                     );
                     inputs.push(input);
                 }
                 Err(e) => {
-                    // Best-effort: a renderer might not have its
-                    // substream wired up yet (e.g., usbsink disabled).
-                    // Log and continue with the inputs that opened.
-                    warn!(
-                        "event=fanin.input.open_failed label={} pcm={} detail={:#}",
-                        label, pcm_name, e
+                    anyhow::bail!(
+                        "required fan-in input '{}' ({}) failed to open: {:#}",
+                        label,
+                        pcm_name,
+                        e,
                     );
                 }
             }
@@ -149,7 +149,7 @@ impl Mixer {
         })?;
         info!(
             "event=fanin.output.opened pcm={} period_frames={} buffer_frames={}",
-            config.output_pcm, config.period_frames, config.buffer_frames,
+            config.output_pcm, config.period_frames, config.output_buffer_frames,
         );
 
         Ok(Self {
@@ -164,8 +164,8 @@ impl Mixer {
         })
     }
 
-    /// Number of successfully-opened inputs. May be less than the
-    /// configured `JASPER_FANIN_INPUT_PCMS` length if some opens failed.
+    /// Number of configured inputs. Mixer construction fails if any
+    /// configured input cannot be opened.
     pub fn input_count(&self) -> usize {
         self.inputs.len()
     }
@@ -284,7 +284,7 @@ fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
     // as silence."
     let pcm = PCM::new(pcm_name, Direction::Capture, true)
         .with_context(|| format!("opening capture PCM {}", pcm_name))?;
-    configure_pcm(&pcm, config)
+    configure_pcm(&pcm, config, config.input_buffer_frames)
         .with_context(|| format!("configuring capture PCM {}", pcm_name))?;
     // Start the stream so reads return data (or EAGAIN) instead of
     // blocking forever in the PREPARED state.
@@ -308,12 +308,12 @@ fn open_output(pcm_name: &str, config: &Config) -> Result<PCM> {
     // ring to make room for the next period.
     let pcm = PCM::new(pcm_name, Direction::Playback, false)
         .with_context(|| format!("opening playback PCM {}", pcm_name))?;
-    configure_pcm(&pcm, config)
+    configure_pcm(&pcm, config, config.output_buffer_frames)
         .with_context(|| format!("configuring playback PCM {}", pcm_name))?;
     Ok(pcm)
 }
 
-fn configure_pcm(pcm: &PCM, config: &Config) -> Result<()> {
+fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
     // HwParams must be dropped before pcm.hw_params() is called.
     // The alsa-rs API: build the params, install them, drop the
     // handle in this nested scope.
@@ -331,9 +331,9 @@ fn configure_pcm(pcm: &PCM, config: &Config) -> Result<()> {
             .with_context(|| {
                 format!("set_period_size({})", config.period_frames)
             })?;
-        hwp.set_buffer_size(config.buffer_frames as i64)
+        hwp.set_buffer_size(buffer_frames as i64)
             .with_context(|| {
-                format!("set_buffer_size({})", config.buffer_frames)
+                format!("set_buffer_size({})", buffer_frames)
             })?;
         pcm.hw_params(&hwp).context("installing HwParams")?;
     }

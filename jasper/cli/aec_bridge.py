@@ -107,13 +107,10 @@ SAMPLE_RATE = 16000
 
 # Capture device for the reference (host-clocked dsnoop on the
 # renderer→camilla loopback). `jasper_ref` is a plug-wrapped alias
-# of `jasper_capture` defined in /root/.asoundrc — the plug layer
-# resamples from whatever rate the snd-aloop loopback is locked
-# at to REF_RATE below. Without the plug wrapping, the bridge
-# silently received zero-RMS audio whenever a 44.1 kHz source
-# (AirPlay, librespot 44.1k tracks, BT A2DP) locked the loopback
-# at a non-48 kHz rate — the regression that broke production AEC
-# after PR #75 changed shairport to output at native 44.1 kHz.
+# of `jasper_capture` defined in /etc/asound.conf. The fan-in topology
+# pins the summed loopback to 48 kHz S16_LE; the plug wrapper remains
+# a defensive conversion layer if an operator changes the reference
+# tap shape.
 # CamillaDSP uses the same plug pattern via `plug:jasper_capture`
 # in v1.yml — this just extends it to the bridge.
 REF_DEVICE = "jasper_ref"

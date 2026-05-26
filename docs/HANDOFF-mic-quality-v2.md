@@ -827,7 +827,15 @@ reference-conditions baseline (captured 2026-05-22) for evaluation.
 
 ### TTS reference routing — three fix approaches
 
-Per [`/root/.asoundrc`](../deploy/alsa/) inspection:
+> **Topology note (updated 2026-05-26):** This section was written
+> against the pre-fan-in `/root/.asoundrc` topology. Current production
+> uses `/etc/asound.conf`; `pcm.jasper_capture` dsnoops fan-in's summed
+> music output on `hw:Loopback,1,7`. Treat the options below as decision
+> archaeology, not an implementation recipe. In particular, do not copy
+> TTS into a renderer input lane unless the design also prevents a
+> delayed duplicate from reaching the speakers through CamillaDSP.
+
+Per the old `/root/.asoundrc` inspection:
 
 - `pcm.jasper_capture` = dsnoop on `hw:Loopback,1,0` (music snd-aloop chain only)
 - `pcm.jasper_out` = dmix on `hw:CARD=A,DEV=0` (Apple USB dongle direct)
@@ -959,7 +967,7 @@ the AEC reference.
 
 Touches:
 
-- `/root/.asoundrc` — add the multi plugin, define new pcm name (e.g.
+- `/etc/asound.conf` — add the multi plugin, define new pcm name (e.g.
   `pcm.jasper_out_with_aec_ref`)
 - Change `JASPER_TTS_DEVICE` from `jasper_out` to the new pcm name
 - Update `jasper/web/voice_setup.py` if it references `jasper_out`
@@ -1215,3 +1223,5 @@ review IS the calibration. The wizard becomes valuable when we
 distribute JTS to other operators (different rooms, mics, voices)
 and want to automate the per-environment configuration that we're
 doing manually here.
+
+Last verified: 2026-05-26

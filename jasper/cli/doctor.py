@@ -342,7 +342,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
             return CheckResult(
                 "tts output", "fail",
                 f"{cfg.tts_device} enumerated but reports 0 output channels. "
-                f"Check /root/.asoundrc and that jasper-camilla is running.",
+                f"Check /etc/asound.conf and that jasper-camilla is running.",
             )
         return CheckResult(
             "tts output", "ok",
@@ -354,7 +354,7 @@ def check_tts_open(cfg: Config) -> CheckResult:
         return CheckResult(
             "tts output", "fail",
             f"can't enumerate {cfg.tts_device}: {e}. "
-            f"Check /root/.asoundrc and that jasper-camilla is running.",
+            f"Check /etc/asound.conf and that jasper-camilla is running.",
         )
 
 
@@ -1415,6 +1415,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
 # a few pages during process startup) but warns if any daemon has
 # meaningful swap — that's the 2026-05-24 failure-mode signature.
 _AUDIO_PATH_UNITS = (
+    "jasper-fanin",
     "jasper-camilla",
     "jasper-aec-bridge",
     "shairport-sync",
@@ -1642,6 +1643,11 @@ def _loopback_playback_active() -> bool:
     single word `closed`. The presence of any non-closed sub means a
     renderer (shairport / librespot / bluealsa) is producing right now.
 
+    In fan-in topology, substream 7 is jasper-fanin's summed output and
+    may be open even when every renderer is idle. Count only input
+    lanes 0..4 for "music active" so AEC output health does not
+    confuse the daemon's own output with a renderer source.
+
     Used to gate the AEC bridge FAIL: ref-silent windows are only
     diagnostic of a broken dsnoop when music IS being routed through the
     loopback. When no renderer is writing, ref-silent is the expected
@@ -1650,6 +1656,9 @@ def _loopback_playback_active() -> bool:
     """
     import glob
     for status_path in glob.glob("/proc/asound/Loopback/pcm0p/sub*/status"):
+        m = re.search(r"/sub(\d+)/status$", status_path)
+        if m and int(m.group(1)) > 4:
+            continue
         try:
             with open(status_path, encoding="utf-8") as f:
                 first_line = f.readline().strip()
@@ -1752,9 +1761,12 @@ def _assess_aec_bridge_output(
             f"RMS with ref<{_AEC_REF_SILENT_THRESHOLD} RMS and zero windows show "
             f"ref signal — bridge's reference path is delivering silence "
             f"while the mic captures audio. AEC can't cancel without a "
-            f"reference. Common cause: pcm.jasper_capture dsnoop rate-locked "
-            f"to a renderer's native rate that doesn't match the dsnoop's "
-            f"declared slave rate. See docs/HANDOFF-aec.md § 'Lessons learned' #6.",
+            f"reference. In the fan-in topology, first verify "
+            f"/etc/asound.conf maps pcm.jasper_capture to hw:Loopback,1,7 "
+            f"(jasper-fanin's summed output) and that jasper-fanin is "
+            f"active. A stale dmix-era capture tap on substream 0 can make "
+            f"jasper_ref busy or silent. See docs/HANDOFF-aec.md "
+            f"Lessons learned for the original silent-ref failure mode.",
         )
 
     # Failure mode 2 — continuous drift warnings = severe clock skew
@@ -1818,14 +1830,13 @@ def _assess_aec_bridge_output(
 
 
 def check_fanin_binary_installed() -> CheckResult:
-    """The jasper-fanin Rust daemon (Tier 2A audio architecture) ships
-    as an installed-but-disabled-by-default binary at
+    """The jasper-fanin Rust daemon ships as an installed binary at
     /opt/jasper/bin/jasper-fanin. install.sh runs cargo build during
     deploy; this check verifies the build actually produced the
     binary. A missing binary means cargo build silently failed and
-    Phase 3 opt-in would fail at `systemctl enable`.
+    renderer audio cannot run.
 
-    See docs/HANDOFF-fan-in-daemon.md for the migration plan.
+    See docs/HANDOFF-fan-in-daemon.md for the design.
     """
     path = Path("/opt/jasper/bin/jasper-fanin")
     if not path.exists():
@@ -1851,102 +1862,182 @@ def check_fanin_binary_installed() -> CheckResult:
     )
 
 
-def check_audio_topology_state() -> CheckResult:
-    """The audio topology env file
-    (/var/lib/jasper/audio_topology.env) declares which renderer/DSP
-    chain shape is active: `dmix` (default) or `fanin` (Tier 2A).
-    This check catches a "half-switched" state where the env file
-    and the daemons disagree:
-
-      - env says `fanin` but jasper-fanin.service is inactive →
-        renderers are writing to per-renderer substreams but nothing
-        is reading them; output is silence. Hard fail with the fix.
-      - env says `dmix` but jasper-fanin.service is active →
-        jasper-fanin is running but the renderers aren't feeding
-        it; harmless but wasteful. Warn.
-      - env absent → dmix mode by default; ok.
-
-    Switch with:  sudo jasper-audio-topology [dmix|fanin]
-    See docs/HANDOFF-fan-in-daemon.md.
-    """
-    env_path = Path("/var/lib/jasper/audio_topology.env")
-    declared_mode = "dmix"  # default when file is absent
-    if env_path.exists():
-        try:
-            for line in env_path.read_text().splitlines():
-                line = line.strip()
-                if line.startswith("JASPER_AUDIO_TOPOLOGY="):
-                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
-                    if value:
-                        declared_mode = value
-                    break
-        except OSError as e:
-            return CheckResult(
-                "audio topology",
-                "warn",
-                f"could not read {env_path}: {e}",
-            )
-
-    if declared_mode not in ("dmix", "fanin"):
-        return CheckResult(
-            "audio topology",
-            "fail",
-            f"unknown JASPER_AUDIO_TOPOLOGY={declared_mode!r} in "
-            f"{env_path}. Valid values: dmix, fanin. Reset with: "
-            f"sudo jasper-audio-topology dmix",
-        )
-
-    fanin_active = (
-        _run(["systemctl", "is-active", "jasper-fanin.service"])
-        .stdout.strip()
-        == "active"
+def _asound_non_comment_text(text: str) -> str:
+    return "\n".join(
+        line for line in text.splitlines()
+        if not line.lstrip().startswith("#")
     )
 
-    if declared_mode == "fanin" and not fanin_active:
+
+def _asound_pcm_block(text: str, name: str) -> str | None:
+    """Return a top-level pcm.NAME block body from an asoundrc.
+
+    The deployed ALSA snippets keep each top-level PCM block separated
+    by the next `pcm.` or `ctl.` definition. We do not need a full ALSA
+    parser here; this is a drift detector for our own generated file.
+    """
+    pattern = re.compile(rf"^pcm\.{re.escape(name)}\s*\{{", re.MULTILINE)
+    match = pattern.search(text)
+    if not match:
+        return None
+    tail = text[match.start():]
+    next_def = re.search(r"^(?:pcm|ctl)\.", tail[match.end() - match.start():], re.MULTILINE)
+    if next_def:
+        return tail[:match.end() - match.start() + next_def.start()]
+    return tail
+
+
+_FANIN_EXPECTED_INPUTS = [
+    ("spotify", "hw:Loopback,1,0"),
+    ("airplay", "hw:Loopback,1,1"),
+    ("bluealsa", "hw:Loopback,1,2"),
+    ("usbsink", "hw:Loopback,1,3"),
+    ("correction", "hw:Loopback,1,4"),
+]
+_FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
+
+
+def check_fanin_asound_wiring() -> CheckResult:
+    """Verify the deployed ALSA graph is the fan-in graph.
+
+    This catches the exact split-brain failure that can break AEC:
+    renderers and jasper-fanin are running in fan-in mode, but
+    /etc/asound.conf still points `pcm.jasper_capture` at the old
+    substream 0 instead of the summed fan-in output on substream 7.
+    """
+    label = "fan-in ALSA wiring"
+    path = Path("/etc/asound.conf")
+    if not path.exists():
+        return CheckResult(label, "fail", f"{path} missing — re-run install.sh")
+    try:
+        text = path.read_text()
+    except OSError as e:
+        return CheckResult(label, "fail", f"can't read {path}: {e}")
+
+    active = _asound_non_comment_text(text)
+    legacy_blocks = [
+        name for name in ("jasper_renderer_mix", "jasper_renderer_in")
+        if re.search(rf"^pcm\.{name}\s*\{{", active, re.MULTILINE)
+    ]
+    if legacy_blocks:
         return CheckResult(
-            "audio topology",
+            label,
             "fail",
-            f"declared mode is 'fanin' but jasper-fanin.service is "
-            f"not active. Renderers are writing to per-renderer "
-            f"substreams with nothing reading them — output is "
-            f"silence. Either start the daemon "
-            f"(sudo systemctl start jasper-fanin) or revert with: "
-            f"sudo jasper-audio-topology dmix",
+            f"{path} still defines legacy renderer dmix block(s): "
+            f"{', '.join(legacy_blocks)}. Fan-in-only installs must "
+            f"define private renderer lanes and no jasper_renderer_* "
+            f"front end. Re-run deploy/install.sh.",
         )
-    if declared_mode == "dmix" and fanin_active:
+
+    expected_aliases = {
+        "librespot_substream": "hw:Loopback,0,0",
+        "shairport_substream": "hw:Loopback,0,1",
+        "bluealsa_substream": "hw:Loopback,0,2",
+        "usbsink_substream": "hw:Loopback,0,3",
+        "correction_substream": "hw:Loopback,0,4",
+    }
+    missing: list[str] = []
+    wrong: list[str] = []
+    for alias, slave in expected_aliases.items():
+        block = _asound_pcm_block(active, alias)
+        if block is None:
+            missing.append(alias)
+        elif (
+            f'pcm "{slave}"' not in block
+            or "rate 48000" not in block
+            or "channels 2" not in block
+            or "format S16_LE" not in block
+        ):
+            wrong.append(f"{alias}≠{slave}")
+    if missing or wrong:
+        parts = []
+        if missing:
+            parts.append("missing " + ", ".join(missing))
+        if wrong:
+            parts.append("wrong slave " + ", ".join(wrong))
         return CheckResult(
-            "audio topology",
+            label,
+            "fail",
+            "; ".join(parts) + ". Re-run deploy/install.sh to restore "
+            "the fan-in asoundrc.",
+        )
+
+    capture = _asound_pcm_block(active, "jasper_capture")
+    if capture is None:
+        return CheckResult(
+            label,
+            "fail",
+            "pcm.jasper_capture missing — CamillaDSP and AEC bridge "
+            "have no shared reference tap.",
+        )
+    if 'pcm "hw:Loopback,1,7"' not in capture:
+        detail = (
+            "pcm.jasper_capture must dsnoop hw:Loopback,1,7 "
+            "(jasper-fanin's summed output)."
+        )
+        if 'pcm "hw:Loopback,1,0"' in capture:
+            detail += (
+                " It currently points at substream 0, which is now a "
+                "private fan-in input lane and can make jasper_ref fail "
+                "with EBUSY."
+            )
+        return CheckResult(label, "fail", detail)
+    for required in ("rate 48000", "channels 2", "format S16_LE"):
+        if required not in capture:
+            return CheckResult(
+                label,
+                "fail",
+                "pcm.jasper_capture must pin the dsnoop slave to "
+                f"48 kHz stereo S16_LE; missing {required!r}.",
+            )
+
+    ref = _asound_pcm_block(active, "jasper_ref")
+    if ref is None:
+        return CheckResult(
+            label,
+            "fail",
+            "pcm.jasper_ref missing — AEC bridge opens jasper_ref, not "
+            "jasper_capture directly.",
+        )
+    if 'slave.pcm "jasper_capture"' not in ref:
+        return CheckResult(
+            label,
+            "fail",
+            "pcm.jasper_ref must plug-wrap pcm.jasper_capture so the AEC "
+            "bridge reads the summed fan-in reference.",
+        )
+
+    stale_state = Path("/var/lib/jasper/audio_topology.env")
+    if stale_state.exists():
+        return CheckResult(
+            label,
             "warn",
-            f"declared mode is 'dmix' but jasper-fanin.service is "
-            f"active. Daemon is running but unused; stop with: "
-            f"sudo systemctl stop jasper-fanin",
+            f"fan-in asoundrc is correct, but stale {stale_state} still "
+            f"exists from the retired dmix/fanin switcher. Re-run "
+            f"deploy/install.sh to archive/remove it.",
         )
 
     return CheckResult(
-        "audio topology",
+        label,
         "ok",
-        f"mode={declared_mode} (jasper-fanin "
-        f"{'active' if fanin_active else 'stopped'})",
+        "renderer/test lanes 0..4; jasper_capture/jasper_ref on summed substream 7",
     )
 
 
 def check_fanin_service() -> CheckResult:
-    """The jasper-fanin systemd unit is INSTALLED but NOT ENABLED by
-    default. The dmix-based renderer path is still the active topology
-    at deploy time; operators opt into the fanin topology by setting
-    `JASPER_AUDIO_TOPOLOGY=fanin` in /etc/jasper/jasper.env and
-    `systemctl enable --now jasper-fanin.service`. See
-    docs/HANDOFF-fan-in-daemon.md "Migration plan" for the full
-    procedure and the 72-hour soak gate.
+    """The jasper-fanin systemd unit is required for renderer audio.
+
+    Fan-in is the only supported renderer topology. If the daemon is
+    disabled or inactive, AirPlay/Spotify/Bluetooth/USB-in may write to
+    their private lanes, but nothing publishes the summed stream to
+    CamillaDSP or the AEC bridge.
 
     Returns:
-      - ok ("disabled — Tier 2A not opted in") when the unit is
-        loaded but disabled. This is the expected default state.
       - ok ("active, responding") when enabled and the UDS endpoint
         replies to STATUS with a fresh progress sentinel.
-      - warn when enabled+active but the UDS probe fails or the work
-        loop is stale.
-      - fail when enabled but the service isn't active.
+      - fail when disabled/inactive, when STATUS cannot be read, or
+        when the live STATUS schema drifts from the production graph.
+      - warn when enabled+active but the work loop is stale.
     """
     enabled = _run(
         ["systemctl", "is-enabled", "jasper-fanin.service"]
@@ -1958,8 +2049,9 @@ def check_fanin_service() -> CheckResult:
     if enabled in ("disabled", "static", "indirect"):
         return CheckResult(
             "jasper-fanin service",
-            "ok",
-            "disabled (Tier 2A migration not opted in; default state)",
+            "fail",
+            f"state={enabled}. Fan-in is mandatory; run: "
+            f"sudo systemctl enable --now jasper-fanin.service",
         )
     if enabled == "not-found":
         return CheckResult(
@@ -1980,24 +2072,38 @@ def check_fanin_service() -> CheckResult:
     # Service is active. Probe the UDS endpoint to verify the work
     # loop is making progress (catches "process alive but wedged").
     socket_path = "/run/jasper-fanin/control.sock"
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(2.0)
-        sock.connect(socket_path)
-        sock.sendall(b"STATUS\n")
-        chunks: list[bytes] = []
-        while True:
-            chunk = sock.recv(4096)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        sock.close()
-    except OSError as e:
+    last_error: OSError | None = None
+    for attempt in range(2):
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(socket_path)
+            sock.sendall(b"STATUS\n")
+            chunks: list[bytes] = []
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            sock.close()
+            break
+        except OSError as e:
+            last_error = e
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
+            if attempt == 0:
+                time.sleep(0.1)
+    else:
         return CheckResult(
             "jasper-fanin service",
-            "warn",
-            f"active but UDS probe at {socket_path} failed: {e}. "
-            f"Work loop may be wedged; "
+            "fail",
+            f"active but UDS probe at {socket_path} failed: {last_error}. "
+            f"Fan-in is mandatory; without STATUS doctor cannot verify "
+            f"the live graph, buffers, or watchdog progress. "
             f"check: journalctl -u jasper-fanin | tail",
         )
 
@@ -2007,17 +2113,46 @@ def check_fanin_service() -> CheckResult:
     except json.JSONDecodeError as e:
         return CheckResult(
             "jasper-fanin service",
-            "warn",
+            "fail",
             f"active but UDS STATUS returned invalid JSON: {e}",
+        )
+
+    output_pcm = data.get("output", {}).get("pcm")
+    if output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active but STATUS output.pcm={output_pcm!r}; expected "
+            f"{_FANIN_EXPECTED_OUTPUT_PCM}. Check /var/lib/jasper/fanin.env.",
+        )
+    inputs = data.get("inputs")
+    if not isinstance(inputs, list):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS response missing inputs[]",
+        )
+    actual_inputs = [
+        (inp.get("label"), inp.get("pcm"))
+        for inp in inputs
+        if isinstance(inp, dict)
+    ]
+    if actual_inputs != _FANIN_EXPECTED_INPUTS:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS inputs drifted. Expected "
+            f"{_FANIN_EXPECTED_INPUTS!r}; got {actual_inputs!r}. "
+            "Check /var/lib/jasper/fanin.env.",
         )
 
     progress_age = data.get("watchdog", {}).get(
         "last_progress_age_ms", -1
     )
-    if progress_age < 0:
+    if not isinstance(progress_age, (int, float)) or progress_age < 0:
         return CheckResult(
             "jasper-fanin service",
-            "warn",
+            "fail",
             "active but STATUS response missing watchdog state",
         )
     if progress_age > 1000:
@@ -2029,10 +2164,64 @@ def check_fanin_service() -> CheckResult:
         )
     frames = data.get("output", {}).get("frames_written", 0)
     xruns = data.get("output", {}).get("xrun_count", 0)
+    input_buffer_frames = data.get("input_buffer_frames")
+    output_buffer_frames = data.get("output", {}).get("buffer_frames")
+    if not isinstance(input_buffer_frames, int):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS missing integer input_buffer_frames",
+        )
+    if not isinstance(output_buffer_frames, int):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS missing integer output.buffer_frames",
+        )
+    input_xruns = []
+    for inp in data.get("inputs", []):
+        try:
+            count = int(inp.get("xrun_count", 0))
+        except (TypeError, ValueError, AttributeError):
+            continue
+        if count:
+            input_xruns.append(f"{inp.get('label', '?')}={count}")
+    if input_buffer_frames < 4096:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active, but runtime input_buffer_frames={input_buffer_frames} is below "
+            f"4096. AirPlay WiFi burst absorption was validated at 4096; "
+            f"check /var/lib/jasper/fanin.env and "
+            f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
+        )
+    if output_buffer_frames < 3072:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active, but runtime output_buffer_frames={output_buffer_frames} is below "
+            f"3072. CamillaDSP short-read warnings were observed with "
+            f"1024 and 2048-frame fan-in output buffers; production is "
+            f"validated at 3072. Check /var/lib/jasper/fanin.env and "
+            f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
+        )
+    if output_buffer_frames > 3072:
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            f"active, but runtime output_buffer_frames={output_buffer_frames} exceeds "
+            f"3072. Larger fan-in output queues add latency and need a "
+            f"fresh AirPlay offset validation before shipping. "
+            f"Check /var/lib/jasper/fanin.env and "
+            f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
+        )
     return CheckResult(
         "jasper-fanin service",
         "ok",
-        f"active, frames_written={frames}, output xruns={xruns}, "
+        f"active, frames_written={frames}, "
+        f"input_buffer_frames={input_buffer_frames}, "
+        f"output_buffer_frames={output_buffer_frames}, "
+        f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
         f"progress_age_ms={progress_age}",
     )
 
@@ -2197,7 +2386,7 @@ _PROBE_SINE_DURATION_S = 5.0
 
 def probe_aec_ref_path() -> list[CheckResult]:
     """Active probe: confirm the bridge's reference path is wired
-    correctly by playing a brief sine into plughw:Loopback,0,0 and
+    correctly by playing a brief sine into correction_substream and
     verifying the bridge's `ref` RMS rises in the rms log over the
     test window.
 
@@ -2234,10 +2423,9 @@ def probe_aec_ref_path() -> list[CheckResult]:
     results.append(CheckResult("probe — bridge running", "ok", "active"))
 
     # Pre-flight 2 — refuse if a renderer is currently playing. The
-    # probe writes to plughw:Loopback,0,0 which is the same path the
-    # renderers use; competing with active music would either get a
-    # device-busy error or, worse, mix our sine into the user's music
-    # for 5 s.
+    # probe writes to correction_substream, a dedicated fan-in input,
+    # but it still emerges from the speaker and would mix with active
+    # music for 5 s.
     try:
         with urllib.request.urlopen(
             "http://127.0.0.1:8780/state", timeout=3,
@@ -2253,19 +2441,36 @@ def probe_aec_ref_path() -> list[CheckResult]:
                 f"existing music. Stop {active} playback and re-run.",
             ))
             return results
+        if _loopback_playback_active():
+            results.append(CheckResult(
+                "probe — renderers idle", "fail",
+                "a fan-in input lane is currently open in /proc/asound; "
+                "refuse to play test sine over active renderer audio. "
+                "Stop playback and re-run.",
+            ))
+            return results
         results.append(CheckResult(
             "probe — renderers idle", "ok",
             f"active_source={active!r}",
         ))
     except (urllib.error.URLError, json.JSONDecodeError, OSError) as e:
-        # If jasper-control is down, we can't confirm idle. Proceed
-        # anyway — aplay will refuse with EBUSY if there's a real
-        # conflict on Loopback,0,0.
+        # correction_substream is a private fan-in input, so aplay won't
+        # necessarily get EBUSY just because AirPlay/Spotify is active.
+        # If /state is down, fall back to /proc/asound ownership before
+        # deciding whether the active probe is safe to run.
+        if _loopback_playback_active():
+            results.append(CheckResult(
+                "probe — renderers idle", "fail",
+                f"jasper-control /state unreachable ({e}) and a fan-in "
+                f"input lane is open in /proc/asound. Refuse to play "
+                f"test sine over possible active renderer audio.",
+            ))
+            return results
         results.append(CheckResult(
             "probe — renderers idle", "warn",
-            f"jasper-control /state unreachable ({e}); proceeding without "
-            f"idle confirmation. If a renderer is running, aplay will "
-            f"refuse the device.",
+            f"jasper-control /state unreachable ({e}); /proc/asound "
+            f"shows fan-in input lanes idle, so proceeding with active "
+            f"probe.",
         ))
 
     # Generate the test sine. Stereo S16_LE 48 kHz to match the dongle's
@@ -2298,10 +2503,10 @@ def probe_aec_ref_path() -> list[CheckResult]:
     probe_start = datetime.datetime.now(datetime.timezone.utc)
     since = probe_start.strftime("%Y-%m-%d %H:%M:%S UTC")
 
-    # Play the sine. plughw absorbs any rate-lock state of the loopback
-    # — same reason camilla and the bridge wrap their captures in plug.
+    # Play the sine through the dedicated correction/test fan-in lane.
+    # Its plug wrapper handles format/rate conversion before fanin.
     play = _run(
-        ["aplay", "-q", "-D", "plughw:Loopback,0,0", _PROBE_SINE_PATH],
+        ["aplay", "-q", "-D", "correction_substream", _PROBE_SINE_PATH],
         timeout=_PROBE_SINE_DURATION_S + 5.0,
     )
     try:
@@ -2312,13 +2517,14 @@ def probe_aec_ref_path() -> list[CheckResult]:
         results.append(CheckResult(
             "probe — aplay sine", "fail",
             f"aplay failed: {play.stderr.strip() or f'rc={play.returncode}'}. "
-            f"If 'device busy', a renderer is using Loopback,0,0; if "
-            f"'invalid argument', check /proc/asound/Loopback exists.",
+            f"If 'Unknown PCM', re-run install.sh so /etc/asound.conf "
+            f"defines correction_substream; if 'invalid argument', check "
+            f"/proc/asound/Loopback exists.",
         ))
         return results
     results.append(CheckResult(
         "probe — aplay sine", "ok",
-        f"{_PROBE_SINE_DURATION_S:.0f} s of {freq} Hz sine to plughw:Loopback,0,0",
+        f"{_PROBE_SINE_DURATION_S:.0f} s of {freq} Hz sine to correction_substream",
     ))
 
     # Wait one bridge rms window (5 s cadence) so the post-play log
@@ -2620,7 +2826,9 @@ def check_usbsink_preempt_port_reachable() -> CheckResult:
 
 def check_xvf_firmware_6ch() -> CheckResult:
     """6-ch firmware exposes raw mics on channels 2-5 of the XVF
-    capture endpoint. The bridge depends on this — it reads channel 2."""
+    capture endpoint. The bridge depends on the 6-channel endpoint
+    shape and reads channel 1 (ASR beam); channel 2 is the optional
+    raw0 corpus leg."""
     from ..mics import xvf3800
     capture_ch = xvf3800.capture_channels()
     if capture_ch is None:
@@ -3159,19 +3367,18 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
-        # Tier 2A fan-in daemon (docs/HANDOFF-fan-in-daemon.md).
+        # Mandatory fan-in daemon (docs/HANDOFF-fan-in-daemon.md).
         # The binary check fails hard if cargo build silently failed
-        # during install; the service check is a no-op-by-default
-        # (the daemon ships disabled, operator opts in for Phase 3).
-        # When opted in, the service check probes the UDS endpoint
-        # to detect a wedged work loop (catches "process alive but
-        # not making progress" — the same shape Tier 5.2's
-        # SystemSupervisor protects against at the global level).
+        # during install. The service check probes the UDS endpoint,
+        # validates canonical lane wiring, and detects a wedged work
+        # loop (catches "process alive but not making progress" — the
+        # same shape Tier 5.2's SystemSupervisor protects against at
+        # the global level).
         check_fanin_binary_installed,
-        # Topology/daemon consistency: catches "env says fanin but
-        # jasper-fanin isn't running" (= silence) or its mirror.
-        # docs/HANDOFF-fan-in-daemon.md.
-        check_audio_topology_state,
+        # Fan-in is the only supported renderer topology. The wiring
+        # check catches stale dmix-era /etc/asound.conf after deploy;
+        # the service check catches a dead/missing summing daemon.
+        check_fanin_asound_wiring,
         check_fanin_service,
         # Reports which additive wake-detection legs the user has
         # armed via the /system Wake detection card (raw + DTLN).
@@ -3222,15 +3429,10 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # Catch deployment drift on the shairport-sync.conf alsa block —
         # raw `hw:Loopback` silently breaks AirPlay (the d6c946c bug).
         check_shairport_sync_loopback_plughw,
-        # Catch the bug class that broke us 2026-05-23: PR #214 wired
-        # renderers to a user-space ALSA PCM (`jasper_renderer_in`)
-        # defined in an asoundrc that the renderer users couldn't read.
-        # `check_shairport_sync_loopback_plughw` above passed on the
-        # string match, but the *runtime* open failed and crashed
-        # shairport-sync on every connection. This probe runs the
-        # actual open AS each renderer's User=. Catches both this
-        # bug class and the broader "deploy looked fine, services
-        # active, but devices unreachable" failure mode.
+        # Catch named-PCM visibility failures under each renderer's
+        # runtime User=. In fan-in mode, EBUSY on an active private
+        # lane is OK; Unknown PCM remains a real asoundrc/deploy
+        # failure.
         check_renderer_device_resolvable,
     ]
     results = [c() for c in sync_checks]
@@ -3242,23 +3444,14 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
     """Verify the deployed shairport-sync.conf uses a multi-writer-safe
     renderer device.
 
-    Canonical (since 2026-05-22, PR #214 "Claim B"): `jasper_renderer_in`
-    — the plug-wrapped front-end of the renderer-side dmix
-    (`pcm.jasper_renderer_mix`). The dmix sits in front of
-    `hw:Loopback,0,0` so librespot, shairport-sync, and bluealsa-aplay
-    can hold the device simultaneously. Without it, snd-aloop's
-    single-writer constraint caused EBUSY crashes during multi-renderer
-    handover and the volume-flap / Spotify-Connect-handover bugs.
+    Canonical: `shairport_substream` — AirPlay's private fan-in lane.
+    jasper-fanin reads the capture side and publishes the summed music
+    stream to CamillaDSP/AEC. A stale `jasper_renderer_in` value means
+    shairport is still pointed at the retired renderer-side dmix path.
 
-    Acceptable legacy: `plughw:Loopback,0,0` — works on a box that
-    skipped the PR #214 deploy. The plug layer still handles rate
-    negotiation (44.1k AirPlay → 48k Loopback), but the device is
-    single-writer so multi-renderer scenarios will EBUSY-crash one
-    renderer until the user redeploys.
-
-    Failure: raw `hw:Loopback,0,0` — bypasses ALSA's plug layer; AirPlay
-    sessions silently rejected because shairport requests 44.1k and the
-    Loopback substream is locked at 48k.
+    Legacy `plughw:Loopback,0,0` and raw `hw:Loopback,0,0` are both
+    stale now. The raw form is additionally broken because it bypasses
+    ALSA's plug layer.
 
     Check runs against the DEPLOYED file (not the repo) so it catches
     both kinds of drift: branch not yet merged, and manual on-Pi edits."""
@@ -3287,21 +3480,22 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "on shairport-sync's default (probably wrong).",
         )
     line = active_lines[0]
-    if "jasper_renderer_in" in line:
+    if "shairport_substream" in line:
         return CheckResult(
             label, "ok",
-            "jasper_renderer_in (canonical since PR #214 — plug-wrapped "
-            "dmix; multi-writer-safe with librespot + bluealsa-aplay)",
+            "shairport_substream (fan-in private AirPlay lane)",
+        )
+    if "jasper_renderer_in" in line:
+        return CheckResult(
+            label, "fail",
+            "jasper_renderer_in — stale retired dmix path. Re-run "
+            "deploy/install.sh so shairport renders to shairport_substream.",
         )
     if 'plughw:Loopback' in line:
         return CheckResult(
             label, "warn",
-            "plughw:Loopback,0,0 — pre-PR-#214 wiring. Works, but the "
-            "loopback is single-writer so a phantom AirPlay SETUP from "
-            "another device will crash-loop librespot on EBUSY. Redeploy "
-            "(`bash scripts/deploy-to-pi.sh`) to pick up the renderer "
-            "dmix that fixes this. Source of truth: "
-            "deploy/shairport-sync.conf.template.",
+            "plughw:Loopback,0,0 — stale pre-fan-in wiring. Redeploy "
+            "to render shairport_substream, AirPlay's private fan-in lane.",
         )
     if '"hw:Loopback' in line or "'hw:Loopback" in line:
         return CheckResult(
@@ -3338,7 +3532,7 @@ def _read_first_line_matching(path: Path, predicate) -> Optional[str]:
 
 def _renderer_device_shairport() -> Optional[str]:
     """shairport-sync: parse /etc/shairport-sync.conf for output_device.
-    Format: `output_device = "jasper_renderer_in";` (libconfig syntax)."""
+    Format: `output_device = "shairport_substream";` (libconfig syntax)."""
     ln = _read_first_line_matching(
         Path("/etc/shairport-sync.conf"),
         lambda l: (
@@ -3415,14 +3609,12 @@ def _resolve_systemd_env_vars(device: str, unit: str) -> str:
     """Expand `${VAR}` references in a device string using the
     systemd unit's resolved environment.
 
-    The renderer service files now reference ALSA devices via
-    systemd env vars (e.g., `--device ${JASPER_LIBRESPOT_DEVICE}`)
-    so the audio-topology switch can flip them without rewriting
-    every ExecStart line. systemd expands those references at
-    daemon-start time, but when this doctor check reads the unit
-    file directly it sees the literal `${VAR}` string. Passing
-    that to aplay would fail with "Unknown PCM ${VAR}" — a false
-    positive.
+    Most renderer service files now use literal fan-in lane names, but
+    this helper remains useful for operator overrides that use systemd
+    environment variables. systemd expands those references at daemon
+    start time; when the doctor reads the unit file directly it sees
+    the literal `${VAR}` string. Passing that to aplay would fail with
+    "Unknown PCM ${VAR}" — a false positive.
 
     We ask systemd for the unit's resolved environment
     (`systemctl show -p Environment`), which already accounts for
@@ -3505,20 +3697,66 @@ def _probe_open_as_user(device: str, user: Optional[str]) -> tuple[bool, str]:
     return False, detail or f"exit={r.returncode}"
 
 
+_FANIN_PRIVATE_RENDERER_DEVICES = {
+    "librespot_substream": 0,
+    "shairport_substream": 1,
+    "bluealsa_substream": 2,
+    "usbsink_substream": 3,
+}
+
+
+def _alsa_busy(detail: str) -> bool:
+    return (
+        "Device or resource busy" in detail
+        or "EBUSY" in detail
+        or "errno 16" in detail
+    )
+
+
+def _fanin_lane_busy_owner_matches(device: str, unit: str) -> tuple[bool, str]:
+    """Return whether an EBUSY private fan-in lane is owned by `unit`.
+
+    An EBUSY aplay probe proves the PCM name resolved, but it does not
+    prove the expected renderer owns the lane. The snd-aloop proc status
+    exposes `owner_pid`; systemd cgroups expose the owning unit. Combine
+    both so a stale test process cannot make doctor green.
+    """
+    substream = _FANIN_PRIVATE_RENDERER_DEVICES.get(device)
+    if substream is None:
+        return False, "not a known fan-in private lane"
+    status_path = Path(f"/proc/asound/Loopback/pcm0p/sub{substream}/status")
+    try:
+        text = status_path.read_text()
+    except OSError as e:
+        return False, f"could not read {status_path}: {e}"
+    m = re.search(r"owner_pid\s*:\s*(\d+)", text)
+    if not m:
+        return False, f"{status_path} has no owner_pid"
+    pid = m.group(1)
+    cgroup_path = Path(f"/proc/{pid}/cgroup")
+    try:
+        cgroup = cgroup_path.read_text()
+    except OSError as e:
+        return False, f"could not read {cgroup_path}: {e}"
+    if f"/{unit}" in cgroup:
+        return True, f"busy/owned pid={pid}"
+    return False, f"busy but owner pid={pid} cgroup={cgroup.strip()!r}"
+
+
 def check_renderer_device_resolvable() -> CheckResult:
     """Verify each music renderer can actually open the ALSA device
     it's configured to write to, AS its runtime systemd User=.
 
-    The bug this catches (PR #223, 2026-05-23): PR #214 wired the
-    renderers to a user-space ALSA PCM (`jasper_renderer_in`)
-    defined in /root/.asoundrc (mode 0600). Renderer users
-    (shairport-sync, pi) couldn't read /root/.asoundrc, so
-    snd_pcm_open() returned "Unknown PCM" and shairport-sync
-    crashed with output_device_error_2 on every AirPlay connection.
-    String-matching the conf files (check_shairport_sync_loopback_plughw
-    above) passed because the strings looked right; what failed was
-    the runtime resolution of those strings under the renderer's user
-    identity. Only a real open attempt catches that.
+    The original bug this catches (PR #223, 2026-05-23): renderer users
+    could not read the asoundrc that defined the named ALSA PCMs, so
+    snd_pcm_open() returned "Unknown PCM" despite config strings looking
+    right. A real open attempt catches that class.
+
+    Fan-in caveat: renderer lanes are intentionally private
+    single-writer substreams. If the renderer is already active, a
+    second `aplay -D shairport_substream` probe can return EBUSY. We
+    accept that only when /proc/asound's owner_pid belongs to the
+    expected systemd unit.
 
     Method: for each known renderer:
       1. Look up its systemd User=.
@@ -3526,9 +3764,9 @@ def check_renderer_device_resolvable() -> CheckResult:
       3. `sudo -u <user> aplay -D <device> /dev/zero` for a short
          duration. Success = device opens and a write goes through.
 
-    Probe is safe to run anytime — writes only silence, sample-wise
-    additive into the dmix, no audible impact even during music
-    playback.
+    Probe is safe to run anytime. It writes only silence. On idle
+    fan-in lanes, the open succeeds; on active fan-in lanes, EBUSY is
+    accepted as "owned by the renderer."
 
     Returns:
       ok    — all configured renderers can open their device as their user
@@ -3554,12 +3792,10 @@ def check_renderer_device_resolvable() -> CheckResult:
         if device is None:
             incomplete.append(f"{name}: config not found (not installed?)")
             continue
-        # If the parsed device contains a ${VAR} reference (per the
-        # 2026-05-25 audio-topology-switch work — see deploy/bin/
-        # jasper-audio-topology), ask systemd what value it would
-        # substitute at ExecStart time. Otherwise the aplay probe
-        # below will fail with "Unknown PCM ${VAR}" — a false
-        # positive, since the running daemon HAS resolved it.
+        # If the parsed device contains a ${VAR} reference, ask systemd
+        # what value it would substitute at ExecStart time. Otherwise
+        # the aplay probe below will fail with "Unknown PCM ${VAR}" —
+        # a false positive, since the running daemon has resolved it.
         resolved_device = _resolve_systemd_env_vars(device, unit)
         user = _systemd_user_for(unit)
         ok, detail = _probe_open_as_user(resolved_device, user)
@@ -3574,6 +3810,17 @@ def check_renderer_device_resolvable() -> CheckResult:
         )
         if ok:
             successes.append(f"{name}({who})→{display}")
+        elif (
+            resolved_device in _FANIN_PRIVATE_RENDERER_DEVICES
+            and _alsa_busy(detail)
+        ):
+            owned, owner_detail = _fanin_lane_busy_owner_matches(
+                resolved_device, unit,
+            )
+            if owned:
+                successes.append(f"{name}({who})→{display} {owner_detail}")
+            else:
+                failures.append(f"{name}({who})→{display}: {owner_detail}")
         else:
             failures.append(f"{name}({who})→{display}: {detail}")
     if failures:
@@ -3582,7 +3829,8 @@ def check_renderer_device_resolvable() -> CheckResult:
             "; ".join(failures) + ". This is the bug class PR #223 "
             "addressed — verify /etc/asound.conf exists and is mode "
             "0644 so non-root renderer users can resolve user-space "
-            "ALSA PCM names.",
+            "ALSA PCM names. EBUSY is expected only for active fan-in "
+            "private lanes; Unknown PCM is always a real failure.",
         )
     if not successes:
         # All renderers were unknown — probably a stripped image.
@@ -3926,7 +4174,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--probe-aec", action="store_true",
-        help="Active probe — play a brief sine into plughw:Loopback,0,0 "
+        help="Active probe — play a brief sine into correction_substream "
              "and verify the AEC bridge's `ref` rises in its rms log. "
              "Skips the standard checks and runs only this one test. "
              "Refuses if a renderer is currently playing.",
