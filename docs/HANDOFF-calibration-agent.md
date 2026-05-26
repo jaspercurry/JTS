@@ -5,9 +5,10 @@
 > 0a substrate has landed: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
 > picker, bundle metadata, capture-quality checks, bounded correction
-> strategies, design-audit reports, first-pass confidence reports, and a read-only
-> `jasper-calibration-agent` intake CLI. The LLM agent itself is
-> still not implemented.
+> strategies, design-audit reports, first-pass confidence reports,
+> `position_analysis.json` artifacts, and a read-only
+> `jasper-calibration-agent` intake CLI. The LLM agent itself is still
+> not implemented.
 >
 > **What this proposes:** build toward a guided speaker-tuning system
 > on top of the existing `/correction/` wizard. The first layer is
@@ -766,8 +767,10 @@ Before any LLM work:
   capture-quality status, position count, per-position variance,
   repeatability, browser/device confidence, and whether the selected
   correction strategy is justified by the evidence. A first pass now
-  exists for the fields JTS already collects; SNR, repeatability, and
-  research-tuned thresholds are still future work.
+  exists for the fields JTS already collects and is shown in the
+  `/correction/` UI. Completed designs also write
+  `position_analysis.json` for replayable seat-variance analysis. SNR,
+  repeatability, and research-tuned thresholds are still future work.
 - Keep the current `info.json` / `result.json` shape compatible, but
   add explicit versioning so future FIR and agent tooling can detect
   what artifacts are present instead of guessing from filenames.

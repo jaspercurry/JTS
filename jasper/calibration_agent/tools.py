@@ -134,6 +134,9 @@ def get_measurement_summary(bundle: MeasurementBundle) -> dict[str, Any]:
             or (result.get("design_report") or {}).get("confidence_report")
             or (info.get("design_report") or {}).get("confidence_report")
         ),
+        "position_analysis": (
+            result.get("position_analysis") or info.get("position_analysis")
+        ),
         "design_report": result.get("design_report") or info.get("design_report"),
         "quality_issue_count": len(quality_issues),
         "quality_issues": quality_issues,

@@ -106,6 +106,14 @@
   calibration-agent intake tools. This is deliberately a v1
   instrument panel; SNR, repeatability, and research-tuned thresholds
   remain future refinements.
+- ✅ **Phase 2.7 — confidence UI + per-position analysis artifact.**
+  Implemented 2026-05-26. Adds a simple `/correction/` confidence
+  card showing score, findings, position-variance summary, and
+  allowed/blocked correction strategies. Each completed design now
+  writes `position_analysis.json` with per-position magnitude curves,
+  spatial average, and per-frequency variance arrays so future FIR and
+  LLM tooling can inspect seat-to-seat behavior without re-running
+  deconvolution.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -116,7 +124,7 @@
   work.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
-**Outstanding Phases 0-2.6 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.7 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before

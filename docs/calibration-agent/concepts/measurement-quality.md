@@ -33,6 +33,9 @@ designing filters from ambiguous data.
 - Build a first-pass confidence report from completed position count,
   calibrated-mic presence, input-device metadata, capture-quality
   issues, per-position variance, and strategy gates.
+- Write `position_analysis.json` with per-position magnitude curves,
+  spatial average, and variance arrays for replayable seat-variance
+  review.
 
 ## Quality Flags To Add
 

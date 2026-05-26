@@ -275,6 +275,7 @@ class MeasurementSession:
         self.capture_quality: list[dict[str, Any]] = []
         self.verify_quality: dict[str, Any] | None = None
         self.confidence_report: dict[str, Any] | None = None
+        self.position_analysis: dict[str, Any] | None = None
 
         # Output curves for the chart.
         self.measured_curve: CurveJSON | None = None
@@ -448,6 +449,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "position_analysis": self.position_analysis,
             "current_correction_at_start": self.current_correction_at_start,
             "autolevel": self.autolevel.snapshot(),
             "sweep_meta": (
@@ -514,6 +516,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "position_analysis": self.position_analysis,
             "peqs": [p.__dict__ for p in self.peqs],
             "design_report": self.design_report,
         }
@@ -555,6 +558,73 @@ class MeasurementSession:
                     "mic_calibration.txt copy failed for session %s: %s",
                     self.session_id, e,
                 )
+
+    def _write_position_analysis_json(self) -> None:
+        """Persist replayable per-position curves and variance bands.
+
+        `result.json` keeps the chart-level summary. This artifact is
+        intentionally more detailed so future FIR / agent passes can
+        inspect what each listening position contributed without
+        re-running deconvolution.
+        """
+        bundle = self._ensure_bundle_dir()
+        if (
+            bundle is None
+            or self.position_freqs is None
+            or not self.position_magnitudes
+            or self.measured_curve is None
+        ):
+            self.position_analysis = None
+            return
+
+        freqs = np.asarray(self.position_freqs, dtype=float)
+        matrix = np.vstack([
+            np.asarray(mag, dtype=float) for mag in self.position_magnitudes
+        ])
+        std_db = np.std(matrix, axis=0)
+        range_db = np.ptp(matrix, axis=0)
+
+        def round_list(values: np.ndarray) -> list[float]:
+            return [round(float(v), 3) for v in values]
+
+        variance_summary = (
+            (self.confidence_report or {})
+            .get("position_variance")
+        )
+        payload = {
+            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+            "artifact_schema_version": 1,
+            "session_id": self.session_id,
+            "correction_band_hz": [self.cfg.peq_f_low, self.cfg.peq_f_high],
+            "freqs_hz": round_list(freqs),
+            "positions": [
+                {
+                    "position_index": idx,
+                    "magnitude_db": round_list(np.asarray(mag, dtype=float)),
+                }
+                for idx, mag in enumerate(self.position_magnitudes)
+            ],
+            "spatial_average_db": [
+                round(float(v), 3) for v in self.measured_curve.magnitude_db
+            ],
+            "variance": {
+                "std_db": round_list(std_db),
+                "range_db": round_list(range_db),
+                "summary": variance_summary,
+            },
+        }
+        target_path = bundle / "position_analysis.json"
+        tmp_path = target_path.with_suffix(".json.tmp")
+        tmp_path.write_text(json.dumps(payload, indent=2, default=str))
+        tmp_path.replace(target_path)
+
+        self.position_analysis = {
+            "artifact_path": "position_analysis.json",
+            "artifact_schema_version": 1,
+            "position_count": len(self.position_magnitudes),
+            "freq_count": int(freqs.shape[0]),
+            "variance": variance_summary,
+        }
 
     def _copy_applied_yaml(self) -> None:
         """Copy the just-emitted correction YAML into the bundle. We
@@ -902,6 +972,11 @@ class MeasurementSession:
         self.design_report = design.report
         self.confidence_report = self._build_confidence_report()
         self.design_report["confidence_report"] = self.confidence_report
+        try:
+            self._write_position_analysis_json()
+        except Exception:  # noqa: BLE001
+            self.position_analysis = None
+            logger.exception("bundle position_analysis.json write failed")
 
     # ------------------------------------------------------------------
     # Apply / reset / verify.
@@ -1368,6 +1443,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "position_analysis": self.position_analysis,
             "sweep": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),

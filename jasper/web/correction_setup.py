@@ -179,6 +179,25 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .quality-banner ul { margin: 0.4em 0 0; padding-left: 1.2em; }
   .quality-banner.hidden { display: none; }
 
+  .confidence-card { border:1px solid #ddd; border-left:5px solid #999;
+                     border-radius:6px; padding:0.75em 0.9em; margin:0.8em 0;
+                     background:#fafafa; }
+  .confidence-card.high { border-left-color:#1db954; }
+  .confidence-card.medium { border-left-color:#d6b656; }
+  .confidence-card.low { border-left-color:#d44; }
+  .confidence-card.hidden { display:none; }
+  .confidence-card h3 { margin-top:0; }
+  .confidence-card .confidence-score { font-variant-numeric: tabular-nums;
+                                      font-weight:600; }
+  .confidence-card .gate-list { display:flex; gap:0.4em; flex-wrap:wrap;
+                                margin:0.5em 0; }
+  .confidence-card .gate { display:inline-block; border-radius:4px;
+                           padding:0.18em 0.45em; font-size:0.86em;
+                           background:#eee; color:#555; }
+  .confidence-card .gate.allowed { background:#e4f5e9; color:#176f36; }
+  .confidence-card .gate.blocked { background:#f7e4e4; color:#8a1f1f; }
+  .confidence-card ul { margin:0.4em 0 0; padding-left:1.2em; }
+
   .mic-panel { background:#f7f7f7; border:1px solid #ddd;
                border-radius:6px; padding:0.8em 0.9em; margin:1em 0; }
   .mic-grid { display:grid; grid-template-columns: minmax(0, 1fr);
@@ -391,6 +410,7 @@ __NAV_BACK__
     <p class="hint" style="margin-top:0.3em" id="autolevel-detail"></p>
   </div>
   <div id="result-section" class="hidden">
+    <div id="confidence-panel" class="confidence-card hidden"></div>
     <h3>Frequency response</h3>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <p class="hint">
@@ -473,6 +493,7 @@ __NAV_BACK__
   var peqList = document.getElementById('peq-list');
   var verifySummary = document.getElementById('verify-summary');
   var designReport = document.getElementById('design-report');
+  var confidencePanel = document.getElementById('confidence-panel');
 
   var ctx = null;
   var micStream = null;
@@ -1017,6 +1038,63 @@ __NAV_BACK__
       warningHtml + filterHtml;
   }
 
+  function renderConfidence(payload) {
+    var report = payload && (
+      payload.confidence_report ||
+      (payload.design_report && payload.design_report.confidence_report)
+    );
+    if (!report) {
+      confidencePanel.className = 'confidence-card hidden';
+      confidencePanel.innerHTML = '';
+      return;
+    }
+
+    var level = report.level || 'low';
+    var score = typeof report.score === 'number' ? report.score : 0;
+    var variance = report.position_variance || {};
+    var gates = report.strategy_gates || {};
+    var findings = (report.findings || []).slice(0, 5);
+    var gateHtml = ['safe', 'balanced', 'assertive'].map(function (name) {
+      var gate = gates[name] || {};
+      var allowed = !!gate.allowed;
+      return '<span class="gate ' + (allowed ? 'allowed' : 'blocked') + '">' +
+        escapeText(name) + ': ' + (allowed ? 'allowed' : 'blocked') +
+        '</span>';
+    }).join('');
+
+    var varianceHtml = '';
+    if (variance.available) {
+      varianceHtml =
+        '<p class="hint">Position variance: ' +
+        'p90 std ' + Number(variance.p90_std_db || 0).toFixed(1) + ' dB, ' +
+        'max range ' + Number(variance.max_range_db || 0).toFixed(1) +
+        ' dB across ' + Number(variance.position_count || 0) +
+        ' positions.</p>';
+    } else {
+      varianceHtml =
+        '<p class="hint">Position variance unavailable: ' +
+        escapeText(variance.reason || 'need more completed positions') +
+        '.</p>';
+    }
+
+    var findingsHtml = '';
+    if (findings.length) {
+      findingsHtml = '<ul>' + findings.map(function (finding) {
+        return '<li>' + escapeText(finding.message || finding.code) + '</li>';
+      }).join('') + '</ul>';
+    }
+
+    confidencePanel.className = 'confidence-card ' + level;
+    confidencePanel.innerHTML =
+      '<h3>Measurement confidence</h3>' +
+      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
+      '<span class="confidence-score">' + score + '/100</span></p>' +
+      '<p class="hint">' + escapeText(report.summary || '') + '</p>' +
+      varianceHtml +
+      '<div class="gate-list">' + gateHtml + '</div>' +
+      findingsHtml;
+  }
+
   function drawChart(measured, target, predicted) {
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.getBoundingClientRect();
@@ -1159,6 +1237,8 @@ __NAV_BACK__
     verifySummary.classList.add('hidden');
     designReport.classList.add('hidden');
     designReport.innerHTML = '';
+    confidencePanel.className = 'confidence-card hidden';
+    confidencePanel.innerHTML = '';
     qualityBanner.className = 'quality-banner hidden';
     qualityBanner.innerHTML = '';
     lastVerify = null;
@@ -1474,6 +1554,7 @@ __NAV_BACK__
       }
       setStateBadge(s.state, detail);
       renderQuality(s);
+      renderConfidence(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
       if (s.state === 'needs_next_position') {
@@ -1548,6 +1629,7 @@ __NAV_BACK__
         renderPEQs(data.peqs);
       }
       renderDesignReport(data.design_report);
+      renderConfidence(data);
       renderQuality(data);
       resultSection.classList.remove('hidden');
       if (data.measured) {

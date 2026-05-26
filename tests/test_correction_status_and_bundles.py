@@ -264,6 +264,18 @@ async def test_design_writes_result_json(tmp_path: Path):
         result["design_report"]["confidence_report"]
         == result["confidence_report"]
     )
+    assert result["position_analysis"]["artifact_path"] == "position_analysis.json"
+    position_analysis_path = sess.bundle_dir / "position_analysis.json"
+    assert position_analysis_path.exists()
+    position_analysis = json.loads(position_analysis_path.read_text())
+    assert position_analysis["session_id"] == sess.session_id
+    assert position_analysis["artifact_schema_version"] == 1
+    assert len(position_analysis["positions"]) == 1
+    assert len(position_analysis["positions"][0]["magnitude_db"]) == len(
+        position_analysis["freqs_hz"],
+    )
+    assert "std_db" in position_analysis["variance"]
+    assert "range_db" in position_analysis["variance"]
 
 
 # ---------- /start auto-reset + /sessions endpoint -------------------------
