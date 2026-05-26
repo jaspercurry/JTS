@@ -43,6 +43,7 @@ import secrets
 import threading
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
+from socketserver import BaseRequestHandler, StreamRequestHandler
 
 from jasper import wake_ports
 
@@ -147,7 +148,12 @@ def _make_lazy_wake_corpus_server(
                 )
 
                 for base in reversed(real_cls.mro()):
-                    if base in {object, BaseHTTPRequestHandler}:
+                    if base in {
+                        object,
+                        BaseRequestHandler,
+                        StreamRequestHandler,
+                        BaseHTTPRequestHandler,
+                    }:
                         continue
                     for name, value in base.__dict__.items():
                         if name.startswith("__") or name == "log_request":
