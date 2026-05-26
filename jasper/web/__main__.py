@@ -171,8 +171,9 @@ def main() -> int:
         target_for(airplay_port), state_path=airplay_state,
     )
 
-    # Sources wizard — three toggles, no persistent state file. Shells
-    # out to systemctl for AirPlay + Spotify Connect; DBus for BT.
+    # Sources wizard — playback-source toggles, no persistent state
+    # file. Shells out to systemctl for AirPlay, Spotify Connect, and
+    # USB sink; DBus for BT.
     sources_server = sources_setup.make_server(target_for(sources_port))
 
     # Wake-word page — model picker + detection layers + sensitivity.

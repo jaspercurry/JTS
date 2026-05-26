@@ -563,8 +563,8 @@ sees a chart, taps "Apply," next song plays through corrected DSP.
 
 Concrete changes:
 - `jasper/correction/coordinator.py`: `measurement_window()` async
-  context manager. Calls `systemctl stop librespot shairport-sync
-  bluealsa-aplay`. Sends `MEASURE_PAUSE` over UDS to voice_daemon.
+  context manager. Calls `systemctl stop` on all music source daemons
+  that can write into fan-in. Sends `MEASURE_PAUSE` over UDS to voice_daemon.
   On exit (including exceptions): sends `MEASURE_RESUME`,
   `systemctl start ...`.
 - `jasper/voice_daemon.py`: handle `MEASURE_PAUSE` / `MEASURE_RESUME`
@@ -846,10 +846,10 @@ What can actually go wrong, ordered by likelihood × impact.
    that loads our emitted YAML, runs the existing
    [test_camilla_ducker.py](../tests/test_camilla_ducker.py) tests
    against it.
-4. **measurement_window() leaves librespot/shairport in a stopped
+4. **measurement_window() leaves a music source daemon in a stopped
    state on crash.** Mitigation: `try/finally` in coordinator;
-   systemd `Restart=always` on the renderers; explicit
-   `jasper-doctor` check that all three are running.
+   systemd restart policies on the renderers; explicit
+   `jasper-doctor` checks for source-daemon health.
 5. **iOS user gives up on cert trust dance.** Mitigation: extremely
    clear onboarding instructions (screenshots, not just text) on
    the port-80 landing page. Cert download served at HTTP-only URL

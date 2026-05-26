@@ -324,7 +324,8 @@ readable form for users who'd rather read than be guided.
 
 `install.sh` source-builds shairport-sync (AirPlay 2) + nqptp,
 drops in librespot (rust, via raspotify .deb) + bluez-alsa +
-bt-agent, and owns the full systemd unit per renderer.
+bt-agent, installs the optional `jasper-usbsink`, and owns the full
+systemd unit per renderer.
 
 `jasper/renderer.py:RendererClient` reads renderer state from each
 daemon's own surface:
@@ -332,10 +333,18 @@ daemon's own surface:
   `--onevent` hook `/usr/local/bin/jasper-librespot-event`)
 - shairport-sync → MPRIS PlaybackStatus over busctl
 - bluez-alsa → `bluealsa-cli list-pcms`
+- jasper-usbsink → `/run/jasper-usbsink/state.json`
 
 `jasper-mux.service` does latest-source-wins preemption: when a
 new source transitions to playing while another is already active,
 it pauses the older one.
+
+All music/content sources enter the fan-in topology through a private
+snd-aloop lane. Before adding another playback source, read
+[`docs/audio-paths.md`](docs/audio-paths.md#adding-a-new-music-source);
+that checklist is the single source of truth for lane assignment,
+fan-in config, mux, volume, `/sources/`, doctor, and correction
+measurement-window updates.
 
 Spotify volume control goes via the Spotify Web API (the multi-
 account `spotify_router`) since librespot has no local control
