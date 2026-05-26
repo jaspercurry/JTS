@@ -1,14 +1,53 @@
-# Handoff: Tier 2A fan-in daemon — design
+# Handoff: Tier 2A fan-in daemon — operational
 
-> **Status: shipped (Phase 1 + Phase 2 chunks 1-4 landed in PR #308,
-> 2026-05-25). Disabled by default.** The daemon source, the systemd
-> unit, the install.sh build wiring, the jasper-doctor checks, and the
-> `/state` aggregation are all in place. Activating the topology (Phase
-> 3) still requires explicit operator opt-in — set
-> `JASPER_AUDIO_TOPOLOGY=fanin` and `systemctl enable --now
-> jasper-fanin.service`, then complete the 72-hour soak before Phase 4
-> (default-on). The "Status" line moves to operational once Phase 4
-> lands.
+> **Status: production default as of 2026-05-26 (PR #XXX).** Fresh
+> installs land on fanin; existing speakers with an explicit
+> `/var/lib/jasper/audio_topology.env` keep whatever topology the
+> operator chose. The CLI escape hatch back to dmix
+> (`sudo jasper-audio-topology dmix`) is preserved for at least the
+> next two weeks of soak — see the "Why the cutover" section below
+> for what triggered the promotion. Original Phase 1/2 work (daemon
+> source, systemd unit, install.sh build wiring, jasper-doctor
+> checks, `/state` aggregation) landed in PR #308 on 2026-05-25; the
+> 2026-05-26 promotion required one targeted follow-up (the
+> input-buffer sizing for WiFi-burst absorption — see "Configuration"
+> below).
+
+## Why the cutover (2026-05-26)
+
+The dmix topology PR #214 introduced (2026-05-22) was working at the
+"can multiple renderers play without crashing" level, but on-Pi
+measurement on 2026-05-26 found it was producing **~5-7 audible drops
+per minute on AirPlay** (Pattern A3 in docs/HANDOFF-airplay.md). The
+mechanism turned out to be a layered interaction we hadn't
+anticipated:
+
+1. **802.11 A-MPDU aggregation** delivers AirPlay 2 RTP packets in
+   **bursts of ~4 packets every ~30 ms** instead of the nominal 1
+   packet every ~8 ms. Confirmed via tcpdump capture of the
+   Mac Studio → Pi flow.
+2. **shairport faithfully writes those bursts** into its
+   `pcm.jasper_renderer_in` (plug wrapper on the dmix).
+3. **The dmix's per-write mutex / context-switch** was slipping
+   shairport's player thread by ~5 ms when it computed
+   `should_be_frame` for the next packet — just enough to push the
+   head packet of each burst past the hardcoded
+   `desired_lead_time=0.120 s` threshold in shairport-sync v4.3.7's
+   `player.c:1130` check.
+4. Every burst whose head-packet processing slipped into the wrong
+   half of the threshold got dropped as "out of date."
+
+**Switching to fanin eliminated the drops entirely**: 0 drops in 5
+min vs the dmix's 55 drops in the prior 10 min on the identical Mac
+Studio sender + same WiFi link. fanin replaces the userspace dmix
+with per-renderer snd-aloop substreams + a Rust summing daemon — no
+shared dmix mutex, no shared write-timing perturbation. The
+validation A/B is documented in docs/HANDOFF-airplay.md Pattern A3
+"The fanin verdict (2026-05-26)."
+
+The cutover also required bumping the per-input ALSA buffer (see
+"Configuration" below) because the dmix layer was incidentally also
+the WiFi-burst absorption layer.
 
 ## TL;DR
 
@@ -397,12 +436,17 @@ works without any wizard interaction.
 
 ```sh
 # Default values shown — operator override via /etc/jasper/jasper.env
+# (or /var/lib/jasper/fanin.env). The Environment= override in the
+# systemd unit (deploy/systemd/jasper-fanin.service) sets
+# JASPER_FANIN_BUFFER_FRAMES=4096 as the production default; the
+# code default of 1024 is the floor for "what's the minimum stable
+# size given a non-bursty writer."
 JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
 JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3
 JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
-JASPER_FANIN_BUFFER_FRAMES=1024                                 # ~21 ms — well below current dmix
+JASPER_FANIN_BUFFER_FRAMES=4096                                 # ~85 ms — see "Buffer sizing" below
 JASPER_FANIN_HANDOVER_RAMP_MS=10
 JASPER_FANIN_SILENCE_THRESHOLD_DBFS=-90
 ```
@@ -414,10 +458,62 @@ a comma-delimited shape silently splits one PCM name into three
 entries. Discovered via the chunk 2 smoke test; regression-tested
 in `config::tests::pipe_delimiter_preserves_commas_inside_hw_pcm_names`.
 
-Reasoning on the period/buffer: 1024-frame buffer (~21 ms) is half the
-old dmix's 4096; matches the documented floor for stable dmix-replacement
-shapes. Period 256 keeps wakeup cadence frequent enough that the
-heartbeat sentinel sees real forward progress every ~5 ms.
+**Period sizing**: 256 frames at 48 kHz = ~5.3 ms wakeup cadence,
+frequent enough that the heartbeat sentinel sees real forward
+progress every ~5 ms and the Tier 1+2 watchdog catches a wedged
+work loop within `WatchdogSec=30s`. No reason to deviate.
+
+#### Buffer sizing — why 4096, not 1024 (2026-05-26)
+
+The original Phase 2 design defaulted to `BUFFER_FRAMES=1024`
+(~21 ms), reasoned as "half the old dmix; matches the documented
+floor for stable dmix-replacement shapes." On 2026-05-26 we found
+that floor was too low for the real-world AirPlay-on-WiFi delivery
+pattern, and bumped the production default to `4096` (~85 ms) via
+the systemd unit's `Environment=` directive.
+
+**The mechanism (kept here for future reference)**:
+
+- 802.11 A-MPDU aggregation batches outgoing AirPlay RTP packets
+  into multi-packet radio transmissions. Measured on
+  Mac Studio → Pi 5 over a typical home AP: **bursts of ~4 packets
+  every ~30 ms** instead of the nominal 1 packet every ~8 ms. The
+  largest observed inter-burst gap was ~40 ms.
+- shairport faithfully writes whatever it receives into its
+  snd-aloop substream. Under WiFi-bursty delivery, the per-substream
+  ring fills in ~32 ms bursts and idles between them.
+- With buffer = 1024 frames (~21 ms), the ring's headroom is *less*
+  than a single inter-burst gap. fanin's continuous read tries to
+  drain it during the gap, hits empty, then the writer's next burst
+  arrives and overruns the still-not-fully-consumed ring → EPIPE,
+  which fanin handles by injecting **one period (5.3 ms) of silence**
+  into the mixer output. That's an audible click. **Measured ~1
+  xrun every 30-60 s** on real hardware until the buffer was bumped.
+- With buffer = 4096 frames (~85 ms), the ring absorbs the
+  worst-case ~40 ms gap with ample headroom. **Verified: 0 xruns
+  over 4.5 min of AirPlay playback** vs. 44 xruns over the prior
+  21 min on the same Mac + WiFi link with `BUFFER_FRAMES=1024`.
+- The size matches what the dmix layer (PR #214, replaced by this
+  topology) had in its slave's `buffer_size 4096` directive. The
+  dmix was **accidentally** also the WiFi-burst absorption layer for
+  AirPlay — that's the requirement fanin must continue to satisfy.
+
+**Trade-off**: ~64 ms more buffering on the input side than the
+original "1024 floor" design assumed. Net latency is still
+considerably better than the dmix topology because fanin's output
+path (no second dmix between fanin and CamillaDSP/AEC bridge) is
+~85 ms shorter than dmix's was. The fanin input-side cost is just
+moving the unavoidable burst-absorption buffer from "before the
+mixer" (dmix) to "at the mixer's input ring" (fanin).
+
+**Future tuning**: if a future WiFi setup proves to have tighter
+delivery (e.g., a wired AirPlay 2 link, ethernet over a Pi 4/5 with
+a USB-Ethernet dongle, or improved router QoS), this is the first
+knob to retune. Capture a tcpdump of the actual on-wire
+inter-arrival distribution; if max gap is materially below 40 ms,
+`JASPER_FANIN_BUFFER_FRAMES=2048` (~43 ms) could buy back ~43 ms of
+latency. Don't tune below `2048` without also confirming the WiFi
+gap distribution stays under ~20 ms in your environment.
 
 ## asoundrc changes (`deploy/alsa/asoundrc.jasper`)
 

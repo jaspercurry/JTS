@@ -1301,6 +1301,67 @@ migrate_voice_provider() {
 # in it because NM's own keyfile is also plaintext at 0600 — encrypting
 # our copy while NM's stays plaintext is theatre against a root-equiv
 # attacker. The PSK does NOT appear in any `echo` from this function.
+migrate_audio_topology() {
+    # Make `fanin` the default audio topology on fresh installs.
+    #
+    # Background — why fanin is the default now:
+    #   - PR #214 (2026-05-22) inserted a userspace dmix layer
+    #     (pcm.jasper_renderer_mix) between renderers and snd-aloop to
+    #     fix a multi-renderer -EBUSY crash-loop. Worked, but the
+    #     dmix's 4096-frame buffer was *incidentally* the WiFi-burst
+    #     absorption layer for AirPlay 2 (802.11 A-MPDU delivers
+    #     ~4 packets every ~30 ms; shairport needs ≥40 ms of buffer
+    #     between renderer and DSP to survive the inter-burst gap).
+    #   - On 2026-05-26 we measured ~5-7 audible drops/min on the
+    #     dmix topology that turned out to be the dmix's own per-write
+    #     mutex slipping shairport's player thread by ~5 ms — just
+    #     enough to push burst-head packets past the
+    #     `desired_lead_time=0.120 s` threshold in
+    #     `shairport-sync/player.c:1130`.
+    #   - fanin replaces the dmix with per-renderer snd-aloop
+    #     substreams + a Rust summing daemon. Validated 2026-05-26:
+    #     **zero drops** over 5 min vs dmix's 55 drops/10 min on
+    #     identical music + WiFi link.
+    #   - The fanin daemon ships with JASPER_FANIN_BUFFER_FRAMES=4096
+    #     (set in deploy/systemd/jasper-fanin.service) so it provides
+    #     the same WiFi-burst absorption capacity the dmix had.
+    #
+    # Behavior:
+    #   - State file already exists  → respect operator's choice.
+    #     A pre-existing /var/lib/jasper/audio_topology.env means the
+    #     operator (or a prior install.sh) has already chosen a
+    #     topology. Don't override.
+    #   - State file absent          → switch to fanin. This catches
+    #     the fresh-install case AND any upgrade from a pre-fanin
+    #     release that never ran the CLI.
+    #
+    # To opt out: after install completes, run
+    #   `sudo jasper-audio-topology dmix`
+    # which writes the state file with JASPER_AUDIO_TOPOLOGY=dmix
+    # and this migration will leave it alone on subsequent runs.
+    #
+    # Calls the same CLI an operator would use — single code path for
+    # state-file write + asoundrc swap + shairport conf re-render +
+    # daemon orchestration. See deploy/bin/jasper-audio-topology.
+    local state="${STATE_DIR}/audio_topology.env"
+
+    if [[ -f "${state}" ]]; then
+        local current
+        current=$(grep -E '^JASPER_AUDIO_TOPOLOGY=' "${state}" 2>/dev/null \
+                  | head -1 | cut -d= -f2)
+        echo "  migrate_audio_topology: existing state mode=${current:-unknown} (preserved)"
+        return 0
+    fi
+
+    if [[ ! -x /usr/local/sbin/jasper-audio-topology ]]; then
+        echo "  migrate_audio_topology: CLI not installed yet — skipping (re-run install.sh)"
+        return 0
+    fi
+
+    echo "  migrate_audio_topology: no existing state file — defaulting fresh install to fanin"
+    /usr/local/sbin/jasper-audio-topology fanin
+}
+
 migrate_wifi_guardian() {
     local stash="${STATE_DIR}/wifi_guardian.env"
 
@@ -1728,10 +1789,17 @@ install_systemd_units() {
         /usr/local/sbin/jasper-aec-reconcile
 
     # jasper-fanin: per-renderer snd-aloop substream fan-in daemon
-    # (Tier 2A audio architecture). Installed but NOT enabled by
-    # default — operator opts in via the JASPER_AUDIO_TOPOLOGY=fanin
-    # feature flag in /etc/jasper/jasper.env once their hardware is
-    # ready. See docs/HANDOFF-fan-in-daemon.md migration plan.
+    # (Tier 2A audio architecture). **Production default** as of
+    # 2026-05-26 — replaces the dmix-based topology that PR #214
+    # introduced and that turned out to cause periodic AirPlay drops
+    # via WiFi-burst + dmix-write-timing interaction. The actual
+    # enable + start happens via migrate_audio_topology below (which
+    # invokes the jasper-audio-topology CLI). On a fresh install this
+    # ends up active; on existing speakers it preserves whatever
+    # topology the operator already chose. See
+    # docs/HANDOFF-fan-in-daemon.md for the design + 2026-05-26
+    # validation; docs/HANDOFF-airplay.md Pattern A3 for the dmix
+    # failure mode that motivated the cutover.
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
         "${SYSTEMD_DIR}/jasper-fanin.service"
@@ -2360,6 +2428,7 @@ main() {
     install_jasper
     build_install_jasper_fanin   # Rust daemon binary; installed but not enabled
     install_systemd_units
+    migrate_audio_topology       # Default fresh installs to fanin (PR #XXX)
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram
     migrate_cgroup_memory_enabled  # Stage 2 audio-slice: cgroup memory + PSI in cmdline.txt
     install_journald_persistent_storage
