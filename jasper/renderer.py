@@ -5,9 +5,11 @@ Consults each renderer daemon directly for its playback state:
   librespot     → /run/librespot/state.json (--onevent hook)
   shairport-sync → org.mpris.MediaPlayer2.ShairportSync DBus
   bluez-alsa    → bluealsa-cli list-pcms (subprocess)
+  jasper-usbsink → /run/jasper-usbsink/state.json
 
 `RendererClient.active_renderers()` returns a dict with one boolean
-per renderer (`spotactive`, `aplactive`, `btactive`).
+per renderer (`spotactive`, `aplactive`, `btactive`,
+`usbsinkactive`).
 
 For source-aware AirPlay/Spotify transport, callers should use
 `jasper.tools.transport.make_transport_dispatcher`, which delegates

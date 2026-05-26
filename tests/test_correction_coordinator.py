@@ -86,6 +86,17 @@ async def test_pause_and_resume_renderers(monkeypatch):
     assert pause_idx < resume_idx
 
 
+def test_default_renderer_pause_list_covers_music_sources():
+    """Correction sweeps need the fan-in music chain silent. Keep this
+    list in sync when a playback source gets added."""
+    assert coordinator.DEFAULT_RENDERERS_TO_PAUSE == (
+        "librespot.service",
+        "shairport-sync.service",
+        "bluealsa-aplay.service",
+        "jasper-usbsink.service",
+    )
+
+
 @pytest.mark.asyncio
 async def test_resume_runs_even_on_exception(monkeypatch):
     """The whole point of the finally clause: a crash inside the

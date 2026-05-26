@@ -14,7 +14,7 @@ Several attenuators sit on the audio chain in series:
 
 ```
 track_loudness × airplay_sender_vol × spotify_connect_vol
-    × bt_avrcp_vol × camilla_main_volume → DAC
+    × bt_avrcp_vol × usbsink_host_vol × camilla_main_volume → DAC
 ```
 
 Most of these are **upstream of CamillaDSP**. If the iPhone slider is
@@ -38,7 +38,8 @@ sync with whatever attenuator is actually doing the work.
 When the voice tool / dial / "louder" wants to change volume:
 
 1. Coordinator queries `backend.active_renderers()`.
-2. Picks the active source: priority `airplay > spotify > bluetooth > idle`.
+2. Picks the active source: priority
+   `airplay > spotify > bluetooth > usbsink > idle`.
 3. Decides whether the source is **push-mode** (it has a slider we
    can drive — camilla pinned at 0 dB) or **camilla-as-master** (we
    can't drive its slider — camilla carries listening_level on the
@@ -49,10 +50,13 @@ When the voice tool / dial / "louder" wants to change volume:
      camilla-as-master" below for the why)
    - **SPOTIFY** → push-mode (Web API)
    - **BLUETOOTH** → push-mode (AVRCP via bluez-alsa)
+   - **USBSINK** → camilla-as-master (the host slider is observed
+     one-way by `jasper-usbsink`, not driven by JTS)
 4. Pushes the level to the right attenuator:
    - **AirPlay** → CamillaDSP `main_volume` (linear over −50..0 dB)
    - **Spotify** → Spotify Web API `PUT /me/player/volume` via the multi-account `spotify_router` (librespot 0.8.0 has no local control HTTP, so we go through Spotify's cloud → spirc → librespot, ~200-800ms latency, also propagates to all Spotify clients so the app slider visibly moves)
    - **Bluetooth** → `org.bluez.MediaTransport1.Volume` property on the active a2dpsnk path (uint16 0..127)
+   - **USB sink** → CamillaDSP `main_volume`
    - **Idle** → CamillaDSP `main_volume`
 5. In push-mode, **CamillaDSP `main_volume` is pinned at 0 dB** so
    there's no double-attenuation. In camilla-as-master mode (idle or
@@ -69,6 +73,9 @@ source's current value and feeds detected changes into
 - Spotify: read `/run/librespot/state.json` (written atomically by librespot's `--onevent` hook on every player event; `volume` field is raw 0-65535, mapped to percent)
 - Bluetooth: `bluealsa-cli list-pcms` to find the transport, then
   `busctl get-property` for `Volume`
+- USB sink: observed in the `jasper-usbsink` daemon itself. The host
+  slider is bridged into `VolumeCoordinator.observe_source_volume(...)`
+  with `source="usbsink"`; the shared `VolumeObserver` does not poll it.
 
 When the user moves the Spotify app slider or BT volume, the next
 poll picks it up (sub-second latency) and the coordinator updates
@@ -401,11 +408,16 @@ Useful references:
 
 ## Changes that need this doc
 
-If you're adding a fourth audio source, hook into:
+If you're adding another audio source, start with
+[`audio-paths.md`](audio-paths.md#adding-a-new-music-source), then hook
+into the volume-specific pieces here:
+
 - `Source` enum in `volume_coordinator.py`
 - `_active_source()` priority chain
 - One `_set_<source>` dispatcher
-- One `_read_<source>_*` observer reader
+- One `_read_<source>_*` observer reader, or a source-local bridge like
+  `jasper-usbsink` if polling from `VolumeObserver` would be the wrong
+  ownership boundary
 - Echo-prevention: `_stamp_outbound(Source.NEW, level)` in the
   dispatcher
 
@@ -416,4 +428,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-26 (re-verified after adding the self-healing reconciler `maybe_reconcile_camilla` to `VolumeObserver._tick`; new "Self-healing reconciler" section)
+Last verified: 2026-05-26 (re-verified after fan-in-only source checklist; USB sink volume path included)

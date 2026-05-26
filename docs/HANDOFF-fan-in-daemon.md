@@ -76,6 +76,13 @@ current CamillaDSP `target_level: 2048`, the fixed downstream delay
 shairport must compensate is now ~171 ms instead of ~192 ms. The saving
 survives any future PipeWire migration.
 
+For future playback sources, this doc owns the topology details, but
+the cross-cutting contributor checklist lives in
+[`audio-paths.md`](audio-paths.md#adding-a-new-music-source). Start
+there so lane assignment, mux, volume, doctor, source wizard, and
+measurement-window updates happen together instead of drifting into
+parallel one-off lists.
+
 ## Why now
 
 PR #214 (2026-05-22) solved a real `-EBUSY` crash-loop with the smallest
@@ -830,6 +837,9 @@ follow-on if/when warranted.
 
 - [`docs/HANDOFF-resilience.md`](HANDOFF-resilience.md) — the multi-tier
   resilience ladder this design composes with.
+- [`docs/audio-paths.md`](audio-paths.md#adding-a-new-music-source) —
+  the canonical checklist for adding another music source to the
+  fan-in topology.
 - [`docs/HANDOFF-airplay.md`](HANDOFF-airplay.md) — Pattern A3 (the
   current Tier 1A fix) and the underlying snd_pcm_delay() limitation
   this Tier 2A work avoids by deleting the dmix.

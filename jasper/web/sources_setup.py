@@ -1,6 +1,6 @@
 """Sources on/off page at /sources/.
 
-Three toggles, one per audio source:
+Playback-source toggles:
 
   - **AirPlay** ↔ `shairport-sync.service` (systemctl enable/disable +
     start/stop). nqptp stays running either way; it's a tiny PTP daemon
@@ -14,16 +14,21 @@ Three toggles, one per audio source:
     to a Spotify account — claiming is a separate one-time OAuth step
     needed only for voice cold-start (see /spotify/). Basic phone-side
     Spotify Connect works without claiming.
+  - **USB Audio Input** ↔ `jasper-usbsink.service` (systemctl
+    enable/disable + start/stop). The main service owns the
+    `jasper-usbsink-init.service` ConfigFS lifecycle through systemd
+    Requires/PartOf wiring.
 
-All three default ON (the units ship with `Restart=always`). The toggle
-is the only knob; there's no per-source settings on this page.
+AirPlay, Bluetooth, and Spotify Connect default ON. USB Audio Input
+defaults OFF so it has zero resident RAM cost until explicitly enabled.
+The toggle is the only knob; there's no per-source settings on this page.
 
 State polling: clients GET /state every few seconds to reflect external
 changes (operator ran `systemctl stop shairport-sync` from SSH, etc.).
 
 URL surface (after nginx strips /sources/):
   GET  /         page render
-  GET  /state    {airplay, bluetooth, spotify_connect} → {enabled: bool, available: bool}
+  GET  /state    {airplay, bluetooth, spotify_connect, usbsink} → {enabled: bool, available: bool}
   POST /set      {source, enabled} → same shape as /state on success
 """
 from __future__ import annotations

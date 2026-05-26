@@ -2038,7 +2038,7 @@ def _handle_next_position(
     asyncio.run_coroutine_threadsafe(_run_next_sweep(), _ensure_loop())
 
     # Wait until the background task has actually advanced state.
-    # measurement_window setup takes ~100-500 ms (systemctl stop x3
+    # measurement_window setup takes ~100-500 ms (systemctl stops
     # + MEASURE_PAUSE UDS) before prepare_and_play_sweep sets
     # PREPARING; allow up to 5 seconds of slack.
     _run_async(
