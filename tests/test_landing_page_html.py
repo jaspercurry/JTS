@@ -49,3 +49,20 @@ def test_volume_slider_allows_only_one_flush_loop() -> None:
     assert "if (flushing) return;" in html
     assert "flushing = true;" in html
     assert "flushing = false;" in html
+
+
+def test_landing_page_has_source_selector_buttons() -> None:
+    html = _index_html()
+
+    assert 'aria-label="Playback source"' in html
+    for source in ("auto", "airplay", "bluetooth", "spotify", "usbsink"):
+        assert f'data-source="{source}"' in html
+
+
+def test_source_selector_uses_control_endpoints() -> None:
+    html = _index_html()
+
+    assert "fetch('/source/state'" in html
+    assert "fetch('/source/select'" in html
+    assert "pendingSource" in html
+    assert "source-button.playing::after" in html

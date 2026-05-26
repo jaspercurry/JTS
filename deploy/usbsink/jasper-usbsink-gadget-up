@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Bring up the JTS USB Audio Class 2 gadget descriptor in ConfigFS.
+# Bring up the Jasper USB Audio Class 2 gadget descriptor in ConfigFS.
 #
 # Runs once at jasper-usbsink-init.service start. The dtoverlay
 # `dwc2,dr_mode=peripheral` (added to /boot/firmware/config.txt by
 # install.sh) puts the BCM2712 OTG controller into peripheral mode at
-# boot; this script writes the ConfigFS tree that exposes JTS to a
+# boot; this script writes the ConfigFS tree that exposes the speaker to a
 # connected host as a USB audio output device.
 #
 # Idempotent: if the gadget directory already exists, exits 0 without
@@ -12,7 +12,7 @@
 # the tree; the next start re-creates it cleanly.
 #
 # Adapted from PiCorrect's setup.sh:68-123. The JTS-specific changes:
-# - Manufacturer / product strings rebranded to JTS
+# - Manufacturer / product strings rebranded to Jasper
 # - Tagged paths under /sys/kernel/config/usb_gadget/jts-usb-audio
 # - libcomposite is modprobed by the systemd unit's ExecStartPre, not
 #   here, so the script itself stays minimal and side-effect-free
@@ -25,6 +25,13 @@ set -euo pipefail
 CONFIGFS=/sys/kernel/config
 NAME=jts-usb-audio
 GADGET_DIR="${CONFIGFS}/usb_gadget/${NAME}"
+SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
+
+if [[ -r "$SPEAKER_NAME_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$SPEAKER_NAME_FILE" 2>/dev/null || true
+fi
+SPEAKER_NAME="${JASPER_SPEAKER_NAME:-JTS}"
 
 # Idempotent: if descriptor exists AND is bound to a UDC, we're done.
 # (If a partial setup left an unbound descriptor, the down script
@@ -64,14 +71,14 @@ mkdir -p strings/0x409
 SERIAL=$(awk -F': ' '/^Serial/{print $2; exit}' /proc/cpuinfo 2>/dev/null || true)
 echo "${SERIAL:-jts-unknown}" > strings/0x409/serialnumber
 echo "Jasper Tech Speaker" > strings/0x409/manufacturer
-echo "JTS USB Audio" > strings/0x409/product
+echo "${SPEAKER_NAME} USB Audio" > strings/0x409/product
 
 # Configuration descriptor. One configuration, named "c.1", holding
 # the single UAC2 function. MaxPower in mA — 500 mA matches the USB
 # 2.0 default; we draw power separately via the 8086 splitter, so this
 # is informational only.
 mkdir -p configs/c.1/strings/0x409
-echo "JTS USB Audio Configuration" > configs/c.1/strings/0x409/configuration
+echo "${SPEAKER_NAME} USB Audio Configuration" > configs/c.1/strings/0x409/configuration
 echo 500 > configs/c.1/MaxPower
 
 # UAC2 function. JTS is unidirectional: host sends audio TO the Pi

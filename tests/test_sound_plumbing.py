@@ -15,7 +15,7 @@ def test_sound_wizard_is_socket_nginx_and_web_wired():
     landing = (ROOT / "deploy" / "index.html").read_text()
     service = (ROOT / "deploy" / "jasper-web.service").read_text()
 
-    assert "ListenStream=127.0.0.1:8783" in socket_unit
+    assert "ListenStream=127.0.0.1:8784" in socket_unit
     assert "location /sound/" in nginx
     assert "JASPER_SOUND_WEB_PORT" in web_main
     assert "sound_setup.make_server" in web_main

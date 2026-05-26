@@ -124,7 +124,16 @@ def backend(tmp_path: Path):
     include_raw_mic_0."""
     b = wake_corpus_setup.RecordingBackend(
         output_dir=tmp_path / "out",
-        ports={"on": 9876, "off": 9877, "dtln": 9878, "raw0": 9879},
+        ports={
+            "on": 9876,
+            "off": 9877,
+            "dtln": 9878,
+            "raw0": 9879,
+            "ref": 9880,
+            "usb_raw": 9881,
+            "usb_webrtc": 9882,
+            "usb_dtln": 9883,
+        },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
     )
     b.start()
@@ -275,16 +284,19 @@ def test_sequence_excludes_deleted_clips(backend) -> None:
     sequence can overwrite a later good take in the same condition.
     """
     backend.begin_session("jasper")
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip1 = backend.stop_recording()
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip2 = backend.stop_recording()
     assert clip1.seq == 1
     assert clip2.seq == 2
 
     backend.delete_clip(clip1.clip_id)
 
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip3 = backend.stop_recording()
     # Sequence is monotonic across the session, including deleted clips.
     assert clip3.seq == 3
@@ -321,7 +333,8 @@ def test_delete_clip_idempotent_on_missing(backend) -> None:
 
 def test_delete_clip_idempotent_on_already_deleted(backend) -> None:
     backend.begin_session("jasper")
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
     # Second delete returns False (already deleted)
@@ -335,7 +348,8 @@ def test_delete_clip_idempotent_on_already_deleted(backend) -> None:
 
 def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip = backend.stop_recording()
 
     json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
@@ -353,7 +367,8 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
 
 def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
 
@@ -367,7 +382,8 @@ def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
 
 def test_metadata_atomic_no_tmp_left_behind(backend, tmp_path: Path) -> None:
     backend.begin_session("jasper")
-    backend.start_recording("quiet", "near"); time.sleep(0.05)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
     backend.stop_recording()
 
     md_dir = tmp_path / "out" / "metadata"
@@ -1100,7 +1116,8 @@ def test_legs_includes_raw0_in_tuple() -> None:
     """The LEGS tuple must include raw0 so downstream tools that
     iterate over it pick up the new quadrant directories."""
     assert "raw0" in wake_corpus_setup.LEGS
-    assert wake_corpus_setup.BASE_LEGS == ("on", "off", "dtln")
+    assert wake_corpus_setup.BASE_LEGS == ("on", "off")
+    assert wake_corpus_setup.DTLN_LEG == "dtln"
 
 
 def test_default_aec_raw0_port_constant_exposed() -> None:
@@ -1112,10 +1129,12 @@ def test_default_aec_raw0_port_constant_exposed() -> None:
 
 def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
     """A backend constructed without explicit ports defaults to all
-    four leg ports (recorder subscribes to a subset based on the
-    session flag)."""
+    known leg ports (recorder subscribes to a session-selected subset)."""
     b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
-    assert set(b._ports.keys()) == {"on", "off", "dtln", "raw0"}
+    assert set(b._ports.keys()) == {
+        "on", "off", "dtln", "raw0", "ref", "usb_raw",
+        "usb_webrtc", "usb_dtln",
+    }
 
 
 def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
@@ -1125,9 +1144,21 @@ def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
         aec_off_port=2222,
         aec_dtln_port=3333,
         aec_raw0_port=4444,
+        aec_ref_port=5555,
+        aec_usb_raw_port=6666,
+        aec_usb_webrtc_port=7777,
+        aec_usb_dtln_port=8888,
         include_dtln=False,
     )
-    assert ports == {"on": 1111, "off": 2222, "raw0": 4444}
+    assert ports == {
+        "on": 1111,
+        "off": 2222,
+        "raw0": 4444,
+        "ref": 5555,
+        "usb_raw": 6666,
+        "usb_webrtc": 7777,
+        "usb_dtln": 8888,
+    }
 
 
 def test_combined_web_entrypoint_includes_raw0_port(
@@ -1145,12 +1176,20 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_OFF_PORT", "2200")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_DTLN_PORT", "3300")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_RAW0_PORT", "4400")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_REF_PORT", "5500")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT", "6600")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT", "7700")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
 
     assert web_main._wake_corpus_ports_from_env() == {
         "on": 1100,
         "off": 2200,
         "dtln": 3300,
         "raw0": 4400,
+        "ref": 5500,
+        "usb_raw": 6600,
+        "usb_webrtc": 7700,
+        "usb_dtln": 8800,
     }
 
 
@@ -1165,6 +1204,8 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     ports = web_main._wake_corpus_ports_from_env()
     assert "dtln" not in ports
     assert ports["raw0"] == 4400
+    assert ports["ref"] == wake_corpus_setup.DEFAULT_AEC_REF_PORT
+    assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
 
 
 def test_begin_session_default_excludes_raw0(backend) -> None:
@@ -1172,6 +1213,25 @@ def test_begin_session_default_excludes_raw0(backend) -> None:
     pre-flag sessions shouldn't suddenly start capturing 4 legs."""
     backend.begin_session("jasper")
     assert backend.include_raw_mic_0() is False
+    assert backend.include_dtln() is True
+
+
+def test_begin_session_can_disable_dtln(backend, tmp_path: Path) -> None:
+    """XVF DTLN is session-selectable so low-RAM corpus runs can stay
+    on the two cheap production legs."""
+    backend.begin_session("jasper", include_dtln=False)
+    assert backend.include_dtln() is False
+    assert backend.enabled_legs() == ("on", "off")
+
+    backend.start_recording("quiet", "near")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    assert (out / "aec_on_nomusic").is_dir()
+    assert (out / "aec_off_nomusic").is_dir()
+    assert not (out / "aec_dtln_nomusic").exists()
+    assert set(clip.files.keys()) == {"on", "off"}
 
 
 def test_begin_session_with_raw0_records_4_legs(
@@ -1216,6 +1276,57 @@ def test_begin_session_without_raw0_records_3_legs(
     assert set(clip.files.keys()) == {"on", "off", "dtln"}
 
 
+def test_begin_session_with_usb_mic_records_corpus_experiment_legs(
+    backend, tmp_path: Path,
+) -> None:
+    """USB/ref opt-in adds the corpus-only cheap-mic legs without
+    needing to change the production base leg set."""
+    backend.begin_session("jasper", include_usb_mic=True)
+    assert backend.include_usb_mic() is True
+    assert set(backend.enabled_legs()) == {
+        "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
+    }
+    backend.start_recording("ambient", "near")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    for leg in ("ref", "usb_raw", "usb_webrtc"):
+        d = out / f"aec_{leg}_ambient"
+        assert d.is_dir(), f"missing dir: {d}"
+        assert len(list(d.glob("*.aec-*.wav"))) == 1
+    assert set(clip.files.keys()) == {
+        "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
+    }
+
+
+def test_begin_session_with_usb_dtln_records_companion_legs(
+    backend, tmp_path: Path,
+) -> None:
+    """USB DTLN can be tested independently of USB WebRTC, but it
+    still records ref + USB raw so the comparison is interpretable."""
+    backend.begin_session("jasper", include_usb_dtln=True)
+    assert backend.include_usb_mic() is False
+    assert backend.include_usb_dtln() is True
+    assert set(backend.enabled_legs()) == {
+        "on", "off", "dtln", "ref", "usb_raw", "usb_dtln",
+    }
+
+    backend.start_recording("ambient", "near")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    for leg in ("ref", "usb_raw", "usb_dtln"):
+        d = out / f"aec_{leg}_ambient"
+        assert d.is_dir(), f"missing dir: {d}"
+        assert len(list(d.glob("*.aec-*.wav"))) == 1
+    assert set(clip.files.keys()) == {
+        "on", "off", "dtln", "ref", "usb_raw", "usb_dtln",
+    }
+    assert "usb_webrtc" not in clip.files
+
+
 def test_metadata_persists_include_raw_mic_0_flag(
     backend, tmp_path: Path,
 ) -> None:
@@ -1229,6 +1340,42 @@ def test_metadata_persists_include_raw_mic_0_flag(
     json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
     data = json.loads(json_files[0].read_text())
     assert data["include_raw_mic_0"] is True
+    assert data["include_dtln"] is True
+    assert data["enabled_legs"] == ["on", "off", "dtln", "raw0"]
+
+
+def test_metadata_persists_include_usb_mic_flag(
+    backend, tmp_path: Path,
+) -> None:
+    backend.begin_session("jasper", include_usb_mic=True)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    data = json.loads(json_files[0].read_text())
+    assert data["include_usb_mic"] is True
+    assert data["include_usb_dtln"] is False
+    assert data["enabled_legs"] == [
+        "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
+    ]
+
+
+def test_metadata_persists_dtln_session_flags(
+    backend, tmp_path: Path,
+) -> None:
+    backend.begin_session(
+        "jasper", include_dtln=False, include_usb_dtln=True,
+    )
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    data = json.loads(json_files[0].read_text())
+    assert data["include_dtln"] is False
+    assert data["include_usb_dtln"] is True
+    assert data["enabled_legs"] == ["on", "off", "ref", "usb_raw", "usb_dtln"]
 
 
 def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
@@ -1248,6 +1395,31 @@ def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
     b.start()
     try:
         assert b.include_raw_mic_0() is True
+        assert b.include_dtln() is True
+    finally:
+        b.shutdown()
+
+
+def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
+    out = tmp_path / "out"
+    md = out / "metadata"
+    md.mkdir(parents=True)
+    (md / "enroll_jasper_x.json").write_text(json.dumps({
+        "session_id": "x", "member": "jasper",
+        "ports": {
+            "on": 9876, "off": 9877, "dtln": 9878,
+            "ref": 9880, "usb_raw": 9881, "usb_dtln": 9883,
+        },
+        "include_dtln": False,
+        "include_usb_dtln": True,
+        "clips": [],
+    }))
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.include_dtln() is False
+        assert b.include_usb_dtln() is True
+        assert b.enabled_legs() == ("on", "off", "ref", "usb_raw", "usb_dtln")
     finally:
         b.shutdown()
 
@@ -1325,6 +1497,8 @@ def test_list_sessions_returns_summaries_newest_first(
     assert sessions[1]["session_id"] == "old"
     assert sessions[0]["include_raw_mic_0"] is True
     assert sessions[1]["include_raw_mic_0"] is False
+    assert sessions[0]["include_dtln"] is True
+    assert sessions[0]["include_usb_dtln"] is False
     assert sessions[0]["clip_count"] == 1
     assert sessions[0]["conditions"] == {"ambient": 1}
 
@@ -1380,6 +1554,8 @@ def test_load_session_switches_active(backend, tmp_path: Path) -> None:
     result = backend.load_session(first_id)
     assert result["session_id"] == first_id
     assert result["include_raw_mic_0"] is True
+    assert result["include_dtln"] is True
+    assert result["include_usb_dtln"] is False
     assert backend.session_id() == first_id
     assert backend.include_raw_mic_0() is True
     # And the loaded session's clips are now visible
@@ -1443,6 +1619,8 @@ def test_delete_active_session_clears_in_memory_state(
     assert backend.member() is None
     assert backend.list_clips() == []
     assert backend.include_raw_mic_0() is False
+    assert backend.include_dtln() is False
+    assert backend.include_usb_dtln() is False
 
 
 def test_delete_session_refuses_during_recording(backend) -> None:
@@ -1478,6 +1656,33 @@ def test_html_has_include_raw_mic_0_checkbox() -> None:
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'id="include-raw-mic-0"' in html_text
     assert 'raw mic 0' in html_text
+
+
+def test_html_has_include_usb_mic_checkbox() -> None:
+    """Begin-a-new-session form has the corpus USB/ref toggle."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="include-usb-mic"' in html_text
+    assert 'USB mic + reference' in html_text
+    assert 'include_usb_mic' in html_text
+
+
+def test_html_has_dtln_session_checkboxes() -> None:
+    """Begin-a-new-session form exposes XVF and USB DTLN toggles."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="include-dtln"' in html_text
+    assert 'id="include-usb-dtln"' in html_text
+    assert 'include_dtln' in html_text
+    assert 'include_usb_dtln' in html_text
+    assert 'USB DTLN' in html_text
+
+
+def test_html_playback_uses_leg_selector() -> None:
+    """Clip rows let the operator choose any recorded leg for playback."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'data-audio-leg' in html_text
+    assert 'legLabel(leg)' in html_text
+    assert 'encodeURIComponent(ev.target.value)' in html_text
+    assert "usb_dtln: 'USB DTLN'" in html_text
 
 
 def test_html_js_calls_sessions_endpoints() -> None:
@@ -1605,6 +1810,74 @@ def test_api_status_includes_include_raw_mic_0(
         try:
             body = json.loads(resp.read())
             assert body["include_raw_mic_0"] is True
+            assert body["include_dtln"] is True
+            assert body["enabled_legs"] == ["on", "off", "dtln", "raw0"]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_status_includes_include_usb_mic(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    backend.begin_session("jasper", include_usb_mic=True)
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert body["include_usb_mic"] is True
+            assert body["include_usb_dtln"] is False
+            assert body["enabled_legs"] == [
+                "on", "off", "dtln", "ref", "usb_raw", "usb_webrtc",
+            ]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_begin_accepts_dtln_flags(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session",
+            json.dumps({
+                "member": "jasper",
+                "include_dtln": False,
+                "include_usb_dtln": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["include_dtln"] is False
+            assert body["include_usb_dtln"] is True
+            assert body["enabled_legs"] == [
+                "on", "off", "ref", "usb_raw", "usb_dtln",
+            ]
         finally:
             conn.close()
     finally:

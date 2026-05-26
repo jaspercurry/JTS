@@ -103,8 +103,11 @@ explicit so future-you can re-derive decisions instead of memorising them.
 
 ### 3.1 Landing page `/` — 13 cards
 
-Sticky-ish top: **Volume slider** (0-100%, drag/keyboard) + **Mic toggle**
-(checked = listening). Both poll `jasper-control` on 1.5-3s loops.
+Sticky-ish top: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
+(checked = listening), and a lightweight **Source selector** (Auto,
+AirPlay, Bluetooth, Spotify, USB). The selector posts to
+`jasper-control`'s `/source/*` routes and is distinct from the
+`/sources/` on/off wizard.
 
 Then 12 navigation cards stacked equally:
 

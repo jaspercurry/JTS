@@ -47,6 +47,7 @@ Type=notify
 WatchdogSec=30s
 TimeoutStopSec=5s
 EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Spotify CLIENT_ID/SECRET written by the setup wizard at
 # https://jts.local/spotify. Optional — leading `-` lets the
 # daemon boot fine when this file doesn't exist yet (the

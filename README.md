@@ -127,9 +127,11 @@ over its websocket on port 1234.
 > Why the split and what the tracker does:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
-`jasper-mux` arbitrates between the renderers — when a new
-source transitions to playing while another is already active, it
-pauses the older one so the user gets "latest source wins" UX.
+`jasper-mux` arbitrates between the renderers. In auto mode, when a new
+source transitions to playing while another is already active, it pauses
+the older one so the user gets "latest source wins" UX. The landing page
+also exposes a lightweight Source selector: manual mode gates one
+renderer lane through `jasper-fanin` without turning any source on/off.
 
 There's also a reconciler-managed software AEC bridge
 (`jasper-aec-bridge`) that taps the music chain via a
@@ -148,7 +150,8 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ Music streaming (AirPlay 2, Spotify Connect, Bluetooth A2DP) via
   source-built shairport-sync + nqptp, librespot (rust, via raspotify
   .deb) with log volume curve, and bluez-alsa
-- ✅ `jasper-mux` daemon for latest-source-wins preemption
+- ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
+  landing-page source selection
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)
@@ -200,10 +203,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   shaping without clearing room correction. See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract and observability hooks.
+- ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
+  name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
+  to `JTS`; the URL remains `jts.local`.
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB-C port (via the 8086
-  Consultancy USB-C/PWR Splitter) and the host sees JTS as a USB
-  audio output device. Off by default; toggle at
+  Consultancy USB-C/PWR Splitter) and the host sees the configured
+  speaker name as a USB audio output device. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins
@@ -453,17 +459,17 @@ reference. Currently:
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
-  **Current primary workstream (2026-05-25).** The forward-looking
+  **Current primary workstream (2026-05-26).** The forward-looking
   plan for training a custom `jarvis_jts_*_v1` wake-word model
   matched to the JTS audio chain, replacing the community
   `jarvis_v2` model (published recall 26%). Sequenced phases
   (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
   explicit listening checkpoints. Capture tooling shipped end-to-
   end via the browser recorder at http://jts.local/wake-corpus/
-  (PRs #303 → #323) with a 4th `raw0` leg for future-proofing
-  against cheaper mic hardware. Read this before working on wake-
-  word reliability, training data collection, or testing
-  methodology.
+  (PRs #303 → #323, plus the 2026-05-26 USB/ref/DTLN follow-up) with
+  a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
+  for future cheaper-mic experiments. Read this before working on wake-
+  word reliability, training data collection, or testing methodology.
 - [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
   Active workstream (May 2026). The VAD / mic-stream A/B test matrix:
   why local Silero on the AEC stream (Cell 0) is the production default,

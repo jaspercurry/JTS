@@ -48,6 +48,35 @@ short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
 testing showed dmix's per-write timing could drop WiFi-bursty RTP
 packets.
 
+## Manual source selection
+
+The landing page's Source selector chooses which enabled renderer lane
+the speaker passes; it does not turn renderers on or off. The on/off
+surface remains `/sources/`.
+
+Control path:
+
+```
+deploy/index.html
+  → jasper-control /source/state + /source/select
+  → jasper-mux UDS /run/jasper-mux/control.sock
+  → jasper-fanin UDS /run/jasper-fanin/control.sock
+  → selected input gate in the fan-in audio loop
+```
+
+Ownership is deliberately split:
+
+- `jasper-mux` owns policy: auto mode is latest-source-wins; manual
+  mode is the user-selected source. It maps public source IDs
+  (`spotify`, `airplay`, `bluetooth`, `usbsink`) to fan-in labels
+  (`spotify`, `airplay`, `bluealsa`, `usbsink`).
+- `jasper-fanin` owns only the cheap audio gate: `AUTO` sums active
+  lanes; `SELECT <label>` passes one renderer lane. The correction/test
+  lane is always mixed so diagnostics and room correction still work.
+- `jasper-control` is the HTTP proxy for the web UI. It also merges
+  `/sources/` availability into `/source/state` so unavailable/off
+  renderers can be disabled in the landing-page selector.
+
 ## Adding a new music source
 
 This is the canonical checklist for adding another source that should
@@ -72,7 +101,9 @@ mixer, a second output device, or a new volume model.
    `deploy/systemd/jasper-fanin.service`. The lists are pipe-delimited
    because ALSA `hw:` names contain commas. A configured input is part
    of the production graph; if it cannot be opened, fan-in should fail
-   loudly instead of silently dropping the source.
+   loudly instead of silently dropping the source. Keep the renderer
+   label stable: mux uses that label when it asks fan-in to pass one
+   selected source lane.
 3. **Wire the source daemon to the alias.** Its systemd unit should
    write to the alias, not to `jasper_capture`, `jasper_out`, or raw
    `hw:Loopback,*` names. Renderer units should order after
@@ -89,27 +120,33 @@ mixer, a second output device, or a new volume model.
    real pause/silence API. If the source cannot be paused from the Pi,
    document the intentional fallback ("may briefly mix") and expose an
    operator escape hatch only when the failure mode justifies one.
-6. **Choose the volume model.** Update `VolumeCoordinator`: either the
+6. **Wire manual source selection.** Add the source to
+   `jasper.mux.Source`, `SOURCE_TO_FANIN_LABEL`, the mux status payload,
+   `jasper/control/server.py`'s `/source/select` allow-list, and the
+   landing-page selector in `deploy/index.html`. The `/sources/` wizard
+   remains the on/off surface; `/source/select` only picks the lane the
+   speaker should currently pass.
+7. **Choose the volume model.** Update `VolumeCoordinator`: either the
    source is **push-mode** (its own slider carries `listening_level`
    and CamillaDSP stays at 0 dB) or **camilla-as-master** (CamillaDSP
    carries `listening_level`). Add inbound observation only if the
    source has a reliable user-facing volume surface.
-7. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
+8. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
    `previous`, or `now playing` can control the source, wire
    `jasper/tools/transport.py` and document the backend in
    `HANDOFF-voice-music-control.md`. If not, return a concrete "not
    supported for this source" response.
-8. **Add operator surfaces and observability.** Update `/sources/` if
+9. **Add operator surfaces and observability.** Update `/sources/` if
    the source can be enabled/disabled, `/state` if it has useful live
    state, `jasper-doctor` for topology drift and runtime health, and
    `jts-audio.slice` / no-swap checks for any resident audio-path
    daemon.
-9. **Protect measurements and tests.** Add the source to the
+10. **Protect measurements and tests.** Add the source to the
    correction `measurement_window()` pause list if it can emit during a
    sweep. Add tests for asound wiring, fan-in config, source-state
    fail-soft behavior, mux preemption, volume dispatch, and any source
    wizard toggles.
-10. **Update docs in one place, then link.** This section covers the
+11. **Update docs in one place, then link.** This section covers the
     cross-cutting checklist. Source-specific quirks belong in a
     focused HANDOFF only when they are non-obvious, as USB sink does in
     `HANDOFF-usbsink.md`. README's documentation map should link the
@@ -339,4 +376,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-26 (added the canonical checklist for future music sources after the fan-in-only cutover)
+Last verified: 2026-05-26 (updated the future-source checklist for fan-in plus manual source selection)

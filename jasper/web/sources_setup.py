@@ -266,7 +266,7 @@ computer plugged into the Pi's USB-C port.</p>
       <div class="source-name">USB Audio Input</div>
       <div class="source-note" id="usbsink-note">
         Plug a computer into the Pi's USB-C port (via the 8086 splitter).
-        Your computer sees JTS as a USB audio output device.
+        Your computer sees the speaker as a USB audio output device.
       </div>
       <div class="source-note" id="usbsink-unavailable-note" style="display:none">
         USB gadget mode not enabled in /boot/firmware/config.txt —

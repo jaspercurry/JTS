@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Wake + Wi-Fi + Peers + Transit + Weather + Sound)
+Description=Jasper smart-speaker web setup service (Spotify + voice provider + Google + AirPlay + Sources + Speaker + Wake + Wi-Fi + Peers + Transit + Weather + Sound)
 # Socket-activated by jasper-web.socket — daemon exits after 10 min idle.
 Requires=jasper-web.socket
 After=jasper-web.socket network-online.target time-sync.target
@@ -20,6 +20,7 @@ Wants=network-online.target time-sync.target
 Type=notify
 WatchdogSec=30s
 EnvironmentFile=/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # Optional file written by the Spotify setup wizard when the user
 # pastes their Spotify Developer App credentials. Sourced after
 # jasper.env so wizard-written values win. Leading `-` makes it
@@ -55,13 +56,14 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 #   /google/   →  127.0.0.1:8768
 #   /airplay/  →  127.0.0.1:8771
 #   /sources/  →  127.0.0.1:8773
+#   /speaker/  →  127.0.0.1:8783
 #   /wake/     →  127.0.0.1:8774
 #   /wifi/     →  127.0.0.1:8775
 #   /peers/    →  127.0.0.1:8776
 #   /transit/  →  127.0.0.1:8777
 #   /ha/       →  127.0.0.1:8778
 #   /weather/  →  127.0.0.1:8779
-#   /sound/    →  127.0.0.1:8783
+#   /sound/    →  127.0.0.1:8784
 # When socket-activated, all fds arrive via LISTEN_FDS and the
 # Python side disambiguates by getsockname()[1] (port). See
 # jasper/web/__main__.py for the wiring.
@@ -74,14 +76,14 @@ RestartSec=2
 
 # Hardening — this process needs to read /etc/jasper/jasper.env,
 # read+write /var/lib/jasper/ and generated CamillaDSP configs,
-# accept connections on systemd-passed
-# loopback fds, and call `systemctl restart jasper-voice` after a
-# wizard updates state.
+# update BlueZ's local name, accept connections on systemd-passed
+# loopback fds, and call `systemctl restart` after a wizard updates
+# state.
 ProtectSystem=full
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs
+ReadWritePaths=/var/lib/jasper /var/lib/camilladsp/configs /etc/bluetooth
 
 [Install]
 # WantedBy left out intentionally — enabling the .socket pulls in

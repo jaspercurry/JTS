@@ -475,7 +475,7 @@ install_renderers() {
     # shairport-sync config is templated: deploy/shairport-sync.conf.template
     # has placeholders substituted by /usr/local/sbin/jasper-apply-airplay-mode:
     #   - __DISABLE_SYNCHRONIZATION__ from /var/lib/jasper/airplay_mode.env
-    #   - __AIRPLAY_NAME__ from /etc/jasper/jasper.env / hostname fallback
+    #   - __AIRPLAY_NAME__ from /var/lib/jasper/speaker_name.env
     #   - __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__ from the active CamillaDSP
     #     samplerate/chunksize/target_level.
     # shairport-sync.service's ExecStartPre re-renders on every restart, so
@@ -493,15 +493,7 @@ install_renderers() {
     # audio state after an upgrade.
     rm -f /usr/local/sbin/jasper-audio-topology
     rm -rf /etc/jasper/audio-topology
-    # jasper-derive-device-name maps the system hostname to a display
-    # name shown in Spotify Connect / AirPlay device pickers. Called
-    # by jasper-apply-airplay-mode (and by the jasper.env seeding
-    # block below) as a hostname-driven default so a second/third Pi
-    # on the same LAN doesn't collide with the first on Avahi. See
-    # the script for the mapping (jts → JTS, jts2 → JTS-2, etc.).
-    install -m 0755 \
-        "${REPO_DIR}/deploy/bin/jasper-derive-device-name" \
-        /usr/local/sbin/jasper-derive-device-name
+    rm -f /usr/local/sbin/jasper-derive-device-name
     # Default to synced: with shairport-sync.conf.template setting
     # resync_threshold_in_seconds=0.2, synced mode is glitch-free on
     # this chain (empirically verified over multiple 5-min samples
@@ -533,8 +525,8 @@ set_usb_gadget_mode() {
     # (the USB-C port) into peripheral mode so it can present as a USB
     # gadget to a connected host. This is the precondition for the
     # jasper-usbsink feature — a fourth music source where a computer
-    # plugged into the Pi via the 8086 splitter sees JTS as a USB audio
-    # output device.
+    # plugged into the Pi via the 8086 splitter sees the configured
+    # speaker name as a USB audio output device.
     #
     # We only set the dtoverlay. We do NOT load libcomposite at boot,
     # auto-create the gadget descriptor, or enable jasper-usbsink. All
@@ -568,7 +560,7 @@ set_usb_gadget_mode() {
 
 # JTS install — required for jasper-usbsink (USB audio gadget source).
 # Puts the BCM2712 OTG controller into peripheral mode so a connected
-# host can see JTS as a USB audio output device. libcomposite is NOT
+# host can see the speaker as a USB audio output device. libcomposite is NOT
 # loaded at boot; the jasper-usbsink-init.service modprobes it on
 # demand, so RAM stays at baseline when the USB sink is disabled.
 # Reboot required to take effect. See docs/HANDOFF-usbsink.md.
@@ -1043,15 +1035,6 @@ PY
         local mic_card
         mic_card=$(detect_card arecord 'xvf3800|respeaker.*array' 'Array')
         echo "  ReSpeaker mic: ${mic_card}"
-        # Derive Spotify Connect / AirPlay display names from the
-        # system hostname so a second/third Pi on the same LAN gets
-        # a unique name out of the box (jts → JTS, jts2 → JTS-2).
-        # See deploy/bin/jasper-derive-device-name for the mapping;
-        # the operator can still override either var in jasper.env
-        # for a custom display name like "Living Room".
-        local device_name
-        device_name=$("${REPO_DIR}/deploy/bin/jasper-derive-device-name")
-        echo "  device name: ${device_name}"
         # Derive JASPER_HOSTNAME from the OS hostname so a fresh Pi
         # named "jts2" in Raspberry Pi Imager ends up with
         # JASPER_HOSTNAME=jts2.local — otherwise other devices on the
@@ -1063,8 +1046,6 @@ PY
         echo "  hostname: ${hostname_value}"
         sed \
             -e "s|JASPER_MIC_DEVICE=Array|JASPER_MIC_DEVICE=${mic_card}|" \
-            -e "s|^JASPER_SPOTIFY_DEVICE_NAME=.*|JASPER_SPOTIFY_DEVICE_NAME=${device_name}|" \
-            -e "s|^JASPER_AIRPLAY_DEVICE_NAME=.*|JASPER_AIRPLAY_DEVICE_NAME=${device_name}|" \
             -e "s|^JASPER_HOSTNAME=.*|JASPER_HOSTNAME=${hostname_value}|" \
             "${REPO_DIR}/.env.example" > "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
@@ -1073,6 +1054,16 @@ PY
         echo "Pick a voice provider at http://${hostname_value}/voice before"
         echo "starting jasper-voice — there is no default."
         echo
+    fi
+    sed -i \
+        -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
+        -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
+        "${ENV_DIR}/jasper.env"
+    if [[ ! -e "${STATE_DIR}/speaker_name.env" ]]; then
+        install -d -m 0750 "${STATE_DIR}"
+        printf 'JASPER_SPEAKER_NAME="JTS"\n' > "${STATE_DIR}/speaker_name.env"
+        chmod 0644 "${STATE_DIR}/speaker_name.env"
+        echo "  speaker name: JTS"
     fi
     migrate_voice_provider
     migrate_transit_config

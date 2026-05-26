@@ -39,7 +39,7 @@
 //! every successful `step()`, satisfying the JTS progress-sentinel
 //! contract documented in `src/watchdog.rs`.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -77,6 +77,11 @@ pub struct Mixer {
     pub frames_written: Arc<AtomicU64>,
     /// Cumulative output xrun events.
     pub output_xrun_count: Arc<AtomicU64>,
+    /// Selected input index. -1 means auto/mix all active inputs;
+    /// non-negative means pass only that source's lane. The
+    /// correction/test lane is always mixed so diagnostics keep
+    /// working even if the household selected a renderer manually.
+    selected_input_index: Arc<AtomicI32>,
     /// Channel for forwarding xrun events to the off-thread log
     /// writer. `try_send` is non-blocking on an unbounded channel
     /// (std::sync::mpsc::Sender::send only fails when the receiver
@@ -159,6 +164,7 @@ impl Mixer {
             output_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
+            selected_input_index: Arc::new(AtomicI32::new(-1)),
             xrun_tx,
             period_frames: config.period_frames,
         })
@@ -174,6 +180,12 @@ impl Mixer {
     /// (chunk 3 will use this).
     pub fn inputs(&self) -> &[Input] {
         &self.inputs
+    }
+
+    /// Shared selected-input index for the STATUS/control endpoint.
+    /// The audio loop reads this atomically once per period.
+    pub fn selected_input_index(&self) -> Arc<AtomicI32> {
+        Arc::clone(&self.selected_input_index)
     }
 
     /// Drive the work loop until `shutdown` is set. Bumps the
@@ -233,8 +245,12 @@ impl Mixer {
 
         // 2. Read from each input, accumulate into sum_buf.
         let period_frames = self.period_frames as usize;
-        for input in &mut self.inputs {
+        let selected_input = self.selected_input_index.load(Ordering::Relaxed);
+        for (idx, input) in self.inputs.iter_mut().enumerate() {
             let frames = read_input(input, period_frames, &self.xrun_tx)?;
+            if !input_selected(selected_input, idx, &input.label) {
+                continue;
+            }
             // Only sum the samples we actually got. `read_input`
             // zero-pads the tail of input.read_buf so reading the
             // full period is also safe; explicit bounds save a few
@@ -276,6 +292,16 @@ fn saturate_to_i16(sum: &[i32], out: &mut [i16]) {
     for (o, &s) in out.iter_mut().zip(sum) {
         *o = s.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
     }
+}
+
+fn input_selected(
+    selected_input: i32,
+    input_index: usize,
+    label: &str,
+) -> bool {
+    selected_input < 0
+        || selected_input == input_index as i32
+        || label == "correction"
 }
 
 fn open_input(pcm_name: &str, label: &str, config: &Config) -> Result<Input> {
@@ -569,5 +595,13 @@ mod tests {
         let mut out = vec![0i16; 2];
         saturate_to_i16(&sum, &mut out);
         assert_eq!(out, vec![i16::MAX, i16::MAX]);
+    }
+
+    #[test]
+    fn selected_input_passes_auto_selected_and_correction() {
+        assert!(input_selected(-1, 0, "spotify"));
+        assert!(input_selected(1, 1, "airplay"));
+        assert!(!input_selected(1, 0, "spotify"));
+        assert!(input_selected(1, 4, "correction"));
     }
 }

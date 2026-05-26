@@ -37,8 +37,9 @@ UAC2 gadget + CamillaDSP stack on Pi 5 hardware
 
 USB gadget audio becomes a fourth music source alongside AirPlay, Spotify
 Connect, and Bluetooth A2DP. The user plugs a computer into the Pi via
-USB-C, the computer sees JTS as a USB audio output device, audio flows
-through the existing CamillaDSP chain to the speakers.
+USB-C, the computer sees the configured speaker name as a USB audio
+output device, audio flows through the existing CamillaDSP chain to the
+speakers.
 
 PLAN.md previously marked this as v8 "Blocked on Pi linux #6289 / #6569
 being fixed". That deferral is obsolete: PiCorrect resolves #6289 by
@@ -49,8 +50,8 @@ a quick verification on Trixie's current kernel before we commit — see
 §11 Risk register.
 
 **In scope**
-- Host computer → JTS as a USB audio output (unidirectional, host-side
-  is playback-only)
+- Host computer → configured speaker name as a USB audio output
+  (unidirectional, host-side is playback-only)
 - Host volume slider drives JTS canonical `listening_level` (Mac volume
   feels like spinning the dial)
 - Latest-source-wins arbitration via `jasper-mux`
@@ -71,7 +72,7 @@ a quick verification on Trixie's current kernel before we commit — see
   gadget is fixed at 48 kHz S32_LE stereo, which downmixes inside the
   host's audio stack with no loss for any practical music source
 - Routing JTS speaker output back over USB (loopback-to-host) — host
-  sees JTS as a one-way sink
+  sees the speaker as a one-way sink
 - Configurable gadget VID/PID/manufacturer strings via wizard — single
   set baked into the boot script, settable via env if a user needs it
 - Hot-changing the dtoverlay state at runtime — requires a reboot, and
@@ -452,7 +453,8 @@ deploy/systemd/jasper-usbsink-init.service
 `uac2-gadget-up.sh` is lifted from
 [PiCorrect's setup.sh:68-123](https://github.com/jaspercurry/PiCorrect/blob/main/setup.sh#L68)
 with two modifications:
-- Manufacturer/product strings: "Jasper Tech Speaker" / "JTS USB Audio"
+- Manufacturer/product strings: "Jasper Tech Speaker" /
+  `"<speaker name> USB Audio"` (default "JTS USB Audio")
 - Serial number derived from the same `/proc/cpuinfo` line PiCorrect
   uses
 - Idempotency check: skip if `${CONFIGFS}/${NAME}` already exists
@@ -868,8 +870,8 @@ elif source == "usbsink":
 
 Add a row to the HTML rendering. New row with the source name "USB
 Audio Input" and a note "Plug a computer into the Pi's USB-C port via
-the 8086 splitter. Mac/Windows/Linux will see JTS as a USB audio
-output.".
+the 8086 splitter. Mac/Windows/Linux will see the speaker as a USB
+audio output.".
 
 The wizard's optimistic-UI JavaScript already loops over `SOURCES`;
 just add `usbsink` to that array (line 247). No further JS changes
@@ -1167,10 +1169,10 @@ descriptor creates and registers an ALSA card.
 - `deploy/systemd/jasper-usbsink-init.service`
 - Manual test on the Pi: deploy, reboot, `systemctl start
   jasper-usbsink-init`, verify `/proc/asound/UAC2Gadget` exists
-- Plug Mac in: Mac should see "JTS USB Audio" in Audio Devices
+- Plug Mac in: Mac should see "<speaker name> USB Audio" in Audio Devices
 
-**Acceptance**: Mac System Settings → Sound shows JTS as an output
-device. Setting JTS as output and playing audio: Mac says it's
+**Acceptance**: Mac System Settings → Sound shows the speaker as an
+output device. Setting it as output and playing audio: Mac says it's
 streaming, JTS speakers play nothing (no daemon yet). RAM cost
 verified: `systemctl stop jasper-usbsink-init` brings it back to
 baseline minus the ~50 KB dwc2 module.
@@ -1241,7 +1243,7 @@ between USB and existing sources.
 - Toggle off → daemon stops, init stops, ALSA card disappears,
   libcomposite unloads (verify with `lsmod | grep libcomposite`)
 - Toggle on → init runs, descriptor created, daemon starts, ALSA card
-  appears, host re-detects JTS as audio device
+  appears, host re-detects the speaker as an audio device
 - Off→on cycle <3 s end-to-end
 
 ### Phase 6 — Doctor checks (~1 h)
@@ -1323,7 +1325,7 @@ in `BRINGUP.md`:
 1. After install + reboot, `lsmod | grep libcomposite` shows nothing
 2. `systemctl status jasper-usbsink-init` is `inactive (dead)`
 3. Toggle USB on in `/sources/` → both units active within ~3 s
-4. Plug Mac in → Mac sees JTS as audio output
+4. Plug Mac in → Mac sees the speaker as an audio output
 5. Play music from Mac → audible from JTS speakers
 6. Adjust Mac volume → JTS volume follows (verify via dashboard or
    `curl :8780/state | jq .voice.listening_level`)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tear down the JTS USB Audio gadget descriptor.
+# Tear down the Jasper USB Audio gadget descriptor.
 #
 # Best-effort: each step's failure is logged but doesn't abort the
 # rest. A partially-broken descriptor (e.g. previous gadget-up died

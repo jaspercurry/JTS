@@ -71,6 +71,44 @@ async def test_active_renderers_all_inactive(renderer):
 
 
 @pytest.mark.asyncio
+async def test_selected_source_reads_manual_mux_status(renderer):
+    reader = MagicMock()
+    reader.readline = AsyncMock(
+        return_value=b'{"mode":"manual","selected_source":"bluetooth"}\n',
+    )
+    writer = MagicMock()
+    writer.write = MagicMock()
+    writer.drain = AsyncMock()
+    writer.close = MagicMock()
+    writer.wait_closed = AsyncMock()
+
+    with patch(
+        "asyncio.open_unix_connection",
+        new=AsyncMock(return_value=(reader, writer)),
+    ):
+        assert await renderer.selected_source() == "bluetooth"
+
+
+@pytest.mark.asyncio
+async def test_selected_source_returns_none_in_auto_mode(renderer):
+    reader = MagicMock()
+    reader.readline = AsyncMock(
+        return_value=b'{"mode":"auto","selected_source":null}\n',
+    )
+    writer = MagicMock()
+    writer.write = MagicMock()
+    writer.drain = AsyncMock()
+    writer.close = MagicMock()
+    writer.wait_closed = AsyncMock()
+
+    with patch(
+        "asyncio.open_unix_connection",
+        new=AsyncMock(return_value=(reader, writer)),
+    ):
+        assert await renderer.selected_source() is None
+
+
+@pytest.mark.asyncio
 async def test_active_renderers_spotify_playing(renderer):
     _write_librespot_state(renderer, {
         "playing": True, "paused": False, "stopped": False,

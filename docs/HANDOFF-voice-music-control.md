@@ -95,8 +95,9 @@ full design.
   phone." Spoken back to the user.
 - **No active source, user asks "play Kanye West"** →
   `start_playback` targets the Pi's librespot endpoint
-  (`JASPER_SPOTIFY_DEVICE_NAME`, default "JTS"). If that endpoint
-  isn't visible to the user's Spotify account, returns "no
+  using the shared speaker display name from `/speaker/` (default
+  "JTS"). If that endpoint isn't visible to the user's Spotify
+  account, returns "no
   Spotify target device available — visit `<management URL>` to
   link your account or open Spotify and cast to the speaker once
   to register it."

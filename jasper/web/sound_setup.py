@@ -532,7 +532,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--port", type=int,
-        default=int(os.environ.get("JASPER_SOUND_WEB_PORT", "8783")),
+        default=int(os.environ.get("JASPER_SOUND_WEB_PORT", "8784")),
     )
     parser.add_argument(
         "--profile-path",

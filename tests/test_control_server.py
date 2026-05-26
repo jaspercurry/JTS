@@ -483,6 +483,147 @@ def test_transport_dispatcher_error_field_propagates_as_502(monkeypatch):
         thread.join(timeout=2)
 
 
+# --- /source/state + /source/select ---
+
+
+@pytest.fixture
+def server_with_mux_stub(monkeypatch):
+    """Stub jasper-mux's UDS command helper so source-selection route
+    tests don't require a live daemon socket."""
+    calls: list[str] = []
+    responses: list[dict] = []
+
+    async def fake_mux_command(cmd: str, **kwargs):  # noqa: ARG001
+        calls.append(cmd)
+        if responses:
+            response = responses.pop(0)
+            if response.get("raise") == "missing":
+                raise FileNotFoundError("/run/jasper-mux/control.sock")
+            return response
+        if cmd.startswith("SELECT "):
+            selected = cmd.split(" ", 1)[1]
+            return {
+                "mode": "manual",
+                "selected_source": selected,
+                "active_source": selected,
+                "sources": {
+                    "airplay": {"playing": selected == "airplay"},
+                    "bluetooth": {"playing": selected == "bluetooth"},
+                    "spotify": {"playing": selected == "spotify"},
+                    "usbsink": {"playing": selected == "usbsink"},
+                },
+            }
+        return {
+            "mode": "auto",
+            "selected_source": None,
+            "active_source": "airplay",
+            "sources": {
+                "airplay": {"playing": True},
+                "bluetooth": {"playing": False},
+                "spotify": {"playing": False},
+                "usbsink": {"playing": False},
+            },
+        }
+
+    import jasper.control.server as srv_mod
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_command)
+
+    def fake_augment(payload: dict) -> dict:
+        for source in payload.get("sources", {}).values():
+            source["available"] = True
+            source["enabled"] = True
+        return payload
+
+    monkeypatch.setattr(srv_mod, "_augment_source_payload", fake_augment)
+
+    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        yield base, calls, responses
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_source_state_proxies_mux_status(server_with_mux_stub):
+    base, calls, _ = server_with_mux_stub
+    status, body = _get(f"{base}/source/state")
+
+    assert status == 200
+    assert calls == ["STATUS"]
+    assert body["active_source"] == "airplay"
+    assert body["sources"]["airplay"]["playing"] is True
+
+
+def test_source_select_posts_source_to_mux(server_with_mux_stub):
+    base, calls, _ = server_with_mux_stub
+    status, body = _post(f"{base}/source/select", {"source": "bluetooth"})
+
+    assert status == 200
+    assert calls == ["SELECT bluetooth"]
+    assert body["mode"] == "manual"
+    assert body["selected_source"] == "bluetooth"
+
+
+def test_source_select_auto_posts_auto_to_mux(server_with_mux_stub):
+    base, calls, _ = server_with_mux_stub
+    status, _ = _post(f"{base}/source/select", {"source": "auto"})
+
+    assert status == 200
+    assert calls == ["AUTO"]
+
+
+def test_source_select_rejects_unknown_source(server_with_mux_stub):
+    base, calls, _ = server_with_mux_stub
+    status, body = _post(f"{base}/source/select", {"source": "cassette"})
+
+    assert status == 400
+    assert calls == []
+    assert "source must be" in body["error"]
+
+
+def test_source_state_mux_unreachable_is_503(server_with_mux_stub):
+    base, calls, responses = server_with_mux_stub
+    responses.append({"raise": "missing"})
+
+    status, body = _get(f"{base}/source/state")
+
+    assert status == 503
+    assert calls == ["STATUS"]
+    assert "jasper-mux unreachable" in body["error"]
+
+
+def test_source_payload_adds_sources_wizard_availability(monkeypatch):
+    import jasper.web.sources_setup as sources_mod
+    from jasper.control.server import _augment_source_payload
+
+    monkeypatch.setattr(sources_mod, "_gather_state", lambda: {
+        "airplay": {"available": True, "enabled": True},
+        "bluetooth": {"available": False, "enabled": False},
+        "spotify_connect": {"available": True, "enabled": True},
+        "usbsink": {"available": False, "enabled": False},
+    })
+    payload = {
+        "sources": {
+            "airplay": {"playing": False},
+            "bluetooth": {"playing": False},
+            "spotify": {"playing": True},
+            "usbsink": {"playing": False},
+        },
+    }
+
+    result = _augment_source_payload(payload)
+
+    assert result["sources"]["airplay"]["enabled"] is True
+    assert result["sources"]["bluetooth"]["available"] is False
+    assert result["sources"]["spotify"]["enabled"] is True
+    assert result["sources"]["usbsink"]["available"] is False
+
+
 # --- 404 / coordinator-failure ---
 
 

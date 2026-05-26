@@ -15,8 +15,8 @@ Renderer support:
     pause:  Two-tier escalation. Tier 1 is Spotify Web API via
             spotipy — librespot 0.8.0 has no local control HTTP.
             We iterate household accounts and issue
-            PUT /me/player/pause to any account that has the JTS
-            device in its list. Tier 2 (added 2026-05-22) is
+            PUT /me/player/pause to any account that has the configured
+            speaker device in its list. Tier 2 (added 2026-05-22) is
             `systemctl restart librespot.service` if Tier 1 fails
             — guarantees librespot releases its private fan-in lane
             so the new winner is heard alone. Tier 2 is still useful
@@ -53,6 +53,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import json
 import logging
 import os
 from dataclasses import dataclass, field
@@ -86,6 +88,14 @@ class Source(str, Enum):
     USBSINK = "usbsink"
 
 
+SOURCE_TO_FANIN_LABEL = {
+    Source.SPOTIFY: "spotify",
+    Source.AIRPLAY: "airplay",
+    Source.BLUETOOTH: "bluealsa",
+    Source.USBSINK: "usbsink",
+}
+
+
 # Host:port the usbsink daemon's preempt endpoint listens on. Keep
 # in sync with jasper.usbsink.preempt_listener.DEFAULT_PORT — both
 # are defaults the operator can override via env var. We duplicate
@@ -99,6 +109,12 @@ USBSINK_PREEMPT_PORT = int(os.environ.get(
     "JASPER_USBSINK_PREEMPT_PORT", "8781",
 ))
 USBSINK_PREEMPT_URL = f"http://{USBSINK_PREEMPT_HOST}:{USBSINK_PREEMPT_PORT}/preempt"
+FANIN_CONTROL_SOCKET = os.environ.get(
+    "JASPER_FANIN_CONTROL_SOCKET", "/run/jasper-fanin/control.sock",
+)
+MUX_CONTROL_SOCKET = os.environ.get(
+    "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
+)
 
 
 def _spotify_preempt_restart_disabled() -> bool:
@@ -160,6 +176,7 @@ class Mux:
         self._librespot_state_path = librespot_state_path
         self._state = _State()
         self._winner: Optional[Source] = None
+        self._manual_source: Optional[Source] = None
         self._winner_age_ticks = 0
         # Lazy router for Web API pause. Built on first use, kept
         # for the daemon's lifetime. None means Spotify env vars
@@ -181,28 +198,38 @@ class Mux:
             "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
-        while True:
-            try:
-                await self._tick()
-            except asyncio.CancelledError:
-                raise
-            except Exception as e:  # noqa: BLE001
-                logger.warning("mux tick failed: %s", e)
-            await asyncio.sleep(self.POLL_INTERVAL_SEC)
+        await self._fanin_auto_best_effort(reason="startup")
+        control_task = asyncio.create_task(self._run_control_server())
+        try:
+            while True:
+                try:
+                    await self._tick()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("mux tick failed: %s", e)
+                await asyncio.sleep(self.POLL_INTERVAL_SEC)
+        finally:
+            control_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await control_task
 
-    async def _tick(self) -> None:
+    async def _probe_sources(self) -> dict[Source, bool]:
         spotify, airplay, bluetooth, usbsink = await asyncio.gather(
             spotify_playing(self._librespot_state_path),
             airplay_playing(),
             bluetooth_playing(),
             usbsink_playing(),
         )
-        current = {
+        return {
             Source.SPOTIFY: spotify,
             Source.AIRPLAY: airplay,
             Source.BLUETOOTH: bluetooth,
             Source.USBSINK: usbsink,
         }
+
+    async def _tick(self) -> None:
+        current = await self._probe_sources()
 
         # Detect transitions inactive→active. Multiple in one tick
         # would be unusual but possible — we treat any of them as
@@ -215,6 +242,15 @@ class Mux:
 
         self._state.playing = current
         self._winner_age_ticks += 1
+
+        if self._manual_source is not None:
+            await self._fanin_select_best_effort(
+                self._manual_source, reason="manual_tick",
+            )
+            if self._usbsink_preempted:
+                await self._usbsink_set_preempt(False, reason="manual_mode")
+            self._winner = self._manual_source
+            return
 
         if newly_started:
             new_winner = newly_started[-1]
@@ -262,6 +298,188 @@ class Mux:
                 await self._usbsink_set_preempt(
                     False, reason="all_others_idle",
                 )
+
+    async def select_source(self, source: Source) -> dict[str, Any]:
+        """Manual source selection from the web UI.
+
+        Fan-in enforces the audible lane. This deliberately does not
+        pause, disconnect, or disable any renderer: the source selector
+        chooses what the speaker passes through, while the `/sources/`
+        wizard remains the on/off surface.
+        """
+        await self._fanin_select(source)
+        self._manual_source = source
+        current = await self._probe_sources()
+        self._state.playing = current
+
+        if self._usbsink_preempted:
+            await self._usbsink_set_preempt(False, reason="manual_select")
+
+        self._winner = source
+        self._winner_age_ticks = 0
+        logger.info("event=source.manual_select source=%s", source.value)
+        return self._status_payload(current)
+
+    async def auto_select(self) -> dict[str, Any]:
+        """Return to latest-source-wins behavior."""
+        current = await self._probe_sources()
+        active_sources = [
+            source for source, is_playing in current.items() if is_playing
+        ]
+        if active_sources:
+            new_winner = active_sources[-1]
+            for source in active_sources:
+                if source != new_winner:
+                    await self._pause_best_effort(
+                        source, reason="auto_select",
+                    )
+            if new_winner == Source.USBSINK and self._usbsink_preempted:
+                await self._usbsink_set_preempt(False, reason="auto_select")
+            self._winner = new_winner
+            self._winner_age_ticks = 0
+        else:
+            self._winner = None
+
+        await self._fanin_auto()
+        self._manual_source = None
+        self._state.playing = current
+        if self._usbsink_preempted:
+            others_playing = any(
+                playing
+                for src, playing in current.items()
+                if src != Source.USBSINK
+            )
+            if not others_playing:
+                await self._usbsink_set_preempt(
+                    False, reason="manual_auto_others_idle",
+                )
+        logger.info("event=source.auto_select")
+        return self._status_payload(current)
+
+    def _status_payload(
+        self, current: dict[Source, bool] | None = None,
+    ) -> dict[str, Any]:
+        current = current or self._state.playing
+        active = self._active_source_name(current)
+        return {
+            "mode": "manual" if self._manual_source is not None else "auto",
+            "selected_source": (
+                self._manual_source.value if self._manual_source else None
+            ),
+            "active_source": active,
+            "winner": self._winner.value if self._winner else None,
+            "sources": {
+                source.value: {"playing": bool(current.get(source, False))}
+                for source in Source
+            },
+        }
+
+    def _active_source_name(self, current: dict[Source, bool]) -> str:
+        if self._manual_source is not None:
+            return self._manual_source.value
+        if self._winner is not None and current.get(self._winner, False):
+            return self._winner.value
+        for source in (
+            Source.AIRPLAY,
+            Source.SPOTIFY,
+            Source.BLUETOOTH,
+            Source.USBSINK,
+        ):
+            if current.get(source, False):
+                return source.value
+        return "idle"
+
+    async def _pause_best_effort(self, source: Source, *, reason: str) -> None:
+        try:
+            await self._pause(source)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "source preempt failed source=%s reason=%s: %s",
+                source.value, reason, e,
+            )
+
+    async def _fanin_select(self, source: Source) -> dict[str, Any]:
+        label = SOURCE_TO_FANIN_LABEL[source]
+        return await _fanin_command(f"SELECT {label}")
+
+    async def _fanin_auto(self) -> dict[str, Any]:
+        return await _fanin_command("AUTO")
+
+    async def _fanin_select_best_effort(
+        self, source: Source, *, reason: str,
+    ) -> None:
+        try:
+            await self._fanin_select(source)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "fanin source gate reassert failed source=%s reason=%s: %s",
+                source.value, reason, e,
+            )
+
+    async def _fanin_auto_best_effort(self, *, reason: str) -> None:
+        try:
+            await self._fanin_auto()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fanin AUTO reset failed reason=%s: %s", reason, e)
+
+    async def _run_control_server(self) -> None:
+        try:
+            parent = os.path.dirname(MUX_CONTROL_SOCKET)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            try:
+                os.unlink(MUX_CONTROL_SOCKET)
+            except FileNotFoundError:
+                pass
+            server = await asyncio.start_unix_server(
+                self._handle_control_client,
+                path=MUX_CONTROL_SOCKET,
+            )
+            logger.info("mux control socket listening at %s", MUX_CONTROL_SOCKET)
+            async with server:
+                await server.serve_forever()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mux control socket unavailable: %s", e)
+
+    async def _handle_control_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
+        try:
+            raw = await asyncio.wait_for(reader.readline(), timeout=2.0)
+            command = raw.decode("utf-8", "replace").strip()
+            if command == "STATUS":
+                payload = self._status_payload()
+            elif command == "AUTO":
+                payload = await self.auto_select()
+            elif command.startswith("SELECT "):
+                source_name = command.split(" ", 1)[1].strip()
+                try:
+                    source = Source(source_name)
+                except ValueError:
+                    payload = {"error": f"unknown source {source_name!r}"}
+                else:
+                    payload = await self.select_source(source)
+            else:
+                payload = {"error": f"unknown command {command!r}"}
+            writer.write((json.dumps(payload) + "\n").encode("utf-8"))
+            await writer.drain()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("mux control request failed: %s", e)
+            with contextlib.suppress(Exception):
+                writer.write(
+                    (json.dumps({"error": str(e)}) + "\n").encode("utf-8"),
+                )
+                await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
 
     # ------------------------------------------------------------------
     # Pause actions — Spotify and AirPlay have clean APIs; Bluetooth
@@ -314,7 +532,6 @@ class Mux:
             )
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
-
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — POSTs to the daemon's local HTTP
@@ -371,7 +588,6 @@ class Mux:
                 "usbsink preempt POST failed (silenced=%s reason=%s): %s",
                 silenced, reason, e,
             )
-
 
     # ------------------------------------------------------------------
     # Spotify Web API helpers — librespot 0.8.0 has no local control
@@ -447,7 +663,8 @@ class Mux:
         router = self._ensure_spotify_router()
         if router is None:
             return False
-        device_name = os.environ.get("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+        from .speaker_name import runtime_name as _speaker_runtime_name
+        device_name = _speaker_runtime_name()
         # Two-pass: first prefer is_active devices (lowest-latency
         # path); fall through to any JTS-named device if that fails.
         for prefer_active in (True, False):
@@ -495,8 +712,8 @@ class Mux:
         that gap, the new winner (AirPlay / Bluetooth) is heard alone.
         After respawn, librespot is back as an idle Spotify Connect
         device — the credential cache (--system-cache
-        /var/cache/librespot) persists, so the user's phone re-sees JTS
-        in the Connect picker without re-authenticating. The catch: any
+        /var/cache/librespot) persists, so the user's phone re-sees the
+        speaker in the Connect picker without re-authenticating. The catch: any
         state inside librespot's current session (track position, queue)
         is lost — the next Spotify Connect cast picks up fresh.
 
@@ -553,6 +770,34 @@ async def _busctl(*args: str) -> Optional[str]:
     if proc.returncode != 0:
         return None
     return stdout.decode("utf-8", "replace")
+
+
+async def _fanin_command(cmd: str) -> dict[str, Any]:
+    """Send one line to jasper-fanin's control socket.
+
+    Fan-in owns the hot-path audio gate; mux owns policy. Keeping the
+    IPC here as a one-command UDS call mirrors jasper-control's voice
+    socket helper without importing any Rust-specific detail.
+    """
+    reader, writer = await asyncio.open_unix_connection(FANIN_CONTROL_SOCKET)
+    try:
+        writer.write((cmd + "\n").encode("ascii"))
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=2.0)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+    if not line:
+        raise RuntimeError("jasper-fanin returned no response")
+    payload = json.loads(line.decode("utf-8"))
+    if isinstance(payload, dict) and "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    if not isinstance(payload, dict):
+        raise RuntimeError("jasper-fanin returned non-object JSON")
+    return payload
 
 
 async def _amain(args: argparse.Namespace) -> None:

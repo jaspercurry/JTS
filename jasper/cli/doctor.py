@@ -73,6 +73,24 @@ def check_env_file() -> CheckResult:
     return CheckResult("env file", "ok", str(p))
 
 
+def check_speaker_name() -> CheckResult:
+    from ..speaker_name import STATE_FILE, read_state
+
+    state = read_state()
+    p = Path(STATE_FILE)
+    if p.exists() and state.source != "state":
+        return CheckResult(
+            "speaker name",
+            "warn",
+            f"{p} exists but could not be parsed; using {state.name!r}",
+        )
+    return CheckResult(
+        "speaker name",
+        "ok",
+        f"{state.name!r} ({state.source})",
+    )
+
+
 # Per-provider expected key prefix and human-readable label. The prefix
 # is a soft signal — providers occasionally rotate the format, so a
 # mismatch is a warn, not a fail. Source: each provider's API docs as
@@ -622,8 +640,8 @@ def check_spotify_cache(cfg: Config) -> CheckResult:
 
 def check_spotify_connect_device(cfg: Config) -> CheckResult:
     """Verify the on-Pi librespot endpoint is visible to at least one
-    configured Spotify account, with a broadcast name matching
-    JASPER_SPOTIFY_DEVICE_NAME (substring match).
+    configured Spotify account, with a broadcast name matching the
+    /speaker/ display name (substring match).
 
     This is the cold-start playback path: when no AirPlay is active,
     `spotify_play` falls through to `resolve_target` → librespot.
@@ -640,8 +658,8 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
     if not pattern:
         return CheckResult(
             label, "fail",
-            "JASPER_SPOTIFY_DEVICE_NAME is empty. Set it to a substring "
-            "of librespot's --name (default 'JTS').",
+            "speaker name is empty. Visit http://jts.local/speaker/ "
+            "and set a display name (default 'JTS').",
         )
 
     # Build clients and probe each account's sp.devices() for a match.
@@ -704,7 +722,7 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         f"{cfg.spotify_device_name!r}. Devices currently visible to the "
         f"linked accounts: {sorted(seen_names_overall)}. "
         f"Fix: open Spotify on a phone/desktop logged into the linked "
-        f"account, click the cast/devices icon, select the JTS speaker "
+        f"account, click the cast/devices icon, select the speaker "
         f"once to make it discoverable; or verify librespot is running "
         f"(`systemctl status librespot`) and broadcasting "
         f"(`avahi-browse -tr _spotify-connect._tcp`).",
@@ -2739,7 +2757,7 @@ def check_usbsink_card() -> CheckResult:
     if Path("/proc/asound/UAC2Gadget").is_dir():
         return CheckResult(
             "usbsink card", "ok",
-            "UAC2Gadget card present (host will see JTS as USB audio)",
+            "UAC2Gadget card present (host will see the speaker as USB audio)",
         )
     return CheckResult(
         "usbsink card", "fail",
@@ -3367,6 +3385,7 @@ def render_json(results: list[CheckResult]) -> int:
 async def run_async(cfg: Config) -> list[CheckResult]:
     sync_checks: list[Callable[[], CheckResult]] = [
         check_env_file,
+        check_speaker_name,
         lambda: check_provider_key(cfg),
         lambda: check_mic_card_matches_config(cfg),
         check_loopback,
@@ -3561,7 +3580,7 @@ def check_shairport_sync_loopback_plughw() -> CheckResult:
             "output_device uses raw `hw:Loopback,0,0` — AirPlay sessions "
             "will be silently rejected because Loopback is locked at "
             "48 kHz and shairport requests 44.1 kHz. Symptom: iPhone / "
-            "Mac sees JTS in the picker but can't establish a session. "
+            "Mac sees the speaker in the picker but can't establish a session. "
             "Fix: redeploy via `bash scripts/deploy-to-pi.sh`. Source "
             "of truth: deploy/shairport-sync.conf.template.",
         )

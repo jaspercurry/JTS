@@ -63,6 +63,10 @@ DIAL_HEARTBEAT_PATH = os.environ.get(
     "JASPER_DIAL_HEARTBEAT_PATH",
     "/var/lib/jasper/dial_heartbeat.json",
 )
+MUX_CONTROL_SOCKET_PATH = os.environ.get(
+    "JASPER_MUX_CONTROL_SOCKET",
+    "/run/jasper-mux/control.sock",
+)
 
 
 def _load_dial_heartbeat() -> dict[str, Any]:
@@ -466,6 +470,7 @@ async def _with_coordinator(
     docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
     from ..camilla import CamillaController
     from ..renderer import RendererClient
+    from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
     from ..volume_persistence import VolumePersistence
 
@@ -491,9 +496,7 @@ async def _with_coordinator(
         persistence=persistence,
         backend=backend,
         spotify_router=spotify_router,
-        spotify_device_name=os.environ.get(
-            "JASPER_SPOTIFY_DEVICE_NAME", "JTS",
-        ),
+        spotify_device_name=_speaker_runtime_name(),
         duck_active_probe=duck_active_probe,
     )
     coord.load_persisted_level()
@@ -575,6 +578,71 @@ async def _voice_socket_command(
     return json.loads(line.decode("utf-8"))
 
 
+async def _mux_socket_command(
+    cmd: str,
+    *,
+    socket_path: str = MUX_CONTROL_SOCKET_PATH,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
+    """Send one ASCII command to jasper-mux's local control socket.
+
+    The web frontend should not talk to fan-in directly: mux owns the
+    manual-vs-auto source policy and uses fan-in only as the low-level
+    audio gate.
+    """
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        writer.write((cmd + "\n").encode("ascii"))
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+    if not line:
+        raise RuntimeError("jasper-mux returned no response")
+    payload = json.loads(line.decode("utf-8"))
+    if isinstance(payload, dict) and "error" in payload:
+        raise RuntimeError(str(payload["error"]))
+    if not isinstance(payload, dict):
+        raise RuntimeError("jasper-mux returned non-object JSON")
+    return payload
+
+
+def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Add on/off wizard availability to mux source status.
+
+    Mux knows audio policy; `/sources/` knows whether each renderer is
+    enabled/available. The landing selector needs both, but keeping the
+    merge here avoids teaching mux about systemd/DBus source toggles.
+    """
+    sources = payload.get("sources")
+    if not isinstance(sources, dict):
+        return payload
+    try:
+        from ..web.sources_setup import _gather_state as _sources_state
+        wizard_state = _sources_state()
+    except Exception as e:  # noqa: BLE001
+        logger.debug("source availability read failed: %s", e)
+        return payload
+    for wizard_key, mux_key in (
+        ("airplay", "airplay"),
+        ("bluetooth", "bluetooth"),
+        ("spotify_connect", "spotify"),
+        ("usbsink", "usbsink"),
+    ):
+        state = wizard_state.get(wizard_key)
+        if not isinstance(state, dict):
+            continue
+        slot = sources.setdefault(mux_key, {})
+        if isinstance(slot, dict):
+            slot["available"] = bool(state.get("available", True))
+            slot["enabled"] = bool(state.get("enabled", False))
+    return payload
+
+
 async def _probe_dial_reachable(ip: str, *, timeout: float = 0.5) -> bool:
     """Fast TCP probe for dial liveness. The dial firmware doesn't run
     a server on any TCP port, so any connect attempt resolves to:
@@ -621,6 +689,7 @@ async def _get_state(
 
     from .. import librespot_state
     from ..camilla import CamillaController
+    from ..speaker_name import read_state as _read_speaker_name_state
 
     # Cheap synchronous reads first.
     voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
@@ -766,6 +835,20 @@ async def _get_state(
         except json.JSONDecodeError:
             return None
 
+    async def _mux_status() -> dict | None:
+        try:
+            return await _mux_socket_command("STATUS", timeout=1.0)
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            asyncio.TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return None
+
     (
         cam_db,
         airplay,
@@ -773,6 +856,7 @@ async def _get_state(
         ha_status,
         dial_online,
         fanin_st,
+        mux_st,
     ) = await asyncio.gather(
         _camilla_volume(),
         _airplay_playing(),
@@ -780,11 +864,13 @@ async def _get_state(
         _ha_status(),
         _dial_online(),
         _fanin_status(),
+        _mux_status(),
     )
 
     spotify_blob = librespot_state.read(
         os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
     )
+    speaker_name_state = _read_speaker_name_state()
     spotify = {
         "playing": bool(spotify_blob.get("playing", False)),
         "track_id": spotify_blob.get("track_id"),
@@ -821,8 +907,16 @@ async def _get_state(
     # Active-source picks. USB sink takes precedence over idle but
     # below the other named renderers — same priority chain as the
     # volume coordinator's _active_source.
+    mux_manual_source = None
+    if isinstance(mux_st, dict) and mux_st.get("mode") == "manual":
+        raw_selected = mux_st.get("selected_source")
+        if isinstance(raw_selected, str):
+            mux_manual_source = raw_selected
+
     if voice_session:
         active_source: str = "voice"
+    elif mux_manual_source:
+        active_source = mux_manual_source
     elif spotify["playing"]:
         active_source = "spotify"
     elif airplay:
@@ -872,6 +966,10 @@ async def _get_state(
             # "off" vs "idle" based on this.
             "usbsink": usbsink_state,
         },
+        "speaker_name": {
+            "name": speaker_name_state.name,
+            "source": speaker_name_state.source,
+        },
         "active_source": active_source,
         # Fan-in daemon. null only when the daemon/socket is unavailable.
         # When running, the UDS STATUS endpoint emits a JSON snapshot
@@ -879,6 +977,7 @@ async def _get_state(
         # metrics — surfaced verbatim here. See
         # docs/HANDOFF-fan-in-daemon.md.
         "fanin": fanin_st,
+        "source_selection": mux_st,
         "satellites": {
             "dial": dial,
         },
@@ -1107,6 +1206,31 @@ def _make_handler(
                     return
                 self._send_json({"muted": bool(st.get("mic_muted", False))})
                 return
+            if self.path == "/source/state":
+                # Source selection state from jasper-mux. This is
+                # separate from the /sources/ wizard (on/off toggles):
+                # selecting a source does not enable or disable any
+                # renderer, it only chooses which active lane the
+                # speaker should pass through.
+                try:
+                    result = asyncio.run(_mux_socket_command("STATUS"))
+                except (
+                    FileNotFoundError,
+                    ConnectionRefusedError,
+                    OSError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    self._send_json(
+                        {"error": f"jasper-mux unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("source STATUS failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                self._send_json(_augment_source_payload(result))
+                return
             if self.path == "/aec":
                 # Software AEC bridge state + per-leg config + wake
                 # threshold. Mode and leg booleans are the persisted
@@ -1165,6 +1289,7 @@ def _make_handler(
                 # surface an empty history rather than 500.
                 from .system_metrics import read_build_info
                 from .. import home_assistant as _ha_mod
+                from ..speaker_name import read_state as _read_speaker_name_state
 
                 # HA probe is async + slow-ish (~50-200 ms typical against
                 # a healthy local HA, fails fast on unreachable). Run it
@@ -1193,6 +1318,7 @@ def _make_handler(
                     "voice_provider": os.environ.get(
                         "JASPER_VOICE_PROVIDER", "gemini",
                     ),
+                    "speaker_name": _read_speaker_name_state().__dict__,
                     "home_assistant": ha_status,
                 }
                 self._send_json(payload)
@@ -1365,6 +1491,51 @@ def _make_handler(
                     self._send_json(result, status=502)
                     return
                 self._send_json(result)
+                return
+
+            if self.path == "/source/select":
+                # POST /source/select body: {"source": "airplay"} or
+                # {"source": "auto"}. The mux validates policy and
+                # forwards the low-level lane choice to fan-in.
+                body = self._read_json()
+                source = str(body.get("source") or "").strip().lower()
+                if source == "auto":
+                    cmd = "AUTO"
+                elif source in ("airplay", "bluetooth", "spotify", "usbsink"):
+                    cmd = f"SELECT {source}"
+                else:
+                    self._send_json(
+                        {
+                            "error": (
+                                "source must be airplay, bluetooth, spotify, "
+                                "usbsink, or auto"
+                            ),
+                        },
+                        status=400,
+                    )
+                    return
+                try:
+                    result = asyncio.run(_mux_socket_command(cmd))
+                except (
+                    FileNotFoundError,
+                    ConnectionRefusedError,
+                    OSError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    self._send_json(
+                        {"error": f"jasper-mux unreachable: {e}"},
+                        status=503,
+                    )
+                    return
+                except Exception as e:  # noqa: BLE001
+                    logger.exception("source select failed")
+                    self._send_json({"error": str(e)}, status=502)
+                    return
+                logger.info(
+                    "event=source.select source=%s client=%s",
+                    source, self.address_string(),
+                )
+                self._send_json(_augment_source_payload(result))
                 return
 
             if self.path == "/session/start" or self.path == "/session/end":

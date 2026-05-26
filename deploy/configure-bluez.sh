@@ -1,14 +1,22 @@
 #!/bin/sh
-# Configure /etc/bluetooth/main.conf for JTS speaker mode.
+# Configure /etc/bluetooth/main.conf for Jasper speaker mode.
 #
 # Idempotent: each sed line replaces the existing key (whether
-# commented out with `#` or not) with the JTS value. Safe to re-run.
+# commented out with `#` or not) with the desired value. Safe to re-run.
 #
 # Run as part of install.sh; not expected to be invoked manually.
 
 set -eu
 
 CONF=/etc/bluetooth/main.conf
+SPEAKER_NAME_FILE=${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}
+
+if [ -r "$SPEAKER_NAME_FILE" ]; then
+    # shellcheck disable=SC1090
+    . "$SPEAKER_NAME_FILE" 2>/dev/null || true
+fi
+speaker_name=${JASPER_SPEAKER_NAME:-JTS}
+speaker_name_sed=$(printf '%s' "$speaker_name" | sed -e 's/[\/&]/\\&/g')
 
 if [ ! -f "$CONF" ]; then
     echo "ERROR: $CONF not found — is bluez installed?" >&2
@@ -21,7 +29,7 @@ if [ ! -f "${CONF}.bak.orig" ]; then
 fi
 
 # Name visible to phones in their BT picker.
-sudo sed -i 's/^#\?Name = .*/Name = JTS/' "$CONF"
+sudo sed -i "s/^#\?Name = .*/Name = ${speaker_name_sed}/" "$CONF"
 
 # Class of Device: 0x200414 = audio service + audio/video major +
 # loudspeaker minor. Tells phones we're a speaker so they enable

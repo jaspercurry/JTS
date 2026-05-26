@@ -153,9 +153,10 @@ CamillaDSP → jasper_out dmix (TTS sums in here) → Apple USB-C dongle
   `pcm.jasper_ref` is still a plug-wrapped dsnoop; the AEC bridge code
   doesn't change at all. Only the underlying substream-pair shifts from
   `(1,0)` to `(1,7)`.
-- **Mux arbitration.** Unchanged. `jasper-mux` still does latest-source-wins
-  via MPRIS/Web-API pause. The substream-per-renderer assignment recovers
-  the implicit `-EBUSY` floor as a defense-in-depth backstop.
+- **Mux arbitration.** `jasper-mux` still owns source policy:
+  latest-source-wins in auto mode, and user-selected source override
+  from the landing page. Fan-in only enforces the low-level selected
+  input gate when mux asks it to.
 - **Renderer service files.** Each renderer's `--device` flag changes
   from `jasper_renderer_in` (the plug-on-dmix) to its assigned substream
   alias (`pcm.librespot_substream`, etc.). The renderer code is unchanged.
@@ -350,6 +351,7 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |
 | `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
 | `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
+| `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto`) | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
 | `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
@@ -358,15 +360,28 @@ pick them up alongside other subsystems' events; the verbs match the
 `shairport.*` / `wifi_guardian.*` / `aec_bridge.*` patterns documented
 elsewhere.
 
-### State exposure via `/state`
+### State and selection control
 
 A UDS socket at `/run/jasper-fanin/control.sock` accepts a single
-command, `STATUS`, returning JSON:
+line command:
+
+- `STATUS` returns the current counters/config snapshot.
+- `SELECT <label>` passes only that renderer lane to the sum.
+- `AUTO` clears the selected lane and returns to summing active inputs.
+
+`jasper-mux` is the only production caller for `SELECT` / `AUTO`.
+The fan-in daemon does not decide what source should win; it only
+executes the cheap audio gate. The `correction` lane is always mixed
+so room-correction/test sweeps still work while a household source is
+manually selected.
+
+`STATUS` JSON:
 
 ```json
 {
   "uptime_seconds": 1234.56,
   "input_buffer_frames": 4096,
+  "selected_input": "airplay",
   "inputs": [
     {"label": "spotify", "pcm": "hw:Loopback,1,0", "frames_read": 0, "xrun_count": 0},
     {"label": "airplay", "pcm": "hw:Loopback,1,1", "frames_read": 5928432, "xrun_count": 0},
@@ -656,15 +671,14 @@ maintainability. Rust wins on all three.
   second DAC / headphone tap would extend this — likely by adding a
   second output substream that mirrors substream 7's content. ADR-noted
   for future revisit; not built in v1.
-- **Not a router.** No "send this input to this output" logic. Just sum
-  all inputs and emit one stream.
+- **Not a policy router.** It has one intentionally dumb selected-input
+  gate for mux-controlled source override. It does not choose winners,
+  inspect renderer state, or route to multiple outputs.
 - **Not a DSP stage.** No EQ, no resampling, no room correction.
   CamillaDSP owns all that downstream.
-- **Not aware of mux state.** Doesn't know which renderer is "the
-  current primary" — it sums whatever's active. Mux's "latest source
-  wins" still works because at most one renderer should be producing
-  signal at a time. The fan-in daemon is dumb summation; the
-  intelligence lives in mux.
+- **Not aware of source state.** It knows only a selected input label
+  or auto/null. Mux owns "current primary", renderer probing, pause
+  APIs, and user source selection.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.

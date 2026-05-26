@@ -2,8 +2,8 @@
 # jasper-apply-airplay-mode — render /etc/shairport-sync.conf from the
 # template at /etc/shairport-sync.conf.template, substituting:
 #   - disable_synchronization based on /var/lib/jasper/airplay_mode.env
-#   - AirPlay device name based on JASPER_AIRPLAY_DEVICE_NAME (in
-#     /etc/jasper/jasper.env)
+#   - AirPlay device name based on JASPER_SPEAKER_NAME (in
+#     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, the
 #     fan-in output buffer, plus the output dmix buffer in
@@ -20,8 +20,8 @@
 #
 # Env input:
 #   JASPER_AIRPLAY_FREE_RUNNING — "yes" / "no". Default: "no".
-#   JASPER_AIRPLAY_DEVICE_NAME  — display name shown in AirPlay pickers.
-#                                 Default: jasper-derive-device-name output.
+#   JASPER_SPEAKER_NAME         — display name shown in renderer pickers.
+#                                 Default: JTS.
 #   JASPER_CAMILLA_STATEFILE    — CamillaDSP statefile path.
 #                                 Default: /var/lib/camilladsp/statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
@@ -43,7 +43,7 @@ TEMPLATE="${JASPER_SHAIRPORT_TEMPLATE:-/etc/shairport-sync.conf.template}"
 TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
 ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
 JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
-DERIVE_HELPER="${JASPER_DERIVE_DEVICE_NAME:-/usr/local/sbin/jasper-derive-device-name}"
+SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/v1.yml}"
 ASOUNDRC="${JASPER_ASOUNDRC:-/etc/asound.conf}"
@@ -254,24 +254,18 @@ fi
 renderer_device="shairport_substream"
 # Also source jasper.env (mode 0640, readable by root only — this
 # script runs with the leading `+` privilege escalation from
-# shairport-sync.service's ExecStartPre, so root-read is fine). Used
-# to pick up JASPER_AIRPLAY_DEVICE_NAME if the operator set one.
+# shairport-sync.service's ExecStartPre, so root-read is fine).
 if [[ -r "$JASPER_ENV_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$JASPER_ENV_FILE" 2>/dev/null || true
 fi
+if [[ -r "$SPEAKER_NAME_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$SPEAKER_NAME_FILE" 2>/dev/null || true
+fi
 mode="${JASPER_AIRPLAY_FREE_RUNNING:-no}"
 
-# Resolve device name: explicit env var wins; otherwise derive from
-# hostname so two Pis on the same LAN don't both advertise as "JTS".
-airplay_name="${JASPER_AIRPLAY_DEVICE_NAME:-}"
-if [[ -z "$airplay_name" ]]; then
-    if [[ -x "$DERIVE_HELPER" ]]; then
-        airplay_name=$("$DERIVE_HELPER")
-    else
-        airplay_name="JTS"
-    fi
-fi
+airplay_name="${JASPER_SPEAKER_NAME:-JTS}"
 
 case "$mode" in
     yes|YES|true|TRUE|1)
@@ -290,12 +284,13 @@ case "$mode" in
 esac
 
 latency_offset="$(derive_audio_backend_latency_offset)"
+airplay_name_sed="$(printf '%s' "$airplay_name" | sed -e 's/[\/&]/\\&/g')"
 
 tmp="${TARGET}.tmp.$$"
 trap 'rm -f "$tmp"' EXIT
 
 sed -e "s/__DISABLE_SYNCHRONIZATION__/${disable_sync}/g" \
-    -e "s/__AIRPLAY_NAME__/${airplay_name}/g" \
+    -e "s/__AIRPLAY_NAME__/${airplay_name_sed}/g" \
     -e "s/__AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__/${latency_offset}/g" \
     -e "s/__RENDERER_DEVICE__/${renderer_device}/g" \
     "$TEMPLATE" > "$tmp"

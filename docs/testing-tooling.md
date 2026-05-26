@@ -114,6 +114,9 @@ For Session A, add `--min-per-cell 7` after the recording is complete.
 For Session B, use `--min-per-cell 2` for the Jarvis held-out portion;
 hard negatives have a different target distribution and should be
 reviewed separately from the 3 × 3 Jarvis matrix.
+For optional cheap-USB sessions, add repeated leg checks such as
+`--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`; add
+`--expect-leg usb_dtln` only for sessions where USB DTLN was enabled.
 
 The audit checks:
 - Session metadata readability and `include_raw_mic_0` flags

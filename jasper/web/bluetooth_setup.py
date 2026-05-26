@@ -292,7 +292,7 @@ _PAGE_STYLE = """
 
 def _landing_html() -> bytes:
     body = """
-<p class="sub">Pair phones (to use JTS as a Bluetooth speaker), volume
+<p class="sub">Pair phones (to use this as a Bluetooth speaker), volume
 knobs, headphones, anything that speaks Bluetooth.</p>
 
 <div class="toggles">

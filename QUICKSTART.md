@@ -143,6 +143,8 @@ laptop — anything on your LAN can hit them:
   Citi Bike. Geocode your address; pick stops.
 - **`http://jts.local/spotify/`** — optional. Connect a Spotify
   account so "play Taylor Swift" works without your phone.
+- **`http://jts.local/speaker/`** — optional. Rename the speaker as it
+  appears in AirPlay, Spotify Connect, Bluetooth, and USB Audio pickers.
 - **`http://jts.local/system/`** — the dashboard. Status, dial
   onboarding, mic-mute, software version, WiFi.
 

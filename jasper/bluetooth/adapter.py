@@ -75,6 +75,18 @@ async def set_powered(value: bool, adapter: str = DEFAULT_ADAPTER) -> None:
         bus.disconnect()
 
 
+async def set_alias(name: str, adapter: str = DEFAULT_ADAPTER) -> None:
+    """Set the adapter's friendly name as shown in Bluetooth pickers."""
+    bus = await MessageBus(bus_type=BusType.SYSTEM).connect()
+    try:
+        _, props = await _adapter(bus, adapter)
+        await props.call_set(
+            "org.bluez.Adapter1", "Alias", Variant("s", name),
+        )
+    finally:
+        bus.disconnect()
+
+
 async def set_discoverable(
     value: bool,
     adapter: str = DEFAULT_ADAPTER,
