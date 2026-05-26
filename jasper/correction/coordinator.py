@@ -11,9 +11,9 @@ restores on exit. Used by the room-correction wizard:
 
 What gets paused (and why):
 
-  - librespot, shairport-sync, bluealsa-aplay (the three renderers)
-    via `systemctl stop`. We need silence on the music chain so the
-    sweep is the only signal hitting the loopback.
+  - Music source daemons via `systemctl stop`. We need silence on the
+    fan-in music chain so the sweep is the only signal hitting the
+    loopback.
   - voice_daemon's WakeLoop + TtsVolumeTracker via the
     `MEASURE_PAUSE` UDS command (see jasper/voice_daemon.py). The
     WakeLoop drops mic frames during the window — no wake events
@@ -60,6 +60,7 @@ DEFAULT_RENDERERS_TO_PAUSE: tuple[str, ...] = (
     "librespot.service",
     "shairport-sync.service",
     "bluealsa-aplay.service",
+    "jasper-usbsink.service",
 )
 
 DEFAULT_VOICE_SOCKET_PATH = "/run/jasper/voice.sock"

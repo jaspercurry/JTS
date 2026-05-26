@@ -1,8 +1,8 @@
 # Source-aware voice transport + Spotify routing
 
 How the voice-control surface (volume, transport, Spotify play) is
-wired across the three renderers (AirPlay 2, Spotify Connect,
-Bluetooth A2DP). All of this is implemented and shipped; this doc
+wired across the music sources (AirPlay 2, Spotify Connect,
+Bluetooth A2DP, and USB sink). All of this is implemented and shipped; this doc
 explains the design and the non-obvious cases.
 
 ## File map
@@ -28,6 +28,9 @@ The coordinator dispatches to whichever source's slider is active:
   not reliable on modern iOS/macOS)
 - Spotify Connect → Spotify Web API per the active account
 - Bluetooth A2DP → DBus to bluez-alsa
+- USB sink → CamillaDSP `main_volume` as the JTS speaker volume
+  (host-side volume is observed one-way by `jasper-usbsink`; JTS does
+  not push volume back to the host)
 - Idle (no source) → CamillaDSP main_volume
 
 CamillaDSP `main_volume` is reserved for the daemon's ducking
@@ -44,6 +47,7 @@ queries `renderer.active_renderers()` and picks the right backend:
 | AirPlay (`aplactive`) | shairport-sync MPRIS over busctl. AirPlay-carrying-Spotify gets short-circuited via the title-match path (see below). |
 | Spotify Connect (`spotactive`) | spotipy `next_track()` / `previous_track()` / `pause_playback()` against the user's account |
 | Bluetooth (`btactive`) | Not supported — no transport API on bluez-alsa A2DP sink. Returns a spoken explanation. |
+| USB sink (`usbsinkactive`) | Not supported — the host computer owns its player transport. Returns a spoken explanation if exposed through future tools. |
 | No active source | Returns "nothing is playing" error so the model can tell the user something concrete instead of silently no-op'ing. |
 
 ### 3. Spotify play (`spotify_play(query, kind)`)
@@ -99,6 +103,8 @@ full design.
 - **Bluetooth active, user asks for transport** → returns
   "Bluetooth transport isn't supported — control playback on your
   phone."
+- **USB sink active, user asks for transport** → host-owned player;
+  control playback on the computer.
 
 ## System-instruction guidance
 
@@ -118,3 +124,7 @@ invite further conversation.
 - Don't try to control AirPlay generically — only the
   AirPlay-carrying-Spotify case has a workaround. Be honest with
   the user about other AirPlay sources.
+
+---
+
+Last verified: 2026-05-26 (source list re-checked after USB sink and fan-in-only topology)

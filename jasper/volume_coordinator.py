@@ -763,7 +763,7 @@ class VolumeCoordinator:
         for `source`, vs. delegating to a downstream slider.
 
         True (camilla-as-master): camilla tracks listening_level. Used
-        for IDLE, AIRPLAY, and USBSINK — all three sources either
+        for IDLE, AIRPLAY, and USBSINK — these camilla-master modes either
         can't reliably mirror receiver-side volume back to the
         controlling client (AirPlay 2 modern senders) or have no
         downstream slider to push to (the gadget's host-side slider

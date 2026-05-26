@@ -48,6 +48,74 @@ short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
 testing showed dmix's per-write timing could drop WiFi-bursty RTP
 packets.
 
+## Adding a new music source
+
+This is the canonical checklist for adding another source that should
+play through the speakers as **music/content**. It is not for TTS,
+system cues, wake sounds, or other assistant-owned audio; those stay on
+the TTS/test-tone path unless the design explicitly wants CamillaDSP
+processing.
+
+Keep the change boring. A new source should look like the existing
+AirPlay, Spotify, Bluetooth, or USB sink lanes, not introduce a second
+mixer, a second output device, or a new volume model.
+
+1. **Give it one private fan-in lane.** Add exactly one PCM alias in
+   `deploy/alsa/asoundrc.jasper`, pinned to 48 kHz stereo S16_LE via
+   `plug`. Current allocation: `0` Spotify, `1` AirPlay, `2`
+   Bluetooth, `3` USB sink, `4` correction/test, `5` debug/monitor
+   reserve, `6` free, `7` fan-in summed output. Do not put a source on
+   substream `7`. If you need more than the remaining free lane, stop
+   and redesign the topology rather than overloading snd-aloop.
+2. **Teach `jasper-fanin` about the lane.** Extend
+   `JASPER_FANIN_INPUT_PCMS` and `JASPER_FANIN_INPUT_RENDERERS` in
+   `deploy/systemd/jasper-fanin.service`. The lists are pipe-delimited
+   because ALSA `hw:` names contain commas. A configured input is part
+   of the production graph; if it cannot be opened, fan-in should fail
+   loudly instead of silently dropping the source.
+3. **Wire the source daemon to the alias.** Its systemd unit should
+   write to the alias, not to `jasper_capture`, `jasper_out`, or raw
+   `hw:Loopback,*` names. Renderer units should order after
+   `jasper-fanin.service` and use the same hardening/resource patterns
+   as the existing sources. If the source is optional, default it off
+   and make the disabled state cost zero resident RAM.
+4. **Expose fail-soft playing state.** Add one probe in
+   `jasper/source_state.py`, surface it through
+   `RendererClient.active_renderers()`, and keep transport failures as
+   `False` plus debug logging. This state feeds mux, volume, transport,
+   dashboards, and voice tools, so avoid duplicating probes in each
+   caller.
+5. **Define preemption.** Add the source to `jasper/mux.py`. Prefer a
+   real pause/silence API. If the source cannot be paused from the Pi,
+   document the intentional fallback ("may briefly mix") and expose an
+   operator escape hatch only when the failure mode justifies one.
+6. **Choose the volume model.** Update `VolumeCoordinator`: either the
+   source is **push-mode** (its own slider carries `listening_level`
+   and CamillaDSP stays at 0 dB) or **camilla-as-master** (CamillaDSP
+   carries `listening_level`). Add inbound observation only if the
+   source has a reliable user-facing volume surface.
+7. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
+   `previous`, or `now playing` can control the source, wire
+   `jasper/tools/transport.py` and document the backend in
+   `HANDOFF-voice-music-control.md`. If not, return a concrete "not
+   supported for this source" response.
+8. **Add operator surfaces and observability.** Update `/sources/` if
+   the source can be enabled/disabled, `/state` if it has useful live
+   state, `jasper-doctor` for topology drift and runtime health, and
+   `jts-audio.slice` / no-swap checks for any resident audio-path
+   daemon.
+9. **Protect measurements and tests.** Add the source to the
+   correction `measurement_window()` pause list if it can emit during a
+   sweep. Add tests for asound wiring, fan-in config, source-state
+   fail-soft behavior, mux preemption, volume dispatch, and any source
+   wizard toggles.
+10. **Update docs in one place, then link.** This section covers the
+    cross-cutting checklist. Source-specific quirks belong in a
+    focused HANDOFF only when they are non-obvious, as USB sink does in
+    `HANDOFF-usbsink.md`. README's documentation map should link the
+    current operational truth; historical design notes should be marked
+    historical.
+
 Both legs converge at `pcm.jasper_out`, a dmix on the dongle. dmix
 sums the two writers' streams sample-wise and sends one stream to the
 DAC. CamillaDSP is upstream of dmix only on the music leg.
@@ -271,4 +339,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-26 (fan-in renderer topology replaced the renderer-side dmix path)
+Last verified: 2026-05-26 (added the canonical checklist for future music sources after the fan-in-only cutover)

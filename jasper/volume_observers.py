@@ -23,8 +23,11 @@ simpler to reason about — one well-placed sleep, one error path per
 source, no long-lived subscription state to manage.
 
 Cadence: 1 Hz, mirroring jasper-mux's source-state poll. Each tick
-fans out to three concurrent state probes (Spotify HTTP, AirPlay
-busctl, Bluetooth busctl); the whole tick is well under 100 ms typical.
+fans out to the three built-in protocol-volume probes (Spotify state
+file, AirPlay busctl, Bluetooth busctl); the whole tick is well under
+100 ms typical. USB sink is the exception: its daemon observes the
+host-side gadget mixer directly and posts `source="usbsink"` changes to
+jasper-control, so this shared observer does not poll it.
 
 Echo prevention. The coordinator tracks the timestamp of every
 outbound write per source. When an observer reports a value it just
@@ -57,8 +60,10 @@ logger = logging.getLogger(__name__)
 class VolumeObserver:
     """Polls each source's current volume at a fixed cadence and
     feeds detected changes into the coordinator. One instance covers
-    all three sources; per-source last-seen state makes change
-    detection cheap.
+    the built-in protocol-volume surfaces (AirPlay, Spotify,
+    Bluetooth); USB sink's host-volume observer lives in
+    `jasper.usbsink.volume_bridge`. Per-source last-seen state makes
+    change detection cheap.
 
     The observer runs as one asyncio task and is started/stopped via
     voice_daemon's lifecycle. Cancelling the task is the documented
