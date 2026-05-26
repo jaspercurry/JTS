@@ -21,6 +21,7 @@
 | If you want to … | Start with |
 |---|---|
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
+| Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
 | Count wake-word detections on captured audio offline | [Wake-word scoring (offline)](#wake-word-scoring-offline) |
 | Pull production wake events + clips from the Pi | [Wake-event telemetry (production)](#wake-event-telemetry-production) |
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
@@ -94,6 +95,36 @@ controlled-lab WAVs (e.g. from `wake-rate-test.sh` or
 `capture-reference-condition.sh`), don't try to ingest them into the
 wake-events DB — different schema, different assumptions. Use offline
 scoring tools instead.
+
+---
+
+## Wake-corpus audit (deliberate recordings)
+
+The browser recorder at `http://jts.local/wake-corpus/` writes the
+Phase 0b gold corpus under `/var/lib/jasper/enrollment_positives/`
+with per-session JSON sidecars in `metadata/`. After rsyncing that
+directory to `./data/enrollment_positives/`, run:
+
+```sh
+bash scripts/audit-wake-corpus.sh \
+  data/enrollment_positives --expect-raw0
+```
+
+For Session A, add `--min-per-cell 7` after the recording is complete.
+For Session B, use `--min-per-cell 2` for the Jarvis held-out portion;
+hard negatives have a different target distribution and should be
+reviewed separately from the 3 × 3 Jarvis matrix.
+
+The audit checks:
+- Session metadata readability and `include_raw_mic_0` flags
+- Missing expected legs, especially raw0 in raw0-enabled sessions
+- Condition × distance coverage matrix
+- WAV existence, format (16 kHz mono int16), duration, RMS, and peak
+
+This is separate from production wake-event telemetry. It does not
+read `wake-events.sqlite3` and does not score wake-word models; it is
+the quick "did the gold corpus record what we think it recorded?"
+gate before Phase 0a/0c work.
 
 ---
 

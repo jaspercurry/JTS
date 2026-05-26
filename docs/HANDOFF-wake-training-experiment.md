@@ -26,15 +26,19 @@ model) has a published recall of 26% and observed wake rate roughly
 matches that.
 
 **The plan in one paragraph.** Capture a known-conditions gold corpus
-(60 utterances: 3 distances × 2 music states × 10 reps, with raw mic
-+ AEC reference signal). Build an offline test harness that processes
-this corpus through any AEC config and scores it with any wake-word
-model. Train per-leg specialized Jarvis models (one for raw, one for
-AEC ON, one for DTLN) using `livekit-wakeword` + PR #69 (vendored),
-with Piper synthetic positives + OpenSLR-28 RIR augmentation + 5-20
-dB SNR noise mixing. Deploy via the existing OR-gate fusion. Validate
-at every decision point with both metrics AND human listening (five
-explicit checkpoints).
+(~85-105 positive Jarvis utterances across two sessions: 3 distances
+× 3 conditions, plus ~30-40 hard negatives in Session B). The
+browser recorder captures the three production legs (`:9876` AEC ON,
+`:9877` chip-direct, `:9878` DTLN) plus opt-in `raw0` (`:9879`) for
+future cheap-mic portability. Iteration 1 does **not** capture an AEC
+reference; it trains against the current fixed BEST_A chain. Build an
+offline test harness and scoring runner around that corpus. Train
+per-leg specialized Jarvis models (one for raw, one for AEC ON, one
+for DTLN) using `livekit-wakeword` + PR #69 (vendored), with Piper
+synthetic positives + OpenSLR-28 RIR augmentation + 5-20 dB SNR noise
+mixing. Deploy via the existing OR-gate fusion. Validate at every
+decision point with both metrics AND human listening (five explicit
+checkpoints).
 
 **What this is NOT.** Another AEC tuning sweep, a PipeWire migration,
 a Silero VAD experiment, or a chase after "the right" base model.
@@ -247,10 +251,12 @@ model; any leg firing above threshold triggers the session. Shared
 0.7 s refractory.
 
 **Eval surface: gold corpus (Phase 0 deliverable).** Not the
-production wake_events corpus (which has unknown conditions). 60
-utterances captured deliberately with known distance + music state
-labels. Each captured as paired (raw mic + AEC reference) WAVs so
-any AEC config can be replayed offline. See §5 Phase 0.
+production wake_events corpus (which has unknown conditions). The
+Phase 0b corpus is recorded deliberately with known distance +
+condition labels across two sessions. Each clip captures the three
+production wake legs, and raw0 when the session opts in. AEC reference
+capture was dropped for iteration 1; see §5 Phase 0b for the current
+scope.
 
 ---
 
@@ -506,10 +512,11 @@ For each leg's training set:
    real+sim mixing ratio. If iteration 1 is RIR-quality-limited,
    consider switching to [FAST-RIR](https://arxiv.org/abs/2110.04057)
    (on-the-fly generative simulation, no precomputed corpus).
-3. Add background noise at SNR range determined by Phase −1b
-   measurement (initially planned 5-20 dB, adjust if reality
-   demands wider). NOT below 0 dB — the training distribution
-   should bracket realistic deployment SNRs, not extend into the
+3. Add background noise at an initial 5-20 dB SNR range. Real
+   deployment SNR measurement was deferred to iteration 2 once the
+   speaker is in daily use; adjust if iteration 1 evidence demands
+   wider. NOT below 0 dB — the training distribution should bracket
+   realistic deployment SNRs, not extend into the
    impossible. Noise sources: MUSAN noise + music + speech subsets,
    FMA for music diversity.
 4. **Leg-specific augmentation:**
@@ -984,6 +991,11 @@ Recorder UX status:
 - ✅ jasper-voice start/stop wired (refuses start while recording —
   would EADDRINUSE the UDP ports)
 
+Recording-day audit tooling:
+- ✅ `bash scripts/audit-wake-corpus.sh data/enrollment_positives
+  --expect-raw0` validates post-rsync session metadata, raw0 leg
+  presence, condition × distance coverage, and WAV format/RMS.
+
 **Phase −1 (pre-foundation verifications): in progress.**
 - −1a (LLM session routing): investigation results in PR cover
   letter / next session message.
@@ -1003,6 +1015,17 @@ via the new Sessions card.
 
 ## Changelog
 
+- **2026-05-25 (v6):** Recording-day prep fixes:
+  - Corrected stale TL;DR / architecture prose that still described
+    the older 60-utterance, 2-condition, AEC-reference-capture plan.
+    Current Phase 0b truth is 3 conditions, two sessions, raw0 opt-in,
+    and no AEC reference capture in iteration 1.
+  - Added the local `scripts/audit-wake-corpus.sh` post-rsync audit
+    for session metadata, raw0 presence, per-cell coverage, and WAV
+    format/RMS sanity.
+  - Recorder production path now keeps raw0 in the combined
+    `jasper-web` port map; clip sequence numbers are monotonic across
+    deletes to avoid filename reuse.
 - **2026-05-25 (v5):** Capture tooling shipped end-to-end. Phase 0b
   rewritten:
   - Recorder is now the browser UI at http://jts.local/wake-corpus/,
@@ -1092,5 +1115,4 @@ via the new Sessions card.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-25 (v5 — recorder shipped end-to-end with 4th raw0 leg + sessions UX)
-
+Last verified: 2026-05-25 (v6 — recorder raw0 path + corpus audit prep verified)
