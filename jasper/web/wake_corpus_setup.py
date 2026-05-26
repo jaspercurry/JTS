@@ -239,6 +239,17 @@ def _enabled_legs_from_metadata(
     )
 
 
+def _metadata_flag(
+    data: dict[str, Any],
+    key: str,
+    leg: str,
+    enabled_legs: tuple[str, ...],
+) -> bool:
+    """Return a saved checkbox flag, capped to legs this process can record."""
+    requested = bool(data.get(key, leg in enabled_legs))
+    return requested and leg in enabled_legs
+
+
 # ---------------------------------------------------------------------------
 # Data shapes
 # ---------------------------------------------------------------------------
@@ -603,9 +614,9 @@ class RecordingBackend:
         include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
-        include_dtln = bool(data.get("include_dtln", DTLN_LEG in enabled_legs))
-        include_usb_dtln = bool(
-            data.get("include_usb_dtln", USB_DTLN_LEG in enabled_legs),
+        include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
+        include_usb_dtln = _metadata_flag(
+            data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
         )
         with self._lock:
             self._session_id = session_id
@@ -672,20 +683,21 @@ class RecordingBackend:
             # in-memory id AND the on-disk metadata filename, and the
             # second would silently overwrite the first.
             ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-            self._session_id = f"{ts}-{secrets.token_hex(2)}"
-            self._member = safe_member
-            self._clips = []
-            self._include_raw_mic_0 = include_raw_mic_0
-            self._include_dtln = include_dtln
-            self._include_usb_mic = include_usb_mic
-            self._include_usb_dtln = include_usb_dtln
-            self._enabled_legs = _session_legs(
+            enabled_legs = _session_legs(
                 self._ports,
                 include_dtln=include_dtln,
                 include_raw_mic_0=include_raw_mic_0,
                 include_usb_mic=include_usb_mic,
                 include_usb_dtln=include_usb_dtln,
             )
+            self._session_id = f"{ts}-{secrets.token_hex(2)}"
+            self._member = safe_member
+            self._clips = []
+            self._include_raw_mic_0 = include_raw_mic_0
+            self._include_dtln = DTLN_LEG in enabled_legs
+            self._include_usb_mic = include_usb_mic
+            self._include_usb_dtln = USB_DTLN_LEG in enabled_legs
+            self._enabled_legs = enabled_legs
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         self._save_metadata()  # write the per-session flag before clips arrive
         return self._session_id
@@ -984,15 +996,13 @@ class RecordingBackend:
                 "clip_count": len(alive),
                 "deleted_count": len(clips) - len(alive),
                 "include_raw_mic_0": bool(data.get("include_raw_mic_0", False)),
-                "include_dtln": bool(data.get(
-                    "include_dtln",
-                    DTLN_LEG in enabled_legs,
-                )),
+                "include_dtln": _metadata_flag(
+                    data, "include_dtln", DTLN_LEG, enabled_legs,
+                ),
                 "include_usb_mic": bool(data.get("include_usb_mic", False)),
-                "include_usb_dtln": bool(data.get(
-                    "include_usb_dtln",
-                    USB_DTLN_LEG in enabled_legs,
-                )),
+                "include_usb_dtln": _metadata_flag(
+                    data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
+                ),
                 "enabled_legs": list(enabled_legs),
                 "conditions": conds,
                 "is_active": (
@@ -1041,9 +1051,9 @@ class RecordingBackend:
         include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
-        include_dtln = bool(data.get("include_dtln", DTLN_LEG in enabled_legs))
-        include_usb_dtln = bool(
-            data.get("include_usb_dtln", USB_DTLN_LEG in enabled_legs),
+        include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
+        include_usb_dtln = _metadata_flag(
+            data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
         )
         with self._lock:
             self._session_id = session_id
