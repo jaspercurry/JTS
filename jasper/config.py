@@ -23,6 +23,16 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw else default
 
 
+def _env_optional_float(name: str) -> float | None:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise RuntimeError(f"{name} must be a number") from e
+
+
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     return int(raw) if raw else default
@@ -52,6 +62,14 @@ def _validate(cfg: "Config") -> "Config":
             raise RuntimeError(f"{name} must be >= 0 (0 = disabled)")
     if cfg.daily_spend_cap_usd < 0:
         raise RuntimeError("JASPER_DAILY_SPEND_CAP_USD must be >= 0")
+    if (cfg.weather_default_lat is None) != (cfg.weather_default_lon is None):
+        raise RuntimeError(
+            "JASPER_WEATHER_LAT and JASPER_WEATHER_LON must be set together"
+        )
+    if cfg.weather_default_lat is not None and not -90 <= cfg.weather_default_lat <= 90:
+        raise RuntimeError("JASPER_WEATHER_LAT must be between -90 and 90")
+    if cfg.weather_default_lon is not None and not -180 <= cfg.weather_default_lon <= 180:
+        raise RuntimeError("JASPER_WEATHER_LON must be between -180 and 180")
     # Hearing-safety: TTS gain is now an OFFSET applied on top of
     # CamillaDSP's main_volume (negative attenuates from master,
     # zero matches it). A positive value would push TTS above master
@@ -235,6 +253,9 @@ class Config:
     sounds_dir: str
 
     weather_default_location: str
+    weather_default_lat: float | None
+    weather_default_lon: float | None
+    weather_default_display_name: str
     weather_units: str
 
     subway_station_id: str
@@ -346,6 +367,27 @@ class Config:
         # other devices reach this speaker?" — read first so URL
         # defaults below can derive from it.
         hostname = _env("JASPER_HOSTNAME", "jts.local")
+        weather_default_location = _env("JASPER_DEFAULT_LOCATION", "").strip()
+        weather_default_lat = _env_optional_float("JASPER_WEATHER_LAT")
+        weather_default_lon = _env_optional_float("JASPER_WEATHER_LON")
+        weather_default_display_name = _env("JASPER_WEATHER_DISPLAY_NAME", "").strip()
+        if weather_default_lat is None and weather_default_lon is None:
+            transit_lat_raw = os.environ.get("JASPER_TRANSIT_LAT", "").strip()
+            transit_lon_raw = os.environ.get("JASPER_TRANSIT_LON", "").strip()
+            if transit_lat_raw and transit_lon_raw:
+                try:
+                    weather_default_lat = float(transit_lat_raw)
+                    weather_default_lon = float(transit_lon_raw)
+                except ValueError:
+                    weather_default_lat = None
+                    weather_default_lon = None
+                else:
+                    if not weather_default_display_name:
+                        weather_default_display_name = _env(
+                            "JASPER_TRANSIT_DISPLAY_NAME", "",
+                        ).strip()
+        if not weather_default_display_name:
+            weather_default_display_name = weather_default_location
         return _validate(cls(
             voice_provider=provider,
             hostname=hostname,
@@ -706,7 +748,10 @@ class Config:
             ),
             # Default location for "Hey Jarvis, what's the weather?" with
             # no city specified. Empty = require explicit location each time.
-            weather_default_location=_env("JASPER_DEFAULT_LOCATION", ""),
+            weather_default_location=weather_default_location,
+            weather_default_lat=weather_default_lat,
+            weather_default_lon=weather_default_lon,
+            weather_default_display_name=weather_default_display_name,
             weather_units=_env("JASPER_WEATHER_UNITS", "celsius"),
             # NYC MTA subway. Empty station_id disables the tool.
             # Find your stop_id at data.ny.gov/dataset/...subway-stations
@@ -815,6 +860,17 @@ class Config:
     @property
     def subway_enabled(self) -> bool:
         return bool(self.subway_station_id)
+
+    @property
+    def weather_prompt_location(self) -> str:
+        """Human-readable default location for the system addendum."""
+        if self.weather_default_display_name:
+            return self.weather_default_display_name
+        if self.weather_default_location:
+            return self.weather_default_location
+        if self.weather_default_lat is not None and self.weather_default_lon is not None:
+            return f"{self.weather_default_lat:.3f}, {self.weather_default_lon:.3f}"
+        return ""
 
     @property
     def bus_enabled(self) -> bool:

@@ -16,9 +16,19 @@ def make_weather_tools(weather):
         next 14 days, plus daily sunrise/sunset for any day in
         that range.
 
-        Use for any weather, temperature, rain, sunrise, or sunset
-        question. `location` is optional — empty string uses the
-        speaker's default location.
+        Call this for any weather, temperature, rain, sunrise, or
+        sunset question.
+
+        Args:
+          location: Optional place named by the user. When the user
+            asks about the default/home/current area without naming a
+            different place, omit this argument or pass an empty string;
+            the speaker's weather default will be used. When the user
+            names a place, pass the user's place text here, including
+            qualifiers such as state, province, or country when spoken:
+            "Tampa, Florida", "Cortez, FL", "Denver, Colorado",
+            "Paris, France", "London, Ontario". Do not strip the
+            qualifier down to only the city.
 
         Response shape:
           location, current_local_time, units ('°C' or '°F')

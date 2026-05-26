@@ -11,9 +11,12 @@ so repeat queries for the same location only cost one HTTP call.
 from __future__ import annotations
 
 import logging
+import math
+import re
 from dataclasses import dataclass
 
 import httpx
+from rapidfuzz import fuzz
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +72,232 @@ class _Location:
     lon: float
 
 
+@dataclass(frozen=True)
+class _ParsedPlace:
+    raw: str
+    base: str
+    admin1: str = ""
+    country_code: str = ""
+    country_name: str = ""
+
+
+@dataclass(frozen=True)
+class _Candidate:
+    name: str
+    lat: float
+    lon: float
+    admin1: str = ""
+    country: str = ""
+    country_code: str = ""
+    population: int = 0
+
+
+_US_STATE_ABBR: dict[str, str] = {
+    "AL": "Alabama", "AK": "Alaska", "AZ": "Arizona", "AR": "Arkansas",
+    "CA": "California", "CO": "Colorado", "CT": "Connecticut",
+    "DE": "Delaware", "DC": "District of Columbia", "FL": "Florida",
+    "GA": "Georgia", "HI": "Hawaii", "ID": "Idaho", "IL": "Illinois",
+    "IN": "Indiana", "IA": "Iowa", "KS": "Kansas", "KY": "Kentucky",
+    "LA": "Louisiana", "ME": "Maine", "MD": "Maryland",
+    "MA": "Massachusetts", "MI": "Michigan", "MN": "Minnesota",
+    "MS": "Mississippi", "MO": "Missouri", "MT": "Montana",
+    "NE": "Nebraska", "NV": "Nevada", "NH": "New Hampshire",
+    "NJ": "New Jersey", "NM": "New Mexico", "NY": "New York",
+    "NC": "North Carolina", "ND": "North Dakota", "OH": "Ohio",
+    "OK": "Oklahoma", "OR": "Oregon", "PA": "Pennsylvania",
+    "RI": "Rhode Island", "SC": "South Carolina", "SD": "South Dakota",
+    "TN": "Tennessee", "TX": "Texas", "UT": "Utah", "VT": "Vermont",
+    "VA": "Virginia", "WA": "Washington", "WV": "West Virginia",
+    "WI": "Wisconsin", "WY": "Wyoming",
+}
+US_STATES: dict[str, str] = {
+    **{abbr.lower(): name for abbr, name in _US_STATE_ABBR.items()},
+    **{name.lower(): name for name in _US_STATE_ABBR.values()},
+}
+
+_CA_PROVINCE_ABBR: dict[str, str] = {
+    "AB": "Alberta",
+    "BC": "British Columbia",
+    "MB": "Manitoba",
+    "NB": "New Brunswick",
+    "NL": "Newfoundland and Labrador",
+    "NS": "Nova Scotia",
+    "NT": "Northwest Territories",
+    "NU": "Nunavut",
+    "ON": "Ontario",
+    "PE": "Prince Edward Island",
+    "PEI": "Prince Edward Island",
+    "QC": "Quebec",
+    "SK": "Saskatchewan",
+    "YT": "Yukon",
+}
+CA_PROVINCES: dict[str, str] = {
+    **{abbr.lower(): name for abbr, name in _CA_PROVINCE_ABBR.items()},
+    **{name.lower(): name for name in _CA_PROVINCE_ABBR.values()},
+    "newfoundland": "Newfoundland and Labrador",
+}
+
+COUNTRIES: dict[str, tuple[str, str]] = {
+    "us": ("US", "United States"),
+    "usa": ("US", "United States"),
+    "u s": ("US", "United States"),
+    "u s a": ("US", "United States"),
+    "united states": ("US", "United States"),
+    "united states of america": ("US", "United States"),
+    "america": ("US", "United States"),
+    "canada": ("CA", "Canada"),
+    "france": ("FR", "France"),
+    "uk": ("GB", "United Kingdom"),
+    "u k": ("GB", "United Kingdom"),
+    "gb": ("GB", "United Kingdom"),
+    "great britain": ("GB", "United Kingdom"),
+    "united kingdom": ("GB", "United Kingdom"),
+    "england": ("GB", "United Kingdom"),
+    "ireland": ("IE", "Ireland"),
+    "germany": ("DE", "Germany"),
+    "deutschland": ("DE", "Germany"),
+    "italy": ("IT", "Italy"),
+    "spain": ("ES", "Spain"),
+    "mexico": ("MX", "Mexico"),
+    "australia": ("AU", "Australia"),
+    "new zealand": ("NZ", "New Zealand"),
+    "japan": ("JP", "Japan"),
+}
+COUNTRY_NAME_TO_CODE = {name: code for code, name in COUNTRIES.values()}
+
+
 def _describe(code: int | None) -> str:
     if code is None:
         return "unknown"
     return WMO_DESCRIPTIONS.get(int(code), "unknown")
+
+
+def _norm(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def _suffix_match(value: str, mapping: dict[str, str]) -> tuple[str, str] | None:
+    norm = _norm(value)
+    matches = [
+        (alias, canonical)
+        for alias, canonical in mapping.items()
+        if norm == alias or norm.endswith(f" {alias}")
+    ]
+    if not matches:
+        return None
+    return max(matches, key=lambda item: len(item[0]))
+
+
+def _parse_place(place: str) -> _ParsedPlace:
+    raw = place.strip()
+    if not raw:
+        return _ParsedPlace(raw="", base="")
+
+    pieces = [p.strip(" .") for p in re.split(r",+", raw) if p.strip(" .")]
+    base = pieces[0] if pieces else raw
+    qualifiers = " ".join(pieces[1:]).strip()
+
+    admin1 = ""
+    country_code = ""
+    country_name = ""
+
+    if qualifiers:
+        unknown: list[str] = []
+        for piece in pieces[1:]:
+            norm_piece = _norm(piece)
+            country = COUNTRIES.get(norm_piece)
+            state = US_STATES.get(norm_piece)
+            province = CA_PROVINCES.get(norm_piece)
+            if country:
+                country_code, country_name = country
+            elif state:
+                admin1 = state
+                country_code, country_name = "US", "United States"
+            elif province:
+                admin1 = province
+                country_code, country_name = "CA", "Canada"
+            else:
+                unknown.append(piece)
+        if not (admin1 or country_code) and unknown:
+            admin1 = qualifiers
+    else:
+        country_match = _suffix_match(base, COUNTRIES)
+        state_match = _suffix_match(base, US_STATES)
+        province_match = _suffix_match(base, CA_PROVINCES)
+        matches: list[tuple[int, str, str]] = []
+        if country_match:
+            matches.append((len(country_match[0]), "country", country_match[0]))
+        if state_match:
+            matches.append((len(state_match[0]), "state", state_match[0]))
+        if province_match:
+            matches.append((len(province_match[0]), "province", province_match[0]))
+        if matches:
+            _length, kind, alias = max(matches, key=lambda item: item[0])
+            base = re.sub(
+                rf"[\s,]+{re.escape(alias)}\.?$",
+                "",
+                _norm(base),
+                flags=re.IGNORECASE,
+            ).strip()
+            if kind == "country":
+                country_code, country_name = COUNTRIES[alias]
+            elif kind == "state":
+                admin1 = US_STATES[alias]
+                country_code, country_name = "US", "United States"
+            else:
+                admin1 = CA_PROVINCES[alias]
+                country_code, country_name = "CA", "Canada"
+
+    return _ParsedPlace(
+        raw=raw,
+        base=base.strip() or raw,
+        admin1=admin1,
+        country_code=country_code,
+        country_name=country_name,
+    )
+
+
+def _candidate_from_result(result: dict, fallback_name: str) -> _Candidate:
+    country = str(result.get("country") or "")
+    country_code = str(result.get("country_code") or "").upper()
+    if not country_code and country:
+        country_code = COUNTRY_NAME_TO_CODE.get(country, "")
+    return _Candidate(
+        name=str(result.get("name") or fallback_name),
+        lat=float(result["latitude"]),
+        lon=float(result["longitude"]),
+        admin1=str(result.get("admin1") or ""),
+        country=country,
+        country_code=country_code,
+        population=int(result.get("population") or 0),
+    )
+
+
+def _candidate_display_name(candidate: _Candidate) -> str:
+    if candidate.admin1:
+        return f"{candidate.name}, {candidate.admin1}"
+    if candidate.country:
+        return f"{candidate.name}, {candidate.country}"
+    return candidate.name
+
+
+def _candidate_score(parsed: _ParsedPlace, candidate: _Candidate) -> float | None:
+    if parsed.country_code and candidate.country_code != parsed.country_code:
+        return None
+    if parsed.admin1 and _norm(candidate.admin1) != _norm(parsed.admin1):
+        return None
+
+    name_score = float(fuzz.WRatio(_norm(parsed.base), _norm(candidate.name)))
+    score = name_score
+    if _norm(parsed.base) == _norm(candidate.name):
+        score += 25.0
+    if parsed.admin1:
+        score += 80.0
+    if parsed.country_code:
+        score += 30.0
+    if candidate.population:
+        score += min(15.0, math.log10(candidate.population) * 3.0)
+    return score
 
 
 def _will_rain(daily_code: int | None, precip_prob: int | None) -> bool:
@@ -333,6 +558,9 @@ class WeatherClient:
         self,
         default_location: str = "",
         units: str = "celsius",
+        default_lat: float | None = None,
+        default_lon: float | None = None,
+        default_name: str = "",
         http: httpx.AsyncClient | None = None,
     ) -> None:
         self._default = default_location
@@ -340,6 +568,17 @@ class WeatherClient:
         self._http = http or httpx.AsyncClient(timeout=5.0)
         self._owns_http = http is None
         self._geocode_cache: dict[str, _Location] = {}
+        self._default_location: _Location | None = None
+        if default_lat is not None and default_lon is not None:
+            self._default_location = _Location(
+                name=(
+                    default_name.strip()
+                    or default_location.strip()
+                    or "default location"
+                ),
+                lat=float(default_lat),
+                lon=float(default_lon),
+            )
 
     async def aclose(self) -> None:
         if self._owns_http:
@@ -349,30 +588,60 @@ class WeatherClient:
         key = place.strip().lower()
         if key in self._geocode_cache:
             return self._geocode_cache[key]
+        parsed = _parse_place(place)
+        if not parsed.base:
+            return None
+        params = {"name": parsed.base, "count": 20, "language": "en"}
+        if parsed.country_code:
+            params["countryCode"] = parsed.country_code
         r = await self._http.get(
             GEOCODE_URL,
-            params={"name": place, "count": 1, "language": "en"},
+            params=params,
             timeout=5.0,
         )
         r.raise_for_status()
         data = r.json()
-        results = data.get("results") or []
-        if not results:
+        raw_results = data.get("results") or []
+        candidates = [
+            _candidate_from_result(res, parsed.base)
+            for res in raw_results
+            if res.get("latitude") is not None and res.get("longitude") is not None
+        ]
+        scored = [
+            (score, candidate)
+            for candidate in candidates
+            if (score := _candidate_score(parsed, candidate)) is not None
+        ]
+        if not scored:
+            logger.info(
+                "event=weather_geocode query=%r base=%r admin1=%r country=%r "
+                "candidates=%d outcome=no_match",
+                parsed.raw,
+                parsed.base,
+                parsed.admin1,
+                parsed.country_code,
+                len(candidates),
+            )
             return None
-        res = results[0]
-        admin = res.get("admin1") or ""
-        country = res.get("country") or ""
-        full_name = res.get("name", place)
-        if admin:
-            full_name = f"{full_name}, {admin}"
-        elif country:
-            full_name = f"{full_name}, {country}"
+        scored.sort(key=lambda item: item[0], reverse=True)
+        res = scored[0][1]
+        full_name = _candidate_display_name(res)
         loc = _Location(
             name=full_name,
-            lat=float(res["latitude"]),
-            lon=float(res["longitude"]),
+            lat=res.lat,
+            lon=res.lon,
         )
         self._geocode_cache[key] = loc
+        logger.info(
+            "event=weather_geocode query=%r base=%r admin1=%r country=%r "
+            "candidates=%d selected=%r outcome=ok",
+            parsed.raw,
+            parsed.base,
+            parsed.admin1,
+            parsed.country_code,
+            len(candidates),
+            loc.name,
+        )
         return loc
 
     async def _forecast(self, loc: _Location) -> dict:
@@ -400,19 +669,29 @@ class WeatherClient:
         return r.json()
 
     async def get_weather(self, location: str = "") -> dict:
-        place = (location or self._default or "").strip()
-        if not place:
-            return {
-                "error": "no location specified and no default configured "
-                "(set JASPER_DEFAULT_LOCATION to enable bare 'what's the "
-                "weather' queries)",
-            }
-        try:
-            loc = await self._geocode(place)
-        except httpx.HTTPError as e:
-            return {"error": f"geocoding failed: {e}"}
-        if loc is None:
-            return {"error": f"couldn't find location: {place}"}
+        explicit_place = (location or "").strip()
+        if explicit_place:
+            try:
+                loc = await self._geocode(explicit_place)
+            except httpx.HTTPError as e:
+                return {"error": f"geocoding failed: {e}"}
+            if loc is None:
+                return {"error": f"couldn't find location: {explicit_place}"}
+        elif self._default_location is not None:
+            loc = self._default_location
+        else:
+            place = self._default.strip()
+            if not place:
+                return {
+                    "error": "no location specified and no weather default "
+                    "configured (visit /weather/ to set one)",
+                }
+            try:
+                loc = await self._geocode(place)
+            except httpx.HTTPError as e:
+                return {"error": f"geocoding failed: {e}"}
+            if loc is None:
+                return {"error": f"couldn't find location: {place}"}
         try:
             forecast = await self._forecast(loc)
         except httpx.HTTPError as e:

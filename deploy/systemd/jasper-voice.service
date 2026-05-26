@@ -71,6 +71,11 @@ EnvironmentFile=-/var/lib/jasper/google_credentials.env
 # the leading `-` — daemon falls back to bundled "hey_jarvis" when
 # the file is missing. See jasper/wake_models.py for the registry.
 EnvironmentFile=-/var/lib/jasper/wake_model.env
+# Weather default location + units written by the wizard at
+# http://jts.local/weather/. Sourced AFTER /etc/jasper/jasper.env so
+# wizard-written values win. Optional via leading `-`; with no default,
+# explicit-location weather questions still work.
+EnvironmentFile=-/var/lib/jasper/weather.env
 # Transit settings (subway station, bus stop, MTA BusTime key, etc.)
 # written by the wizard at http://jts.local/transit/. Subway and bus
 # tools register only when the relevant env vars are populated, so a

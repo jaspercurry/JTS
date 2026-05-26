@@ -46,9 +46,9 @@ async def test_sunset_today(harness, trial: int) -> None:
     failure is the bug, documented in test form. When the fix
     lands, this turns green and stays green.
     """
-    if not harness.cfg.weather_default_location:
+    if not harness.cfg.weather_prompt_location:
         pytest.skip(
-            "voice-eval: JASPER_DEFAULT_LOCATION not set; sunset has no "
+            "voice-eval: weather default location not set; sunset has no "
             "location to resolve against",
         )
 
@@ -87,7 +87,7 @@ async def test_sunset_today(harness, trial: int) -> None:
             f"{sunset_raw!r}. See transcript: {result.transcript_path}",
         )
 
-    truth = await oracles.weather_sunset(harness.cfg.weather_default_location)
+    truth = await oracles.weather_sunset(harness.cfg.weather_prompt_location)
     if truth is None:
         pytest.skip("voice-eval: Open-Meteo oracle returned no result; "
                     "transient — re-run")
@@ -104,7 +104,6 @@ async def test_sunset_today(harness, trial: int) -> None:
     if result.spoken_text:
         spoken_time = harness.extract_time_from_text(result.spoken_text)
         if spoken_time is not None:
-            from datetime import datetime
             truth_t = truth.time()
             spoken_dt = datetime.combine(truth.date(), spoken_time)
             truth_dt = datetime.combine(truth.date(), truth_t)
