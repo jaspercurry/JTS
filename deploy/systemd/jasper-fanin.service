@@ -85,6 +85,37 @@ RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
+# Input/output ALSA buffer sizing — must absorb the WiFi delivery
+# burst pattern.
+#
+# 802.11 A-MPDU aggregation batches multiple AirPlay RTP packets into a
+# single radio transmission; the on-wire pattern observed via tcpdump
+# (2026-05-26) is **bursts of ~4 packets every ~30 ms** instead of the
+# nominal 1 packet every 8 ms at 44.1 kHz. shairport faithfully writes
+# those bursts into its snd-aloop substream, so fanin's per-input ALSA
+# ring sees the same bursty fill pattern.
+#
+# With the upstream default of buffer_frames=1024 (~21 ms at 48 kHz),
+# the ring would overrun before the next burst arrived — measured at
+# ~2 xruns/min on real hardware (every xrun = one period of injected
+# silence = audible click every 30-60 s). With 4096 (~85 ms), the ring
+# absorbs the worst-case ~40 ms burst gap comfortably. **This matches
+# the buffer size of the userspace dmix layer (PR #214) that fanin
+# replaces** — that dmix was, accidentally, the WiFi-burst absorption
+# layer. fanin must provide the same absorption capacity to be
+# regression-free against dmix.
+#
+# Trade-off: ~85 ms of buffering on the input side, same as the dmix
+# layer had. fanin's net latency saving comes from collapsing the
+# *output*-side path (no more renderer-side dmix between fanin's output
+# and CamillaDSP's input); the input-side absorption is intentional and
+# necessary, not a regression.
+#
+# Read at runtime by jasper_fanin::config::Config::from_env().
+# Override via /var/lib/jasper/fanin.env if you need to retune
+# (e.g., a future PR with verified-tighter WiFi delivery).
+Environment="JASPER_FANIN_BUFFER_FRAMES=4096"
+
 ExecStart=/opt/jasper/bin/jasper-fanin
 
 [Install]

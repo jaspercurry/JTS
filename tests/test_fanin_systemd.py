@@ -205,6 +205,44 @@ def test_exec_start_points_at_installed_binary():
     )
 
 
+def test_input_buffer_frames_sized_for_wifi_burst_absorption():
+    """Per-input ALSA ring buffer must be >= 4096 frames so it
+    absorbs the worst-case 802.11 A-MPDU inter-burst gap (~40 ms
+    observed; we want comfortable headroom, hence 4096 = ~85 ms).
+
+    Below 4096, AirPlay sessions produce ~1 input EPIPE-overrun per
+    30-60 s on real hardware, each injecting one period of silence
+    into the mixer output. See docs/HANDOFF-fan-in-daemon.md
+    "Configuration → Buffer sizing" for the measurement story and
+    docs/HANDOFF-airplay.md Pattern A3 for what it fixes.
+
+    The dmix layer (PR #214, which fanin replaces) had buffer_size
+    4096; fanin must match that to preserve the burst-absorption
+    behaviour the dmix accidentally provided.
+    """
+    unit = _read_unit()
+    # Look in the [Service] section for the Environment= directive
+    # — it's the production default, even though operators can
+    # override via /var/lib/jasper/fanin.env.
+    match = re.search(
+        r'^\s*Environment\s*=\s*"?JASPER_FANIN_BUFFER_FRAMES=(\d+)"?',
+        unit,
+        re.MULTILINE,
+    )
+    assert match is not None, (
+        "jasper-fanin.service must set Environment=\"JASPER_FANIN_BUFFER_FRAMES=...\" "
+        "(production default for per-input ALSA buffer sizing). "
+        "See docs/HANDOFF-fan-in-daemon.md 'Buffer sizing'."
+    )
+    val = int(match.group(1))
+    assert val >= 4096, (
+        f"JASPER_FANIN_BUFFER_FRAMES={val} is below 4096 (~85 ms). "
+        f"Below 4096, WiFi A-MPDU burst delivery overruns the input "
+        f"ring at ~2 xruns/min on AirPlay. See HANDOFF-airplay.md "
+        f"Pattern A3 + HANDOFF-fan-in-daemon.md 'Buffer sizing'."
+    )
+
+
 def test_hardening_directives_present():
     """Defense-in-depth filesystem hardening — matches the
     conventions of other jasper-* units. None of these are
@@ -252,27 +290,50 @@ def test_install_target_is_multi_user():
     assert val == "multi-user.target"
 
 
-def test_install_sh_does_not_enable_fanin_by_default():
-    """install.sh must NOT auto-enable jasper-fanin.service. The
-    Tier 2A migration is opt-in (Phase 3 in the HANDOFF doc); a
-    fresh install lands on the dmix-based renderer path."""
+def test_install_sh_defaults_fresh_installs_to_fanin():
+    """install.sh's `migrate_audio_topology` helper defaults fresh
+    installs (no existing /var/lib/jasper/audio_topology.env) to the
+    fanin topology. Pre-existing state files are preserved so
+    operators who chose dmix keep their choice.
+
+    This inverted the 2026-05-25 opt-in posture on 2026-05-26 after
+    measurement confirmed that the dmix topology was producing
+    ~5-7 audible drops per minute on AirPlay (see
+    docs/HANDOFF-airplay.md Pattern A3 and
+    docs/HANDOFF-fan-in-daemon.md "Why the cutover").
+
+    The systemctl-enable of jasper-fanin happens INSIDE the
+    jasper-audio-topology CLI (which install.sh invokes via
+    migrate_audio_topology), not as a literal `systemctl enable
+    jasper-fanin` line in install.sh itself.
+    """
     install_sh = (REPO / "deploy" / "install.sh").read_text()
-    # `systemctl enable jasper-fanin.service` should NOT appear
-    # outside of comments. Comments are fine (they may document
-    # the operator opt-in flow).
-    for lineno, line in enumerate(install_sh.splitlines(), 1):
-        stripped = line.strip()
-        if stripped.startswith("#"):
-            continue
-        if re.search(
-            r"systemctl\s+enable[^#]*jasper-fanin",
-            stripped,
-        ):
-            raise AssertionError(
-                f"install.sh:{lineno} auto-enables jasper-fanin "
-                f"({stripped!r}). Tier 2A migration must be opt-in. "
-                f"See docs/HANDOFF-fan-in-daemon.md migration plan."
-            )
+    assert "migrate_audio_topology()" in install_sh, (
+        "install.sh must define migrate_audio_topology helper"
+    )
+    # The helper must be called from main(). Look for the function
+    # name appearing as a bare command — `migrate_audio_topology`
+    # at start-of-line (after indent) optionally followed by a
+    # trailing `#` comment. Excludes the function definition line
+    # (which has `()` after the name) and comment-only mentions.
+    call_site = re.search(
+        r"^\s*migrate_audio_topology(?:\s|$|\s*#)",
+        install_sh,
+        re.MULTILINE,
+    )
+    assert call_site is not None, (
+        "main() must call migrate_audio_topology (otherwise fresh "
+        "installs silently stay on dmix despite the helper existing). "
+        "See docs/HANDOFF-airplay.md Pattern A3."
+    )
+    # The helper must invoke `jasper-audio-topology fanin` when the
+    # state file is absent. The CLI does the actual systemctl
+    # orchestration.
+    assert "/usr/local/sbin/jasper-audio-topology fanin" in install_sh, (
+        "migrate_audio_topology must call the topology CLI with the "
+        "fanin argument when no state file exists. Single source of "
+        "truth — same code path as an operator's manual switch."
+    )
 
 
 def test_install_sh_builds_and_installs_binary():
