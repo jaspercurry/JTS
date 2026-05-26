@@ -309,8 +309,9 @@
 
     // Volume slider. Talks to jasper-control's /volume endpoints
     // (proxied through nginx so this stays same-origin). Optimistic
-    // UI: bar follows the pointer instantly; we throttle POSTs and
-    // reconcile from the server response and a 1.5 s poll.
+    // UI: bar follows the pointer instantly; local intent owns the
+    // slider while a write is pending. Once the write queue settles,
+    // polling resumes and reconciles back to server truth.
     (function() {
       var hit = document.getElementById('vol-hit');
       var fill = document.getElementById('vol-fill');
@@ -318,9 +319,13 @@
       var dragging = false;
       var pending = null;     // queued percent waiting to send
       var inFlight = false;
+      var flushing = false;   // true while the throttled send loop owns pending
+      var desiredPct = null;  // newest user-requested percent
+      var ignorePollUntil = 0;
       var lastSentAt = 0;
       var THROTTLE_MS = 150;
       var POLL_MS = 1500;
+      var SETTLE_MS = 1500;
 
       function setUI(pct) {
         pct = Math.max(0, Math.min(100, Math.round(pct)));
@@ -335,43 +340,59 @@
         return (x / rect.width) * 100;
       }
 
+      function localVolumeDirty() {
+        return dragging || flushing || inFlight || pending !== null ||
+               Date.now() < ignorePollUntil;
+      }
+
       // Throttled sender. pending=most-recent target; only one POST in
       // flight at a time. When a POST completes we re-check pending and
       // fire the next, so a fast drag coalesces to the latest position.
       function sendThrottled(pct) {
-        pending = pct;
-        if (inFlight) return;
+        desiredPct = Math.max(0, Math.min(100, Math.round(pct)));
+        pending = desiredPct;
+        // Suppress poll readbacks briefly so an older canonical value
+        // cannot repaint a newer local gesture while audio catches up.
+        ignorePollUntil = Date.now() + SETTLE_MS;
+        if (flushing) return;
         flush();
       }
       async function flush() {
-        while (pending !== null) {
-          var wait = Math.max(0, lastSentAt + THROTTLE_MS - Date.now());
-          if (wait > 0) await new Promise(function(r) { setTimeout(r, wait); });
-          var toSend = pending;
-          pending = null;
-          inFlight = true;
-          lastSentAt = Date.now();
-          try {
-            var resp = await fetch('/volume/set', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify({percent: toSend}),
-            });
-            if (resp.ok) {
-              var data = await resp.json();
-              // Only reconcile UI from server when not dragging — we
-              // don't want a late response to yank the bar away from
-              // the user's finger.
-              if (!dragging && typeof data.percent === 'number') {
-                setUI(data.percent);
+        if (flushing) return;
+        flushing = true;
+        try {
+          while (pending !== null) {
+            var wait = Math.max(0, lastSentAt + THROTTLE_MS - Date.now());
+            if (wait > 0) await new Promise(function(r) { setTimeout(r, wait); });
+            var toSend = pending;
+            pending = null;
+            inFlight = true;
+            lastSentAt = Date.now();
+            try {
+              var resp = await fetch('/volume/set', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({percent: toSend}),
+              });
+              if (resp.ok) {
+                var data = await resp.json();
+                // Reconcile only from the newest completed intent.
+                // Older POST responses are stale by definition and
+                // must not snap the slider backward after pointerup.
+                if (!dragging && pending === null && toSend === desiredPct &&
+                    typeof data.percent === 'number') {
+                  setUI(data.percent);
+                }
               }
+            } catch (e) {
+              // Network blip — leave optimistic value in place. Next
+              // poll after the settle window will reconcile.
+            } finally {
+              inFlight = false;
             }
-          } catch (e) {
-            // Network blip — leave optimistic value in place. Next
-            // poll will reconcile.
-          } finally {
-            inFlight = false;
           }
+        } finally {
+          flushing = false;
         }
       }
 
@@ -421,7 +442,7 @@
       });
 
       async function poll() {
-        if (dragging || inFlight) return;
+        if (localVolumeDirty()) return;
         if (document.visibilityState === 'hidden') return;
         try {
           var resp = await fetch('/volume');
