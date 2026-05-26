@@ -1,5 +1,22 @@
 # JTS — Staff Engineering Review for Google OSS Ownership
 
+> **Status: historical review.** Snapshot from 2026-05-26 / PR #335.
+> Preserved as a point-in-time OSS-readiness assessment, not current
+> operational truth. Current documentation rules live in
+> [AGENTS.md#documentation-paradigm](../AGENTS.md#documentation-paradigm);
+> the repo doc atlas lives in
+> [README.md#documentation-map](../README.md#documentation-map).
+>
+> **Refresh against main (2026-05-26, `6d6ff52`).** Main now has an
+> Apache-2.0 [LICENSE](../LICENSE), [CONTRIBUTING.md](../CONTRIBUTING.md),
+> [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md), issue/PR templates,
+> pytest CI, many wizard CSRF helpers, and [CLAUDE.md](../CLAUDE.md) as a
+> thin import shim. This update intentionally leaves the original review
+> body intact; treat stale claims below as review history. Current
+> open easy wins are tracked in [LICENSE-third-party.md](../LICENSE-third-party.md)
+> and the remaining security/supply-chain hardening work should get its own
+> living docs when implemented.
+
 *A hypothetical assessment, written as if a Google staff software engineer
 were evaluating this repository for the company to take on open-source
 ownership. Synthesized from a multi-agent code review covering architecture,
