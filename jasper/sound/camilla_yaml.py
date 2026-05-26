@@ -1,0 +1,328 @@
+"""Emit CamillaDSP configs for sound curves and preference EQ.
+
+The generated config preserves the base JTS audio path and any existing
+room-correction PEQs, then appends preference filters. That ordering is
+intentional: room correction fixes the room; preference EQ shapes what
+the listener likes after that correction.
+"""
+from __future__ import annotations
+
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Iterable
+
+from jasper.camilla_config_contract import (
+    DEFAULT_CAPTURE_DEVICE,
+    DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_CHUNKSIZE,
+    DEFAULT_PLAYBACK_DEVICE,
+    DEFAULT_PLAYBACK_FORMAT,
+    DEFAULT_SAMPLE_RATE,
+    DEFAULT_TARGET_LEVEL,
+    PeqFilter,
+)
+
+from .profile import FilterSpec, SoundProfile, build_sound_filters, estimate_headroom_db
+
+logger = logging.getLogger(__name__)
+
+BASE_CONFIG_PATH = Path("/etc/camilladsp/v1.yml")
+SOUND_CONFIG_NAME = "sound_current.yml"
+_JTS_GENERATED_RE = re.compile(r"^(?:correction_[A-Za-z0-9]+_\d+|sound_current)\.yml$")
+
+
+def _fmt(value: float) -> str:
+    return f"{value:.4f}"
+
+
+def _emit_gain_filter(name: str, gain_db: float) -> list[str]:
+    return [
+        f"  {name}:",
+        "    type: Gain",
+        f"    parameters: {{ gain: {_fmt(gain_db)}, inverted: false, mute: false }}",
+    ]
+
+
+def _emit_peq_filter(name: str, peq: PeqFilter) -> list[str]:
+    return [
+        f"  {name}:",
+        "    type: Biquad",
+        "    parameters:",
+        "      type: Peaking",
+        f"      freq: {_fmt(peq.freq)}",
+        f"      q: {_fmt(peq.q)}",
+        f"      gain: {_fmt(peq.gain)}",
+    ]
+
+
+def _emit_filter_spec(spec: FilterSpec) -> list[str]:
+    lines = [
+        f"  {spec.name}:",
+        "    type: Biquad",
+        "    parameters:",
+        f"      type: {spec.biquad_type}",
+        f"      freq: {_fmt(spec.freq)}",
+    ]
+    if spec.biquad_type in {"Lowshelf", "Highshelf"}:
+        lines.append(f"      slope: {_fmt(spec.slope or 6.0)}")
+    else:
+        lines.append(f"      q: {_fmt(spec.q or 1.0)}")
+    lines.append(f"      gain: {_fmt(spec.gain)}")
+    return lines
+
+
+def _emit_filter_definitions(
+    profile: SoundProfile,
+    room_peqs: Iterable[PeqFilter],
+) -> tuple[str, list[str], float]:
+    lines: list[str] = []
+    chain_names: list[str] = []
+
+    lines.extend(_emit_gain_filter("flat", 0.0))
+
+    room_list = list(room_peqs)
+    for i, peq in enumerate(room_list, start=1):
+        name = f"room_peq_{i}"
+        lines.extend(_emit_peq_filter(name, peq))
+        chain_names.append(name)
+
+    headroom_db = estimate_headroom_db(profile)
+    sound_filters = build_sound_filters(profile)
+    if sound_filters:
+        if headroom_db > 0.0:
+            lines.extend(_emit_gain_filter("sound_preamp", -headroom_db))
+            chain_names.append("sound_preamp")
+        for spec in sound_filters:
+            lines.extend(_emit_filter_spec(spec))
+            chain_names.append(spec.name)
+
+    chain_names.append("flat")
+    return "\n".join(lines), chain_names, headroom_db
+
+
+def _emit_pipeline(chain_names: list[str]) -> str:
+    chain_str = "[" + ", ".join(chain_names) + "]"
+    return (
+        "  - type: Mixer\n"
+        "    name: master_gain\n"
+        "  - type: Filter\n"
+        "    channels: [0]\n"
+        f"    names: {chain_str}\n"
+        "  - type: Filter\n"
+        "    channels: [1]\n"
+        f"    names: {chain_str}"
+    )
+
+
+def emit_sound_config(
+    profile: SoundProfile,
+    *,
+    room_peqs: list[PeqFilter] | None = None,
+    capture_device: str = DEFAULT_CAPTURE_DEVICE,
+    playback_device: str = DEFAULT_PLAYBACK_DEVICE,
+    capture_format: str = DEFAULT_CAPTURE_FORMAT,
+    playback_format: str = DEFAULT_PLAYBACK_FORMAT,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    chunksize: int = DEFAULT_CHUNKSIZE,
+    target_level: int = DEFAULT_TARGET_LEVEL,
+    out_path: str | Path | None = None,
+    profile_id: str | None = None,
+) -> str:
+    """Build a CamillaDSP YAML config for the preference profile."""
+
+    filter_yaml, chain_names, headroom_db = _emit_filter_definitions(
+        profile, room_peqs or [],
+    )
+    pipeline_yaml = _emit_pipeline(chain_names)
+    header_id = f" (id={profile_id})" if profile_id else ""
+    yaml = f"""---
+# Auto-generated JTS DSP config{header_id}.
+# Source: jasper.sound.camilla_yaml.emit_sound_config
+# DO NOT HAND-EDIT — update http://jts.local/correction/ or
+# http://jts.local/sound/ instead.
+#
+# Structure mirrors deploy/camilladsp/v1.yml. Room-correction PEQs,
+# when present, run before sound-curve / preference-EQ filters. The
+# `master_gain` mixer remains identity so the Ducker contract holds.
+# estimated_sound_headroom_db={headroom_db:.3f}
+
+devices:
+  samplerate: {sample_rate}
+  chunksize: {chunksize}
+  queuelimit: 4
+  target_level: {target_level}
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: 2
+    device: "{capture_device}"
+    format: {capture_format}
+  playback:
+    type: Alsa
+    channels: 2
+    device: "{playback_device}"
+    format: {playback_format}
+
+filters:
+{filter_yaml}
+
+mixers:
+  master_gain:
+    channels: {{ in: 2, out: 2 }}
+    mapping:
+      - dest: 0
+        sources: [{{ channel: 0, gain: 0, inverted: false }}]
+      - dest: 1
+        sources: [{{ channel: 1, gain: 0, inverted: false }}]
+
+pipeline:
+{pipeline_yaml}
+"""
+
+    if out_path is not None:
+        out_path = Path(out_path)
+        if not out_path.parent.exists():
+            raise FileNotFoundError(
+                f"parent directory does not exist: {out_path.parent}"
+            )
+        _atomic_write_text(out_path, yaml)
+        logger.info(
+            "wrote sound config: %s (room_peqs=%d sound_filters=%d headroom=%.3f)",
+            out_path, len(room_peqs or []), len(build_sound_filters(profile)),
+            headroom_db,
+        )
+    return yaml
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    with tempfile.NamedTemporaryFile(
+        "w",
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as f:
+        f.write(text)
+        tmp_name = f.name
+    os.replace(tmp_name, path)
+
+
+def sound_config_path(config_dir: str | Path) -> Path:
+    return Path(config_dir) / SOUND_CONFIG_NAME
+
+
+def is_base_config(path: str | Path | None) -> bool:
+    return Path(path) == BASE_CONFIG_PATH if path else False
+
+
+def is_jts_generated_config(
+    path: str | Path | None,
+    *,
+    config_dir: str | Path,
+) -> bool:
+    if not path:
+        return False
+    cfg_path = Path(path)
+    return cfg_path.parent == Path(config_dir) and bool(
+        _JTS_GENERATED_RE.match(cfg_path.name)
+    )
+
+
+def validate_camilla_config(path: str | Path) -> bool:
+    """Validate a generated config when the CamillaDSP binary is present."""
+
+    binary = os.environ.get("JASPER_CAMILLADSP_BIN")
+    if not binary:
+        default_binary = Path("/opt/camilladsp/camilladsp")
+        binary = str(default_binary) if default_binary.exists() else None
+    if not binary:
+        binary = shutil.which("camilladsp")
+    if not binary:
+        logger.info("camilladsp binary not found; skipping config preflight")
+        return True
+
+    try:
+        result = subprocess.run(
+            [binary, "-c", str(path), "--check"],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        logger.error("camilladsp --check could not run for %s: %s", path, e)
+        return False
+    if result.returncode == 0:
+        return True
+    logger.error(
+        "camilladsp --check failed for %s: stdout=%r stderr=%r",
+        path, result.stdout[-500:], result.stderr[-500:],
+    )
+    return False
+
+
+def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
+    """Extract generated room-correction PEQs from a CamillaDSP YAML.
+
+    We intentionally avoid a YAML runtime dependency here. The parser is
+    scoped to the deterministic config shapes emitted by
+    jasper.correction.camilla_yaml and this module.
+    """
+
+    try:
+        filters_text = text.split("\nfilters:\n", 1)[1].split("\nmixers:\n", 1)[0]
+    except IndexError:
+        return []
+
+    blocks: list[tuple[str, str]] = []
+    current_name: str | None = None
+    current_lines: list[str] = []
+    for line in filters_text.splitlines():
+        match = re.match(r"^  ([A-Za-z0-9_]+):\s*$", line)
+        if match:
+            if current_name is not None:
+                blocks.append((current_name, "\n".join(current_lines)))
+            current_name = match.group(1)
+            current_lines = []
+            continue
+        if current_name is not None:
+            current_lines.append(line)
+    if current_name is not None:
+        blocks.append((current_name, "\n".join(current_lines)))
+
+    peqs: list[PeqFilter] = []
+    for name, block in blocks:
+        if not (re.fullmatch(r"peq_\d+", name) or re.fullmatch(r"room_peq_\d+", name)):
+            continue
+        if "type: Biquad" not in block or not re.search(r"^\s+type:\s+Peaking\s*$", block, re.M):
+            continue
+        values: dict[str, float] = {}
+        for key in ("freq", "q", "gain"):
+            match = re.search(rf"^\s+{key}:\s+([-+]?\d+(?:\.\d+)?)\s*$", block, re.M)
+            if not match:
+                break
+            values[key] = float(match.group(1))
+        else:
+            peqs.append(
+                PeqFilter(freq=values["freq"], q=values["q"], gain=values["gain"])
+            )
+    return peqs
+
+
+def extract_room_peqs_from_config(path: str | Path | None) -> list[PeqFilter]:
+    if not path:
+        return []
+    cfg_path = Path(path)
+    try:
+        return extract_room_peqs_from_config_text(cfg_path.read_text())
+    except FileNotFoundError:
+        logger.info("active CamillaDSP config path not readable: %s", cfg_path)
+    except OSError as e:
+        logger.warning("could not inspect CamillaDSP config %s: %s", cfg_path, e)
+    return []

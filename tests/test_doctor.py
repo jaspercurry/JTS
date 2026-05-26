@@ -1635,6 +1635,67 @@ def test_check_correction_current_config_reports_flat_base(
     assert "custom/non-JTS" in r.detail
 
 
+def test_check_correction_current_config_reports_generated_correction(
+    monkeypatch, tmp_path,
+):
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    generated = config_dir / "correction_abc_1700000000.yml"
+    generated.write_text("filters:\n  room_peq_1:\n    type: Biquad\n")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {generated}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_correction_current_config()
+
+    assert r.status == "ok"
+    assert "session=abc" in r.detail
+    assert "peqs=1" in r.detail
+
+
+def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "ok"
+    assert "default Flat" in r.detail
+
+
+def test_check_sound_profile_warns_when_saved_profile_not_active(
+    monkeypatch, tmp_path,
+):
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text(json.dumps({
+        "enabled": True,
+        "curve_id": "harman",
+        "simple_eq": {"bass_db": 1.0, "mid_db": 0.0, "treble_db": 0.0},
+    }))
+    statefile = tmp_path / "statefile.yml"
+    base = tmp_path / "v1.yml"
+    base.write_text("# base\n")
+    statefile.write_text(f"config_path: {base}\n")
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "warn"
+    assert "curve=harman" in r.detail
+    assert "not reflected" in r.detail
+
+
+def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
+    profile = tmp_path / "sound_profile.json"
+    profile.write_text("{not json")
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile))
+
+    r = doctor.check_sound_profile()
+
+    assert r.status == "fail"
+    assert "could not read" in r.detail
+
+
 def test_check_correction_latest_bundle_warns_without_calibration(
     monkeypatch, tmp_path,
 ):
@@ -1687,4 +1748,5 @@ def test_correction_doctor_checks_registered():
     assert "check_correction_web_service" in src
     assert "check_correction_state_dirs" in src
     assert "check_correction_current_config" in src
+    assert "check_sound_profile" in src
     assert "check_correction_latest_bundle" in src

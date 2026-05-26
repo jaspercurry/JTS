@@ -103,7 +103,8 @@ _CTX_ATTR = "_jts_request_ctx"
 # proceed" by the time they see the second wizard.
 PAGE_STYLE = """
   body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-         max-width: 620px; margin: 2em auto; padding: 0 1em; color: #222; }
+         max-width: 620px; margin: 2em auto; padding: 0 1em;
+         color: #222; background: #fff; }
   h1 { margin-bottom: 0.25em; } h2 { margin-top: 2em; }
   .sub { color: #666; margin-top: 0; }
   .msg { background: #e8f4ff; border: 1px solid #abd; padding: 0.6em 0.8em;

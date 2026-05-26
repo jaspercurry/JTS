@@ -514,6 +514,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     state_path = tmp_path / "speaker_volume.json"
     state_path.write_text('{"listening_level": 73}')
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing_sound.json"))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
     monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
     # Point librespot state at a missing file → empty dict.
@@ -531,6 +532,8 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
+    assert body["audio"]["sound"]["curve_id"] == "flat"
+    assert body["audio"]["sound"]["filter_count"] == 0
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False

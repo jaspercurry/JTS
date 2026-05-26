@@ -645,6 +645,28 @@ async def _get_state(
     except (OSError, ValueError, json.JSONDecodeError):
         pass
 
+    sound_profile: dict[str, Any] | None
+    try:
+        from ..sound.profile import (
+            build_sound_filters,
+            estimate_headroom_db,
+            load_profile,
+        )
+
+        profile = load_profile()
+        sound_profile = {
+            "enabled": profile.enabled,
+            "curve_id": profile.curve_id,
+            "simple_eq": profile.simple_eq.to_dict(),
+            "parametric_band_count": len(profile.parametric_bands),
+            "filter_count": len(build_sound_filters(profile)),
+            "headroom_db": estimate_headroom_db(profile),
+            "updated_at": profile.updated_at or None,
+        }
+    except Exception:  # noqa: BLE001
+        logger.exception("sound profile state probe failed")
+        sound_profile = None
+
     # Slow probes — fan out in parallel.
     async def _camilla_volume() -> float | None:
         try:
@@ -838,6 +860,7 @@ async def _get_state(
                 round(cam_db, 2) if cam_db is not None else None
             ),
             "listening_level_percent": listening_level,
+            "sound": sound_profile,
         },
         "renderers": {
             "spotify": spotify,

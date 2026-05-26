@@ -50,12 +50,11 @@ import json
 import logging
 import os
 import secrets
-import sys
 import threading
 import time
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -68,17 +67,19 @@ import numpy as np
 # Reuse audio I/O + systemctl helpers from the CLI. Single source of
 # truth for the WAV format + the "stop jasper-voice to free UDP" dance.
 from jasper.cli.wake_enroll import (
-    CHANNELS,
+    CHANNELS as CHANNELS,
+    SAMPLE_RATE_HZ as SAMPLE_RATE_HZ,
+    SAMPLE_WIDTH_BYTES as SAMPLE_WIDTH_BYTES,
+    VOICE_UNIT,
+    require_root,
+    write_wav,
+)
+from jasper.wake_ports import (
     DEFAULT_AEC_DTLN_PORT,
     DEFAULT_AEC_OFF_PORT,
     DEFAULT_AEC_ON_PORT,
     DEFAULT_AEC_RAW0_PORT,
-    SAMPLE_RATE_HZ,
-    SAMPLE_WIDTH_BYTES,
-    VOICE_UNIT,
-    require_root,
-    systemctl,
-    write_wav,
+    build_ports,
 )
 
 # Shared "← Home" nav element + its CSS. Matches every other JTS
@@ -132,30 +133,6 @@ RESUME_WINDOW_SEC = 3600.0
 # embedded JS reads `<meta name="csrf-token">` and sends this header
 # on every mutating request.
 CSRF_HEADER = "X-CSRF-Token"
-
-
-def build_ports(
-    *,
-    aec_on_port: int = DEFAULT_AEC_ON_PORT,
-    aec_off_port: int = DEFAULT_AEC_OFF_PORT,
-    aec_dtln_port: int = DEFAULT_AEC_DTLN_PORT,
-    aec_raw0_port: int = DEFAULT_AEC_RAW0_PORT,
-    include_dtln: bool = True,
-) -> dict[str, int]:
-    """Return the UDP port map for the corpus recorder.
-
-    Raw mic 0 is always present in the map so a raw0-enabled session
-    can subscribe to it. DTLN remains optional because some low-RAM
-    installs deliberately keep that bridge leg disabled.
-    """
-    ports = {
-        "on": aec_on_port,
-        "off": aec_off_port,
-    }
-    if include_dtln:
-        ports["dtln"] = aec_dtln_port
-    ports["raw0"] = aec_raw0_port
-    return ports
 
 
 # ---------------------------------------------------------------------------

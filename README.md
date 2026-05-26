@@ -193,6 +193,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   wireless remote (e.g. the VK-01 volume knob) is present, since
   powering the adapter off would silently disconnect it. Same
   prompt fires on the Power switch at `http://jts.local/bluetooth/`.
+- ✅ Sound curve + preference EQ wizard at `http://jts.local/sound/` —
+  stock Flat / Harman-style / B&K-style curves plus Bass, Mid, and
+  Treble controls. Applying emits a CamillaDSP config that preserves
+  any active room-correction PEQs; the EQ toggle bypasses preference
+  shaping without clearing room correction. See
+  [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
+  for the composition contract and observability hooks.
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB-C port (via the 8086
   Consultancy USB-C/PWR Splitter) and the host sees JTS as a USB
@@ -594,6 +601,11 @@ reference. Currently:
   design-audit bundles, PEQ generation, CamillaDSP hot-swap. Active
   workstream — read the Status section first to see which phase is
   in flight.
+- [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
+  — `/sound/` preference-EQ layer: stock sound curves, Bass/Mid/Treble,
+  room-correction composition order, generated config ownership,
+  A/B bypass semantics, doctor and `/state` observability, and the
+  future AI/advanced-parametric boundary.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of
@@ -764,7 +776,7 @@ and openwakeword stub diet landed.
 | `jasper-mux` (renderer arbitration) | Active | ~13 MB | ~0% idle |
 | `jasper-usbsink` (USB audio source) | **Disabled by default**, ~22 MB when on | 0 MB off, ~22 MB on | ~3% of one core while host streams |
 | `jasper-usbsink-init` (gadget ConfigFS oneshot) | follows usbsink | one-shot, ~0 | ~0 |
-| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
+| `jasper-web` (Spotify / voice / Google / AirPlay / Sources / Wake / Wi-Fi / Peers / Transit / Home Assistant / Weather / Sound wizards) | **Socket-activated** | ~0 idle, ~22 MB when open | n/a idle |
 | `jasper-bluetooth-web` (BT pair UI) | **Socket-activated** | ~0 idle, ~17 MB when open | n/a idle |
 | `jasper-correction-web` (room correction UI) | **Socket-activated** | ~0 idle, ~15 MB when open | n/a idle |
 | `jasper-dial-web` (dial onboarding UI) | **Socket-activated** | ~0 idle, ~9 MB when open | n/a idle |
@@ -774,10 +786,11 @@ and openwakeword stub diet landed.
 
 The five web-wizard daemons are socket-activated — systemd holds
 their ports open and only spawns the daemon when a tab opens any of
-its pages. `jasper-web` alone hosts ten URL surfaces (Spotify, voice,
-Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home Assistant)
-on ten loopback ports; the other four daemons each host one. All five
-exit after 10 min of no requests, so the resident cost is zero between
+its pages. `jasper-web` alone hosts thirteen URL surfaces (Spotify,
+voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home
+Assistant, Weather, Sound, Wake-Corpus) on thirteen loopback ports; the
+other four daemons each host one. All five exit after 10 min of no
+requests, so the resident cost is zero between
 admin sessions. First request after idle takes ~500-800 ms (Python
 startup); invisible during the OAuth round-trip or BT pair flow.
 

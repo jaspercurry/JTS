@@ -31,6 +31,7 @@ from jasper.correction.session import (
     SessionState,
     parse_current_correction,
 )
+from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 
 
 # ---------- parse_current_correction ---------------------------------------
@@ -76,6 +77,36 @@ def test_parse_current_correction_extracts_id_timestamp_peq_count(
     assert cc["session_id"] == "abc123"
     assert cc["applied_at_epoch"] == 1700000000
     assert cc["peq_count"] == 3
+
+
+def test_parse_current_correction_counts_room_peqs_in_sound_config(tmp_path: Path):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    yaml_path = cfg_dir / "sound_current.yml"
+    yaml_path.write_text(
+        "filters:\n"
+        "  flat:\n"
+        "    type: Gain\n"
+        "  room_peq_1:\n"
+        "    type: Biquad\n"
+    )
+
+    cc = parse_current_correction(str(yaml_path), config_dir=cfg_dir)
+
+    assert cc is not None
+    assert cc["session_id"] == "sound"
+    assert cc["peq_count"] == 1
+
+
+def test_parse_current_correction_ignores_sound_config_without_room_peqs(
+    tmp_path: Path,
+):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    yaml_path = cfg_dir / "sound_current.yml"
+    yaml_path.write_text("filters:\n  sound_simple_bass:\n    type: Biquad\n")
+
+    assert parse_current_correction(str(yaml_path), config_dir=cfg_dir) is None
 
 
 def test_parse_current_correction_unknown_filename_returns_none(
@@ -179,7 +210,7 @@ def test_capture_path_for_position_uses_per_session_dir(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_apply_copies_yaml_into_bundle(tmp_path: Path):
+async def test_apply_copies_yaml_into_bundle(tmp_path: Path, monkeypatch):
     """apply() writes the correction YAML to /var/lib/camilladsp/configs
     and copies it into the bundle as applied.yml — so the bundle is
     self-contained even if the user later deletes the configs file."""
@@ -192,6 +223,7 @@ async def test_apply_copies_yaml_into_bundle(tmp_path: Path):
         PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0),
         PEQJSON(freq_hz=160.0, q=4.0, gain_db=-2.0),
     ]
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing_sound.json"))
 
     calls: list[str] = []
 
@@ -208,6 +240,34 @@ async def test_apply_copies_yaml_into_bundle(tmp_path: Path):
     assert bundle_yaml.exists()
     assert not bundle_yaml.is_symlink()
     assert bundle_yaml.read_text() == sess.config_path.read_text()
+
+
+@pytest.mark.asyncio
+async def test_correction_apply_preserves_saved_sound_profile(
+    tmp_path: Path,
+    monkeypatch,
+):
+    sess = _make_session(tmp_path)
+    sess.state = SessionState.READY
+    from jasper.correction.session import PEQJSON
+    sess.peqs = [PEQJSON(freq_hz=80.0, q=4.0, gain_db=-3.0)]
+    profile_path = tmp_path / "sound_profile.json"
+    save_profile(
+        SoundProfile(curve_id="harman", simple_eq=SimpleEq(treble_db=1.5)),
+        profile_path,
+    )
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(profile_path))
+
+    async def fake_set_config(path: str) -> bool:
+        return True
+
+    await sess.apply(fake_set_config)
+
+    assert sess.config_path is not None
+    yaml = sess.config_path.read_text()
+    assert "room_peq_1:" in yaml
+    assert "sound_curve_harman_bass:" in yaml
+    assert "sound_simple_treble:" in yaml
 
 
 @pytest.mark.asyncio

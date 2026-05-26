@@ -8,7 +8,7 @@ Python only resolves the names at call time — so the bug only
 surfaced when systemd started the daemon, at which point ALL eight
 wizards went down.
 
-Two layers of defense here:
+Three layers of defense here:
 
 1. **Pattern-specific checks against `__main__.py`** — catches the
    exact `__main__.py` bug that bit us (every `<name>_setup.X` has
@@ -21,12 +21,18 @@ Two layers of defense here:
    detection (handles match/case patterns, comprehensions, walrus,
    nested scopes, etc.). If ruff isn't available locally the test
    skips rather than flakes.
+
+3. **Import-cost check for the combined settings host** — proves
+   the socket-activated `jasper.web.__main__` entrypoint doesn't pull
+   in wake-corpus recorder dependencies unless `/wake-corpus/` is
+   actually used.
 """
 from __future__ import annotations
 
 import re
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -115,3 +121,78 @@ def test_peering_surface_has_no_undefined_names():
             + result.stdout,
         )
     pytest.skip(f"ruff failed to run (exit {result.returncode}): {result.stderr}")
+
+
+# ----------------------------------------------------------------------
+# Layer 3 — combined settings host stays import-cheap
+# ----------------------------------------------------------------------
+
+
+def test_combined_web_import_does_not_load_wake_corpus_heavy_deps():
+    """Importing jasper.web.__main__ must not load the recorder stack.
+
+    jasper-web is socket-activated and hosts many lightweight settings
+    pages. The wake-corpus page imports NumPy via its recorder pipeline,
+    so it must stay lazy until someone actually requests /wake-corpus/.
+    """
+    code = (
+        "import sys; "
+        "import jasper.web.__main__; "
+        "loaded = [m for m in ("
+        "'numpy', 'scipy', 'jasper.web.wake_corpus_setup'"
+        ") if m in sys.modules]; "
+        "print(','.join(loaded)); "
+        "raise SystemExit(1 if loaded else 0)"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO),
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        "jasper.web.__main__ imported heavy wake-corpus dependencies: "
+        f"{result.stdout.strip() or result.stderr.strip()}"
+    )
+
+
+def test_lazy_wake_corpus_server_construction_stays_import_cheap():
+    """Building the lazy /wake-corpus server must not load the recorder."""
+    code = """
+import sys
+import types
+from pathlib import Path
+
+import jasper.web.__main__ as web_main
+
+
+def fake_make_http_server(target, handler_cls):
+    return types.SimpleNamespace(RequestHandlerClass=handler_cls)
+
+
+web_main._systemd.make_http_server = fake_make_http_server
+web_main._make_lazy_wake_corpus_server(
+    ("127.0.0.1", 0),
+    output_dir=Path("."),
+    ports={"on": 9876},
+    csrf_token="x",
+)
+loaded = [
+    m for m in ("numpy", "scipy", "jasper.web.wake_corpus_setup")
+    if m in sys.modules
+]
+print(",".join(loaded))
+raise SystemExit(1 if loaded else 0)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        cwd=str(_REPO),
+        timeout=10,
+    )
+    assert result.returncode == 0, (
+        "lazy /wake-corpus server construction imported recorder deps: "
+        f"{result.stdout.strip() or result.stderr.strip()}"
+    )

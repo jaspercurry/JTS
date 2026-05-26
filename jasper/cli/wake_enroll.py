@@ -61,6 +61,13 @@ from pathlib import Path
 
 import numpy as np
 
+from jasper.wake_ports import (
+    DEFAULT_AEC_DTLN_PORT,
+    DEFAULT_AEC_OFF_PORT,
+    DEFAULT_AEC_ON_PORT,
+    DEFAULT_AEC_RAW0_PORT as DEFAULT_AEC_RAW0_PORT,
+)
+
 logger = logging.getLogger("jasper-wake-enroll")
 
 
@@ -81,18 +88,6 @@ DEFAULT_DURATION_SEC = 3.0
 # reset and breathe, short enough that 30 utterances doesn't take
 # forever. Skippable with ENTER (not yet implemented; just sleep).
 INTER_CLIP_PAUSE_SEC = 2.0
-
-# Default UDP ports. Match the AEC bridge's default emit ports +
-# CLAUDE.md's HANDOFF-wake-telemetry.md spec.
-# (JASPER_AEC_UDP_PORT / _RAW / _DTLN in jasper.cli.aec_bridge.)
-DEFAULT_AEC_ON_PORT = 9876
-DEFAULT_AEC_OFF_PORT = 9877
-DEFAULT_AEC_DTLN_PORT = 9878
-# Truly-raw mic 0 (chip channel 2 — no chip DSP applied). Optional
-# 4th capture leg used by the wake-corpus recorder when the operator
-# wants mic-agnostic training data. The bridge always emits here;
-# consumers opt in by binding the port.
-DEFAULT_AEC_RAW0_PORT = 9879
 
 # What we tell systemd to stop / start. The voice daemon owns both
 # UDP receiver sockets in production, so it must be down for the
@@ -379,8 +374,8 @@ async def run_session(args: argparse.Namespace) -> int:
     active_legs = list(leg_ports.keys())
 
     session_id = make_session_id(args.member)
-    print(f"\nJTS Wake-Word Enrollment")
-    print(f"=" * 40)
+    print("\nJTS Wake-Word Enrollment")
+    print("=" * 40)
     print(f"  Member    : {args.member}")
     print(f"  Condition : {args.condition}")
     print(f"  Count     : {args.count} utterances of \"Jarvis\"")
@@ -438,7 +433,7 @@ async def run_session(args: argparse.Namespace) -> int:
             if len(empty_legs) == len(active_legs):
                 print(
                     f"  ✗ no audio captured on any leg "
-                    f"({', '.join(f'{l}={len(recordings[l])}B' for l in active_legs)}).\n"
+                    f"({', '.join(f'{leg}={len(recordings[leg])}B' for leg in active_legs)}).\n"
                     f"    Is jasper-aec-bridge running? Skipping clip."
                 )
                 continue

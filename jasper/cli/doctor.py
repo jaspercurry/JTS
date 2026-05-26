@@ -35,6 +35,8 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from ..config import Config
+from ..env_load import load_env_files as _load_env_files
+from ..env_load import parse_env_file as _shared_parse_env_file
 
 
 GREEN = "\033[32m"
@@ -55,11 +57,10 @@ def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
 
 
-# Re-exported for back-compat with any external callers; the load
-# logic now lives in jasper.env_load so other CLIs (jasper-cues)
-# share the exact same env-file precedence as the doctor.
-from ..env_load import ENV_FILES, load_env_files as _load_env_files
-from ..env_load import parse_env_file as _parse_env_file
+def _parse_env_file(path: str) -> dict[str, str]:
+    """Back-compat wrapper for tests and external doctor consumers."""
+
+    return _shared_parse_env_file(path)
 
 
 def check_env_file() -> CheckResult:
@@ -3182,7 +3183,7 @@ def check_correction_current_config() -> CheckResult:
             "current correction", "fail",
             f"CamillaDSP statefile points at missing config {config_path}",
         )
-    parsed = parse_current_correction(path.name, config_dir=path.parent)
+    parsed = parse_current_correction(str(path), config_dir=path.parent)
     if parsed is None:
         if path == Path("/etc/camilladsp/v1.yml"):
             return CheckResult("current correction", "ok", "flat base config")
@@ -3195,6 +3196,62 @@ def check_correction_current_config() -> CheckResult:
         f"session={parsed['session_id']} peqs={parsed['peq_count']} "
         f"({config_path})",
     )
+
+
+def _sound_profile_path() -> Path:
+    return Path(
+        os.environ.get(
+            "JASPER_SOUND_PROFILE_PATH",
+            "/var/lib/jasper/sound_profile.json",
+        )
+    )
+
+
+def check_sound_profile() -> CheckResult:
+    from jasper.sound.profile import (
+        SoundProfile,
+        build_sound_filters,
+        estimate_headroom_db,
+    )
+
+    path = _sound_profile_path()
+    if not path.exists():
+        return CheckResult(
+            "sound profile",
+            "ok",
+            "default Flat profile (no saved preference EQ)",
+        )
+    try:
+        raw = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as e:
+        return CheckResult("sound profile", "fail", f"could not read {path}: {e}")
+
+    profile = SoundProfile.from_mapping(raw)
+    filter_count = len(build_sound_filters(profile))
+    headroom_db = estimate_headroom_db(profile)
+
+    statefile = Path(
+        os.environ.get(
+            "JASPER_CAMILLA_STATEFILE",
+            "/var/lib/camilladsp/statefile.yml",
+        )
+    )
+    active_path = _parse_camilla_statefile_config_path(statefile)
+    active_name = Path(active_path).name if active_path else ""
+    active_generated = (
+        active_name.startswith("correction_") or active_name == "sound_current.yml"
+    )
+    status = "ok"
+    drift = ""
+    if profile.enabled and filter_count and not active_generated:
+        status = "warn"
+        drift = " (saved profile not reflected in active generated config)"
+
+    detail = (
+        f"enabled={profile.enabled} curve={profile.curve_id} "
+        f"filters={filter_count} headroom={headroom_db:.1f}dB{drift}"
+    )
+    return CheckResult("sound profile", status, detail)
 
 
 def check_correction_latest_bundle() -> CheckResult:
@@ -3340,6 +3397,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_correction_web_service,
         check_correction_state_dirs,
         check_correction_current_config,
+        check_sound_profile,
         check_correction_latest_bundle,
         check_ram,
         # Stage 1 memory-pressure resilience (docs/HANDOFF-resilience.md
@@ -3535,10 +3593,10 @@ def _renderer_device_shairport() -> Optional[str]:
     Format: `output_device = "shairport_substream";` (libconfig syntax)."""
     ln = _read_first_line_matching(
         Path("/etc/shairport-sync.conf"),
-        lambda l: (
-            l.lstrip().startswith("output_device")
-            and "=" in l
-            and not l.lstrip().startswith("//")
+        lambda line: (
+            line.lstrip().startswith("output_device")
+            and "=" in line
+            and not line.lstrip().startswith("//")
         ),
     )
     if not ln:

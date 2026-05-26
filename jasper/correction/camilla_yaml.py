@@ -24,21 +24,19 @@ import logging
 from pathlib import Path
 from typing import Iterable
 
+from jasper.camilla_config_contract import (
+    DEFAULT_CAPTURE_DEVICE,
+    DEFAULT_CAPTURE_FORMAT,
+    DEFAULT_CHUNKSIZE,
+    DEFAULT_PLAYBACK_DEVICE,
+    DEFAULT_PLAYBACK_FORMAT,
+    DEFAULT_SAMPLE_RATE,
+    DEFAULT_TARGET_LEVEL,
+)
+
 from .peq import PEQ
 
 logger = logging.getLogger(__name__)
-
-
-# Defaults match deploy/camilladsp/v1.yml. Anything that diverges
-# breaks the v1.yml ↔ correction config substitution at runtime.
-# Override only when the underlying audio path changes.
-DEFAULT_CAPTURE_DEVICE = "plug:jasper_capture"
-DEFAULT_PLAYBACK_DEVICE = "jasper_out"
-DEFAULT_CAPTURE_FORMAT = "S32_LE"
-DEFAULT_PLAYBACK_FORMAT = "S16_LE"
-DEFAULT_SAMPLE_RATE = 48000
-DEFAULT_CHUNKSIZE = 1024
-DEFAULT_TARGET_LEVEL = 2048  # 2× chunksize — see comment in deploy/camilladsp/v1.yml (2026-05-25 latency trim from 4096)
 
 
 def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:

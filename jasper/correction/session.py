@@ -59,7 +59,6 @@ from . import (
     strategy,
     sweep,
 )
-from .camilla_yaml import emit_correction_config
 from .calibration import CalibrationRecord
 from .peq import PEQ
 
@@ -69,7 +68,8 @@ logger = logging.getLogger(__name__)
 _CORRECTION_FILENAME_RE = re.compile(
     r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
-_PEQ_KEY_RE = re.compile(r"^\s+peq_\d+:", re.MULTILINE)
+_SOUND_FILENAME_RE = re.compile(r"^sound_current\.yml$")
+_PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
 
 
 def parse_current_correction(
@@ -94,7 +94,22 @@ def parse_current_correction(
         return None
     m = _CORRECTION_FILENAME_RE.match(p.name)
     if not m:
-        return None
+        if not _SOUND_FILENAME_RE.match(p.name):
+            return None
+        try:
+            text = p.read_text()
+            peq_count = len(_PEQ_KEY_RE.findall(text))
+            applied_at_epoch = int(p.stat().st_mtime)
+        except OSError:
+            return None
+        if peq_count == 0:
+            return None
+        return {
+            "path": str(p),
+            "session_id": "sound",
+            "applied_at_epoch": applied_at_epoch,
+            "peq_count": peq_count,
+        }
     try:
         ts = int(m.group("ts"))
     except ValueError:
@@ -1001,11 +1016,22 @@ class MeasurementSession:
                 PEQ(freq=p.freq_hz, q=p.q, gain=p.gain_db)
                 for p in self.peqs
             ]
-            emit_correction_config(
-                peq_objs,
-                out_path=out_path,
-                measurement_id=self.session_id,
+            from jasper.sound.camilla_yaml import (
+                emit_sound_config,
+                validate_camilla_config,
             )
+            from jasper.sound.profile import load_profile
+
+            emit_sound_config(
+                load_profile(),
+                room_peqs=peq_objs,
+                out_path=out_path,
+                profile_id=self.session_id,
+            )
+            if not validate_camilla_config(out_path):
+                raise RuntimeError(
+                    f"generated CamillaDSP config failed validation: {out_path}"
+                )
             self.config_path = out_path
         except Exception as e:  # noqa: BLE001
             async with self._lock:

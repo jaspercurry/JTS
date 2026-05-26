@@ -17,6 +17,7 @@ unit per wizard. nginx routes:
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
   /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
   /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
+  /sound/    →  127.0.0.1:8783  (jasper.web.sound_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -37,9 +38,12 @@ from __future__ import annotations
 
 import logging
 import os
-import threading
-
 import secrets
+import threading
+from http.server import BaseHTTPRequestHandler
+from pathlib import Path
+
+from jasper import wake_ports
 
 from . import (
     _systemd,
@@ -47,11 +51,11 @@ from . import (
     google_setup,
     home_assistant_setup,
     peering_setup,
+    sound_setup,
     sources_setup,
     spotify_setup,
     transit_setup,
     voice_setup,
-    wake_corpus_setup,
     wake_setup,
     weather_setup,
     wifi_setup,
@@ -69,25 +73,94 @@ def _serve_forever(server, label: str) -> None:
 
 def _wake_corpus_ports_from_env() -> dict[str, int]:
     """Resolve wake-corpus UDP ports for the combined jasper-web unit."""
-    return wake_corpus_setup.build_ports(
+    return wake_ports.build_ports(
         aec_on_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_ON_PORT",
-            wake_corpus_setup.DEFAULT_AEC_ON_PORT,
+            str(wake_ports.DEFAULT_AEC_ON_PORT),
         )),
         aec_off_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_OFF_PORT",
-            wake_corpus_setup.DEFAULT_AEC_OFF_PORT,
+            str(wake_ports.DEFAULT_AEC_OFF_PORT),
         )),
         aec_dtln_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_DTLN_PORT",
-            wake_corpus_setup.DEFAULT_AEC_DTLN_PORT,
+            str(wake_ports.DEFAULT_AEC_DTLN_PORT),
         )),
         aec_raw0_port=int(os.environ.get(
             "JASPER_WAKE_CORPUS_AEC_RAW0_PORT",
-            wake_corpus_setup.DEFAULT_AEC_RAW0_PORT,
+            str(wake_ports.DEFAULT_AEC_RAW0_PORT),
         )),
         include_dtln=os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0",
     )
+
+
+def _make_lazy_wake_corpus_server(
+    target,
+    *,
+    output_dir: Path,
+    ports: dict[str, int],
+    csrf_token: str,
+):
+    """Bind `/wake-corpus/` without importing NumPy until first use."""
+
+    class _LazyWakeCorpusHandler(BaseHTTPRequestHandler):
+        _load_lock = threading.Lock()
+        _loaded = False
+
+        @classmethod
+        def _load_real_handler(cls) -> None:
+            if cls._loaded:
+                return
+            with cls._load_lock:
+                if cls._loaded:
+                    return
+
+                from . import wake_corpus_setup
+
+                backend = wake_corpus_setup.RecordingBackend(
+                    output_dir=output_dir,
+                    ports=ports,
+                )
+                backend.start()
+                real_cls = wake_corpus_setup._make_handler_class(
+                    backend,
+                    csrf_token,
+                )
+
+                for base in reversed(real_cls.mro()):
+                    if base in {object, BaseHTTPRequestHandler}:
+                        continue
+                    for name, value in base.__dict__.items():
+                        if name.startswith("__") or name == "log_request":
+                            continue
+                        setattr(cls, name, value)
+                cls._loaded = True
+                logger.info(
+                    "jasper-web /wake-corpus loaded recorder lazily "
+                    "(output=%s legs=%s)",
+                    output_dir,
+                    ",".join(ports.keys()),
+                )
+
+        def _delegate(self, method_name: str) -> None:
+            try:
+                self.__class__._load_real_handler()
+            except Exception as e:  # noqa: BLE001
+                logger.exception("wake-corpus lazy load failed")
+                self.send_error(503, f"wake-corpus recorder unavailable: {e}")
+                return
+            getattr(self, method_name)()
+
+        def do_GET(self) -> None:  # noqa: N802
+            self._delegate("do_GET")
+
+        def do_POST(self) -> None:  # noqa: N802
+            self._delegate("do_POST")
+
+        def do_DELETE(self) -> None:  # noqa: N802
+            self._delegate("do_DELETE")
+
+    return _systemd.make_http_server(target, _LazyWakeCorpusHandler)
 
 
 def main() -> int:
@@ -113,6 +186,7 @@ def main() -> int:
     ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
     weather_port = int(os.environ.get("JASPER_WEATHER_WEB_PORT", "8779"))
     wake_corpus_port = int(os.environ.get("JASPER_WAKE_CORPUS_WEB_PORT", "8782"))
+    sound_port = int(os.environ.get("JASPER_SOUND_WEB_PORT", "8783"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -244,14 +318,30 @@ def main() -> int:
         transit_path=transit_state,
     )
 
+    # Sound curve + preference EQ wizard. Writes the profile under
+    # /var/lib/jasper and generated CamillaDSP configs under
+    # /var/lib/camilladsp/configs, preserving any active room PEQs.
+    sound_profile = os.environ.get(
+        "JASPER_SOUND_PROFILE_PATH", sound_setup.PROFILE_PATH,
+    )
+    sound_config_dir = os.environ.get(
+        "JASPER_SOUND_CONFIG_DIR", sound_setup.DEFAULT_CONFIG_DIR,
+    )
+    sound_server = sound_setup.make_server(
+        target_for(sound_port),
+        profile_path=sound_profile,
+        config_dir=sound_config_dir,
+    )
+
     # Wake-word corpus recorder — browser-driven recording UI for the
-    # Phase 0b gold-corpus protocol. Owns its own RecordingBackend
-    # with an asyncio loop in a background daemon thread (for UDP
-    # capture from jasper-aec-bridge's :9876 / :9877 / :9878 / :9879
-    # streams).
+    # Phase 0b gold-corpus protocol. This is intentionally lazy:
+    # wake_corpus_setup imports NumPy, and the combined settings host
+    # should stay cheap for the common /sound, /wifi, /voice, etc.
+    # paths. The first /wake-corpus request loads the recorder and
+    # starts its asyncio loop for UDP capture from jasper-aec-bridge's
+    # :9876 / :9877 / :9878 / :9879 streams.
     # Per-session CSRF token regenerated each daemon start. See
     # docs/HANDOFF-wake-training-experiment.md Phase 0b.
-    from pathlib import Path
     wake_corpus_output = Path(
         os.environ.get(
             "JASPER_WAKE_CORPUS_OUTPUT",
@@ -259,15 +349,12 @@ def main() -> int:
         )
     )
     wake_corpus_ports = _wake_corpus_ports_from_env()
-    wake_corpus_backend = wake_corpus_setup.RecordingBackend(
-        output_dir=wake_corpus_output, ports=wake_corpus_ports,
-    )
-    wake_corpus_backend.start()  # spawns the asyncio loop thread
     wake_corpus_csrf = secrets.token_hex(16)
-    wake_corpus_server = wake_corpus_setup.make_server(
+    wake_corpus_server = _make_lazy_wake_corpus_server(
         target_for(wake_corpus_port),
+        output_dir=wake_corpus_output,
+        ports=wake_corpus_ports,
         csrf_token=wake_corpus_csrf,
-        backend=wake_corpus_backend,
     )
 
     # Idle-exit triggers when NO wizard sees a request for the window.
@@ -287,6 +374,7 @@ def main() -> int:
         transit_server.RequestHandlerClass,
         ha_server.RequestHandlerClass,
         weather_server.RequestHandlerClass,
+        sound_server.RequestHandlerClass,
         wake_corpus_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
@@ -304,6 +392,7 @@ def main() -> int:
         ("/transit", transit_port),
         ("/ha", ha_port),
         ("/weather", weather_port),
+        ("/sound", sound_port),
         ("/wake-corpus", wake_corpus_port),
     ):
         if port in by_port:
@@ -326,6 +415,7 @@ def main() -> int:
         ("/transit", transit_server),
         ("/ha", ha_server),
         ("/weather", weather_server),
+        ("/sound", sound_server),
         ("/wake-corpus", wake_corpus_server),
     ):
         threading.Thread(
