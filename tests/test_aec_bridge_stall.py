@@ -105,9 +105,6 @@ class _ScriptedMicQ:
     def qsize(self):
         return max(0, len(self._script) - self._i)
 
-    def qsize(self):
-        return 0
-
 
 @pytest.fixture(autouse=True)
 def _reset_shutdown_and_stub_sd(monkeypatch):
@@ -407,3 +404,89 @@ def test_aec_loop_emits_raw0_when_raw0_q_passed(monkeypatch):
     assert call.args[0] == b"".join(raw0_frames)
     assert call.args[1] == (OUT_HOST, OUT_PORT_RAW0)
     assert len(call.args[0]) == OUT_FRAME_BYTES
+
+
+def test_aec_loop_emits_ref_when_enabled(monkeypatch):
+    """Corpus ref output is opt-in and emits the exact 16 kHz ref
+    frames the AEC loop consumed."""
+    import socket as real_socket
+    from jasper.cli.aec_bridge import OUT_PORT_REF
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    ref_sock = _mock_socket()
+    socket_factory = MagicMock(
+        side_effect=[aec_sock, raw_sock, raw0_sock, ref_sock],
+    )
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    ref_frames = [bytes([i + 50]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+
+    _aec_loop(
+        _ScriptedMicQ(ref_frames),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        emit_ref=True,
+    )
+
+    ref_sock.sendto.assert_called_once_with(
+        b"".join(ref_frames), (OUT_HOST, OUT_PORT_REF),
+    )
+    ref_sock.close.assert_called_once()
+
+
+def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
+    """Corpus USB mode emits cheap-mic raw plus a second WebRTC AEC
+    output, without changing the primary XVF AEC/raw/raw0 packets."""
+    import socket as real_socket
+    from jasper.cli.aec_bridge import OUT_PORT_USB_RAW, OUT_PORT_USB_WEBRTC
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    usb_raw_sock = _mock_socket()
+    usb_webrtc_sock = _mock_socket()
+    socket_factory = MagicMock(
+        side_effect=[
+            aec_sock, raw_sock, raw0_sock, usb_raw_sock, usb_webrtc_sock,
+        ],
+    )
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    usb_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    usb_clean_frames = [
+        bytes([i + 150]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+    usb_engine = MagicMock()
+    usb_engine.process.side_effect = usb_clean_frames
+    monkeypatch.setattr(aec_bridge, "_select_engine", lambda: usb_engine)
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        usb_raw_q=_ScriptedMicQ(usb_frames),
+    )
+
+    usb_raw_sock.sendto.assert_called_once_with(
+        b"".join(usb_frames), (OUT_HOST, OUT_PORT_USB_RAW),
+    )
+    usb_webrtc_sock.sendto.assert_called_once_with(
+        b"".join(usb_clean_frames), (OUT_HOST, OUT_PORT_USB_WEBRTC),
+    )
+    usb_engine.close.assert_called_once()

@@ -30,11 +30,13 @@ matches that.
 × 3 conditions, plus ~30-40 hard negatives in Session B). The
 browser recorder captures the three production legs (`:9876` AEC ON,
 `:9877` chip-direct, `:9878` DTLN) plus opt-in `raw0` (`:9879`) for
-future cheap-mic portability. Iteration 1 does **not** capture an AEC
-reference; it trains against the current fixed BEST_A chain. Build an
-offline test harness and scoring runner around that corpus. Train
-per-leg specialized Jarvis models (one for raw, one for AEC ON, one
-for DTLN) using `livekit-wakeword` + PR #69 (vendored), with Piper
+future cheap-mic portability. It can also opt into corpus-only cheap
+USB mic + reference legs (`:9880`/`:9881`/`:9882`) for testing whether
+the software-AEC path can lower the hardware entry point; those legs
+are not production wake inputs. Build an offline test harness and
+scoring runner around that corpus. Train per-leg specialized Jarvis
+models (one for raw, one for AEC ON, one for DTLN) using
+`livekit-wakeword` + PR #69 (vendored), with Piper
 synthetic positives + OpenSLR-28 RIR augmentation + 5-20 dB SNR noise
 mixing. Deploy via the existing OR-gate fusion. Validate at every
 decision point with both metrics AND human listening (five explicit
@@ -236,14 +238,21 @@ during training; if chain ablation later wins, retraining is cheap
 (~$5-15 per leg per Modal run).
 
 **A 4th `raw0` leg is captured during Phase 0b** from chip channel
-2 (truly raw — no chip OR software DSP, what a cheap mic without an
-XMOS chip would deliver). It is NOT consumed by production wake
-detection — it exists purely as training data for two future use
-cases: (a) testing whether iteration-N's model generalizes to cheap-
-mic hardware without retraining, (b) producing a `jarvis_jts_raw0_v1`
-model later if we ever ship JTS on cheaper mic hardware. Iteration 1
-captures it but doesn't train on it; the value compounds across
-future iterations.
+2 (truly raw — no chip OR software DSP). It is NOT consumed by
+production wake detection — it exists purely as training data for
+two future use cases: (a) testing whether iteration-N's model
+generalizes to no-chip mic hardware without retraining, (b) producing
+a `jarvis_jts_raw0_v1` model later if we ever ship JTS on cheaper mic
+hardware. Iteration 1 captures it but doesn't train on it; the value
+compounds across future iterations.
+
+**Optional cheap-USB corpus legs** (`ref`, `usb_raw`, `usb_webrtc`)
+are also available during Phase 0b. These are corpus-only comparison
+legs for the hardware-cost question: can a $10 single-channel USB mic
+plus software AEC get close enough to the XVF chain? They are not
+production wake-detection inputs, and a cheap-USB DTLN leg is deferred
+until WebRTC USB comparison clips justify the extra neural-engine
+resource cost.
 
 **Fusion: existing OR-gate.** The triple-stream architecture shipped
 in PR #253 is unchanged. Each leg scores against its own specialized
@@ -253,10 +262,9 @@ model; any leg firing above threshold triggers the session. Shared
 **Eval surface: gold corpus (Phase 0 deliverable).** Not the
 production wake_events corpus (which has unknown conditions). The
 Phase 0b corpus is recorded deliberately with known distance +
-condition labels across two sessions. Each clip captures the three
-production wake legs, and raw0 when the session opts in. AEC reference
-capture was dropped for iteration 1; see §5 Phase 0b for the current
-scope.
+condition labels across two sessions. Each clip captures the
+configured production wake legs, plus raw0 and/or USB/reference legs
+when the session opts in; see §5 Phase 0b for the current scope.
 
 ---
 
@@ -355,7 +363,7 @@ at http://jts.local/wake-corpus/, exposed via socket-activated
 - PR #315 (live mic-level meter + ambient condition + trash icon)
 - PR #323 (raw mic 0 4th leg + sessions management UX)
 
-**What the recorder captures.** Up to **four legs** per utterance,
+**What the recorder captures.** Up to **seven legs** per utterance,
 written into per-leg quadrant directories at
 `/var/lib/jasper/enrollment_positives/aec_<leg>_<condition>/`:
 
@@ -365,21 +373,26 @@ written into per-leg quadrant directories at
 | `off` | UDP `:9877` | chip ch1 — **no software processing** |
 | `dtln` | UDP `:9878` | chip ch1 → SW DTLN-aec |
 | `raw0` | UDP `:9879` | chip ch2 — **truly raw, no chip OR software DSP** (gated by per-session toggle) |
+| `ref` | UDP `:9880` | 16 kHz mono speaker reference frame that SW AEC consumes (corpus-only; opt-in) |
+| `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
+| `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
-captures what a cheap USB mic without an XMOS chip would deliver.
-Training on `raw0` produces a model that's largely mic-agnostic; the
-other three legs train models specialized to the JTS chain. **Always
-opt into this in iteration 1** — it's why we're recording in the
-first place.
+captures a no-chip baseline from the XVF. The USB/reference opt-in
+legs (added 2026-05-26) go one step further: they record a real cheap
+USB mic in parallel with the exact reference frame the bridge fed into
+WebRTC. These are for testing and offline analysis, not for iteration
+1 production wake detection. **Always opt into raw0 in iteration 1.**
+Opt into USB/reference when the cheap mic is connected and
+`jasper-aec-bridge` was started with the corpus USB/ref env flags
+below.
 
-**AEC reference signal NOT captured** (revised from earlier plan).
-The reference was originally going to be captured as a 5th tap to
-enable offline AEC chain variation. Iteration 1 fixes the chain at
-the current BEST_A production config and trains against the fixed
-chain. Phase 2 (chain ablation) is the gate on whether we ever need
-that reference capture — and Phase 2 is itself gated on Phase 1
-leaving meaningful condition gaps.
+**DTLN policy.** The existing `dtln` leg is still the first neural-AEC
+comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
+turns on DTLN inference in the bridge, and `JASPER_WAKE_CORPUS_DTLN=0`
+hides the recorder leg for low-RAM sessions. A cheap-USB DTLN leg is
+deferred until the USB WebRTC path has produced listenable comparison
+clips; a second neural engine is likely the highest-risk RAM/CPU cost.
 
 **Recording protocol — Jasper (~60-90 min total, across two
 sessions on different days):**
@@ -405,10 +418,32 @@ sessions on different days):**
 - Both sessions: **opt into raw mic 0** via the recorder's "Also
   capture raw mic 0" checkbox at session start. Per-session
   property — every clip in the session inherits it.
+- Cheap-USB comparison sessions: plug in the USB mic, enable bridge
+  corpus legs, then check "Also capture USB mic + reference" at
+  session start. This adds `ref`, `usb_raw`, and `usb_webrtc` WAVs
+  per clip and makes the clip-row playback selector show all recorded
+  legs.
+
+**Bridge env for USB/reference corpus sessions:**
+
+```sh
+JASPER_AEC_CORPUS_REF_ENABLED=1
+JASPER_AEC_CORPUS_USB_ENABLED=1
+JASPER_AEC_USB_MIC_DEVICE="USB PnP Sound Device"
+# Optional only if PortAudio's default-rate probe is wrong:
+# JASPER_AEC_USB_MIC_RATE=44100
+```
+
+Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
+(`usb_webrtc`). The recorder can hide those ports with
+`JASPER_WAKE_CORPUS_USB=0` if the bridge is running without them.
+The bridge opens the USB mic at its PortAudio default sample rate
+(the test mic reported 44.1 kHz) and resamples to the corpus contract
+of 16 kHz mono before UDP emission.
 
 **Sessions management UX (PR #323).** The recorder's top-of-page
 Sessions card lists every recorded session (member, timestamp,
-clip count, condition breakdown, raw-mic-0 indicator). Each row has
+clip count, condition breakdown, leg indicators). Each row has
 Load (resume) + Delete (hard-remove WAVs + JSON) buttons. Cleanup
 of pre-raw0 sessions = one click each before starting fresh.
 
@@ -977,6 +1012,9 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
 - **PR #323 — raw mic 0 4th leg (chip ch2, `:9879`) + sessions
   management UX (list / load / delete) + per-session
   include_raw_mic_0 toggle**
+- 2026-05-26 follow-up — corpus-only cheap USB mic + reference legs
+  (`:9880`-`:9882`), session-level leg metadata, and all-leg playback
+  selector
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -984,10 +1022,12 @@ Recorder UX status:
 - ✅ 3 conditions: quiet / ambient / music
 - ✅ 3 distances: near / mid / far
 - ✅ Per-session raw-mic-0 toggle (4 legs vs 3)
+- ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
+  (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm)
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
-  playback
+  playback selector for every WAV recorded on a clip
 - ✅ jasper-voice start/stop wired (refuses start while recording —
   would EADDRINUSE the UDP ports)
 
@@ -995,6 +1035,8 @@ Recording-day audit tooling:
 - ✅ `bash scripts/audit-wake-corpus.sh data/enrollment_positives
   --expect-raw0` validates post-rsync session metadata, raw0 leg
   presence, condition × distance coverage, and WAV format/RMS.
+- ✅ `--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`
+  validates USB/reference opt-in sessions after rsync.
 
 **Phase −1 (pre-foundation verifications): in progress.**
 - −1a (LLM session routing): investigation results in PR cover
@@ -1015,11 +1057,24 @@ via the new Sessions card.
 
 ## Changelog
 
+- **2026-05-26 (v7):** Cheap-USB/ref corpus comparison path:
+  - Added corpus-only bridge outputs for `ref` (`:9880`), `usb_raw`
+    (`:9881`), and `usb_webrtc` (`:9882`), gated by
+    `JASPER_AEC_CORPUS_REF_ENABLED` / `JASPER_AEC_CORPUS_USB_ENABLED`.
+  - Recorder now persists a session-level `enabled_legs` list instead
+    of relying only on the raw0 boolean; legacy metadata still reads
+    correctly.
+  - Clip playback now has a leg selector so Jasper can compare XVF
+    WebRTC/raw/DTLN/raw0, USB raw/WebRTC, and reference WAVs per
+    utterance.
+  - Audit script accepts repeated `--expect-leg` flags for USB/ref
+    sessions while preserving `--expect-raw0`.
 - **2026-05-25 (v6):** Recording-day prep fixes:
   - Corrected stale TL;DR / architecture prose that still described
     the older 60-utterance, 2-condition, AEC-reference-capture plan.
-    Current Phase 0b truth is 3 conditions, two sessions, raw0 opt-in,
-    and no AEC reference capture in iteration 1.
+    At the time, Phase 0b truth was 3 conditions, two sessions, raw0
+    opt-in, and no AEC reference capture in iteration 1. v7 re-added
+    reference capture only as a corpus-only cheap-USB experiment aid.
   - Added the local `scripts/audit-wake-corpus.sh` post-rsync audit
     for session metadata, raw0 presence, per-cell coverage, and WAV
     format/RMS sanity.
@@ -1046,10 +1101,11 @@ via the new Sessions card.
   - Sessions management UX documented: list / load / delete per
     session via the recorder's top-of-page card.
   - AEC reference signal capture (originally Phase 0b's gate on
-    Phase 2 offline chain ablation) DROPPED for iteration 1 — Phase
-    1 trains against a fixed chain at current production BEST_A, and
-    Phase 2 is itself gated on Phase 1 leaving gaps. Reference
-    capture comes back if Phase 2 ever runs.
+    Phase 2 offline chain ablation) DROPPED from the core training
+    plan — Phase 1 trains against a fixed chain at current production
+    BEST_A, and Phase 2 is itself gated on Phase 1 leaving gaps. v7
+    later restored reference capture as a corpus-only cheap-USB
+    comparison aid, not as a Phase 2 pre-spec.
   - Architecture §4: per-leg models updated to call out 3 production
     models trained on `:9876` / `:9877` / `:9878`. The `raw0`
     capture is explicitly for future use, not iteration 1 training.
@@ -1115,4 +1171,4 @@ via the new Sessions card.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-25 (v6 — recorder raw0 path + corpus audit prep verified)
+Last verified: 2026-05-26 (v7 — recorder leg selection + USB/ref corpus path verified)

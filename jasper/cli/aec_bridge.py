@@ -193,6 +193,20 @@ OUT_PORT_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_DTLN", "9878"))
 # Always emitted. Cost is ~0.25% of one core for the extra slice +
 # sendto — same noise-floor cost as the existing :9877 raw leg.
 OUT_PORT_RAW0 = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW0", "9879"))
+# Corpus-only experiment streams. These are disabled by default so
+# normal production bridge cost stays exactly where it is. When enabled
+# for wake-corpus recording, the bridge emits:
+#   - ref: the 16 kHz mono reference frame AEC3 actually consumed
+#   - usb_raw: a cheap USB mic's raw mono capture
+#   - usb_webrtc: that same USB mic through a second WebRTC AEC3 chain
+#
+# They are intentionally not consumed by jasper-voice. They exist to
+# make the gold corpus useful for cheap-mic portability experiments.
+OUT_PORT_REF = int(os.environ.get("JASPER_AEC_UDP_PORT_REF", "9880"))
+OUT_PORT_USB_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_RAW", "9881"))
+OUT_PORT_USB_WEBRTC = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_WEBRTC", "9882"))
+USB_MIC_DEVICE = os.environ.get("JASPER_AEC_USB_MIC_DEVICE", "USB PnP Sound Device")
+USB_MIC_RATE = int(float(os.environ.get("JASPER_AEC_USB_MIC_RATE", "0")))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
 # 320-sample AEC frames into one UDP packet keeps the
 # bridge↔voice contract symmetric with the existing MicCapture
@@ -228,6 +242,10 @@ class BridgeStalled(RuntimeError):
 
 class MicDeviceUnavailable(RuntimeError):
     """The configured PortAudio mic device is not currently present."""
+
+
+class UsbMicUnavailable(RuntimeError):
+    """The configured corpus USB mic device is not currently present."""
 
 
 # Clipping counters (module-level for cheap cross-thread access; small
@@ -533,6 +551,25 @@ def _validate_mic_device() -> None:
         ) from e
 
 
+def _validate_usb_mic_device() -> None:
+    """Fail fast when corpus USB capture is explicitly enabled but absent."""
+    try:
+        sd.query_devices(USB_MIC_DEVICE, "input")
+    except Exception as e:  # noqa: BLE001
+        raise UsbMicUnavailable(
+            f"USB corpus mic device {USB_MIC_DEVICE!r} unavailable: {e}"
+        ) from e
+
+
+def _usb_capture_rate() -> int:
+    """Return the USB mic capture rate PortAudio can actually open."""
+    if USB_MIC_RATE > 0:
+        return USB_MIC_RATE
+    info = sd.query_devices(USB_MIC_DEVICE, "input")
+    rate = int(round(float(info.get("default_samplerate") or SAMPLE_RATE)))
+    return rate if rate > 0 else SAMPLE_RATE
+
+
 def _ref_thread(ref_q: Queue) -> None:
     global _ref_clipped_samples, _ref_total_samples
     """Capture 48k stereo ref via alsaaudio (PortAudio doesn't see
@@ -695,10 +732,65 @@ def _mic_thread(mic_q: Queue, raw0_q: Optional[Queue] = None) -> None:
         _shutdown.wait()
 
 
+def _usb_mic_thread(usb_q: Queue) -> None:
+    """Capture optional cheap-USB-mic audio for corpus-only legs.
+
+    This stream is deliberately independent of the XVF mic stream so
+    unplugging or starving the cheap mic can't stall production AEC.
+    The bridge only starts this thread when
+    JASPER_AEC_CORPUS_USB_ENABLED=1.
+    """
+
+    import math
+
+    usb_rate = _usb_capture_rate()
+    capture_block = max(1, round(FRAME_SAMPLES * usb_rate / SAMPLE_RATE))
+    gcd = math.gcd(usb_rate, SAMPLE_RATE)
+    up = SAMPLE_RATE // gcd
+    down = usb_rate // gcd
+    accum_16 = np.empty(0, dtype=np.float32)
+
+    def cb(indata, frames, time_info, status):
+        nonlocal accum_16
+        if status:
+            logger.debug("usb mic status: %s", status)
+        if _shutdown.is_set():
+            return
+        mono = indata[:, 0].astype(np.float32, copy=True)
+        if usb_rate != SAMPLE_RATE:
+            mono = resample_poly(mono, up=up, down=down)
+        accum_16 = np.concatenate([accum_16, mono])
+        while accum_16.size >= FRAME_SAMPLES:
+            chunk = accum_16[:FRAME_SAMPLES]
+            accum_16 = accum_16[FRAME_SAMPLES:]
+            chunk = np.clip(chunk, -32768, 32767).astype(np.int16)
+            try:
+                usb_q.put_nowait(chunk.tobytes())
+            except Full:
+                logger.warning("usb corpus mic queue full, dropping frame")
+
+    with sd.InputStream(
+        device=USB_MIC_DEVICE,
+        samplerate=usb_rate,
+        channels=1,
+        dtype="int16",
+        blocksize=capture_block,
+        callback=cb,
+    ):
+        logger.info(
+            "USB corpus mic capture opened: %s @ %d Hz mono -> %d Hz "
+            "(block=%d)",
+            USB_MIC_DEVICE, usb_rate, SAMPLE_RATE, capture_block,
+        )
+        _shutdown.wait()
+
+
 def _aec_loop(  # noqa: PLR0915
     ref_q: Queue, mic_q: Queue, engine: _Aec3Engine,
     heartbeat: Optional[Heartbeat] = None,
     raw0_q: Optional[Queue] = None,
+    emit_ref: bool = False,
+    usb_raw_q: Optional[Queue] = None,
 ) -> None:
     # Post-AEC static gain applied to the engine output before it
     # reaches jasper-voice over UDP. Restores level into openWakeWord's training
@@ -793,6 +885,33 @@ def _aec_loop(  # noqa: PLR0915
     out_sock_raw0.setblocking(False)
     out_dest_raw0 = (OUT_HOST, OUT_PORT_RAW0)
     out_batch_raw0 = bytearray()
+    out_sock_ref = None
+    out_dest_ref = None
+    out_batch_ref = bytearray()
+    if emit_ref:
+        out_sock_ref = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        out_sock_ref.setblocking(False)
+        out_dest_ref = (OUT_HOST, OUT_PORT_REF)
+
+    out_sock_usb_raw = None
+    out_dest_usb_raw = None
+    out_batch_usb_raw = bytearray()
+    out_sock_usb_webrtc = None
+    out_dest_usb_webrtc = None
+    out_batch_usb_webrtc = bytearray()
+    usb_engine = None
+    if usb_raw_q is not None:
+        out_sock_usb_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        out_sock_usb_raw.setblocking(False)
+        out_dest_usb_raw = (OUT_HOST, OUT_PORT_USB_RAW)
+        out_sock_usb_webrtc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        out_sock_usb_webrtc.setblocking(False)
+        out_dest_usb_webrtc = (OUT_HOST, OUT_PORT_USB_WEBRTC)
+        usb_engine = _select_engine()
+        logger.info(
+            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d",
+            OUT_HOST, OUT_PORT_USB_RAW, OUT_HOST, OUT_PORT_USB_WEBRTC,
+        )
 
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
@@ -822,10 +941,16 @@ def _aec_loop(  # noqa: PLR0915
             )
 
     logger.info(
-        "udp outputs: aec=%s:%d raw=%s:%d raw0=%s:%d%s frame=%d samples (%d bytes)",
+        "udp outputs: aec=%s:%d raw=%s:%d raw0=%s:%d%s%s%s frame=%d samples (%d bytes)",
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW,
         OUT_HOST, OUT_PORT_RAW0,
         f" dtln={OUT_HOST}:{OUT_PORT_DTLN}" if dtln_engine else "",
+        f" ref={OUT_HOST}:{OUT_PORT_REF}" if emit_ref else "",
+        (
+            f" usb_raw={OUT_HOST}:{OUT_PORT_USB_RAW} "
+            f"usb_webrtc={OUT_HOST}:{OUT_PORT_USB_WEBRTC}"
+            if usb_raw_q is not None else ""
+        ),
         OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
     # Aggregate four AEC frames (320 samples each) into one UDP
@@ -945,11 +1070,20 @@ def _aec_loop(  # noqa: PLR0915
             # for the full diagnosis trail.
             try:
                 last_ref_bytes = ref_q.get_nowait()
-                drained = 1
             except Empty:
-                drained = 0
                 _ref_starved_frames += 1
             ref_bytes = last_ref_bytes
+            if emit_ref:
+                out_batch_ref.extend(ref_bytes)
+                if len(out_batch_ref) >= OUT_FRAME_BYTES:
+                    try:
+                        out_sock_ref.sendto(
+                            bytes(out_batch_ref[:OUT_FRAME_BYTES]),
+                            out_dest_ref,
+                        )
+                    except BlockingIOError:
+                        logger.warning("udp ref sendto would block, dropping frame")
+                    del out_batch_ref[:OUT_FRAME_BYTES]
 
             # Emit chip-direct mic on OUT_PORT_RAW BEFORE running
             # the AEC engine. This is the "AEC OFF" leg the
@@ -1044,6 +1178,51 @@ def _aec_loop(  # noqa: PLR0915
                             )
                         del out_batch_dtln[:OUT_FRAME_BYTES]
 
+            if usb_raw_q is not None:
+                try:
+                    usb_bytes = usb_raw_q.get_nowait()
+                except Empty:
+                    usb_bytes = b""
+                if usb_bytes:
+                    out_batch_usb_raw.extend(usb_bytes)
+                    if len(out_batch_usb_raw) >= OUT_FRAME_BYTES:
+                        try:
+                            out_sock_usb_raw.sendto(
+                                bytes(out_batch_usb_raw[:OUT_FRAME_BYTES]),
+                                out_dest_usb_raw,
+                            )
+                        except BlockingIOError:
+                            logger.warning(
+                                "udp usb_raw sendto would block, dropping frame"
+                            )
+                        del out_batch_usb_raw[:OUT_FRAME_BYTES]
+
+                    if usb_engine is not None:
+                        try:
+                            usb_clean = usb_engine.process(usb_bytes, ref_bytes)
+                        except Exception as e:  # noqa: BLE001
+                            logger.exception(
+                                "USB WebRTC process() crashed; disabling "
+                                "usb_webrtc path: %s",
+                                e,
+                            )
+                            usb_engine = None
+                            usb_clean = b""
+                        if usb_clean:
+                            out_batch_usb_webrtc.extend(usb_clean)
+                            if len(out_batch_usb_webrtc) >= OUT_FRAME_BYTES:
+                                try:
+                                    out_sock_usb_webrtc.sendto(
+                                        bytes(out_batch_usb_webrtc[:OUT_FRAME_BYTES]),
+                                        out_dest_usb_webrtc,
+                                    )
+                                except BlockingIOError:
+                                    logger.warning(
+                                        "udp usb_webrtc sendto would block, "
+                                        "dropping frame"
+                                    )
+                                del out_batch_usb_webrtc[:OUT_FRAME_BYTES]
+
             # Debug WAV record: writes happen here so the captured
             # frames are exactly what the bridge measured for its
             # internal "attenuation" log + what the AEC emitted before
@@ -1127,6 +1306,14 @@ def _aec_loop(  # noqa: PLR0915
         out_sock.close()
         out_sock_raw.close()
         out_sock_raw0.close()
+        if out_sock_ref is not None:
+            out_sock_ref.close()
+        if out_sock_usb_raw is not None:
+            out_sock_usb_raw.close()
+        if out_sock_usb_webrtc is not None:
+            out_sock_usb_webrtc.close()
+        if usb_engine is not None:
+            usb_engine.close()
         if out_sock_dtln is not None:
             out_sock_dtln.close()
         for w in (mic_wav, aec_wav, ref_wav):
@@ -1142,12 +1329,17 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
+    corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
+    corpus_usb_enabled = _env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
     logger.info(
         "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
-        "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d",
+        "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d "
+        "corpus_ref=%s corpus_usb=%s",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
+        "on" if corpus_ref_enabled else "off",
+        "on" if corpus_usb_enabled else "off",
     )
 
     try:
@@ -1155,6 +1347,12 @@ def main() -> int:
     except MicDeviceUnavailable as e:
         logger.error("%s", e)
         return 1
+    if corpus_usb_enabled:
+        try:
+            _validate_usb_mic_device()
+        except UsbMicUnavailable as e:
+            logger.error("%s", e)
+            return 1
 
     engine = _select_engine()
 
@@ -1172,13 +1370,22 @@ def main() -> int:
     # fills mic_q; the AEC loop drains it independently to emit on
     # OUT_PORT_RAW0. See OUT_PORT_RAW0 comment for rationale.
     raw0_q: Queue[bytes] = Queue(maxsize=QUEUE_MAXSIZE)
+    usb_q: Queue[bytes] | None = (
+        Queue(maxsize=QUEUE_MAXSIZE) if corpus_usb_enabled else None
+    )
 
     ref_t = threading.Thread(target=_ref_thread, args=(ref_q,), daemon=True)
     mic_t = threading.Thread(
         target=_mic_thread, args=(mic_q, raw0_q), daemon=True,
     )
+    usb_t = (
+        threading.Thread(target=_usb_mic_thread, args=(usb_q,), daemon=True)
+        if usb_q is not None else None
+    )
     ref_t.start()
     mic_t.start()
+    if usb_t is not None:
+        usb_t.start()
 
     # Tier 1 of the resilience ladder. Bumped after each successful
     # frame in `_aec_loop`; if the loop wedges (e.g. mic InputStream
@@ -1193,7 +1400,15 @@ def main() -> int:
     heartbeat.start()
 
     try:
-        _aec_loop(ref_q, mic_q, engine, heartbeat=heartbeat, raw0_q=raw0_q)
+        _aec_loop(
+            ref_q,
+            mic_q,
+            engine,
+            heartbeat=heartbeat,
+            raw0_q=raw0_q,
+            emit_ref=corpus_ref_enabled,
+            usb_raw_q=usb_q,
+        )
     except BridgeStalled as e:
         logger.error("%s", e)
         _shutdown.set()
@@ -1207,6 +1422,8 @@ def main() -> int:
         engine.close()
         ref_t.join(timeout=2)
         mic_t.join(timeout=2)
+        if usb_t is not None:
+            usb_t.join(timeout=2)
     return 0
 
 

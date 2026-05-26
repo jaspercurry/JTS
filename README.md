@@ -446,17 +446,17 @@ reference. Currently:
   (measurement infrastructure already deployed) so this doc stays
   short on what's documented elsewhere.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
-  **Current primary workstream (2026-05-25).** The forward-looking
+  **Current primary workstream (2026-05-26).** The forward-looking
   plan for training a custom `jarvis_jts_*_v1` wake-word model
   matched to the JTS audio chain, replacing the community
   `jarvis_v2` model (published recall 26%). Sequenced phases
   (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
   explicit listening checkpoints. Capture tooling shipped end-to-
   end via the browser recorder at http://jts.local/wake-corpus/
-  (PRs #303 → #323) with a 4th `raw0` leg for future-proofing
-  against cheaper mic hardware. Read this before working on wake-
-  word reliability, training data collection, or testing
-  methodology.
+  (PRs #303 → #323, plus the 2026-05-26 USB/ref follow-up) with a
+  4th `raw0` leg and corpus-only cheap USB mic/reference legs for
+  future cheaper-mic experiments. Read this before working on wake-
+  word reliability, training data collection, or testing methodology.
 - [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
   Active workstream (May 2026). The VAD / mic-stream A/B test matrix:
   why local Silero on the AEC stream (Cell 0) is the production default,

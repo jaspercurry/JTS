@@ -37,6 +37,8 @@ CONDITIONS = ("quiet", "ambient", "music")
 DISTANCES = ("near", "mid", "far")
 BASE_LEGS = ("on", "off", "dtln")
 RAW0_LEG = "raw0"
+USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
+KNOWN_LEGS = BASE_LEGS + (RAW0_LEG,) + USB_CORPUS_LEGS
 SILENCE_RMS = 30.0
 MAX_EXPECTED_DURATION_SEC = 30.5
 
@@ -116,6 +118,12 @@ def _resolve_wav_path(corpus_dir: Path, path_str: str) -> Path:
 
 
 def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
+    enabled = session.get("enabled_legs")
+    if isinstance(enabled, list):
+        legs = tuple(str(leg) for leg in enabled if str(leg) in KNOWN_LEGS)
+        if legs:
+            return legs
+
     ports = session.get("ports") or {}
     legs = ["on", "off"]
     # Older metadata may not have a useful ports map. Treat that as the
@@ -124,6 +132,8 @@ def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
         legs.append("dtln")
     if session.get("include_raw_mic_0"):
         legs.append(RAW0_LEG)
+    if session.get("include_usb_mic"):
+        legs.extend(leg for leg in USB_CORPUS_LEGS if not ports or leg in ports)
     return tuple(legs)
 
 
@@ -149,6 +159,7 @@ def audit(
     corpus_dir: Path,
     *,
     expect_raw0: bool = False,
+    expect_legs: tuple[str, ...] = (),
     min_per_cell: int | None = None,
 ) -> int:
     issues: list[str] = []
@@ -206,11 +217,18 @@ def audit(
             )
         if expect_raw0 and not include_raw0:
             issues.append(f"session {session_id}: raw0 expected but session flag is false")
+        for leg in expect_legs:
+            if leg not in expected_legs:
+                issues.append(
+                    f"session {session_id}: expected leg {leg!r} not enabled "
+                    f"(enabled={', '.join(expected_legs) or 'none'})"
+                )
 
         conds = Counter(str(c.get("condition", "?")) for c in alive)
         print(
             f"  {session_id} member={member} clips={len(alive)} "
             f"deleted={len(clips) - len(alive)} raw0={include_raw0} "
+            f"legs={list(expected_legs)} "
             f"conditions={dict(sorted(conds.items()))}"
         )
 
@@ -344,6 +362,13 @@ def main(argv: list[str] | None = None) -> int:
         help="Fail if any session is not raw0-enabled.",
     )
     parser.add_argument(
+        "--expect-leg",
+        action="append",
+        choices=KNOWN_LEGS,
+        default=[],
+        help="Fail if any session does not enable this leg. May be repeated.",
+    )
+    parser.add_argument(
         "--min-per-cell",
         type=int,
         default=None,
@@ -353,6 +378,7 @@ def main(argv: list[str] | None = None) -> int:
     return audit(
         args.corpus_dir,
         expect_raw0=args.expect_raw0,
+        expect_legs=tuple(args.expect_leg),
         min_per_cell=args.min_per_cell,
     )
 

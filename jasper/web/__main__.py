@@ -84,7 +84,20 @@ def _wake_corpus_ports_from_env() -> dict[str, int]:
             "JASPER_WAKE_CORPUS_AEC_RAW0_PORT",
             wake_corpus_setup.DEFAULT_AEC_RAW0_PORT,
         )),
+        aec_ref_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_REF_PORT",
+            wake_corpus_setup.DEFAULT_AEC_REF_PORT,
+        )),
+        aec_usb_raw_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT",
+            wake_corpus_setup.DEFAULT_AEC_USB_RAW_PORT,
+        )),
+        aec_usb_webrtc_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT",
+            wake_corpus_setup.DEFAULT_AEC_USB_WEBRTC_PORT,
+        )),
         include_dtln=os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0",
+        include_usb=os.environ.get("JASPER_WAKE_CORPUS_USB", "1") != "0",
     )
 
 
@@ -230,8 +243,7 @@ def main() -> int:
     # Wake-word corpus recorder — browser-driven recording UI for the
     # Phase 0b gold-corpus protocol. Owns its own RecordingBackend
     # with an asyncio loop in a background daemon thread (for UDP
-    # capture from jasper-aec-bridge's :9876 / :9877 / :9878 / :9879
-    # streams).
+    # capture from jasper-aec-bridge's production/corpus streams).
     # Per-session CSRF token regenerated each daemon start. See
     # docs/HANDOFF-wake-training-experiment.md Phase 0b.
     from pathlib import Path
