@@ -18,12 +18,12 @@ Renderer support:
             PUT /me/player/pause to any account that has the JTS
             device in its list. Tier 2 (added 2026-05-22) is
             `systemctl restart librespot.service` if Tier 1 fails
-            — guarantees librespot releases its FD on the renderer
-            dmix so the new winner is heard alone. Tier 2 is
-            necessary because after the 2026-05-22 dmix change,
-            two renderers no longer contend for ALSA EBUSY; without
-            Tier 2 an un-pauseable librespot would simply mix audio
-            alongside the new winner. Off-switch:
+            — guarantees librespot releases its private fan-in lane
+            so the new winner is heard alone. Tier 2 is still useful
+            after the 2026-05-26 fan-in cutover: renderers no longer
+            share one ALSA device, so an un-pauseable librespot would
+            keep streaming into its own lane and be summed alongside
+            the new winner. Off-switch:
             JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing"
@@ -44,7 +44,7 @@ Renderer support:
     pause:  POST {"silenced": true} to
             http://127.0.0.1:JASPER_USBSINK_PREEMPT_PORT/preempt.
             The daemon silences its output (writes zeros to
-            hw:Loopback,0,0). When all other sources go idle, we
+            usbsink_substream). When all other sources go idle, we
             release the preempt so user-host transitions (pause
             then play on Mac) can re-take the speaker.
 
@@ -274,12 +274,12 @@ class Mux:
             ok = await self._spotify_pause_via_web_api()
             if ok:
                 return
-            # Tier 1 failed. After the 2026-05-22 renderer-dmix change,
-            # an un-pauseable librespot doesn't crash on EBUSY anymore —
+            # Tier 1 failed. With fan-in, an un-pauseable librespot
+            # owns its private lane and does not crash on ALSA EBUSY —
             # it just keeps streaming and mixes with the new winner.
             # The user's contract ("we cannot have both played at the
             # same time") requires us to force a release. systemctl
-            # restart kills librespot's FD on the renderer dmix; the
+            # restart kills librespot's FD on its fan-in lane; the
             # new winner is then heard alone for the ~2-3 s before
             # systemd brings librespot back as an idle Connect device.
             if _spotify_preempt_restart_disabled():
@@ -292,7 +292,7 @@ class Mux:
             logger.warning(
                 "spotify pause: Web API failed; escalating to "
                 "`systemctl restart librespot.service` to force "
-                "release of the renderer dmix",
+                "release of the fan-in spotify lane",
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
@@ -319,7 +319,7 @@ class Mux:
     # ------------------------------------------------------------------
     # USB sink preempt protocol — POSTs to the daemon's local HTTP
     # endpoint. The daemon flips its internal `preempted` flag,
-    # making its audio callback emit silence into hw:Loopback,0,0.
+    # making its audio callback emit silence into usbsink_substream.
     # ------------------------------------------------------------------
 
     async def _usbsink_set_preempt(self, silenced: bool, *, reason: str) -> None:
@@ -486,19 +486,19 @@ class Mux:
 
     async def _spotify_force_restart_librespot(self) -> bool:
         """Tier 2 escalation: restart librespot.service to force it
-        to drop its FD on the renderer dmix.
+        to drop its FD on the Spotify fan-in lane.
 
-        Effects observed at the dmix layer: librespot exits, the dmix
-        client count drops, the dmix slave (hw:Loopback,0,0) is
-        released to the next writer. systemd respawns librespot in
-        ~2-3 s (Restart=always); during that gap, the new winner
-        (AirPlay / Bluetooth) is heard alone. After respawn, librespot
-        is back as an idle Spotify Connect device — the credential
-        cache (--system-cache /var/cache/librespot) persists, so the
-        user's phone re-sees JTS in the Connect picker without
-        re-authenticating. The catch: any state inside librespot's
-        current session (track position, queue) is lost — the next
-        Spotify Connect cast picks up fresh.
+        Effects observed at the audio layer: librespot exits and closes
+        its private `librespot_substream` writer; fanin then reads
+        silence on that lane while the new winner's lane continues.
+        systemd respawns librespot in ~2-3 s (Restart=always); during
+        that gap, the new winner (AirPlay / Bluetooth) is heard alone.
+        After respawn, librespot is back as an idle Spotify Connect
+        device — the credential cache (--system-cache
+        /var/cache/librespot) persists, so the user's phone re-sees JTS
+        in the Connect picker without re-authenticating. The catch: any
+        state inside librespot's current session (track position, queue)
+        is lost — the next Spotify Connect cast picks up fresh.
 
         We use `systemctl restart` rather than `kill -TERM` so the
         same `Restart=always` policy that handles every other

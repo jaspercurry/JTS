@@ -1,4 +1,4 @@
-"""Audio bridge: UAC2Gadget capture → renderer dmix playback.
+"""Audio bridge: UAC2Gadget capture → fan-in renderer lane.
 
 Two sounddevice streams connected by a bounded queue:
 
@@ -8,24 +8,19 @@ Two sounddevice streams connected by a bounded queue:
     queue.Queue(maxsize=N)
         │
         ▼
-    sd.OutputStream(jasper_renderer_in, 48k S16 stereo)
+    sd.OutputStream(usbsink_substream, 48k S16 stereo)
         │  playback callback: dequeue (or silence on underrun), gate
         │  on `preempted` (write zeros instead of audio)
 
 Two separate streams (not one duplex `sd.Stream`) because PortAudio's
 duplex mode requires both ends use the same underlying ALSA device
-context; UAC2Gadget and the renderer dmix are different cards. Two
+context; UAC2Gadget and the fan-in lane are different cards. Two
 streams share a Python queue between their PortAudio threads; both
 threads run lock-free except for the queue.
 
-The playback target is `pcm.jasper_renderer_in` — the `plug:` front-end
-to the multi-writer dmix (`pcm.jasper_renderer_mix`, ipc_key 7779) that
-all four renderers (librespot, shairport-sync, bluealsa-aplay, and now
-us) write into. The dmix sums their streams sample-wise and writes a
-single stream to `hw:Loopback,0,0`. Writing direct to
-`hw:Loopback,0,0` would EBUSY-race the dmix (single-writer kernel
-device) — the dmix is the established multi-writer mediator, see
-deploy/alsa/asoundrc.jasper and PR #214 for the rationale.
+The playback target is `pcm.usbsink_substream`, the USB-in private
+snd-aloop lane. jasper-fanin reads the capture side, sums it with the
+other renderer lanes, and writes one music stream to CamillaDSP/AEC.
 
 The bridge exposes minimal external surface:
   - `start()` / `stop()` for lifecycle
@@ -52,10 +47,10 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 # Stream parameters. Both ends are stereo @ 48 kHz to match the
-# renderer dmix and the dongle dmix. Different sample sizes:
+# fan-in lane and the dongle dmix. Different sample sizes:
 #   - capture: S32_LE (the UAC2 gadget descriptor's c_ssize=4)
-#   - playback: S16_LE (the fixed format of `pcm.jasper_renderer_mix`;
-#     the `plug:` front-end `pcm.jasper_renderer_in` would resample
+#   - playback: S16_LE (the fixed format of the fan-in lanes;
+#     the `plug:` front-end `pcm.usbsink_substream` would resample
 #     anything else, but we already match so plug becomes a no-op)
 SAMPLE_RATE = 48000
 CHANNELS = 2
@@ -92,9 +87,8 @@ class BridgeStats:
 
 class AudioBridge:
     """Captures the host's audio from the UAC2Gadget ALSA card and
-    replays it into `pcm.jasper_renderer_in` (the plug-wrapped
-    multi-writer dmix in front of `hw:Loopback,0,0`) where the rest of
-    the music chain picks it up.
+    replays it into `pcm.usbsink_substream`, where jasper-fanin picks
+    it up for the rest of the music chain.
 
     Lifecycle:
         bridge = AudioBridge(capture_device="UAC2Gadget", ...)
@@ -119,7 +113,7 @@ class AudioBridge:
         # underscore. See DaemonConfig docstring for the full
         # dual-naming explanation.
         capture_device: str = "UAC2_Gadget",
-        playback_device: str = "jasper_renderer_in",
+        playback_device: str = "usbsink_substream",
         sample_rate: int = SAMPLE_RATE,
         channels: int = CHANNELS,
         block_frames: int = BLOCK_FRAMES,

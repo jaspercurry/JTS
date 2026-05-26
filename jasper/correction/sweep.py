@@ -9,7 +9,7 @@ Application, and Implementation` (Novak, Lotton, Simon).
 
 The sweep is generated on the Pi at the playback sample rate
 (48 kHz, matching CamillaDSP). Saved as 16-bit S16_LE WAV so
-`aplay -D plughw:Loopback,0,0` can consume it directly. Stored to
+`aplay -D correction_substream` can consume it directly. Stored to
 disk because the sweep is deterministic per (f1, f2, duration,
 sample_rate) tuple — no point regenerating on every measurement.
 

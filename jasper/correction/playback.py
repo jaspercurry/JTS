@@ -1,10 +1,12 @@
 """Sweep playback through the JTS music chain.
 
-Plays a sweep WAV via `aplay -D plughw:Loopback,0,0` — the same ALSA
-device the renderers (librespot, shairport-sync, bluealsa-aplay)
-write to. This puts the sweep on the SAME signal path music takes:
+Plays a sweep WAV via `aplay -D correction_substream`, a dedicated
+fan-in lane for correction/test audio. This puts the sweep on the
+SAME signal path music takes without borrowing any renderer's private
+lane:
 
-    sweep WAV → plughw:Loopback,0,0 → snd-aloop → plughw:Loopback,1,0
+    sweep WAV → correction_substream → snd-aloop lane 4
+              → jasper-fanin → pcm.jasper_capture
               → jasper-camilla (main_volume + correction filters)
               → pcm.jasper_out (dmix on dongle)
               → dongle → amp → speakers
@@ -18,10 +20,10 @@ recover is the real listening-position-to-room-to-mic transfer
 function.
 
 Why aplay subprocess, not sounddevice: we want the sweep to enter
-at the same ALSA entry point music does (`hw:Loopback,0,0`
-specifically — see docs/audio-paths.md). sounddevice's PortAudio
-backend abstracts ALSA devices and would either go through the
-default device or require an exact device-name match that varies
+at a stable named ALSA entry point that jasper-fanin consumes
+(`correction_substream` — see docs/audio-paths.md). sounddevice's
+PortAudio backend abstracts ALSA devices and would either go through
+the default device or require an exact device-name match that varies
 by Trixie ALSA generation; aplay is the canonical tool for "play
 this WAV on this device" and is already installed everywhere.
 """
@@ -42,9 +44,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_TONE_DIR = Path("/var/lib/jasper/correction/tones")
 
 
-# Default ALSA device the sweep is played to. Matches the Loopback
-# capture side of the JTS audio path (see docs/audio-paths.md).
-DEFAULT_ALSA_DEVICE = "plughw:Loopback,0,0"
+# Default ALSA device the sweep is played to. Dedicated fan-in input
+# lane for correction/test audio (see docs/audio-paths.md).
+DEFAULT_ALSA_DEVICE = "correction_substream"
 
 
 class SweepPlaybackError(RuntimeError):
@@ -68,7 +70,7 @@ async def play_sweep(
     Args:
       wav_path: path to the sweep WAV. Must exist and be readable
         by the calling process.
-      alsa_device: ALSA device target. Default is plughw:Loopback,0,0
+      alsa_device: ALSA device target. Default is correction_substream,
         which puts the sweep into the music chain. Override for
         tests / hardware experiments.
       timeout_s: hard kill if aplay doesn't finish in this window.
@@ -190,9 +192,9 @@ class TonePlayer:
     decides we're done.
 
     Why aplay-and-kill rather than streaming via sounddevice: same
-    ALSA path the sweep + music use (plughw:Loopback,0,0). Keeps
-    everything going through CamillaDSP so main_volume changes
-    during the ramp apply to the tone in real time.
+    ALSA path the sweep + music use (via jasper-fanin). Keeps everything
+    going through CamillaDSP so main_volume changes during the ramp
+    apply to the tone in real time.
     """
 
     def __init__(

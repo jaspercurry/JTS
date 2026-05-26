@@ -1,17 +1,14 @@
-# Handoff: Tier 2A fan-in daemon — operational
+# Handoff: fan-in renderer topology
 
-> **Status: production default as of 2026-05-26 (PR #XXX).** Fresh
-> installs land on fanin; existing speakers with an explicit
-> `/var/lib/jasper/audio_topology.env` keep whatever topology the
-> operator chose. The CLI escape hatch back to dmix
-> (`sudo jasper-audio-topology dmix`) is preserved for at least the
-> next two weeks of soak — see the "Why the cutover" section below
-> for what triggered the promotion. Original Phase 1/2 work (daemon
-> source, systemd unit, install.sh build wiring, jasper-doctor
-> checks, `/state` aggregation) landed in PR #308 on 2026-05-25; the
-> 2026-05-26 promotion required one targeted follow-up (the
-> input-buffer sizing for WiFi-burst absorption — see "Configuration"
-> below).
+> **Status: production default and only supported renderer topology as
+> of 2026-05-26 (PR #329 plus follow-up cleanup).** The dmix/fanin
+> switcher and `/var/lib/jasper/audio_topology.env` are retired.
+> install.sh writes the fan-in `/etc/asound.conf` directly, enables
+> `jasper-fanin.service`, and archives/removes stale topology state.
+> Original Phase 1/2 work (daemon source, systemd unit, install.sh
+> build wiring, jasper-doctor checks, `/state` aggregation) landed in
+> PR #308 on 2026-05-25; PR #329 promoted fan-in after the AirPlay
+> Pattern A3 investigation and set the 4096-frame input buffer.
 
 ## Why the cutover (2026-05-26)
 
@@ -26,7 +23,7 @@ anticipated:
    **bursts of ~4 packets every ~30 ms** instead of the nominal 1
    packet every ~8 ms. Confirmed via tcpdump capture of the
    Mac Studio → Pi flow.
-2. **shairport faithfully writes those bursts** into its
+2. **shairport faithfully wrote those bursts** into the old
    `pcm.jasper_renderer_in` (plug wrapper on the dmix).
 3. **The dmix's per-write mutex / context-switch** was slipping
    shairport's player thread by ~5 ms when it computed
@@ -51,32 +48,33 @@ the WiFi-burst absorption layer.
 
 ## TL;DR
 
-JTS's current music topology has all renderers (librespot, shairport-sync,
-bluealsa-aplay, future HDMI) writing through a userspace dmix
-(`pcm.jasper_renderer_mix`, added 2026-05-22 by PR #214) into a single
-snd-aloop substream pair. The dmix adds ~85 ms of buffering that's
-structurally invisible to `snd_pcm_delay()`, costs ALSA-config complexity,
-and complicates the AEC reference tap. The current Tier 1A fix
-([PR #308](https://github.com/jaspercurry/JTS/pull/308)) compensates the
-invisible delay; Tier 2A **deletes the dmix layer entirely** by exploiting
-snd-aloop's per-substream rate independence.
+JTS's current music topology gives each renderer (librespot,
+shairport-sync, bluealsa-aplay, USB-in, future HDMI) a private
+snd-aloop lane. The prior userspace renderer dmix
+(`pcm.jasper_renderer_mix`, added 2026-05-22 by PR #214) solved
+multi-writer `-EBUSY` but added ~85 ms of buffering and, more
+importantly, introduced AirPlay burst-timing drops. The fan-in daemon
+keeps the single summed music reference without the shared dmix writer
+path.
 
-Each renderer gets its own snd-aloop substream (`hw:Loopback,0,0..3`). A
-small Rust daemon (`jasper-fanin`) reads the capture side of each
-substream, sums them sample-wise, and writes to a single dedicated
+Each renderer gets its own snd-aloop substream (`hw:Loopback,0,0..3`),
+and correction/test playback gets `correction_substream`
+(`hw:Loopback,0,4`). A small Rust daemon (`jasper-fanin`) reads the
+capture side of each substream, sums them sample-wise, and writes to a
+single dedicated
 "summed music" substream (`hw:Loopback,0,7`). CamillaDSP and the AEC bridge
 both dsnoop on the capture side of that summed substream (`hw:Loopback,1,7`)
-— same shape as today, just one substream pair shifted. The dmix layer
-and its ~85 ms of latency disappear; the AEC reference signal becomes
-cleaner (post-mix, single point of truth); adding a future HDMI source is
-"assign substream 4" rather than "fight contention."
+— same consumer shape, just one substream pair shifted from the old
+dmix tap. The renderer dmix layer and its ~85 ms of latency disappear;
+the AEC reference signal becomes cleaner (post-mix, single point of
+truth); adding a future HDMI source is
+"assign the next free private substream" rather than "fight contention."
 
-Net latency saving over the current Tier 1A topology: ~85 ms (the
-renderer-side dmix buffer). Combined with the Tier 1A latency offset fix
-and the Tier 1B-equivalent CamillaDSP `target_level` trim that landed in
-PR #308, the total round-trip from "shairport accepts RTP packet" to
-"speaker emits sound" drops from the current ~150 ms to ~65 ms. The
-saving survives any future PipeWire migration.
+Net latency saving over the retired dmix topology: ~85 ms of
+renderer-side queueing. With the fan-in output queue, output dmix, and
+current CamillaDSP `target_level: 2048`, the fixed downstream delay
+shairport must compensate is now ~171 ms instead of ~192 ms. The saving
+survives any future PipeWire migration.
 
 ## Why now
 
@@ -121,12 +119,12 @@ Renderers (each on its own snd-aloop substream pair):
   shairport-sync       → hw:Loopback,0,1
   bluealsa-aplay       → hw:Loopback,0,2
   jasper-usbsink       → hw:Loopback,0,3
-  (reserved)           → hw:Loopback,0,4    [for HDMI input or future renderers]
+  correction/test      → hw:Loopback,0,4
   (reserved)           → hw:Loopback,0,5    [debug/monitor mirror, for offline AEC capture]
   (reserved)           → hw:Loopback,0,6
                           
 jasper-fanin (the new Rust daemon):
-  reads from           ← hw:Loopback,1,0..3 (via per-substream dsnoop or direct hw)
+  reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
   sums sample-wise
   writes to            → hw:Loopback,0,7
 
@@ -164,13 +162,13 @@ CamillaDSP → jasper_out dmix (TTS sums in here) → Apple USB-C dongle
 
 - `pcm.jasper_renderer_mix` dmix block in asoundrc — gone.
 - `pcm.jasper_renderer_in` plug wrapper — gone.
-- The 85 ms invisible-to-shairport buffer.
+- The renderer-side 85 ms buffer that was invisible to shairport.
 - The need for shairport's `audio_backend_latency_offset_in_seconds` to
-  carry a dmix term — the derivation in `jasper-apply-airplay-mode`
-  already falls back gracefully when no `pcm.jasper_renderer_mix` block
-  exists, so it auto-reverts to compensating only CamillaDSP's
-  `target_level` (i.e., the offset drops from `-0.106667` to `-0.021333`
-  after this change, a further ~85 ms saving on AirPlay scheduling).
+  carry a renderer-dmix term. The current derivation compensates
+  CamillaDSP's `target_level` above `chunksize`, the fan-in output
+  buffer, and the output dmix on `pcm.jasper_out`, so the production
+  offset is `-0.170667` with the current `target_level: 2048`,
+  fan-in output buffer `3072`, and output dmix `buffer_size 4096`.
 
 ### What this adds
 
@@ -249,25 +247,18 @@ membership shields the work loop from it.
 | All input substreams silent | Output zeros to maintain ALSA frame timing | Idle state is normal; don't underrun the output |
 | One input substream xrun | Log `event=fanin.xrun input=N count=M`; recover via `snd_pcm_recover`; continue | snd_pcm convention |
 | Output substream xrun | Log `event=fanin.xrun output count=M`; recover; AEC bridge handles brief ref outage gracefully | The bridge's `claude/aec-bridge-ref-starvation-fix` carries the last ref instead of using silence fallback |
-| Unable to open any input PCM at startup | Continue with the inputs that opened; structural failure of one renderer is not fatal | Renderers may not be enabled (Bluetooth off, USB-in off) |
+| Unable to open any configured input PCM at startup | Exit 1, let systemd restart with backoff | Every configured input is a private snd-aloop lane that should exist after install; missing one means live topology drift |
 | Unable to open output PCM at startup | Exit 1, let systemd restart with backoff | Structural; the dedicated output substream MUST exist |
 | Work loop hang | Watchdog ping stops, systemd kills + restarts in ~2 s | The whole point of the heartbeat |
 | Repeated wedge (5 restarts in 5 min) | `StartLimitAction=reboot` triggers clean system reboot | Tier 5.1 protection |
 
 ### Per-handover ramp
 
-When the "active primary" input changes (e.g., AirPlay handover to Spotify),
-a hard step-discontinuity at the sample boundary clicks audibly. The
-daemon applies a 10 ms cosine ramp on the transition:
-
-```
-during handover frame:
-    ramp_factor = 0.5 * (1 - cos(pi * elapsed_ms / 10))
-    output = old_input * (1 - ramp_factor) + new_input * ramp_factor
-```
-
-Cost: +480 samples of handover latency (~10 ms), zero steady-state cost.
-Adds ~30 lines of Rust on top of the main mixer loop.
+Not implemented in the current mixer. The daemon performs saturating
+sample-wise summation, and `jasper-mux` keeps simultaneous-source windows
+short by pausing the older renderer on handover. If measured handovers
+produce audible clicks, add a small ramp in the mixer with tests and
+doctor/state visibility; until then, the extra state machine is deferred.
 
 ### Mixer math
 
@@ -345,17 +336,15 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 
 | Event | When | Severity |
 |---|---|---|
-| `event=fanin.started inputs=N output=hw:Loopback,0,7 rate=48000 period=256` | startup ready | INFO |
-| `event=fanin.input.opened slot=N pcm=hw:Loopback,1,N` | each input opened (lazy, per-renderer) | INFO |
-| `event=fanin.input.silent slot=N renderer=spotify duration_ms=420` | input went silent for ≥250 ms | INFO |
-| `event=fanin.input.active slot=N renderer=spotify` | input transitioned silent→active | INFO |
-| `event=fanin.handover from=spotify to=airplay ramp_ms=10` | active primary changed | INFO |
-| `event=fanin.xrun source=input slot=N frames=M` | snd_pcm_recover triggered | WARN |
-| `event=fanin.xrun source=output frames=M` | output xrun | WARN |
-| `event=fanin.input.frame_late slot=N lag_ms=X` | input read returned later than expected by X ms | WARN (>5 ms) |
+| `event=fanin.boot version=...` | process startup | INFO |
+| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=... output_buffer_frames=...` | parsed runtime config | INFO |
+| `event=fanin.input.opened label=airplay pcm=hw:Loopback,1,1 ...` | each input opened | INFO |
+| `event=fanin.output.opened pcm=hw:Loopback,0,7 ...` | summed output opened | INFO |
+| `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |
+| `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
+| `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
-| `event=fanin.fatal reason=... detail=...` | structural failure leading to exit | ERROR |
-| `event=fanin.shutdown reason=sigterm graceful=true` | clean shutdown | INFO |
+| `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
 Why this exact set: the `event=` prefix lets `scripts/jasper-trace.sh`
 pick them up alongside other subsystems' events; the verbs match the
@@ -369,23 +358,23 @@ command, `STATUS`, returning JSON:
 
 ```json
 {
-  "running": true,
-  "uptime_seconds": 1234.5,
+  "uptime_seconds": 1234.56,
+  "input_buffer_frames": 4096,
   "inputs": [
-    {"slot": 0, "pcm": "hw:Loopback,1,0", "renderer": "spotify", "active": false, "frames_read": 0, "xrun_count": 0, "rms_dbfs": null},
-    {"slot": 1, "pcm": "hw:Loopback,1,1", "renderer": "airplay", "active": true,  "frames_read": 5928432, "xrun_count": 0, "rms_dbfs": -22.4},
-    {"slot": 2, "pcm": "hw:Loopback,1,2", "renderer": "bluealsa", "active": false, "frames_read": 0, "xrun_count": 0, "rms_dbfs": null},
-    {"slot": 3, "pcm": "hw:Loopback,1,3", "renderer": "usbsink", "active": false, "frames_read": 0, "xrun_count": 0, "rms_dbfs": null}
+    {"label": "spotify", "pcm": "hw:Loopback,1,0", "frames_read": 0, "xrun_count": 0},
+    {"label": "airplay", "pcm": "hw:Loopback,1,1", "frames_read": 5928432, "xrun_count": 0},
+    {"label": "bluealsa", "pcm": "hw:Loopback,1,2", "frames_read": 0, "xrun_count": 0},
+    {"label": "usbsink", "pcm": "hw:Loopback,1,3", "frames_read": 0, "xrun_count": 0},
+    {"label": "correction", "pcm": "hw:Loopback,1,4", "frames_read": 0, "xrun_count": 0}
   ],
   "output": {
     "pcm": "hw:Loopback,0,7",
     "sample_rate": 48000,
+    "period_frames": 256,
+    "buffer_frames": 3072,
     "frames_written": 5928432,
     "xrun_count": 0
   },
-  "current_primary": "airplay",
-  "handover_count": 3,
-  "last_handover_at": "2026-05-25T13:45:21Z",
   "watchdog": {
     "pings_sent": 142,
     "pings_skipped": 0,
@@ -400,19 +389,25 @@ daemons.
 
 ### jasper-doctor checks (`jasper/cli/doctor.py`)
 
-Two checks, added to the run-list:
+Fan-in checks are in the main doctor run-list:
 
-1. **`check_fanin_running`**:
-   - `systemctl is-active jasper-fanin.service` == "active"
-   - UDS probe to `/run/jasper-fanin/control.sock` returns valid JSON
-   - `watchdog.last_progress_age_ms < 1000` (catches "service active but
-     work loop wedged")
-   - Returns OK with summary; WARN if work loop hasn't ticked in >1 s.
+1. **`check_fanin_asound_wiring`** verifies `/etc/asound.conf` has no
+   retired `jasper_renderer_*` dmix blocks, defines every private
+   renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
+   and points `pcm.jasper_capture` / `pcm.jasper_ref` at summed
+   substream 7.
 
-2. **`check_fanin_output_substream`**:
-   - Reads `/proc/asound/Loopback/pcm0p/sub7/status`
-   - Expects `state: RUNNING` and the writer's PID matches `jasper-fanin`.
-   - WARN if not running, FAIL if another process owns the substream.
+2. **`check_fanin_service`** treats disabled or inactive
+   `jasper-fanin.service` as a failure, probes
+   `/run/jasper-fanin/control.sock`, verifies the live STATUS input
+   labels/PCMs and output PCM match the production graph, checks the
+   watchdog progress age, and warns if `input_buffer_frames` drops
+   below the validated 4096-frame AirPlay burst absorber.
+
+3. **`check_renderer_device_resolvable`** verifies each renderer can
+   resolve/open its configured private lane as its runtime systemd user.
+   Active lanes may return EBUSY; doctor accepts that only when
+   `/proc/asound/.../owner_pid` belongs to the expected renderer unit.
 
 ### Persistent state
 
@@ -437,18 +432,15 @@ works without any wizard interaction.
 ```sh
 # Default values shown — operator override via /etc/jasper/jasper.env
 # (or /var/lib/jasper/fanin.env). The Environment= override in the
-# systemd unit (deploy/systemd/jasper-fanin.service) sets
-# JASPER_FANIN_BUFFER_FRAMES=4096 as the production default; the
-# code default of 1024 is the floor for "what's the minimum stable
-# size given a non-bursty writer."
+# systemd unit (deploy/systemd/jasper-fanin.service) sets the
+# production input/output buffer overrides below.
 JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
-JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3
-JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink   # informational, surfaces in /state
+JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3|hw:Loopback,1,4
+JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink|correction   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
-JASPER_FANIN_BUFFER_FRAMES=4096                                 # ~85 ms — see "Buffer sizing" below
-JASPER_FANIN_HANDOVER_RAMP_MS=10
-JASPER_FANIN_SILENCE_THRESHOLD_DBFS=-90
+JASPER_FANIN_INPUT_BUFFER_FRAMES=4096                            # ~85 ms input burst absorber — see "Buffer sizing" below
+JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072                           # ~64 ms output queue toward CamillaDSP/AEC
 ```
 
 The list-shaped env vars (`JASPER_FANIN_INPUT_PCMS`,
@@ -463,14 +455,18 @@ frequent enough that the heartbeat sentinel sees real forward
 progress every ~5 ms and the Tier 1+2 watchdog catches a wedged
 work loop within `WatchdogSec=30s`. No reason to deviate.
 
-#### Buffer sizing — why 4096, not 1024 (2026-05-26)
+#### Input buffer sizing — why 4096, not 1024 (2026-05-26)
 
-The original Phase 2 design defaulted to `BUFFER_FRAMES=1024`
+The original Phase 2 design defaulted to one shared
+`BUFFER_FRAMES=1024`
 (~21 ms), reasoned as "half the old dmix; matches the documented
 floor for stable dmix-replacement shapes." On 2026-05-26 we found
-that floor was too low for the real-world AirPlay-on-WiFi delivery
-pattern, and bumped the production default to `4096` (~85 ms) via
-the systemd unit's `Environment=` directive.
+that floor was too low for the **input** side under the real-world
+AirPlay-on-WiFi delivery pattern. The production unit now sets
+`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` (~85 ms) and keeps
+`JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072` (~64 ms) so CamillaDSP can
+consistently read full 1024-frame chunks while WiFi burst absorption
+still does not become the downstream fanin→CamillaDSP/AEC queue.
 
 **The mechanism (kept here for future reference)**:
 
@@ -498,22 +494,25 @@ the systemd unit's `Environment=` directive.
   dmix was **accidentally** also the WiFi-burst absorption layer for
   AirPlay — that's the requirement fanin must continue to satisfy.
 
-**Trade-off**: ~64 ms more buffering on the input side than the
-original "1024 floor" design assumed. Net latency is still
-considerably better than the dmix topology because fanin's output
-path (no second dmix between fanin and CamillaDSP/AEC bridge) is
-~85 ms shorter than dmix's was. The fanin input-side cost is just
-moving the unavoidable burst-absorption buffer from "before the
-mixer" (dmix) to "at the mixer's input ring" (fanin).
+**Trade-off**: up to ~85 ms of input-side queue capacity, not a hard
+"every frame waits 85 ms" delay. Actual queued audio depends on each
+lane's writer/reader fill level, and shairport can observe snd-aloop
+delay on its private lane. Net latency is still considerably better
+than the dmix topology because fanin's output path (no second dmix
+between fanin and CamillaDSP/AEC bridge) is ~85 ms shorter than dmix's
+was. The fanin input-side cost is moving the unavoidable burst-
+absorption headroom from "before the mixer" (dmix) to "at the mixer's
+input ring" (fanin).
 
 **Future tuning**: if a future WiFi setup proves to have tighter
 delivery (e.g., a wired AirPlay 2 link, ethernet over a Pi 4/5 with
 a USB-Ethernet dongle, or improved router QoS), this is the first
 knob to retune. Capture a tcpdump of the actual on-wire
 inter-arrival distribution; if max gap is materially below 40 ms,
-`JASPER_FANIN_BUFFER_FRAMES=2048` (~43 ms) could buy back ~43 ms of
-latency. Don't tune below `2048` without also confirming the WiFi
-gap distribution stays under ~20 ms in your environment.
+`JASPER_FANIN_INPUT_BUFFER_FRAMES=2048` (~43 ms) could reduce worst-case
+queue capacity by ~43 ms. Treat that as an explicit experiment, not a
+cleanup default, and don't tune below `2048` without also confirming
+the WiFi gap distribution stays under ~20 ms in your environment.
 
 ## asoundrc changes (`deploy/alsa/asoundrc.jasper`)
 
@@ -524,15 +523,24 @@ gap distribution stays under ~20 ms in your environment.
 
 ### Added
 
-Per-renderer aliases (informational; renderers still use `hw:Loopback,0,N`
-directly in their service flags, but the aliases document the intent and
-provide a future migration surface):
+Per-renderer/test aliases (the service files use these names; the
+underlying `hw:Loopback,0,N` lane remains private to that producer):
 
 ```
-pcm.librespot_substream  { type plug; slave.pcm "hw:Loopback,0,0"; }
-pcm.shairport_substream  { type plug; slave.pcm "hw:Loopback,0,1"; }
-pcm.bluealsa_substream   { type plug; slave.pcm "hw:Loopback,0,2"; }
-pcm.usbsink_substream    { type plug; slave.pcm "hw:Loopback,0,3"; }
+pcm.librespot_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,0"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+
+pcm.shairport_substream  → hw:Loopback,0,1  (same pinned plug shape)
+pcm.bluealsa_substream   → hw:Loopback,0,2  (same pinned plug shape)
+pcm.usbsink_substream    → hw:Loopback,0,3  (same pinned plug shape)
+pcm.correction_substream → hw:Loopback,0,4  (same pinned plug shape)
 ```
 
 The `plug:` wrapper is what handles each renderer's native rate/format
@@ -591,7 +599,6 @@ rust/jasper-fanin/                  ← new
     state.rs                        ← UDS status server
     config.rs                       ← env-var parsing
     watchdog.rs                     ← progress-sentinel
-    handover.rs                     ← cosine ramp
     xrun_log.rs                     ← /var/lib/jasper/fanin/xrun_history.jsonl
 
 deploy/
@@ -604,17 +611,18 @@ deploy/
 
 jasper/
   cli/
-    doctor.py                       ← add 2 checks
+    doctor.py                       ← fan-in wiring/service/renderer checks
   control/
     server.py                       ← add fanin to /state aggregation
 
 scripts/
-  build-jasper-fanin.sh             ← `cargo build --release`, copy to /opt/jasper/bin
+  aec-probe-latency.sh              ← active AEC delay probe via correction_substream
+  aec-probe-pinknoise.sh            ← AEC attenuation probe via correction_substream
 
 tests/
-  test_fanin_unit.py                ← hardware-free pytest for the systemd unit shape
-  test_fanin_doctor.py              ← hardware-free pytest for the doctor checks
-  test_asoundrc_topology.py         ← assert renderer substream aliases exist, dmix block removed
+  test_fanin_systemd.py             ← hardware-free pytest for the systemd unit shape
+  test_fanin_wiring.py              ← asoundrc + renderer unit topology shape
+  test_doctor.py                    ← doctor parser/check behavior
 ```
 
 The Rust binary is built on the Pi during `install.sh` (taking ~3-5
@@ -654,48 +662,46 @@ maintainability. Rust wins on all three.
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
 
-## Switching between topologies (Phase 3 testing)
+## Retired topology switch
 
-`deploy/bin/jasper-audio-topology` (installed at
-`/usr/local/sbin/jasper-audio-topology`) is the CLI that flips the
-chain between `dmix` and `fanin` atomically. It:
+The old `deploy/bin/jasper-audio-topology` CLI and
+`/var/lib/jasper/audio_topology.env` state file were removed when
+fan-in became the only supported renderer topology. Keeping both
+paths created a single-source-of-truth violation: deploy could render
+a dmix-era `/etc/asound.conf` while the persisted state and renderer
+units still said fanin. That exact mixed state makes
+`pcm.jasper_capture` point at substream 0 (now a private input lane)
+instead of substream 7 (the summed output), starving the AEC bridge's
+reference signal.
 
-- writes `/var/lib/jasper/audio_topology.env` (the single source of
-  truth for the active mode and the per-renderer device env vars)
-- swaps `/etc/asound.conf` between the dmix and fanin variants
-  (backing up the dmix version on first switch)
-- regenerates `/etc/shairport-sync.conf` via the existing
-  `jasper-apply-airplay-mode` (which now reads
-  `JASPER_AUDIO_TOPOLOGY`)
-- runs `systemctl daemon-reload` so each renderer's
-  `EnvironmentFile=-/var/lib/jasper/audio_topology.env` re-resolves
-- enables+starts `jasper-fanin.service` (fanin) or stops+disables
-  it (dmix)
-- restarts the renderer + DSP chain in dependency order
-- post-restart, verifies critical daemons came up
+Current deploy behavior:
 
-Usage:
+- `deploy/alsa/asoundrc.jasper` is the fan-in asoundrc.
+- renderer units point directly at their private lanes
+  (`librespot_substream`, `shairport_substream`,
+  `bluealsa_substream`, `usbsink_substream`).
+- `install.sh` enables `jasper-fanin.service` directly.
+- `install.sh` archives/removes stale
+  `/var/lib/jasper/audio_topology.env` and removes any installed
+  `/usr/local/sbin/jasper-audio-topology`.
 
-```sh
-sudo jasper-audio-topology               # show status
-sudo jasper-audio-topology status        # same
-sudo jasper-audio-topology fanin         # switch to fanin
-sudo jasper-audio-topology dmix          # switch back
-sudo jasper-audio-topology fanin --dry-run   # preview without flipping
-```
+Current doctor behavior:
 
-A jasper-doctor check (`check_audio_topology_state`) catches the
-"half-switched" failure mode where the env file declares one mode
-but the daemons disagree (e.g., env says `fanin` but
-`jasper-fanin.service` isn't running — that means the renderers
-are writing to per-renderer substreams with nobody reading them,
-i.e. the speaker is silent).
+- `check_fanin_asound_wiring` verifies no legacy
+  `jasper_renderer_*` blocks exist, all private renderer lanes are
+  present, and `pcm.jasper_capture` dsnoops `hw:Loopback,1,7`.
+- `check_fanin_service` treats disabled/inactive `jasper-fanin` as a
+  failure, probes the UDS STATUS endpoint, and warns if runtime
+  `input_buffer_frames` drops below 4096.
+- `check_renderer_device_resolvable` treats EBUSY on an active
+  private lane as OK only when the lane owner is the expected renderer
+  unit; Unknown PCM is always a real failure.
 
-The CLI is the migration tool for Phase 3 (operator opt-in
-testing). When Phase 4 ships default-on, this script becomes the
-"emergency revert to dmix" tool — still useful, narrower scope.
+## Historical Migration Plan
 
-## Migration plan
+The phase plan below is preserved as decision archaeology. It is no
+longer the operational runbook: Phase 4 has effectively shipped, and
+the dmix path has been removed rather than kept behind a rollback flag.
 
 Phase ordering matters because each phase needs the previous one's
 infrastructure to be in place.
@@ -737,60 +743,67 @@ no xruns over a 1-hour active listening session.
 **Soak:** **72 hours minimum on the `=fanin` flag** under mixed load
 (Spotify, AirPlay, BT, TTS, voice). Acceptance criteria below.
 
-### Phase 4 — default-on (dmix path retired)
+### Phase 4 — default-on (superseded by production cleanup)
 
 - Flip the default to `fanin`.
-- After 30 days of clean operation, delete the dmix path entirely
-  (asoundrc block + the latency-offset derivation's dmix term + the
-  Tier 2 mux escalation that compensates for missing EBUSY).
+- Original conservative plan: after 30 days of clean operation, delete
+  the dmix path entirely.
+- Actual 2026-05-26 follow-up: deleted the dmix path immediately after
+  measured AirPlay validation and replaced the rollback flag with
+  jasper-doctor drift checks, because keeping two paths caused the
+  `/etc/asound.conf` split-brain that starved the AEC bridge reference.
 
 **Verify:** fresh install via `bash deploy/install.sh` lands on the
 fanin topology with zero operator interaction.
 **Soak:** captured by the 30-day continuous-use window.
 
-## Acceptance criteria for Phase 3 → Phase 4 promotion
+## Historical Acceptance Criteria
 
-- [ ] End-to-end music latency drops by ≥75 ms vs the current
-  (post-PR-#308) baseline (~150 ms → ~75 ms).
-- [ ] shairport "Dropping out of date packet" rate: 0 over the soak
-  window.
-- [ ] CamillaDSP `PB: Prepare playback after buffer underrun` rate: 0.
+- [x] AirPlay latency-offset math accounts for CamillaDSP target fill,
+  fan-in output, and output dmix only: expected fixed downstream
+  compensation is now ~171 ms rather than the old renderer-dmix-era
+  ~192 ms. External end-to-end loopback latency was not
+  remeasured during the 2026-05-26 cleanup.
+- [x] shairport "Dropping out of date packet" rate: 0 over the
+  measured post-cutover AirPlay validation window.
+- [x] CamillaDSP `PB: Prepare playback after buffer underrun` rate: 0.
 - [ ] AEC ERLE measured against a known echo signal stays within 1 dB
   of the pre-PR baseline.
 - [ ] Bluealsa codec switch (SBC ↔ AAC) at the substream boundary: no
   audible glitch beyond the existing baseline.
-- [ ] `event=fanin.xrun` count: ≤2 per hour under stress; 0 under
-  steady listening.
+- [x] `event=fanin.xrun` count: 0 under steady AirPlay listening after
+  the 4096-frame buffer cutover. Mixed-source stress remains a useful
+  future check.
 - [ ] jasper-fanin RSS <8 MB over the soak.
 - [ ] CPU <2% of one Pi 5 core at steady state, <5% under handover.
-- [ ] Watchdog never fires unprovoked (no `event=fanin.watchdog.stale`
-  lines under realistic load).
+- [x] Watchdog never fires unprovoked during post-deploy validation
+  (no `event=fanin.watchdog.stale` lines under realistic load).
 
-If xruns appear under WiFi-storm stress test: escalate to PREEMPT_RT
-kernel, re-soak, document as a hard requirement. Otherwise stock kernel
-is the supported floor.
+These were the original promotion checks. The unchecked rows are still
+useful future soak targets for Bluetooth/Spotify/ERLE measurement; they
+are not blockers for the 2026-05-26 production cutover because keeping
+the old dmix path created a worse split-brain failure mode.
 
-## Open design questions
+If xruns appear under a future WiFi-storm stress test at
+`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096`: escalate to PREEMPT_RT kernel,
+re-soak, and document it as a hard requirement. Otherwise stock kernel
+remains the supported floor.
 
-These need answers during Phase 2 build, not before:
+## Resolved Implementation Choices
 
-1. **`alsa-rs` vs `cpal` vs raw bindgen.** Default to `alsa-rs` — mature,
-   idiomatic, the right level of abstraction. Confidence: high.
-2. **Per-input ring-buffer sizing.** Each input needs a small jitter
-   buffer because renderers won't deliver in lockstep. 2× period (~10 ms)
-   is the default; bench-measure during Phase 2.
-3. **Output substream lifecycle on daemon restart.** If `jasper-fanin`
-   crashes and systemd takes ~2 s to restart it, the output substream
-   closes and reopens. CamillaDSP's dsnoop on the capture side sees a
-   brief stream of silence. The AEC bridge sees the same. Acceptable
-   under the resilience contract (Tier 1+2 catches it), but worth
-   measuring: how long is the brief silence? If it's <100 ms it's a
-   non-issue; if longer, the daemon may need to keep the output PCM
-   open in a "muted/zero-fill" mode during shutdown.
-4. **HUP-reload semantics.** `ExecReload=/bin/kill -HUP $MAINPID` —
-   the daemon should re-read its env-file config on HUP without
-   dropping the output substream. Implementation detail; not load-bearing
-   for v1.
+1. **ALSA binding.** The daemon uses `alsa-rs`, which is the right
+   level of abstraction for direct PCM open/read/write and hardware
+   parameter control.
+2. **Per-input ring-buffer sizing.** Production default is 4096 frames
+   after real AirPlay/WiFi validation. Doctor warns below that value.
+3. **Output substream lifecycle on daemon restart.** systemd restarts
+   `jasper-fanin.service`; CamillaDSP and the AEC bridge see a brief
+   zero/silence gap while the output PCM is re-opened. That is inside
+   the existing resilience contract.
+4. **Reload semantics.** Runtime retuning is done with a service
+   restart. Keeping the daemon small and explicit won over a HUP reload
+   path that would need to preserve output PCM state across config
+   mutation.
 
 ## What's NOT in this design
 
@@ -840,4 +853,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-25.
+Last verified: 2026-05-26.

@@ -49,19 +49,18 @@ general = {
     //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
     // Derived by jasper-apply-airplay-mode as:
-    //   -((target_level - chunksize + dmix_buffer) / samplerate)
+    //   -((target_level - chunksize + fanin_output_buffer + output_dmix_buffer) / samplerate)
     // where target_level/chunksize/samplerate come from the active
-    // CamillaDSP config and dmix_buffer is buffer_size from the
-    // pcm.jasper_renderer_mix block in /etc/asound.conf. Shairport's
-    // ALSA handle is the renderer-side dmix (the plug on top of
-    // jasper_renderer_mix), so snd_pcm_delay() returns the dmix slave's
-    // queue — invisible to shairport are (a) the dmix's own internal
-    // buffer between client writes and slave reads, and (b) CamillaDSP's
-    // target_level buffer further downstream. This offset tells shairport
-    // to feed audio to that handle early so the sound emerges from the
-    // speaker at the AirPlay-scheduled time, keeping video/multi-room
-    // sync honest. Renders as -0.149333 with the production values
-    // (chunksize=1024, target_level=4096, dmix buffer_size=4096).
+    // CamillaDSP config, fanin_output_buffer comes from jasper-fanin's
+    // output buffer setting, and output_dmix_buffer is buffer_size from
+    // the pcm.jasper_out block in /etc/asound.conf. The retired
+    // renderer-side dmix is gone; shairport now writes its private
+    // fan-in lane while jasper-fanin handles WiFi burst absorption.
+    // This offset tells shairport about the fixed downstream delay
+    // invisible to its ALSA handle so video/multi-room sync stays
+    // honest. Renders as -0.170667 with the production values
+    // (chunksize=1024, target_level=2048, fan-in output=3072,
+    // output dmix=4096).
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
     // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
@@ -86,34 +85,18 @@ sessioncontrol = {
 };
 
 alsa = {
-    // output_device is substituted by jasper-apply-airplay-mode based
-    // on JASPER_AUDIO_TOPOLOGY:
-    //   dmix mode (default): `jasper_renderer_in` — the plug-wrapped
-    //                         renderer-side dmix from
-    //                         deploy/alsa/asoundrc.jasper.
-    //   fanin mode (Tier 2A): `shairport_substream` — the per-renderer
-    //                         substream alias. The jasper-fanin daemon
-    //                         reads this substream's capture side.
-    // Either way, the plug layer above handles shairport's native
-    // 44100 → 48000 S16_LE conversion through libsamplerate
-    // (samplerate_best, set as the rate_converter default at the top
-    // of asoundrc.jasper). shairport-sync still only accepts
-    // output_rate values that are integer multiples of 44100, so
-    // 44100 stays here as shairport's native AirPlay rate; the
-    // resampling happens one layer up in plug.
-    //
-    // Historical: pre-2026-05-22 this was plughw:Loopback,0,0
-    // directly, which meant any second renderer (librespot,
-    // bluealsa-aplay) opening the same device got ALSA -EBUSY and
-    // crashed. PR #214 added the renderer-side dmix as a fix.
+    // shairport_substream is AirPlay's private fan-in lane. The plug
+    // wrapper handles shairport's native 44100 → 48000 S16_LE conversion
+    // through libsamplerate (samplerate_best, set as the rate_converter
+    // default at the top of asoundrc.jasper). shairport-sync still only
+    // accepts output_rate values that are integer multiples of 44100, so
+    // 44100 stays here as shairport's native AirPlay rate.
     output_device = "__RENDERER_DEVICE__";
     output_rate = 44100;
     // S32 stays for the same reason it did before -- efficient when
-    // the plug layer above the dmix only has to downconvert format
-    // (S32 -> S16_LE), and the final output to the dongle (jasper_out)
-    // is S16_LE anyway. The 16 bits of resolution drop happens once
-    // at the renderer-dmix boundary instead of being split between
-    // multiple plug stages.
+    // the plug layer above the fan-in lane only has to downconvert
+    // format (S32 -> S16_LE), and the final output to the dongle
+    // (jasper_out) is S16_LE anyway.
     output_format = "S32";
     use_mmap_if_available = "no";
     // Templated — see file header. With JTS's snd-aloop -> CamillaDSP

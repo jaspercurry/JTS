@@ -2,9 +2,9 @@
 
 Tier 1 (existing): Spotify Web API `PUT /me/player/pause` via spotipy.
 Tier 2 (added 2026-05-22): `systemctl restart librespot.service` if
-Tier 1 fails. Tier 2 exists because after the renderer-dmix change
-(PR #214 / Claim B), an un-pauseable librespot no longer crashes on
-ALSA EBUSY — it stays alive and mixes audio with the new winner.
+Tier 1 fails. Tier 2 still matters after the fan-in cutover: an
+un-pauseable librespot owns its private fan-in lane, stays alive, and
+is summed with the new winner until it releases that lane.
 The user's contract ("we cannot have both played at the same time")
 requires us to force a release.
 

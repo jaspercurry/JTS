@@ -460,7 +460,7 @@ def cmd_calibrate_spl(args) -> None:
             time.sleep(0.5)
             input(f"\nPress ENTER to play pink noise at main_volume={vol_db:.0f} dB...")
             proc = subprocess.Popen(
-                ["aplay", "-D", "plughw:Loopback,0,0", "-q", str(pink_path)],
+                ["aplay", "-D", "correction_substream", "-q", str(pink_path)],
             )
             time.sleep(30.5)
             proc.terminate()

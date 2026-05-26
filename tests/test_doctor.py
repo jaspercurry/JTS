@@ -744,6 +744,292 @@ def test_check_citibike_caps_missing_list_at_three_with_suffix(monkeypatch):
 
 # ---- shairport-sync.conf output_device check ---------------------------
 
+def _patch_asound_conf(
+    monkeypatch,
+    conf_text: str,
+    tmp_path: Path,
+    *,
+    stale_topology_env: bool = False,
+):
+    target = tmp_path / "asound.conf"
+    target.write_text(conf_text)
+    stale = tmp_path / "audio_topology.env"
+    if stale_topology_env:
+        stale.write_text("JASPER_AUDIO_TOPOLOGY=dmix\n")
+    real_path_cls = doctor.Path
+
+    def fake_path(arg):
+        if arg == "/etc/asound.conf":
+            return target
+        if arg == "/var/lib/jasper/audio_topology.env":
+            return stale
+        return real_path_cls(arg)
+
+    monkeypatch.setattr(doctor, "Path", fake_path)
+
+
+_FANIN_ASOUND = """
+pcm.librespot_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,0"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.shairport_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,1"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.bluealsa_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,2"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.usbsink_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,3"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.correction_substream {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,4"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.jasper_capture {
+    type dsnoop
+    slave {
+        pcm "hw:Loopback,1,7"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+pcm.jasper_ref {
+    type plug
+    slave.pcm "jasper_capture"
+}
+"""
+
+
+def test_fanin_asound_wiring_ok(monkeypatch, tmp_path):
+    _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "ok"
+    assert "substream 7" in r.detail
+
+
+def test_fanin_asound_wiring_fails_on_legacy_capture(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace('pcm "hw:Loopback,1,7"', 'pcm "hw:Loopback,1,0"'),
+        tmp_path,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "substream 0" in r.detail
+    assert "EBUSY" in r.detail
+
+
+def test_fanin_asound_wiring_fails_without_jasper_ref(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace(
+            'pcm.jasper_ref {\n    type plug\n    slave.pcm "jasper_capture"\n}\n',
+            "",
+        ),
+        tmp_path,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "pcm.jasper_ref missing" in r.detail
+
+
+def test_fanin_asound_wiring_fails_when_capture_shape_unpinned(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace(
+            '        pcm "hw:Loopback,1,7"\n        rate 48000\n',
+            '        pcm "hw:Loopback,1,7"\n',
+        ),
+        tmp_path,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "48 kHz stereo S16_LE" in r.detail
+
+
+class _FakeSocket:
+    def __init__(self, payload: bytes = b"", error: OSError | None = None):
+        self._chunks = [payload, b""]
+        self._error = error
+
+    def settimeout(self, timeout):
+        pass
+
+    def connect(self, path):
+        if self._error is not None:
+            raise self._error
+
+    def sendall(self, data):
+        pass
+
+    def recv(self, size):
+        return self._chunks.pop(0)
+
+    def close(self):
+        pass
+
+
+def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
+    def fake_run(cmd, *args, **kwargs):
+        stdout = ""
+        if cmd[:2] == ["systemctl", "is-enabled"]:
+            stdout = enabled + "\n"
+        elif cmd[:2] == ["systemctl", "is-active"]:
+            stdout = active + "\n"
+        return type("P", (), {"stdout": stdout, "stderr": "", "returncode": 0})()
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+
+def _fanin_status_payload(
+    *,
+    input_buffer_frames: int = 4096,
+    output_buffer_frames: int = 3072,
+    progress_age_ms: int = 2,
+) -> bytes:
+    return json.dumps({
+        "input_buffer_frames": input_buffer_frames,
+        "output": {
+            "pcm": doctor._FANIN_EXPECTED_OUTPUT_PCM,
+            "buffer_frames": output_buffer_frames,
+            "frames_written": 1234,
+            "xrun_count": 0,
+        },
+        "inputs": [
+            {"label": label, "pcm": pcm, "xrun_count": 0}
+            for label, pcm in doctor._FANIN_EXPECTED_INPUTS
+        ],
+        "watchdog": {"last_progress_age_ms": progress_age_ms},
+    }).encode()
+
+
+def _patch_fanin_status_socket(monkeypatch, payload: bytes):
+    monkeypatch.setattr(
+        doctor.socket,
+        "socket",
+        lambda *a, **kw: _FakeSocket(payload=payload),
+    )
+
+
+def test_check_fanin_service_ok_with_expected_status(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
+    r = doctor.check_fanin_service()
+    assert r.status == "ok"
+    assert "input_buffer_frames=4096" in r.detail
+    assert "output_buffer_frames=3072" in r.detail
+
+
+def test_check_fanin_service_fails_on_invalid_status_json(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, b"not-json")
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "invalid JSON" in r.detail
+
+
+def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    monkeypatch.setattr(
+        doctor.socket,
+        "socket",
+        lambda *a, **kw: _FakeSocket(error=OSError("connection refused")),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "UDS probe" in r.detail
+
+
+def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_status_payload(input_buffer_frames=2048),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "input_buffer_frames=2048" in r.detail
+
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _fanin_status_payload(output_buffer_frames=2048),
+    )
+    r = doctor.check_fanin_service()
+    assert r.status == "fail"
+    assert "output_buffer_frames=2048" in r.detail
+
+
+def test_audio_path_no_swap_includes_fanin():
+    assert "jasper-fanin" in doctor._AUDIO_PATH_UNITS
+
+
+def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND.replace(
+            'slave {\n        pcm "hw:Loopback,0,1"\n        rate 48000\n        channels 2\n        format S16_LE\n    }',
+            'slave.pcm "hw:Loopback,0,1"',
+        ),
+        tmp_path,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "shairport_substream" in r.detail
+
+
+def test_fanin_asound_wiring_fails_on_legacy_renderer_dmix(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND + "\npcm.jasper_renderer_mix {\n    type dmix\n}\n",
+        tmp_path,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "fail"
+    assert "legacy renderer dmix" in r.detail
+
+
+def test_fanin_asound_wiring_warns_on_stale_topology_env(monkeypatch, tmp_path):
+    _patch_asound_conf(
+        monkeypatch,
+        _FANIN_ASOUND,
+        tmp_path,
+        stale_topology_env=True,
+    )
+    r = doctor.check_fanin_asound_wiring()
+    assert r.status == "warn"
+    assert "stale" in r.detail
+
+
 def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
     """Have the doctor read a synthetic shairport-sync.conf instead of
     /etc/shairport-sync.conf. The function takes no args and hardcodes
@@ -761,17 +1047,28 @@ def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
     monkeypatch.setattr(doctor, "Path", fake_path)
 
 
-def test_shairport_check_jasper_renderer_in_is_ok(monkeypatch, tmp_path):
-    """Canonical post-PR-#214 wiring: output_device targets the dmix
-    front-end. Doctor should report `ok`."""
+def test_shairport_check_substream_is_ok(monkeypatch, tmp_path):
+    """Canonical fan-in wiring: AirPlay targets its private lane."""
+    _patch_shairport_conf(
+        monkeypatch,
+        'alsa = {\n    output_device = "shairport_substream";\n};\n',
+        tmp_path,
+    )
+    r = doctor.check_shairport_sync_loopback_plughw()
+    assert r.status == "ok"
+    assert "shairport_substream" in r.detail
+
+
+def test_shairport_check_jasper_renderer_in_fails(monkeypatch, tmp_path):
+    """The retired renderer-dmix device is now a hard drift signal."""
     _patch_shairport_conf(
         monkeypatch,
         'alsa = {\n    output_device = "jasper_renderer_in";\n};\n',
         tmp_path,
     )
     r = doctor.check_shairport_sync_loopback_plughw()
-    assert r.status == "ok"
-    assert "jasper_renderer_in" in r.detail
+    assert r.status == "fail"
+    assert "retired dmix" in r.detail
 
 
 def test_shairport_check_legacy_plughw_warns_with_redeploy_hint(
@@ -822,7 +1119,7 @@ def test_shairport_check_comments_ignored(monkeypatch, tmp_path):
     conf = (
         "alsa = {\n"
         '    // Pre-2026-05-22 this was plughw:Loopback,0,0 directly\n'
-        '    output_device = "jasper_renderer_in";\n'
+        '    output_device = "shairport_substream";\n'
         "};\n"
     )
     _patch_shairport_conf(monkeypatch, conf, tmp_path)
@@ -841,11 +1138,11 @@ def test_renderer_resolvable_all_ok(monkeypatch):
     """Happy path: every renderer has a discoverable device and the
     probe succeeds for each."""
     monkeypatch.setattr(doctor, "_renderer_device_shairport",
-                        lambda: "jasper_renderer_in")
+                        lambda: "shairport_substream")
     monkeypatch.setattr(doctor, "_renderer_device_librespot",
-                        lambda: "jasper_renderer_in")
+                        lambda: "librespot_substream")
     monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
-                        lambda: "jasper_renderer_in")
+                        lambda: "bluealsa_substream")
     monkeypatch.setattr(doctor, "_systemd_user_for",
                         lambda unit: {
                             "shairport-sync.service": "shairport-sync",
@@ -856,9 +1153,48 @@ def test_renderer_resolvable_all_ok(monkeypatch):
                         lambda dev, user: (True, ""))
     r = doctor.check_renderer_device_resolvable()
     assert r.status == "ok"
-    assert "shairport-sync(shairport-sync)→jasper_renderer_in" in r.detail
-    assert "librespot(pi)→jasper_renderer_in" in r.detail
-    assert "bluealsa-aplay(root)→jasper_renderer_in" in r.detail
+    assert "shairport-sync(shairport-sync)→shairport_substream" in r.detail
+    assert "librespot(pi)→librespot_substream" in r.detail
+    assert "bluealsa-aplay(root)→bluealsa_substream" in r.detail
+
+
+def test_renderer_resolvable_accepts_busy_private_fanin_lane(monkeypatch):
+    """An active renderer already owns its private lane, so a second
+    aplay probe can return EBUSY. That is not an Unknown-PCM failure."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "shairport_substream")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: "shairport-sync")
+    monkeypatch.setattr(doctor, "_probe_open_as_user",
+                        lambda dev, user: (False, "Device or resource busy"))
+    monkeypatch.setattr(doctor, "_fanin_lane_busy_owner_matches",
+                        lambda dev, unit: (True, "busy/owned pid=123"))
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "ok"
+    assert "busy/owned" in r.detail
+
+
+def test_renderer_resolvable_rejects_busy_lane_owned_by_wrong_unit(monkeypatch):
+    """EBUSY is okay only when /proc shows the expected renderer owns
+    the private fan-in lane."""
+    monkeypatch.setattr(doctor, "_renderer_device_shairport",
+                        lambda: "shairport_substream")
+    monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
+    monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
+    monkeypatch.setattr(doctor, "_systemd_user_for",
+                        lambda unit: "shairport-sync")
+    monkeypatch.setattr(doctor, "_probe_open_as_user",
+                        lambda dev, user: (False, "Device or resource busy"))
+    monkeypatch.setattr(
+        doctor,
+        "_fanin_lane_busy_owner_matches",
+        lambda dev, unit: (False, "busy but owner pid=999 cgroup='other.service'"),
+    )
+    r = doctor.check_renderer_device_resolvable()
+    assert r.status == "fail"
+    assert "other.service" in r.detail
 
 
 def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
@@ -867,11 +1203,11 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     Pre-#223 the doctor missed this entirely. This test pins that the
     new check would have caught it."""
     monkeypatch.setattr(doctor, "_renderer_device_shairport",
-                        lambda: "jasper_renderer_in")
+                        lambda: "shairport_substream")
     monkeypatch.setattr(doctor, "_renderer_device_librespot",
-                        lambda: "jasper_renderer_in")
+                        lambda: "librespot_substream")
     monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
-                        lambda: "jasper_renderer_in")
+                        lambda: "bluealsa_substream")
     monkeypatch.setattr(doctor, "_systemd_user_for",
                         lambda unit: {
                             "shairport-sync.service": "shairport-sync",
@@ -884,7 +1220,7 @@ def test_renderer_resolvable_catches_pr214_regression(monkeypatch):
     # — only shairport-sync fails. Doctor must still fail-the-check.
     def fake_probe(dev, user):
         if user == "shairport-sync":
-            return (False, 'ALSA lib pcm.c:2722: Unknown PCM jasper_renderer_in')
+            return (False, 'ALSA lib pcm.c:2722: Unknown PCM shairport_substream')
         return (True, "")
     monkeypatch.setattr(doctor, "_probe_open_as_user", fake_probe)
 
@@ -917,7 +1253,7 @@ def test_renderer_resolvable_skips_missing_renderers(monkeypatch):
     """A stripped image without all renderers installed should
     `ok` for what works, `warn` only if nothing was probeable."""
     monkeypatch.setattr(doctor, "_renderer_device_shairport",
-                        lambda: "jasper_renderer_in")
+                        lambda: "shairport_substream")
     monkeypatch.setattr(doctor, "_renderer_device_librespot", lambda: None)
     monkeypatch.setattr(doctor, "_renderer_device_bluealsa", lambda: None)
     monkeypatch.setattr(doctor, "_systemd_user_for",
@@ -942,15 +1278,12 @@ def test_renderer_resolvable_no_renderers_at_all_is_warn(monkeypatch):
 
 
 def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
-    """Regression for the 2026-05-25 audio-topology-switch deploy:
-    the renderer service files now use `${JASPER_<RENDERER>_DEVICE}`
-    instead of a literal `jasper_renderer_in`, so the topology switch
-    can flip them without rewriting ExecStart. The doctor's check
-    must resolve those env vars via `systemctl show -p Environment`
-    before probing — otherwise it false-positives with 'Unknown PCM
-    ${JASPER_LIBRESPOT_DEVICE}'."""
+    """Operator overrides can still use `${VAR}` device indirection.
+    The doctor's check must resolve those env vars via `systemctl show
+    -p Environment` before probing, otherwise it false-positives with
+    'Unknown PCM ${JASPER_LIBRESPOT_DEVICE}'."""
     monkeypatch.setattr(doctor, "_renderer_device_shairport",
-                        lambda: "jasper_renderer_in")  # already literal
+                        lambda: "shairport_substream")  # already literal
     monkeypatch.setattr(doctor, "_renderer_device_librespot",
                         lambda: "${JASPER_LIBRESPOT_DEVICE}")
     monkeypatch.setattr(doctor, "_renderer_device_bluealsa",
@@ -963,15 +1296,14 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
                         }[unit])
 
     # Mock _resolve_systemd_env_vars to simulate systemd returning
-    # the dmix-mode defaults for each unit (= what
-    # /var/lib/jasper/audio_topology.env would set when absent).
+    # operator-supplied fan-in lane names.
     def fake_resolve(device, unit):
         env = {
             "librespot.service": {
-                "JASPER_LIBRESPOT_DEVICE": "jasper_renderer_in",
+                "JASPER_LIBRESPOT_DEVICE": "librespot_substream",
             },
             "bluealsa-aplay.service": {
-                "JASPER_BLUEALSA_DEVICE": "jasper_renderer_in",
+                "JASPER_BLUEALSA_DEVICE": "bluealsa_substream",
             },
         }.get(unit, {})
         import re
@@ -994,7 +1326,8 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     assert r.status == "ok"
     # Probe must have been called with the RESOLVED value, not the
     # literal ${VAR} string.
-    assert "jasper_renderer_in" in received
+    assert "librespot_substream" in received
+    assert "bluealsa_substream" in received
     assert "${JASPER_LIBRESPOT_DEVICE}" not in received
     assert "${JASPER_BLUEALSA_DEVICE}" not in received
     # Detail should show both literal and resolved when they differ,
@@ -1002,7 +1335,7 @@ def test_renderer_resolvable_expands_systemd_env_vars(monkeypatch):
     assert "from ${JASPER_LIBRESPOT_DEVICE}" in r.detail
     assert "from ${JASPER_BLUEALSA_DEVICE}" in r.detail
     # And the shairport literal (no `${`) is shown unchanged.
-    assert "(shairport-sync)→jasper_renderer_in" in r.detail
+    assert "(shairport-sync)→shairport_substream" in r.detail
     assert "(from " not in r.detail.split("shairport-sync(")[1].split(";")[0]
 
 
@@ -1010,8 +1343,8 @@ def test_resolve_systemd_env_vars_no_op_when_no_placeholder():
     """Strings without ${VAR} pass through unchanged — avoids the
     subprocess call entirely."""
     assert doctor._resolve_systemd_env_vars(
-        "jasper_renderer_in", "librespot.service"
-    ) == "jasper_renderer_in"
+        "librespot_substream", "librespot.service"
+    ) == "librespot_substream"
     assert doctor._resolve_systemd_env_vars(
         "hw:Loopback,0,0", "any.service"
     ) == "hw:Loopback,0,0"
@@ -1042,7 +1375,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
     conf.write_text(
         "alsa = {\n"
         '    // Pre-2026-05-23 this was plughw:Loopback,0,0\n'
-        '    output_device = "jasper_renderer_in";\n'
+        '    output_device = "shairport_substream";\n'
         "};\n"
     )
     real_path_cls = doctor.Path
@@ -1053,7 +1386,7 @@ def test_parse_shairport_device_from_conf(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor, "Path", fake_path)
-    assert doctor._renderer_device_shairport() == "jasper_renderer_in"
+    assert doctor._renderer_device_shairport() == "shairport_substream"
 
 
 def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
@@ -1065,7 +1398,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
         "ExecStart=/usr/bin/librespot \\\n"
         "    --name JTS \\\n"
         "    --backend alsa \\\n"
-        "    --device jasper_renderer_in \\\n"
+        "    --device librespot_substream \\\n"
         "    --format S24_3\n"
     )
     real_path_cls = doctor.Path
@@ -1076,7 +1409,7 @@ def test_parse_librespot_device_from_systemd_unit(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor, "Path", fake_path)
-    assert doctor._renderer_device_librespot() == "jasper_renderer_in"
+    assert doctor._renderer_device_librespot() == "librespot_substream"
 
 
 def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
@@ -1087,7 +1420,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
     dropin.write_text(
         "[Service]\n"
         "ExecStart=\n"
-        "ExecStart=/usr/bin/bluealsa-aplay -S --pcm=jasper_renderer_in\n"
+        "ExecStart=/usr/bin/bluealsa-aplay -S --pcm=bluealsa_substream\n"
     )
     real_path_cls = doctor.Path
 
@@ -1100,7 +1433,7 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
         return real_path_cls(arg)
 
     monkeypatch.setattr(doctor, "Path", fake_path)
-    assert doctor._renderer_device_bluealsa() == "jasper_renderer_in"
+    assert doctor._renderer_device_bluealsa() == "bluealsa_substream"
 
 
 # ---------------------------------------------------- check_wifi_guardian

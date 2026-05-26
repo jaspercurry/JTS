@@ -27,9 +27,10 @@ dmix instead, and compensate for the bypass in software (see
 
 ```
 MUSIC chain (gets CamillaDSP processing)
-    renderers → pcm.jasper_renderer_in (plug)
-              → pcm.jasper_renderer_mix (dmix; multi-writer-safe)
-              → hw:Loopback,0,0 → snd-aloop → plughw:Loopback,1,0
+    renderers / correction sweeps → private fan-in lanes
+              → hw:Loopback,0,0..4 → snd-aloop → hw:Loopback,1,0..4
+              → jasper-fanin → hw:Loopback,0,7
+              → snd-aloop → pcm.jasper_capture (dsnoop on hw:Loopback,1,7)
               → jasper-camilla (main_volume + filters)
               → pcm.jasper_out (dmix on dongle)
               → dongle → amp → speakers
@@ -39,14 +40,13 @@ TTS / TEST-TONE chain (BYPASSES CamillaDSP)
                             → dongle → amp → speakers
 ```
 
-The renderer-side dmix (`jasper_renderer_mix`, fronted by
-`jasper_renderer_in`) was added 2026-05-22 so the three renderers
-(librespot, shairport-sync, bluealsa-aplay) can hold the device
-simultaneously. Without it, snd-aloop's `hw:Loopback,0,0` is
-single-writer; any second renderer trying to open it during a phantom
-or genuine session of another renderer returned ALSA -EBUSY, which
-crashed librespot in a respawn loop and made the user-reported
-"Spotify Connect handover from AirPlay" fail.
+Each renderer has its own snd-aloop lane, and room-correction/test
+playback has a dedicated `correction_substream` lane. `jasper-fanin`
+sums those lanes into substream 7, which CamillaDSP and the AEC bridge
+share via `pcm.jasper_capture` / `pcm.jasper_ref`. This replaced the
+short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
+testing showed dmix's per-write timing could drop WiFi-bursty RTP
+packets.
 
 Both legs converge at `pcm.jasper_out`, a dmix on the dongle. dmix
 sums the two writers' streams sample-wise and sends one stream to the
@@ -229,7 +229,7 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 
 ## Operational notes
 
-**Test the music chain** (volume-controlled): `aplay -D plughw:Loopback,0,0 file.wav`.
+**Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
 Goes through CamillaDSP, so `main_volume` applies.
 
 **Test the TTS chain**: `aplay -D plug:jasper_out file.wav`. Bypasses
@@ -243,8 +243,9 @@ install time.
 
 ## AEC bridge implications
 
-The bridge taps `pcm.jasper_capture`, a dsnoop on `hw:Loopback,1,0` —
-the music chain reference, BEFORE CamillaDSP processing. So:
+The bridge taps `pcm.jasper_capture`, a dsnoop on the summed fan-in
+output `hw:Loopback,1,7` — the music chain reference, BEFORE
+CamillaDSP processing. So:
 
 - TTS bleed through the mic isn't in the AEC reference; the bridge
   cancels music bleed only. This is **intentional** today — the
@@ -270,4 +271,4 @@ the music chain reference, BEFORE CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-25 (PR #311 added "End-of-turn drain" section; the TtsPlayout drain primitive replaced the old fixed-margin watchdog and `_play_responses` sleep)
+Last verified: 2026-05-26 (fan-in renderer topology replaced the renderer-side dmix path)

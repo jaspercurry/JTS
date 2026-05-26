@@ -2,6 +2,7 @@
 Description=Jasper renderer fan-in (per-substream → summed music reference)
 Documentation=file:///opt/jasper/docs/HANDOFF-fan-in-daemon.md
 After=sound.target
+Before=jasper-camilla.service shairport-sync.service librespot.service bluealsa-aplay.service jasper-usbsink.service jasper-aec-bridge.service
 
 # StartLimit tuned for the audio path. Tighter burst than the
 # default-4/300 sidecar pattern because fan-in is hot-path
@@ -17,11 +18,12 @@ StartLimitAction=reboot
 
 [Service]
 # Type=notify + WatchdogSec=30s is the JTS-standard Tier 1+2
-# resilience contract. The daemon's src/watchdog.rs sends READY=1
-# at startup and pings WATCHDOG=1 every ~10 s, gated on a
-# progress sentinel updated by the work loop after every successful
-# frame. A wedged work loop stops bumping; the heartbeat thread
-# stops pinging; systemd reaps us within WatchdogSec.
+# resilience contract. The daemon sends READY=1 after its ALSA PCMs
+# are initialized and the STATUS server thread is spawned, then pings
+# WATCHDOG=1 every ~10 s, gated on a progress sentinel updated by the
+# work loop after every successful frame. A wedged work loop stops
+# bumping; the heartbeat thread stops pinging; systemd reaps us within
+# WatchdogSec.
 Type=notify
 WatchdogSec=30s
 
@@ -85,8 +87,10 @@ RuntimeDirectoryMode=0750
 EnvironmentFile=/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
-# Input/output ALSA buffer sizing — must absorb the WiFi delivery
-# burst pattern.
+# Input ALSA buffer sizing — must absorb the WiFi delivery burst
+# pattern. Output buffering is split out below and intentionally kept
+# smaller so the burst absorber does not become hidden downstream
+# latency between fanin and CamillaDSP/AEC.
 #
 # 802.11 A-MPDU aggregation batches multiple AirPlay RTP packets into a
 # single radio transmission; the on-wire pattern observed via tcpdump
@@ -105,16 +109,21 @@ EnvironmentFile=-/var/lib/jasper/fanin.env
 # layer. fanin must provide the same absorption capacity to be
 # regression-free against dmix.
 #
-# Trade-off: ~85 ms of buffering on the input side, same as the dmix
-# layer had. fanin's net latency saving comes from collapsing the
-# *output*-side path (no more renderer-side dmix between fanin's output
-# and CamillaDSP's input); the input-side absorption is intentional and
-# necessary, not a regression.
+# Trade-off: up to ~85 ms of input-side queue capacity, same as the
+# dmix layer had. This is headroom, not a fixed delay added to every
+# frame: actual queued audio depends on the writer/reader fill level,
+# and shairport can observe snd-aloop delay on its private lane. fanin's
+# The output side is kept much smaller than the input side, but not at
+# the absolute minimum: 1024 flooded CamillaDSP short-read warnings,
+# and 2048 still produced intermittent 1023/1024 reads during active
+# AirPlay. 3072 keeps two extra Camilla chunks of safety without
+# turning this into the 4096-frame input burst absorber.
 #
 # Read at runtime by jasper_fanin::config::Config::from_env().
 # Override via /var/lib/jasper/fanin.env if you need to retune
 # (e.g., a future PR with verified-tighter WiFi delivery).
-Environment="JASPER_FANIN_BUFFER_FRAMES=4096"
+Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
+Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=3072"
 
 ExecStart=/opt/jasper/bin/jasper-fanin
 

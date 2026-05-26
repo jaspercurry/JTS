@@ -45,7 +45,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -81,7 +81,8 @@ pub struct StateServer {
     /// Echo of config knobs in the snapshot.
     sample_rate: u32,
     period_frames: u32,
-    buffer_frames: u32,
+    input_buffer_frames: u32,
+    output_buffer_frames: u32,
 }
 
 pub struct InputSnapshotSource {
@@ -98,7 +99,8 @@ impl StateServer {
         socket_path: PathBuf,
         sample_rate: u32,
         period_frames: u32,
-        buffer_frames: u32,
+        input_buffer_frames: u32,
+        output_buffer_frames: u32,
         output_pcm: String,
     ) -> Self {
         let inputs = mixer
@@ -121,7 +123,8 @@ impl StateServer {
             heartbeat,
             sample_rate,
             period_frames,
-            buffer_frames,
+            input_buffer_frames,
+            output_buffer_frames,
         }
     }
 
@@ -228,6 +231,15 @@ impl StateServer {
         );
         buf.push(',');
 
+        // input_buffer_frames (all configured inputs use the same ALSA
+        // buffer size)
+        push_kv_u64(
+            &mut buf,
+            "input_buffer_frames",
+            self.input_buffer_frames as u64,
+        );
+        buf.push(',');
+
         // inputs array
         buf.push_str(r#""inputs":["#);
         for (i, input) in self.inputs.iter().enumerate() {
@@ -263,7 +275,11 @@ impl StateServer {
         buf.push(',');
         push_kv_u64(&mut buf, "period_frames", self.period_frames as u64);
         buf.push(',');
-        push_kv_u64(&mut buf, "buffer_frames", self.buffer_frames as u64);
+        push_kv_u64(
+            &mut buf,
+            "buffer_frames",
+            self.output_buffer_frames as u64,
+        );
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -375,7 +391,8 @@ mod tests {
             heartbeat: Arc::new(Heartbeat::new()),
             sample_rate: 48000,
             period_frames: 256,
-            buffer_frames: 1024,
+            input_buffer_frames: 4096,
+            output_buffer_frames: 2048,
         }
     }
 

@@ -49,7 +49,7 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.grok_session_max_sec == 0
     assert cfg.grok_proactive_buffer_sec == 0
     assert cfg.daily_spend_cap_usd == 1.0
-    # ALSA defaults must match the templates in /root/.asoundrc and the
+    # ALSA defaults must match the templates in /etc/asound.conf and the
     # post-install /etc/jasper/jasper.env. If these drift, first-boot fails.
     assert cfg.mic_device == "Array"
     assert cfg.mic_capture_rate == 16000

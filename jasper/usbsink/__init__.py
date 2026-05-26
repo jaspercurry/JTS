@@ -3,8 +3,8 @@
 Surfaces a connected host computer as a fourth music source alongside
 AirPlay, Spotify Connect, and Bluetooth A2DP. The host sees JTS as a
 USB audio output device (UAC2 gadget); JTS bridges the captured
-frames into hw:Loopback,0,0 so they join the existing CamillaDSP
-chain at the same sum point as the other renderers.
+frames into `usbsink_substream`, the USB-in private fan-in lane, so
+they join the same summed music chain as the other renderers.
 
 Package layout:
   audio_bridge.py   sounddevice loop: UAC2Gadget capture → Loopback

@@ -999,12 +999,12 @@ persist them to flash via that command.
 - Both write to `pcm.jasper_out` (dmix on the dongle). If only one
   works, the dmix isn't summing — usually means the writers are
   using different rates/formats than the dmix's locked
-  rate/format. Check `cat /root/.asoundrc`.
+  rate/format. Check `cat /etc/asound.conf`.
 
 **AirPlay senders see "JTS" but won't connect.**
-- shairport-sync.conf must use `plughw:Loopback,0,0` (not bare
-  `hw:`). `jasper-doctor` catches this. Plain `hw:` fails the
-  44.1→48k rate negotiation silently.
+- shairport-sync.conf must use `shairport_substream`, the AirPlay
+  private fan-in lane. `jasper-doctor` catches stale bare
+  `hw:Loopback,*` or retired `jasper_renderer_in` wiring.
 
 **iPhone / Mac volume slider does nothing.**
 - The volume coordinator polls each source's slider at 1 Hz.

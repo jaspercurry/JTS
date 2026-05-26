@@ -166,7 +166,7 @@ This is the **only** supported deploy path. It does, in order:
 1. `git rev-parse` → captures local SHA + branch (writes `-dirty`
    suffix if working tree has uncommitted changes)
 2. `rsync` to `pi@jts.local:/home/pi/jts/` (excludes `.git/`,
-   `.venv/`, `*.egg-info`, etc.)
+   `.venv/`, `captures/`, `wake-events/`, `*.egg-info`, etc.)
 3. `ssh ... sudo bash install.sh` with `JASPER_DEPLOY_SHA*` env vars
    set — rsyncs the Python source from `/home/pi/jts/` into
    `/opt/jasper/`, then `pip install -e`'s `/opt/jasper` into
@@ -1291,8 +1291,8 @@ Bridge startup log confirms the live config:
 `engine=aec3 ns=on/low agc1=on(target=9,max=18dB) agc2=off ...`
 
 **Prerequisite**: the XVF chip must be on the 6-channel firmware
-variant — the bridge reads raw mic 0 from channel 2 of the chip's
-USB capture, which only exists on that variant. The known-good
+variant — the bridge opens the 6-channel USB capture endpoint and
+reads the ASR beam on channel 1. The known-good
 filename + repo hash are tracked in
 [`jasper/mics/xvf3800.py`](jasper/mics/xvf3800.py); as of
 2026-05-15 that's `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin`,
@@ -1704,8 +1704,8 @@ Fourth music source. The user plugs a computer into the Pi's USB-C
 port (via the 8086 Consultancy USB-C/PWR Splitter; the splitter
 provides external power so the Pi stays alive even with a host
 attached). JTS exposes itself to the host as a UAC2 audio output
-device; the daemon bridges captured audio into `hw:Loopback,0,0` so
-it joins the existing CamillaDSP chain.
+device; the daemon bridges captured audio into `usbsink_substream`,
+its private fan-in lane, so it joins the existing CamillaDSP chain.
 
 Off by default. Toggle at `http://jts.local/sources/`. **Requires a
 one-time install + reboot** for the `dtoverlay=dwc2,dr_mode=peripheral`

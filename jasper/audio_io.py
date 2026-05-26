@@ -490,7 +490,7 @@ class TtsPlayout:
         from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
 
         # Open as STEREO even though our input is mono. The dongle's
-        # dmix (`pcm.jasper_out` in /root/.asoundrc) is configured at
+        # dmix (`pcm.jasper_out` in /etc/asound.conf) is configured at
         # channels=2 with no plug layer; opening at channels=1
         # against it makes PortAudio do something quietly broken —
         # mono samples land in the stereo frame interleave as if they

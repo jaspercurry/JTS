@@ -53,7 +53,7 @@ echo "    sha:    ${SHA}${DIRTY} (${SHA_FULL})"
 rsync -az --delete --stats --quiet \
     --exclude .venv --exclude __pycache__ --exclude '.git' --exclude 'logs/*' \
     --exclude '.pio' --exclude '.claude/worktrees' --exclude '.claude/' \
-    --exclude 'captures/*' --exclude '*.pyc' \
+    --exclude 'captures/*' --exclude 'wake-events/*' --exclude '*.pyc' \
     --exclude 'jasper_speaker.egg-info' --exclude '*.egg-info' \
     ./ "${PI_USER}@${PI_HOST}:/home/pi/jts/"
 

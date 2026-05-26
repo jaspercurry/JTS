@@ -61,22 +61,28 @@ Phone (AirPlay / Spotify Connect / BT)
         │
         ▼
   shairport-sync (AirPlay 2)   librespot (Spotify Connect)
-  bluealsa-aplay (BT A2DP)
-        │
-        │ each writes directly to hw:Loopback,0,0
-        ▼
-  hw:Loopback,0,sub0  ── snd-aloop ──  plughw:Loopback,1,0
-                                              │
-                                              ▼
-                                    jasper-camilla (CamillaDSP, port 1234)
-                                    - main_volume (the ducking knob)
-                                    - flat passthrough today
-                                              │
-                                              ▼
-                                    pcm.jasper_out (dmix on Apple dongle)
-                                              │
-                                              ▼
-                                    Apple USB-C dongle → amp → speakers
+  bluealsa-aplay (BT A2DP)      jasper-usbsink (USB audio input)
+        │                       │
+        │ private snd-aloop lanes: hw:Loopback,0,0..4
+        ▼                       ▼
+  hw:Loopback,1,0..4  ──►  jasper-fanin
+                              │ sums active renderer/test lanes
+                              ▼
+                       hw:Loopback,0,7
+                              │
+                              ▼ (loop)
+                       pcm.jasper_capture / pcm.jasper_ref
+                              │
+                              ▼
+                    jasper-camilla (CamillaDSP, port 1234)
+                    - main_volume (the ducking knob)
+                    - flat passthrough today
+                              │
+                              ▼
+                    pcm.jasper_out (dmix on Apple dongle)
+                              │
+                              ▼
+                    Apple USB-C dongle → amp → speakers
 
 
   XVF3800 4-mic array  ── USB UAC2 ──  hw:CARD=Array,DEV=0
@@ -117,11 +123,11 @@ over its websocket on port 1234.
 > turning the iPhone slider, the Spotify slider, the dial, the
 > `listening_level` wizard, or an external amp downstream of the dongle.
 > To test the chain at a controlled volume, play to
-> `plughw:Loopback,0,0` (the music input), not `jasper_out` (which
-> bypasses the DSP). Why the split and what the tracker does:
+> `correction_substream`, not `jasper_out` (which bypasses the DSP).
+> Why the split and what the tracker does:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
-`jasper-mux` arbitrates between the three renderers — when a new
+`jasper-mux` arbitrates between the renderers — when a new
 source transitions to playing while another is already active, it
 pauses the older one so the user gets "latest source wins" UX.
 
@@ -279,7 +285,7 @@ firmware/
 
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
-  alsa/                         /root/.asoundrc template
+  alsa/                         /etc/asound.conf template
   camilladsp/                   v1.yml passthrough config + master_gain
   systemd/                      jasper-{camilla,voice,control,mux,aec-bridge,aec-init}
                                 + librespot, shairport-sync, nqptp, bt-agent
@@ -565,17 +571,19 @@ reference. Currently:
   scenarios. Patterns currently fixed: CamillaDSP rate_adjust +
   AsyncSinc oscillation (PR #75), shairport `resync_threshold`
   misfire on snd-aloop fill (PR #83), renderer-side dmix buffer
-  invisible to shairport's latency model (PR #308).
+  invisible to shairport's latency model (PR #308), and the
+  WiFi-burst × dmix write-timing interaction fixed by the fan-in
+  topology (PR #329).
 - [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) —
-  **Design (no code yet).** Tier 2A audio-architecture rework:
-  delete the renderer-side dmix by assigning each renderer its own
-  snd-aloop substream pair, with a small Rust daemon
-  (`jasper-fanin`) summing the capture sides into a single "summed
-  music" substream that both CamillaDSP and the AEC bridge dsnoop.
-  Saves ~85 ms of unnecessary buffering, eliminates the dmix
-  invisible-buffer footgun, recovers the `-EBUSY` arbitration floor.
-  Includes the full resilience + observability contract the daemon
-  must ship with from PR #1.
+  Production fan-in renderer topology: each renderer gets its own
+  snd-aloop substream pair; the Rust `jasper-fanin` daemon sums the
+  capture sides into substream 7, which both CamillaDSP and the AEC
+  bridge dsnoop. Covers buffer sizing (`4096` frames for WiFi-burst
+  absorption), systemd resilience, observability, and the retired
+  dmix failure mode.
+- [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — Optional USB
+  audio-input gadget: ConfigFS setup, host-control preemption,
+  source wizard behavior, and how the USB-in lane feeds fan-in.
 - [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
   Pre-rendered audio cue subsystem: registry, cache lifecycle, CLI,
   how to add a new reactive or proactive cue. Start here when a
@@ -685,15 +693,15 @@ infrastructure stays in the repo so we don't have to re-derive
 the question if AEC3 ever plateaus.
 
 The chip is still useful — its **beamforming, noise suppression,
-and AGC** all run on the conference channel (channel 0 of the
+and AGC** all run on the ASR beam channel (channel 1 of the
 USB capture endpoint). We use that processed channel; just not
 the chip's on-chip AEC.
 
 **Software AEC ships ON by default when the chip is on the 6-channel
 firmware variant.** A Python daemon (`jasper-aec-bridge`) runs
 WebRTC AEC3 echo cancellation between the host's music chain
-(tapped via `pcm.jasper_capture` dsnoop) and the chip's raw mic 0
-(channel 2 of the 6-channel firmware). It sends an AEC'd mono signal
+(tapped via `pcm.jasper_capture` dsnoop) and the chip's ASR beam
+(channel 1 of the 6-channel firmware). It sends an AEC'd mono signal
 over UDP localhost (`127.0.0.1:9876`) to `jasper-voice`'s
 `UdpMicCapture` instead of the chip's processed mic. The engine is
 the `jasper_aec3` pybind11 binding around Trixie's
@@ -721,9 +729,10 @@ kernel state to corrupt and `sendto()` is non-blocking. See
 full architectural rationale and the multi-tier resilience design
 the speaker now uses.
 
-The bridge needs the **6-channel XVF firmware variant** since it
-taps raw mic 0 (channel 2 of 6) — the 2-channel firmware Seeed
-ships by default doesn't expose those raw channels. As of
+The bridge needs the **6-channel XVF firmware variant** because it
+opens the 6-channel USB capture endpoint and reads the ASR beam on
+channel 1; the 2-channel firmware Seeed ships by default does not
+match that capture shape. As of
 2026-05-15 the recommended file is
 `respeaker_xvf3800_usb_dfu_firmware_6chl_v2.0.8.bin` (the only
 6-channel variant in upstream `master`); browse the

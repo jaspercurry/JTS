@@ -1,9 +1,9 @@
 [Unit]
 Description=Jasper USB sink — audio bridge from UAC2 gadget into the music chain
 # Bridges the host's USB audio output (captured via the ConfigFS UAC2
-# gadget set up by jasper-usbsink-init) into hw:Loopback,0,0 where
-# AirPlay/Spotify/BT also write. The bridge sums into the same dmix at
-# the dongle, so it's just another renderer from the music chain's
+# gadget set up by jasper-usbsink-init) into the USB-in private
+# snd-aloop lane. jasper-fanin sums it with AirPlay/Spotify/BT before
+# CamillaDSP, so it is just another renderer from the music chain's
 # perspective.
 #
 # Ships DISABLED. The /sources/ wizard toggle enables/disables this
@@ -13,8 +13,9 @@ Description=Jasper USB sink — audio bridge from UAC2 gadget into the music cha
 # nothing in user space.
 #
 # See docs/HANDOFF-usbsink.md for the full design.
-After=jasper-usbsink-init.service jasper-camilla.service sound.target
+After=jasper-usbsink-init.service jasper-fanin.service jasper-camilla.service sound.target
 Requires=jasper-usbsink-init.service
+Wants=jasper-fanin.service
 # PartOf= propagates a stop/restart of the init service to the daemon.
 # If init is stopped (toggle off in /sources/), this stops too. If init
 # crashes and systemd restarts it, the daemon restarts in sync.
@@ -40,12 +41,7 @@ TimeoutStopSec=5s
 # Leading `-` makes systemd skip silently if the file isn't there.
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/usbsink.env
-# Tier 2A topology switch (deploy/bin/jasper-audio-topology). Default
-# playback device for jasper-usbsink is set in jasper/usbsink/daemon.py
-# to `jasper_renderer_in`; this EnvironmentFile sets
-# JASPER_USBSINK_PLAYBACK_DEVICE to `usbsink_substream` in fanin
-# topology. Optional (`-` prefix) so absence = dmix mode = default used.
-EnvironmentFile=-/var/lib/jasper/audio_topology.env
+Environment="JASPER_USBSINK_PLAYBACK_DEVICE=usbsink_substream"
 ExecStart=/opt/jasper/.venv/bin/jasper-usbsink
 Restart=on-failure
 RestartSec=2s

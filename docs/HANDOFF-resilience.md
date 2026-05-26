@@ -550,7 +550,7 @@ Two changes:
 `MemorySwapMax=0`:
 
 ```
-jts-audio.slice          ← jasper-camilla, shairport-sync,
+jts-audio.slice          ← jasper-fanin, jasper-camilla, shairport-sync,
                             librespot, bluealsa-aplay
                           MemorySwapMax=0
                           ManagedOOMPreference=avoid
@@ -656,7 +656,7 @@ they have protection, but they don't.
 policy declaratively instead of per-unit:
 
 ```
-jts-audio.slice    ← jasper-camilla, shairport-sync, librespot, bluealsa
+jts-audio.slice    ← jasper-fanin, jasper-camilla, shairport-sync, librespot, bluealsa
                      MemorySwapMax=0          # audio pages NEVER touch zram
                      ManagedOOMPreference=avoid
 

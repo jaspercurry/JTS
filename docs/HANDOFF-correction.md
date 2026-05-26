@@ -155,7 +155,7 @@ them; design **with** them.
 |---|---|---|
 | Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: pause renderers during expensive generation, measure real memory before enabling mixed-phase / FDW paths. |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
-| Pure ALSA: **snd-aloop + dmix**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `plughw:Loopback,0,0` — same point music enters. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on `hw:Loopback,1,0`), processes, writes to `pcm.jasper_out` (dmix on dongle). |
+| Pure ALSA: **snd-aloop + fan-in + dmix**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `pcm.jasper_out` (dmix on dongle). |
 | `master_gain` mixer **already exists** as identity | [deploy/camilladsp/v1.yml](../deploy/camilladsp/v1.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md](../PLAN.md) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
@@ -422,15 +422,17 @@ From [docs/audio-paths.md](audio-paths.md):
 
 ```
 MUSIC chain
-    renderers → hw:Loopback,0,0 → snd-aloop → plughw:Loopback,1,0
+    renderers / correction sweeps → private fan-in lanes
+              → jasper-fanin → pcm.jasper_capture
               → jasper-camilla (main_volume + filters)
               → pcm.jasper_out (dmix on dongle)
               → dongle → amp → speakers
 ```
 
-**Sweep injection point: `plughw:Loopback,0,0`.** This puts the
-sweep on the same path music takes — through CamillaDSP, through
-any active correction filter, to the dongle. So:
+**Sweep injection point: `correction_substream`.** This puts the
+sweep on the same path music takes — through jasper-fanin, through
+CamillaDSP, through any active correction filter, to the dongle —
+without borrowing a renderer's private lane. So:
 
 1. Pre-correction measurement = sweep through current pipeline.
 2. Apply candidate filter set.
@@ -460,7 +462,7 @@ jasper/
 │   ├── __init__.py
 │   ├── coordinator.py                   measurement_window() async CM
 │   ├── sweep.py                         NumPy/SciPy synchronized swept-sine
-│   ├── playback.py                      sweep → plughw:Loopback,0,0 via aplay
+│   ├── playback.py                      sweep → correction_substream via aplay
 │   ├── deconv.py                        IR extraction
 │   ├── analysis.py                      smoothing, spatial avg, deviation metrics
 │   ├── peq.py                           greedy PEQ design (≤5 filters, cuts)
@@ -575,7 +577,7 @@ Concrete changes:
   swept-sine, 10 s, 20 Hz - 20 kHz, -12 dBFS, S16_LE WAV output.
   Cache on disk — it's deterministic.
 - `jasper/correction/playback.py`: shell out to
-  `aplay -D plughw:Loopback,0,0 sweep.wav`. Wait for completion.
+  `aplay -D correction_substream sweep.wav`. Wait for completion.
 - `jasper/correction/deconv.py`: take phone-uploaded WAV + sweep
   metadata, perform regularized FFT inversion → mono float32 IR.
 - `jasper/correction/analysis.py`: 1/48-octave magnitude smoothing
@@ -607,7 +609,7 @@ Concrete changes:
 3. Magnitude chart renders within 5 s.
 4. Tap Apply → CamillaDSP swaps config without audio dropout (verify
    by playing music continuously across the apply boundary;
-   `aplay -D plughw:Loopback,0,0 white_noise.wav` is the easiest
+   `aplay -D correction_substream white_noise.wav` is the easiest
    no-streaming-service way to verify mid-stream).
 5. Re-running Measure shows a different curve (filter actually
    reaches the speaker).
@@ -892,7 +894,7 @@ These items can only be verified on real hardware. Deploy with
       filters with reasonable freq/Q/gain.
 - [ ] Tap **Apply** → CamillaDSP swaps config without audio dropout
       (verify by playing music continuously across the apply
-      boundary, e.g. `aplay -D plughw:Loopback,0,0 white_noise.wav`
+      boundary, e.g. `aplay -D correction_substream white_noise.wav`
       in another shell).
 - [ ] **Audibility check**: play a familiar bass-heavy track
       before/after Apply — modal peak should audibly tighten.

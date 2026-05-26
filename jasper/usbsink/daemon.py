@@ -97,12 +97,9 @@ class DaemonConfig:
     # name format is "UAC2_Gadget: PCM (hw:4,0)" so the underscore
     # form is what matches.
     capture_device: str = "UAC2_Gadget"
-    # Renderer-side dmix: jasper_renderer_in is the `plug:` front-end
-    # of pcm.jasper_renderer_mix (ipc_key 7779), the multi-writer mixer
-    # in front of hw:Loopback,0,0 that all renderers (librespot,
-    # shairport-sync, bluealsa-aplay, jasper-usbsink) write into. See
-    # deploy/alsa/asoundrc.jasper + PR #214.
-    playback_device: str = "jasper_renderer_in"
+    # Private fan-in lane for the USB-audio renderer. jasper-fanin reads
+    # the capture side and publishes the summed music stream.
+    playback_device: str = "usbsink_substream"
     # ALSA "short" name (no underscore) — what amixer -c and
     # /proc/asound/<name> use. Volume bridge polls this; state
     # publisher reads /proc/asound/<this>/ to detect host-connected.
@@ -122,7 +119,7 @@ class DaemonConfig:
                 "JASPER_USBSINK_CAPTURE_DEVICE", "UAC2_Gadget",
             ),
             playback_device=os.environ.get(
-                "JASPER_USBSINK_PLAYBACK_DEVICE", "jasper_renderer_in",
+                "JASPER_USBSINK_PLAYBACK_DEVICE", "usbsink_substream",
             ),
             mixer_card=os.environ.get(
                 "JASPER_USBSINK_MIXER_CARD", "UAC2Gadget",

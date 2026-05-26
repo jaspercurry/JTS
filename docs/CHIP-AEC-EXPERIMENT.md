@@ -1,7 +1,12 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: shelved indefinitely.** This investigation has been put on
-the sidelines — no active work, not on the roadmap. The four
+**Status: shelved indefinitely; topology snapshot is historical.**
+This investigation has been put on the sidelines — no active work, not
+on the roadmap. The topology diagram below records the 2026-05-23
+dmix-era experiment shape, not the current 2026-05-26 fan-in production
+topology. Current production wiring lives in
+[`docs/audio-paths.md`](audio-paths.md). Re-verify and update this
+experiment before running it again. The four
 `scripts/chip-aec-*.sh` scripts + `jasper/chip_aec_experiment.py` +
 this doc ship to `main` so the infrastructure isn't lost if we ever
 revisit the question, but production state is untouched until someone
@@ -156,8 +161,8 @@ mute, etc. all untouched.
 ## How to run
 
 ```sh
-# 1. Switch to this branch on the laptop
-git checkout chip-aec-experiment
+# 1. Run from a current checkout after re-reading the historical warning
+#    at the top of this file and reviewing the scripts below.
 
 # 2. Set up (rsync code, stop bridge, start experiment daemon, set chip params)
 bash scripts/chip-aec-setup.sh
@@ -348,9 +353,9 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last verified: 2026-05-23 (rebased onto current `main`; drift fixes
-landed for masking the full AEC service chain, capture-comparison
-EBUSY collision, dual/triple-stream env handling, and the wake-event
-corpus marker. Re-verify when: XMOS publishes a 48 kHz USB firmware
-variant; another round of AEC subsystem refactor lands; or when
-running the experiment for the first time after a >3-month gap.)
+Last reviewed as historical: 2026-05-26. Last operational verification:
+2026-05-23 (rebased onto then-current `main`; drift fixes landed for
+masking the full AEC service chain, capture-comparison EBUSY collision,
+dual/triple-stream env handling, and the wake-event corpus marker).
+Re-verify before running: this doc intentionally preserves a dmix-era
+experiment snapshot, not current production topology.
