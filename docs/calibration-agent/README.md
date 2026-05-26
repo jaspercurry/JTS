@@ -55,7 +55,8 @@ Every concept file should have:
   — single-point, multi-position, RMS, vector, and moving-mic
   measurement trade-offs.
 - [`concepts/active-speaker-dsp.md`](concepts/active-speaker-dsp.md)
-  — active crossover, driver alignment, and speaker-baseline tuning.
+  — 2-way/3-way active crossover, driver alignment, speaker-baseline
+  tuning, and the near-field/null-depth/gated measurement triad.
   Current operational truth and implementation planning live in
   [`../HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md).
 - [`filter-design/fir-room-correction.md`](filter-design/fir-room-correction.md)
@@ -91,5 +92,10 @@ Every concept file should have:
   crossover tuning as a speaker-baseline commissioning module with
   separate safety gates, not as a room-correction extension. Same raw
   archive as above.
+- 2026-05-26: folded proposal-v3 active speaker commissioning into
+  the same handoff and concept note. Update: preset-first generic
+  2-way/3-way workflow, strict Layer A/B/C separation, phone-as-mic
+  raw PCM capture, calibration as a blocking step, and lower-crossover
+  confidence caveats for 3-way speakers.
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

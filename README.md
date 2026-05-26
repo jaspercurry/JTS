@@ -598,11 +598,13 @@ reference. Currently:
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
   — Active speaker DSP / crossover commissioning workstream
-  seed (2026-05-25). Canonical handoff for future JTS hardware where
-  CamillaDSP directly drives woofer and tweeter amplifier channels:
-  speaker-baseline layer, safe 2-way bring-up, channel-map hazards,
-  TTS/cue bypass risk, measurement protocol, LR4/IIR-first default,
-  delay/null verification, and separation from room correction.
+  planning baseline (2026-05-25, updated 2026-05-26). Canonical
+  handoff for future JTS hardware where CamillaDSP directly drives
+  woofer/mid/tweeter amplifier channels: speaker-baseline layer,
+  strict room-correction/preference separation, 2-way/3-way preset
+  model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
+  near-field/null-depth/gated measurement triad, LR/IIR-first default,
+  and delay/null verification.
 - [`docs/calibration-agent/`](docs/calibration-agent/README.md) —
   Calibration/tuning knowledge corpus:
   measurement-quality guidance, FIR research landing zone,

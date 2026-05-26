@@ -1,85 +1,74 @@
 # Active Speaker DSP
 
-> **Status: initial concept.** This file captures the overlap between
-> JTS room correction and active speaker commissioning for speakers
-> where CamillaDSP drives woofer and tweeter channels separately.
-> Current operational planning lives in
+> **Status: current concept note.** Operational planning lives in
 > [`../../HANDOFF-active-speaker-dsp.md`](../../HANDOFF-active-speaker-dsp.md).
+> This page is the calibration-agent corpus summary.
 
-## Operational Summary
+## Core Model
 
-Active crossover tuning is a different layer from room correction.
-Room correction asks, "what should we compensate at the listening
-position?" Active speaker commissioning asks, "what should this
-speaker be before the room is considered?"
+Active speaker commissioning is Layer A: the speaker baseline. It is
+separate from Layer B room correction and Layer C preference voicing.
 
-For a two-way active JTS speaker, CamillaDSP may own:
+- **Layer A speaker baseline**: per-driver linearization, baffle-step
+  compensation, acoustic-target crossover, polarity, time alignment,
+  gain trim, and per-driver limiters. This is commissioned once per
+  hardware build or unit and stored as a versioned speaker profile.
+- **Layer B room correction**: listening-position or listening-area
+  correction, mostly modal-region and spatial-average behavior. This
+  is re-run when the room or placement changes.
+- **Layer C preference voicing**: house curve, target tilt, bass/treble
+  taste, and subjective "brighter / warmer / more bass" adjustments.
+  This is reversible user preference, not accuracy.
 
-- woofer/tweeter crossover filters;
-- per-driver gain trims;
-- polarity;
-- driver delay / acoustic-center alignment;
-- phase behavior through the crossover region;
-- driver protection filters and limiters;
-- optional driver-response equalization.
+The important rule for future agents: do not use room correction to
+hide a speaker-baseline problem, and do not bake preference voicing
+into the baseline.
 
-That baseline should be measured, stored, and versioned separately
-from room correction. Room correction should not silently rewrite the
-crossover.
+## Measurement Triad
 
-## Relationship To Phase Correction
+The proposed consumer wizard uses three complementary measurements:
 
-Driver phase alignment around the crossover is one of the clearest
-places where phase work can be useful. Unlike room reflections, the
-woofer/tweeter relationship is repeatable and tied to the speaker's
-physical design. A bad delay, polarity choice, or crossover topology
-can create a cancellation or lobe around the crossover frequency that
-no normal room-correction pass should try to hide.
+1. **Near-field per-driver capture** catches individual driver and
+   assembly deviations while overwhelming room reflections.
+2. **Null-depth optimization** verifies polarity and delay through each
+   crossover by maximizing the inverted-polarity null.
+3. **Gated at-position summed measurement** validates the direct
+   acoustic sum through the crossover region above the gate-derived
+   low-frequency limit.
 
-FIR may be useful later, but first-class active speaker DSP does not
-require jumping straight to mixed-phase FIR. The staged path is:
+Below roughly 300 Hz, single-position in-room data is not a clean
+speaker-baseline measurement; hand that region to room correction.
+Around 300-500 Hz, especially for 3-way lower crossovers, confidence
+depends on the available gate length and the engineering preset.
 
-1. known-safe IIR crossover and limiter profile;
-2. measure woofer-only and tweeter-only responses safely;
-3. inspect summed response, polarity, delay, and phase around the
-   crossover;
-4. tune delay/gain/polarity and crossover parameters deterministically;
-5. consider FIR or mixed-phase work only after the basic acoustic sum
-   is understood.
+## DSP Shape
 
-## JTS Guardrails
+CamillaDSP templates should be bounded and preset-driven:
 
-- Always provide a safe mute / restore path for individual driver
-  measurement.
-- Do not run tweeter sweeps at unsafe levels or below its protected
-  range.
-- Store speaker-baseline profiles separately from room-correction
-  sessions.
-- Make the active profile explicit in every measurement bundle so a
-  later room-correction pass knows what speaker baseline was active.
-- Treat crossover/driver alignment as an expert or guided setup flow,
-  not as a casual end-user "make it sound better" control.
-- Keep preference EQ after the speaker baseline and room correction.
+```text
+stereo input
+  -> room correction / preference layers when enabled
+  -> baseline pre-split filters such as BSC
+  -> split_2way or split_3way mixer
+  -> per-driver crossover(s)
+  -> per-driver EQ
+  -> per-driver delay
+  -> per-driver gain trim
+  -> per-driver limiter
+  -> physical outputs
+```
 
-## Open Questions
+Polarity belongs in the mixer mapping (`inverted: true`). Limiters
+belong last in each per-driver chain. The active baseline profile must
+be stored separately from room-correction bundles and preference
+profiles.
 
-- What crossover topology should be the safe JTS default for the
-  selected woofer/tweeter pair?
-- What measurement protocol gives enough nearfield / listening-axis
-  data without requiring lab equipment?
-- How should CamillaDSP channel routing represent "speaker profile"
-  versus "room profile" so rollback is obvious?
-- What phase / group-delay plots are necessary before an LLM can give
-  useful guided explanations?
+## LLM Boundary
 
-## Sources To Research
+An LLM can explain why a null test failed, ask whether timing
+reference and calibration were valid, and recommend which deterministic
+check to run next. It must not invent filter taps, remove tweeter
+protection, write arbitrary CamillaDSP YAML, or call magnitude-only
+data valid for phase alignment.
 
-- Linkwitz-Riley / Butterworth / Bessel active crossover design.
-- Loudspeaker Measurement and Design / VituixCAD workflows.
-- REW driver timing and acoustic-center alignment workflows.
-- CamillaDSP channel routing, IIR filters, FIR convolution, and
-  limiter behavior.
-- AES / loudspeaker engineering references on directivity, lobing,
-  crossover phase, and driver protection.
-
-Last verified: 2026-05-25
+Last verified: 2026-05-26
