@@ -6,9 +6,11 @@
 # differ. See docs/HANDOFF-voice-providers.md for the architecture
 # and per-provider trade-offs.
 #
-# Each provider needs its own API key set in /etc/jasper/jasper.env
-# BEFORE switching to it. The daemon refuses to start if the active
-# provider's key is missing. Other providers' keys may stay blank.
+# Each provider needs its own API key set in either the operator env
+# (/etc/jasper/jasper.env) or the wizard-owned provider env
+# (/var/lib/jasper/voice_provider.env) BEFORE switching to it. The
+# daemon refuses to start if the active provider's key is missing.
+# Other providers' keys may stay blank.
 #
 # Usage:
 #   bash scripts/switch-voice-provider.sh gemini
@@ -22,14 +24,18 @@
 #   grok   :  $0.05  / minute  (flat $3.00 / hour, NOT token-based — note
 #                                JASPER_DAILY_SPEND_CAP_USD will under-count)
 #
-# Defaults: PI_HOST falls back to JASPER_HOSTNAME, then to jts.local.
-# PI_USER=pi. Override either via env.
+# Defaults: PI_HOST/PI_USER come from .env.local when present, then
+# PI_HOST falls back to JASPER_HOSTNAME and jts.local.
 
 set -euo pipefail
 
-PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
-PI_USER="${PI_USER:-pi}"
-SSH="ssh -o ConnectTimeout=5 ${PI_USER}@${PI_HOST}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/_lib.sh"
+
+SSH=(ssh -o ConnectTimeout=5 "${PI_USER}@${PI_HOST}")
+OPERATOR_ENV="/etc/jasper/jasper.env"
+PROVIDER_ENV="/var/lib/jasper/voice_provider.env"
 
 PROVIDER="${1:-}"
 
@@ -37,10 +43,10 @@ case "$PROVIDER" in
     gemini|openai|grok) ;;
     "")
         echo "Current voice provider on ${PI_HOST}:"
-        $SSH "sudo grep '^JASPER_VOICE_PROVIDER=' /etc/jasper/jasper.env"
+        "${SSH[@]}" "sudo sh -c 'grep -h \"^JASPER_VOICE_PROVIDER=\" \"${PROVIDER_ENV}\" 2>/dev/null || echo \"(unset — visit http://${PI_HOST}/voice/)\"'"
         echo
-        echo "Active model:"
-        $SSH "sudo grep -E '^JASPER_(GEMINI|OPENAI|GROK)_MODEL=' /etc/jasper/jasper.env"
+        echo "Configured model overrides:"
+        "${SSH[@]}" "sudo sh -c 'grep -h -E \"^JASPER_(GEMINI|OPENAI|GROK)_MODEL=\" \"${OPERATOR_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null || true'"
         echo
         echo "Usage:  bash scripts/switch-voice-provider.sh [gemini|openai|grok]"
         exit 0
@@ -60,17 +66,36 @@ case "$PROVIDER" in
     grok)   KEY_VAR=XAI_API_KEY ;;
 esac
 
-KEY_LINE=$($SSH "sudo grep -E \"^${KEY_VAR}=\" /etc/jasper/jasper.env || true")
+KEY_LINE=$("${SSH[@]}" "sudo sh -c 'grep -h -E \"^${KEY_VAR}=.*\" \"${OPERATOR_ENV}\" \"${PROVIDER_ENV}\" 2>/dev/null | tail -1 || true'")
 if [[ -z "$KEY_LINE" || "$KEY_LINE" == "${KEY_VAR}=" ]]; then
-    echo "error: ${KEY_VAR} is not set in /etc/jasper/jasper.env on ${PI_HOST}." >&2
-    echo "       Set it first (visit the provider's console for a key) then re-run." >&2
+    echo "error: ${KEY_VAR} is not set for the effective voice config on ${PI_HOST}." >&2
+    echo "       Set it via http://${PI_HOST}/voice/ or ${OPERATOR_ENV}, then re-run." >&2
     exit 3
 fi
 
 echo "Switching ${PI_HOST}:JASPER_VOICE_PROVIDER → ${PROVIDER}"
-$SSH "sudo sed -i 's|^JASPER_VOICE_PROVIDER=.*|JASPER_VOICE_PROVIDER=${PROVIDER}|' /etc/jasper/jasper.env && \
-      sudo grep '^JASPER_VOICE_PROVIDER=' /etc/jasper/jasper.env && \
-      sudo systemctl restart jasper-voice && \
-      sleep 2 && \
-      systemctl is-active jasper-voice && \
-      sudo journalctl -u jasper-voice -n 5 --no-pager 2>&1 | grep -v -E 'GetGpuDevices|device_discovery' | tail -5"
+"${SSH[@]}" "sudo sh -s -- ${PROVIDER}" <<'REMOTE'
+set -eu
+provider="$1"
+env="/var/lib/jasper/voice_provider.env"
+install -d -m 0750 /var/lib/jasper
+tmp="$(mktemp "${env}.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
+
+if [ -f "$env" ]; then
+    grep -v '^JASPER_VOICE_PROVIDER=' "$env" > "$tmp" || true
+fi
+printf 'JASPER_VOICE_PROVIDER=%s\n' "$provider" >> "$tmp"
+chown root:root "$tmp"
+chmod 0600 "$tmp"
+mv "$tmp" "$env"
+trap - EXIT
+
+grep '^JASPER_VOICE_PROVIDER=' "$env"
+systemctl restart jasper-voice
+sleep 2
+systemctl is-active jasper-voice
+journalctl -u jasper-voice -n 5 --no-pager 2>&1 \
+    | grep -v -E 'GetGpuDevices|device_discovery' \
+    | tail -5
+REMOTE

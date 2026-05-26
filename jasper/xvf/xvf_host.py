@@ -1,3 +1,8 @@
+"""Vendored host-control helper for the Seeed ReSpeaker XVF3800.
+
+Source: https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY
+License and redistribution status are tracked in LICENSE-third-party.md.
+"""
 
 import sys
 import struct
