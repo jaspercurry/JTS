@@ -127,9 +127,11 @@ over its websocket on port 1234.
 > Why the split and what the tracker does:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
-`jasper-mux` arbitrates between the renderers — when a new
-source transitions to playing while another is already active, it
-pauses the older one so the user gets "latest source wins" UX.
+`jasper-mux` arbitrates between the renderers. In auto mode, when a new
+source transitions to playing while another is already active, it pauses
+the older one so the user gets "latest source wins" UX. The landing page
+also exposes a lightweight Source selector: manual mode gates one
+renderer lane through `jasper-fanin` without turning any source on/off.
 
 There's also a reconciler-managed software AEC bridge
 (`jasper-aec-bridge`) that taps the music chain via a
@@ -148,7 +150,8 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ Music streaming (AirPlay 2, Spotify Connect, Bluetooth A2DP) via
   source-built shairport-sync + nqptp, librespot (rust, via raspotify
   .deb) with log volume curve, and bluez-alsa
-- ✅ `jasper-mux` daemon for latest-source-wins preemption
+- ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
+  landing-page source selection
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)

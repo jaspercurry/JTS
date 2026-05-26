@@ -335,16 +335,20 @@ daemon's own surface:
 - bluez-alsa → `bluealsa-cli list-pcms`
 - jasper-usbsink → `/run/jasper-usbsink/state.json`
 
-`jasper-mux.service` does latest-source-wins preemption: when a
-new source transitions to playing while another is already active,
-it pauses the older one.
+`jasper-mux.service` owns renderer source policy. In auto mode it does
+latest-source-wins preemption: when a new source transitions to playing
+while another is already active, it pauses the older one. The landing
+page's Source selector can switch mux into manual mode; mux then asks
+`jasper-fanin` to pass one renderer lane without turning any source on
+or off. The `/sources/` wizard remains the on/off surface.
 
 All music/content sources enter the fan-in topology through a private
 snd-aloop lane. Before adding another playback source, read
 [`docs/audio-paths.md`](docs/audio-paths.md#adding-a-new-music-source);
 that checklist is the single source of truth for lane assignment,
 fan-in config, mux, volume, `/sources/`, doctor, and correction
-measurement-window updates.
+measurement-window updates, including `/source/select` landing-page
+selection wiring.
 
 Spotify volume control goes via the Spotify Web API (the multi-
 account `spotify_router`) since librespot has no local control
@@ -1745,12 +1749,15 @@ Dial / voice "louder" / etc. do NOT write back to the gadget mixer
 — the host slider is one-way input, mirroring AirPlay sender
 behavior. See HANDOFF-usbsink.md §3.2 for the rationale.
 
-**Source arbitration**: Latest-source-wins via `jasper-mux`. When
-another source starts while USB is playing, mux POSTs `silenced=true`
-to `http://127.0.0.1:8781/preempt` and the daemon silences its
-output. When all other sources go idle, mux releases the preempt so
-a fresh host transition (pause-then-play on Mac) can re-take the
-speaker.
+**Source arbitration**: Auto mode is latest-source-wins via
+`jasper-mux`. When another source starts while USB is playing in auto
+mode, mux POSTs `silenced=true` to `http://127.0.0.1:8781/preempt`
+and the daemon silences its output. In manual source-selection mode,
+fanin's selected-input gate is the arbiter instead; mux releases any
+USB preempt so choosing a source does not turn other sources on/off.
+When auto mode resumes and all other sources go idle, mux releases the
+preempt so a fresh host transition (pause-then-play on Mac) can
+re-take the speaker.
 
 **Debugging quick reference**:
 

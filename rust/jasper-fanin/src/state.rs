@@ -2,9 +2,12 @@
 //! `/state` aggregator (`jasper-control`) and `jasper-doctor`.
 //!
 //! Listens on a Unix domain socket (default
-//! `/run/jasper-fanin/control.sock`). Accepts one command:
+//! `/run/jasper-fanin/control.sock`). Accepts one command per
+//! connection:
 //!
 //!   `STATUS\n`  → responds with a JSON snapshot, closes connection.
+//!   `SELECT <label>\n` → pass only one renderer lane to the sum.
+//!   `AUTO\n`    → return to summing all active lanes.
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -46,7 +49,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -76,6 +79,7 @@ pub struct StateServer {
     output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
+    selected_input_index: Arc<AtomicI32>,
     /// Watchdog handle for the heartbeat metrics.
     heartbeat: Arc<Heartbeat>,
     /// Echo of config knobs in the snapshot.
@@ -120,6 +124,7 @@ impl StateServer {
             output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
+            selected_input_index: mixer.selected_input_index(),
             heartbeat,
             sample_rate,
             period_frames,
@@ -198,8 +203,21 @@ impl StateServer {
             .read_line(&mut command)
             .context("reading command from connection")?;
 
-        let response = match command.trim() {
+        let command = command.trim();
+        let response = match command {
             "STATUS" => self.snapshot_json(),
+            "AUTO" => {
+                let previous =
+                    self.selected_input_index.swap(-1, Ordering::Relaxed);
+                if previous != -1 {
+                    info!("event=fanin.source_select selected=auto");
+                }
+                self.snapshot_json()
+            }
+            cmd if cmd.starts_with("SELECT ") => {
+                let label = cmd.trim_start_matches("SELECT ").trim();
+                self.select_input_json(label)
+            }
             other => format!(
                 r#"{{"error":"unknown command","received":"{}"}}"#,
                 escape_json(other),
@@ -211,6 +229,31 @@ impl StateServer {
             .context("writing response")?;
         stream.write_all(b"\n").ok();
         Ok(())
+    }
+
+    fn select_input_json(&self, label: &str) -> String {
+        if label.is_empty() {
+            return r#"{"error":"missing input label"}"#.to_string();
+        }
+        if let Some((idx, input)) = self
+            .inputs
+            .iter()
+            .enumerate()
+            .find(|(_, input)| input.label == label)
+        {
+            let previous = self
+                .selected_input_index
+                .swap(idx as i32, Ordering::Relaxed);
+            if previous != idx as i32 {
+                info!("event=fanin.source_select selected={}", input.label);
+            }
+            self.snapshot_json()
+        } else {
+            format!(
+                r#"{{"error":"unknown input label","label":"{}"}}"#,
+                escape_json(label),
+            )
+        }
     }
 
     /// Build the JSON snapshot. Reads each atomic with Relaxed
@@ -238,6 +281,25 @@ impl StateServer {
             "input_buffer_frames",
             self.input_buffer_frames as u64,
         );
+        buf.push(',');
+
+        // selected_input: null in auto mode, otherwise the selected
+        // label. Invalid values should not happen (only SELECT can set
+        // non-negative indices), but render null if a future version
+        // changes the input list under us.
+        buf.push_str(r#""selected_input":"#);
+        let selected = self.selected_input_index.load(Ordering::Relaxed);
+        if selected >= 0 {
+            if let Some(input) = self.inputs.get(selected as usize) {
+                buf.push('"');
+                buf.push_str(&escape_json(&input.label));
+                buf.push('"');
+            } else {
+                buf.push_str("null");
+            }
+        } else {
+            buf.push_str("null");
+        }
         buf.push(',');
 
         // inputs array
@@ -388,6 +450,7 @@ mod tests {
             output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
+            selected_input_index: Arc::new(AtomicI32::new(-1)),
             heartbeat: Arc::new(Heartbeat::new()),
             sample_rate: 48000,
             period_frames: 256,
@@ -400,7 +463,13 @@ mod tests {
     fn snapshot_json_contains_expected_top_level_keys() {
         let server = make_test_server();
         let j = server.snapshot_json();
-        for key in &["uptime_seconds", "inputs", "output", "watchdog"] {
+        for key in &[
+            "uptime_seconds",
+            "selected_input",
+            "inputs",
+            "output",
+            "watchdog",
+        ] {
             assert!(
                 j.contains(&format!(r#""{}":"#, key)),
                 "missing top-level key {} in snapshot: {}",
@@ -428,6 +497,34 @@ mod tests {
         assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
+    }
+
+    #[test]
+    fn snapshot_json_reports_selected_input() {
+        let server = make_test_server();
+        assert!(server.snapshot_json().contains(r#""selected_input":null"#));
+        server.selected_input_index.store(1, Ordering::Relaxed);
+        assert!(
+            server
+                .snapshot_json()
+                .contains(r#""selected_input":"airplay""#)
+        );
+    }
+
+    #[test]
+    fn select_input_json_updates_selection() {
+        let server = make_test_server();
+        let j = server.select_input_json("spotify");
+        assert_eq!(server.selected_input_index.load(Ordering::Relaxed), 0);
+        assert!(j.contains(r#""selected_input":"spotify""#));
+    }
+
+    #[test]
+    fn select_input_json_rejects_unknown_label() {
+        let server = make_test_server();
+        let j = server.select_input_json("bluetooth");
+        assert_eq!(server.selected_input_index.load(Ordering::Relaxed), -1);
+        assert!(j.contains(r#""error":"unknown input label""#));
     }
 
     #[test]

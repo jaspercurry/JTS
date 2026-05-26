@@ -108,6 +108,68 @@
     .mic-toggle input:focus-visible + .track {
       outline: 2px solid #1db954; outline-offset: 2px;
     }
+
+    .source-row {
+      padding-top: 0.9em; margin-top: 0.8em;
+      border-top: 1px solid #e6e6e6;
+    }
+    .source-head {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 0.8em; margin-bottom: 0.7em;
+    }
+    .source-label { font-weight: 500; color: #444; font-size: 0.95em; }
+    .source-status {
+      min-width: 6.5em; text-align: right;
+      color: #666; font-size: 0.84em;
+      font-variant-numeric: tabular-nums;
+    }
+    .source-buttons {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 0.45em;
+    }
+    .source-button {
+      position: relative;
+      min-width: 0; min-height: 46px;
+      border: 1px solid #d9d9d9; border-radius: 8px;
+      background: #fff; color: #333;
+      font: inherit; font-size: 0.82em; font-weight: 600;
+      cursor: pointer;
+      display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 0.15em;
+      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .source-button .source-icon {
+      font-size: 1.1em; line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .source-button .source-name-short { display: none; }
+    .source-button:hover {
+      border-color: #1db954; background: #f0fff4;
+    }
+    .source-button.active {
+      border-color: #1db954; background: #eafff1; color: #0f7d37;
+    }
+    .source-button.current:not(.active) {
+      border-color: #9fd9b2;
+    }
+    .source-button.playing::after {
+      content: "";
+      position: absolute; top: 6px; right: 6px;
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #1db954;
+    }
+    .source-button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .source-button:focus-visible {
+      outline: 2px solid #1db954; outline-offset: 2px;
+    }
+    @media (max-width: 480px) {
+      .source-buttons { grid-template-columns: repeat(5, minmax(42px, 1fr)); }
+      .source-button { min-height: 46px; font-size: 0.68em; }
+      .source-button .source-icon { font-size: 1em; }
+      .source-button .source-name-full { display: none; }
+      .source-button .source-name-short { display: inline; }
+    }
   </style>
 </head>
 <body>
@@ -133,6 +195,49 @@
                  aria-label="Microphone listening">
           <span class="track"></span>
         </label>
+      </div>
+      <div class="source-row">
+        <div class="source-head">
+          <span class="source-label">Source</span>
+          <span class="source-status" id="source-status">Offline</span>
+        </div>
+        <div class="source-buttons" role="group" aria-label="Playback source">
+          <button class="source-button" type="button" data-source="auto"
+                  aria-label="Auto source selection"
+                  aria-pressed="false" title="Auto">
+            <span class="source-icon">A</span>
+            <span class="source-name-full">Auto</span>
+            <span class="source-name-short">Auto</span>
+          </button>
+          <button class="source-button" type="button" data-source="airplay"
+                  aria-label="AirPlay source"
+                  aria-pressed="false" title="AirPlay">
+            <span class="source-icon">AP</span>
+            <span class="source-name-full">AirPlay</span>
+            <span class="source-name-short">Air</span>
+          </button>
+          <button class="source-button" type="button" data-source="bluetooth"
+                  aria-label="Bluetooth source"
+                  aria-pressed="false" title="Bluetooth">
+            <span class="source-icon">BT</span>
+            <span class="source-name-full">Bluetooth</span>
+            <span class="source-name-short">BT</span>
+          </button>
+          <button class="source-button" type="button" data-source="spotify"
+                  aria-label="Spotify source"
+                  aria-pressed="false" title="Spotify">
+            <span class="source-icon">SP</span>
+            <span class="source-name-full">Spotify</span>
+            <span class="source-name-short">Spot</span>
+          </button>
+          <button class="source-button" type="button" data-source="usbsink"
+                  aria-label="USB source"
+                  aria-pressed="false" title="USB">
+            <span class="source-icon">USB</span>
+            <span class="source-name-full">USB</span>
+            <span class="source-name-short">USB</span>
+          </button>
+        </div>
       </div>
     </div>
 
@@ -462,6 +567,119 @@
       }
       setInterval(poll, POLL_MS);
       poll();
+    })();
+
+    // Source selector. /source/state and /source/select are thin
+    // proxies to jasper-mux. The UI is optimistic on taps, then
+    // reconciles from mux state; a green dot marks the source that is
+    // actually reporting audio/connection activity.
+    (function() {
+      var buttons = Array.prototype.slice.call(
+        document.querySelectorAll('.source-button[data-source]')
+      );
+      var statusEl = document.getElementById('source-status');
+      var POLL_MS = 3000;
+      var dirtyUntil = 0;
+      var pendingSource = null;
+      var requestSeq = 0;
+      var names = {
+        auto: 'Auto',
+        airplay: 'AirPlay',
+        bluetooth: 'Bluetooth',
+        spotify: 'Spotify',
+        usbsink: 'USB',
+        idle: 'Idle',
+      };
+
+      function label(source) {
+        return names[source] || source || 'Idle';
+      }
+
+      function applyState(state) {
+        var mode = state && state.mode === 'manual' ? 'manual' : 'auto';
+        var selected = mode === 'manual' ? state.selected_source : 'auto';
+        var active = state && state.active_source ? state.active_source : 'idle';
+        var sources = (state && state.sources) || {};
+        if (pendingSource && Date.now() < dirtyUntil) {
+          selected = pendingSource;
+        } else {
+          pendingSource = null;
+        }
+        buttons.forEach(function(btn) {
+          var source = btn.dataset.source;
+          var info = sources[source] || {};
+          var isSelected = source === selected;
+          var isCurrent = source !== 'auto' && source === active && active !== 'idle';
+          var unavailable = source !== 'auto' && info.available === false;
+          var off = source !== 'auto' && info.enabled === false;
+          btn.classList.toggle('active', isSelected);
+          btn.classList.toggle('current', isCurrent);
+          btn.classList.toggle('playing', isCurrent);
+          btn.disabled = unavailable || off;
+          btn.title = (unavailable || off) ?
+            label(source) + ' is off or unavailable' : label(source);
+          btn.setAttribute('aria-pressed', String(isSelected));
+        });
+        statusEl.textContent = mode === 'manual' ? label(selected) : label(active);
+      }
+
+      function offline() {
+        buttons.forEach(function(btn) {
+          btn.disabled = true;
+          btn.classList.remove('active', 'playing');
+          btn.setAttribute('aria-pressed', 'false');
+        });
+        statusEl.textContent = 'Offline';
+      }
+
+      async function fetchState() {
+        if (document.visibilityState === 'hidden') return;
+        try {
+          var resp = await fetch('/source/state', {cache: 'no-store'});
+          if (resp.ok) {
+            applyState(await resp.json());
+          } else {
+            offline();
+          }
+        } catch (_) { offline(); }
+      }
+
+      async function selectSource(source) {
+        var requestId = ++requestSeq;
+        pendingSource = source;
+        dirtyUntil = Date.now() + 1500;
+        applyState({mode: source === 'auto' ? 'auto' : 'manual',
+                    selected_source: source === 'auto' ? null : source,
+                    active_source: source, sources: {}});
+        try {
+          var resp = await fetch('/source/select', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({source: source}),
+          });
+          if (resp.ok) {
+            if (requestId !== requestSeq) return;
+            pendingSource = null;
+            applyState(await resp.json());
+          } else {
+            if (requestId !== requestSeq) return;
+            pendingSource = null;
+            await fetchState();
+          }
+        } catch (_) {
+          if (requestId !== requestSeq) return;
+          pendingSource = null;
+          await fetchState();
+        }
+      }
+
+      buttons.forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          selectSource(btn.dataset.source);
+        });
+      });
+      setInterval(fetchState, POLL_MS);
+      fetchState();
     })();
 
     // Mic mute toggle. Talks to jasper-control's /mic endpoints

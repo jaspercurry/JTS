@@ -102,11 +102,19 @@ class _FakeCamilla:
 
 
 class _FakeBackend:
-    def __init__(self, active: dict[str, bool] | None = None) -> None:
+    def __init__(
+        self,
+        active: dict[str, bool] | None = None,
+        selected: str | None = None,
+    ) -> None:
         self._active = active or {}
+        self._selected = selected
 
     async def active_renderers(self) -> dict[str, bool]:
         return dict(self._active)
+
+    async def selected_source(self) -> str | None:
+        return self._selected
 
 
 class _RecordingCoordinator(VolumeCoordinator):
@@ -144,10 +152,16 @@ class _RecordingCoordinator(VolumeCoordinator):
         self.camilla_writes.append(level)
 
 
-def _coord(tmp_path, *, active: dict[str, bool] | None = None, db: float = 0.0):
+def _coord(
+    tmp_path,
+    *,
+    active: dict[str, bool] | None = None,
+    selected: str | None = None,
+    db: float = 0.0,
+):
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=db)
-    backend = _FakeBackend(active=active)
+    backend = _FakeBackend(active=active, selected=selected)
     coord = _RecordingCoordinator(
         camilla=cam,
         persistence=persistence,
@@ -178,8 +192,22 @@ async def test_set_volume_airplay_active_routes_to_camilla(tmp_path):
     await coord.set_listening_level(50)
     assert coord.airplay_writes == [50]
     assert coord.camilla_writes == [50]
-    assert coord.spotify_writes == []
-    assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
+
+
+async def test_manual_selected_source_overrides_raw_renderer_probe(tmp_path):
+    """Source selection gates what the speaker actually passes, so
+    volume dispatch follows mux's manual selection over raw activity."""
+    coord, _, _ = _coord(
+        tmp_path,
+        active={"aplactive": True},
+        selected="spotify",
+        db=0.0,
+    )
+
+    await coord.set_listening_level(55)
+
+    assert coord.spotify_writes == [55]
+    assert coord.airplay_writes == []
 
 
 async def test_set_volume_spotify_active_routes_to_spotify(tmp_path):

@@ -737,12 +737,27 @@ class VolumeCoordinator:
         a stable priority: airplay > spotify > bluetooth > usbsink
         > idle.
 
+        Manual source selection is an audible fan-in policy override:
+        if mux reports one, prefer it even when raw renderer probes
+        say a different source is active. Fail soft to raw probes when
+        mux is unavailable or an older RendererClient lacks the method.
+
         USB sink comes last among the active priorities — between two
         camilla-master sources (AirPlay vs USBSINK), AirPlay was the
         first to ship and any in-flight session there is more likely
         to be intentional than a USB session that happens to be
         bouncing back from the host's idle state.
         """
+        selected_source = getattr(self._backend, "selected_source", None)
+        if selected_source is not None:
+            try:
+                selected = await selected_source()
+                if selected:
+                    return Source(selected)
+            except (ValueError, TypeError):
+                logger.debug("mux selected_source was unknown; ignoring")
+            except Exception as e:  # noqa: BLE001
+                logger.debug("selected_source() failed (%s); using probes", e)
         try:
             active = await self._backend.active_renderers()
         except Exception as e:  # noqa: BLE001

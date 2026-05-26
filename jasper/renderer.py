@@ -18,7 +18,9 @@ to MPRIS / Spotify Web API based on the active source.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import re
 from typing import Any
 
@@ -31,6 +33,8 @@ from .source_state import (
 )
 
 logger = logging.getLogger(__name__)
+
+MUX_CONTROL_SOCKET = "/run/jasper-mux/control.sock"
 
 
 class RendererClient:
@@ -70,6 +74,46 @@ class RendererClient:
             "spotactive": spot,
             "usbsinkactive": usb,
         }
+
+    async def selected_source(self) -> str | None:
+        """Return mux's manual selected source, or None in auto mode.
+
+        This is intentionally separate from `active_renderers()`,
+        which reports raw renderer activity. Manual source selection
+        controls the audible fan-in lane even when a non-selected
+        renderer is still producing audio, so volume/dashboard callers
+        may need this effective policy layer.
+        """
+        socket_path = os.environ.get(
+            "JASPER_MUX_CONTROL_SOCKET", MUX_CONTROL_SOCKET,
+        )
+        try:
+            reader, writer = await asyncio.open_unix_connection(socket_path)
+        except (FileNotFoundError, ConnectionRefusedError,
+                asyncio.TimeoutError, OSError) as e:
+            logger.debug("mux status unavailable: %s", e)
+            return None
+        try:
+            writer.write(b"STATUS\n")
+            await writer.drain()
+            line = await asyncio.wait_for(reader.readline(), timeout=1.0)
+        except (asyncio.TimeoutError, ConnectionResetError, OSError) as e:
+            logger.debug("mux STATUS failed: %s", e)
+            return None
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            payload = json.loads(line.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        if payload.get("mode") != "manual":
+            return None
+        selected = payload.get("selected_source")
+        return selected if isinstance(selected, str) else None
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at

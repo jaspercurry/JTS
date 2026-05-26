@@ -413,7 +413,10 @@ If you're adding another audio source, start with
 into the volume-specific pieces here:
 
 - `Source` enum in `volume_coordinator.py`
-- `_active_source()` priority chain
+- `_active_source()` priority chain. Manual source selection is an
+  audible fan-in gate owned by mux; volume follows mux's
+  `selected_source` when mux is in manual mode, then falls back to raw
+  renderer probes in auto mode or when mux is unreachable.
 - One `_set_<source>` dispatcher
 - One `_read_<source>_*` observer reader, or a source-local bridge like
   `jasper-usbsink` if polling from `VolumeObserver` would be the wrong

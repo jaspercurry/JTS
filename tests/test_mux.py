@@ -447,3 +447,91 @@ async def test_usbsink_set_preempt_disabled_case_insensitive(
             f"JASPER_USBSINK_PREEMPT={val!r} should trigger the "
             "escape hatch (case-insensitive, whitespace-stripped)."
         )
+
+
+# ----------------------------------------------------------------------
+# Manual source selection — web UI selects a renderer lane without
+# turning renderers on/off. Fan-in is the audio gate; mux owns policy.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_select_source_gates_fanin_without_pausing_other_sources(
+    mux, patched_probes,
+):
+    _stub_probes(
+        patched_probes,
+        spotify=True,
+        airplay=True,
+        bluetooth=True,
+        usbsink=False,
+    )
+    _stub_pauses(mux)
+    mux._fanin_select = AsyncMock(return_value={})
+
+    status = await mux.select_source(Source.AIRPLAY)
+
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
+    mux._pause.assert_not_awaited()
+    assert mux._manual_source is Source.AIRPLAY
+    assert mux._winner is Source.AIRPLAY
+    assert status["mode"] == "manual"
+    assert status["selected_source"] == "airplay"
+    assert status["active_source"] == "airplay"
+
+
+@pytest.mark.asyncio
+async def test_manual_tick_keeps_selected_source_when_other_source_starts(
+    mux, patched_probes,
+):
+    mux._manual_source = Source.BLUETOOTH
+    mux._fanin_select = AsyncMock(return_value={})
+    _stub_pauses(mux)
+
+    _stub_probes(patched_probes, bluetooth=True, spotify=False)
+    await mux._tick()
+    mux._pause.assert_not_awaited()
+
+    _stub_probes(patched_probes, bluetooth=True, spotify=True)
+    await mux._tick()
+
+    mux._pause.assert_not_awaited()
+    assert mux._fanin_select.await_count == 2
+    mux._fanin_select.assert_awaited_with(Source.BLUETOOTH)
+    assert mux._winner is Source.BLUETOOTH
+
+
+@pytest.mark.asyncio
+async def test_auto_select_clears_manual_source_and_releases_fanin_gate(
+    mux, patched_probes,
+):
+    mux._manual_source = Source.SPOTIFY
+    mux._winner = Source.SPOTIFY
+    mux._fanin_auto = AsyncMock(return_value={})
+    _stub_probes(patched_probes, spotify=False, airplay=True)
+
+    status = await mux.auto_select()
+
+    mux._fanin_auto.assert_awaited_once_with()
+    assert mux._manual_source is None
+    assert status["mode"] == "auto"
+    assert status["selected_source"] is None
+    assert status["active_source"] == "airplay"
+
+
+@pytest.mark.asyncio
+async def test_auto_select_preempts_other_active_sources_before_auto_gate(
+    mux, patched_probes,
+):
+    mux._manual_source = Source.AIRPLAY
+    mux._fanin_auto = AsyncMock(return_value={})
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+
+    status = await mux.auto_select()
+
+    mux._pause.assert_awaited_once_with(Source.SPOTIFY)
+    mux._fanin_auto.assert_awaited_once_with()
+    assert mux._manual_source is None
+    assert mux._winner is Source.AIRPLAY
+    assert status["mode"] == "auto"

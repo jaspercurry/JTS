@@ -1,12 +1,16 @@
 [Unit]
 Description=Jasper renderer source-arbiter (latest-source-wins preemption)
-After=librespot.service shairport-sync.service bluealsa.service
-Wants=librespot.service shairport-sync.service bluealsa.service
+After=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
+Wants=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
 
 [Service]
 Type=simple
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# Optional fan-in overrides. Loading the same file here keeps
+# JASPER_FANIN_CONTROL_SOCKET aligned if an operator moves fan-in's
+# UDS out of /run/jasper-fanin/control.sock.
+EnvironmentFile=-/var/lib/jasper/fanin.env
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=on-failure
 RestartSec=2
@@ -15,6 +19,8 @@ RestartSec=2
 MemoryHigh=80M
 MemoryMax=120M
 Nice=-3
+RuntimeDirectory=jasper-mux
+RuntimeDirectoryMode=0750
 
 # OOM protection (Stage 1 of memory-resilience plan, see
 # docs/HANDOFF-resilience.md). Mux arbitration is a graceful-fail
