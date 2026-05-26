@@ -116,10 +116,15 @@ DISTANCES = ("near", "mid", "far")
 DEFAULT_AEC_REF_PORT = 9880
 DEFAULT_AEC_USB_RAW_PORT = 9881
 DEFAULT_AEC_USB_WEBRTC_PORT = 9882
-LEGS = ("on", "off", "dtln", "raw0", "ref", "usb_raw", "usb_webrtc")
-BASE_LEGS = ("on", "off", "dtln")
+DEFAULT_AEC_USB_DTLN_PORT = 9883
+LEGS = (
+    "on", "off", "dtln", "raw0", "ref", "usb_raw", "usb_webrtc", "usb_dtln",
+)
+BASE_LEGS = ("on", "off")
+DTLN_LEG = "dtln"
 RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
+USB_DTLN_LEG = "usb_dtln"
 LEG_LABELS = {
     "on": "XVF WebRTC",
     "off": "XVF raw",
@@ -128,6 +133,7 @@ LEG_LABELS = {
     "ref": "Reference",
     "usb_raw": "USB raw",
     "usb_webrtc": "USB WebRTC",
+    "usb_dtln": "USB DTLN",
 }
 
 # Hard cap so a forgotten "stop" doesn't fill memory with a 1-hour
@@ -157,6 +163,7 @@ def build_ports(
     aec_ref_port: int = DEFAULT_AEC_REF_PORT,
     aec_usb_raw_port: int = DEFAULT_AEC_USB_RAW_PORT,
     aec_usb_webrtc_port: int = DEFAULT_AEC_USB_WEBRTC_PORT,
+    aec_usb_dtln_port: int = DEFAULT_AEC_USB_DTLN_PORT,
     include_dtln: bool = True,
     include_usb: bool = True,
 ) -> dict[str, int]:
@@ -178,6 +185,7 @@ def build_ports(
         ports["ref"] = aec_ref_port
         ports["usb_raw"] = aec_usb_raw_port
         ports["usb_webrtc"] = aec_usb_webrtc_port
+        ports[USB_DTLN_LEG] = aec_usb_dtln_port
     return ports
 
 
@@ -189,14 +197,23 @@ def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
 def _session_legs(
     ports: dict[str, int],
     *,
+    include_dtln: bool = True,
     include_raw_mic_0: bool = False,
     include_usb_mic: bool = False,
+    include_usb_dtln: bool = False,
 ) -> tuple[str, ...]:
     legs = list(_default_enabled_legs(ports))
+    if include_dtln and DTLN_LEG in ports:
+        legs.append(DTLN_LEG)
     if include_raw_mic_0 and RAW0_LEG in ports:
         legs.append(RAW0_LEG)
     if include_usb_mic:
         legs.extend(leg for leg in USB_CORPUS_LEGS if leg in ports)
+    if include_usb_dtln and USB_DTLN_LEG in ports:
+        # DTLN only makes sense when compared to the same raw USB mic
+        # and reference signal, so include those companion legs even if
+        # the caller didn't tick the broader USB/WebRTC checkbox.
+        legs.extend(leg for leg in ("ref", "usb_raw", USB_DTLN_LEG) if leg in ports)
     # Preserve order while de-duping.
     return tuple(dict.fromkeys(legs))
 
@@ -215,8 +232,10 @@ def _enabled_legs_from_metadata(
             return legs
     return _session_legs(
         ports,
+        include_dtln=bool(data.get("include_dtln", True)),
         include_raw_mic_0=bool(data.get("include_raw_mic_0", False)),
         include_usb_mic=bool(data.get("include_usb_mic", False)),
+        include_usb_dtln=bool(data.get("include_usb_dtln", False)),
     )
 
 
@@ -433,7 +452,9 @@ class RecordingBackend:
         # the same leg set and downstream training tools can rely on
         # "session contains raw0 → every clip has it."
         self._include_raw_mic_0: bool = False
+        self._include_dtln: bool = False
         self._include_usb_mic: bool = False
+        self._include_usb_dtln: bool = False
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
         self._clips: list[ClipMetadata] = []
         self._current: RecordingTask | None = None
@@ -582,26 +603,36 @@ class RecordingBackend:
         include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
+        include_dtln = bool(data.get("include_dtln", DTLN_LEG in enabled_legs))
+        include_usb_dtln = bool(
+            data.get("include_usb_dtln", USB_DTLN_LEG in enabled_legs),
+        )
         with self._lock:
             self._session_id = session_id
             self._member = member
             self._clips = clips
             self._include_raw_mic_0 = include_raw_mic_0
+            self._include_dtln = include_dtln
             self._include_usb_mic = include_usb_mic
+            self._include_usb_dtln = include_usb_dtln
             self._enabled_legs = enabled_legs
         logger.info(
             "recovered session %s for %s with %d clip(s) (%d non-deleted) "
-            "include_raw_mic_0=%s include_usb_mic=%s legs=%s",
+            "include_raw_mic_0=%s include_dtln=%s include_usb_mic=%s "
+            "include_usb_dtln=%s legs=%s",
             session_id, member, len(clips),
             sum(1 for c in clips if not c.deleted), include_raw_mic_0,
-            include_usb_mic, ",".join(enabled_legs),
+            include_dtln, include_usb_mic, include_usb_dtln,
+            ",".join(enabled_legs),
         )
 
     def begin_session(
         self,
         member: str,
         include_raw_mic_0: bool = False,
+        include_dtln: bool = True,
         include_usb_mic: bool = False,
+        include_usb_dtln: bool = False,
     ) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
@@ -611,10 +642,18 @@ class RecordingBackend:
         into `aec_raw0_<condition>/`. Per-session, not per-clip, so
         downstream tools can rely on session-wide consistency.
 
+        `include_dtln` (default True) — when True and the recorder has
+        a DTLN port configured, clips capture the XVF raw-through-DTLN
+        comparison leg.
+
         `include_usb_mic` (default False) — when True, clips also
         capture the corpus-only reference + cheap USB mic legs. These
         require matching bridge env flags to be enabled, otherwise the
         UDP captures will simply have no audio to write.
+
+        `include_usb_dtln` (default False) — when True, clips capture
+        the cheap USB raw-through-DTLN leg. The bridge must be started
+        with JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 for packets to arrive.
 
         Returns the new session_id (UTC timestamp).
         """
@@ -637,11 +676,15 @@ class RecordingBackend:
             self._member = safe_member
             self._clips = []
             self._include_raw_mic_0 = include_raw_mic_0
+            self._include_dtln = include_dtln
             self._include_usb_mic = include_usb_mic
+            self._include_usb_dtln = include_usb_dtln
             self._enabled_legs = _session_legs(
                 self._ports,
+                include_dtln=include_dtln,
                 include_raw_mic_0=include_raw_mic_0,
                 include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
             )
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         self._save_metadata()  # write the per-session flag before clips arrive
@@ -652,10 +695,20 @@ class RecordingBackend:
         with self._lock:
             return self._include_raw_mic_0
 
+    def include_dtln(self) -> bool:
+        """Whether the active session captures the XVF DTLN leg."""
+        with self._lock:
+            return self._include_dtln
+
     def include_usb_mic(self) -> bool:
         """Whether the active session captures corpus USB/ref legs."""
         with self._lock:
             return self._include_usb_mic
+
+    def include_usb_dtln(self) -> bool:
+        """Whether the active session captures the USB DTLN leg."""
+        with self._lock:
+            return self._include_usb_dtln
 
     def enabled_legs(self) -> tuple[str, ...]:
         """The active session's leg set, in recording/playback order."""
@@ -882,7 +935,9 @@ class RecordingBackend:
                 "member": self._member,
                 "ports": self._ports,
                 "include_raw_mic_0": self._include_raw_mic_0,
+                "include_dtln": self._include_dtln,
                 "include_usb_mic": self._include_usb_mic,
+                "include_usb_dtln": self._include_usb_dtln,
                 "enabled_legs": list(self._enabled_legs),
                 "clips": [c.to_json() for c in self._clips],
             }
@@ -921,6 +976,7 @@ class RecordingBackend:
             for c in alive:
                 k = c.get("condition", "?")
                 conds[k] = conds.get(k, 0) + 1
+            enabled_legs = _enabled_legs_from_metadata(data, self._ports)
             out.append({
                 "session_id": data.get("session_id", "?"),
                 "member": data.get("member", "?"),
@@ -928,8 +984,16 @@ class RecordingBackend:
                 "clip_count": len(alive),
                 "deleted_count": len(clips) - len(alive),
                 "include_raw_mic_0": bool(data.get("include_raw_mic_0", False)),
+                "include_dtln": bool(data.get(
+                    "include_dtln",
+                    DTLN_LEG in enabled_legs,
+                )),
                 "include_usb_mic": bool(data.get("include_usb_mic", False)),
-                "enabled_legs": list(_enabled_legs_from_metadata(data, self._ports)),
+                "include_usb_dtln": bool(data.get(
+                    "include_usb_dtln",
+                    USB_DTLN_LEG in enabled_legs,
+                )),
+                "enabled_legs": list(enabled_legs),
                 "conditions": conds,
                 "is_active": (
                     self._session_id is not None
@@ -977,25 +1041,34 @@ class RecordingBackend:
         include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
+        include_dtln = bool(data.get("include_dtln", DTLN_LEG in enabled_legs))
+        include_usb_dtln = bool(
+            data.get("include_usb_dtln", USB_DTLN_LEG in enabled_legs),
+        )
         with self._lock:
             self._session_id = session_id
             self._member = member
             self._clips = clips
             self._include_raw_mic_0 = include_raw_mic_0
+            self._include_dtln = include_dtln
             self._include_usb_mic = include_usb_mic
+            self._include_usb_dtln = include_usb_dtln
             self._enabled_legs = enabled_legs
         logger.info(
             "loaded session %s for %s with %d clip(s) include_raw_mic_0=%s "
-            "include_usb_mic=%s legs=%s",
+            "include_dtln=%s include_usb_mic=%s include_usb_dtln=%s legs=%s",
             session_id, member,
             sum(1 for c in clips if not c.deleted),
-            include_raw_mic_0, include_usb_mic, ",".join(enabled_legs),
+            include_raw_mic_0, include_dtln, include_usb_mic,
+            include_usb_dtln, ",".join(enabled_legs),
         )
         return {
             "session_id": session_id, "member": member,
             "clip_count": sum(1 for c in clips if not c.deleted),
             "include_raw_mic_0": include_raw_mic_0,
+            "include_dtln": include_dtln,
             "include_usb_mic": include_usb_mic,
+            "include_usb_dtln": include_usb_dtln,
             "enabled_legs": list(enabled_legs),
         }
 
@@ -1055,7 +1128,9 @@ class RecordingBackend:
                 self._member = None
                 self._clips = []
                 self._include_raw_mic_0 = False
+                self._include_dtln = False
                 self._include_usb_mic = False
+                self._include_usb_dtln = False
                 self._enabled_legs = _default_enabled_legs(self._ports)
         logger.info(
             "deleted session %s: %d wavs removed, %d missing",
@@ -1161,7 +1236,9 @@ class _Handler(BaseHTTPRequestHandler):
                 "session_id": self.backend.session_id(),
                 "member": self.backend.member(),
                 "include_raw_mic_0": self.backend.include_raw_mic_0(),
+                "include_dtln": self.backend.include_dtln(),
                 "include_usb_mic": self.backend.include_usb_mic(),
+                "include_usb_dtln": self.backend.include_usb_dtln(),
                 "enabled_legs": list(self.backend.enabled_legs()),
                 "is_recording": self.backend.is_recording(),
                 "elapsed_sec": self.backend.elapsed_recording_sec(),
@@ -1290,7 +1367,9 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/api/session":
             member = (body.get("member") or "").strip()
             include_raw_mic_0 = bool(body.get("include_raw_mic_0", False))
+            include_dtln = bool(body.get("include_dtln", True))
             include_usb_mic = bool(body.get("include_usb_mic", False))
+            include_usb_dtln = bool(body.get("include_usb_dtln", False))
             if not member:
                 self._send_error_json(400, "member is required")
                 return
@@ -1298,7 +1377,9 @@ class _Handler(BaseHTTPRequestHandler):
                 session_id = self.backend.begin_session(
                     member,
                     include_raw_mic_0=include_raw_mic_0,
+                    include_dtln=include_dtln,
                     include_usb_mic=include_usb_mic,
+                    include_usb_dtln=include_usb_dtln,
                 )
             except (ValueError, StateError) as e:
                 self._send_error_json(400, str(e))
@@ -1306,7 +1387,9 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "session_id": session_id, "member": member,
                 "include_raw_mic_0": include_raw_mic_0,
+                "include_dtln": include_dtln,
                 "include_usb_mic": include_usb_mic,
+                "include_usb_dtln": include_usb_dtln,
                 "enabled_legs": list(self.backend.enabled_legs()),
             })
             return
@@ -1729,11 +1812,27 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       </label>
     </div>
     <div class="row checkbox">
+      <input type="checkbox" id="include-dtln" checked>
+      <label for="include-dtln">
+        Capture <strong>XVF DTLN</strong>
+        <span class="hint">— chip ASR-beam raw through the neural AEC
+        comparison path; requires the bridge DTLN env to be enabled.</span>
+      </label>
+    </div>
+    <div class="row checkbox">
       <input type="checkbox" id="include-usb-mic">
       <label for="include-usb-mic">
         Also capture <strong>USB mic + reference</strong>
         <span class="hint">— corpus-only cheap mic raw, cheap mic WebRTC,
         and the 16 kHz reference the bridge feeds into AEC.</span>
+      </label>
+    </div>
+    <div class="row checkbox">
+      <input type="checkbox" id="include-usb-dtln">
+      <label for="include-usb-dtln">
+        Also capture <strong>USB DTLN</strong>
+        <span class="hint">— cheap USB raw through neural AEC. This also
+        records the USB raw and reference companion legs.</span>
       </label>
     </div>
   </div>
@@ -1801,6 +1900,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       ref: 'Reference',
       usb_raw: 'USB raw',
       usb_webrtc: 'USB WebRTC',
+      usb_dtln: 'USB DTLN',
     };
     function legLabel(leg) { return LEG_LABELS[leg] || leg; }
     // Read the CSRF token embedded in the page's meta tag; send it
@@ -1860,7 +1960,9 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const sessionLabel = s.session_id
           ? `${s.member} / ${s.session_id}`
             + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
+            + (!s.include_dtln ? ' · XVF DTLN off' : '')
             + (s.include_usb_mic ? ' · USB/ref ✓' : '')
+            + (s.include_usb_dtln ? ' · USB DTLN ✓' : '')
             + (s.enabled_legs?.length ? ` · ${s.enabled_legs.map(legLabel).join(', ')}` : '')
           : '(no session)';
         $('session-id').textContent = sessionLabel;
@@ -1894,13 +1996,17 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function beginSession() {
       const member = $('member').value.trim();
       const includeRawMic0 = $('include-raw-mic-0').checked;
+      const includeDtln = $('include-dtln').checked;
       const includeUsbMic = $('include-usb-mic').checked;
+      const includeUsbDtln = $('include-usb-dtln').checked;
       if (!member) { showErr('member is required'); return; }
       try {
         await api('POST', 'api/session', {
           member,
           include_raw_mic_0: includeRawMic0,
+          include_dtln: includeDtln,
           include_usb_mic: includeUsbMic,
+          include_usb_dtln: includeUsbDtln,
         });
         showErr('');
         await refreshStatus();
@@ -1926,8 +2032,14 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           const rawPill = s.include_raw_mic_0
             ? '<span class="pill tiny purple">raw mic 0</span>'
             : '';
+          const dtlnPill = s.include_dtln
+            ? '<span class="pill tiny purple">XVF DTLN</span>'
+            : '';
           const usbPill = s.include_usb_mic
             ? '<span class="pill tiny purple">USB/ref</span>'
+            : '';
+          const usbDtlnPill = s.include_usb_dtln
+            ? '<span class="pill tiny purple">USB DTLN</span>'
             : '';
           const legsText = (s.enabled_legs || []).map(legLabel).join(', ');
           const activeMark = s.is_active
@@ -1936,7 +2048,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           row.innerHTML = `
             <div class="session-meta">
               <div>${activeMark}<strong>${s.member}</strong>
-                ${rawPill} ${usbPill}
+                ${rawPill} ${dtlnPill} ${usbPill} ${usbDtlnPill}
                 <span class="id">${s.session_id}</span></div>
               <div class="breakdown">${s.clip_count} clip(s) · ${condText} · legs: ${legsText || 'none'} · ${date}</div>
             </div>
@@ -2237,6 +2349,11 @@ def main(argv: list[str] | None = None) -> int:
              f"(default {DEFAULT_AEC_USB_WEBRTC_PORT}).",
     )
     parser.add_argument(
+        "--aec-usb-dtln-port", type=int, default=DEFAULT_AEC_USB_DTLN_PORT,
+        help="UDP port for cheap USB DTLN leg "
+             f"(default {DEFAULT_AEC_USB_DTLN_PORT}).",
+    )
+    parser.add_argument(
         "--no-dtln", action="store_true",
         help="Skip the DTLN leg entirely (for 2-stream Pis or "
              "JASPER_WAKE_LEG_DTLN=0).",
@@ -2273,6 +2390,7 @@ def main(argv: list[str] | None = None) -> int:
         aec_ref_port=args.aec_ref_port,
         aec_usb_raw_port=args.aec_usb_raw_port,
         aec_usb_webrtc_port=args.aec_usb_webrtc_port,
+        aec_usb_dtln_port=args.aec_usb_dtln_port,
         include_dtln=not args.no_dtln,
         include_usb=not args.no_usb_corpus,
     )

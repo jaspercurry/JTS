@@ -199,12 +199,14 @@ OUT_PORT_RAW0 = int(os.environ.get("JASPER_AEC_UDP_PORT_RAW0", "9879"))
 #   - ref: the 16 kHz mono reference frame AEC3 actually consumed
 #   - usb_raw: a cheap USB mic's raw mono capture
 #   - usb_webrtc: that same USB mic through a second WebRTC AEC3 chain
+#   - usb_dtln: the cheap USB mic through a second DTLN-aec chain
 #
 # They are intentionally not consumed by jasper-voice. They exist to
 # make the gold corpus useful for cheap-mic portability experiments.
 OUT_PORT_REF = int(os.environ.get("JASPER_AEC_UDP_PORT_REF", "9880"))
 OUT_PORT_USB_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_RAW", "9881"))
 OUT_PORT_USB_WEBRTC = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_WEBRTC", "9882"))
+OUT_PORT_USB_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_DTLN", "9883"))
 USB_MIC_DEVICE = os.environ.get("JASPER_AEC_USB_MIC_DEVICE", "USB PnP Sound Device")
 USB_MIC_RATE = int(float(os.environ.get("JASPER_AEC_USB_MIC_RATE", "0")))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
@@ -900,6 +902,10 @@ def _aec_loop(  # noqa: PLR0915
     out_dest_usb_webrtc = None
     out_batch_usb_webrtc = bytearray()
     usb_engine = None
+    usb_dtln_engine = None
+    out_sock_usb_dtln = None
+    out_dest_usb_dtln = None
+    out_batch_usb_dtln = bytearray()
     if usb_raw_q is not None:
         out_sock_usb_raw = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         out_sock_usb_raw.setblocking(False)
@@ -912,6 +918,29 @@ def _aec_loop(  # noqa: PLR0915
             "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d",
             OUT_HOST, OUT_PORT_USB_RAW, OUT_HOST, OUT_PORT_USB_WEBRTC,
         )
+        if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
+            try:
+                from jasper.aec_engines.dtln import DTLNEngine, default_model_dir
+                usb_dtln_size = int(os.environ.get(
+                    "JASPER_AEC_USB_DTLN_SIZE",
+                    os.environ.get("JASPER_AEC_DTLN_SIZE", "256"),
+                ))
+                usb_dtln_engine = DTLNEngine(
+                    model_dir=default_model_dir(), model_size=usb_dtln_size,
+                )
+                out_sock_usb_dtln = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                out_sock_usb_dtln.setblocking(False)
+                out_dest_usb_dtln = (OUT_HOST, OUT_PORT_USB_DTLN)
+                logger.info(
+                    "USB DTLN-aec corpus output enabled: size=%d, udp out=%s:%d",
+                    usb_dtln_size, OUT_HOST, OUT_PORT_USB_DTLN,
+                )
+            except (FileNotFoundError, ImportError) as e:
+                logger.warning(
+                    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED set but USB DTLN "
+                    "couldn't load: %s. Continuing without usb_dtln.",
+                    e,
+                )
 
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
@@ -940,18 +969,23 @@ def _aec_loop(  # noqa: PLR0915
                 "Continuing with AEC3 only.", e,
             )
 
+    output_parts = [
+        f"aec={OUT_HOST}:{OUT_PORT}",
+        f"raw={OUT_HOST}:{OUT_PORT_RAW}",
+        f"raw0={OUT_HOST}:{OUT_PORT_RAW0}",
+    ]
+    if dtln_engine is not None:
+        output_parts.append(f"dtln={OUT_HOST}:{OUT_PORT_DTLN}")
+    if emit_ref:
+        output_parts.append(f"ref={OUT_HOST}:{OUT_PORT_REF}")
+    if usb_raw_q is not None:
+        output_parts.append(f"usb_raw={OUT_HOST}:{OUT_PORT_USB_RAW}")
+        output_parts.append(f"usb_webrtc={OUT_HOST}:{OUT_PORT_USB_WEBRTC}")
+    if usb_dtln_engine is not None:
+        output_parts.append(f"usb_dtln={OUT_HOST}:{OUT_PORT_USB_DTLN}")
     logger.info(
-        "udp outputs: aec=%s:%d raw=%s:%d raw0=%s:%d%s%s%s frame=%d samples (%d bytes)",
-        OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW,
-        OUT_HOST, OUT_PORT_RAW0,
-        f" dtln={OUT_HOST}:{OUT_PORT_DTLN}" if dtln_engine else "",
-        f" ref={OUT_HOST}:{OUT_PORT_REF}" if emit_ref else "",
-        (
-            f" usb_raw={OUT_HOST}:{OUT_PORT_USB_RAW} "
-            f"usb_webrtc={OUT_HOST}:{OUT_PORT_USB_WEBRTC}"
-            if usb_raw_q is not None else ""
-        ),
-        OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
+        "udp outputs: %s frame=%d samples (%d bytes)",
+        " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
     )
     # Aggregate four AEC frames (320 samples each) into one UDP
     # packet (1280 samples = MicCapture.OUTPUT_FRAME_SAMPLES) so
@@ -1223,6 +1257,34 @@ def _aec_loop(  # noqa: PLR0915
                                     )
                                 del out_batch_usb_webrtc[:OUT_FRAME_BYTES]
 
+                    if usb_dtln_engine is not None:
+                        try:
+                            usb_dtln_clean = usb_dtln_engine.process(
+                                usb_bytes, ref_bytes,
+                            )
+                        except Exception as e:  # noqa: BLE001
+                            logger.exception(
+                                "USB DTLN process() crashed; disabling "
+                                "usb_dtln path: %s",
+                                e,
+                            )
+                            usb_dtln_engine = None
+                            usb_dtln_clean = b""
+                        if usb_dtln_clean:
+                            out_batch_usb_dtln.extend(usb_dtln_clean)
+                            if len(out_batch_usb_dtln) >= OUT_FRAME_BYTES:
+                                try:
+                                    out_sock_usb_dtln.sendto(
+                                        bytes(out_batch_usb_dtln[:OUT_FRAME_BYTES]),
+                                        out_dest_usb_dtln,
+                                    )
+                                except BlockingIOError:
+                                    logger.warning(
+                                        "udp usb_dtln sendto would block, "
+                                        "dropping frame"
+                                    )
+                                del out_batch_usb_dtln[:OUT_FRAME_BYTES]
+
             # Debug WAV record: writes happen here so the captured
             # frames are exactly what the bridge measured for its
             # internal "attenuation" log + what the AEC emitted before
@@ -1312,8 +1374,12 @@ def _aec_loop(  # noqa: PLR0915
             out_sock_usb_raw.close()
         if out_sock_usb_webrtc is not None:
             out_sock_usb_webrtc.close()
+        if out_sock_usb_dtln is not None:
+            out_sock_usb_dtln.close()
         if usb_engine is not None:
             usb_engine.close()
+        if usb_dtln_engine is not None:
+            usb_dtln_engine.close()
         if out_sock_dtln is not None:
             out_sock_dtln.close()
         for w in (mic_wav, aec_wav, ref_wav):
@@ -1331,16 +1397,25 @@ def main() -> int:
     )
     corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
     corpus_usb_enabled = _env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
+    corpus_usb_dtln_enabled = _env_bool(
+        "JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0",
+    )
     logger.info(
         "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
         "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d "
-        "corpus_ref=%s corpus_usb=%s",
+        "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
         "on" if corpus_ref_enabled else "off",
         "on" if corpus_usb_enabled else "off",
+        "on" if corpus_usb_dtln_enabled else "off",
     )
+    if corpus_usb_dtln_enabled and not corpus_usb_enabled:
+        logger.warning(
+            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
+            "JASPER_AEC_CORPUS_USB_ENABLED=1 also starts the USB mic capture",
+        )
 
     try:
         _validate_mic_device()

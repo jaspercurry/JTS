@@ -363,7 +363,7 @@ at http://jts.local/wake-corpus/, exposed via socket-activated
 - PR #315 (live mic-level meter + ambient condition + trash icon)
 - PR #323 (raw mic 0 4th leg + sessions management UX)
 
-**What the recorder captures.** Up to **seven legs** per utterance,
+**What the recorder captures.** Up to **eight legs** per utterance,
 written into per-leg quadrant directories at
 `/var/lib/jasper/enrollment_positives/aec_<leg>_<condition>/`:
 
@@ -376,6 +376,7 @@ written into per-leg quadrant directories at
 | `ref` | UDP `:9880` | 16 kHz mono speaker reference frame that SW AEC consumes (corpus-only; opt-in) |
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
+| `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -389,10 +390,13 @@ below.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
-turns on DTLN inference in the bridge, and `JASPER_WAKE_CORPUS_DTLN=0`
-hides the recorder leg for low-RAM sessions. A cheap-USB DTLN leg is
-deferred until the USB WebRTC path has produced listenable comparison
-clips; a second neural engine is likely the highest-risk RAM/CPU cost.
+turns on XVF DTLN inference in the bridge, and the recorder has a
+per-session XVF DTLN checkbox for choosing whether to subscribe to
+that leg. Cheap-USB DTLN is a separate experiment: the bridge only
+runs the second neural engine when `JASPER_AEC_CORPUS_USB_ENABLED=1`
+and `JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1`; the recorder's USB DTLN
+checkbox subscribes to `usb_dtln` and records its `ref` + `usb_raw`
+companion legs. Treat USB DTLN as high resource risk on a 1 GB Pi.
 
 **Recording protocol — Jasper (~60-90 min total, across two
 sessions on different days):**
@@ -1036,6 +1040,7 @@ Recording-day audit tooling:
   --expect-raw0` validates post-rsync session metadata, raw0 leg
   presence, condition × distance coverage, and WAV format/RMS.
 - ✅ `--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`
+  and `--expect-leg usb_dtln`
   validates USB/reference opt-in sessions after rsync.
 
 **Phase −1 (pre-foundation verifications): in progress.**
@@ -1061,11 +1066,14 @@ via the new Sessions card.
   - Added corpus-only bridge outputs for `ref` (`:9880`), `usb_raw`
     (`:9881`), and `usb_webrtc` (`:9882`), gated by
     `JASPER_AEC_CORPUS_REF_ENABLED` / `JASPER_AEC_CORPUS_USB_ENABLED`.
+  - Added optional `usb_dtln` (`:9883`), gated by
+    `JASPER_AEC_CORPUS_USB_DTLN_ENABLED`, plus session checkboxes for
+    XVF DTLN and USB DTLN capture.
   - Recorder now persists a session-level `enabled_legs` list instead
     of relying only on the raw0 boolean; legacy metadata still reads
     correctly.
   - Clip playback now has a leg selector so Jasper can compare XVF
-    WebRTC/raw/DTLN/raw0, USB raw/WebRTC, and reference WAVs per
+    WebRTC/raw/DTLN/raw0, USB raw/WebRTC/DTLN, and reference WAVs per
     utterance.
   - Audit script accepts repeated `--expect-leg` flags for USB/ref
     sessions while preserving `--expect-raw0`.

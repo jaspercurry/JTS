@@ -38,7 +38,8 @@ DISTANCES = ("near", "mid", "far")
 BASE_LEGS = ("on", "off", "dtln")
 RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
-KNOWN_LEGS = BASE_LEGS + (RAW0_LEG,) + USB_CORPUS_LEGS
+USB_DTLN_LEG = "usb_dtln"
+KNOWN_LEGS = BASE_LEGS + (RAW0_LEG,) + USB_CORPUS_LEGS + (USB_DTLN_LEG,)
 SILENCE_RMS = 30.0
 MAX_EXPECTED_DURATION_SEC = 30.5
 
@@ -128,12 +129,20 @@ def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
     legs = ["on", "off"]
     # Older metadata may not have a useful ports map. Treat that as the
     # normal 3-leg base recorder shape.
-    if not ports or "dtln" in ports:
+    if session.get("include_dtln", True) and (not ports or "dtln" in ports):
         legs.append("dtln")
     if session.get("include_raw_mic_0"):
         legs.append(RAW0_LEG)
     if session.get("include_usb_mic"):
         legs.extend(leg for leg in USB_CORPUS_LEGS if not ports or leg in ports)
+    if session.get("include_usb_dtln"):
+        legs.extend(
+            leg for leg in ("ref", "usb_raw", USB_DTLN_LEG)
+            if not ports or leg in ports
+        )
+    # Preserve recorder order while de-duping shared ref/usb_raw
+    # companion legs.
+    legs = list(dict.fromkeys(legs))
     return tuple(legs)
 
 

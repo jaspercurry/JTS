@@ -96,6 +96,10 @@ def _wake_corpus_ports_from_env() -> dict[str, int]:
             "JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT",
             wake_corpus_setup.DEFAULT_AEC_USB_WEBRTC_PORT,
         )),
+        aec_usb_dtln_port=int(os.environ.get(
+            "JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT",
+            wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT,
+        )),
         include_dtln=os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0",
         include_usb=os.environ.get("JASPER_WAKE_CORPUS_USB", "1") != "0",
     )

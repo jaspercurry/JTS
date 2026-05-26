@@ -453,9 +453,9 @@ reference. Currently:
   (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
   explicit listening checkpoints. Capture tooling shipped end-to-
   end via the browser recorder at http://jts.local/wake-corpus/
-  (PRs #303 → #323, plus the 2026-05-26 USB/ref follow-up) with a
-  4th `raw0` leg and corpus-only cheap USB mic/reference legs for
-  future cheaper-mic experiments. Read this before working on wake-
+  (PRs #303 → #323, plus the 2026-05-26 USB/ref/DTLN follow-up) with
+  a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
+  for future cheaper-mic experiments. Read this before working on wake-
   word reliability, training data collection, or testing methodology.
 - [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
   Active workstream (May 2026). The VAD / mic-stream A/B test matrix:

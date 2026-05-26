@@ -34,6 +34,7 @@ def _write_session(
     session_id: str = "20260526T120000Z-abcd",
     include_raw0: bool = True,
     include_usb: bool = False,
+    include_usb_dtln: bool = False,
     enabled_legs: list[str] | None = None,
     files: dict[str, str] | None = None,
     ports: dict[str, int] | None = None,
@@ -52,6 +53,7 @@ def _write_session(
         "ports": ports or {"on": 9876, "off": 9877, "dtln": 9878, "raw0": 9879},
         "include_raw_mic_0": include_raw0,
         "include_usb_mic": include_usb,
+        "include_usb_dtln": include_usb_dtln,
         "clips": [
             {
                 "clip_id": "clip-1",
@@ -208,6 +210,44 @@ def test_audit_accepts_enabled_legs_for_usb_ref_session(
     assert rc == 0
     assert "Issues: none" in out
     assert "'usb_webrtc': 1" in out
+
+
+def test_audit_accepts_usb_dtln_expected_leg(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    root = tmp_path / "enrollment_positives"
+    files = {
+        "on": str(root / "aec_on_nomusic" / "clip.aec-on.wav"),
+        "off": str(root / "aec_off_nomusic" / "clip.aec-off.wav"),
+        "dtln": str(root / "aec_dtln_nomusic" / "clip.aec-dtln.wav"),
+        "ref": str(root / "aec_ref_nomusic" / "clip.aec-ref.wav"),
+        "usb_raw": str(root / "aec_usb_raw_nomusic" / "clip.aec-usb_raw.wav"),
+        "usb_dtln": str(root / "aec_usb_dtln_nomusic" / "clip.aec-usb_dtln.wav"),
+    }
+    for path_str in files.values():
+        _write_wav(Path(path_str))
+    _write_session(
+        root,
+        include_raw0=False,
+        include_usb_dtln=True,
+        files=files,
+        ports={
+            "on": 9876,
+            "off": 9877,
+            "dtln": 9878,
+            "ref": 9880,
+            "usb_raw": 9881,
+            "usb_dtln": 9883,
+        },
+    )
+
+    rc = audit_wake_corpus.audit(root, expect_legs=("usb_dtln",))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Issues: none" in out
+    assert "'usb_dtln': 1" in out
 
 
 def test_audit_fails_when_expected_usb_leg_not_enabled(
