@@ -169,6 +169,20 @@ class VolumeObserver:
         if current_active == Source.BLUETOOTH and bt_vol is not None:
             await self._maybe_observe(Source.BLUETOOTH, float(bt_vol))
 
+        # Self-healing convergence backstop. Idempotent and gated
+        # internally — no-op unless `main_volume_db` has drifted
+        # from `percent_to_db(listening_level)` in a band that
+        # indicates a stale-state bug rather than a duck-in-progress.
+        # See `VolumeCoordinator.maybe_reconcile_camilla` for the
+        # full gate logic and docs/HANDOFF-volume.md "Reconciler".
+        try:
+            await self._coord.maybe_reconcile_camilla()
+        except Exception as e:  # noqa: BLE001
+            # Should never raise (the method swallows internally),
+            # but never let a reconcile bug bring down the observer
+            # — observation is the more important responsibility.
+            logger.warning("reconciler raised %s; skipping", e)
+
     async def _maybe_observe(self, source: Source, value: float) -> None:
         last = self._last_seen[source]
         # First observation per source DOES propagate. Each source

@@ -774,6 +774,188 @@ async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
     assert "target_db=-15.0" in msg
 
 
+# ---- maybe_reconcile_camilla (self-healing backstop, "Option E") -------
+#
+# The reconciler is jasper-voice's belt-to-Option-A's-suspenders. It
+# runs at 1 Hz inside VolumeObserver._tick and converges main_volume_db
+# back toward percent_to_db(listening_level) when they've drifted —
+# catching any future writer or transient that creates a desync.
+# Gated heavily so it never fights a Ducker (in-session) or a CueDuck
+# (deep drift) or a push-mode source (camilla pinned at 0 dB).
+
+
+async def test_reconcile_noop_within_dead_band(tmp_path):
+    """Drift smaller than RECONCILE_DRIFT_DB is camilla's normal jitter
+    or sub-percentile rounding — no-op."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-15.3)  # expected for 70% is -15.0; drift 0.3
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+
+
+async def test_reconcile_converges_when_camilla_below_expected(tmp_path):
+    """The Option-A bug shape: listening_level=76% (expected -12 dB)
+    but main_volume stuck at -18 dB (a 6 dB drift in the
+    reconciler's catch band). Reconciler writes -12 dB."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-18.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 76
+    persistence.save_listening_level(76, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-12.0)) < 0.01
+
+
+async def test_reconcile_converges_when_camilla_above_expected(tmp_path):
+    """Symmetric direction: main_volume is louder than listening_level
+    implies (some writer raised it without going through the coordinator).
+    Reconciler pulls it down."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-8.0)  # too loud for 70% / expected -15
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
+
+
+async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):
+    """CueDuck plays proactive cues with `_voice_session_active=False`.
+    During a CueDuck, main_volume is JASPER_DUCK_DB below expected
+    (default -25 dB, well past RECONCILE_DUCK_SKIP_DB=10). Reconciler
+    must skip — un-ducking the cue mid-playback would defeat the cue."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-40.0)  # cue-ducked: -15 expected, -25 dB duck
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+
+
+async def test_reconcile_noop_during_voice_session(tmp_path):
+    """Voice session is active → the Ducker owns camilla.
+    Reconciler must defer to it absolutely; the flag is the strongest
+    gate."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-30.0)  # ducked, but only 15 dB below expected
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    coord.note_voice_session(True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+
+
+async def test_reconcile_noop_when_push_mode_source_active(tmp_path):
+    """Spotify Connect is active → camilla pinned at 0 dB by design,
+    listening_level lives on the Spotify slider. Reconciler must not
+    write camilla here — would compound with the source's own
+    attenuator."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    backend = _FakeBackend(active={"spotactive": True})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 60  # would imply -20 dB if camilla carried it
+    persistence.save_listening_level(60, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+
+
+async def test_reconcile_noop_when_camilla_unreachable(tmp_path):
+    """Best-effort read returning None (camilla restart blip) → skip
+    silently. The next tick retries when camilla recovers."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
+    cam.unavailable = True
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 70
+    persistence.save_listening_level(70, mark_user_change=True)
+    # Should not raise.
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls == []
+
+
+async def test_reconcile_emits_structured_event(tmp_path, caplog):
+    """The reconciler's write logs `event=volume.reconciled` with
+    enough context (level, current_db, expected_db, drift_db) that
+    a debugger can answer 'who caused the drift' from journalctl
+    alone."""
+    import logging
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-18.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 76
+    persistence.save_listening_level(76, mark_user_change=True)
+    caplog.set_level(logging.INFO, logger="jasper.volume_coordinator")
+    await coord.maybe_reconcile_camilla()
+    events = [
+        r for r in caplog.records
+        if "event=volume.reconciled" in r.message
+    ]
+    assert len(events) == 1
+    msg = events[0].message
+    assert "level=76%" in msg
+    assert "current_db=-18.00" in msg
+    assert "expected_db=-12.00" in msg
+    assert "drift_db=+6.00" in msg
+
+
+async def test_reconcile_no_loop_when_already_converged(tmp_path):
+    """After one reconcile fires and camilla is at expected, the next
+    tick must be a no-op (no write loop). Idempotence regression."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=-18.0)
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 76
+    persistence.save_listening_level(76, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    first_write_count = len(cam.set_calls)
+    assert first_write_count == 1
+    # Subsequent tick — camilla is now at -12 (set by reconciler);
+    # no further drift to correct.
+    await coord.maybe_reconcile_camilla()
+    assert len(cam.set_calls) == first_write_count
+
+
 async def test_get_camilla_target_db_idle_returns_listening_level_db(tmp_path):
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)

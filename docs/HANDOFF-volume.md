@@ -222,6 +222,51 @@ at turn-start (no change). Building real-time TTS responsiveness to
 user input requires a delta-based tracker refactor; not justified
 for the use frequency observed in production.
 
+## Self-healing reconciler (backstop)
+
+`VolumeCoordinator.maybe_reconcile_camilla()` is the resilience
+backstop that runs inside `VolumeObserver._tick` at 1 Hz on
+jasper-voice. It's a no-op when state is healthy; when
+`camilla.main_volume_db` has drifted from
+`percent_to_db(listening_level)`, it writes the expected value back
+to converge.
+
+The reconciler is **not** the primary defense against the desync
+class of bugs — the cross-daemon defer signal (above) is. The
+reconciler protects against drift from other writers (room
+correction, a future code path that bypasses the coordinator, a
+camilla restart blip that swallows a write) and gives the system a
+self-healing property no matter how the drift was introduced.
+
+**Gates** (all must pass for a write to land):
+
+1. `_voice_session_active=False` — the Ducker owns camilla during
+   a session.
+2. Active source uses camilla-as-master (idle / AirPlay / USBSINK).
+   Push-mode sources pin camilla at 0 dB by design.
+3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
+   normal jitter (~0.1 dB).
+4. `|drift| < RECONCILE_DUCK_SKIP_DB` (10 dB) — CueDuck plays
+   proactive cues without setting `_voice_session_active`, so we
+   skip anything that looks duck-deep. Below the default
+   `JASPER_DUCK_DB = -25 dB` by safe margin.
+
+**Trade-off:** if an operator configures `JASPER_DUCK_DB` shallower
+than 10 dB (e.g., -5 dB), the reconciler may briefly un-duck cues
+during proactive cue playback (1 Hz of "raise camilla to expected"
+inside a 5–10 s cue window). Production default of -25 dB is well
+clear. If this needs to change, gate the reconciler on a "cue
+active" flag set by the cue manager, mirroring `note_voice_session`.
+
+**Emits** `event=volume.reconciled` on every write with
+`source=`, `level=`, `current_db=`, `expected_db=`, `drift_db=`.
+Visible in `journalctl -u jasper-voice` for drift forensics.
+
+The reconciler does NOT replace `apply_active_source_transition`'s
+explicit boundary handling — transitions still go through the
+canonical path. The reconciler is the safety net for everything
+else.
+
 ## Hearing-safety belt
 
 The coordinator pushes commands; it doesn't enforce safety on its own.
@@ -371,4 +416,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-25 (re-verified after replacing the inferred-duck heuristic in `_set_camilla` with a cross-daemon UDS probe; "Two deferral triggers" subsection renamed and rewritten as "Cross-daemon defer signal")
+Last verified: 2026-05-26 (re-verified after adding the self-healing reconciler `maybe_reconcile_camilla` to `VolumeObserver._tick`; new "Self-healing reconciler" section)

@@ -26,6 +26,7 @@ class _FakeCoordinator:
         self.active = active
         self.observed: list[tuple[Source, float]] = []
         self.transitions: list[tuple[Source, Source]] = []
+        self.reconcile_calls: int = 0
 
     async def _active_source(self):
         return self.active
@@ -35,6 +36,9 @@ class _FakeCoordinator:
 
     async def observe_source_volume(self, source, value):
         self.observed.append((source, float(value)))
+
+    async def maybe_reconcile_camilla(self) -> None:
+        self.reconcile_calls += 1
 
 
 # ---------- AirPlay reader -------------------------------------------------
@@ -284,3 +288,69 @@ async def test_tick_skips_inactive_sources(monkeypatch, tmp_path):
 
     await obs._tick()
     assert coord.observed == []
+
+
+async def test_tick_calls_reconciler_every_tick(monkeypatch, tmp_path):
+    """Self-healing convergence runs on every tick. The reconciler
+    is idempotent and gated internally so it's safe to call
+    unconditionally — the observer's job is just to drive the
+    cadence."""
+    coord = _FakeCoordinator(active=Source.IDLE)
+    obs = VolumeObserver(
+        coord,
+        librespot_state_path=str(tmp_path / "missing.json"),
+    )
+
+    async def fake_busctl(*args, **kwargs):
+        return None
+
+    async def fake_path():
+        return None
+
+    monkeypatch.setattr(
+        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+    )
+    monkeypatch.setattr(
+        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+    )
+
+    await obs._tick()
+    await obs._tick()
+    await obs._tick()
+    assert coord.reconcile_calls == 3
+
+
+async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, caplog):
+    """The reconciler is supposed to swallow internally, but if a
+    future bug makes it raise the observer must keep running —
+    observation is the more important responsibility."""
+    import logging
+
+    class _BrokenCoord(_FakeCoordinator):
+        async def maybe_reconcile_camilla(self) -> None:
+            raise RuntimeError("simulated reconciler bug")
+
+    coord = _BrokenCoord(active=Source.IDLE)
+    obs = VolumeObserver(
+        coord,
+        librespot_state_path=str(tmp_path / "missing.json"),
+    )
+
+    async def fake_busctl(*args, **kwargs):
+        return None
+
+    async def fake_path():
+        return None
+
+    monkeypatch.setattr(
+        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+    )
+    monkeypatch.setattr(
+        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+    )
+    caplog.set_level(logging.WARNING, logger="jasper.volume_observers")
+    # Must not raise out of _tick.
+    await obs._tick()
+    assert any(
+        "reconciler raised" in r.message for r in caplog.records
+    )
