@@ -17,6 +17,7 @@ unit per wizard. nginx routes:
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
   /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
   /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
+  /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -47,6 +48,7 @@ from . import (
     google_setup,
     home_assistant_setup,
     peering_setup,
+    speaker_setup,
     sources_setup,
     spotify_setup,
     transit_setup,
@@ -113,6 +115,7 @@ def main() -> int:
     ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
     weather_port = int(os.environ.get("JASPER_WEATHER_WEB_PORT", "8779"))
     wake_corpus_port = int(os.environ.get("JASPER_WAKE_CORPUS_WEB_PORT", "8782"))
+    speaker_port = int(os.environ.get("JASPER_SPEAKER_WEB_PORT", "8783"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
     # direct invocation — each wizard then falls through to its own
@@ -175,6 +178,15 @@ def main() -> int:
     # file. Shells out to systemctl for AirPlay, Spotify Connect, and
     # USB sink; DBus for BT.
     sources_server = sources_setup.make_server(target_for(sources_port))
+
+    # Speaker display name — one user-facing name for Spotify Connect,
+    # AirPlay, Bluetooth, and USB Audio.
+    speaker_state = os.environ.get(
+        "JASPER_SPEAKER_NAME_FILE", speaker_setup.SPEAKER_NAME_FILE,
+    )
+    speaker_server = speaker_setup.make_server(
+        target_for(speaker_port), state_path=speaker_state,
+    )
 
     # Wake-word page — model picker + detection layers + sensitivity.
     # Writes /var/lib/jasper/wake_model.env on model save; proxies
@@ -281,6 +293,7 @@ def main() -> int:
         google_server.RequestHandlerClass,
         airplay_server.RequestHandlerClass,
         sources_server.RequestHandlerClass,
+        speaker_server.RequestHandlerClass,
         wake_server.RequestHandlerClass,
         wifi_server.RequestHandlerClass,
         peers_server.RequestHandlerClass,
@@ -298,6 +311,7 @@ def main() -> int:
         ("/google", google_port),
         ("/airplay", airplay_port),
         ("/sources", sources_port),
+        ("/speaker", speaker_port),
         ("/wake", wake_port),
         ("/wifi", wifi_port),
         ("/peers", peers_port),
@@ -320,6 +334,7 @@ def main() -> int:
         ("/google", google_server),
         ("/airplay", airplay_server),
         ("/sources", sources_server),
+        ("/speaker", speaker_server),
         ("/wake", wake_server),
         ("/wifi", wifi_server),
         ("/peers", peers_server),

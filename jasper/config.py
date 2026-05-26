@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
 from .citibike import parse_saved_stations as _parse_citibike_stations
+from .speaker_name import runtime_name as _speaker_runtime_name
 
 logger = logging.getLogger(__name__)
 
@@ -676,9 +677,9 @@ class Config:
             ),
             # Substring (case-insensitive) matched against
             # `sp.devices()[].name` to find the Pi's librespot endpoint.
-            # Default "JTS" matches `--name JTS` in deploy/systemd/
-            # librespot.service. Change if you renamed the device.
-            spotify_device_name=_env("JASPER_SPOTIFY_DEVICE_NAME", "JTS"),
+            # The /speaker/ wizard writes JASPER_SPEAKER_NAME, consumed
+            # by both librespot's --name and this targeting path.
+            spotify_device_name=_speaker_runtime_name(),
             # Multi-account registry: one record per household member,
             # mapping AirPlay ClientName patterns to per-user OAuth
             # caches. See jasper.accounts module-doc for shape.

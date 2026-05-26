@@ -66,6 +66,7 @@ def _render(
     airplay_env = tmp_path / "airplay_mode.env"
     fanin_env = tmp_path / "fanin.env"
     jasper_env = tmp_path / "jasper.env"
+    speaker_env = tmp_path / "speaker_name.env"
 
     template.write_text(
         textwrap.dedent(
@@ -88,7 +89,8 @@ def _render(
         fanin_env.write_text(
             f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES={fanin_output_buffer_frames}\n"
         )
-    jasper_env.write_text('JASPER_AIRPLAY_DEVICE_NAME="Unit Test"\n')
+    jasper_env.write_text("")
+    speaker_env.write_text('JASPER_SPEAKER_NAME="Unit Test"\n')
 
     if asoundrc is NO_ASOUNDRC:
         asoundrc_path = tmp_path / "no-asound.conf"
@@ -105,10 +107,10 @@ def _render(
             "JASPER_AIRPLAY_MODE_ENV": str(airplay_env),
             "JASPER_FANIN_ENV_FILE": str(fanin_env),
             "JASPER_ENV_FILE": str(jasper_env),
+            "JASPER_SPEAKER_NAME_FILE": str(speaker_env),
             "JASPER_CAMILLA_STATEFILE": str(statefile),
             "JASPER_CAMILLA_DEFAULT_CONFIG": str(camilla),
             "JASPER_ASOUNDRC": str(asoundrc_path),
-            "JASPER_DERIVE_DEVICE_NAME": str(tmp_path / "missing-helper"),
         }
     )
 

@@ -163,7 +163,7 @@ def _attach_fake_router(mux: Mux, clients: list[_FakeSpClient]):
 async def test_web_api_prefers_active_device_when_available(mux, monkeypatch):
     """The two-pass logic should hit an is_active device on pass 1 and
     never fall through to pass 2 (which would also try inactive devs)."""
-    monkeypatch.setenv("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
     active = _FakeSpClient("primary", [
         {"name": "JTS", "id": "jts-active", "is_active": True},
     ])
@@ -178,7 +178,7 @@ async def test_web_api_falls_through_to_inactive_device(mux, monkeypatch):
     try inactive JTS devices. Real-world rationale: Spotify's is_active
     flag lags behind player state by multiple seconds; librespot can be
     audibly playing while Web API still says is_active=False."""
-    monkeypatch.setenv("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
     inactive = _FakeSpClient("primary", [
         {"name": "JTS", "id": "jts-inactive", "is_active": False},
     ])
@@ -191,7 +191,7 @@ async def test_web_api_falls_through_to_inactive_device(mux, monkeypatch):
 async def test_web_api_no_jts_device_at_all_returns_false(mux, monkeypatch):
     """If no account has any device named JTS, the Web API path fails
     cleanly (returns False); caller then escalates to systemctl."""
-    monkeypatch.setenv("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
     other = _FakeSpClient("primary", [
         {"name": "Phone", "id": "phone-1", "is_active": True},
     ])
@@ -206,7 +206,7 @@ async def test_web_api_pause_exception_on_one_account_tries_next(
 ):
     """If one account's pause_playback raises, the loop should continue
     to the next account rather than aborting the whole preempt."""
-    monkeypatch.setenv("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+    monkeypatch.setenv("JASPER_SPEAKER_NAME", "JTS")
     bad = _FakeSpClient("primary", [
         {"name": "JTS", "id": "jts-1", "is_active": True},
     ], raises_on_pause=True)

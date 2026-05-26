@@ -193,10 +193,13 @@ when the configured AEC mic is present with 6-channel firmware — see
   wireless remote (e.g. the VK-01 volume knob) is present, since
   powering the adapter off would silently disconnect it. Same
   prompt fires on the Power switch at `http://jts.local/bluetooth/`.
+- ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
+  name for AirPlay, Spotify Connect, Bluetooth, and USB Audio. Defaults
+  to `JTS`; the URL remains `jts.local`.
 - ✅ **USB Audio Input** (`jasper-usbsink`) — fourth music source.
   Plug a computer into the Pi's USB-C port (via the 8086
-  Consultancy USB-C/PWR Splitter) and the host sees JTS as a USB
-  audio output device. Off by default; toggle at
+  Consultancy USB-C/PWR Splitter) and the host sees the configured
+  speaker name as a USB audio output device. Off by default; toggle at
   `http://jts.local/sources/` enables it. The host's volume slider
   drives JTS's canonical `listening_level` (feels like spinning the
   dial). Joins the existing mux arbitration for latest-source-wins

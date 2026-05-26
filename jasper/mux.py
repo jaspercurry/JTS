@@ -15,8 +15,8 @@ Renderer support:
     pause:  Two-tier escalation. Tier 1 is Spotify Web API via
             spotipy — librespot 0.8.0 has no local control HTTP.
             We iterate household accounts and issue
-            PUT /me/player/pause to any account that has the JTS
-            device in its list. Tier 2 (added 2026-05-22) is
+            PUT /me/player/pause to any account that has the configured
+            speaker device in its list. Tier 2 (added 2026-05-22) is
             `systemctl restart librespot.service` if Tier 1 fails
             — guarantees librespot releases its private fan-in lane
             so the new winner is heard alone. Tier 2 is still useful
@@ -447,7 +447,8 @@ class Mux:
         router = self._ensure_spotify_router()
         if router is None:
             return False
-        device_name = os.environ.get("JASPER_SPOTIFY_DEVICE_NAME", "JTS")
+        from .speaker_name import runtime_name as _speaker_runtime_name
+        device_name = _speaker_runtime_name()
         # Two-pass: first prefer is_active devices (lowest-latency
         # path); fall through to any JTS-named device if that fails.
         for prefer_active in (True, False):
@@ -495,8 +496,8 @@ class Mux:
         that gap, the new winner (AirPlay / Bluetooth) is heard alone.
         After respawn, librespot is back as an idle Spotify Connect
         device — the credential cache (--system-cache
-        /var/cache/librespot) persists, so the user's phone re-sees JTS
-        in the Connect picker without re-authenticating. The catch: any
+        /var/cache/librespot) persists, so the user's phone re-sees the
+        speaker in the Connect picker without re-authenticating. The catch: any
         state inside librespot's current session (track position, queue)
         is lost — the next Spotify Connect cast picks up fresh.
 

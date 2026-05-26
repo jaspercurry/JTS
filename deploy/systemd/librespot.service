@@ -17,15 +17,13 @@ Type=simple
 User=pi
 Group=audio
 # Spotify Connect display name. Sourced from /etc/jasper/jasper.env if
-# JASPER_SPOTIFY_DEVICE_NAME is set there (the EnvironmentFile= below);
-# otherwise falls back to the Environment= default. This keeps a second
-# Pi on the same LAN from crashing librespot with an Avahi name
-# collision — install.sh seeds jasper.env with a hostname-derived
-# default via jasper-derive-device-name (jts2 → "JTS-2", etc.). The
-# leading `-` on EnvironmentFile makes it optional (no error if the
-# file is absent during very early bringup).
-Environment="JASPER_SPOTIFY_DEVICE_NAME=JTS"
+# JASPER_SPEAKER_NAME is the one user-facing display name shown by
+# Spotify Connect, AirPlay, Bluetooth, and USB Audio. The /speaker/
+# wizard writes /var/lib/jasper/speaker_name.env; the Environment=
+# default covers very early bringup before that file exists.
+Environment="JASPER_SPEAKER_NAME=JTS"
 EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # RuntimeDirectory creates /run/librespot/ at start with mode 0755.
 # Other components (jasper-mux, jasper-voice volume_observers,
 # jasper-control coordinator) read /run/librespot/state.json — the
@@ -54,7 +52,7 @@ CacheDirectoryMode=0700
 # music stream to CamillaDSP/AEC. The private lane keeps renderer
 # opens independent; latest-source-wins remains jasper-mux policy.
 ExecStart=/usr/bin/librespot \
-    --name ${JASPER_SPOTIFY_DEVICE_NAME} \
+    --name=${JASPER_SPEAKER_NAME} \
     --device-type speaker \
     --bitrate 320 \
     --backend alsa \

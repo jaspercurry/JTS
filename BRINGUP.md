@@ -442,10 +442,12 @@ ssh pi@jts.local 'systemctl is-active jasper-usbsink jasper-usbsink-init'
 Plug your Mac/Windows/Linux laptop into the splitter's USB-A leg.
 
 - **macOS**: Open System Settings → Sound → Output. **JTS USB Audio**
-  appears. Select it. (Note: macOS may label the device "Playback
+  appears by default (or `<speaker name> USB Audio` if renamed in
+  `/speaker/`). Select it. (Note: macOS may label the device "Playback
   Inactive" — that's a cosmetic kernel bug in `f_uac2.c`, audio still
   works. Don't chase.)
-- **Windows**: Open Sound settings, choose JTS USB Audio as output.
+- **Windows**: Open Sound settings, choose JTS USB Audio as output
+  (or the renamed USB Audio device).
 - **Linux**: Should auto-route via PulseAudio/PipeWire, or `pactl
   set-default-sink alsa_output.usb-Linux_Foundation_*`.
 
@@ -476,7 +478,7 @@ ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/jasper-doctor' | grep -i usbsink
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | Toggle greyed out, "needs dtoverlay + reboot" note | Phase 2's `install.sh` ran before the source had `set_usb_gadget_mode`, OR you've edited `/boot/firmware/config.txt` since | Re-run `bash scripts/deploy-to-pi.sh` from the laptop, reboot |
-| Host doesn't see JTS in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
+| Host doesn't see the speaker in its audio device picker | Splitter not wired (forgot the USB-A cable to host), or `jasper-usbsink-init` didn't bring up the gadget | `journalctl -u jasper-usbsink-init` for ConfigFS errors |
 | Mac says "Playback Inactive" | Cosmetic kernel bug — audio still plays | Ignore |
 | Volume slider on Mac doesn't move JTS | `amixer -c UAC2Gadget controls` should show `PCM Capture Volume`; if missing, gadget descriptor wasn't built with `c_volume_present=1` | `journalctl -u jasper-usbsink \| grep volume_bridge` |
 | Toggle off but `lsmod \| grep libcomposite` shows it loaded | RAM-drift from a previous bad stop — jasper-doctor will warn | `sudo rmmod u_audio libcomposite` or reboot |
@@ -519,7 +521,8 @@ curl -s -X POST -H 'Content-Type: application/json' \
 Listen for fan noise + amp idle hum. If silence is suspiciously
 quiet, double-check the amp is on and speakers are connected.
 
-AirPlay something to "JTS" (it should appear in your phone /
+AirPlay something to "JTS" (or the display name configured at
+`http://jts.local/speaker/`; it should appear in your phone /
 laptop's AirPlay picker after a few seconds). At main_volume =
 −30 dB you should hear barely-audible audio. Now adjust the
 **amp's physical gain knob** until that level is your
@@ -1001,7 +1004,7 @@ persist them to flash via that command.
   using different rates/formats than the dmix's locked
   rate/format. Check `cat /etc/asound.conf`.
 
-**AirPlay senders see "JTS" but won't connect.**
+**AirPlay senders see the speaker but won't connect.**
 - shairport-sync.conf must use `shairport_substream`, the AirPlay
   private fan-in lane. `jasper-doctor` catches stale bare
   `hw:Loopback,*` or retired `jasper_renderer_in` wiring.

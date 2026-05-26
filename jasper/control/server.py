@@ -466,6 +466,7 @@ async def _with_coordinator(
     docs/HANDOFF-volume.md "Cross-daemon defer signal" for the why."""
     from ..camilla import CamillaController
     from ..renderer import RendererClient
+    from ..speaker_name import runtime_name as _speaker_runtime_name
     from ..volume_coordinator import VolumeCoordinator
     from ..volume_persistence import VolumePersistence
 
@@ -491,9 +492,7 @@ async def _with_coordinator(
         persistence=persistence,
         backend=backend,
         spotify_router=spotify_router,
-        spotify_device_name=os.environ.get(
-            "JASPER_SPOTIFY_DEVICE_NAME", "JTS",
-        ),
+        spotify_device_name=_speaker_runtime_name(),
         duck_active_probe=duck_active_probe,
     )
     coord.load_persisted_level()
@@ -621,6 +620,7 @@ async def _get_state(
 
     from .. import librespot_state
     from ..camilla import CamillaController
+    from ..speaker_name import read_state as _read_speaker_name_state
 
     # Cheap synchronous reads first.
     voice_provider = os.environ.get("JASPER_VOICE_PROVIDER", "gemini")
@@ -763,6 +763,7 @@ async def _get_state(
     spotify_blob = librespot_state.read(
         os.environ.get("JASPER_LIBRESPOT_STATE", librespot_state.DEFAULT_PATH),
     )
+    speaker_name_state = _read_speaker_name_state()
     spotify = {
         "playing": bool(spotify_blob.get("playing", False)),
         "track_id": spotify_blob.get("track_id"),
@@ -848,6 +849,10 @@ async def _get_state(
             # /system dashboard and any other consumer can show
             # "off" vs "idle" based on this.
             "usbsink": usbsink_state,
+        },
+        "speaker_name": {
+            "name": speaker_name_state.name,
+            "source": speaker_name_state.source,
         },
         "active_source": active_source,
         # Fan-in daemon. null only when the daemon/socket is unavailable.
@@ -1142,6 +1147,7 @@ def _make_handler(
                 # surface an empty history rather than 500.
                 from .system_metrics import read_build_info
                 from .. import home_assistant as _ha_mod
+                from ..speaker_name import read_state as _read_speaker_name_state
 
                 # HA probe is async + slow-ish (~50-200 ms typical against
                 # a healthy local HA, fails fast on unreachable). Run it
@@ -1170,6 +1176,7 @@ def _make_handler(
                     "voice_provider": os.environ.get(
                         "JASPER_VOICE_PROVIDER", "gemini",
                     ),
+                    "speaker_name": _read_speaker_name_state().__dict__,
                     "home_assistant": ha_status,
                 }
                 self._send_json(payload)

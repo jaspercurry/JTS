@@ -6,6 +6,7 @@ Wants=librespot.service shairport-sync.service bluealsa.service
 [Service]
 Type=simple
 EnvironmentFile=-/etc/jasper/jasper.env
+EnvironmentFile=-/var/lib/jasper/speaker_name.env
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
 Restart=on-failure
 RestartSec=2
