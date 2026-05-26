@@ -258,6 +258,12 @@ async def test_design_writes_result_json(tmp_path: Path):
         "balanced"
     )
     assert result["design_report"]["target_profile"]["target_id"] == "flat"
+    assert result["confidence_report"]["level"] in {"medium", "low"}
+    assert result["confidence_report"]["strategy_gates"]["safe"]["allowed"] is True
+    assert (
+        result["design_report"]["confidence_report"]
+        == result["confidence_report"]
+    )
 
 
 # ---------- /start auto-reset + /sessions endpoint -------------------------

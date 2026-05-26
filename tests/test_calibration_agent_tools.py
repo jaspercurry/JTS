@@ -33,6 +33,11 @@ def _write_bundle(root: Path, session_id: str = "abc") -> Path:
                 "message": "browser reported echo cancellation enabled",
             }],
         }],
+        "confidence_report": {
+            "level": "medium",
+            "score": 72,
+            "strategy_gates": {"balanced": {"allowed": True}},
+        },
     }
     result = {
         "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
@@ -85,6 +90,7 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
     assert summary["session_id"] == "abc"
     assert summary["strategy_choice"] == "balanced"
     assert summary["design_report"]["improvement"]["rms_db"] == 2.0
+    assert summary["confidence_report"]["level"] == "medium"
     assert summary["mic_calibrated"] is True
     assert summary["quality_issues"][0]["artifact_path"] == "captures/p0.wav"
     assert intake["peaks_nulls"]["peaks"][0]["freq_hz"] == 80.0

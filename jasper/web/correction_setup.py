@@ -2276,6 +2276,7 @@ def _handle_upload_capture(
         "verify_metrics": sess.verify_metrics,
         "capture_quality": sess.capture_quality,
         "verify_quality": sess.verify_quality,
+        "confidence_report": sess.confidence_report,
         "peqs": [p.__dict__ for p in sess.peqs],
         "design_report": sess.design_report,
     }

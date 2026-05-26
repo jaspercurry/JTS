@@ -9,9 +9,12 @@
 
 JTS should grow from conservative bass correction into a richer
 calibration platform by adding substrate first: bundle
-reproducibility, calibrated microphones, multi-position data,
-visualizations, and separate DSP layers. FIR and LLM-assisted tuning
-become safer only after that substrate exists.
+reproducibility, calibrated microphones, multi-position confidence,
+visualizations, and separate DSP layers. The main product lane is room
+correction and preference tuning for ordinary listeners; active
+speaker commissioning is an adjacent power-user lane. FIR and
+LLM-assisted tuning become safer only after the measurement substrate
+is trustworthy enough to explain.
 
 ## Ladder
 
@@ -27,6 +30,15 @@ become safer only after that substrate exists.
 | 7 | Minimum-phase FIR | Same conservative target and boost rules as PEQ, emitted as FIR. |
 | 8 | FDW / mixed-phase experiments | Opt-in, high measurement confidence, pre-ringing audit, power-user first. |
 | 9 | LLM advisor | Explains, asks, compares, and submits bounded strategy JSON only. |
+
+## Current Main-Lane Priority
+
+After the calibrated mic and strategy-audit substrate, the next room
+correction work should be measurement trust rather than more filter
+types. The immediate priority is Stage 3: first-class confidence
+reporting, per-position variance, repeatability flags, and bundle
+artifacts that let deterministic code and future LLM tools explain
+what the measurement can and cannot support.
 
 ## DSP Pipeline Boundary
 
@@ -60,7 +72,9 @@ or test tone.
 ## Parallel Track: Active Speaker Commissioning
 
 JTS speakers with separate woofer/mid/tweeter amplifier channels need
-a separate commissioning path before the room-correction ladder:
+a separate commissioning path before the room-correction ladder. This
+track matters for JTS hardware and DIY users, but it should not displace
+the room-correction main lane:
 
 | Stage | Capability | Ship criteria |
 |---|---|---|

@@ -128,6 +128,12 @@ def get_measurement_summary(bundle: MeasurementBundle) -> dict[str, Any]:
         "mic": mic or None,
         "input_device": info.get("input_device"),
         "peq_count": len(result.get("peqs") or info.get("peqs") or []),
+        "confidence_report": (
+            result.get("confidence_report")
+            or info.get("confidence_report")
+            or (result.get("design_report") or {}).get("confidence_report")
+            or (info.get("design_report") or {}).get("confidence_report")
+        ),
         "design_report": result.get("design_report") or info.get("design_report"),
         "quality_issue_count": len(quality_issues),
         "quality_issues": quality_issues,

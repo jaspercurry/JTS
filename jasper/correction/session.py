@@ -49,7 +49,16 @@ from typing import Any, Awaitable, Callable
 
 import numpy as np
 
-from . import analysis, bundles, calibration, deconv, quality, strategy, sweep
+from . import (
+    analysis,
+    bundles,
+    calibration,
+    confidence,
+    deconv,
+    quality,
+    strategy,
+    sweep,
+)
 from .camilla_yaml import emit_correction_config
 from .calibration import CalibrationRecord
 from .peq import PEQ
@@ -265,6 +274,7 @@ class MeasurementSession:
         self.position_freqs: np.ndarray | None = None  # log grid
         self.capture_quality: list[dict[str, Any]] = []
         self.verify_quality: dict[str, Any] | None = None
+        self.confidence_report: dict[str, Any] | None = None
 
         # Output curves for the chart.
         self.measured_curve: CurveJSON | None = None
@@ -437,6 +447,7 @@ class MeasurementSession:
             ),
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "current_correction_at_start": self.current_correction_at_start,
             "autolevel": self.autolevel.snapshot(),
             "sweep_meta": (
@@ -502,6 +513,7 @@ class MeasurementSession:
             "verify_metrics": self.verify_metrics,
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "peqs": [p.__dict__ for p in self.peqs],
             "design_report": self.design_report,
         }
@@ -703,6 +715,19 @@ class MeasurementSession:
         """Resolve target_choice → dB target curve on `freqs`."""
         return strategy.resolve_target_profile(self.target_choice).curve_db(freqs)
 
+    def _build_confidence_report(self) -> dict[str, Any]:
+        return confidence.build_confidence_report(
+            total_positions=self.total_positions,
+            completed_positions=len(self.position_magnitudes),
+            has_mic_calibration=self.mic_calibration is not None,
+            input_device=self.input_device,
+            capture_quality=self.capture_quality,
+            strategy_choice=self.strategy_choice,
+            position_magnitudes=self.position_magnitudes,
+            freqs_hz=self.position_freqs,
+            correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
+        )
+
     # ------------------------------------------------------------------
     # Phase 1 / Phase 2 measurement flow.
     # ------------------------------------------------------------------
@@ -875,6 +900,8 @@ class MeasurementSession:
         )
         self.peqs = [PEQJSON.from_peq(p) for p in design.peqs]
         self.design_report = design.report
+        self.confidence_report = self._build_confidence_report()
+        self.design_report["confidence_report"] = self.confidence_report
 
     # ------------------------------------------------------------------
     # Apply / reset / verify.
@@ -1340,6 +1367,7 @@ class MeasurementSession:
             ),
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "sweep": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),

@@ -1,10 +1,11 @@
 # HANDOFF: LLM-driven calibration agent
 
-> **Status: research + early substrate (2026-05-25).** This is the
+> **Status: research + early substrate (2026-05-26).** This is the
 > design-space document for the guided calibration/tuning arc. Phase
-> 0a substrate is now underway: calibrated mic registry/parser,
+> 0a substrate has landed: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
-> picker, bundle metadata, capture-quality checks, and a read-only
+> picker, bundle metadata, capture-quality checks, bounded correction
+> strategies, design-audit reports, first-pass confidence reports, and a read-only
 > `jasper-calibration-agent` intake CLI. The LLM agent itself is
 > still not implemented.
 >
@@ -32,10 +33,10 @@
 
 ## TL;DR
 
-1. The shipped `/correction/` substrate is good (Phase 0–2.2 in
-   [`HANDOFF-correction.md`](HANDOFF-correction.md), 123 correction
-   tests
-   green on synthetic data). What it lacks is the **judgment layer**:
+1. The shipped `/correction/` substrate is good (Phase 0–2.5 in
+   [`HANDOFF-correction.md`](HANDOFF-correction.md), with focused
+   correction tests green on synthetic data). What it lacks is the
+   **judgment layer**:
    today's UX is "auto-PEQ proposes ≤5 cuts, you tap Apply" with no
    coaching, no room-shape context, no critique of the proposal.
 2. **The May 2026 research pass found no product filling that gap
@@ -725,7 +726,7 @@ Each phase is independently shippable, each ends in a measurable
 user-visible improvement, each is small enough that a stall doesn't
 strand the work.
 
-### Phase 0a — Calibration mic + device picker (SUBSTRATE UNDERWAY)
+### Phase 0a — Calibration mic + device picker (DONE)
 
 Before any LLM work:
 
@@ -746,7 +747,11 @@ Before any LLM work:
 - Make any built-in phone-mic compensation a **fallback** rather than
   the default when an external calibrated mic is selected.
 
-### Phase 0b — Bundle contract + N10 hardware verification (PARTIAL)
+**Status:** implemented 2026-05-25 in the room-correction substrate.
+Keep future changes inside the provider/parser boundary rather than
+letting vendor quirks leak into measurement math.
+
+### Phase 0b — Bundle contract + measurement confidence (PARTIAL)
 
 Before any LLM work:
 
@@ -757,6 +762,12 @@ Before any LLM work:
   selected mic/device metadata, calibration-file hash, target curve,
   generated PEQ, predicted response, applied config, and verify
   measurement.
+- Add first-class confidence reporting: mic calibration status,
+  capture-quality status, position count, per-position variance,
+  repeatability, browser/device confidence, and whether the selected
+  correction strategy is justified by the evidence. A first pass now
+  exists for the fields JTS already collects; SNR, repeatability, and
+  research-tuned thresholds are still future work.
 - Keep the current `info.json` / `result.json` shape compatible, but
   add explicit versioning so future FIR and agent tooling can detect
   what artifacts are present instead of guessing from filenames.
@@ -768,9 +779,9 @@ Before any LLM work:
   reality you want Y."
 
 **Sequencing rationale:** the agent's recommendations inherit the
-measurement quality. Shipping the agent on top of uncalibrated input
-is a confidence-amplifier on bad data. Phase 0a/0b should land first;
-ideally several real calibration sessions are run before Phase A so
+measurement quality. Shipping the agent on top of low-confidence input
+is a confidence-amplifier on bad data. Phase 0a has landed; Phase 0b
+and several real calibration sessions should come before Phase A so
 the author has lived experience of what the agent should be saying.
 
 ### Phase 0c — FIR + tuning corpus research (INITIAL PASS DONE)
@@ -1067,4 +1078,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

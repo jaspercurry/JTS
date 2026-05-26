@@ -94,7 +94,19 @@
   calibration-agent intake tool surfaces the same report so a future
   LLM can explain and recommend bounded strategy changes without
   reverse-engineering the filters.
-- ⏳ **Phase 3 — power-user pass-through.** Already shipped as part
+- ✅ **Phase 2.6 — first-pass measurement confidence report.**
+  Implemented 2026-05-26. Adds `jasper.correction.confidence`, a
+  deterministic confidence summary derived from existing facts:
+  completed position count, calibrated-mic presence, input-device
+  metadata, capture-quality issues, per-position variance in the
+  correction band, and strategy gates for `safe` / `balanced` /
+  `assertive`. The report is persisted into `info.json` /
+  `result.json`, embedded in the design audit, returned from the
+  upload/status path, and exposed through the read-only
+  calibration-agent intake tools. This is deliberately a v1
+  instrument panel; SNR, repeatability, and research-tuned thresholds
+  remain future refinements.
+- ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
   scoped Phase 3.
@@ -104,7 +116,7 @@
   work.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
-**Outstanding Phases 0-2.4 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.6 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
@@ -361,17 +373,22 @@ position and may vector-average below the transition region while
 power-averaging above, but the shipped code does power-mean
 everywhere.
 
-### Decision 8 — Mic compensation: ship one curve, accept the inaccuracy
+### Decision 8 — Mic compensation: calibrated external mic first
 
-**Decision:** Bundle a single iPhone built-in-mic compensation
-curve (HouseCurve approach). Apply boost compensation below 60 Hz
-and above 8-10 kHz. Document explicitly that it's approximate.
-Provide UMIK-2 path as the accuracy escape hatch (Phase 4).
+**Decision:** Treat per-unit calibrated measurement mics as the
+trusted path. The wizard supports browser input-device selection,
+server-side serial lookup for known Dayton Audio and miniDSP mics,
+and manual calibration-file upload for unsupported mics or vendor
+lookup failures. A built-in phone mic path may remain as a degraded
+fallback, but it must be labeled lower confidence and should not
+unlock future FIR or agent recommendations that depend on small dB
+distinctions.
 
-**Why not a per-model curve database?** No published cross-model
+**Why not a per-phone curve database?** No published cross-model
 compensation database exists. HouseCurve and AudioTool both ship
-single generic curves. Don't try to be cleverer than the people
-selling this for $20.
+single generic curves. A generic phone curve is useful for demos and
+rough bass-region work, but the long-term substrate for serious room
+correction is a known calibrated mic with bundle provenance.
 
 ### Decision 9 — Power-user pass-through: reverse-proxy `camillagui-backend` at `/camilla/`
 
@@ -600,7 +617,9 @@ Concrete changes:
   ambient too loud (>50 dB pre-sweep, prompt user).
 - House-curve preset slider (warm / neutral / bright) interpolating
   Flat ↔ Harman.
-- Bundled iPhone mic compensation curve applied automatically.
+- Calibrated external mic metadata and correction curve applied when
+  available; built-in phone mic compensation is a degraded fallback,
+  not the high-confidence path.
 
 ### Phase 3 — Power-user pass-through (1.5 days)
 
@@ -614,7 +633,7 @@ Concrete changes:
 - Statefile coordination: measurement coordinator is the only
   writer; camillagui reads + suggests.
 
-### Phase 4 — REW interop + calibrated-mic lookup polish (2 days)
+### Phase 4 — REW import/export and measurement interop (2 days)
 
 - `.frd` export (REW-compatible: `Hz dB phase`, 1/48-oct underlying).
 - `.wav` IR export (mono float32, normalized) for REW / external FIR
@@ -623,10 +642,11 @@ Concrete changes:
 - Document the round-trip workflow: measure here → export `.frd` →
   open in REW → REW's CamillaDSP YAML export (V5.20.14+) → upload
   back at `/camilla/`.
-- Harden calibration lookup provider adapters. Dayton serial lookup is
-  a known server-side fetch path; UMIK-1 has a long-lived static file
-  path; UMIK-2 is still endpoint archaeology and must keep manual
-  upload as the fallback until the public form contract is verified.
+- Keep calibration lookup provider adapters narrow and observable.
+  Dayton and miniDSP serial lookup already landed in Phase 2.3; Phase
+  4 should preserve manual upload as the fallback and focus on import /
+  export paths, provenance, and clear operator errors when vendor
+  endpoints drift.
 
 ### Phase 5 — Filter sophistication (research-gated, 1 GB-aware)
 

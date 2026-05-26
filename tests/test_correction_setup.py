@@ -596,6 +596,7 @@ def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
         verify_metrics = None
         peqs = []
         design_report = None
+        confidence_report = None
 
         def capture_path_for_position(self, position: int):
             return tmp_path / f"p{position}.wav"
