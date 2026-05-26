@@ -530,6 +530,7 @@ async def test_get_weather_explicit_location_overrides_default():
         ("Denver CO", "denver", "US"),
         ("Paris France", "paris", "FR"),
         ("London Ontario", "london", "CA"),
+        ("Buenos Aires, Argentina", "Buenos Aires, Argentina", ""),
     ],
 )
 @pytest.mark.asyncio
@@ -597,6 +598,18 @@ async def test_get_weather_parses_spoken_location_qualifiers(
                 "latitude": 42.98, "longitude": -81.23, "population": 420000,
             },
         ],
+        "Buenos Aires, Argentina": [
+            {
+                "name": "Buenos Aires", "country": "Argentina",
+                "country_code": "AR", "latitude": -34.61, "longitude": -58.38,
+                "population": 2890000,
+            },
+            {
+                "name": "Buenos Aires", "country": "Costa Rica",
+                "country_code": "CR", "latitude": 9.17, "longitude": -83.33,
+                "population": 27000,
+            },
+        ],
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -614,11 +627,16 @@ async def test_get_weather_parses_spoken_location_qualifiers(
         result = await weather.get_weather(location=query)
         assert "error" not in result
         assert captured_geocode_query[0]["name"] == expected_name
-        assert captured_geocode_query[0]["countryCode"] == expected_country
+        if expected_country:
+            assert captured_geocode_query[0]["countryCode"] == expected_country
+        else:
+            assert "countryCode" not in captured_geocode_query[0]
         if query.startswith("Cortez, Florida"):
             assert result["location"] == "Cortez, Florida"
         if query == "London Ontario":
             assert result["location"] == "London, Ontario"
+        if query == "Buenos Aires, Argentina":
+            assert result["location"] == "Buenos Aires, Argentina"
     finally:
         await http.aclose()
 

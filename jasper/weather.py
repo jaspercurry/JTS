@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import math
 import re
+import unicodedata
 from dataclasses import dataclass
 
 import httpx
@@ -76,9 +77,10 @@ class _Location:
 class _ParsedPlace:
     raw: str
     base: str
+    search_name: str
     admin1: str = ""
     country_code: str = ""
-    country_name: str = ""
+    soft_qualifier: str = ""
 
 
 @dataclass(frozen=True)
@@ -173,6 +175,11 @@ def _describe(code: int | None) -> str:
 
 
 def _norm(value: str) -> str:
+    value = (
+        unicodedata.normalize("NFKD", value)
+        .encode("ascii", "ignore")
+        .decode("ascii")
+    )
     return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
 
 
@@ -191,7 +198,7 @@ def _suffix_match(value: str, mapping: dict[str, str]) -> tuple[str, str] | None
 def _parse_place(place: str) -> _ParsedPlace:
     raw = place.strip()
     if not raw:
-        return _ParsedPlace(raw="", base="")
+        return _ParsedPlace(raw="", base="", search_name="")
 
     pieces = [p.strip(" .") for p in re.split(r",+", raw) if p.strip(" .")]
     base = pieces[0] if pieces else raw
@@ -199,7 +206,7 @@ def _parse_place(place: str) -> _ParsedPlace:
 
     admin1 = ""
     country_code = ""
-    country_name = ""
+    soft_qualifier = ""
 
     if qualifiers:
         unknown: list[str] = []
@@ -209,17 +216,19 @@ def _parse_place(place: str) -> _ParsedPlace:
             state = US_STATES.get(norm_piece)
             province = CA_PROVINCES.get(norm_piece)
             if country:
-                country_code, country_name = country
+                country_code = country[0]
             elif state:
                 admin1 = state
-                country_code, country_name = "US", "United States"
+                country_code = "US"
             elif province:
                 admin1 = province
-                country_code, country_name = "CA", "Canada"
+                country_code = "CA"
             else:
                 unknown.append(piece)
-        if not (admin1 or country_code) and unknown:
-            admin1 = qualifiers
+        # Unknown comma qualifiers are soft hints, not hard admin filters:
+        # "Buenos Aires, Argentina" should still resolve without a full
+        # bundled country list.
+        soft_qualifier = " ".join(unknown).strip()
     else:
         country_match = _suffix_match(base, COUNTRIES)
         state_match = _suffix_match(base, US_STATES)
@@ -240,20 +249,23 @@ def _parse_place(place: str) -> _ParsedPlace:
                 flags=re.IGNORECASE,
             ).strip()
             if kind == "country":
-                country_code, country_name = COUNTRIES[alias]
+                country_code = COUNTRIES[alias][0]
             elif kind == "state":
                 admin1 = US_STATES[alias]
-                country_code, country_name = "US", "United States"
+                country_code = "US"
             else:
                 admin1 = CA_PROVINCES[alias]
-                country_code, country_name = "CA", "Canada"
+                country_code = "CA"
+
+    search_name = raw if soft_qualifier and not (admin1 or country_code) else base
 
     return _ParsedPlace(
         raw=raw,
         base=base.strip() or raw,
+        search_name=search_name.strip() or raw,
         admin1=admin1,
         country_code=country_code,
-        country_name=country_name,
+        soft_qualifier=soft_qualifier,
     )
 
 
@@ -297,6 +309,24 @@ def _candidate_score(parsed: _ParsedPlace, candidate: _Candidate) -> float | Non
         score += 30.0
     if candidate.population:
         score += min(15.0, math.log10(candidate.population) * 3.0)
+    if parsed.soft_qualifier:
+        soft = _norm(parsed.soft_qualifier)
+        qualifier_score = max(
+            (
+                fuzz.WRatio(soft, _norm(value))
+                for value in (
+                    candidate.admin1,
+                    candidate.country,
+                    f"{candidate.admin1} {candidate.country}",
+                )
+                if value
+            ),
+            default=0,
+        )
+        if qualifier_score >= 90:
+            score += 35.0
+        elif qualifier_score >= 75:
+            score += 15.0
     return score
 
 
@@ -591,7 +621,7 @@ class WeatherClient:
         parsed = _parse_place(place)
         if not parsed.base:
             return None
-        params = {"name": parsed.base, "count": 20, "language": "en"}
+        params = {"name": parsed.search_name, "count": 20, "language": "en"}
         if parsed.country_code:
             params["countryCode"] = parsed.country_code
         r = await self._http.get(
@@ -615,11 +645,12 @@ class WeatherClient:
         if not scored:
             logger.info(
                 "event=weather_geocode query=%r base=%r admin1=%r country=%r "
-                "candidates=%d outcome=no_match",
+                "soft=%r candidates=%d outcome=no_match",
                 parsed.raw,
                 parsed.base,
                 parsed.admin1,
                 parsed.country_code,
+                parsed.soft_qualifier,
                 len(candidates),
             )
             return None
@@ -634,11 +665,12 @@ class WeatherClient:
         self._geocode_cache[key] = loc
         logger.info(
             "event=weather_geocode query=%r base=%r admin1=%r country=%r "
-            "candidates=%d selected=%r outcome=ok",
+            "soft=%r candidates=%d selected=%r outcome=ok",
             parsed.raw,
             parsed.base,
             parsed.admin1,
             parsed.country_code,
+            parsed.soft_qualifier,
             len(candidates),
             loc.name,
         )
