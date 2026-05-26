@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import secrets
+import subprocess
 import threading
 import time
 import uuid
@@ -85,7 +86,13 @@ from jasper.cli.wake_enroll import (
 # the recorder's own style block (the recorder doesn't use the
 # wrap_page() helper since its HTML is more bespoke than the form-
 # based wizards).
-from jasper.web._common import NAV_BACK_CSS, NAV_BACK_HTML
+from jasper.web._common import (
+    NAV_BACK_CSS,
+    NAV_BACK_HTML,
+    delete_env_file,
+    read_env_file,
+    write_env_file,
+)
 
 logger = logging.getLogger("jasper-wake-corpus-web")
 
@@ -152,6 +159,164 @@ RESUME_WINDOW_SEC = 3600.0
 # embedded JS reads `<meta name="csrf-token">` and sends this header
 # on every mutating request.
 CSRF_HEADER = "X-CSRF-Token"
+
+# Bridge-side corpus-output config. The web service is intentionally
+# sandboxed away from /etc/jasper/jasper.env, so operator-driven corpus
+# experiment flags live in /var/lib/jasper like the other wizard-owned
+# env files.
+SYSTEM_ENV_PATH = Path(os.environ.get(
+    "JASPER_SYSTEM_ENV_FILE", "/etc/jasper/jasper.env",
+))
+BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
+    "JASPER_WAKE_CORPUS_BRIDGE_ENV",
+    "/var/lib/jasper/wake_corpus_bridge.env",
+))
+BRIDGE_UNIT = "jasper-aec-bridge.service"
+BRIDGE_RESTART_TIMEOUT_SEC = 30.0
+DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
+
+BRIDGE_OUTPUT_LABELS = {
+    "dtln": "XVF DTLN",
+    "ref": "reference",
+    "usb": "USB raw/WebRTC",
+    "usb_dtln": "USB DTLN",
+}
+
+
+def _env_truthy(value: str | None, *, default: bool = False) -> bool:
+    """Parse the bool vocabulary used by jasper-aec-bridge."""
+    if value is None:
+        return default
+    return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+def _read_bridge_env() -> dict[str, str]:
+    """Read bridge env as systemd will see it: /etc first, corpus
+    wizard file second. Later EnvironmentFile entries win in systemd,
+    so the same overlay order is used here for status/prompt logic.
+    """
+    env: dict[str, str] = {}
+    env.update(read_env_file(str(SYSTEM_ENV_PATH)))
+    env.update(read_env_file(str(BRIDGE_CORPUS_ENV_PATH)))
+    return env
+
+
+def bridge_output_status() -> dict[str, Any]:
+    """Current bridge corpus-output flags, as the UI should present
+    them before beginning a session.
+    """
+    env = _read_bridge_env()
+    return {
+        "dtln": _env_truthy(env.get("JASPER_AEC_DTLN_ENABLED")),
+        "ref": _env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
+        "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
+        "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
+        "env_path": str(BRIDGE_CORPUS_ENV_PATH),
+    }
+
+
+def missing_bridge_outputs_for_session(
+    *,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+) -> list[str]:
+    """Return bridge outputs that must be enabled before a requested
+    session can actually produce the WAV legs the operator checked.
+
+    raw0 is always emitted by the bridge, so it does not participate
+    in this check.
+    """
+    status = bridge_output_status()
+    missing: list[str] = []
+    if include_dtln and not status["dtln"]:
+        missing.append("dtln")
+    if include_usb_mic or include_usb_dtln:
+        if not status["ref"]:
+            missing.append("ref")
+        if not status["usb"]:
+            missing.append("usb")
+    if include_usb_dtln and not status["usb_dtln"]:
+        missing.append("usb_dtln")
+    return missing
+
+
+def restart_aec_bridge() -> None:
+    """Restart the bridge and wait for systemd to report the outcome.
+
+    This path is only used for the explicit corpus-output enable flow,
+    where the operator is waiting to record immediately. A blocking
+    restart is better here than a queued `--no-block` restart because
+    a missing USB mic or failed DTLN load should stop the session
+    before it records silently-missing legs.
+    """
+    subprocess.run(
+        ["systemctl", "restart", BRIDGE_UNIT],
+        check=True,
+        timeout=BRIDGE_RESTART_TIMEOUT_SEC,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def enable_bridge_outputs_for_session(
+    *,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+) -> None:
+    """Persist requested bridge corpus outputs and restart the bridge.
+
+    This function only enables outputs. It deliberately does not turn
+    anything off when a later session leaves a box unchecked: disabling
+    a live bridge output is a separate operator decision, and the
+    recorder can simply ignore legs it is not subscribing to.
+    """
+    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    env_path = str(BRIDGE_CORPUS_ENV_PATH)
+    existed = BRIDGE_CORPUS_ENV_PATH.exists()
+    old_values = read_env_file(env_path)
+    values = dict(old_values)
+
+    if include_dtln:
+        values["JASPER_AEC_DTLN_ENABLED"] = "1"
+    if include_usb_mic or include_usb_dtln:
+        values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
+        values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
+        if (
+            "JASPER_AEC_USB_MIC_DEVICE" not in values
+            and "JASPER_AEC_USB_MIC_DEVICE" not in system_env
+        ):
+            values["JASPER_AEC_USB_MIC_DEVICE"] = DEFAULT_USB_MIC_DEVICE
+    if include_usb_dtln:
+        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
+
+    write_env_file(env_path, values, mode=0o644)
+    try:
+        restart_aec_bridge()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ):
+        if existed:
+            write_env_file(env_path, old_values, mode=0o644)
+        else:
+            delete_env_file(env_path)
+        try:
+            restart_aec_bridge()
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as rollback_error:
+            logger.warning(
+                "bridge env rollback restart failed after corpus-output "
+                "enable failure: %s",
+                rollback_error,
+            )
+        raise
 
 
 def build_ports(
@@ -1250,6 +1415,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": self.backend.include_usb_mic(),
                 "include_usb_dtln": self.backend.include_usb_dtln(),
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "bridge_outputs": bridge_output_status(),
                 "is_recording": self.backend.is_recording(),
                 "elapsed_sec": self.backend.elapsed_recording_sec(),
                 "clip_count": len(self.backend.list_clips()),
@@ -1380,9 +1546,68 @@ class _Handler(BaseHTTPRequestHandler):
             include_dtln = bool(body.get("include_dtln", True))
             include_usb_mic = bool(body.get("include_usb_mic", False))
             include_usb_dtln = bool(body.get("include_usb_dtln", False))
+            enable_bridge_outputs = bool(
+                body.get("enable_bridge_outputs", False),
+            )
             if not member:
                 self._send_error_json(400, "member is required")
                 return
+            if self.backend.is_recording():
+                self._send_error_json(
+                    409,
+                    "can't begin session: recording in progress",
+                )
+                return
+            missing_outputs = missing_bridge_outputs_for_session(
+                include_dtln=include_dtln,
+                include_usb_mic=include_usb_mic,
+                include_usb_dtln=include_usb_dtln,
+            )
+            if missing_outputs and not enable_bridge_outputs:
+                labels = [
+                    BRIDGE_OUTPUT_LABELS.get(key, key)
+                    for key in missing_outputs
+                ]
+                self._send_json({
+                    "error": (
+                        "bridge outputs are disabled for requested "
+                        f"legs: {', '.join(labels)}"
+                    ),
+                    "can_enable_bridge_outputs": True,
+                    "missing_bridge_outputs": missing_outputs,
+                    "missing_bridge_output_labels": labels,
+                }, status=409)
+                return
+            if missing_outputs:
+                try:
+                    enable_bridge_outputs_for_session(
+                        include_dtln=include_dtln,
+                        include_usb_mic=include_usb_mic,
+                        include_usb_dtln=include_usb_dtln,
+                    )
+                except subprocess.CalledProcessError as e:
+                    detail = (e.stderr or e.stdout or str(e)).strip()
+                    msg = (
+                        f"could not enable bridge outputs; {BRIDGE_UNIT} "
+                        "restart failed and the env was rolled back"
+                    )
+                    if detail:
+                        msg = f"{msg}: {detail[-500:]}"
+                    self._send_error_json(500, msg)
+                    return
+                except subprocess.TimeoutExpired:
+                    self._send_error_json(
+                        500,
+                        f"could not enable bridge outputs; {BRIDGE_UNIT} "
+                        "restart timed out and the env was rolled back",
+                    )
+                    return
+                except OSError as e:
+                    self._send_error_json(
+                        500,
+                        f"failed to enable bridge outputs: {e}",
+                    )
+                    return
             try:
                 session_id = self.backend.begin_session(
                     member,
@@ -1401,6 +1626,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": include_usb_mic,
                 "include_usb_dtln": include_usb_dtln,
                 "enabled_legs": list(self.backend.enabled_legs()),
+                "bridge_outputs": bridge_output_status(),
             })
             return
 
@@ -1458,7 +1684,6 @@ class _Handler(BaseHTTPRequestHandler):
                     "can't bind UDP ports the recording is using",
                 )
                 return
-            import subprocess
             try:
                 subprocess.run(
                     ["systemctl", action, VOICE_UNIT], check=True,
@@ -1934,7 +2159,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       const r = await fetch(path, opts);
       if (!r.ok) {
         const e = await r.json().catch(() => ({error: 'request failed'}));
-        throw new Error(e.error || `${r.status}`);
+        const err = new Error(e.error || `${r.status}`);
+        err.status = r.status;
+        err.body = e;
+        throw err;
       }
       return r.json();
     }
@@ -2010,19 +2238,49 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       const includeUsbMic = $('include-usb-mic').checked;
       const includeUsbDtln = $('include-usb-dtln').checked;
       if (!member) { showErr('member is required'); return; }
+      const payload = {
+        member,
+        include_raw_mic_0: includeRawMic0,
+        include_dtln: includeDtln,
+        include_usb_mic: includeUsbMic,
+        include_usb_dtln: includeUsbDtln,
+      };
       try {
-        await api('POST', 'api/session', {
-          member,
-          include_raw_mic_0: includeRawMic0,
-          include_dtln: includeDtln,
-          include_usb_mic: includeUsbMic,
-          include_usb_dtln: includeUsbDtln,
-        });
+        await api('POST', 'api/session', payload);
         showErr('');
         await refreshStatus();
         await refreshClips();
         await refreshSessions();
-      } catch (e) { showErr(`begin session: ${e.message}`); }
+      } catch (e) {
+        const body = e.body || {};
+        if (e.status === 409 && body.can_enable_bridge_outputs) {
+          const labels = body.missing_bridge_output_labels || [];
+          const ok = confirm(
+            `The bridge is not currently emitting: ${labels.join(', ')}.\n\n` +
+            `Enable those bridge outputs and restart jasper-aec-bridge now? ` +
+            `This can add CPU/RAM load, especially DTLN paths.`
+          );
+          if (!ok) {
+            showErr('begin session: bridge outputs not enabled');
+            return;
+          }
+          try {
+            await api('POST', 'api/session', {
+              ...payload,
+              enable_bridge_outputs: true,
+            });
+            showErr('');
+            await refreshStatus();
+            await refreshClips();
+            await refreshSessions();
+            return;
+          } catch (retryErr) {
+            showErr(`begin session: ${retryErr.message}`);
+            return;
+          }
+        }
+        showErr(`begin session: ${e.message}`);
+      }
     }
 
     async function refreshSessions() {
