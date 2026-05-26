@@ -142,22 +142,24 @@ Mode in the consumer apps and dictation in Claude Code.
   certain failures, OpenAI just reconnects.
 - **Pricing**. See `Pricing` in `jasper/usage.py`.
 - **Server-side VAD capability**. OpenAI and Grok support mid-session
-  switching from manual VAD to `server_vad` via `session.update`.
+  switching from manual VAD to `server_vad` via `session.update`, but
+  this is now an opt-in experiment, not the default production path.
   Gemini does not — its `automatic_activity_detection` is fixed at
   connect time (changeable only on session resume with a ~500-1000 ms
   reconnect). The daemon's `_begin_turn` checks
   `connection.supports_server_vad()` (a `LiveConnection` protocol
-  method) rather than branching on provider name. When music is playing
-  and the provider supports it, the daemon switches to `server_vad`
-  with `create_response: false` + `interrupt_response: false`, receives
+  method) rather than branching on provider name. When
+  `JASPER_SERVER_VAD_ENABLED=1`, music is playing, and the provider
+  supports it, the daemon switches to `server_vad` with
+  `create_response: false` + `interrupt_response: false`, receives
   `speech_started` / `speech_stopped` / `committed` events, and fires
   `response.create` from the `_server_vad_response_trigger` background
-  task. Manual VAD is restored on turn release. The switching is gated
-  on `TtsVolumeTracker.music_is_playing()` because AEC3's residual
-  suppressor degrades local Silero scores during music (peaks
-  0.50-0.59, below the 0.60 arming threshold). In silence, local
-  Silero works perfectly and is preferred (lower latency, no API
-  dependency). Config: `JASPER_SERVER_VAD_ENABLED`,
+  task. Manual VAD is restored on turn release. The switching is also
+  gated on `TtsVolumeTracker.music_is_playing()`. Production defaults
+  to local Silero (`JASPER_SERVER_VAD_ENABLED=0`) because the May 2026
+  A/B matrix found server VAD cut off real utterances and was prone to
+  wake-word interference; see `HANDOFF-vad-experiments.md`. Config:
+  `JASPER_SERVER_VAD_ENABLED`,
   `JASPER_SERVER_VAD_THRESHOLD`, `JASPER_SERVER_VAD_SILENCE_MS`,
   `JASPER_SERVER_VAD_PREFIX_MS`. Shadow VAD telemetry (a second Silero
   instance on the raw stream, scoring every session frame as pure
@@ -279,4 +281,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-25 (PR #311 added "End-of-turn timing" subsection + the matching anti-pattern entry)
+Last verified: 2026-05-26 (server-VAD default checked against config + May 2026 VAD matrix)
