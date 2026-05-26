@@ -1230,6 +1230,75 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
 
 
+def test_combined_web_lazy_wake_corpus_serves_after_first_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The lazy loader must not overwrite BaseHTTPRequestHandler.handle.
+
+    Regression guard for the production 502: the first request loaded
+    wake_corpus_setup successfully, then later requests accepted and
+    immediately closed because the lazy class had copied socketserver's
+    no-op BaseRequestHandler.handle onto itself.
+    """
+    import http.client
+
+    from jasper.web import __main__ as web_main
+
+    monkeypatch.setattr(wake_corpus_setup, "voice_daemon_active", lambda: False)
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "bridge_output_status",
+        lambda: {
+            "dtln": True,
+            "ref": False,
+            "usb": False,
+            "usb_dtln": False,
+            "env_path": str(tmp_path / "wake_corpus_bridge.env"),
+        },
+    )
+
+    server = web_main._make_lazy_wake_corpus_server(
+        ("127.0.0.1", 0),
+        output_dir=tmp_path / "out",
+        ports={"on": 9876, "off": 9877},
+        csrf_token="test-token",
+    )
+    port = server.server_address[1]
+    th = threading.Thread(target=server.serve_forever, daemon=True)
+    th.start()
+
+    def get(path: str) -> tuple[int, bytes]:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        try:
+            conn.request("GET", path)
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    try:
+        status, body = get("/")
+        assert status == 200
+        assert b"Wake-Word Corpus Recorder" in body
+
+        status, body = get("/api/status")
+        assert status == 200
+        payload = json.loads(body)
+        assert payload["voice_daemon_active"] is False
+
+        status, body = get("/api/sessions")
+        assert status == 200
+        assert json.loads(body) == {"sessions": []}
+    finally:
+        backend_obj = getattr(server.RequestHandlerClass, "backend", None)
+        server.shutdown()
+        server.server_close()
+        if backend_obj is not None:
+            backend_obj.shutdown()
+        th.join(timeout=2)
+
+
 def test_begin_session_default_excludes_raw0(backend) -> None:
     """Default begin_session() does NOT opt into raw0 — historical
     pre-flag sessions shouldn't suddenly start capturing 4 legs."""
