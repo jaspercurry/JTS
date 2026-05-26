@@ -384,9 +384,10 @@ legs (added 2026-05-26) go one step further: they record a real cheap
 USB mic in parallel with the exact reference frame the bridge fed into
 WebRTC. These are for testing and offline analysis, not for iteration
 1 production wake detection. **Always opt into raw0 in iteration 1.**
-Opt into USB/reference when the cheap mic is connected and
-`jasper-aec-bridge` was started with the corpus USB/ref env flags
-below.
+Opt into USB/reference when the cheap mic is connected. If the bridge
+is not already emitting the requested optional legs, the recorder will
+offer to enable the matching bridge flags, restart
+`jasper-aec-bridge`, and only then begin the session.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -430,12 +431,29 @@ sessions on different days):**
 
 **Bridge env for USB/reference corpus sessions:**
 
+Preferred path: check the USB/reference and/or USB DTLN boxes in the
+recorder. If the bridge outputs are disabled, accept the recorder's
+enable-and-restart prompt. The prompt writes
+`/var/lib/jasper/wake_corpus_bridge.env`, which
+`jasper-aec-bridge.service` sources after `/etc/jasper/jasper.env`.
+If the bridge cannot restart with the requested optional outputs
+(for example, the USB mic is missing), the recorder rolls that env
+file back and restarts the bridge with the prior config.
+
+Equivalent manual env:
+
 ```sh
 JASPER_AEC_CORPUS_REF_ENABLED=1
 JASPER_AEC_CORPUS_USB_ENABLED=1
 JASPER_AEC_USB_MIC_DEVICE="USB PnP Sound Device"
 # Optional only if PortAudio's default-rate probe is wrong:
 # JASPER_AEC_USB_MIC_RATE=44100
+```
+
+USB DTLN adds:
+
+```sh
+JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1
 ```
 
 Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
@@ -1062,6 +1080,17 @@ via the new Sessions card.
 
 ## Changelog
 
+- **2026-05-26 (v8):** Recorder-managed bridge-output enable flow:
+  - `jasper-aec-bridge.service` now sources optional recorder-owned
+    `/var/lib/jasper/wake_corpus_bridge.env` after
+    `/etc/jasper/jasper.env`.
+  - Beginning a session with checked XVF DTLN, USB/reference, or USB
+    DTLN legs now verifies the bridge is emitting those outputs. If
+    not, the UI offers to enable the required flags and restart the
+    bridge before creating the session, so checked boxes cannot silently
+    produce missing WAV legs.
+  - Failed bridge restarts roll back the recorder-owned env file and
+    restart the bridge with the prior config.
 - **2026-05-26 (v7):** Cheap-USB/ref corpus comparison path:
   - Added corpus-only bridge outputs for `ref` (`:9880`), `usb_raw`
     (`:9881`), and `usb_webrtc` (`:9882`), gated by
@@ -1179,4 +1208,4 @@ via the new Sessions card.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-26 (v7 — recorder leg selection + USB/ref corpus path verified)
+Last verified: 2026-05-26 (v8 — recorder-managed bridge-output enable flow verified)
