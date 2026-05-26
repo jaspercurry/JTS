@@ -149,45 +149,78 @@ Both daemons converge through the persistence file. voice_daemon's
 coordinator runs the inbound observers; control_daemon's
 coordinator does not (it doesn't need them — it's a write surface).
 
-### Two deferral triggers in `_set_camilla`
+### Cross-daemon defer signal
 
 The coordinator writes camilla via `_set_camilla(level)` on the
 camilla-master paths (AirPlay + idle + USBSINK). A camilla write
 mid-voice-session would clobber the Ducker's setting and make music
-audibly louder mid-TTS, so two complementary gates short-circuit:
+audibly louder mid-TTS, so two complementary gates short-circuit
+the write:
 
 1. **`_voice_session_active` flag** — set by `note_voice_session(True/
    False)` from jasper-voice's `WakeLoop`. Catches the voice-tool-
    driven path (LLM calls `set_volume` mid-session). Only meaningful
    on the long-lived coordinator owned by jasper-voice; per-request
-   coordinators in jasper-control always have this flag at `False`.
-2. **Inferred-duck check** (PR #299) — if the requested target is
-   more than `_DUCK_INFERENCE_THRESHOLD_DB = 5 dB` ABOVE camilla's
-   current `main_volume`, a Ducker is plausibly active and we
-   defer. Catches the dial / web-slider path through jasper-
-   control's per-request coordinator (which can't see voice-session
-   state).
+   coordinators in jasper-control always read it as `False`.
+2. **`_duck_active_probe` callback** — the authoritative cross-daemon
+   signal. jasper-control's per-request coordinators are constructed
+   with a probe that asks jasper-voice over UDS (`STATUS` →
+   `duck_active`) whether the `Ducker` is currently engaged. Probe-
+   true defers (same effect as the flag); probe-false writes camilla;
+   probe-`None` (UDS unreachable, voice wedged, malformed) **fails
+   open** — the coordinator writes camilla anyway. The dial must
+   never silently stop working because of an inter-daemon problem;
+   better to occasionally un-duck music for a moment than to leave
+   the user with a dead knob. Built by `_make_duck_active_probe` in
+   `jasper/control/server.py`.
 
-Both gates persist `listening_level` (user intent recorded), only the
-camilla write is skipped. When `Ducker.restore()` runs at session
-end it reads disk → `get_camilla_target_db()` → camilla lands at
-the user's intended level. The inferred-duck check is **asymmetric
-by design**: only raises by > threshold defer. Requests at or below
-current `main_volume` pass through — the user is asking for
-at-or-below the ducked level, which doesn't break the duck's
-protection. Test names:
-`test_set_camilla_passes_through_when_lowering_below_ducked_level`
-and `test_set_camilla_passes_through_when_no_duck_inferred` lock
-the asymmetry in.
+Both gates persist `listening_level` (user intent recorded); only
+the camilla write is skipped. When `Ducker.restore()` runs at
+session end it reads disk → `get_camilla_target_db()` → camilla
+lands at the user's intended level. The defer log lines distinguish
+the two paths: `camilla main_volume deferred to ducker.restore`
+(flag path) vs `event=volume.deferred reason=session_signaled`
+(probe path).
 
-What we **don't** do (per the deeper investigation in PR #299): TTS
-gain does NOT respond to dial / web-slider input during TTS playback.
-The tracker stays paused. The user can adjust between turns; mid-
-TTS the audible feedback is that music doesn't get loud (good), and
-TTS itself plays at the gain set at turn-start (no change). Building
-real-time TTS responsiveness to user input requires either
-cross-daemon UDS coordination or a delta-based tracker refactor;
-neither felt justified for the use frequency observed in production.
+#### Why the probe replaced the prior dB-comparison heuristic
+
+Until 2026-05-25, gate #2 was a heuristic: "if the requested target
+is more than 5 dB above camilla's current `main_volume`, infer a
+duck and defer." This conflated two situations that produced an
+identical signal — *Ducker has lowered camilla by 25 dB* and *user
+spun the dial 3 detents in one batch (+6 dB)*. The dial firmware
+batches multi-detent spins into one POST (correct behavior — what
+makes fast spins feel responsive), so any sufficiently fast spin
+crossed the threshold.
+
+The misfire wasn't merely a glitch. When the heuristic deferred,
+`listening_level` was persisted (the caller does it in `_dispatch`'s
+finally block) but `main_volume_db` was not. With no actual Ducker
+running, nothing came along to converge them. Every subsequent dial
+twist computed its target from the now-inflated `listening_level`,
+the gap to current `main_volume` only widened, and the heuristic
+fired again — a self-perpetuating cascade. Users saw the dial UI
+and web slider both reading 100% while the speaker stayed quiet.
+
+The probe replaces a structurally ambiguous signal with an
+authoritative one: jasper-voice is the source of truth about whether
+its own Ducker is engaged, so we ask it. The fail-open behavior
+preserves the AGENTS.md "production speaker — must be resilient and
+plug-and-play" contract: if jasper-voice is down or wedged, the dial
+keeps working at the cost of *possibly* un-ducking music for a
+moment (which wouldn't happen anyway because the wedged daemon
+can't duck either). The previous fix's asymmetric "only raises
+defer" rationale was correct in spirit but the wrong target — what
+mattered was "is a duck *actually* active," not "would this write
+*look like* it's fighting a duck."
+
+What we **don't** do: TTS gain does NOT respond to dial / web-
+slider input during TTS playback. The tracker stays paused. The
+user can adjust between turns; mid-TTS the audible feedback is that
+music doesn't get loud (good), and TTS itself plays at the gain set
+at turn-start (no change). Building real-time TTS responsiveness to
+user input requires a delta-based tracker refactor; not justified
+for the use frequency observed in production.
 
 ## Hearing-safety belt
 
@@ -338,4 +371,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-24 (re-verified after PR #299 added the inferred-duck defer to `_set_camilla` and the "Two deferral triggers" subsection)
+Last verified: 2026-05-25 (re-verified after replacing the inferred-duck heuristic in `_set_camilla` with a cross-daemon UDS probe; "Two deferral triggers" subsection renamed and rewritten as "Cross-daemon defer signal")

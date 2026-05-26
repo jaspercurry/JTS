@@ -568,30 +568,40 @@ async def test_set_camilla_deferred_during_voice_session(tmp_path):
     assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
 
 
-# ---- duck-inference defer (PR #299) --------------------------------------
+# ---- cross-daemon duck-active probe -------------------------------------
 #
 # jasper-control builds a fresh VolumeCoordinator per HTTP request, so the
 # `_voice_session_active` flag above is always False even when jasper-voice
-# has a session in flight. The defer-on-inferred-duck path below catches
-# the dial-during-TTS case in that per-request coordinator.
+# has a session in flight. Those coordinators receive a `duck_active_probe`
+# callable that asks jasper-voice over UDS whether the Ducker is currently
+# engaged. The probe is the authoritative signal — no inference. Probe-true
+# defers (same effect as the flag); probe-false writes camilla; probe-None
+# (UDS unreachable, voice wedged, malformed response) fails open so the dial
+# never silently stops working.
+#
+# Replaces the prior dB-comparison heuristic that conflated "user spinning
+# fast" with "duck active" (a fast 3-detent dial spin = +6 dB request,
+# above the old 5 dB threshold, used to defer spuriously and poison
+# listening_level — see docs/HANDOFF-volume.md "Cross-daemon defer signal").
 
-async def test_set_camilla_deferred_when_request_would_unduck_music(tmp_path):
-    """Per-request coordinator (`_voice_session_active=False`) sees
-    camilla at -40 dB (a Ducker has lowered it). Dial twists to 70%
-    → target -15 dB. delta = -15 - (-40) = +25 dB, way above the 5 dB
-    threshold → defer. Regression for the pre-existing dial-clobbers-
-    music-mid-TTS bug — without this check, the dial path used to
-    write camilla immediately and music would become audibly louder
-    mid-utterance."""
+
+async def test_set_camilla_deferred_when_probe_returns_true(tmp_path):
+    """Per-request coordinator with a probe that signals duck-active.
+    Camilla write is deferred, listening_level still persists so
+    Ducker.restore lands at user intent on session end. Regression
+    for the original PR #299 bug: dial twist during TTS would
+    clobber the Ducker and music became audibly louder mid-utterance."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
-    cam = _FakeCamilla(db=-40.0)  # Ducker has lowered it
+    cam = _FakeCamilla(db=-40.0)  # already ducked
     backend = _FakeBackend(active={})
+
+    async def probe():
+        return True
+
     coord = VolumeCoordinator(
         camilla=cam, persistence=persistence, backend=backend,
-        spotify_router=None,
+        spotify_router=None, duck_active_probe=probe,
     )
-    # Note: _voice_session_active stays False — this is the
-    # per-request coordinator shape.
     await coord.set_listening_level(70)
     # Camilla NOT touched — defer fired.
     assert cam.set_calls == []
@@ -601,95 +611,167 @@ async def test_set_camilla_deferred_when_request_would_unduck_music(tmp_path):
     assert record is not None and record.listening_level == 70
 
 
-async def test_set_camilla_passes_through_when_no_duck_inferred(tmp_path):
-    """No duck active (camilla at the expected -15 dB for the current
-    listening_level=70%). User dials to 50% → target -25 dB. delta =
-    -25 - (-15) = -10 dB (negative, would lower). Lowering passes
-    through — both directions safe when no duck protection at risk."""
+async def test_set_camilla_writes_when_probe_returns_false(tmp_path):
+    """Probe says no duck → write camilla. No more spurious defers
+    on legitimate user input."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
-    cam = _FakeCamilla(db=-15.0)  # synced with listening_level=70%
+    cam = _FakeCamilla(db=-40.0)
     backend = _FakeBackend(active={})
+
+    async def probe():
+        return False
+
     coord = VolumeCoordinator(
         camilla=cam, persistence=persistence, backend=backend,
-        spotify_router=None,
+        spotify_router=None, duck_active_probe=probe,
     )
-    await coord.set_listening_level(50)
-    # Camilla written.
-    assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
+    await coord.set_listening_level(70)
+    # 70% → -15 dB. Camilla written.
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
 
 
-async def test_set_camilla_passes_through_when_lowering_below_ducked_level(
-    tmp_path,
-):
-    """User lowers volume during a duck (camilla at -40, dial to 10%
-    → target -45). delta = -45 - (-40) = -5 dB (negative). Asymmetric
-    by design: we only defer raises (the unsafe direction). Lowering
-    is fine — the music gets quieter, which is what the user wanted
-    and doesn't break the duck's protection."""
+async def test_set_camilla_writes_when_probe_returns_none(tmp_path):
+    """Probe returning None (UDS unreachable, voice daemon wedged,
+    response malformed) → write camilla anyway. Fail-open is the
+    correct default for a home appliance: better to occasionally
+    un-duck music for a moment than to leave the user with a dead
+    dial because of an inter-daemon problem."""
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
-    cam = _FakeCamilla(db=-40.0)  # ducked
+    cam = _FakeCamilla(db=-40.0)
     backend = _FakeBackend(active={})
+
+    async def probe():
+        return None
+
     coord = VolumeCoordinator(
         camilla=cam, persistence=persistence, backend=backend,
-        spotify_router=None,
+        spotify_router=None, duck_active_probe=probe,
     )
-    await coord.set_listening_level(10)
-    # 10% → -45 dB. Camilla written through.
-    assert cam.set_calls and abs(cam.set_calls[-1] - (-45.0)) < 0.01
+    await coord.set_listening_level(70)
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
 
 
-async def test_set_camilla_passes_through_when_camilla_unreachable(tmp_path):
-    """Defensive: if camilla is in a restart blip and best_effort
-    read returns None, fall through to the existing write path
-    (which also handles unreachable best_effort). Don't accidentally
-    defer just because we couldn't read state. The next set call
-    (or source transition) will re-apply once camilla is back."""
+async def test_set_camilla_writes_when_probe_raises(tmp_path, caplog):
+    """Probe is *expected* to convert errors to None internally, but
+    if it raises anyway the coordinator must still fail-open (write
+    camilla) and warn so the bug surfaces in logs without breaking
+    volume control."""
+    import logging
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=0.0)
-    cam.unavailable = True  # all best_effort calls return None / False
+    backend = _FakeBackend(active={})
+
+    async def probe():
+        raise RuntimeError("simulated probe bug")
+
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None, duck_active_probe=probe,
+    )
+    caplog.set_level(logging.WARNING, logger="jasper.volume_coordinator")
+    await coord.set_listening_level(60)
+    # 60% → -20 dB. Write landed despite the probe blowing up.
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-20.0)) < 0.01
+    assert any(
+        "duck_active_probe raised" in r.message for r in caplog.records
+    )
+
+
+async def test_set_camilla_writes_when_no_probe_configured(tmp_path):
+    """jasper-voice's own coordinator never sets a probe — it has
+    the in-process `_voice_session_active` flag instead. With both
+    signals off, camilla writes proceed. (When the flag goes on,
+    the earlier test `test_set_camilla_deferred_during_voice_session`
+    covers the defer.)"""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)
     backend = _FakeBackend(active={})
     coord = VolumeCoordinator(
         camilla=cam, persistence=persistence, backend=backend,
-        spotify_router=None,
+        spotify_router=None,  # no duck_active_probe
     )
-    # Should not raise — best_effort=True on both read and write.
     await coord.set_listening_level(70)
-    # set_volume_db was attempted (returned False since unavailable)
-    # but the path didn't short-circuit on the inferred-duck check.
-    # set_calls stays empty because _FakeCamilla.set_volume_db returns
-    # False without recording. The important assertion is that
-    # listening_level still persisted.
-    assert coord.get_listening_level() == 70
-    record = persistence.load()
-    assert record is not None and record.listening_level == 70
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
 
 
-async def test_set_camilla_defer_logs_structured_event(tmp_path, caplog):
-    """The defer path emits a structured log line so a debugger can
-    distinguish 'deferred because voice session active' from
-    'deferred because we inferred a duck.' If this defer fires
-    spuriously in production, the log makes the cause obvious."""
+async def test_set_camilla_fast_spin_regression(tmp_path):
+    """Regression for the dial-fast-spin desync bug observed 2026-05-25.
+
+    Reproduction: per-request coordinator, no active duck. User spins
+    the dial fast enough that one POST batches 3 detents (+12% / +6 dB).
+    Under the old dB-comparison heuristic, this triggered an
+    `inferred_duck` defer because target_db - current_db = +6 > 5,
+    even though there was no actual session. listening_level was
+    persisted while main_volume stayed put — every subsequent dial
+    twist read the inflated listening_level and kept deferring
+    (cascade), trapping the user with a knob that did nothing until
+    they spun all the way down.
+
+    After the fix: probe returns False (no session) → camilla gets
+    written. No defer. No cascade. The dial spin lands."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    # Match the production log: camilla at -18 dB (64%), in sync with
+    # listening_level=64%.
+    cam = _FakeCamilla(db=-18.0)
+    backend = _FakeBackend(active={})
+
+    async def probe():
+        return False  # No session active — the actual bug scenario
+
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None, duck_active_probe=probe,
+    )
+    # Seed in-memory level to 64% so the +12% adjust lands at 76%
+    # (matching the production log's first deferred event).
+    coord._level = 64
+    persistence.save_listening_level(64, mark_user_change=True)
+
+    # Fast spin: 3 detents batched → +12% adjust → 76% / -12 dB.
+    await coord.adjust_listening_level(12)
+    # Old behavior: cam.set_calls would be empty (defer fired) and
+    # listening_level would be 76 while main_volume_db stayed -18.
+    # New behavior: camilla written to -12 dB; listening_level in sync.
+    assert cam.set_calls and abs(cam.set_calls[-1] - (-12.0)) < 0.01, (
+        "fast spin must land on camilla when no duck is active"
+    )
+    assert coord.get_listening_level() == 76
+
+    # And no cascade: subsequent small twists keep tracking 1:1.
+    cam.db = -12.0  # simulate camilla acknowledging the last write
+    await coord.adjust_listening_level(4)  # one detent up → 80%
+    assert abs(cam.set_calls[-1] - (-10.0)) < 0.01
+    assert coord.get_listening_level() == 80
+
+
+async def test_set_camilla_defer_logs_session_signaled_event(tmp_path, caplog):
+    """The probe-driven defer emits `reason=session_signaled` so it's
+    distinguishable in logs from the in-process flag path (which logs
+    `camilla main_volume deferred to ducker.restore`) and from any
+    future defer reasons."""
     import logging
     persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
     cam = _FakeCamilla(db=-40.0)
     backend = _FakeBackend(active={})
+
+    async def probe():
+        return True
+
     coord = VolumeCoordinator(
         camilla=cam, persistence=persistence, backend=backend,
-        spotify_router=None,
+        spotify_router=None, duck_active_probe=probe,
     )
     caplog.set_level(logging.INFO, logger="jasper.volume_coordinator")
     await coord.set_listening_level(70)
     deferral_events = [
         r for r in caplog.records
         if "event=volume.deferred" in r.message
-        and "reason=inferred_duck" in r.message
+        and "reason=session_signaled" in r.message
     ]
     assert len(deferral_events) == 1
     msg = deferral_events[0].message
-    # Carries enough to diagnose without correlating other lines.
+    assert "level=70%" in msg
     assert "target_db=-15.0" in msg
-    assert "current_db=-40.0" in msg
-    assert "delta_db=25.0" in msg
 
 
 async def test_get_camilla_target_db_idle_returns_listening_level_db(tmp_path):

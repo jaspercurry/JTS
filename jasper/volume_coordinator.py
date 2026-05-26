@@ -42,7 +42,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
 import httpx
 
@@ -133,28 +133,13 @@ ECHO_WINDOW_SEC = 0.5
 PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 
 
-# Duck-inference threshold for the defensive defer path in `_set_camilla`.
-# jasper-control builds a fresh VolumeCoordinator per HTTP request — its
-# `_voice_session_active` is always False even when jasper-voice has a
-# session in flight (the flag is only set on jasper-voice's long-lived
-# coordinator via `note_voice_session`). Without a defensive check the
-# dial path would clobber the Ducker's main_volume setting and music
-# would become audibly louder mid-TTS.
-#
-# We infer an active duck by comparing camilla's current `main_volume_db`
-# to the requested target derived from `listening_level`: if the requested
-# target is more than this many dB ABOVE the current main_volume, a
-# Ducker is presumed to have written camilla. 5 dB is comfortably above
-# normal jitter (~0.1 dB on a stable camilla) and well below any
-# reasonable JASPER_DUCK_DB (default -25 dB; shallowest a user is likely
-# to set is ~-10 dB).
-#
-# This is intentionally one-directional: only "raise above current"
-# triggers the defer (the unsafe direction — would un-duck music
-# mid-TTS). Requests at or below current main_volume pass through
-# (the user's request is already at-or-below the ducked level, so
-# letting it through doesn't break the duck's protection).
-_DUCK_INFERENCE_THRESHOLD_DB = 5.0
+# Type alias for the cross-daemon duck-active probe. Returns True iff a
+# Ducker is currently holding camilla.main_volume below the canonical
+# listening_level target; False or None means safe to write camilla
+# directly. None is the "unknown / probe failed" fallback — `_set_camilla`
+# treats it as False (fail-open), so a wedged jasper-voice never freezes
+# the dial. See docs/HANDOFF-volume.md "Cross-daemon defer signal".
+DuckActiveProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
 @dataclass
@@ -192,6 +177,7 @@ class VolumeCoordinator:
         spotify_router: Any | None = None,
         spotify_device_name: str = "JTS",
         http_client: Optional[httpx.AsyncClient] = None,
+        duck_active_probe: DuckActiveProbe | None = None,
     ) -> None:
         self._camilla = camilla
         self._persistence = persistence
@@ -228,8 +214,19 @@ class VolumeCoordinator:
         # Voice-session gate: while True, the source-transition
         # handler is suppressed because the ducker has temporary
         # control of camilla. Set/cleared by voice_daemon's WakeLoop
-        # via `note_voice_session(True/False)`.
+        # via `note_voice_session(True/False)`. Only meaningful on
+        # the long-lived coordinator owned by jasper-voice; per-
+        # request coordinators in jasper-control always read False
+        # and rely on `_duck_active_probe` instead.
         self._voice_session_active: bool = False
+        # Cross-daemon duck-active signal. jasper-control's per-
+        # request coordinators set this to a UDS-probing callable
+        # that asks jasper-voice's `session_status` whether the
+        # Ducker is currently engaged. jasper-voice's own coordinator
+        # leaves it None — `_voice_session_active` is the in-process
+        # signal there. See docs/HANDOFF-volume.md "Cross-daemon
+        # defer signal".
+        self._duck_active_probe: DuckActiveProbe | None = duck_active_probe
 
     # ------------------------------------------------------------------
     # Public API — read state
@@ -828,54 +825,57 @@ class VolumeCoordinator:
 
     async def _set_camilla(self, level: int) -> None:
         db = percent_to_db(level)
+        # Defer gate #1: in-process voice-session flag. Set by
+        # WakeLoop.note_voice_session on the long-lived coordinator
+        # owned by jasper-voice. The Ducker has exclusive control of
+        # camilla during a session; Ducker.restore() reads the
+        # canonical target via get_camilla_target_db() on session end
+        # and lands camilla at the user's intent. listening_level is
+        # still updated in self._level by the caller and persisted by
+        # _dispatch's finally block, so the user's intent survives;
+        # main_volume_db is intentionally NOT saved here — it'd
+        # diverge from camilla's actual state until restore.
         if self._voice_session_active:
-            # Voice session in progress — Ducker owns camilla. Writing
-            # here would either be clobbered by Ducker.restore (absolute
-            # write) or, worse, get the duck delta added on top.
-            # listening_level is still updated in self._level by the
-            # caller and persisted by _dispatch's save_listening_level,
-            # so the user's intent survives; Ducker.restore reads it
-            # via get_camilla_target_db() and lands camilla there.
-            # main_volume_db is intentionally NOT saved here — it'd
-            # diverge from camilla's actual state until restore.
             logger.info(
                 "camilla main_volume deferred to ducker.restore: "
                 "%d%% (%.1f dB) — voice session active",
                 level, db,
             )
             return
-        # Defensive duck-inference defer (PR #299). The above
-        # `_voice_session_active` gate only fires on jasper-voice's
-        # long-lived coordinator. jasper-control builds a fresh
-        # VolumeCoordinator per HTTP request whose flag is always
-        # False, so dial / web-slider writes from that path used to
-        # clobber the Ducker mid-session — music became audibly
-        # louder mid-TTS. Infer an active duck by comparing the
-        # requested target to camilla's current main_volume: if we'd
-        # be raising it by more than _DUCK_INFERENCE_THRESHOLD_DB,
-        # something else (the Ducker) has plausibly lowered it and
-        # we should defer.
+        # Defer gate #2: cross-daemon duck-active probe. The flag
+        # above only fires on jasper-voice's long-lived coordinator.
+        # jasper-control builds a fresh VolumeCoordinator per HTTP
+        # request whose flag is always False, so it asks jasper-voice
+        # over UDS whether the Ducker is currently engaged. Probe
+        # returning True defers identically to the flag path —
+        # Ducker.restore() will read listening_level off disk on
+        # session end and converge camilla.
         #
-        # Asymmetric on purpose: only "raise by > threshold" defers.
-        # Requests at or below current main_volume pass through —
-        # the user is asking for at-or-below the ducked level, so
-        # letting it through doesn't break the duck's protection.
-        # listening_level is still persisted by _dispatch's finally
-        # block, so when Ducker.restore() reads it on session end
-        # the user's intent lands.
-        current_db = await self._camilla.get_volume_db(best_effort=True)
-        if (
-            current_db is not None
-            and (db - current_db) > _DUCK_INFERENCE_THRESHOLD_DB
-        ):
-            logger.info(
-                "event=volume.deferred reason=inferred_duck "
-                "target_db=%.1f current_db=%.1f delta_db=%.1f "
-                "threshold_db=%.1f level=%d%%",
-                db, current_db, db - current_db,
-                _DUCK_INFERENCE_THRESHOLD_DB, level,
-            )
-            return
+        # Fail-open by design: probe returning None (UDS unreachable,
+        # voice daemon wedged, timeout) means "unknown" → write
+        # camilla normally. The dial must never silently stop working
+        # because of an inter-daemon problem; better to occasionally
+        # un-duck music for a moment than to leave the user with a
+        # dead knob.
+        if self._duck_active_probe is not None:
+            try:
+                duck_active = await self._duck_active_probe()
+            except Exception as e:  # noqa: BLE001
+                # Probe should never raise — it's expected to
+                # convert errors to None internally. If it does
+                # raise, treat as None (fail-open) and warn.
+                logger.warning(
+                    "duck_active_probe raised %s; treating as unknown",
+                    e,
+                )
+                duck_active = None
+            if duck_active is True:
+                logger.info(
+                    "event=volume.deferred reason=session_signaled "
+                    "level=%d%% target_db=%.1f",
+                    level, db,
+                )
+                return
         # best_effort: dial twist arriving during a 2s camilla restart
         # blip should still update listening_level on disk and persist
         # main_volume_db, even if the actual write didn't land. The

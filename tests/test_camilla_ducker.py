@@ -129,6 +129,34 @@ async def test_restore_without_duck_is_no_op():
     assert cam.set_calls == []
 
 
+@pytest.mark.asyncio
+async def test_is_ducked_property_tracks_duck_state():
+    """`is_ducked` is the public signal that jasper-control's
+    VolumeCoordinator consults (via UDS session_status) to decide
+    whether to defer a dial/web-slider camilla write. Must reflect
+    the actual ducker state, not just _ducked's last assignment."""
+    cam = _FakeCamilla(db=-15.0)
+    d = _ducker(cam, duck_db=-25.0, target=-15.0)
+    assert d.is_ducked is False
+    await d.duck()
+    assert d.is_ducked is True
+    await d.restore()
+    assert d.is_ducked is False
+
+
+@pytest.mark.asyncio
+async def test_is_ducked_stays_false_when_duck_skipped_camilla_down():
+    """Camilla restart blip during the duck attempt — the write
+    didn't land, so we mustn't claim we're ducked (jasper-control
+    would defer dial writes against a phantom duck, freezing the
+    knob until camilla recovers and the next duck() actually fires)."""
+    cam = _FakeCamilla(db=0.0)
+    cam.unavailable = True
+    d = _ducker(cam, duck_db=-25.0, target=0.0)
+    await d.duck()
+    assert d.is_ducked is False
+
+
 # ---------- camilla unavailable / restart-blip handling --------------------
 
 
