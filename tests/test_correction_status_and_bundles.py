@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import io
 import json
-import os
 import threading
 import urllib.request
 from pathlib import Path
@@ -139,6 +138,9 @@ def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
     assert data["bundle_schema_version"] == 2
     assert data["state"] == "preparing"
     assert data["target_choice"] == "flat"
+    assert data["strategy_choice"] == "balanced"
+    assert data["correction_strategy"]["strategy_id"] == "balanced"
+    assert data["target_profile"]["target_id"] == "flat"
     assert data["input_device"]["label"] == "USB measurement mic"
     assert "config" in data
     assert data["config"]["sample_rate"] == 48000
@@ -215,7 +217,6 @@ async def test_design_writes_result_json(tmp_path: Path):
     re-renderable without re-running the deconvolution."""
     import numpy as np
     from jasper.correction import sweep
-    from scipy.signal import fftconvolve
 
     sess = _make_session(tmp_path)
     sess.input_device = {
@@ -253,6 +254,10 @@ async def test_design_writes_result_json(tmp_path: Path):
     assert "magnitude_db" in result["measured"]
     assert result["target"] is not None
     assert result["predicted"] is not None
+    assert result["design_report"]["correction_strategy"]["strategy_id"] == (
+        "balanced"
+    )
+    assert result["design_report"]["target_profile"]["target_id"] == "flat"
 
 
 # ---------- /start auto-reset + /sessions endpoint -------------------------
@@ -288,12 +293,14 @@ def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
         *,
         total_positions: int,
         target_choice: str,
+        strategy_choice: str | None = None,
         mic_calibration=None,
         input_device=None,
     ):
         sess = real_replace(
             total_positions=total_positions,
             target_choice=target_choice,
+            strategy_choice=strategy_choice,
             mic_calibration=mic_calibration,
             input_device=input_device,
         )
@@ -393,6 +400,8 @@ def test_start_handler_resets_to_base_before_sweep(
     # the UI can render "was: correction_xyz" if it wants.
     assert body["current_correction_at_start"] is not None
     assert body["current_correction_at_start"]["session_id"] == "xyz"
+    assert body["strategy_choice"] == "balanced"
+    assert body["correction_strategy"]["strategy_id"] == "balanced"
 
 
 def test_start_handler_aborts_if_reset_to_base_fails(

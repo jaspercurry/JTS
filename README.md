@@ -582,8 +582,10 @@ reference. Currently:
   failure path needs to "say something" rather than fall silent.
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
   correction v2 at `/correction/`: iPhone-mic measurement flow,
-  PEQ generation, CamillaDSP hot-swap. Active workstream — read
-  the Status section first to see which phase is in flight.
+  calibrated mic ingest, configurable correction strategies,
+  design-audit bundles, PEQ generation, CamillaDSP hot-swap. Active
+  workstream — read the Status section first to see which phase is
+  in flight.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of

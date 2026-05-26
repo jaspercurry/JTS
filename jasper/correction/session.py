@@ -49,7 +49,7 @@ from typing import Any, Awaitable, Callable
 
 import numpy as np
 
-from . import analysis, bundles, calibration, deconv, peq, quality, sweep, target
+from . import analysis, bundles, calibration, deconv, quality, strategy, sweep
 from .camilla_yaml import emit_correction_config
 from .calibration import CalibrationRecord
 from .peq import PEQ
@@ -123,16 +123,6 @@ class SessionState(Enum):
     AWAITING_VERIFY_CAPTURE = "awaiting_verify_capture"
     VERIFIED = "verified"
     FAILED = "failed"
-
-
-# Targets the user can pick from a dropdown. Maps name → warmth
-# parameter (target.house_curve). 'flat' is a special case.
-TARGET_CHOICES = {
-    "flat": None,           # = target.flat_target
-    "neutral": 0.0,         # = flat (interpolant midpoint)
-    "warm": 0.7,            # = mostly Harman
-    "bright": -0.3,         # = inverse Harman tilt
-}
 
 
 @dataclass
@@ -230,6 +220,7 @@ class SessionConfig:
     peq_max_boost_db: float = 3.0
     peq_cuts_only: bool = True
     peq_flatness_target_db: float = 1.0
+    correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
 class MeasurementSession:
@@ -247,6 +238,7 @@ class MeasurementSession:
         *,
         total_positions: int = 1,
         target_choice: str = "flat",
+        strategy_choice: str | None = None,
         mic_calibration: CalibrationRecord | None = None,
         input_device: dict[str, Any] | None = None,
     ) -> None:
@@ -259,9 +251,12 @@ class MeasurementSession:
 
         self.total_positions = max(1, int(total_positions))
         self.current_position = 0
-        self.target_choice = (
-            target_choice if target_choice in TARGET_CHOICES else "flat"
-        )
+        self.target_choice = strategy.resolve_target_profile(
+            target_choice,
+        ).target_id
+        self.strategy_choice = strategy.resolve_correction_strategy(
+            strategy_choice or self.cfg.correction_strategy,
+        ).strategy_id
         self.mic_calibration = mic_calibration
         self.input_device = input_device
         # Per-position smoothed magnitude responses (dB on log grid).
@@ -277,6 +272,7 @@ class MeasurementSession:
         self.predicted_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_metrics: dict[str, float] | None = None
+        self.design_report: dict[str, Any] | None = None
 
         self.peqs: list[PEQJSON] = []
         self.config_path: Path | None = None
@@ -425,6 +421,13 @@ class MeasurementSession:
             "total_positions": self.total_positions,
             "current_position": self.current_position,
             "target_choice": self.target_choice,
+            "target_profile": strategy.resolve_target_profile(
+                self.target_choice,
+            ).to_dict(),
+            "strategy_choice": self.strategy_choice,
+            "correction_strategy": strategy.resolve_correction_strategy(
+                self.strategy_choice,
+            ).to_dict(),
             "noise_floor_db": self.noise_floor_db,
             "input_device": self.input_device,
             "mic_calibration": (
@@ -440,6 +443,7 @@ class MeasurementSession:
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
             "config_path": (
                 str(self.config_path) if self.config_path else None
             ),
@@ -456,6 +460,8 @@ class MeasurementSession:
                 "peq_max_cut_db": self.cfg.peq_max_cut_db,
                 "peq_max_boost_db": self.cfg.peq_max_boost_db,
                 "peq_cuts_only": self.cfg.peq_cuts_only,
+                "peq_flatness_target_db": self.cfg.peq_flatness_target_db,
+                "correction_strategy": self.cfg.correction_strategy,
             },
         }
         target_path = bundle / "info.json"
@@ -497,6 +503,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
         }
         target_path = bundle / "result.json"
         tmp_path = target_path.with_suffix(".json.tmp")
@@ -694,12 +701,7 @@ class MeasurementSession:
 
     def _design_target(self, freqs: np.ndarray) -> np.ndarray:
         """Resolve target_choice → dB target curve on `freqs`."""
-        if self.target_choice == "flat":
-            return target.flat_target(freqs)
-        warmth = TARGET_CHOICES.get(self.target_choice, 0.0)
-        if warmth is None:  # 'flat'
-            return target.flat_target(freqs)
-        return target.house_curve(freqs, warmth=warmth)
+        return strategy.resolve_target_profile(self.target_choice).curve_db(freqs)
 
     # ------------------------------------------------------------------
     # Phase 1 / Phase 2 measurement flow.
@@ -852,20 +854,12 @@ class MeasurementSession:
 
         averaged_db = analysis.spatial_average_db(self.position_magnitudes)
         log_freqs = self.position_freqs
-        target_db = self._design_target(log_freqs)
-
-        peqs = peq.design_peq(
-            averaged_db, target_db, log_freqs,
-            f_low=self.cfg.peq_f_low,
-            f_high=self.cfg.peq_f_high,
-            max_filters=self.cfg.peq_max_filters,
-            max_cut_db=self.cfg.peq_max_cut_db,
-            max_boost_db=self.cfg.peq_max_boost_db,
-            cuts_only=self.cfg.peq_cuts_only,
-            flatness_target_db=self.cfg.peq_flatness_target_db,
+        design = strategy.design_correction(
+            averaged_db,
+            log_freqs,
+            target_choice=self.target_choice,
+            strategy_choice=self.strategy_choice,
         )
-        predicted_shift = peq.predicted_response(peqs, log_freqs)
-        predicted_curve_db = averaged_db + predicted_shift
 
         self.measured_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
@@ -873,13 +867,14 @@ class MeasurementSession:
         )
         self.target_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
-            magnitude_db=target_db.tolist(),
+            magnitude_db=design.target_db.tolist(),
         )
         self.predicted_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
-            magnitude_db=predicted_curve_db.tolist(),
+            magnitude_db=design.predicted_db.tolist(),
         )
-        self.peqs = [PEQJSON.from_peq(p) for p in peqs]
+        self.peqs = [PEQJSON.from_peq(p) for p in design.peqs]
+        self.design_report = design.report
 
     # ------------------------------------------------------------------
     # Apply / reset / verify.
@@ -1330,6 +1325,13 @@ class MeasurementSession:
             "total_positions": self.total_positions,
             "current_position": self.current_position,
             "target_choice": self.target_choice,
+            "target_profile": strategy.resolve_target_profile(
+                self.target_choice,
+            ).to_dict(),
+            "strategy_choice": self.strategy_choice,
+            "correction_strategy": strategy.resolve_correction_strategy(
+                self.strategy_choice,
+            ).to_dict(),
             "input_device": self.input_device,
             "mic_calibration": (
                 self.mic_calibration.public_metadata()
@@ -1342,6 +1344,7 @@ class MeasurementSession:
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
             "config_path": (
                 str(self.config_path) if self.config_path else None
             ),

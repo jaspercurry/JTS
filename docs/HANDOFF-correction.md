@@ -82,6 +82,18 @@
   bundle, atomic `info.json` writes on failed analysis paths, and
   `jasper-doctor` correction checks for the socket, state dirs,
   current CamillaDSP config path, and newest bundle.
+- ✅ **Phase 2.5 — correction strategy + design audit substrate.**
+  Implemented 2026-05-26. Adds `jasper.correction.strategy`, a
+  deterministic policy layer around PEQ generation. The room
+  correction wizard now exposes target-profile metadata and bounded
+  correction strategies (`safe`, `balanced`, `assertive`), persists
+  `strategy_choice`, `correction_strategy`, `target_profile`, and
+  `design_report` into `info.json` / `result.json`, and renders a
+  compact design audit explaining the selected band, predicted RMS
+  improvement, warnings, and per-filter rationale. The read-only
+  calibration-agent intake tool surfaces the same report so a future
+  LLM can explain and recommend bounded strategy changes without
+  reverse-engineering the filters.
 - ⏳ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -212,13 +224,16 @@ GET  /healthz                liveness — "ok"
 GET  /jts-root-ca.crt        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
-                             mic_calibration, current_correction: {path,
-                             session_id, applied_at_epoch, peq_count} | null})
+                             mic_calibration, target_profile,
+                             correction_strategy, design_report,
+                             current_correction: {path, session_id,
+                             applied_at_epoch, peq_count} | null})
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  reset to base config, begin measurement, returns session_id;
                              body: {total_positions, target_choice,
-                             noise_floor_db?, calibration_id?, input_device?}
+                             strategy_choice?, noise_floor_db?,
+                             calibration_id?, input_device?}
 POST /next-position          advance to position[N+1] sweep
 POST /upload-capture         body = WAV (audio/wav); per-position OR verify capture
 POST /calibration/fetch      body: {model, serial, orientation?}; server-side
@@ -1054,4 +1069,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

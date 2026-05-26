@@ -17,6 +17,8 @@ def _write_bundle(root: Path, session_id: str = "abc") -> Path:
         "started_at": 1000,
         "updated_at": 1001,
         "target_choice": "flat",
+        "strategy_choice": "balanced",
+        "correction_strategy": {"strategy_id": "balanced", "label": "Balanced"},
         "total_positions": 1,
         "current_position": 1,
         "input_device": {"label": "USB measurement mic"},
@@ -47,6 +49,10 @@ def _write_bundle(root: Path, session_id: str = "abc") -> Path:
         "verify": None,
         "verify_metrics": None,
         "peqs": [{"freq_hz": 80, "q": 4, "gain_db": -6}],
+        "design_report": {
+            "correction_strategy": {"strategy_id": "balanced"},
+            "improvement": {"rms_db": 2.0},
+        },
     }
     (bundle / "info.json").write_text(json.dumps(info))
     (bundle / "result.json").write_text(json.dumps(result))
@@ -77,6 +83,8 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
 
     summary = intake["summary"]
     assert summary["session_id"] == "abc"
+    assert summary["strategy_choice"] == "balanced"
+    assert summary["design_report"]["improvement"]["rms_db"] == 2.0
     assert summary["mic_calibrated"] is True
     assert summary["quality_issues"][0]["artifact_path"] == "captures/p0.wav"
     assert intake["peaks_nulls"]["peaks"][0]["freq_hz"] == 80.0

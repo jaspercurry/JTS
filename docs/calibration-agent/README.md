@@ -97,5 +97,10 @@ Every concept file should have:
   2-way/3-way workflow, strict Layer A/B/C separation, phone-as-mic
   raw PCM capture, calibration as a blocking step, and lower-crossover
   confidence caveats for 3-way speakers.
+- 2026-05-26: added room-correction strategy/audit substrate. Bundles
+  now carry target-profile metadata, correction strategy metadata, and
+  a deterministic design report with per-filter rationale. This is the
+  first assistant-facing bridge from measurement math to explainable,
+  bounded recommendations.
 
 Last verified: 2026-05-26

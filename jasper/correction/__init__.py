@@ -8,6 +8,7 @@ Public surface (everything else is implementation detail):
   - deconv.deconvolve(captured_signal, sweep, sample_rate) → impulse response
   - analysis.smooth_fractional_octave(magnitude_db, freqs, fraction) → smoothed
   - target.flat_target(freqs) / target.harman_target(freqs)
+  - strategy.design_correction(...) → bounded PEQ design + audit report
   - peq.design_peq(measured_db, target_db, freqs, **constraints) → list[PEQ]
   - camilla_yaml.emit_correction_config(base_yaml_path, peqs, out_path)
   - coordinator.measurement_window() — async context manager

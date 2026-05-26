@@ -54,6 +54,8 @@ def test_render_page_no_unfilled_placeholders():
     assert "__STYLE__" not in body
     assert "__HOSTNAME__" not in body
     assert "__REQUIRED_SR__" not in body
+    assert "__TARGET_PROFILE_OPTIONS__" not in body
+    assert "__CORRECTION_STRATEGY_OPTIONS__" not in body
 
 
 def test_render_page_includes_ca_download_link():
@@ -236,6 +238,16 @@ def test_render_page_includes_autolevel_controls():
     assert "AUTOLEVEL_SNR_DESIRED_HIGH" in body
     # Preflight noise-floor measurement step is present.
     assert "Measuring room noise" in body
+
+
+def test_render_page_includes_strategy_and_design_audit_controls():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="strategy-select"' in body
+    assert "Balanced" in body
+    assert "Assertive" in body
+    assert "strategy_choice: strategyChoice" in body
+    assert 'id="design-report"' in body
+    assert "renderDesignReport" in body
 
 
 def test_render_page_shows_result_before_drawing_chart():
@@ -583,6 +595,7 @@ def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
         verify_curve = None
         verify_metrics = None
         peqs = []
+        design_report = None
 
         def capture_path_for_position(self, position: int):
             return tmp_path / f"p{position}.wav"
