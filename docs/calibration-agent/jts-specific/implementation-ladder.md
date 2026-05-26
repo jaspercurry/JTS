@@ -1,6 +1,7 @@
 # JTS Calibration Implementation Ladder
 
-> **Status: distilled from 2026-05-25 deep-research intake.**
+> **Status: distilled from 2026-05-25 deep-research intake and
+> updated 2026-05-26 for active-speaker proposal v3.**
 > This is the staged product/architecture path, not a task list for
 > one PR.
 
@@ -8,9 +9,12 @@
 
 JTS should grow from conservative bass correction into a richer
 calibration platform by adding substrate first: bundle
-reproducibility, calibrated microphones, multi-position data,
-visualizations, and separate DSP layers. FIR and LLM-assisted tuning
-become safer only after that substrate exists.
+reproducibility, calibrated microphones, multi-position confidence,
+visualizations, and separate DSP layers. The main product lane is room
+correction and preference tuning for ordinary listeners; active
+speaker commissioning is an adjacent power-user lane. FIR and
+LLM-assisted tuning become safer only after the measurement substrate
+is trustworthy enough to explain.
 
 ## Ladder
 
@@ -27,41 +31,62 @@ become safer only after that substrate exists.
 | 8 | FDW / mixed-phase experiments | Opt-in, high measurement confidence, pre-ringing audit, power-user first. |
 | 9 | LLM advisor | Explains, asks, compares, and submits bounded strategy JSON only. |
 
+## Current Main-Lane Priority
+
+After the calibrated mic and strategy-audit substrate, the next room
+correction work should be measurement trust rather than more filter
+types. The immediate priority is Stage 3: first-class confidence
+reporting, per-position variance, repeatability flags, and bundle
+artifacts that let deterministic code and future LLM tools explain
+what the measurement can and cannot support.
+
 ## DSP Pipeline Boundary
 
 Active speaker DSP, room correction, target shaping, and preference
-tuning should be separate filter banks:
+tuning should be separate filter banks. In active-speaker mode, do
+not model the speaker baseline as a single stereo filter before room
+correction; part of it is pre-split and part of it is per-driver:
 
-```yaml
-pipeline:
-  - mixer: stereo_in
-  - filter: crossover_and_driver_alignment_<speaker_profile_id>
-  - filter: room_correction_<session_id>
-  - filter: target_curve_<target_id>
-  - filter: preference_eq_<profile_id>
-  - filter: limiter_safety
-  - mixer: stereo_out
+```text
+stereo_input
+  -> room_correction_<session_id>        # Layer B, bypassable
+  -> target_curve_<target_id>            # Layer C, bypassable
+  -> preference_eq_<profile_id>          # Layer C, bypassable
+  -> baseline_presplit_<speaker_profile> # Layer A ownership, e.g. BSC
+  -> split_2way_or_3way_<channel_map>
+  -> per_driver_baseline_<speaker_profile>
+       crossover(s)
+       driver_eq
+       delay
+       gain_trim
+       limiter
+  -> physical_outputs
 ```
 
-The active speaker DSP layer is the speaker baseline: crossover
-filters, per-driver gain, polarity, delay, limiter policy, and driver
-integration. It should be tuned before room correction. Room
-correction is rewritten by measurement flows. Preference EQ is
-rewritten by user/LLM-guided taste flows. The limiter/headroom guard
-is always-on.
+Layer A is tuned and versioned before Layer B or Layer C. Layer B is
+rewritten by room measurement flows. Layer C is rewritten by
+user/LLM-guided taste flows. The per-driver limiter/headroom guard is
+always-on and must not be bypassed by any renderer, cue path, sweep,
+or test tone.
 
 ## Parallel Track: Active Speaker Commissioning
 
-JTS speakers with separate woofer/tweeter amplifier channels need a
-separate commissioning path before the room-correction ladder:
+JTS speakers with separate woofer/mid/tweeter amplifier channels need
+a separate commissioning path before the room-correction ladder. This
+track matters for JTS hardware and DIY users, but it should not displace
+the room-correction main lane:
 
 | Stage | Capability | Ship criteria |
 |---|---|---|
-| A0 | Static crossover profile | Known-safe CamillaDSP crossover, polarity, gains, and limiters from bench design. |
-| A1 | Per-driver measurement mode | Measure woofer-only and tweeter-only responses safely, with guardrails around level and mute state. |
-| A2 | Driver alignment | Delay/polarity/phase inspection around crossover, plus predicted summed response. |
-| A3 | Crossover tuning | Deterministic candidate filters, lobe/null checks, excursion/headroom constraints. |
-| A4 | Speaker baseline bundle | Store the accepted speaker profile separately from room measurements. |
+| A0 | Preset/schema substrate | Driver-set preset schema, active channel map, baseline profile schema, and validation, with no hardware loading. |
+| A1 | Safe CamillaDSP templates | Generate checked 2-way/3-way templates with muted/protected startup state, explicit channel labels, and rollback. |
+| A2 | Engineering preset interop | Import or reference REW/VituixCAD artifacts, freeze expected envelopes, safe sweep ranges, polarity, delay ranges, trims, limiters, and BSC. |
+| A3 | Channel/path safety | Prove every audible path flows through the protected active baseline; verify physical outputs before drivers are connected. |
+| A4 | Phone-as-mic W0 | Raw PCM WebSocket ingest, calibration blocking, browser processing sanity checks, and resumable server-side session state. |
+| A5 | Per-driver near-field | Measure woofer/mid/tweeter in isolation against preset envelopes with protective filters and level gates. |
+| A6 | Null-depth alignment | Walk delay and polarity per crossover region; require strong inverted-polarity null before accepting the baseline. |
+| A7 | Gated summed verification | Validate the direct acoustic sum through crossover regions; mark 250-500 Hz lower crossovers reduced-confidence unless the gate supports them. |
+| A8 | Speaker baseline lock | Store accepted `speaker_baseline` separately from room correction and preference profiles, with bundle provenance. |
 
 This track overlaps with FIR/phase work, but it is not the same as
 room phase correction. Driver alignment is usually more repeatable
@@ -123,4 +148,4 @@ The LLM must not:
 - DRC-FIR and rePhase prior art.
 - Toole / Olive / Welti room-correction and preference research.
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

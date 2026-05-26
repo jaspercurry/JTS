@@ -582,26 +582,31 @@ reference. Currently:
   failure path needs to "say something" rather than fall silent.
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
   correction v2 at `/correction/`: iPhone-mic measurement flow,
-  PEQ generation, CamillaDSP hot-swap. Active workstream — read
-  the Status section first to see which phase is in flight.
+  calibrated mic ingest, configurable correction strategies,
+  design-audit bundles, PEQ generation, CamillaDSP hot-swap. Active
+  workstream — read the Status section first to see which phase is
+  in flight.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of
   `/correction/`: calibrated mic ingest (Dayton/miniDSP serial lookup
   plus manual upload fallback), richer measurement bundles,
-  FIR/target-curve research corpus, and eventually an LLM "audio
-  engineer" that critiques the auto-filter, explains trade-offs, and
-  iterates across re-measurements. Also captures the longer-term
-  preference-tuning vision: voice entry point, user feedback like
+  FIR/target-curve research corpus, read-only
+  `jasper-calibration-agent` bundle-intake tooling, and eventually an
+  LLM "audio engineer" that critiques the auto-filter, explains
+  trade-offs, and iterates across re-measurements. Also captures the
+  longer-term preference-tuning vision: voice entry point, user feedback like
   "more bass" / "brighter," and safe reversible EQ layered separately
   from room correction.
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md)
   — Active speaker DSP / crossover commissioning workstream
-  seed (2026-05-25). Canonical handoff for future JTS hardware where
-  CamillaDSP directly drives woofer and tweeter amplifier channels:
-  speaker-baseline layer, safe 2-way bring-up, channel-map hazards,
-  TTS/cue bypass risk, measurement protocol, LR4/IIR-first default,
-  delay/null verification, and separation from room correction.
+  planning baseline (2026-05-25, updated 2026-05-26). Canonical
+  handoff for future JTS hardware where CamillaDSP directly drives
+  woofer/mid/tweeter amplifier channels: speaker-baseline layer,
+  strict room-correction/preference separation, 2-way/3-way preset
+  model, safe bring-up, channel-map hazards, TTS/cue bypass risk,
+  near-field/null-depth/gated measurement triad, LR/IIR-first default,
+  and delay/null verification.
 - [`docs/calibration-agent/`](docs/calibration-agent/README.md) —
   Calibration/tuning knowledge corpus:
   measurement-quality guidance, FIR research landing zone,

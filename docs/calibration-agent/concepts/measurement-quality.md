@@ -1,8 +1,9 @@
 # Measurement Quality
 
-> **Status: initial guidance.** This file captures the measurement
-> checks a future calibration/tuning agent should understand before
-> making recommendations.
+> **Status: current guidance, updated 2026-05-26.** This file captures
+> the measurement checks the correction engine and a future
+> calibration/tuning agent should understand before making
+> recommendations.
 
 ## Operational Summary
 
@@ -21,16 +22,25 @@ designing filters from ambiguous data.
   measurement controls.
 - Auto-level the speaker against the browser mic's observed RMS.
 - Average multiple listening-position captures in linear power.
-- In Phase 2.3, pick the browser input device, fetch known mic
+- Pick the browser input device, fetch known mic
   calibration files by serial, upload unsupported mic calibration
   files manually, and record mic/device metadata in session bundles.
+- Assess capture quality before deconvolution, including clipping,
+  low level, short captures, sample-rate mismatch, uncalibrated mic
+  warnings, and browser-processing warnings.
+- Persist target profile, correction strategy, and a design audit into
+  session bundles for later review.
+- Build a first-pass confidence report from completed position count,
+  calibrated-mic presence, input-device metadata, capture-quality
+  issues, per-position variance, and strategy gates.
 
 ## Quality Flags To Add
 
-- Capture clipping / near-clipping.
+- Research-tuned confidence thresholds for per-filter correction
+  decisions, rather than today's intentionally simple report-level
+  heuristics.
 - Sweep SNR estimate against pre-sweep ambient noise.
 - Repeatability score between nearby positions or repeated sweeps.
-- Position-variance score for each proposed correction band.
 - Calibration coverage warning when the selected curve does not span
   the full analysis band.
 - Browser device mismatch warning when the selected USB mic is not the
@@ -90,4 +100,4 @@ The agent should say "measure again" when:
 - [miniDSP UMIK-1](https://www.minidsp.com/products/acoustic-measurement/umik-1?format=pdf&type=raw)
 - [miniDSP UMIK-2 manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf)
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

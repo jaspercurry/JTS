@@ -21,6 +21,45 @@ What goes here:
 
 ---
 
+## Agent behavior baseline
+
+These rules mirror the user's global Claude Code ruleset
+(`jaspercurry/claude-rules`, last reviewed at commit
+`7f8e9b3` on 2026-05-25) and apply to every AI agent working in
+this repo, including Codex. Project-specific instructions below add
+detail; they do not replace this baseline.
+
+1. **Think before coding.** Surface assumptions, ambiguity, and
+   trade-offs before making non-trivial changes. If the request is
+   genuinely unclear, ask instead of silently choosing.
+
+2. **Check prior art first.** For non-trivial work, look for existing
+   in-repo patterns, shipped subsystem designs, libraries, standards,
+   and relevant research before inventing a new abstraction.
+
+3. **Diagnose before solving.** When fixing a bug, locate the cause
+   with evidence before writing the patch. A plausible fix without a
+   located failure mode is not enough.
+
+4. **Prefer simplicity.** Solve the requested problem with the
+   smallest clear design that fits the codebase. Avoid speculative
+   flexibility, single-use abstractions, and broad refactors.
+
+5. **Make surgical changes.** Touch only what the task requires.
+   Match local style. Clean up obvious orphans created by your own
+   edits. If you notice a significant unrelated problem, finish the
+   current task and then surface it rather than casually widening
+   scope.
+
+6. **Work toward verifiable goals.** For multi-step work, define
+   what success looks like and loop until the evidence matches it.
+
+7. **Close the loop.** Run the code, tests, browser, CLI, endpoint, or
+   operational probe that proves the change. If the environment cannot
+   run a relevant check, say exactly what blocked it.
+
+---
+
 ## Documentation paradigm
 
 How docs in this repo are structured, so additions land in the

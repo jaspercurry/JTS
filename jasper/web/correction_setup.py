@@ -49,7 +49,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse
 
 from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE, send_html_response
 
@@ -123,6 +123,7 @@ def _replace_session(
     *,
     total_positions: int = 1,
     target_choice: str = "flat",
+    strategy_choice: str | None = None,
     mic_calibration=None,
     input_device: dict[str, Any] | None = None,
 ):
@@ -135,6 +136,7 @@ def _replace_session(
     _session = MeasurementSession(
         total_positions=total_positions,
         target_choice=target_choice,
+        strategy_choice=strategy_choice,
         mic_calibration=mic_calibration,
         input_device=input_device,
     )
@@ -168,6 +170,14 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
                 border-radius: 6px; padding: 0.7em 0.9em;
                 margin: 1em 0; color: #800; }
   .err-banner.hidden { display: none; }
+  .quality-banner { border-radius: 6px; padding: 0.7em 0.9em;
+                    margin: 0.5em 0; font-size: 0.94em; }
+  .quality-banner.warn { background: #fff8e1; border: 1px solid #d6b656;
+                         color: #5f4500; }
+  .quality-banner.fail { background: #ffe8e8; border: 1px solid #d99;
+                         color: #800; }
+  .quality-banner ul { margin: 0.4em 0 0; padding-left: 1.2em; }
+  .quality-banner.hidden { display: none; }
 
   .mic-panel { background:#f7f7f7; border:1px solid #ddd;
                border-radius:6px; padding:0.8em 0.9em; margin:1em 0; }
@@ -345,14 +355,19 @@ __NAV_BACK__
 
     <label for="target-select" style="margin-top:0.6em">Target curve</label>
     <select id="target-select" form="dummy">
-      <option value="flat" selected>Flat — neutral, accurate</option>
-      <option value="warm">Warm — Harman-style downward tilt + sub-bass shelf</option>
-      <option value="bright">Bright — slight upward tilt</option>
+      __TARGET_PROFILE_OPTIONS__
     </select>
+
+    <label for="strategy-select" style="margin-top:0.6em">Correction strategy</label>
+    <select id="strategy-select" form="dummy">
+      __CORRECTION_STRATEGY_OPTIONS__
+    </select>
+    <p class="hint" style="margin-top:0.3em">Strategy controls the correction band, filter count, cut/boost policy, and safety bounds. Balanced is the default; Assertive is for calibrated, repeatable measurements.</p>
   </div>
 
   <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
     <span id="state-detail" class="hint"></span></p>
+  <div id="quality-banner" class="quality-banner hidden"></div>
 
   <div id="position-prompt" class="hidden" style="background:#fff3cd; border-radius:6px; padding:0.7em 0.9em; margin:0.5em 0;">
     <p style="margin:0; font-weight:600">Move phone to position <span id="position-current">2</span> of <span id="position-total">5</span>.</p>
@@ -385,6 +400,7 @@ __NAV_BACK__
       After Verify: <span style="color:#a050d0">purple dashed</span> = post-correction measurement.
     </p>
     <p id="verify-summary" class="hint hidden"></p>
+    <div id="design-report" class="hidden"></div>
     <h3>Filters designed</h3>
     <div class="peq-list" id="peq-list"></div>
   </div>
@@ -434,6 +450,7 @@ __NAV_BACK__
   var measureSection = document.getElementById('measure-section');
   var stateBadge = document.getElementById('state-badge');
   var stateDetail = document.getElementById('state-detail');
+  var qualityBanner = document.getElementById('quality-banner');
   var autolevelBtn = document.getElementById('autolevel');
   var autolevelLockBtn = document.getElementById('autolevel-lock');
   var autolevelCancelBtn = document.getElementById('autolevel-cancel');
@@ -447,6 +464,7 @@ __NAV_BACK__
   var resetBtn = document.getElementById('reset-correction');
   var positionsSelect = document.getElementById('positions-select');
   var targetSelect = document.getElementById('target-select');
+  var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
   var positionCurrent = document.getElementById('position-current');
   var positionTotal = document.getElementById('position-total');
@@ -454,6 +472,7 @@ __NAV_BACK__
   var canvas = document.getElementById('chart');
   var peqList = document.getElementById('peq-list');
   var verifySummary = document.getElementById('verify-summary');
+  var designReport = document.getElementById('design-report');
 
   var ctx = null;
   var micStream = null;
@@ -842,6 +861,47 @@ __NAV_BACK__
     stateDetail.textContent = detail || '';
   }
 
+  function qualityReports(payload) {
+    var reports = [];
+    if (payload && Array.isArray(payload.capture_quality)) {
+      reports = reports.concat(payload.capture_quality);
+    }
+    if (payload && payload.verify_quality) {
+      reports.push(payload.verify_quality);
+    }
+    return reports;
+  }
+
+  function renderQuality(payload) {
+    var seen = {};
+    var issues = [];
+    qualityReports(payload).forEach(function (report) {
+      (report && report.issues || []).forEach(function (issue) {
+        var key = [issue.severity, issue.code, issue.message].join('|');
+        if (!seen[key]) {
+          seen[key] = true;
+          issues.push(issue);
+        }
+      });
+    });
+    if (!issues.length) {
+      qualityBanner.className = 'quality-banner hidden';
+      qualityBanner.innerHTML = '';
+      return;
+    }
+    var hasFail = issues.some(function (issue) {
+      return issue.severity === 'fail';
+    });
+    qualityBanner.className = 'quality-banner ' + (hasFail ? 'fail' : 'warn');
+    qualityBanner.innerHTML =
+      '<strong>' + (hasFail ? 'Measurement blocked:' : 'Measurement quality warnings:') +
+      '</strong><ul>' +
+      issues.map(function (issue) {
+        return '<li>' + escapeText(issue.message || issue.code) + '</li>';
+      }).join('') +
+      '</ul>';
+  }
+
   function formatAppliedAt(epoch) {
     if (!epoch) return '';
     var d = new Date(epoch * 1000);
@@ -914,6 +974,47 @@ __NAV_BACK__
     peqList.innerHTML =
       '<table><thead><tr><th>Filter</th><th>Freq</th><th>Q</th><th>Gain</th></tr></thead>' +
       '<tbody>' + rows + '</tbody></table>';
+  }
+
+  function renderDesignReport(report) {
+    if (!report || !report.correction_strategy) {
+      designReport.classList.add('hidden');
+      designReport.innerHTML = '';
+      return;
+    }
+    var before = report.before || {};
+    var after = report.after || {};
+    var improvement = report.improvement || {};
+    var warnings = report.warnings || [];
+    var filterAudits = report.filters || [];
+    var warningHtml = '';
+    if (warnings.length) {
+      warningHtml = '<ul>' + warnings.map(function (w) {
+        return '<li>' + escapeText(w.message || w.code) + '</li>';
+      }).join('') + '</ul>';
+    }
+    var filterHtml = '';
+    if (filterAudits.length) {
+      filterHtml = '<ul>' + filterAudits.map(function (f) {
+        return '<li>' + escapeText(f.rationale || (
+          'Filter near ' + Math.round(f.freq_hz) + ' Hz'
+        )) + '</li>';
+      }).join('') + '</ul>';
+    }
+    designReport.classList.remove('hidden');
+    designReport.innerHTML =
+      '<h3>Design audit</h3>' +
+      '<p class="hint">' +
+      'Strategy: <strong>' + escapeText(report.correction_strategy.label) +
+      '</strong> · Target: <strong>' + escapeText(report.target_profile.label) +
+      '</strong> · Band: ' + Math.round(report.band_hz[0]) + '-' +
+      Math.round(report.band_hz[1]) + ' Hz.</p>' +
+      '<p class="hint">Predicted modal-band RMS error: ' +
+      (before.rms_db || 0).toFixed(1) + ' dB -> ' +
+      (after.rms_db || 0).toFixed(1) + ' dB' +
+      ' (' + (improvement.rms_db || 0).toFixed(1) +
+      ' dB improvement).</p>' +
+      warningHtml + filterHtml;
   }
 
   function drawChart(measured, target, predicted) {
@@ -1056,15 +1157,21 @@ __NAV_BACK__
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
     verifySummary.classList.add('hidden');
+    designReport.classList.add('hidden');
+    designReport.innerHTML = '';
+    qualityBanner.className = 'quality-banner hidden';
+    qualityBanner.innerHTML = '';
     lastVerify = null;
     inVerifyMode = false;
     setStateBadge('preparing', 'pausing music…');
     try {
       var totalPositions = parseInt(positionsSelect.value, 10) || 1;
       var targetChoice = targetSelect.value || 'flat';
+      var strategyChoice = strategySelect.value || 'balanced';
       var resp = await postJson('start', {
         total_positions: totalPositions,
         target_choice: targetChoice,
+        strategy_choice: strategyChoice,
         calibration_id: selectedCalibrationId,
         input_device: selectedInputDevice
       });
@@ -1366,6 +1473,7 @@ __NAV_BACK__
         detail = 'position ' + (s.current_position + 1) + ' of ' + s.total_positions;
       }
       setStateBadge(s.state, detail);
+      renderQuality(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
       if (s.state === 'needs_next_position') {
@@ -1439,6 +1547,8 @@ __NAV_BACK__
       if (data.peqs) {
         renderPEQs(data.peqs);
       }
+      renderDesignReport(data.design_report);
+      renderQuality(data);
       resultSection.classList.remove('hidden');
       if (data.measured) {
         // Force a layout flush so getBoundingClientRect returns
@@ -1454,6 +1564,9 @@ __NAV_BACK__
     } catch (e) {
       setStateBadge('failed', e.message);
       runBtn.disabled = false;
+      try {
+        renderQuality(await fetchStatus());
+      } catch (ignored) {}
     }
   }
 
@@ -1539,6 +1652,12 @@ __NAV_BACK__
 
 def _render_page(hostname: str) -> bytes:
     from jasper.correction.calibration import SUPPORTED_MODELS
+    from jasper.correction.strategy import (
+        DEFAULT_CORRECTION_STRATEGY_ID,
+        DEFAULT_TARGET_PROFILE_ID,
+        correction_strategy_options,
+        target_profile_options,
+    )
 
     mic_model_options = "\n        ".join(
         '<option value="{key}">{label}</option>'.format(
@@ -1547,6 +1666,32 @@ def _render_page(hostname: str) -> bytes:
         )
         for key, spec in SUPPORTED_MODELS.items()
     )
+    target_profile_options_html = "\n      ".join(
+        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+            key=html.escape(str(spec["target_id"]), quote=True),
+            selected=(
+                " selected"
+                if spec["target_id"] == DEFAULT_TARGET_PROFILE_ID
+                else ""
+            ),
+            label=html.escape(str(spec["label"])),
+            description=html.escape(str(spec["description"])),
+        )
+        for spec in target_profile_options()
+    )
+    correction_strategy_options_html = "\n      ".join(
+        '<option value="{key}"{selected}>{label} — {description}</option>'.format(
+            key=html.escape(str(spec["strategy_id"]), quote=True),
+            selected=(
+                " selected"
+                if spec["strategy_id"] == DEFAULT_CORRECTION_STRATEGY_ID
+                else ""
+            ),
+            label=html.escape(str(spec["label"])),
+            description=html.escape(str(spec["description"])),
+        )
+        for spec in correction_strategy_options()
+    )
     return (
         _PAGE_HTML
         .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
@@ -1554,6 +1699,8 @@ def _render_page(hostname: str) -> bytes:
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)
+        .replace("__TARGET_PROFILE_OPTIONS__", target_profile_options_html)
+        .replace("__CORRECTION_STRATEGY_OPTIONS__", correction_strategy_options_html)
     ).encode("utf-8")
 
 
@@ -1671,6 +1818,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     Body fields:
       - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
       - target_choice:   str = 'flat' | 'neutral' | 'warm' | 'bright'
+      - strategy_choice: str = 'safe' | 'balanced' | 'assertive'
       - noise_floor_db:  float | None — optional, client autolevel
         preflight measurement; only saved into the debug bundle.
 
@@ -1686,6 +1834,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     body = _read_json_body(handler)
     total_positions = max(1, min(10, int(body.get("total_positions", 1))))
     target_choice = str(body.get("target_choice", "flat"))
+    strategy_choice = str(body.get("strategy_choice", "balanced"))
     noise_floor_db_raw = body.get("noise_floor_db")
     calibration_id = str(body.get("calibration_id") or "").strip()
     input_device = _sanitize_input_device(body.get("input_device"))
@@ -1710,6 +1859,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sess = _replace_session(
         total_positions=total_positions,
         target_choice=target_choice,
+        strategy_choice=strategy_choice,
         mic_calibration=mic_calibration,
         input_device=input_device,
     )
@@ -1754,11 +1904,15 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
     asyncio.run_coroutine_threadsafe(_run_first_sweep(), _ensure_loop())
 
+    snapshot = sess.snapshot()
     return {
         "session_id": sess.session_id,
         "state": sess.state.value,
         "total_positions": sess.total_positions,
         "target_choice": sess.target_choice,
+        "strategy_choice": sess.strategy_choice,
+        "target_profile": snapshot.get("target_profile"),
+        "correction_strategy": snapshot.get("correction_strategy"),
         "input_device": sess.input_device,
         "mic_calibration": (
             sess.mic_calibration.public_metadata()
@@ -2064,30 +2218,10 @@ def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     sorted by started_at desc; capped at 20. Bundles without a
     parseable info.json (in-progress writes, crashed mid-state) are
     skipped silently."""
+    from jasper.correction.bundles import list_bundles
+
     sess = _get_or_create_session()
-    sessions_dir: Path = sess.cfg.sessions_dir
-    if not sessions_dir.exists():
-        return {"sessions": []}
-    entries: list[dict[str, Any]] = []
-    for sub in sessions_dir.iterdir():
-        if not sub.is_dir():
-            continue
-        info_path = sub / "info.json"
-        if not info_path.exists():
-            continue
-        try:
-            info = json.loads(info_path.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        # Decorate with derived flags the UI cares about without
-        # having to re-stat each bundle.
-        info["bundle_dir"] = str(sub)
-        info["has_result"] = (sub / "result.json").exists()
-        info["has_applied_yml"] = (sub / "applied.yml").exists()
-        info["has_verify_wav"] = (sub / "verify.wav").exists()
-        entries.append(info)
-    entries.sort(key=lambda e: e.get("started_at", 0), reverse=True)
-    return {"sessions": entries[:20]}
+    return {"sessions": list_bundles(sess.cfg.sessions_dir, limit=20)}
 
 
 def _handle_upload_capture(
@@ -2140,7 +2274,11 @@ def _handle_upload_capture(
             sess.verify_curve.__dict__ if sess.verify_curve else None
         ),
         "verify_metrics": sess.verify_metrics,
+        "capture_quality": sess.capture_quality,
+        "verify_quality": sess.verify_quality,
+        "confidence_report": sess.confidence_report,
         "peqs": [p.__dict__ for p in sess.peqs],
+        "design_report": sess.design_report,
     }
 
 
@@ -2308,7 +2446,23 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_autolevel_cancel(self))
                     return
                 if path == "/upload-capture":
-                    self._send_json(_handle_upload_capture(self))
+                    from jasper.correction import quality
+
+                    try:
+                        self._send_json(_handle_upload_capture(self))
+                    except quality.CaptureQualityError as e:
+                        sess = _get_or_create_session()
+                        self._send_json({
+                            "error": str(e),
+                            "session_id": sess.session_id,
+                            "state": sess.state.value,
+                            "current_position": sess.current_position,
+                            "total_positions": sess.total_positions,
+                            "capture_quality": sess.capture_quality,
+                            "verify_quality": sess.verify_quality,
+                        }, status=422)
+                    except ValueError as e:
+                        self._send_client_error(str(e))
                     return
                 if path == "/calibration/fetch":
                     try:

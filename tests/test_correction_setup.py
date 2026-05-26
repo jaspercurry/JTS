@@ -54,6 +54,8 @@ def test_render_page_no_unfilled_placeholders():
     assert "__STYLE__" not in body
     assert "__HOSTNAME__" not in body
     assert "__REQUIRED_SR__" not in body
+    assert "__TARGET_PROFILE_OPTIONS__" not in body
+    assert "__CORRECTION_STRATEGY_OPTIONS__" not in body
 
 
 def test_render_page_includes_ca_download_link():
@@ -236,6 +238,16 @@ def test_render_page_includes_autolevel_controls():
     assert "AUTOLEVEL_SNR_DESIRED_HIGH" in body
     # Preflight noise-floor measurement step is present.
     assert "Measuring room noise" in body
+
+
+def test_render_page_includes_strategy_and_design_audit_controls():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="strategy-select"' in body
+    assert "Balanced" in body
+    assert "Assertive" in body
+    assert "strategy_choice: strategyChoice" in body
+    assert 'id="design-report"' in body
+    assert "renderDesignReport" in body
 
 
 def test_render_page_shows_result_before_drawing_chart():
@@ -542,6 +554,84 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
             assert body["error"] == "miniDSP unavailable"
         else:
             raise AssertionError("expected HTTP 502")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
+    from jasper.correction import quality
+    from jasper.correction.session import SessionState
+
+    report = quality.CaptureQuality(
+        sample_rate=48000,
+        duration_s=1.0,
+        peak_dbfs=0.0,
+        rms_dbfs=-3.0,
+        clipped_fraction=0.1,
+        issues=(
+            quality.QualityIssue(
+                code="capture_clipped",
+                severity="fail",
+                message="capture clipped; lower speaker volume and re-measure",
+            ),
+        ),
+    )
+    report_dict = report.to_dict()
+    report_dict["capture_kind"] = "measurement"
+    report_dict["position_index"] = 0
+    report_dict["artifact_path"] = "captures/p0.wav"
+
+    class FakeSession:
+        session_id = "quality-fail"
+        state = SessionState.AWAITING_CAPTURE
+        current_position = 0
+        total_positions = 1
+        capture_quality: list[dict] = []
+        verify_quality = None
+        measured_curve = None
+        target_curve = None
+        predicted_curve = None
+        verify_curve = None
+        verify_metrics = None
+        peqs = []
+        design_report = None
+        confidence_report = None
+
+        def capture_path_for_position(self, position: int):
+            return tmp_path / f"p{position}.wav"
+
+        async def on_capture_uploaded(self, path):
+            self.state = SessionState.FAILED
+            self.capture_quality = [report_dict]
+            raise quality.CaptureQualityError(report)
+
+    fake = FakeSession()
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: fake,
+    )
+
+    server, base = _start_server()
+    try:
+        req = urllib.request.Request(
+            f"{base}/upload-capture",
+            data=b"not really a wav",
+            headers={"Content-Type": "audio/wav"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(req)
+        except urllib.error.HTTPError as e:
+            assert e.code == 422
+            body = json.loads(e.read().decode())
+            assert "capture quality failed" in body["error"]
+            assert body["state"] == "failed"
+            assert body["capture_quality"][0]["capture_kind"] == "measurement"
+            assert body["capture_quality"][0]["issues"][0]["code"] == (
+                "capture_clipped"
+            )
+        else:
+            raise AssertionError("expected HTTP 422")
     finally:
         server.shutdown()
         server.server_close()

@@ -1,30 +1,46 @@
 # HANDOFF: active speaker DSP commissioning
 
-> **Status: research-backed workstream seed.** Created 2026-05-25
-> from three local deep-research reports on DIY DSP speaker
-> commissioning. This is the canonical handoff for JTS speakers where
-> CamillaDSP directly drives woofer and tweeter amplifier channels.
-> Current JTS production hardware still uses a stereo Apple USB-C
-> dongle passthrough path; active crossover hardware is future work.
+> **Status: planning baseline.** Created 2026-05-25 from three local
+> deep-research reports on DIY DSP speaker commissioning; updated
+> 2026-05-26 with the proposal-v3 active speaker commissioning
+> methodology. This is the canonical handoff for JTS speakers where
+> CamillaDSP directly drives woofer, midrange, and/or tweeter
+> amplifier channels. Current JTS production hardware still uses a
+> stereo Apple USB-C dongle passthrough path; active crossover
+> hardware is future work.
 
 ## Current Operational Truth
 
-Active speaker DSP is a separate layer from room correction.
-Room correction asks, "what should be compensated at this listening
-position?" Active speaker commissioning asks, "what should this
-speaker be before the room is considered?"
+Active speaker DSP is a separate layer from room correction and from
+preference voicing. Room correction asks, "what should be compensated
+at this listening position?" Preference voicing asks, "what tonal
+tilt does this listener like?" Active speaker commissioning asks,
+"what should this speaker be before the room is considered?"
 
 For JTS, that means:
 
 - The current `/correction/` wizard must not rewrite crossover,
   polarity, per-driver gain, driver delay, or limiter policy.
+- Active speaker commissioning is **Layer A: speaker baseline**:
+  per-driver linearization, baffle-step compensation, acoustic-target
+  crossover, polarity, time alignment, gain trim, and per-driver
+  limiters. It is measured with room-immune or quasi-anechoic
+  techniques and stored as a versioned speaker-baseline profile.
+- Room correction is **Layer B**: modal-region EQ and listening-area
+  compensation. It is measured at the listening position(s), lives in
+  the stereo domain, and must not silently alter Layer A.
+- Preference voicing is **Layer C**: house curve, bass/tilt choices,
+  and subjective "brighter / warmer / more bass" tuning. It is
+  reversible taste shaping, stored separately from both Layer A and
+  Layer B.
 - In active mode, "flat" must mean **protected speaker baseline with
   room/preference EQ bypassed**, not an identity full-range
   `/etc/camilladsp/v1.yml` path. Resetting to identity can send
   full-range content to a tweeter.
 - A future active speaker profile is a versioned speaker baseline,
-  not a room-correction session.
-- Room correction and preference EQ sit downstream of that baseline.
+  not a room-correction session. Room correction and preference EQ
+  stack with that baseline, but in a CamillaDSP graph they normally
+  live on the stereo input pair before the per-driver split.
 - Every measurement bundle should eventually record the active
   speaker profile ID so later analysis knows what acoustic baseline
   was measured.
@@ -47,26 +63,43 @@ The existing deployed audio topology is not yet active 2-way ready:
 
 ## Layer Boundary
 
-Keep the DSP layers conceptually separate, but do not confuse this
-with exact CamillaDSP placement:
+Keep DSP ownership separate, and be explicit about logical ownership
+versus physical CamillaDSP placement. The v3 plan uses this model:
+
+- **Layer A: speaker baseline.** Driver linearization, BSC, acoustic
+  crossover, polarity, delay, gain, and per-driver limiters. Measured
+  with near-field, null-depth, gated summed response, plus designer
+  bench measurements. BSC may be physically pre-split; crossover,
+  EQ, delay, and limiters are per-driver after split.
+- **Layer B: room correction.** Modal-region EQ and listening-area
+  correction. Measured at listening position(s). Lives on the stereo
+  input pair before split.
+- **Layer C: preference voicing.** Target tilt, house curve, and
+  subjective bass/treble taste. Derived from published targets and
+  user feedback. Lives on the stereo input pair as a reversible
+  profile.
+
+The practical CamillaDSP shape for active hardware is:
 
 ```text
 source/renderers
-  -> stereo-domain guards: rumble HP, headroom, optional BSC
-  -> room correction / target / preference layers when enabled
-  -> routing / channel map
-  -> per-driver baseline: crossover, driver EQ, delay, polarity, gain
+  -> stereo-domain guards: rumble HP, headroom
+  -> Layer B: room correction when enabled
+  -> Layer C: target/preference voicing when enabled
+  -> Layer A pre-split pieces: baffle-step / global baseline EQ
+  -> N-way routing / channel map
+  -> Layer A per-driver pieces: crossover, driver EQ, delay, polarity, gain
   -> per-driver limiter / protection guard
   -> physical outputs
 ```
 
 The speaker baseline is the thing that makes the box a coherent
-speaker. It should be commissioned once per hardware build and
-changed deliberately. Room correction is re-run for a room/listening
-area. Preference EQ is user taste and should always be reversible.
-Baffle-step compensation is a speaker-baseline decision, but many
-CamillaDSP examples place it before the 2-to-4 split on the stereo
-pair; the profile schema should represent both logical ownership and
+speaker. It should be commissioned once per hardware build and changed
+deliberately. Room correction is re-run for a room/listening area.
+Preference EQ is user taste and should always be reversible.
+Baffle-step compensation is a speaker-baseline decision even when it
+is physically placed before the 2-to-4 or 2-to-6 split on the stereo
+pair. The profile schema must represent both logical ownership and
 physical filter placement.
 
 ## Hard Safety Rules
@@ -98,79 +131,127 @@ These are not UX polish; they are anti-smoke rules.
 
 ## Default Commissioning Stance
 
-The research reports converge on an IIR-first ladder:
+The 2026-05-26 v3 proposal makes this a preset-first system. The
+product does not ask end users to design crossovers from scratch.
+Instead, a speaker designer creates a driver-set preset once, using
+the engineering workflow below; the consumer wizard refines that
+preset for the specific unit and room.
 
-- Use an acoustic Linkwitz-Riley fourth-order target as the first
-  practical default for a conventional 2-way.
+The default stance:
+
+- Support both 2-way and 3-way active speakers through the same
+  generic preset schema and N-way CamillaDSP template.
+- Use an acoustic Linkwitz-Riley target by default. LR4 is the
+  normal starting point; LR2 is rare and polarity-sensitive; LR8 is
+  reserved for drivers that need stronger out-of-band isolation.
 - Treat that as an acoustic target, not merely "insert electrical LR4
   biquads." The drivers, cabinet, protection capacitor, baffle
   diffraction, horn/waveguide, and acoustic center all shape the
   final acoustic slopes.
 - Use IIR biquads for the first production baseline: low latency,
   simple CPU budget, inspectable filters, and no pre-ringing.
-- Reserve FIR for later expert modes: linear-phase crossover
-  experiments, measured excess-phase correction, or imported
-  convolution filters after latency and pre-ringing are explicitly
-  acceptable.
+- Reserve FIR (`Conv`) for explicit later modes: global excess-phase
+  correction, linear-phase experiments, or non-minimum-phase
+  driver-inverse work after latency, CPU, headroom, and pre-ringing
+  are all audited.
 - Choose crossover frequency from the actual drivers and enclosure:
   tweeter safe operating range and distortion, woofer breakup and
   directivity, center-to-center spacing, baffle geometry, target SPL,
   and off-axis behavior. Do not hard-code a universal frequency.
+- Store every accepted baseline as a versioned `speaker_baseline`,
+  distinct from room-correction sessions and preference profiles.
 
-For Jasper's own future active build, a report suggested a 2 kHz LR4
-starting point for a Dayton Epique E150HE-44 plus generic 1-inch
-compression-driver/horn pairing. That is an input hypothesis only.
-Do not promote it to a default until the exact tweeter, horn, baffle,
-amplifier gain, output hardware, and measurements are known.
-The useful constraints to preserve from that hypothesis: crossover
-likely lives in the 1.8-2.5 kHz neighborhood only if the actual horn
-tweeter supports it safely; the E150HE-44's reported directivity knee
-around 2.8 kHz and high-frequency rise argue against crossing too
-high; horn path length may mean the woofer gets delay; and tweeter
-sensitivity trims may be large.
+For Jasper's own future active build, the proposal-v3 worked example
+is a B&C DE250 plus Dayton Epique E150HE-44 2-way: 1.6 kHz LR4,
+non-inverted, likely woofer delay around 0.05-0.30 ms, large tweeter
+trim, conservative tweeter limiter, and a temporary protective
+tweeter HP around 2x Fc during commissioning. Treat those as worked
+example values, not project-wide defaults. They become defaults only
+inside a named preset for that exact driver/horn/baffle/amp/channel
+map combination.
 
 ## Measurement Protocol
 
-Minimum credible active speaker commissioning data:
+Proposal v3 splits measurements into two paths: the engineering path
+that creates presets, and the consumer wizard that verifies/refines a
+known preset on a real speaker.
 
-- Per-driver measurements in the final cabinet/baffle.
-- A common timing reference for crossover delay/phase work: electrical
-  loopback where possible, or a carefully held acoustic timing
-  reference. USB mic magnitude-only traces are not enough for final
-  delay alignment.
-- Woofer-only and tweeter-only captures from the same mic position
-  before the summed capture.
-- Gated far-field measurements for quasi-anechoic mid/high behavior.
-- Near-field woofer and port measurements for bass, merged with
-  far-field data where appropriate.
-- At least limited off-axis validation around the crossover region,
-  especially vertical 0, +/-10, +/-20, +/-30 degrees if the rig can
-  support it.
-- Timing provenance: dual-channel electrical loopback is the gold
-  standard; acoustic timing reference is acceptable but fragile if
-  the mic or reference speaker moves; single-channel USB-mic data
-  must be marked "magnitude-only / unsafe for final alignment."
-- Bench data where available: DATS/impedance jig output, in-box Re,
-  Le, Fs, Qts, and ZMA files so protection and excursion assumptions
-  are not guessed from SPL alone.
+### Consumer Wizard Triad
 
-Indoor gated measurements lose low-frequency resolution. Below the
-gate's useful frequency, be cautious: use near-field/merge workflows
-and avoid aggressive "speaker baseline" EQ that is really correcting
-the room.
+The in-room wizard uses three complementary measurements. None is
+sufficient alone; together they provide a practical room-immune Layer
+A check.
 
-Concrete starting geometry from the reports: measure around 1 m on
-the intended listening axis, preferably outdoors or on a tall stand /
-table with nearby reflecting surfaces pushed far away; use a 3-6 ms
-right-side gate when indoors if that is all the room allows, and
-record the gate-derived lowest valid frequency. Near-field woofer and
-port measurements are typically taken within roughly 5-10 mm of the
-radiating surface; horn/tweeter near-field captures are useful for
-diagnostics but not a substitute for timed far-field integration.
-Off-axis validation should include horizontal and vertical coverage
-fine enough not to miss lobes/nulls; mature views should grow toward
-listening-window, sound-power, DI/spinorama-style summaries, and
-directivity maps.
+1. **Near-field per-driver capture** measures individual driver
+   magnitude and diagnostic phase while overwhelming room reflections.
+   The mic is placed very close to the radiating surface: cone/dust
+   cap for woofer or mid, dome/ribbon surface for tweeter, horn mouth
+   for a compression-driver horn. This is not a free-field response
+   and does not prove the acoustic sum, but it catches driver and
+   assembly deviations against the preset envelope.
+2. **Null-depth optimization** proves polarity and relative delay at
+   each crossover. With the planned crossover active, invert one
+   adjacent driver through the mixer and sweep the crossover band.
+   Walk delay in small steps and maximize the inverted-polarity null.
+   For a healthy LR4 preset, a centered null above roughly 25 dB is a
+   strong pass signal; under roughly 20 dB should trigger delay,
+   polarity, wiring, or hardware investigation.
+3. **Gated at-position summed measurement** validates the direct
+   summed response through the crossover region. The mic moves to the
+   actual listening position, the wizard runs an ESS sweep with the
+   full crossover engaged, gates before the first reflection, and only
+   trusts the response above the gate-derived low-frequency limit.
+
+Frequency budget:
+
+- Above roughly 500-700 Hz in normal rooms: near-field, null-depth,
+  and gated summed data can validate crossover behavior.
+- Around 300-500 Hz: confidence is lower. A 3-way lower crossover in
+  this region must lean harder on the engineering preset and should
+  be labeled reduced-confidence unless the room geometry supports a
+  longer gate.
+- Below roughly 300 Hz: do not pretend in-room single-position data is
+  a clean speaker baseline. Hand fine work to Layer B room correction.
+
+### Engineering Path For Presets
+
+Every curated preset is generated once by the speaker designer using
+the higher-rigor path:
+
+- impedance / bench data where available, so protection and excursion
+  assumptions are not guessed from SPL alone;
+- per-driver in-box measurements with no crossover: gated far-field
+  on the design axis plus near-field captures for low-frequency
+  extension;
+- NF/FF merge with baffle diffraction modeling, e.g. VituixCAD
+  Merger, to create an anechoic-equivalent reference response;
+- crossover simulation against acoustic targets, including vertical
+  polar prediction and deep-null simulation;
+- CamillaDSP YAML generation and `camilladsp --check` validation;
+- re-measurement with the actual CamillaDSP profile loaded;
+- distortion / level escalation for conservative limiter settings;
+- preset freeze with expected envelopes, safe sweep ranges, delay
+  ranges, polarity, limiter values, BSC parameters, and safety
+  thresholds.
+
+### Browser And Phone Capture Requirements
+
+The phone is a smart microphone, not the analysis engine. The DSP host
+generates sweeps, receives raw PCM, deconvolves/gates/analyzes, and
+stores the session. The browser streams lossless binary PCM over
+WebSocket. Do not use WebRTC/Opus for measurement transport.
+
+The first wizard step must verify:
+
+- selected input device and selected calibration file;
+- echo cancellation, AGC, and noise suppression requested off and
+  behaviorally sanity-checked;
+- received sample rate / channel count / level are plausible;
+- known-level test tone produces clean capture with enough SNR;
+- the loaded calibration curve is displayed before proceeding.
+
+Missing or wrong microphone calibration is a blocking error, not a
+warning.
 
 ## Delay, Phase, and Null Verification
 
@@ -199,11 +280,13 @@ Delay alignment is measured, not guessed.
 The future active speaker path should use bounded profile templates,
 not freeform YAML generated by an LLM.
 
-Baseline profile shape:
+Baseline profile shape for 2-way and 3-way speakers:
 
 ```text
-stereo or mono source
-  -> explicit mixer to physical driver outputs
+stereo source
+  -> optional Layer B / C stereo-domain filters
+  -> Layer A pre-split baseline filters such as BSC
+  -> explicit split_2way or split_3way mixer
   -> per-driver crossover filters
   -> per-driver EQ needed to hit the acoustic target
   -> per-driver delay / polarity / gain trim
@@ -211,11 +294,28 @@ stereo or mono source
   -> output device
 ```
 
+For a 2-way stereo speaker pair, the split maps stereo input to four
+outputs: woofer L/R and tweeter L/R. For a 3-way pair, it maps to six
+outputs: woofer L/R, mid L/R, and tweeter L/R. A mono cabinet can use
+the same schema with a one-input variant, but the first JTS schema
+should not special-case mono at the expense of clarity.
+
+Per-driver chain order is fixed unless a named preset explicitly
+overrides it:
+
+```text
+crossover(s) -> in-band driver EQ -> delay -> gain trim -> limiter
+```
+
 Important implementation implications:
 
 - Channel labels must be explicit and persisted.
 - A commissioning-safe profile should start with tweeter outputs
   muted or heavily protected.
+- Polarity inversion belongs in the mixer mapping (`inverted: true`),
+  not as an implicit negative gain hidden in a filter list.
+- The midrange chain in a 3-way preset normally has both a high-pass
+  at the lower crossover and a low-pass at the upper crossover.
 - Generated configs should be validated before load, and rollback
   should be obvious.
 - Candidate primitive set to preserve in schemas/tests:
@@ -240,36 +340,62 @@ Code should eventually own:
 
 1. Active topology detection: output channel count, named physical
    channel map, and "all audible paths are crossover-protected" gate.
-2. Commissioning-safe CamillaDSP profile generation.
-3. Channel identification: quiet band-limited tone per output, with
+2. Preset schema loading: way count, driver roles, expected
+   near-field envelopes, crossover regions, safe sweep ranges, delay
+   ranges, polarity, gain trims, limiter values, BSC parameters, and
+   pass/fail thresholds.
+3. Commissioning-safe CamillaDSP profile generation for 2-way and
+   3-way templates.
+4. Channel identification: quiet band-limited tone per output, with
    DMM/oscilloscope or dummy-load verification before drivers are
    connected, then operator confirmation with low-level band-limited
    tones.
-4. Per-driver measurement mode: isolate woofer/tweeter, enforce
+5. Per-driver measurement mode: isolate woofer/mid/tweeter, enforce
    safe sweep range and level, and record active filters.
-5. Measurement import: REW/VituixCAD FRD/IR imports first; REW local
+6. Null-depth delay/polarity search per crossover region.
+7. Gated summed-response verification through crossover regions.
+8. Measurement import: REW/VituixCAD FRD/IR imports first; REW local
    API integration is plausible later.
-6. Provenance in bundles: driver, angle, axis, distance, timing
+9. Provenance in bundles: driver, angle, axis, distance, timing
    reference, mic calibration, gate/window, active profile, sweep
    voltage/SPL, amp gain, output channel map, protection-cap state,
    protective-HP state, smoothing, ZMA/impedance files, and raw FRD /
    IR / capture paths.
-7. Crossover candidate compiler: structured crossover/filter/delay/
+10. Crossover candidate compiler: structured crossover/filter/delay/
    gain/limiter data to validated CamillaDSP YAML.
-8. Delay/polarity checks: predicted sum, measured sum, inverted-null
+11. Delay/polarity checks: predicted sum, measured sum, inverted-null
    depth, phase tracking, and group-delay plots.
-9. Acceptance gates: no "commissioned" label without timing-valid
+12. Acceptance gates: no "commissioned" label without timing-valid
    driver measurements and at least minimal off-axis validation.
-10. Rollback and A/B: accepted speaker baseline, previous baseline,
+13. Rollback and A/B: accepted speaker baseline, previous baseline,
     room correction bypass, preference EQ bypass.
-11. Thermal/level validation: step up in small increments, monitor
+14. Thermal/level validation: step up in small increments, monitor
     woofer excursion, tweeter distortion, limiter activation, digital
     clipping, and Pi underruns at the intended sample rate/chunk size.
 
-The first shipped product slice should likely be interop-first:
-import REW/VituixCAD measurements and generate/verify a safe
-CamillaDSP profile, rather than immediately rebuilding all of REW and
-VituixCAD inside JTS.
+Updated execution plan:
+
+1. **Substrate slice**: implement data models and validation for
+   speaker presets, active channel maps, and baseline profiles without
+   loading them onto hardware yet.
+2. **Safe config slice**: generate 2-way and 3-way CamillaDSP
+   templates with explicit muted/protected startup state, validate
+   them, and make rollback mechanical.
+3. **Engineering interop slice**: import REW/VituixCAD measurement
+   artifacts and freeze the first named preset before attempting an
+   end-user wizard.
+4. **Channel and path safety slice**: prove every audible source
+   path, including TTS/cues and test tones, flows through the active
+   baseline and cannot bypass tweeter protection.
+5. **Consumer W0 slice**: prototype phone-as-mic raw PCM WebSocket
+   capture, calibration blocking, browser processing sanity checks,
+   and resumable server-side session state.
+6. **Consumer W4-W7 slice**: add per-driver near-field checks,
+   null-depth delay search, and gated summed verification against the
+   preset envelopes.
+
+This deliberately avoids starting with an LLM-guided active wizard.
+The first product value is deterministic safety and repeatability.
 
 ## LLM Boundary
 
@@ -301,10 +427,18 @@ The LLM must not:
   crossover protection as music?
 - Which parts should be in-product JTS tooling versus external
   REW/VituixCAD workflow with imports?
+- Does the active wizard use the current SciPy/NumPy ESS code path,
+  adopt `pyfar`, or wrap both behind one analysis interface?
+- How reliable is external USB/Lightning microphone enumeration and
+  raw `getUserMedia` capture on current iOS Safari and Android Chrome
+  when EC/AGC/noise suppression are disabled?
 - Does the deployed CamillaDSP version expose the limiter/filter
   primitives we want, or do we need a compatibility layer?
 - What profile schema should represent speaker baseline versus room
   correction versus preference EQ?
+- For 3-way speakers with a lower crossover around 250-500 Hz, what
+  pass/fail language accurately communicates reduced in-room gating
+  confidence without blocking useful commissioning?
 - What exact startup sequencing, amp standby/relay behavior, and
   subsonic/rumble high-pass should be mandatory before active output
   is considered safe?
@@ -329,6 +463,12 @@ The LLM must not:
   running and protected.
 - A user edits only the woofer low-pass or bypasses a filter for
   comparison, accidentally leaving the tweeter full range.
+- WebRTC or browser voice processing touches the measurement stream,
+  making deconvolution/level data untrustworthy.
+- The wrong microphone calibration file is loaded, or no calibration
+  file is loaded, and the wizard treats it as a soft warning.
+- A 3-way lower crossover in the 250-500 Hz region is judged with an
+  indoor gate that cannot support that frequency range.
 
 ## Source Reports
 
@@ -338,6 +478,12 @@ This handoff distills three raw research artifacts archived under
 - [`active-speaker-dsp-commissioning-architecture.md`](research/2026-05-25-calibration-agent/raw/active-speaker-dsp-commissioning-architecture.md)
 - [`active-crossover-measurement-workflow.md`](research/2026-05-25-calibration-agent/raw/active-crossover-measurement-workflow.md)
 - [`jts-two-way-camilladsp-commissioning-plan.md`](research/2026-05-25-calibration-agent/raw/jts-two-way-camilladsp-commissioning-plan.md)
+
+It also incorporates the 2026-05-26 proposal-v3 methodology supplied
+in the working session: generic 2-way/3-way active commissioning,
+three-layer DSP separation, near-field/null-depth/gated measurement
+triad, preset-first architecture, phone-as-mic raw PCM transport, and
+the DE250 + E150HE-44 worked example.
 
 Key external prior-art families named by the reports:
 
@@ -358,4 +504,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

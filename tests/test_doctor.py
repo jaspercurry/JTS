@@ -4,10 +4,10 @@ systemctl, arecord, etc) are exercised on the Pi via
 ``jasper-doctor`` itself; this file pins the pure-python helpers."""
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
-
-import pytest
 
 from jasper.cli import doctor
 from jasper.config import Config
@@ -1256,3 +1256,102 @@ def test_check_wifi_guardian_registered_in_sync_checks():
     import inspect
     src = inspect.getsource(doctor.run_async)
     assert "check_wifi_guardian" in src
+
+
+def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
+    def fake_run(cmd, timeout=5.0):
+        unit = cmd[-1]
+        out = "active\n" if unit.endswith(".socket") else "inactive\n"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+    r = doctor.check_correction_web_service()
+    assert r.status == "ok"
+    assert "socket active" in r.detail
+
+
+def test_check_correction_state_dirs_warns_on_missing(monkeypatch, tmp_path):
+    monkeypatch.setenv("JASPER_CORRECTION_ROOT", str(tmp_path / "missing"))
+    r = doctor.check_correction_state_dirs()
+    assert r.status == "warn"
+    assert "missing" in r.detail
+
+
+def test_check_correction_current_config_reports_missing_config(
+    monkeypatch, tmp_path,
+):
+    statefile = tmp_path / "statefile.yml"
+    missing = tmp_path / "does-not-exist.yml"
+    statefile.write_text(f"config_path: {missing}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    r = doctor.check_correction_current_config()
+    assert r.status == "fail"
+    assert "missing config" in r.detail
+
+
+def test_check_correction_current_config_reports_flat_base(
+    monkeypatch, tmp_path,
+):
+    statefile = tmp_path / "statefile.yml"
+    base = tmp_path / "v1.yml"
+    base.write_text("# base\n")
+    statefile.write_text(f"config_path: {base}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+    r = doctor.check_correction_current_config()
+    assert r.status == "warn"
+    assert "custom/non-JTS" in r.detail
+
+
+def test_check_correction_latest_bundle_warns_without_calibration(
+    monkeypatch, tmp_path,
+):
+    sessions = tmp_path / "sessions"
+    bundle = sessions / "abc"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({
+        "bundle_schema_version": 2,
+        "session_id": "abc",
+        "state": "ready",
+        "started_at": 1000,
+        "capture_quality": [],
+    }))
+    (bundle / "result.json").write_text(json.dumps({
+        "bundle_schema_version": 2,
+    }))
+    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
+
+    r = doctor.check_correction_latest_bundle()
+
+    assert r.status == "warn"
+    assert "no calibrated mic" in r.detail
+
+
+def test_check_correction_latest_bundle_warns_when_failed(
+    monkeypatch, tmp_path,
+):
+    sessions = tmp_path / "sessions"
+    bundle = sessions / "failed"
+    bundle.mkdir(parents=True)
+    (bundle / "info.json").write_text(json.dumps({
+        "bundle_schema_version": 2,
+        "session_id": "failed",
+        "state": "failed",
+        "started_at": 1000,
+        "error": "analysis failed: capture clipped",
+        "capture_quality": [],
+    }))
+    monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
+
+    r = doctor.check_correction_latest_bundle()
+
+    assert r.status == "warn"
+    assert "capture clipped" in r.detail
+
+
+def test_correction_doctor_checks_registered():
+    import inspect
+    src = inspect.getsource(doctor.run_async)
+    assert "check_correction_web_service" in src
+    assert "check_correction_state_dirs" in src
+    assert "check_correction_current_config" in src
+    assert "check_correction_latest_bundle" in src

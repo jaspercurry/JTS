@@ -42,14 +42,23 @@ import re
 import shutil
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 import numpy as np
 
-from . import analysis, calibration, deconv, peq, sweep, target
+from . import (
+    analysis,
+    bundles,
+    calibration,
+    confidence,
+    deconv,
+    quality,
+    strategy,
+    sweep,
+)
 from .camilla_yaml import emit_correction_config
 from .calibration import CalibrationRecord
 from .peq import PEQ
@@ -123,16 +132,6 @@ class SessionState(Enum):
     AWAITING_VERIFY_CAPTURE = "awaiting_verify_capture"
     VERIFIED = "verified"
     FAILED = "failed"
-
-
-# Targets the user can pick from a dropdown. Maps name → warmth
-# parameter (target.house_curve). 'flat' is a special case.
-TARGET_CHOICES = {
-    "flat": None,           # = target.flat_target
-    "neutral": 0.0,         # = flat (interpolant midpoint)
-    "warm": 0.7,            # = mostly Harman
-    "bright": -0.3,         # = inverse Harman tilt
-}
 
 
 @dataclass
@@ -230,6 +229,7 @@ class SessionConfig:
     peq_max_boost_db: float = 3.0
     peq_cuts_only: bool = True
     peq_flatness_target_db: float = 1.0
+    correction_strategy: str = strategy.DEFAULT_CORRECTION_STRATEGY_ID
 
 
 class MeasurementSession:
@@ -247,6 +247,7 @@ class MeasurementSession:
         *,
         total_positions: int = 1,
         target_choice: str = "flat",
+        strategy_choice: str | None = None,
         mic_calibration: CalibrationRecord | None = None,
         input_device: dict[str, Any] | None = None,
     ) -> None:
@@ -259,15 +260,21 @@ class MeasurementSession:
 
         self.total_positions = max(1, int(total_positions))
         self.current_position = 0
-        self.target_choice = (
-            target_choice if target_choice in TARGET_CHOICES else "flat"
-        )
+        self.target_choice = strategy.resolve_target_profile(
+            target_choice,
+        ).target_id
+        self.strategy_choice = strategy.resolve_correction_strategy(
+            strategy_choice or self.cfg.correction_strategy,
+        ).strategy_id
         self.mic_calibration = mic_calibration
         self.input_device = input_device
         # Per-position smoothed magnitude responses (dB on log grid).
         # Spatial-averaged at end of multi-position flow.
         self.position_magnitudes: list[np.ndarray] = []
         self.position_freqs: np.ndarray | None = None  # log grid
+        self.capture_quality: list[dict[str, Any]] = []
+        self.verify_quality: dict[str, Any] | None = None
+        self.confidence_report: dict[str, Any] | None = None
 
         # Output curves for the chart.
         self.measured_curve: CurveJSON | None = None
@@ -275,6 +282,7 @@ class MeasurementSession:
         self.predicted_curve: CurveJSON | None = None
         self.verify_curve: CurveJSON | None = None
         self.verify_metrics: dict[str, float] | None = None
+        self.design_report: dict[str, Any] | None = None
 
         self.peqs: list[PEQJSON] = []
         self.config_path: Path | None = None
@@ -414,7 +422,7 @@ class MeasurementSession:
         if bundle is None:
             return
         info = {
-            "bundle_schema_version": 2,
+            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
             "session_id": self.session_id,
             "state": self.state.value,
             "started_at": self.started_at,
@@ -423,6 +431,13 @@ class MeasurementSession:
             "total_positions": self.total_positions,
             "current_position": self.current_position,
             "target_choice": self.target_choice,
+            "target_profile": strategy.resolve_target_profile(
+                self.target_choice,
+            ).to_dict(),
+            "strategy_choice": self.strategy_choice,
+            "correction_strategy": strategy.resolve_correction_strategy(
+                self.strategy_choice,
+            ).to_dict(),
             "noise_floor_db": self.noise_floor_db,
             "input_device": self.input_device,
             "mic_calibration": (
@@ -430,12 +445,16 @@ class MeasurementSession:
                 if self.mic_calibration
                 else None
             ),
+            "capture_quality": self.capture_quality,
+            "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "current_correction_at_start": self.current_correction_at_start,
             "autolevel": self.autolevel.snapshot(),
             "sweep_meta": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
             "config_path": (
                 str(self.config_path) if self.config_path else None
             ),
@@ -452,6 +471,8 @@ class MeasurementSession:
                 "peq_max_cut_db": self.cfg.peq_max_cut_db,
                 "peq_max_boost_db": self.cfg.peq_max_boost_db,
                 "peq_cuts_only": self.cfg.peq_cuts_only,
+                "peq_flatness_target_db": self.cfg.peq_flatness_target_db,
+                "correction_strategy": self.cfg.correction_strategy,
             },
         }
         target_path = bundle / "info.json"
@@ -469,7 +490,7 @@ class MeasurementSession:
         if bundle is None:
             return
         result = {
-            "bundle_schema_version": 2,
+            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
             "session_id": self.session_id,
             "input_device": self.input_device,
             "mic_calibration": (
@@ -490,7 +511,11 @@ class MeasurementSession:
                 self.verify_curve.__dict__ if self.verify_curve else None
             ),
             "verify_metrics": self.verify_metrics,
+            "capture_quality": self.capture_quality,
+            "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
         }
         target_path = bundle / "result.json"
         tmp_path = target_path.with_suffix(".json.tmp")
@@ -583,6 +608,12 @@ class MeasurementSession:
         self.state = SessionState.FAILED
         self._emit("error", {"message": message})
         logger.error("session %s failed: %s", self.session_id, message)
+        try:
+            self._write_info_json()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "bundle info.json write failed (state=%s)", self.state.value,
+            )
 
     def _ensure_sweep_cache(self) -> tuple[Path, sweep.SweepMeta]:
         """Generate or reuse the cached sweep WAV. Cached on disk
@@ -611,22 +642,33 @@ class MeasurementSession:
 
     def _smooth_capture(
         self, captured_wav_path: Path,
-    ) -> tuple[np.ndarray, np.ndarray]:
-        """Read capture, deconvolve, smooth, log-resample. Returns
-        (log_freqs, smoothed_db) — used both per-position and for
-        the verify pass."""
+    ) -> tuple[np.ndarray, np.ndarray, quality.CaptureQuality]:
+        """Read capture, assess quality, deconvolve, smooth, log-resample.
+
+        Returns (log_freqs, smoothed_db, capture_quality) for both the
+        design positions and the verify pass.
+        """
         if self.sweep_meta is None:
             raise RuntimeError(
                 "no sweep_meta — flow ordering bug (call _ensure_sweep_cache first)"
             )
 
         captured, sr = sweep.read_wav_mono(captured_wav_path)
-        if sr != self.cfg.sample_rate:
-            raise ValueError(
-                f"captured sample rate {sr} != expected "
-                f"{self.cfg.sample_rate}; the iOS Safari verify step "
-                f"should have caught this"
+        capture_quality = quality.assess_capture(
+            captured,
+            sample_rate=sr,
+            expected_sample_rate=self.cfg.sample_rate,
+            sweep_n_samples=self.sweep_meta.n_samples,
+            has_mic_calibration=self.mic_calibration is not None,
+            input_device=self.input_device,
+        )
+        for issue in capture_quality.issues:
+            logger.warning(
+                "capture_quality session=%s code=%s severity=%s detail=%s",
+                self.session_id, issue.code, issue.severity, issue.message,
             )
+        if capture_quality.failed:
+            raise quality.CaptureQualityError(capture_quality)
         sweep_signal, _ = sweep.synchronized_swept_sine(
             f1=self.sweep_meta.f1,
             f2=self.sweep_meta.f2,
@@ -647,16 +689,44 @@ class MeasurementSession:
                 log_freqs, log_mag, self.mic_calibration.curve,
             )
         log_mag = analysis.normalize_to_band(log_freqs, log_mag)
-        return log_freqs, log_mag
+        return log_freqs, log_mag, capture_quality
+
+    def _quality_report_dict(
+        self,
+        report: quality.CaptureQuality,
+        *,
+        capture_kind: str,
+        captured_wav_path: Path,
+        position_index: int | None = None,
+    ) -> dict[str, Any]:
+        out = report.to_dict()
+        out["capture_kind"] = capture_kind
+        out["position_index"] = position_index
+        artifact_path = captured_wav_path
+        if self.bundle_dir is not None:
+            try:
+                artifact_path = captured_wav_path.relative_to(self.bundle_dir)
+            except ValueError:
+                pass
+        out["artifact_path"] = str(artifact_path)
+        return out
 
     def _design_target(self, freqs: np.ndarray) -> np.ndarray:
         """Resolve target_choice → dB target curve on `freqs`."""
-        if self.target_choice == "flat":
-            return target.flat_target(freqs)
-        warmth = TARGET_CHOICES.get(self.target_choice, 0.0)
-        if warmth is None:  # 'flat'
-            return target.flat_target(freqs)
-        return target.house_curve(freqs, warmth=warmth)
+        return strategy.resolve_target_profile(self.target_choice).curve_db(freqs)
+
+    def _build_confidence_report(self) -> dict[str, Any]:
+        return confidence.build_confidence_report(
+            total_positions=self.total_positions,
+            completed_positions=len(self.position_magnitudes),
+            has_mic_calibration=self.mic_calibration is not None,
+            input_device=self.input_device,
+            capture_quality=self.capture_quality,
+            strategy_choice=self.strategy_choice,
+            position_magnitudes=self.position_magnitudes,
+            freqs_hz=self.position_freqs,
+            correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
+        )
 
     # ------------------------------------------------------------------
     # Phase 1 / Phase 2 measurement flow.
@@ -743,8 +813,17 @@ class MeasurementSession:
             self.last_capture_path = captured_wav_path
 
         try:
-            log_freqs, log_mag = self._smooth_capture(captured_wav_path)
+            log_freqs, log_mag, capture_quality = self._smooth_capture(
+                captured_wav_path,
+            )
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, quality.CaptureQualityError):
+                self.capture_quality.append(self._quality_report_dict(
+                    e.report,
+                    capture_kind="measurement",
+                    captured_wav_path=captured_wav_path,
+                    position_index=self.current_position,
+                ))
             async with self._lock:
                 await self._fail(f"analysis failed: {e}")
             raise
@@ -752,6 +831,12 @@ class MeasurementSession:
         if self.position_freqs is None:
             self.position_freqs = log_freqs
         self.position_magnitudes.append(log_mag)
+        self.capture_quality.append(self._quality_report_dict(
+            capture_quality,
+            capture_kind="measurement",
+            captured_wav_path=captured_wav_path,
+            position_index=self.current_position,
+        ))
         self.current_position += 1
 
         if self.current_position < self.total_positions:
@@ -794,20 +879,12 @@ class MeasurementSession:
 
         averaged_db = analysis.spatial_average_db(self.position_magnitudes)
         log_freqs = self.position_freqs
-        target_db = self._design_target(log_freqs)
-
-        peqs = peq.design_peq(
-            averaged_db, target_db, log_freqs,
-            f_low=self.cfg.peq_f_low,
-            f_high=self.cfg.peq_f_high,
-            max_filters=self.cfg.peq_max_filters,
-            max_cut_db=self.cfg.peq_max_cut_db,
-            max_boost_db=self.cfg.peq_max_boost_db,
-            cuts_only=self.cfg.peq_cuts_only,
-            flatness_target_db=self.cfg.peq_flatness_target_db,
+        design = strategy.design_correction(
+            averaged_db,
+            log_freqs,
+            target_choice=self.target_choice,
+            strategy_choice=self.strategy_choice,
         )
-        predicted_shift = peq.predicted_response(peqs, log_freqs)
-        predicted_curve_db = averaged_db + predicted_shift
 
         self.measured_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
@@ -815,13 +892,16 @@ class MeasurementSession:
         )
         self.target_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
-            magnitude_db=target_db.tolist(),
+            magnitude_db=design.target_db.tolist(),
         )
         self.predicted_curve = CurveJSON(
             freqs_hz=log_freqs.tolist(),
-            magnitude_db=predicted_curve_db.tolist(),
+            magnitude_db=design.predicted_db.tolist(),
         )
-        self.peqs = [PEQJSON.from_peq(p) for p in peqs]
+        self.peqs = [PEQJSON.from_peq(p) for p in design.peqs]
+        self.design_report = design.report
+        self.confidence_report = self._build_confidence_report()
+        self.design_report["confidence_report"] = self.confidence_report
 
     # ------------------------------------------------------------------
     # Apply / reset / verify.
@@ -958,8 +1038,16 @@ class MeasurementSession:
             self.last_capture_path = captured_wav_path
 
         try:
-            log_freqs, log_mag = self._smooth_capture(captured_wav_path)
+            log_freqs, log_mag, capture_quality = self._smooth_capture(
+                captured_wav_path,
+            )
         except Exception as e:  # noqa: BLE001
+            if isinstance(e, quality.CaptureQualityError):
+                self.verify_quality = self._quality_report_dict(
+                    e.report,
+                    capture_kind="verify",
+                    captured_wav_path=captured_wav_path,
+                )
             async with self._lock:
                 await self._fail(f"verify analysis failed: {e}")
             raise
@@ -984,6 +1072,11 @@ class MeasurementSession:
             magnitude_db=log_mag.tolist(),
         )
         self.verify_metrics = metrics
+        self.verify_quality = self._quality_report_dict(
+            capture_quality,
+            capture_kind="verify",
+            captured_wav_path=captured_wav_path,
+        )
 
         try:
             self._write_result_json()
@@ -1259,16 +1352,27 @@ class MeasurementSession:
             "total_positions": self.total_positions,
             "current_position": self.current_position,
             "target_choice": self.target_choice,
+            "target_profile": strategy.resolve_target_profile(
+                self.target_choice,
+            ).to_dict(),
+            "strategy_choice": self.strategy_choice,
+            "correction_strategy": strategy.resolve_correction_strategy(
+                self.strategy_choice,
+            ).to_dict(),
             "input_device": self.input_device,
             "mic_calibration": (
                 self.mic_calibration.public_metadata()
                 if self.mic_calibration
                 else None
             ),
+            "capture_quality": self.capture_quality,
+            "verify_quality": self.verify_quality,
+            "confidence_report": self.confidence_report,
             "sweep": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None
             ),
             "peqs": [p.__dict__ for p in self.peqs],
+            "design_report": self.design_report,
             "config_path": (
                 str(self.config_path) if self.config_path else None
             ),

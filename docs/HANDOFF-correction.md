@@ -62,7 +62,7 @@
     Default ON; opt-out via `JASPER_CORRECTION_SAVE_BUNDLES=0`.
   - `GET /sessions` (debug endpoint) lists the 20 most-recent
     bundles for `curl`-based debugging / future history UI.
-  - 11 new tests, total 102 in the correction suite.
+  - Covered by the correction regression suite.
 - ✅ **Phase 2.3 — calibrated measurement mic substrate.**
   Implemented 2026-05-25. Adds an input-device picker, first-class mic
   calibration registry, server-side serial lookup for Dayton Audio
@@ -74,7 +74,39 @@
   `MeasurementSession._smooth_capture` before target normalization
   and PEQ design. Storage lives under
   `/var/lib/jasper/correction/calibration_mics/`.
-- ⏳ **Phase 3 — power-user pass-through.** Already shipped as part
+- ✅ **Phase 2.4 — observability and quality floor.**
+  Implemented 2026-05-25. Adds shared bundle helpers
+  (`jasper.correction.bundles`), capture-quality assessment before
+  deconvolution (`jasper.correction.quality`), explicit browser /
+  clipping / low-level / uncalibrated-mic warnings in the UI and
+  bundle, atomic `info.json` writes on failed analysis paths, and
+  `jasper-doctor` correction checks for the socket, state dirs,
+  current CamillaDSP config path, and newest bundle.
+- ✅ **Phase 2.5 — correction strategy + design audit substrate.**
+  Implemented 2026-05-26. Adds `jasper.correction.strategy`, a
+  deterministic policy layer around PEQ generation. The room
+  correction wizard now exposes target-profile metadata and bounded
+  correction strategies (`safe`, `balanced`, `assertive`), persists
+  `strategy_choice`, `correction_strategy`, `target_profile`, and
+  `design_report` into `info.json` / `result.json`, and renders a
+  compact design audit explaining the selected band, predicted RMS
+  improvement, warnings, and per-filter rationale. The read-only
+  calibration-agent intake tool surfaces the same report so a future
+  LLM can explain and recommend bounded strategy changes without
+  reverse-engineering the filters.
+- ✅ **Phase 2.6 — first-pass measurement confidence report.**
+  Implemented 2026-05-26. Adds `jasper.correction.confidence`, a
+  deterministic confidence summary derived from existing facts:
+  completed position count, calibrated-mic presence, input-device
+  metadata, capture-quality issues, per-position variance in the
+  correction band, and strategy gates for `safe` / `balanced` /
+  `assertive`. The report is persisted into `info.json` /
+  `result.json`, embedded in the design audit, returned from the
+  upload/status path, and exposed through the read-only
+  calibration-agent intake tools. This is deliberately a v1
+  instrument panel; SNR, repeatability, and research-tuned thresholds
+  remain future refinements.
+- ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
   scoped Phase 3.
@@ -84,7 +116,7 @@
   work.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
-**Outstanding Phases 0-2 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.6 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
@@ -204,13 +236,16 @@ GET  /healthz                liveness — "ok"
 GET  /jts-root-ca.crt        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
-                             mic_calibration, current_correction: {path,
-                             session_id, applied_at_epoch, peq_count} | null})
+                             mic_calibration, target_profile,
+                             correction_strategy, design_report,
+                             current_correction: {path, session_id,
+                             applied_at_epoch, peq_count} | null})
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  reset to base config, begin measurement, returns session_id;
                              body: {total_positions, target_choice,
-                             noise_floor_db?, calibration_id?, input_device?}
+                             strategy_choice?, noise_floor_db?,
+                             calibration_id?, input_device?}
 POST /next-position          advance to position[N+1] sweep
 POST /upload-capture         body = WAV (audio/wav); per-position OR verify capture
 POST /calibration/fetch      body: {model, serial, orientation?}; server-side
@@ -338,17 +373,22 @@ position and may vector-average below the transition region while
 power-averaging above, but the shipped code does power-mean
 everywhere.
 
-### Decision 8 — Mic compensation: ship one curve, accept the inaccuracy
+### Decision 8 — Mic compensation: calibrated external mic first
 
-**Decision:** Bundle a single iPhone built-in-mic compensation
-curve (HouseCurve approach). Apply boost compensation below 60 Hz
-and above 8-10 kHz. Document explicitly that it's approximate.
-Provide UMIK-2 path as the accuracy escape hatch (Phase 4).
+**Decision:** Treat per-unit calibrated measurement mics as the
+trusted path. The wizard supports browser input-device selection,
+server-side serial lookup for known Dayton Audio and miniDSP mics,
+and manual calibration-file upload for unsupported mics or vendor
+lookup failures. A built-in phone mic path may remain as a degraded
+fallback, but it must be labeled lower confidence and should not
+unlock future FIR or agent recommendations that depend on small dB
+distinctions.
 
-**Why not a per-model curve database?** No published cross-model
+**Why not a per-phone curve database?** No published cross-model
 compensation database exists. HouseCurve and AudioTool both ship
-single generic curves. Don't try to be cleverer than the people
-selling this for $20.
+single generic curves. A generic phone curve is useful for demos and
+rough bass-region work, but the long-term substrate for serious room
+correction is a known calibrated mic with bundle provenance.
 
 ### Decision 9 — Power-user pass-through: reverse-proxy `camillagui-backend` at `/camilla/`
 
@@ -419,7 +459,12 @@ jasper/
 │   ├── target.py                        Harman / flat / house-curve interpolant
 │   ├── camilla_yaml.py                  PyYAML emit; preserves master_gain placeholder
 │   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
+│   ├── quality.py                       capture quality gates + issue schema
+│   ├── bundles.py                       debug-bundle listing / validation helpers
 │   └── session.py                       bundle writer + measurement state machine
+│
+├── cli/
+│   └── doctor.py                        correction socket / bundle / config checks
 │
 ├── web/
 │   └── correction_setup.py              mirrors voice_setup.py shape
@@ -450,6 +495,8 @@ tests/
 ├── test_correction_session.py           session bundle + measurement flow
 ├── test_correction_setup.py             correction web handler
 ├── test_correction_calibration.py       mic calibration parser/providers
+├── test_correction_quality.py           capture quality gates
+├── test_correction_bundles.py           bundle listing / validation helpers
 └── test_correction_systemd_unit.py      unit/install invariants
 
 /usr/share/jasper-web/index.html         EDIT — add /correction/ entry card
@@ -570,7 +617,9 @@ Concrete changes:
   ambient too loud (>50 dB pre-sweep, prompt user).
 - House-curve preset slider (warm / neutral / bright) interpolating
   Flat ↔ Harman.
-- Bundled iPhone mic compensation curve applied automatically.
+- Calibrated external mic metadata and correction curve applied when
+  available; built-in phone mic compensation is a degraded fallback,
+  not the high-confidence path.
 
 ### Phase 3 — Power-user pass-through (1.5 days)
 
@@ -584,7 +633,7 @@ Concrete changes:
 - Statefile coordination: measurement coordinator is the only
   writer; camillagui reads + suggests.
 
-### Phase 4 — REW interop + calibrated-mic lookup polish (2 days)
+### Phase 4 — REW import/export and measurement interop (2 days)
 
 - `.frd` export (REW-compatible: `Hz dB phase`, 1/48-oct underlying).
 - `.wav` IR export (mono float32, normalized) for REW / external FIR
@@ -593,10 +642,11 @@ Concrete changes:
 - Document the round-trip workflow: measure here → export `.frd` →
   open in REW → REW's CamillaDSP YAML export (V5.20.14+) → upload
   back at `/camilla/`.
-- Harden calibration lookup provider adapters. Dayton serial lookup is
-  a known server-side fetch path; UMIK-1 has a long-lived static file
-  path; UMIK-2 is still endpoint archaeology and must keep manual
-  upload as the fallback until the public form contract is verified.
+- Keep calibration lookup provider adapters narrow and observable.
+  Dayton and miniDSP serial lookup already landed in Phase 2.3; Phase
+  4 should preserve manual upload as the fallback and focus on import /
+  export paths, provenance, and clear operator errors when vendor
+  endpoints drift.
 
 ### Phase 5 — Filter sophistication (research-gated, 1 GB-aware)
 
@@ -615,8 +665,10 @@ Concrete changes:
   measurement-window pause discipline and refuse to start if
   `/proc/meminfo` shows insufficient free memory after renderers have
   paused.
-- Add `jasper-doctor` checks: correction subsystem healthy, last
-  measurement timestamp, current correction profile.
+- Extend the existing `jasper-doctor` correction checks with
+  FIR-specific readiness: convolution artifact presence, latency /
+  headroom accounting, newest measurement timestamp, and last FIR
+  generation result.
 
 **1 GB enforcement:** runtime check at filter-design entry.
 Surface "this filter type needs 2 GB Pi or more aggressive
@@ -803,11 +855,15 @@ What can actually go wrong, ordered by likelihood × impact.
 
 ## Hardware test checklist
 
-These items can only be verified on real hardware. Run on the Pi
-after `rsync` + `install.sh`:
+These items can only be verified on real hardware. Deploy with
+`bash scripts/deploy-to-pi.sh`, then run on the Pi:
 
 ### Phase 0 (TLS + skeleton)
-- [ ] `systemctl status jasper-correction-web` → active (running).
+- [ ] `systemctl is-active jasper-correction-web.socket` → `active`
+      (the service itself may be inactive when idle; socket
+      activation is the liveness contract).
+- [ ] `jasper-doctor` reports `correction web`, `correction state
+      dirs`, and `current correction` as ok/warn with no fail.
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
 - [ ] On iPhone after cert trust: page loads with no "Connection
@@ -854,6 +910,18 @@ after `rsync` + `install.sh`:
 - [ ] Target choice: flat vs warm produces different PEQ sets and
       audibly different results.
 
+### Phase 2.4 (observability + quality)
+- [ ] Deliberately quiet capture warns in the UI and bundle instead
+      of silently producing a high-confidence chart.
+- [ ] Deliberately clipped capture blocks analysis, shows
+      "Measurement blocked" in the UI, and leaves `capture_quality`
+      in `info.json`.
+- [ ] `curl -sk https://jts.local/correction/sessions | jq` shows
+      `has_result`, calibration artifact flags, and the latest
+      `capture_quality` fields.
+- [ ] `jasper-doctor` reports the latest bundle and warns when the
+      newest completed measurement had no calibrated mic.
+
 ### Things to watch for in journals
 - `journalctl -u jasper-correction-web -f` — measurement state
   transitions, handler exceptions.
@@ -873,10 +941,14 @@ sessions/<session_id>/
 │                    noise_floor_db, peqs, timestamps,
 │                    input_device, mic_calibration public metadata,
 │                    current_correction_at_start, sweep_meta,
+│                    capture_quality, verify_quality (self-identifying
+│                    reports with capture_kind / position_index /
+│                    artifact_path),
 │                    bundle_schema_version
 ├── result.json      measured / target / predicted curves; verify_curve
 │                    + verify_metrics when /verify ran; repeats
-│                    input_device + mic_calibration public metadata
+│                    input_device, mic_calibration public metadata,
+│                    capture_quality, verify_quality
 ├── captures/        per-position WAVs (p0.wav, p1.wav, ...)
 ├── mic_calibration.json
 │                    selected calibration public metadata + parsed curve
@@ -888,8 +960,9 @@ sessions/<session_id>/
                      configs/ directory is later cleaned up)
 ```
 
-`info.json` is rewritten atomically on each state transition (cheap;
-a few hundred bytes). `result.json` lands after design / verify.
+`info.json` is rewritten atomically on each state transition and on
+failed analysis paths (cheap; a few hundred bytes). `result.json`
+lands after design / verify.
 `applied.yml` is copied (not symlinked) in `apply()` so the bundle
 remains valid after a user-driven cleanup.
 
@@ -940,12 +1013,12 @@ flat `captures/` directory and no per-session artifacts are written.
   practice (run-measurement button is disabled during a measurement)
   but a hand-crafted request could trigger it. Mitigation: add a
   lock around the start handler in Phase 3.
-- **Sweep clipping detection.** No automatic detection if the
-  captured signal clipped (would invalidate the deconvolution).
-  Phase 2 leaves this — a real-world clipped capture would produce
-  a visibly distorted chart, but we don't surface it explicitly.
-- **Ambient noise check.** No pre-sweep ambient SPL check. A loud
-  room would just produce a noisier measurement.
+- **SPL-calibrated room-noise check.** Phase 2.4 catches obviously
+  weak captures and logs low RMS / low peak warnings, but it is not
+  a calibrated ambient SPL measurement. A loud room can still pass
+  the gate if the sweep level is also high; future agent/FIR flows
+  should treat `capture_quality` as a floor, not a lab-grade SNR
+  proof.
 
 ## Cross-session notes
 
@@ -1016,4 +1089,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-25
+Last verified: 2026-05-26

@@ -10,14 +10,14 @@ math; this test pins the wiring.
 """
 from __future__ import annotations
 
-import asyncio
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import sweep
+from jasper.correction import quality, sweep
 from jasper.correction.calibration import store_calibration
 from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
 
@@ -113,13 +113,23 @@ async def test_session_applies_mic_calibration_during_capture(
 
     await sess.prepare_and_play_sweep(fake_play_sweep)
     sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
-    cap_path = tmp_path / "capture.wav"
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
     sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
 
     await sess.on_capture_uploaded(cap_path)
 
     assert called["value"] is True
     assert sess.state == SessionState.READY
+    assert sess.capture_quality
+    assert sess.capture_quality[-1]["failed"] is False
+    assert sess.capture_quality[-1]["capture_kind"] == "measurement"
+    assert sess.capture_quality[-1]["position_index"] == 0
+    assert sess.capture_quality[-1]["artifact_path"] == "captures/p0.wav"
+    assert not any(
+        issue["code"] == "mic_uncalibrated"
+        for issue in sess.capture_quality[-1]["issues"]
+    )
     assert sess.snapshot()["mic_calibration"]["calibration_id"] == (
         record.calibration_id
     )
@@ -131,6 +141,36 @@ async def test_session_applies_mic_calibration_during_capture(
     assert record.calibration_id in meta_path.read_text()
     assert (meta_path.stat().st_mode & 0o777) == 0o600
     assert (raw_path.stat().st_mode & 0o777) == 0o600
+
+
+@pytest.mark.asyncio
+async def test_session_records_failed_capture_quality_in_bundle(tmp_path: Path):
+    sess = _make_session(tmp_path)
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = sess.capture_path_for_position(0)
+    cap_path.parent.mkdir(parents=True, exist_ok=True)
+    sweep.write_sweep_wav(
+        cap_path,
+        np.ones_like(sweep_signal, dtype=np.float32),
+        sr,
+    )
+
+    with pytest.raises(quality.CaptureQualityError, match="clipped"):
+        await sess.on_capture_uploaded(cap_path)
+
+    assert sess.state == SessionState.FAILED
+    assert sess.capture_quality[0]["failed"] is True
+    assert sess.capture_quality[0]["capture_kind"] == "measurement"
+    assert sess.capture_quality[0]["position_index"] == 0
+    info = json.loads((sess.bundle_dir / "info.json").read_text())
+    assert info["state"] == "failed"
+    assert info["capture_quality"][0]["failed"] is True
+    assert info["capture_quality"][0]["artifact_path"] == "captures/p0.wav"
 
 
 @pytest.mark.asyncio
@@ -177,6 +217,12 @@ async def test_session_full_flow_synthetic_room(tmp_path: Path):
     assert sess.measured_curve is not None
     assert sess.target_curve is not None
     assert sess.predicted_curve is not None
+    assert sess.capture_quality
+    assert sess.capture_quality[-1]["capture_kind"] == "measurement"
+    assert any(
+        issue["code"] == "mic_uncalibrated"
+        for issue in sess.capture_quality[-1]["issues"]
+    )
 
     # PEQ designer should have picked at least one filter near 80 Hz.
     assert len(sess.peqs) >= 1
