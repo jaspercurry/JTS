@@ -142,6 +142,28 @@ PERSISTENCE_ECHO_WINDOW_SEC = 2.0
 DuckActiveProbe = Callable[[], Awaitable[Optional[bool]]]
 
 
+# Reconciler thresholds. `maybe_reconcile_camilla` is the self-healing
+# backstop in `VolumeObserver._tick`: when no session is active and the
+# active source is camilla-as-master, it converges `main_volume_db`
+# toward `percent_to_db(listening_level)` if they've drifted apart.
+#
+# `RECONCILE_DRIFT_DB` is the dead band — drift smaller than this is
+# ignored (covers camilla's <0.1 dB jitter with safe margin). Below
+# human-noticeable, well above any normal jitter.
+#
+# `RECONCILE_DUCK_SKIP_DB` is the upper-magnitude cutoff. CueDuck plays
+# proactive cues without setting `_voice_session_active`, so the
+# reconciler can race a CueDuck (which lowers camilla by JASPER_DUCK_DB,
+# typically 25 dB). Treating large drift as "almost certainly a duck"
+# and skipping is the simplest safe guard — anything deeper than 10 dB
+# is not the kind of drift we're trying to catch (those are <10 dB
+# stale-state cases). The trade-off: if the operator configures
+# JASPER_DUCK_DB shallower than 10 dB, the reconciler may briefly
+# un-duck cues. Documented in docs/HANDOFF-volume.md.
+RECONCILE_DRIFT_DB = 1.0
+RECONCILE_DUCK_SKIP_DB = 10.0
+
+
 @dataclass
 class _OutboundStamp:
     """Per-source last-outbound timestamp + the value we wrote."""
@@ -633,6 +655,81 @@ class VolumeCoordinator:
         # Push-mode renderer: camilla is pinned at 0 dB; the source's
         # own slider carries listening_level.
         return 0.0
+
+    async def maybe_reconcile_camilla(self) -> None:
+        """Self-healing convergence: if `main_volume_db` has drifted
+        from `percent_to_db(listening_level)` while no session is
+        active, write the expected value back to camilla.
+
+        Pure resilience backstop. The coordinator's normal write paths
+        keep the two in sync; this only catches edge cases where some
+        other writer or transient (camilla restart blip, room
+        correction reverting, future code paths) leaves them
+        divergent. Called from `VolumeObserver._tick` at 1 Hz.
+
+        Gates (all must pass for a write to land):
+
+        1. `_voice_session_active=False` — during a session the
+           Ducker owns camilla; reconciling would clobber the duck.
+           This is the in-process flag set by `note_voice_session`
+           on jasper-voice's long-lived coordinator. (jasper-control
+           never runs this reconciler — it doesn't host the
+           observer.)
+        2. Active source is camilla-as-master (idle / AirPlay /
+           USBSINK). For push-mode sources (Spotify / Bluetooth)
+           camilla is pinned at 0 dB by design and listening_level
+           lives on the source's own slider; reconciling there would
+           fight `apply_active_source_transition`.
+        3. `|main_volume_db − expected| > RECONCILE_DRIFT_DB` — dead
+           band around camilla's normal jitter so we don't write on
+           every tick.
+        4. `|main_volume_db − expected| < RECONCILE_DUCK_SKIP_DB` —
+           CueDuck plays proactive cues without setting
+           `_voice_session_active`. A CueDuck-in-progress puts
+           camilla `JASPER_DUCK_DB` below expected (default −25 dB).
+           Skipping anything that deep avoids fighting the cue's
+           ducked window. The remaining sub-10 dB band catches
+           genuine stale-state cases.
+
+        Emits `event=volume.reconciled` on every write so drift
+        is visible in journalctl. Failures are logged at WARN and
+        non-fatal — the observer keeps ticking.
+        """
+        if self._voice_session_active:
+            return
+        try:
+            source = await self._active_source()
+        except Exception:  # noqa: BLE001
+            return
+        if not await self._camilla_carries_level(source):
+            return
+        # Refresh from disk so a dial twist that landed via
+        # jasper-control between our own set/adjust calls reflects
+        # in `_level` before we compute the expected dB.
+        self._refresh_from_disk()
+        expected_db = percent_to_db(self._level)
+        current_db = await self._camilla.get_volume_db(best_effort=True)
+        if current_db is None:
+            # Camilla restart blip; next tick retries.
+            return
+        drift = expected_db - current_db
+        if abs(drift) <= RECONCILE_DRIFT_DB:
+            return
+        if abs(drift) >= RECONCILE_DUCK_SKIP_DB:
+            # Looks like a duck (CueDuck without _voice_session_active,
+            # or some other deep attenuation we don't own). Leave it.
+            return
+        # Converge.
+        logger.info(
+            "event=volume.reconciled source=%s level=%d%% "
+            "current_db=%.2f expected_db=%.2f drift_db=%+.2f",
+            source.value, self._level, current_db, expected_db, drift,
+        )
+        try:
+            await self._camilla.set_volume_db(expected_db, best_effort=True)
+            self._persistence.save_now(expected_db)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("reconcile write failed (will retry): %s", e)
 
     async def _active_source(self) -> Source:
         """Pick the active source. Multiple-source-active is rare
