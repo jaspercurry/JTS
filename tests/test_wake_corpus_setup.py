@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import subprocess
 import threading
 import time
 import wave
@@ -1033,6 +1034,27 @@ def _serve_in_thread(backend):
     return server, th, port
 
 
+def _use_tmp_bridge_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    system_env: str = "",
+    corpus_env: str = "",
+) -> tuple[Path, Path]:
+    """Point wake_corpus_setup's bridge env helpers at temp files."""
+    system_path = tmp_path / "jasper.env"
+    bridge_path = tmp_path / "wake_corpus_bridge.env"
+    if system_env:
+        system_path.write_text(system_env)
+    if corpus_env:
+        bridge_path.write_text(corpus_env)
+    monkeypatch.setattr(wake_corpus_setup, "SYSTEM_ENV_PATH", system_path)
+    monkeypatch.setattr(
+        wake_corpus_setup, "BRIDGE_CORPUS_ENV_PATH", bridge_path,
+    )
+    return system_path, bridge_path
+
+
 def test_level_sse_returns_event_stream_headers(backend) -> None:
     """GET /api/recording/level must return 200 + correct SSE headers
     (Content-Type, no-cache, X-Accel-Buffering: no for nginx). We
@@ -1325,6 +1347,128 @@ def test_begin_session_with_usb_dtln_records_companion_legs(
         "on", "off", "dtln", "ref", "usb_raw", "usb_dtln",
     }
     assert "usb_webrtc" not in clip.files
+
+
+def test_missing_bridge_outputs_detects_disabled_usb_and_dtln(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _use_tmp_bridge_env(monkeypatch, tmp_path)
+
+    assert wake_corpus_setup.missing_bridge_outputs_for_session(
+        include_dtln=True,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+    ) == ["dtln", "ref", "usb", "usb_dtln"]
+
+
+def test_missing_bridge_outputs_honors_overlay_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    """The /var/lib corpus env wins over /etc, matching systemd's
+    later EnvironmentFile precedence."""
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env=(
+            "JASPER_AEC_DTLN_ENABLED=0\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=0\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=0\n"
+        ),
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+        ),
+    )
+
+    assert wake_corpus_setup.missing_bridge_outputs_for_session(
+        include_dtln=True,
+        include_usb_mic=True,
+        include_usb_dtln=True,
+    ) == []
+
+
+def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+
+    wake_corpus_setup.enable_bridge_outputs_for_session(
+        include_dtln=True,
+        include_usb_mic=False,
+        include_usb_dtln=True,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert values["JASPER_AEC_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_USB_MIC_DEVICE"] == "USB PnP Sound Device"
+    assert restarts == ["restart"]
+
+
+def test_enable_bridge_outputs_preserves_system_usb_device(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env='JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n',
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    wake_corpus_setup.enable_bridge_outputs_for_session(
+        include_dtln=False,
+        include_usb_mic=True,
+        include_usb_dtln=False,
+    )
+
+    assert "JASPER_AEC_USB_MIC_DEVICE" not in bridge_path.read_text()
+
+
+def test_enable_bridge_outputs_rolls_back_when_restart_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env="JASPER_AEC_DTLN_ENABLED=0\n",
+    )
+    attempts = 0
+
+    def fake_restart() -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise subprocess.CalledProcessError(
+                1, ["systemctl", "restart", "jasper-aec-bridge.service"],
+                stderr="USB corpus mic unavailable",
+            )
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "restart_aec_bridge", fake_restart,
+    )
+
+    with pytest.raises(subprocess.CalledProcessError):
+        wake_corpus_setup.enable_bridge_outputs_for_session(
+            include_dtln=True,
+            include_usb_mic=True,
+            include_usb_dtln=True,
+        )
+
+    assert bridge_path.read_text() == "JASPER_AEC_DTLN_ENABLED=0\n"
+    assert attempts == 2  # failed new config, then restarted rollback config
 
 
 def test_metadata_persists_include_raw_mic_0_flag(
@@ -1676,6 +1820,15 @@ def test_html_has_dtln_session_checkboxes() -> None:
     assert 'USB DTLN' in html_text
 
 
+def test_html_confirm_enables_missing_bridge_outputs() -> None:
+    """The Begin flow offers a deliberate bridge enable/restart retry
+    instead of silently starting a session with missing WAV legs."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert "can_enable_bridge_outputs" in html_text
+    assert "enable_bridge_outputs: true" in html_text
+    assert "restart jasper-aec-bridge" in html_text
+
+
 def test_html_playback_uses_leg_selector() -> None:
     """Clip rows let the operator choose any recorded leg for playback."""
     html_text = wake_corpus_setup._render_index_html("t")
@@ -1850,13 +2003,15 @@ def test_api_status_includes_include_usb_mic(
 
 
 def test_api_session_begin_accepts_dtln_flags(
-    backend, monkeypatch: pytest.MonkeyPatch,
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     import http.client
 
     monkeypatch.setattr(
         wake_corpus_setup, "voice_daemon_active", lambda: False,
     )
+    _use_tmp_bridge_env(monkeypatch, tmp_path)
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
     server, th, port = _serve_in_thread(backend)
     try:
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
@@ -1866,6 +2021,7 @@ def test_api_session_begin_accepts_dtln_flags(
                 "member": "jasper",
                 "include_dtln": False,
                 "include_usb_dtln": True,
+                "enable_bridge_outputs": True,
             }),
             {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
         )
@@ -1878,6 +2034,134 @@ def test_api_session_begin_accepts_dtln_flags(
             assert body["enabled_legs"] == [
                 "on", "off", "ref", "usb_raw", "usb_dtln",
             ]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_status_includes_bridge_output_status(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=0\n"
+        ),
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert body["bridge_outputs"] == {
+                "dtln": True,
+                "ref": True,
+                "usb": False,
+                "usb_dtln": False,
+                "env_path": str(tmp_path / "wake_corpus_bridge.env"),
+            }
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_offers_bridge_enable_for_missing_outputs(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    _use_tmp_bridge_env(monkeypatch, tmp_path)
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session",
+            json.dumps({
+                "member": "jasper",
+                "include_dtln": True,
+                "include_usb_mic": True,
+                "include_usb_dtln": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 409
+            assert body["can_enable_bridge_outputs"] is True
+            assert body["missing_bridge_outputs"] == [
+                "dtln", "ref", "usb", "usb_dtln",
+            ]
+            assert backend.session_id() is None
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_enable_bridge_outputs_then_begins(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    _, bridge_path = _use_tmp_bridge_env(monkeypatch, tmp_path)
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session",
+            json.dumps({
+                "member": "jasper",
+                "include_dtln": True,
+                "include_usb_mic": True,
+                "include_usb_dtln": True,
+                "enable_bridge_outputs": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["member"] == "jasper"
+            assert body["enabled_legs"] == [
+                "on", "off", "dtln", "ref", "usb_raw",
+                "usb_webrtc", "usb_dtln",
+            ]
+            assert restarts == ["restart"]
+            text = bridge_path.read_text()
+            assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
+            assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1" in text
         finally:
             conn.close()
     finally:

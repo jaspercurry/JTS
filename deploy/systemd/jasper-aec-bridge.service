@@ -84,6 +84,10 @@ TimeoutStopSec=5s
 # (ref_gain=0 dB, mic_gain=0 dB, agc2=off) so a missing env file is
 # safe — but the production tuning values won't be applied.
 EnvironmentFile=-/etc/jasper/jasper.env
+# Corpus-recorder experiment flags live under /var/lib/jasper so the
+# sandboxed web UI can deliberately enable optional bridge outputs
+# (reference / cheap USB / DTLN) without writing to /etc.
+EnvironmentFile=-/var/lib/jasper/wake_corpus_bridge.env
 # Skip cleanly when the XVF Array is absent, on 2-channel firmware, or
 # the operator has disabled AEC. The reconciler owns env/service state;
 # this condition keeps manual starts from re-entering a crash loop.
