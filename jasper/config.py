@@ -533,7 +533,7 @@ class Config:
                 "JASPER_VAD_BARGE_IN_THRESHOLD", 0.5,
             ),
             server_vad_enabled=_env(
-                "JASPER_SERVER_VAD_ENABLED", "1",
+                "JASPER_SERVER_VAD_ENABLED", "0",
             ).strip().lower() not in ("0", "false", "no"),
             server_vad_threshold=_env_float(
                 "JASPER_SERVER_VAD_THRESHOLD", 0.5,
