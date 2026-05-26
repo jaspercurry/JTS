@@ -206,7 +206,13 @@ def _build_test_registry(
     registry = ToolRegistry()
 
     # Weather — stateless HTTP client. Read-only.
-    weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
+    weather = WeatherClient(
+        cfg.weather_default_location,
+        cfg.weather_units,
+        default_lat=cfg.weather_default_lat,
+        default_lon=cfg.weather_default_lon,
+        default_name=cfg.weather_default_display_name,
+    )
     for fn in make_weather_tools(weather):
         registry.register(fn)
 
@@ -515,7 +521,7 @@ class VoiceEvalHarness:
             connection = _make_connection(self.cfg)
             await connection.start(
                 wrapped,
-                lambda: _build_system_instruction(self.cfg.weather_default_location),
+                lambda: _build_system_instruction(self.cfg.weather_prompt_location),
             )
             self._connection = connection
             logger.info(

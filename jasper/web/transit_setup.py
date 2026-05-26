@@ -53,7 +53,7 @@ from typing import Any
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .. import transit
+from .. import location_state, transit
 from ..bus import parse_bus_stops
 from ..transit import geocode as geocode_mod
 from ._common import (
@@ -77,15 +77,15 @@ logger = logging.getLogger(__name__)
 
 # Persisted at /var/lib/jasper/transit.env. Mode 0640 — the BusTime
 # key is mildly sensitive but not as critical as an OAuth token.
-TRANSIT_FILE = "/var/lib/jasper/transit.env"
-TRANSIT_FILE_MODE = 0o640
+TRANSIT_FILE = location_state.TRANSIT_FILE
+TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 
 # Wizard-owned coordinate state. Provider-owned env keys come from
 # `transit.all_env_keys()`. Splitting these is deliberate: coords
 # are wizard-internal scaffolding, not consumed by daemons directly.
-LAT_ENV = "JASPER_TRANSIT_LAT"
-LON_ENV = "JASPER_TRANSIT_LON"
-DISPLAY_NAME_ENV = "JASPER_TRANSIT_DISPLAY_NAME"
+LAT_ENV = location_state.TRANSIT_LAT_ENV
+LON_ENV = location_state.TRANSIT_LON_ENV
+DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
 
 # Max distance (mi) to a nearest stop before we consider the provider
 # uncovered. NYC bbox includes some areas (e.g., Sandy Hook NJ tip)
@@ -109,6 +109,37 @@ def _owned_env_keys() -> set[str]:
 
 def _load_state(path: str = TRANSIT_FILE) -> dict[str, str]:
     return read_env_file(path)
+
+
+def _seed_weather_from_transit_if_missing(
+    transit_state: dict[str, str],
+    *,
+    weather_path: str = location_state.WEATHER_FILE,
+) -> bool:
+    """Copy transit coords into weather.env when weather has no coords.
+
+    Weather and transit stay independent after this seed. Existing
+    weather coordinates win so a household can keep different values.
+    """
+    loc = location_state.parse_transit_location(transit_state)
+    if loc is None:
+        return False
+    weather_state = read_env_file(weather_path)
+    if location_state.parse_weather_location(weather_state) is not None:
+        return False
+    units = (
+        weather_state.get(location_state.WEATHER_UNITS_ENV, "").strip()
+        or os.environ.get(location_state.WEATHER_UNITS_ENV, "").strip()
+        or None
+    )
+    new_weather = dict(weather_state)
+    new_weather.update(location_state.weather_env_for_location(loc, units=units))
+    write_env_file(
+        weather_path,
+        new_weather,
+        mode=location_state.WEATHER_FILE_MODE,
+    )
+    return True
 
 
 def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
@@ -1208,6 +1239,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                _seed_weather_from_transit_if_missing(
+                    new, weather_path=cfg["weather_path"],
+                )
             except OSError as e:
                 logger.exception("could not write transit.env after geocode")
                 send_see_other(self, "./", flash=f"Could not save: {e}")
@@ -1224,6 +1258,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             try:
                 if new:
                     write_env_file(cfg["state_path"], new, mode=TRANSIT_FILE_MODE)
+                    _seed_weather_from_transit_if_missing(
+                        new, weather_path=cfg["weather_path"],
+                    )
                 else:
                     delete_env_file(cfg["state_path"])
             except OSError as e:
@@ -1259,9 +1296,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 # ----------------------------------------------------------------------
 
 
-def make_server(target, *, state_path: str = TRANSIT_FILE) -> ThreadingHTTPServer:
+def make_server(
+    target,
+    *,
+    state_path: str = TRANSIT_FILE,
+    weather_path: str = location_state.WEATHER_FILE,
+) -> ThreadingHTTPServer:
     from . import _systemd
-    cfg = {"state_path": state_path}
+    cfg = {"state_path": state_path, "weather_path": weather_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 

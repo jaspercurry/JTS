@@ -1089,6 +1089,7 @@ PY
     fi
     migrate_voice_provider
     migrate_transit_config
+    migrate_weather_config
     migrate_wifi_guardian
     migrate_wake_legs_config
 }
@@ -1225,6 +1226,92 @@ migrate_transit_config() {
         sed -i.bak "/^${k}=/d" "${jasper_env}"
         rm -f "${jasper_env}.bak"
     done
+}
+
+# Migrate stale weather env vars from /etc/jasper/jasper.env into the
+# wizard-owned /var/lib/jasper/weather.env, and seed missing weather /
+# transit coordinates from each other. Weather and transit remain
+# separate after seeding: if both files already have coordinates, this
+# helper leaves both alone.
+migrate_weather_config() {
+    local jasper_env="${ENV_DIR}/jasper.env"
+    local weather_env="${STATE_DIR}/weather.env"
+    local transit_env="${STATE_DIR}/transit.env"
+
+    local keys=(
+        JASPER_DEFAULT_LOCATION
+        JASPER_WEATHER_LAT
+        JASPER_WEATHER_LON
+        JASPER_WEATHER_DISPLAY_NAME
+        JASPER_WEATHER_UNITS
+    )
+
+    [[ -f "${jasper_env}" ]] || return 0
+
+    install -d -m 0750 "${STATE_DIR}"
+
+    local k line stale_value
+    for k in "${keys[@]}"; do
+        line=$(grep -E "^${k}=" "${jasper_env}" || true)
+        [[ -z "${line}" ]] && continue
+        stale_value="${line#${k}=}"
+        stale_value="${stale_value%$'\r'}"
+        stale_value="${stale_value%$'\n'}"
+
+        if [[ -f "${weather_env}" ]] && grep -qE "^${k}=" "${weather_env}"; then
+            sed -i.bak "/^${k}=/d" "${jasper_env}"
+            rm -f "${jasper_env}.bak"
+            echo "  migrate_weather_config: removed stale ${k} line from ${jasper_env}"
+            continue
+        fi
+
+        if [[ -n "${stale_value}" ]]; then
+            touch "${weather_env}"
+            chmod 0640 "${weather_env}"
+            echo "${k}=${stale_value}" >> "${weather_env}"
+            echo "  migrate_weather_config: moved ${k}=${stale_value}"
+            echo "    from ${jasper_env} to ${weather_env}"
+        fi
+        sed -i.bak "/^${k}=/d" "${jasper_env}"
+        rm -f "${jasper_env}.bak"
+    done
+
+    local weather_lat weather_lon weather_display weather_default
+    local transit_lat transit_lon transit_display
+    weather_lat=$(grep -E '^JASPER_WEATHER_LAT=' "${weather_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    weather_lon=$(grep -E '^JASPER_WEATHER_LON=' "${weather_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    weather_display=$(grep -E '^JASPER_WEATHER_DISPLAY_NAME=' "${weather_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    weather_default=$(grep -E '^JASPER_DEFAULT_LOCATION=' "${weather_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    transit_lat=$(grep -E '^JASPER_TRANSIT_LAT=' "${transit_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    transit_lon=$(grep -E '^JASPER_TRANSIT_LON=' "${transit_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+    transit_display=$(grep -E '^JASPER_TRANSIT_DISPLAY_NAME=' "${transit_env}" 2>/dev/null | tail -n1 | cut -d= -f2- || true)
+
+    if [[ -z "${weather_lat}" && -z "${weather_lon}" && -n "${transit_lat}" && -n "${transit_lon}" ]]; then
+        touch "${weather_env}"
+        chmod 0640 "${weather_env}"
+        echo "JASPER_WEATHER_LAT=${transit_lat}" >> "${weather_env}"
+        echo "JASPER_WEATHER_LON=${transit_lon}" >> "${weather_env}"
+        if [[ -n "${transit_display}" && -z "${weather_display}" ]]; then
+            echo "JASPER_WEATHER_DISPLAY_NAME=${transit_display}" >> "${weather_env}"
+        fi
+        if [[ -n "${transit_display}" && -z "${weather_default}" ]]; then
+            echo "JASPER_DEFAULT_LOCATION=${transit_display}" >> "${weather_env}"
+        fi
+        echo "  migrate_weather_config: seeded weather location from transit.env"
+    fi
+
+    if [[ -z "${transit_lat}" && -z "${transit_lon}" && -n "${weather_lat}" && -n "${weather_lon}" ]]; then
+        touch "${transit_env}"
+        chmod 0640 "${transit_env}"
+        echo "JASPER_TRANSIT_LAT=${weather_lat}" >> "${transit_env}"
+        echo "JASPER_TRANSIT_LON=${weather_lon}" >> "${transit_env}"
+        if [[ -n "${weather_display}" ]]; then
+            echo "JASPER_TRANSIT_DISPLAY_NAME=${weather_display}" >> "${transit_env}"
+        elif [[ -n "${weather_default}" ]]; then
+            echo "JASPER_TRANSIT_DISPLAY_NAME=${weather_default}" >> "${transit_env}"
+        fi
+        echo "  migrate_weather_config: seeded transit location from weather.env"
+    fi
 }
 
 # Migrate stale JASPER_VOICE_PROVIDER from /etc/jasper/jasper.env to

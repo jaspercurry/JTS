@@ -3352,7 +3352,13 @@ async def run() -> None:
     renderer = RendererClient(
         librespot_state_path=cfg.librespot_state_path,
     )
-    weather = WeatherClient(cfg.weather_default_location, cfg.weather_units)
+    weather = WeatherClient(
+        cfg.weather_default_location,
+        cfg.weather_units,
+        default_lat=cfg.weather_default_lat,
+        default_lon=cfg.weather_default_lon,
+        default_name=cfg.weather_default_display_name,
+    )
     subway = (
         SubwayClient(
             cfg.subway_station_id,
@@ -3623,7 +3629,7 @@ async def run() -> None:
         await connection.start(
             registry,
             lambda: _build_system_instruction(
-                cfg.weather_default_location,
+                cfg.weather_prompt_location,
                 google_accounts=google_account_names,
                 default_google_account=google_default_account,
                 transit_configured=transit_configured,

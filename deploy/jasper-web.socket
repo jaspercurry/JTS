@@ -1,12 +1,12 @@
 [Unit]
-Description=Jasper web setup wizards (Spotify, voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home Assistant, Wake-Corpus) — socket
+Description=Jasper web setup wizards (Spotify, voice, Google, AirPlay, Sources, Wake, Wi-Fi, Peers, Transit, Home Assistant, Weather, Wake-Corpus) — socket
 # When any of these ports gets a connection, systemd will activate
 # jasper-web.service to handle it. The service exits after 10 min
 # of no activity; this .socket stays listening throughout, so
 # nginx-fronted requests transparently re-spawn the daemon.
 
 [Socket]
-# 11 ListenStream= → 11 fds passed to the daemon at LISTEN_FDS_START.
+# 12 ListenStream= → 12 fds passed to the daemon at LISTEN_FDS_START.
 # Order is undefined per systemd issue #16647, so the Python side
 # matches by getsockname()[1] (port) rather than by fd index.
 # All ports bind 127.0.0.1 — multi-Pi households need no cross-host
@@ -21,6 +21,7 @@ ListenStream=127.0.0.1:8775
 ListenStream=127.0.0.1:8776
 ListenStream=127.0.0.1:8777
 ListenStream=127.0.0.1:8778
+ListenStream=127.0.0.1:8779
 # 8782 = wake-corpus recorder (jasper.web.wake_corpus_setup). Longer-
 # lived than the other wizards — recording sessions can run an hour
 # while the operator works through 60+ utterances. Browser polls

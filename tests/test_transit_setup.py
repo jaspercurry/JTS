@@ -135,6 +135,34 @@ def test_apply_geocode_manual_out_of_range_errors():
     assert "-90" in err
 
 
+def test_seed_weather_from_transit_only_when_weather_missing(tmp_path):
+    weather_path = tmp_path / "weather.env"
+    transit_state = {
+        transit_setup.LAT_ENV: "40.653",
+        transit_setup.LON_ENV: "-74.007",
+        transit_setup.DISPLAY_NAME_ENV: "Sunset Park, Brooklyn",
+    }
+    assert transit_setup._seed_weather_from_transit_if_missing(
+        transit_state,
+        weather_path=str(weather_path),
+    ) is True
+    fields = _common.read_env_file(str(weather_path))
+    assert fields["JASPER_WEATHER_LAT"] == "40.653"
+    assert fields["JASPER_WEATHER_LON"] == "-74.007"
+    assert fields["JASPER_WEATHER_DISPLAY_NAME"] == "Sunset Park, Brooklyn"
+
+    weather_path.write_text(
+        "JASPER_WEATHER_LAT=1.000\n"
+        "JASPER_WEATHER_LON=2.000\n"
+        "JASPER_WEATHER_DISPLAY_NAME=Already set\n",
+    )
+    assert transit_setup._seed_weather_from_transit_if_missing(
+        transit_state,
+        weather_path=str(weather_path),
+    ) is False
+    assert _common.read_env_file(str(weather_path))["JASPER_WEATHER_LAT"] == "1.000"
+
+
 # ---------- Save action ----------------------------------------------------
 
 
@@ -471,6 +499,7 @@ def wizard_server(tmp_path: Path, monkeypatch):
     this one's cache-hit assertions."""
     geocode_mod._reset_cache_for_tests()
     state_path = str(tmp_path / "transit.env")
+    weather_path = str(tmp_path / "weather.env")
     restarts: list[None] = []
     # NB: patch the symbol where it's looked up, not where defined —
     # the handler imports it from _common into its own namespace.
@@ -478,7 +507,11 @@ def wizard_server(tmp_path: Path, monkeypatch):
         transit_setup, "restart_voice_daemon",
         lambda: restarts.append(None),
     )
-    server = transit_setup.make_server(("127.0.0.1", 0), state_path=state_path)
+    server = transit_setup.make_server(
+        ("127.0.0.1", 0),
+        state_path=state_path,
+        weather_path=weather_path,
+    )
     th = threading.Thread(target=server.serve_forever, daemon=True)
     th.start()
     try:

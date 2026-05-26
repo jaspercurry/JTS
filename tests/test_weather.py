@@ -461,6 +461,43 @@ async def test_get_weather_uses_default_location_when_empty():
 
 
 @pytest.mark.asyncio
+async def test_get_weather_uses_default_coordinates_without_geocoding():
+    geocode_calls = 0
+    captured_forecast_query = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal geocode_calls
+        if "geocoding-api" in str(request.url):
+            geocode_calls += 1
+            return httpx.Response(500)
+        captured_forecast_query.append(dict(request.url.params))
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=72, cur_code=0,
+            today_high=80, today_low=68, today_code=0, today_prob=0,
+        ))
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(
+        default_location="11232",
+        units="fahrenheit",
+        default_lat=40.653,
+        default_lon=-74.007,
+        default_name="Sunset Park, Brooklyn",
+        http=http,
+    )
+    try:
+        result = await weather.get_weather()
+        assert "error" not in result
+        assert result["location"] == "Sunset Park, Brooklyn"
+        assert result["units"] == "°F"
+        assert geocode_calls == 0
+        assert captured_forecast_query[0]["latitude"] == "40.653"
+        assert captured_forecast_query[0]["longitude"] == "-74.007"
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_get_weather_explicit_location_overrides_default():
     def handler(request: httpx.Request) -> httpx.Response:
         if "geocoding-api" in str(request.url):
@@ -480,6 +517,108 @@ async def test_get_weather_explicit_location_overrides_default():
     try:
         result = await weather.get_weather(location="Paris")
         assert result["location"] == "Paris, France"
+    finally:
+        await http.aclose()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected_name", "expected_country"),
+    [
+        ("Tampa, FL", "Tampa", "US"),
+        ("Cortez, Florida", "Cortez", "US"),
+        ("Cortez, Florida, USA", "Cortez", "US"),
+        ("Denver CO", "denver", "US"),
+        ("Paris France", "paris", "FR"),
+        ("London Ontario", "london", "CA"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_weather_parses_spoken_location_qualifiers(
+    query: str,
+    expected_name: str,
+    expected_country: str,
+):
+    captured_geocode_query = []
+
+    candidates = {
+        "Tampa, FL": [
+            {
+                "name": "Tampa", "admin1": "Florida",
+                "country": "United States", "country_code": "US",
+                "latitude": 27.95, "longitude": -82.46, "population": 384000,
+            },
+        ],
+        "Cortez, Florida": [
+            {
+                "name": "Cortez", "admin1": "Colorado",
+                "country": "United States", "country_code": "US",
+                "latitude": 37.35, "longitude": -108.58, "population": 8700,
+            },
+            {
+                "name": "Cortez", "admin1": "Florida",
+                "country": "United States", "country_code": "US",
+                "latitude": 27.47, "longitude": -82.68, "population": 4400,
+            },
+        ],
+        "Cortez, Florida, USA": [
+            {
+                "name": "Cortez", "admin1": "Colorado",
+                "country": "United States", "country_code": "US",
+                "latitude": 37.35, "longitude": -108.58, "population": 8700,
+            },
+            {
+                "name": "Cortez", "admin1": "Florida",
+                "country": "United States", "country_code": "US",
+                "latitude": 27.47, "longitude": -82.68, "population": 4400,
+            },
+        ],
+        "Denver CO": [
+            {
+                "name": "Denver", "admin1": "Colorado",
+                "country": "United States", "country_code": "US",
+                "latitude": 39.74, "longitude": -104.98, "population": 715000,
+            },
+        ],
+        "Paris France": [
+            {
+                "name": "Paris", "country": "France", "country_code": "FR",
+                "latitude": 48.85, "longitude": 2.35, "population": 2100000,
+            },
+        ],
+        "London Ontario": [
+            {
+                "name": "London", "admin1": "England",
+                "country": "United Kingdom", "country_code": "GB",
+                "latitude": 51.51, "longitude": -0.13, "population": 8900000,
+            },
+            {
+                "name": "London", "admin1": "Ontario",
+                "country": "Canada", "country_code": "CA",
+                "latitude": 42.98, "longitude": -81.23, "population": 420000,
+            },
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "geocoding-api" in str(request.url):
+            captured_geocode_query.append(dict(request.url.params))
+            return httpx.Response(200, json={"results": candidates[query]})
+        return httpx.Response(200, json=_open_meteo_response(
+            cur_temp=15, cur_code=3,
+            today_high=18, today_low=12, today_code=3, today_prob=20,
+        ))
+
+    http = httpx.AsyncClient(transport=_mock_transport(handler))
+    weather = WeatherClient(default_location="Toronto", http=http)
+    try:
+        result = await weather.get_weather(location=query)
+        assert "error" not in result
+        assert captured_geocode_query[0]["name"] == expected_name
+        assert captured_geocode_query[0]["countryCode"] == expected_country
+        if query.startswith("Cortez, Florida"):
+            assert result["location"] == "Cortez, Florida"
+        if query == "London Ontario":
+            assert result["location"] == "London, Ontario"
     finally:
         await http.aclose()
 
@@ -520,7 +659,7 @@ async def test_get_weather_no_default_no_arg_returns_error():
     try:
         result = await weather.get_weather()
         assert "error" in result
-        assert "JASPER_DEFAULT_LOCATION" in result["error"]
+        assert "/weather/" in result["error"]
     finally:
         await weather.aclose()
 
@@ -577,3 +716,5 @@ def test_get_weather_tool_routes_rain_timing_to_next_rain_window():
     assert "next_rain_window" in flat
     assert "BOTH endpoints" in flat
     assert "ends_after_forecast" in flat
+    assert "Tampa, Florida" in flat
+    assert "Do not strip the qualifier" in flat

@@ -15,7 +15,8 @@ unit per wizard. nginx routes:
   /wifi/     →  127.0.0.1:8775  (jasper.web.wifi_setup)
   /peers/    →  127.0.0.1:8776  (jasper.web.peering_setup)
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
-  /ha/ → 127.0.0.1:8778  (jasper.web.home_assistant_setup)
+  /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
+  /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
 
 Socket activation:
   When started by `jasper-web.socket` (systemd), the listening sockets
@@ -52,6 +53,7 @@ from . import (
     voice_setup,
     wake_corpus_setup,
     wake_setup,
+    weather_setup,
     wifi_setup,
 )
 
@@ -109,6 +111,7 @@ def main() -> int:
     peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
     transit_port = int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777"))
     ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
+    weather_port = int(os.environ.get("JASPER_WEATHER_WEB_PORT", "8779"))
     wake_corpus_port = int(os.environ.get("JASPER_WAKE_CORPUS_WEB_PORT", "8782"))
 
     # Distribute systemd-passed sockets by port. Empty dict on legacy
@@ -211,6 +214,9 @@ def main() -> int:
     )
     transit_server = transit_setup.make_server(
         target_for(transit_port), state_path=transit_state,
+        weather_path=os.environ.get(
+            "JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE,
+        ),
     )
 
     # Home Assistant connection wizard — mDNS discovery + LLAT paste +
@@ -224,6 +230,17 @@ def main() -> int:
     )
     ha_server = home_assistant_setup.make_server(
         target_for(ha_port), state_path=ha_state,
+    )
+
+    # Weather default-location wizard — stores /var/lib/jasper/weather.env
+    # with rounded coords + units for bare "what's the weather?" queries.
+    weather_state = os.environ.get(
+        "JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE,
+    )
+    weather_server = weather_setup.make_server(
+        target_for(weather_port),
+        state_path=weather_state,
+        transit_path=transit_state,
     )
 
     # Wake-word corpus recorder — browser-driven recording UI for the
@@ -268,6 +285,7 @@ def main() -> int:
         peers_server.RequestHandlerClass,
         transit_server.RequestHandlerClass,
         ha_server.RequestHandlerClass,
+        weather_server.RequestHandlerClass,
         wake_corpus_server.RequestHandlerClass,
     ):
         _systemd.install_request_idle_bump(handler_cls, tracker)
@@ -284,6 +302,7 @@ def main() -> int:
         ("/peers", peers_port),
         ("/transit", transit_port),
         ("/ha", ha_port),
+        ("/weather", weather_port),
         ("/wake-corpus", wake_corpus_port),
     ):
         if port in by_port:
@@ -305,6 +324,7 @@ def main() -> int:
         ("/peers", peers_server),
         ("/transit", transit_server),
         ("/ha", ha_server),
+        ("/weather", weather_server),
         ("/wake-corpus", wake_corpus_server),
     ):
         threading.Thread(
