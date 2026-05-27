@@ -22,6 +22,7 @@
 |---|---|
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
 | Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
+| Analyze wake-corpus audio artifacts / quality | [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md) |
 | Count wake-word detections on captured audio offline | [Wake-word scoring (offline)](#wake-word-scoring-offline) |
 | Pull production wake events + clips from the Pi | [Wake-event telemetry (production)](#wake-event-telemetry-production) |
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
@@ -148,6 +149,13 @@ This is separate from production wake-event telemetry. It does not
 read `wake-events.sqlite3` and does not score wake-word models; it is
 the quick "did the gold corpus record what we think it recorded?"
 gate before Phase 0a/0c work.
+
+For deeper signal-quality analysis of artifacts, tears/clicks, AGC
+pumping, clipping, cross-leg event coincidence, and human review
+packages, use [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md).
+That doc is the source of truth for the future analyzer; extend the
+existing corpus audit only when the new check still belongs in the
+quick integrity gate.
 
 ---
 
