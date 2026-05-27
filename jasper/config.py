@@ -8,6 +8,7 @@ from . import home_assistant as _ha_env
 from .bus import parse_bus_stops
 from .citibike import parse_saved_stations as _parse_citibike_stations
 from .speaker_name import runtime_name as _speaker_runtime_name
+from .voice.catalog import default_extra_value, default_model_id, default_voice_id
 
 logger = logging.getLogger(__name__)
 
@@ -393,23 +394,23 @@ class Config:
             voice_provider=provider,
             hostname=hostname,
             gemini_api_key=gemini_key,
-            gemini_model=_env("JASPER_GEMINI_MODEL", "gemini-3.1-flash-live-preview"),
+            gemini_model=_env("JASPER_GEMINI_MODEL", default_model_id("gemini")),
             # Pin the TTS voice so it's consistent across sessions.
             # Available prebuilt voices on Gemini 3.1 Live Preview
             # include Aoede, Charon, Fenrir, Kore, Puck, Leda, Orus,
             # Zephyr. Without this, the server picks one per session.
-            gemini_voice=_env("JASPER_GEMINI_VOICE", "Aoede"),
+            gemini_voice=_env("JASPER_GEMINI_VOICE", default_voice_id("gemini")),
             openai_api_key=openai_key,
             # Default model is the post-2026-05-07 reasoning-capable
             # GA: gpt-realtime-2 ($32 / $64 / $0.40 per 1M audio tokens
             # in / out / cached). For the cheaper non-reasoning sibling
             # set JASPER_OPENAI_MODEL=gpt-realtime-mini ($10 / $20 /
             # $0.30) — same wire format, no `reasoning.effort` field.
-            openai_model=_env("JASPER_OPENAI_MODEL", "gpt-realtime-2"),
+            openai_model=_env("JASPER_OPENAI_MODEL", default_model_id("openai")),
             # OpenAI Realtime voices include marin, cedar, alloy, ash,
             # ballad, coral, echo, sage, shimmer, verse. `marin` is the
             # default in the post-GA SDK quickstarts.
-            openai_voice=_env("JASPER_OPENAI_VOICE", "marin"),
+            openai_voice=_env("JASPER_OPENAI_VOICE", default_voice_id("openai")),
             # Reasoning effort for gpt-realtime-2: minimal | low |
             # medium | high | xhigh. Default `low` matches the SDK
             # default and is the right choice for short voice queries.
@@ -417,16 +418,19 @@ class Config:
             # only includes the field when the model name carries
             # "-2"). `minimal` cuts ~1 second of TTFA at the cost of
             # less coherent multi-step answers.
-            openai_reasoning_effort=_env("JASPER_OPENAI_REASONING_EFFORT", "low"),
+            openai_reasoning_effort=_env(
+                "JASPER_OPENAI_REASONING_EFFORT",
+                default_extra_value("openai", "reasoning_effort"),
+            ),
             grok_api_key=grok_key,
             # xAI Grok Voice Agent. The `grok-voice-think-fast-1.0`
             # model claims sub-second latency and is OpenAI-Realtime-
             # protocol-compatible per xAI's docs (we run it through the
             # same adapter as OpenAI with a base-URL override).
-            grok_model=_env("JASPER_GROK_MODEL", "grok-voice-think-fast-1.0"),
+            grok_model=_env("JASPER_GROK_MODEL", default_model_id("grok")),
             # Grok voice list is disjoint from OpenAI's: eve, ara, rex,
             # sal, leo. Default is `eve` per xAI docs.
-            grok_voice=_env("JASPER_GROK_VOICE", "eve"),
+            grok_voice=_env("JASPER_GROK_VOICE", default_voice_id("grok")),
             # `JASPER_WAKE_MODEL` is either a bundled openWakeWord name
             # (e.g. "hey_jarvis", "alexa") or an absolute path to a
             # .onnx file under /var/lib/jasper/wake/. The /wake/ wizard

@@ -22,6 +22,7 @@ URL surface (after nginx strips the /voice/ prefix):
   GET  /                          page render
   POST /save                      save credentials + active provider, restart
   POST /clear-credentials         clear one provider's key/model/voice
+  POST /refresh-models            refresh one provider's cached model list
 """
 from __future__ import annotations
 
@@ -34,6 +35,22 @@ import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
+
+from jasper.voice.catalog import (
+    PROVIDERS,
+    VALID_PROVIDER_IDS,
+    ProviderCatalogEntry,
+    default_model_id,
+    default_voice_id,
+    provider_by_id,
+)
+from jasper.voice.model_discovery import (
+    DEFAULT_CACHE_PATH,
+    DiscoverySnapshot,
+    ModelDiscoveryError,
+    load_cache,
+    refresh_provider_cache,
+)
 
 from ._common import (
     PAGE_STYLE,
@@ -59,148 +76,14 @@ logger = logging.getLogger(__name__)
 # defaults still live in /etc/jasper/jasper.env; the systemd unit
 # layers this file ON TOP so wizard-written values win.
 PROVIDER_FILE = "/var/lib/jasper/voice_provider.env"
+DISCOVERY_CACHE_FILE = DEFAULT_CACHE_PATH
 
 
-# ----------------------------------------------------------------------
-# Provider catalogue.
-# ----------------------------------------------------------------------
-#
-# Each entry's `models` and `voices` are CURATED suggestions surfaced
-# in the wizard's dropdowns. The voice daemon doesn't enforce these
-# lists at runtime — it just passes whatever string is configured to
-# the SDK — so an advanced user editing /etc/jasper/jasper.env by hand
-# can still pick a model the wizard hasn't heard of. Refresh these on
-# each major model release. See docs/HANDOFF-voice-providers.md for
-# the per-provider trade-offs.
-
-
-PROVIDERS = [
-    {
-        "id": "gemini",
-        "label": "Gemini Live",
-        "vendor": "Google",
-        "key_env": "GEMINI_API_KEY",
-        "key_prefix_hint": "AIzaSy…",
-        "key_url": "https://aistudio.google.com/apikey",
-        "model_env": "JASPER_GEMINI_MODEL",
-        "voice_env": "JASPER_GEMINI_VOICE",
-        # Pricing: ~$3 / $12 per 1M audio tokens (rough). The
-        # cheapest of the three. 15-min audio cap with a 2-h
-        # resumption handle.
-        "cost_hint": "~$0.025 / minute",
-        "models": [
-            {"id": "gemini-3.1-flash-live-preview", "label": "3.1 Flash Live (preview, recommended)"},
-            {"id": "gemini-2.5-flash-native-audio-preview-12-2025", "label": "2.5 Flash native-audio (fallback)"},
-        ],
-        # Gender/style hints sourced from Google's prebuilt-voices
-        # catalogue (ai.google.dev/gemini-api/docs/speech-generation).
-        "voices": [
-            {"id": "Aoede", "label": "Aoede — feminine, breezy"},
-            {"id": "Charon", "label": "Charon — masculine, informative"},
-            {"id": "Fenrir", "label": "Fenrir — masculine, excitable"},
-            {"id": "Kore", "label": "Kore — feminine, firm"},
-            {"id": "Puck", "label": "Puck — masculine, upbeat"},
-            {"id": "Leda", "label": "Leda — feminine, youthful"},
-            {"id": "Orus", "label": "Orus — masculine, firm"},
-            {"id": "Zephyr", "label": "Zephyr — feminine, bright"},
-        ],
-    },
-    {
-        "id": "openai",
-        "label": "OpenAI Realtime",
-        "vendor": "OpenAI",
-        "key_env": "OPENAI_API_KEY",
-        "key_prefix_hint": "sk-…",
-        "key_url": "https://platform.openai.com/api-keys",
-        "model_env": "JASPER_OPENAI_MODEL",
-        "voice_env": "JASPER_OPENAI_VOICE",
-        # gpt-realtime-2 audio: $32 / $64 / $0.40 per 1M tokens
-        # (in / out / cached) → ~$0.30/minute of conversation.
-        "cost_hint": "~$0.30 / minute (gpt-realtime-2)",
-        "models": [
-            {"id": "gpt-realtime-2", "label": "gpt-realtime-2 (released 2026-05-07, recommended)"},
-            {"id": "gpt-realtime-mini", "label": "gpt-realtime-mini (cheaper, no reasoning)"},
-            {"id": "gpt-realtime-1.5", "label": "gpt-realtime-1.5 (older GA)"},
-        ],
-        # Gender/style hints sourced from OpenAI's voice catalogue
-        # (platform.openai.com/docs/guides/realtime). The user picked
-        # `ash` once expecting feminine and got masculine — these
-        # hints exist to head that off.
-        "voices": [
-            {"id": "marin", "label": "marin — feminine, warm"},
-            {"id": "cedar", "label": "cedar — masculine, calm"},
-            {"id": "alloy", "label": "alloy — neutral, balanced"},
-            {"id": "ash", "label": "ash — masculine, soft"},
-            {"id": "ballad", "label": "ballad — masculine, expressive"},
-            {"id": "coral", "label": "coral — feminine, bright"},
-            {"id": "echo", "label": "echo — masculine, smooth"},
-            {"id": "sage", "label": "sage — feminine, even"},
-            {"id": "shimmer", "label": "shimmer — feminine, light"},
-            {"id": "verse", "label": "verse — masculine, melodic"},
-        ],
-        # gpt-realtime-2 specific: reasoning effort. Field is silently
-        # dropped on non-`-2` models by the adapter.
-        "extras": {
-            "reasoning_effort": {
-                "env": "JASPER_OPENAI_REASONING_EFFORT",
-                "label": "Reasoning effort (gpt-realtime-2)",
-                "default": "low",
-                "options": [
-                    ("minimal", "minimal — ~1.1 s TTFA, less coherent multi-step"),
-                    ("low", "low (default) — best for short voice queries"),
-                    ("medium", "medium"),
-                    ("high", "high"),
-                    ("xhigh", "xhigh — slowest, most thorough"),
-                ],
-                "hint": "Only meaningful on gpt-realtime-2. Silently ignored on older models.",
-            },
-        },
-    },
-    {
-        "id": "grok",
-        "label": "Grok Voice Agent",
-        "vendor": "xAI",
-        "key_env": "XAI_API_KEY",
-        "key_prefix_hint": "xai-…",
-        "key_url": "https://console.x.ai/",
-        "model_env": "JASPER_GROK_MODEL",
-        "voice_env": "JASPER_GROK_VOICE",
-        # Flat $3.00/hour. Token-based spend cap under-counts under
-        # Grok — daemon logs a warning at startup. ~$0.05/minute at
-        # the listed rate.
-        "cost_hint": "$3 / hour flat (~$0.05 / minute)",
-        "models": [
-            {"id": "grok-voice-think-fast-1.0", "label": "grok-voice-think-fast-1.0 (recommended)"},
-        ],
-        # Gender/style hints sourced from xAI's voice catalogue
-        # (docs.x.ai/docs/guides/voice/agent).
-        "voices": [
-            {"id": "eve", "label": "eve — feminine, warm"},
-            {"id": "ara", "label": "ara — feminine, casual"},
-            {"id": "rex", "label": "rex — masculine, confident"},
-            {"id": "sal", "label": "sal — masculine, casual"},
-            {"id": "leo", "label": "leo — masculine, smooth"},
-        ],
-    },
-]
-
-
-_VALID_PROVIDER_IDS = {p["id"] for p in PROVIDERS}
-
-
-# All env keys this wizard owns. We re-read the file on every page
-# render and rewrite it whole on every save — the wizard is the source
-# of truth for these, so keys outside this set in the existing file
-# get LEFT ALONE (carried forward) but never produced. That keeps
-# operators' /etc/jasper/jasper.env hand-edits compatible (the daemon
-# sees them; the wizard doesn't trample them).
-_OWNED_ENV_KEYS = {"JASPER_VOICE_PROVIDER"}
-for _p in PROVIDERS:
-    _OWNED_ENV_KEYS.add(_p["key_env"])
-    _OWNED_ENV_KEYS.add(_p["model_env"])
-    _OWNED_ENV_KEYS.add(_p["voice_env"])
-    for _x in _p.get("extras", {}).values():
-        _OWNED_ENV_KEYS.add(_x["env"])
+# Provider metadata lives in jasper.voice.catalog so the wizard's provider,
+# model, voice, and extra-control metadata has one code-owned catalog to
+# audit. The catalog is curated, not an allow-list: unknown configured
+# models are preserved by the select rendering below instead of silently
+# replaced.
 
 
 # Loose validation — block obvious paste mistakes (whitespace, quotes,
@@ -237,8 +120,11 @@ def _value_for(state: dict[str, str], env_var: str, default: str = "") -> str:
     return os.environ.get(env_var, "") or default
 
 
-def _provider_is_configured(state: dict[str, str], provider: dict) -> bool:
-    return bool(_value_for(state, provider["key_env"]))
+def _provider_is_configured(
+    state: dict[str, str],
+    provider: ProviderCatalogEntry,
+) -> bool:
+    return bool(_value_for(state, provider.key_env))
 
 
 def _active_provider_id(state: dict[str, str]) -> str:
@@ -251,7 +137,7 @@ def _active_provider_id(state: dict[str, str]) -> str:
     `/etc/jasper/jasper.env` and `/var/lib/jasper/voice_provider.env`
     disagreed about what was active."""
     active = _value_for(state, "JASPER_VOICE_PROVIDER", "")
-    return active if active in _VALID_PROVIDER_IDS else ""
+    return active if active in VALID_PROVIDER_IDS else ""
 
 
 # ----------------------------------------------------------------------
@@ -301,6 +187,15 @@ _VOICE_PAGE_STYLE = PAGE_STYLE + """
   .provider-body .key-source {
     font-size: 0.85em; color: #888; margin-top: 0.2em;
   }
+  .provider-body .model-discovery-status {
+    color: #666; font-size: 0.85em; margin: 0.35em 0 0.2em;
+  }
+  .provider-body .model-discovery-actions {
+    margin-top: 0.45em; gap: 0.7em;
+  }
+  .provider-body .model-discovery-actions .hint {
+    flex: 1 1 14em; margin: 0;
+  }
 """
 
 
@@ -325,8 +220,8 @@ def _active_radio_html(state: dict[str, str]) -> str:
     rows = []
     for p in PROVIDERS:
         configured = _provider_is_configured(state, p)
-        is_active = active == p["id"]
-        radio_attrs = ["type=\"radio\"", f"name=\"active\"", f"value=\"{p['id']}\""]
+        is_active = active == p.id
+        radio_attrs = ["type=\"radio\"", "name=\"active\"", f"value=\"{p.id}\""]
         if is_active:
             radio_attrs.append("checked")
         if not configured:
@@ -335,13 +230,13 @@ def _active_radio_html(state: dict[str, str]) -> str:
         cls = "radio disabled" if not configured else "radio"
         status = (
             "configured" if configured
-            else f"no {p['key_env']} yet — paste below first"
+            else f"no {p.key_env} yet — paste below first"
         )
         rows.append(f"""
           <label class="{cls}">
             {radio_input}
-            <span class="name">{html.escape(p['label'])}</span>
-            <span class="pricing">{html.escape(p['cost_hint'])}</span>
+            <span class="name">{html.escape(p.label)}</span>
+            <span class="pricing">{html.escape(p.cost_hint)}</span>
             <span class="meta" style="margin: 0">{html.escape(status)}</span>
           </label>""")
     return f"""
@@ -352,16 +247,31 @@ def _active_radio_html(state: dict[str, str]) -> str:
 </div>"""
 
 
-def _model_select_html(provider: dict, current: str) -> str:
+def _model_select_html(
+    provider: ProviderCatalogEntry,
+    current: str,
+    discovered: DiscoverySnapshot | None = None,
+) -> str:
     rows = []
     seen = set()
-    for m in provider["models"]:
-        sel = " selected" if m["id"] == current else ""
+    for model in provider.models:
+        sel = " selected" if model.id == current else ""
         rows.append(
-            f'<option value="{html.escape(m["id"])}"{sel}>'
-            f'{html.escape(m["label"])}</option>'
+            f'<option value="{html.escape(model.id)}"{sel}>'
+            f'{html.escape(model.display_label)}</option>'
         )
-        seen.add(m["id"])
+        seen.add(model.id)
+    if discovered is not None:
+        for model_id in discovered.models:
+            if model_id in seen:
+                continue
+            sel = " selected" if model_id == current else ""
+            rows.append(
+                f'<option value="{html.escape(model_id)}"{sel}>'
+                f'{html.escape(model_id)} '
+                f'(experimental; discovered)</option>'
+            )
+            seen.add(model_id)
     # If the daemon's configured model is something the wizard doesn't
     # know about, surface it as a custom row so the user doesn't get
     # silently switched to something else when they hit Save.
@@ -369,59 +279,85 @@ def _model_select_html(provider: dict, current: str) -> str:
         rows.insert(
             0,
             f'<option value="{html.escape(current)}" selected>'
-            f'{html.escape(current)} (custom)</option>',
+            f'{html.escape(current)} (custom; experimental)</option>',
         )
     # `form="save-form"` associates this input with the outer
     # save-form by ID — necessary because the cards visually live
     # OUTSIDE the form's <form>...</form> tags so a per-card "Clear
     # key" form can sit beside them without nesting (HTML forbids
     # nested forms).
-    return f'<select name="{provider["id"]}_model" form="save-form">{"".join(rows)}</select>'
+    return f'<select name="{provider.id}_model" form="save-form">{"".join(rows)}</select>'
 
 
-def _voice_select_html(provider: dict, current: str) -> str:
+def _model_discovery_status_html(
+    provider: ProviderCatalogEntry,
+    discovered: DiscoverySnapshot | None,
+) -> str:
+    status = ""
+    if discovered is not None and discovered.fetched_at:
+        catalog_ids = {model.id for model in provider.models}
+        unknown_count = len(
+            {model_id for model_id in discovered.models if model_id not in catalog_ids},
+        )
+        suffix = (
+            f"; {unknown_count} untested provider model(s) shown as experimental"
+            if unknown_count else ""
+        )
+        status = f"Last refreshed {html.escape(discovered.fetched_at)}{suffix}."
+    if discovered is not None and discovered.last_error:
+        failed = (
+            f"Last refresh failed {html.escape(discovered.last_error_at)}: "
+            f"{html.escape(discovered.last_error)}."
+        )
+        status = f"{status} {failed}".strip()
+    if not status:
+        status = (
+            "Catalog models are shown. Refresh is manual and never "
+            "changes the active model by itself."
+        )
+    return f'<p class="model-discovery-status">{status}</p>'
+
+
+def _voice_select_html(provider: ProviderCatalogEntry, current: str) -> str:
     rows = []
     seen = set()
-    for v in provider["voices"]:
-        # `voices` entries are {"id": ..., "label": ...} dicts. Plain-
-        # string entries are accepted as a back-compat path so an
-        # operator hand-editing this file with a new voice doesn't
-        # have to remember the schema.
-        if isinstance(v, str):
-            vid, vlabel = v, v
-        else:
-            vid, vlabel = v["id"], v["label"]
-        sel = " selected" if vid == current else ""
-        rows.append(f'<option value="{html.escape(vid)}"{sel}>{html.escape(vlabel)}</option>')
-        seen.add(vid)
+    for voice in provider.voices:
+        sel = " selected" if voice.id == current else ""
+        rows.append(
+            f'<option value="{html.escape(voice.id)}"{sel}>'
+            f'{html.escape(voice.label)}</option>'
+        )
+        seen.add(voice.id)
     if current and current not in seen:
         rows.insert(
             0,
             f'<option value="{html.escape(current)}" selected>'
             f'{html.escape(current)} (custom)</option>',
         )
-    return f'<select name="{provider["id"]}_voice" form="save-form">{"".join(rows)}</select>'
+    return f'<select name="{provider.id}_voice" form="save-form">{"".join(rows)}</select>'
 
 
-def _provider_extras_html(provider: dict, state: dict[str, str]) -> str:
+def _provider_extras_html(
+    provider: ProviderCatalogEntry,
+    state: dict[str, str],
+) -> str:
     """Render any provider-specific extra controls (today: OpenAI's
     reasoning_effort dropdown). Empty string when the provider has no
     extras."""
-    extras = provider.get("extras") or {}
-    if not extras:
+    if not provider.extras:
         return ""
     out = []
-    for field_name, spec in extras.items():
-        current = _value_for(state, spec["env"], spec["default"])
+    for spec in provider.extras:
+        current = _value_for(state, spec.env, spec.default)
         rows = []
         seen = set()
-        for opt_id, opt_label in spec["options"]:
-            sel = " selected" if opt_id == current else ""
+        for opt in spec.options:
+            sel = " selected" if opt.id == current else ""
             rows.append(
-                f'<option value="{html.escape(opt_id)}"{sel}>'
-                f'{html.escape(opt_label)}</option>'
+                f'<option value="{html.escape(opt.id)}"{sel}>'
+                f'{html.escape(opt.label)}</option>'
             )
-            seen.add(opt_id)
+            seen.add(opt.id)
         if current and current not in seen:
             rows.insert(
                 0,
@@ -429,24 +365,33 @@ def _provider_extras_html(provider: dict, state: dict[str, str]) -> str:
                 f'{html.escape(current)} (custom)</option>',
             )
         out.append(f"""
-          <label for="{provider['id']}_{field_name}">{html.escape(spec['label'])}</label>
-          <select id="{provider['id']}_{field_name}" name="{provider['id']}_{field_name}" form="save-form">
+          <label for="{provider.id}_{spec.name}">{html.escape(spec.label)}</label>
+          <select id="{provider.id}_{spec.name}" name="{provider.id}_{spec.name}" form="save-form">
             {''.join(rows)}
           </select>
-          <small>{html.escape(spec.get('hint', ''))}</small>""")
+          <small>{html.escape(spec.hint)}</small>""")
     return "\n".join(out)
 
 
 def _provider_card_html(
-    provider: dict, state: dict[str, str], csrf_token: str, *, is_active: bool,
+    provider: ProviderCatalogEntry,
+    state: dict[str, str],
+    csrf_token: str,
+    discovered: DiscoverySnapshot | None,
+    *,
+    is_active: bool,
 ) -> str:
     """One <details> card per provider. Open by default for the active
     provider so the user lands on what's currently in flight."""
     configured = _provider_is_configured(state, provider)
-    key_value = _value_for(state, provider["key_env"])
+    key_value = _value_for(state, provider.key_env)
     masked = mask_secret(key_value) if key_value else ""
-    model_value = _value_for(state, provider["model_env"])
-    voice_value = _value_for(state, provider["voice_env"])
+    model_value = _value_for(
+        state, provider.model_env, default_model_id(provider.id),
+    )
+    voice_value = _value_for(
+        state, provider.voice_env, default_voice_id(provider.id),
+    )
     badge_html = (
         '<span class="badge">configured</span>' if configured
         else '<span class="badge muted">not configured</span>'
@@ -457,7 +402,7 @@ def _provider_card_html(
     )
     open_attr = " open" if (is_active or not configured) else ""
     key_source = ""
-    if configured and not state.get(provider["key_env"]):
+    if configured and not state.get(provider.key_env):
         # Key came from /etc/jasper/jasper.env (set by the operator,
         # not the wizard). Saving here writes a wizard-owned override.
         key_source = (
@@ -466,54 +411,90 @@ def _provider_card_html(
             'in /var/lib/jasper/voice_provider.env.</p>'
         )
     extras = _provider_extras_html(provider, state)
+    placeholder = (
+        "paste new key — leave blank to keep" if configured
+        else f"paste your key ({provider.key_prefix_hint})"
+    )
+    clear_form = ""
+    if configured:
+        clear_form = f'''
+    <div class="actions">
+      <form method="post" action="clear-credentials"
+            onsubmit="return confirm('Clear the saved {html.escape(provider.label)} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.');">
+        {csrf_field_html(csrf_token)}
+        <input type="hidden" name="provider" value="{provider.id}">
+        <button class="danger" type="submit">Clear key</button>
+      </form>
+    </div>
+    '''
+    refresh_disabled = "" if configured else " disabled"
+    refresh_hint = (
+        "Queries the provider with this speaker's saved key, caches "
+        "the result locally, and labels unknown models as experimental."
+        if configured else
+        f"Paste a {provider.key_env} first, then refresh available models."
+    )
     return f"""
 <details class="account"{open_attr}>
   <summary>
-    <span class="name">{html.escape(provider['label'])}</span>
-    <span class="meta" style="margin:0; font-size:0.85em">{html.escape(provider['vendor'])}</span>
+    <span class="name">{html.escape(provider.label)}</span>
+    <span class="meta" style="margin:0; font-size:0.85em">{html.escape(provider.vendor)}</span>
     {badge_html}{active_badge}
   </summary>
   <div class="account-body provider-body">
     <p class="meta">
-      Cost: <strong>{html.escape(provider['cost_hint'])}</strong>.
+      Cost: <strong>{html.escape(provider.cost_hint)}</strong>.
       Get a key:
-      <a href="{html.escape(provider['key_url'])}" target="_blank" rel="noopener">{html.escape(provider['vendor'])} console ↗</a>
+      <a href="{html.escape(provider.key_url)}" target="_blank" rel="noopener">{html.escape(provider.vendor)} console ↗</a>
     </p>
 
-    <label for="{provider['id']}_key">{html.escape(provider['key_env'])}</label>
-    <input id="{provider['id']}_key" name="{provider['id']}_key" form="save-form"
+    <label for="{provider.id}_key">{html.escape(provider.key_env)}</label>
+    <input id="{provider.id}_key" name="{provider.id}_key" form="save-form"
            type="password" autocomplete="off" autocapitalize="off"
            autocorrect="off" spellcheck="false"
-           placeholder="{html.escape('paste new key — leave blank to keep' if configured else f'paste your key ({provider["key_prefix_hint"]})')}">
+           placeholder="{html.escape(placeholder)}">
     {f'<p class="meta">Currently saved: <code>{html.escape(masked)}</code></p>' if masked else ''}
     {key_source}
 
-    <label for="{provider['id']}_model">Model</label>
-    {_model_select_html(provider, model_value)}
+    <label for="{provider.id}_model">Model</label>
+    {_model_select_html(provider, model_value, discovered)}
+    {_model_discovery_status_html(provider, discovered)}
+    <div class="actions model-discovery-actions">
+      <form method="post" action="refresh-models">
+        {csrf_field_html(csrf_token)}
+        <input type="hidden" name="provider" value="{provider.id}">
+        <button class="secondary" type="submit"{refresh_disabled}>Refresh available models</button>
+      </form>
+      <span class="hint">{html.escape(refresh_hint)}</span>
+    </div>
 
-    <label for="{provider['id']}_voice">TTS voice</label>
+    <label for="{provider.id}_voice">TTS voice</label>
     {_voice_select_html(provider, voice_value)}
 
     {extras}
 
-    {f'''
-    <div class="actions">
-      <form method="post" action="clear-credentials"
-            onsubmit="return confirm('Clear the saved {html.escape(provider["label"])} key and model/voice override? The daemon will fall back to /etc/jasper/jasper.env defaults.');">
-        {csrf_field_html(csrf_token)}
-        <input type="hidden" name="provider" value="{provider['id']}">
-        <button class="danger" type="submit">Clear key</button>
-      </form>
-    </div>
-    ''' if configured else ''}
+    {clear_form}
   </div>
 </details>"""
 
 
-def _index_html(state: dict[str, str], csrf_token: str, *, status_msg: str = "") -> bytes:
+def _index_html(
+    state: dict[str, str],
+    csrf_token: str,
+    *,
+    status_msg: str = "",
+    discovery: dict[str, DiscoverySnapshot] | None = None,
+) -> bytes:
     active_id = _active_provider_id(state)
+    discovery = discovery or {}
     cards = "".join(
-        _provider_card_html(p, state, csrf_token, is_active=(p["id"] == active_id))
+        _provider_card_html(
+            p,
+            state,
+            csrf_token,
+            discovery.get(p.id),
+            is_active=(p.id == active_id),
+        )
         for p in PROVIDERS
     )
     # Page structure note: HTML forbids nested forms, so the outer
@@ -562,13 +543,6 @@ never sent anywhere except the relevant provider's API.</p>
 # ----------------------------------------------------------------------
 
 
-def _provider_by_id(provider_id: str) -> dict | None:
-    for p in PROVIDERS:
-        if p["id"] == provider_id:
-            return p
-    return None
-
-
 def _validate_key(key: str) -> str | None:
     """Return a complaint string if `key` is structurally bad, else
     None. We refuse anything with whitespace or non-base64-URL-safe
@@ -602,36 +576,38 @@ def _apply_save(form: dict[str, str], current: dict[str, str]) -> tuple[dict[str
     directly."""
     new = dict(current)
     for p in PROVIDERS:
-        pid = p["id"]
+        pid = p.id
         key = (form.get(f"{pid}_key") or "").strip()
         if key:
             err = _validate_key(key)
             if err:
-                return current, f"{p['label']}: {err}"
-            new[p["key_env"]] = key
+                return current, f"{p.label}: {err}"
+            new[p.key_env] = key
         model = (form.get(f"{pid}_model") or "").strip()
         if model:
-            new[p["model_env"]] = model
+            new[p.model_env] = model
         voice = (form.get(f"{pid}_voice") or "").strip()
         if voice:
-            new[p["voice_env"]] = voice
-        for field_name, spec in (p.get("extras") or {}).items():
-            val = (form.get(f"{pid}_{field_name}") or "").strip()
+            new[p.voice_env] = voice
+        for spec in p.extras:
+            val = (form.get(f"{pid}_{spec.name}") or "").strip()
             if val:
-                new[spec["env"]] = val
+                new[spec.env] = val
 
     active = (form.get("active") or "").strip()
-    if active not in _VALID_PROVIDER_IDS:
+    if active not in VALID_PROVIDER_IDS:
         return current, f"Unknown provider {active!r}."
-    active_provider = _provider_by_id(active)
+    active_provider = provider_by_id(active)
+    if active_provider is None:
+        return current, f"Unknown provider {active!r}."
     has_key = bool(
-        new.get(active_provider["key_env"])
-        or os.environ.get(active_provider["key_env"])
+        new.get(active_provider.key_env)
+        or os.environ.get(active_provider.key_env)
     )
     if not has_key:
         return current, (
-            f"{active_provider['label']} has no API key configured "
-            f"yet. Paste a {active_provider['key_env']} value before "
+            f"{active_provider.label} has no API key configured "
+            f"yet. Paste a {active_provider.key_env} value before "
             f"selecting it as active."
         )
     new["JASPER_VOICE_PROVIDER"] = active
@@ -649,15 +625,22 @@ def _apply_clear(form: dict[str, str], current: dict[str, str]) -> tuple[dict[st
     and warn at save time. Operator can recover by either pasting a
     new key or hand-editing /etc/jasper/jasper.env."""
     pid = (form.get("provider") or "").strip()
-    p = _provider_by_id(pid)
+    p = provider_by_id(pid)
     if p is None:
         return current, f"Unknown provider {pid!r}."
     new = dict(current)
-    for env in (p["key_env"], p["model_env"], p["voice_env"]):
+    for env in (p.key_env, p.model_env, p.voice_env):
         new.pop(env, None)
-    for spec in (p.get("extras") or {}).values():
-        new.pop(spec["env"], None)
+    for spec in p.extras:
+        new.pop(spec.env, None)
     return new, None
+
+
+def _provider_key_for_discovery(
+    provider: ProviderCatalogEntry,
+    state: dict[str, str],
+) -> str:
+    return _value_for(state, provider.key_env).strip()
 
 
 # ----------------------------------------------------------------------
@@ -681,9 +664,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             path = url.path.rstrip("/") or "/"
             if path == "/":
                 state = _load_state(cfg["state_path"])
+                discovery = load_cache(cfg["discovery_cache_path"])
                 ctx = begin_request(self)
                 send_html_response(self, _index_html(
-                    state, ctx["csrf_token"], status_msg=ctx["flash"],
+                    state,
+                    ctx["csrf_token"],
+                    status_msg=ctx["flash"],
+                    discovery=discovery,
                 ))
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -691,7 +678,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             url = urllib.parse.urlparse(self.path)
             path = url.path.rstrip("/") or "/"
-            if path not in ("/save", "/clear-credentials"):
+            if path not in ("/save", "/clear-credentials", "/refresh-models"):
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             form = read_form(self)
@@ -703,6 +690,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 return
             if path == "/clear-credentials":
                 self._handle_clear(form)
+                return
+            if path == "/refresh-models":
+                self._handle_refresh_models(form)
                 return
 
         # --- route bodies ---
@@ -725,7 +715,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             restart_voice_daemon()
             active = new.get("JASPER_VOICE_PROVIDER", "")
             label = next(
-                (p["label"] for p in PROVIDERS if p["id"] == active),
+                (p.label for p in PROVIDERS if p.id == active),
                 active,
             )
             send_see_other(
@@ -751,10 +741,62 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             restart_voice_daemon()
             pid = (form.get("provider") or "").strip()
             label = next(
-                (p["label"] for p in PROVIDERS if p["id"] == pid),
+                (p.label for p in PROVIDERS if p.id == pid),
                 pid,
             )
             send_see_other(self, "./", flash=f"Cleared {label} credentials.")
+
+        def _handle_refresh_models(self, form: dict[str, str]) -> None:
+            current = _load_state(cfg["state_path"])
+            pid = (form.get("provider") or "").strip()
+            provider = provider_by_id(pid)
+            if provider is None:
+                send_see_other(self, "./", flash=f"Unknown provider {pid!r}.")
+                return
+            api_key = _provider_key_for_discovery(provider, current)
+            if not api_key:
+                send_see_other(
+                    self,
+                    "./",
+                    flash=(
+                        f"{provider.label} has no API key configured yet. "
+                        f"Paste a {provider.key_env} value before refreshing "
+                        "available models."
+                    ),
+                )
+                return
+            try:
+                snapshot = refresh_provider_cache(
+                    provider.id,
+                    api_key,
+                    path=cfg["discovery_cache_path"],
+                    http=cfg.get("discovery_http_client"),
+                )
+            except (ModelDiscoveryError, OSError) as e:
+                logger.warning(
+                    "event=voice_model_discovery provider=%s result=error error=%r",
+                    provider.id,
+                    str(e),
+                )
+                send_see_other(
+                    self,
+                    "./",
+                    flash=f"Could not refresh {provider.label} models: {e}",
+                )
+                return
+            logger.info(
+                "event=voice_model_discovery provider=%s result=ok count=%d",
+                provider.id,
+                len(snapshot.models),
+            )
+            send_see_other(
+                self,
+                "./",
+                flash=(
+                    f"Refreshed {provider.label} models. "
+                    "Newly discovered models are experimental until tested."
+                ),
+            )
 
     return Handler
 
@@ -764,7 +806,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 # ----------------------------------------------------------------------
 
 
-def make_server(target, *, state_path: str = PROVIDER_FILE) -> ThreadingHTTPServer:
+def make_server(
+    target,
+    *,
+    state_path: str = PROVIDER_FILE,
+    discovery_cache_path: str = DISCOVERY_CACHE_FILE,
+    discovery_http_client: Any | None = None,
+) -> ThreadingHTTPServer:
     """Build a configured server. `target` is one of:
       - `socket.socket` — pre-bound listener handed off by systemd
       - `(host, port)` tuple — explicit bind
@@ -772,7 +820,11 @@ def make_server(target, *, state_path: str = PROVIDER_FILE) -> ThreadingHTTPServ
     Mirrors the other wizard `make_server` signatures so jasper.web.__main__
     can drive all four uniformly."""
     from . import _systemd
-    cfg = {"state_path": state_path}
+    cfg = {
+        "state_path": state_path,
+        "discovery_cache_path": discovery_cache_path,
+        "discovery_http_client": discovery_http_client,
+    }
     return _systemd.make_http_server(target, _make_handler(cfg))
 
 
@@ -791,15 +843,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--state", default=os.environ.get("JASPER_VOICE_PROVIDER_FILE", PROVIDER_FILE),
     )
+    parser.add_argument(
+        "--discovery-cache",
+        default=os.environ.get(
+            "JASPER_VOICE_MODEL_DISCOVERY_FILE",
+            DISCOVERY_CACHE_FILE,
+        ),
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    server = make_server((args.host, args.port), state_path=args.state)
+    server = make_server(
+        (args.host, args.port),
+        state_path=args.state,
+        discovery_cache_path=args.discovery_cache,
+    )
     logger.info(
-        "jasper-voice-web listening on http://%s:%d (state=%s)",
-        args.host, args.port, args.state,
+        "jasper-voice-web listening on http://%s:%d (state=%s discovery_cache=%s)",
+        args.host, args.port, args.state, args.discovery_cache,
     )
     try:
         server.serve_forever()

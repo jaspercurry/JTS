@@ -47,6 +47,51 @@ those interfaces; the per-provider adapters are:
 The single switch point is `_make_connection(cfg)` at the top of
 [`voice_daemon.py`](../jasper/voice_daemon.py).
 
+## Model catalog policy
+
+The `/voice/` wizard reads its provider, model, voice, and
+provider-specific knob metadata from
+[`jasper/voice/catalog.py`](../jasper/voice/catalog.py). That file is
+the curated catalog: each visible model is labelled as `tested`,
+`fallback`, or `experimental` so operators can distinguish "this is
+the default we run" from "this exists as an escape hatch." Runtime
+`Config` also reads the provider model, voice, and extra-control
+defaults from the same catalog helpers; env overrides still win.
+
+The catalog is **not** a runtime allow-list. The provider adapters pass
+whatever `JASPER_<PROVIDER>_MODEL` string is configured through to the
+SDK, and the wizard preserves unknown configured values as custom
+experimental rows. This gives JTS the two properties we want:
+
+- No silent latest: we do not automatically switch a speaker to a new
+  upstream model just because a provider released one.
+- No permanent lock-in: an operator can still type or script a newly
+  released model into the env file, and the next wizard save will not
+  erase it.
+
+The `/voice/` wizard also has a manual **Refresh available models**
+button per provider. It is deliberately not part of normal page render:
+network calls happen only when an operator clicks refresh and the
+provider has a configured API key. Discovery code lives in
+[`jasper/voice/model_discovery.py`](../jasper/voice/model_discovery.py)
+and writes `/var/lib/jasper/voice_model_discovery.json` at mode 0600.
+The next page render reads that local cache and appends
+provider-discovered model IDs that are not in the curated catalog as
+`experimental; discovered` dropdown options.
+
+Important invariants:
+
+- No page-load provider calls. The wizard stays fast and usable when
+  the Pi is offline or the provider is down.
+- No auto-promotion. Catalog entries stay first; discovered models are
+  hints, not proof they are production-good on this speaker.
+- No surprise migration. Refresh never changes
+  `JASPER_<PROVIDER>_MODEL`; only an explicit Save with the selected
+  model updates the runtime env file.
+- Failed refreshes keep the last successful model list and record the
+  sanitized error in the cache for the UI. Error strings intentionally
+  avoid leaking API-key-bearing URLs.
+
 ## Why three, not one
 
 Each backend has a real strength and at least one real cost:
@@ -179,12 +224,15 @@ should be:
 3. New env-var block in `Config` (api key, model, voice, anything
    provider-specific) with a sane default and an explicit
    "required only when active provider" validation.
-4. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
-5. New contract test in `tests/test_<provider>_session.py` modeled on
+4. New provider entry in `jasper/voice/catalog.py`, including model
+   status labels (`tested` / `fallback` / `experimental`) and voice
+   choices for the `/voice/` wizard.
+5. New branch in `_make_connection(cfg)` in `voice_daemon.py`.
+6. New contract test in `tests/test_<provider>_session.py` modeled on
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → tool round advances the
    turn's idle anchor (see "Idle anchor + tool rounds" below).
-6. New row in this doc's tradeoff table.
+7. New row in this doc's tradeoff table.
 
 If the wire format is OpenAI-Realtime-compatible (Grok pattern), most
 of step 1 is "subclass `OpenAIRealtimeConnection` and override
@@ -281,4 +329,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-26 (server-VAD default checked against config + May 2026 VAD matrix)
+Last verified: 2026-05-27 (voice provider catalog + manual model discovery checked against config + /voice wizard)

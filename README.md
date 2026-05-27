@@ -171,7 +171,8 @@ when the configured AEC mic is present with 6-channel firmware — see
   xAI Grok Voice Agent. See
   [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)
 - ✅ Web setup wizard at `http://jts.local/voice/` — paste API keys,
-  pick the active provider, save. Writes
+  pick the active provider, choose tested/fallback models, manually
+  refresh provider model lists for experimental trials, save. Writes
   `/var/lib/jasper/voice_provider.env` at mode 0600 and restarts
   `jasper-voice`
 - ✅ Tools: volume, transport (play/pause/skip/now-playing), Spotify

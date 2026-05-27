@@ -24,8 +24,11 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
+import httpx
 import pytest
 
+from jasper.voice import catalog
+from jasper.voice import model_discovery
 from jasper.web import _common, voice_setup
 
 
@@ -85,13 +88,28 @@ def _form_for(active="openai", **kwargs) -> dict[str, str]:
     f = {
         "active": active,
         # All three providers' model + voice always submit (dropdowns).
-        "gemini_model": kwargs.pop("gemini_model", "gemini-3.1-flash-live-preview"),
-        "gemini_voice": kwargs.pop("gemini_voice", "Aoede"),
-        "openai_model": kwargs.pop("openai_model", "gpt-realtime-2"),
-        "openai_voice": kwargs.pop("openai_voice", "marin"),
-        "openai_reasoning_effort": kwargs.pop("openai_reasoning_effort", "low"),
-        "grok_model": kwargs.pop("grok_model", "grok-voice-think-fast-1.0"),
-        "grok_voice": kwargs.pop("grok_voice", "eve"),
+        "gemini_model": kwargs.pop(
+            "gemini_model", catalog.default_model_id("gemini"),
+        ),
+        "gemini_voice": kwargs.pop(
+            "gemini_voice", catalog.default_voice_id("gemini"),
+        ),
+        "openai_model": kwargs.pop(
+            "openai_model", catalog.default_model_id("openai"),
+        ),
+        "openai_voice": kwargs.pop(
+            "openai_voice", catalog.default_voice_id("openai"),
+        ),
+        "openai_reasoning_effort": kwargs.pop(
+            "openai_reasoning_effort",
+            catalog.default_extra_value("openai", "reasoning_effort"),
+        ),
+        "grok_model": kwargs.pop(
+            "grok_model", catalog.default_model_id("grok"),
+        ),
+        "grok_voice": kwargs.pop(
+            "grok_voice", catalog.default_voice_id("grok"),
+        ),
         # Keys default blank (= no change).
         "gemini_key": "",
         "openai_key": "",
@@ -99,6 +117,107 @@ def _form_for(active="openai", **kwargs) -> dict[str, str]:
     }
     f.update(kwargs)
     return f
+
+
+def test_catalog_defaults_are_listed_and_marked_tested():
+    """The wizard defaults should be conscious, audited catalog entries.
+
+    The catalog is still not an allow-list, but the built-in defaults
+    should not drift into an unlabelled or fallback-only state.
+    """
+    defaults = _form_for()
+    for provider in catalog.PROVIDERS:
+        model_default = defaults[f"{provider.id}_model"]
+        voice_default = defaults[f"{provider.id}_voice"]
+        model = next((m for m in provider.models if m.default), None)
+        assert model is not None, f"{provider.id} model default missing"
+        assert model.id == model_default
+        assert model.status is catalog.ModelStatus.TESTED
+        voice = next((v for v in provider.voices if v.default), None)
+        assert voice is not None, f"{provider.id} voice default missing"
+        assert voice.id == voice_default
+
+
+def test_index_model_options_show_catalog_statuses():
+    page = voice_setup._index_html(
+        {},
+        "csrf-token-for-test-" + "x" * 32,
+    ).decode()
+    assert "3.1 Flash Live preview (tested; default)" in page
+    assert (
+        "2.5 Flash native-audio preview "
+        "(fallback; silent-session recovery)"
+    ) in page
+    assert "gpt-realtime-mini (fallback; lower cost, no reasoning)" in page
+
+
+def test_index_selects_catalog_defaults_when_unset():
+    page = voice_setup._index_html(
+        {},
+        "csrf-token-for-test-" + "x" * 32,
+    ).decode()
+    for provider in catalog.PROVIDERS:
+        for field, default in (
+            ("model", catalog.default_model_id(provider.id)),
+            ("voice", catalog.default_voice_id(provider.id)),
+        ):
+            select_idx = page.index(f'name="{provider.id}_{field}"')
+            value_idx = page.index(f'value="{default}"', select_idx)
+            option = page[
+                page.rfind("<option", 0, value_idx): page.index(">", value_idx)
+            ]
+            assert "selected" in option
+
+
+def test_index_preserves_unknown_model_as_custom_experimental():
+    state = {
+        "JASPER_VOICE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-x",
+        "JASPER_OPENAI_MODEL": "gpt-realtime-new-live",
+    }
+    page = voice_setup._index_html(
+        state,
+        "csrf-token-for-test-" + "x" * 32,
+    ).decode()
+    idx = page.index('value="gpt-realtime-new-live"')
+    option = page[page.rfind("<option", 0, idx): page.index("</option>", idx)]
+    assert "selected" in option
+    assert "gpt-realtime-new-live (custom; experimental)" in option
+
+
+def test_index_merges_discovered_models_as_experimental_options():
+    state = {
+        "JASPER_VOICE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-x",
+        "JASPER_OPENAI_MODEL": "gpt-realtime-new-live",
+    }
+    page = voice_setup._index_html(
+        state,
+        "csrf-token-for-test-" + "x" * 32,
+        discovery={
+            "openai": model_discovery.DiscoverySnapshot(
+                provider_id="openai",
+                fetched_at="2026-05-27T10:00:00Z",
+                models=("gpt-realtime-2", "gpt-realtime-new-live"),
+            ),
+        },
+    ).decode()
+    idx = page.index('value="gpt-realtime-new-live"')
+    option = page[page.rfind("<option", 0, idx): page.index("</option>", idx)]
+    assert "selected" in option
+    assert "gpt-realtime-new-live (experimental; discovered)" in option
+    assert "custom; experimental" not in option
+    assert "Last refreshed 2026-05-27T10:00:00Z" in page
+
+
+def test_index_renders_manual_refresh_button_without_page_load_fetch():
+    page = voice_setup._index_html(
+        {"OPENAI_API_KEY": "sk-x"},
+        "csrf-token-for-test-" + "x" * 32,
+    ).decode()
+    assert 'action="refresh-models"' in page
+    assert "Refresh available models" in page
+    assert "Refresh is manual" in page
 
 
 def test_apply_save_blank_key_field_preserves_existing_value():
@@ -197,6 +316,20 @@ def test_apply_save_drops_blank_values_to_keep_file_tidy():
     form["openai_model"] = ""
     new, _ = voice_setup._apply_save(form, {})
     assert "JASPER_OPENAI_MODEL" not in new
+
+
+def test_apply_save_keeps_unknown_model_value():
+    """A newly released model can be submitted before the curated
+    catalog knows about it. Saving must persist that explicit choice
+    rather than collapsing back to the default."""
+    form = _form_for(
+        active="openai",
+        openai_key="sk-x",
+        openai_model="gpt-realtime-new-live",
+    )
+    new, err = voice_setup._apply_save(form, {})
+    assert err is None
+    assert new["JASPER_OPENAI_MODEL"] == "gpt-realtime-new-live"
 
 
 # ---------- Clear logic ----------------------------------------------------
@@ -384,9 +517,18 @@ def test_mask_secret_shows_prefix_and_suffix_for_real_keys():
 # ---------- End-to-end via the actual HTTP server --------------------------
 
 
-def _start_server(tmp_path: Path) -> tuple[ThreadingHTTPServer, str, threading.Thread]:
+def _start_server(
+    tmp_path: Path,
+    *,
+    discovery_http_client=None,
+) -> tuple[ThreadingHTTPServer, str, threading.Thread]:
     state_path = str(tmp_path / "voice_provider.env")
-    server = voice_setup.make_server(("127.0.0.1", 0), state_path=state_path)
+    server = voice_setup.make_server(
+        ("127.0.0.1", 0),
+        state_path=state_path,
+        discovery_cache_path=str(tmp_path / "voice_model_discovery.json"),
+        discovery_http_client=discovery_http_client,
+    )
     port = server.server_address[1]
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -500,6 +642,56 @@ def test_e2e_save_writes_file_and_redirects(
         # Restart was invoked.
         assert called == [True]
     finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_refresh_models_writes_cache_without_restarting_voice(
+    tmp_path: Path, monkeypatch
+):
+    called = []
+    monkeypatch.setattr(
+        voice_setup, "restart_voice_daemon", lambda: called.append(True),
+    )
+    state_path = tmp_path / "voice_provider.env"
+    _common.write_env_file(str(state_path), {
+        "JASPER_VOICE_PROVIDER": "openai",
+        "OPENAI_API_KEY": "sk-existing",
+    })
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url == "https://api.openai.com/v1/models"
+        assert request.headers["Authorization"] == "Bearer sk-existing"
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "gpt-5.2"},
+                    {"id": "gpt-realtime-2"},
+                    {"id": "gpt-realtime-new-live"},
+                ],
+            },
+        )
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    server, base, _ = _start_server(tmp_path, discovery_http_client=http)
+    try:
+        status, location, _ = _post(
+            f"{base}/refresh-models", {"provider": "openai"},
+        )
+        assert status == 303
+        assert "Refreshed" in urllib.parse.unquote(location)
+        assert called == []
+
+        cache_path = tmp_path / "voice_model_discovery.json"
+        assert cache_path.exists()
+        cached = model_discovery.load_cache(str(cache_path))["openai"]
+        assert cached.models == ("gpt-realtime-2", "gpt-realtime-new-live")
+
+        body = urllib.request.urlopen(f"{base}/").read().decode()
+        assert "gpt-realtime-new-live (experimental; discovered)" in body
+    finally:
+        http.close()
         server.shutdown()
         server.server_close()
 

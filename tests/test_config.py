@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.config import Config
+from jasper.voice import catalog
 
 
 @pytest.fixture(autouse=True)
@@ -20,7 +21,11 @@ def _default_voice_provider(monkeypatch):
 def test_defaults_with_only_gemini_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     for var in [
-        "JASPER_GEMINI_MODEL", "JASPER_WAKE_MODEL",
+        "JASPER_GEMINI_MODEL", "JASPER_GEMINI_VOICE",
+        "JASPER_OPENAI_MODEL", "JASPER_OPENAI_VOICE",
+        "JASPER_OPENAI_REASONING_EFFORT",
+        "JASPER_GROK_MODEL", "JASPER_GROK_VOICE",
+        "JASPER_WAKE_MODEL",
         "JASPER_DUCK_DB", "JASPER_DAILY_SPEND_CAP_USD",
         "JASPER_MIC_DEVICE", "JASPER_TTS_DEVICE",
         "JASPER_SPEAKER_NAME",
@@ -37,7 +42,15 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     cfg = Config.from_env()
     assert cfg.voice_provider == "gemini"
     assert cfg.gemini_api_key == "test-key"
-    assert cfg.gemini_model == "gemini-3.1-flash-live-preview"
+    assert cfg.gemini_model == catalog.default_model_id("gemini")
+    assert cfg.gemini_voice == catalog.default_voice_id("gemini")
+    assert cfg.openai_model == catalog.default_model_id("openai")
+    assert cfg.openai_voice == catalog.default_voice_id("openai")
+    assert cfg.openai_reasoning_effort == catalog.default_extra_value(
+        "openai", "reasoning_effort",
+    )
+    assert cfg.grok_model == catalog.default_model_id("grok")
+    assert cfg.grok_voice == catalog.default_voice_id("grok")
     assert cfg.wake_model == "hey_jarvis"
     assert cfg.duck_db == -25.0
     # Idle context reset is opt-in (0 = disabled). Per-provider so the
