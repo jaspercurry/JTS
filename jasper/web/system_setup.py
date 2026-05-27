@@ -320,16 +320,15 @@ _PAGE_BODY = """
 <div class="card" id="services-card">
   <h2>Per-service usage</h2>
   <p class="muted" style="margin: 0 0 0.4em; font-size: 0.85em;">
-    Cgroup-reported CPU and resident memory for JTS daemons, audio
-    renderers, and key system support services. CPU is per-core
-    (100% = one fully saturated core; 400% = all four). New services
-    show "—" for CPU until the next 5 s sample provides a delta.
-    Sorted by CPU descending; the totals row shows what remains outside
-    the listed services.
+    Cgroup-reported CPU and memory for JTS daemons, audio renderers,
+    and key system support services. CPU is per-core (100% = one fully
+    saturated core; 400% = all four). New services show "—" for CPU
+    until the next 5 s sample provides a delta. Sorted by CPU descending;
+    the totals row shows what remains outside the listed services.
   </p>
   <div id="svc-warn" class="warn-banner" style="display:none"></div>
   <table class="svc-table">
-    <thead><tr><th>Service</th><th class="num">CPU</th><th class="num">RSS</th></tr></thead>
+    <thead><tr><th>Service</th><th class="num">CPU</th><th class="num">Mem</th></tr></thead>
     <tbody id="svc-rows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
   </table>
 </div>
@@ -862,11 +861,11 @@ _SCRIPT = r"""
     const svcWarn = document.getElementById('svc-warn');
     // Memory-cgroup-controller availability warning. Surfaces the
     // running-kernel-vs-cmdline.txt gap so the next person doesn't
-    // ask why every service's RSS column reads '—'.
+    // ask why every service's memory column reads '—'.
     if (m.current.memory_cgroup_enabled === false) {
       svcWarn.style.display = '';
       svcWarn.innerHTML =
-        '<strong>RSS unavailable:</strong> the running kernel was ' +
+        '<strong>Memory unavailable:</strong> the running kernel was ' +
         'booted with <code>cgroup_disable=memory</code> (Pi 5 default) ' +
         'and the memory cgroup controller is off, so ' +
         '<code>/sys/fs/cgroup/**/memory.current</code> ' +
@@ -885,11 +884,11 @@ _SCRIPT = r"""
       });
       const rows = sorted.map(s => {
         const cpu = s.cpu_pct == null ? '—' : s.cpu_pct.toFixed(1) + '%';
-        const rss = s.rss_mb == null ? '—' : Math.round(s.rss_mb) + ' MB';
+        const memory = s.memory_mb == null ? '—' : Math.round(s.memory_mb) + ' MB';
         return '<tr><td><span class="svc-name">' + esc(s.name) + '</span>' +
-               '<span class="svc-group">' + esc(s.group || 'Service') + '</span></td>' +
+               ' <span class="svc-group">' + esc(s.group || 'Service') + '</span></td>' +
                '<td class="num">' + cpu + '</td>' +
-               '<td class="num">' + rss + '</td></tr>';
+               '<td class="num">' + memory + '</td></tr>';
       });
       // Totals row. Shown subtotal is the sum of known cpu_pct's
       // (skips first-tick None values). System total comes from
@@ -898,9 +897,9 @@ _SCRIPT = r"""
       // userspace/kernel work outside this curated table.
       const shownCpu = sorted.reduce((acc, s) =>
         acc + (s.cpu_pct == null ? 0 : s.cpu_pct), 0);
-      const shownRss = sorted.reduce((acc, s) =>
-        acc + (s.rss_mb == null ? 0 : s.rss_mb), 0);
-      const anyRss = sorted.some(s => s.rss_mb != null);
+      const shownMemory = sorted.reduce((acc, s) =>
+        acc + (s.memory_mb == null ? 0 : s.memory_mb), 0);
+      const anyMemory = sorted.some(s => s.memory_mb != null);
       const corePcts = m.current.per_core_cpu_pct || [];
       let totalsLine = '';
       if (corePcts.length) {
@@ -918,7 +917,7 @@ _SCRIPT = r"""
             ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)' +
           '</td>' +
           '<td class="num">' +
-            (anyRss ? Math.round(shownRss) + ' MB' : '—') +
+            (anyMemory ? Math.round(shownMemory) + ' MB' : '—') +
           '</td></tr>';
       } else {
         // Per-core sampler hasn't produced a delta yet (first tick
@@ -928,7 +927,7 @@ _SCRIPT = r"""
           '<td>Shown subtotal</td>' +
           '<td class="num">' + Math.round(shownCpu) + '%</td>' +
           '<td class="num">' +
-            (anyRss ? Math.round(shownRss) + ' MB' : '—') +
+            (anyMemory ? Math.round(shownMemory) + ' MB' : '—') +
           '</td></tr>';
       }
       svcRows.innerHTML = rows.join('') + totalsLine;

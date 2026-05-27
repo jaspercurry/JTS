@@ -60,7 +60,6 @@ PWMFAN_DUTY_MAX = 255
 # the audio renderers and system support daemons that explain most of the
 # "non-jasper" CPU gap during audio/debugging sessions.
 CGROUP_ROOT = "/sys/fs/cgroup"
-SYS_SLICE_CGROUP = "/sys/fs/cgroup/system.slice"
 SERVICE_PREFIX = "jasper-"
 SERVICE_SUFFIX = ".service"
 
@@ -99,7 +98,7 @@ EXTRA_SERVICE_GROUPS = {
 # `cgroup_disable=memory` into the kernel cmdline by default; install.sh
 # overrides with `cgroup_enable=memory` in /boot/firmware/cmdline.txt
 # (reboot required). When the override hasn't taken effect, the
-# per-service memory.current files don't exist and RSS reports blank.
+# per-service memory.current files don't exist and memory reports blank.
 # The dashboard surfaces this state so the next person doesn't have
 # to ask why.
 CGROUP_CONTROLLERS_FILE = "/sys/fs/cgroup/cgroup.controllers"
@@ -234,7 +233,7 @@ class SystemSampler:
                     # baseline yet) and on non-Linux systems.
                     "per_core_cpu_pct": list(self._per_core_pct),
                     # Memory cgroup controller availability — surfaces
-                    # the "RSS shows '—' for every service" case. None
+                    # the "memory shows '—' for every service" case. None
                     # on non-Linux; False if the running kernel was
                     # booted with `cgroup_disable=memory` and no
                     # override; True when /sys/fs/cgroup/cgroup.controllers
@@ -243,11 +242,11 @@ class SystemSampler:
                 },
                 # Per-service cgroup stats. List of
                 #   {"name": "jasper-voice", "group": "Voice",
-                #    "cpu_pct": 43.5, "rss_mb": 256.0}
+                #    "cpu_pct": 43.5, "memory_mb": 256.0}
                 # cpu_pct is None on the first tick a service appears
-                # (delta math needs two samples). rss_mb is None only
-                # if memory.current was unreadable (race with cgroup
-                # teardown). 100% = 1 core saturated (top convention).
+                # (delta math needs two samples). memory_mb is cgroup-v2
+                # memory.current, not process RSS; None means unreadable
+                # (race with cgroup teardown). 100% = 1 core saturated.
                 "services": list(self._services_snapshot),
             }
 
@@ -467,14 +466,14 @@ class SystemSampler:
             path = service["path"]
             sample_key = service["cgroup"]
             usec = self._read_cgroup_cpu_usec_path(path)
-            rss_bytes = self._read_cgroup_memory_bytes_path(path)
-            if usec is None and rss_bytes is None:
+            memory_bytes = self._read_cgroup_memory_bytes_path(path)
+            if usec is None and memory_bytes is None:
                 # Cgroup vanished between listdir and read — race
                 # with service teardown. Skip silently.
                 continue
-            rss_mb = (
-                round(rss_bytes / (1024 * 1024), 1)
-                if rss_bytes is not None else None
+            memory_mb = (
+                round(memory_bytes / (1024 * 1024), 1)
+                if memory_bytes is not None else None
             )
             cpu_pct: float | None = None
             if usec is not None and sample_key in prev:
@@ -494,24 +493,10 @@ class SystemSampler:
                 "group": service["group"],
                 "cgroup": sample_key,
                 "cpu_pct": cpu_pct,
-                "rss_mb": rss_mb,
+                "memory_mb": memory_mb,
             })
         self._service_samples = new_samples
         return out
-
-    @staticmethod
-    def _list_jasper_cgroups(slice_dir: str = SYS_SLICE_CGROUP) -> list[str]:
-        """Return jasper-*.service cgroup directory names. Empty list
-        when /sys/fs/cgroup/system.slice is absent (dev box on macOS,
-        or cgroup-v1 system — Trixie uses v2 by default)."""
-        try:
-            entries = os.listdir(slice_dir)
-        except OSError:
-            return []
-        return sorted(
-            e for e in entries
-            if e.startswith(SERVICE_PREFIX) and e.endswith(SERVICE_SUFFIX)
-        )
 
     @staticmethod
     def _service_group(unit: str) -> str | None:
@@ -605,7 +590,7 @@ class SystemSampler:
         to /boot/firmware/cmdline.txt, but the running kernel honors
         whatever it was booted with — so the dashboard can correctly
         say "reboot to apply" instead of silently rendering "—" for
-        every service's RSS column."""
+        every service's memory column."""
         try:
             with open(controllers_file) as f:
                 controllers = f.read().split()

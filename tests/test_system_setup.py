@@ -193,8 +193,10 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "running + waiting tasks" in text
     assert "metric-line" in text
     assert "JTS daemons, audio" in text
+    assert "<th class=\"num\">Mem</th>" in text
     assert "svc-group" in text
     assert "System total · shown / unshown / free" in text
+    assert "RSS unavailable" not in text
     assert "Math.round(capacityPercent(totalCpu, cores.length))" in text
     assert "const systemCapacity = capacityPercent(systemCpu, corePcts.length)" in text
     assert "Math.round(systemCapacity)" in text

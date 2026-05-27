@@ -343,22 +343,6 @@ def _make_fake_slice(root, services: dict[str, dict]) -> str:
     return slice_dir
 
 
-def test_list_jasper_cgroups_filters_by_prefix(tmp_path) -> None:
-    slice_dir = _make_fake_slice(str(tmp_path), {
-        "jasper-voice.service": {},
-        "jasper-camilla.service": {},
-        # Non-jasper unit: must be excluded.
-        "shairport-sync.service": {},
-        # Wrong suffix: must be excluded.
-        "jasper-not-a-service": {},
-        # Slices, scopes, mount units: not relevant.
-        "system-getty.slice": {},
-    })
-    assert SystemSampler._list_jasper_cgroups(slice_dir) == [
-        "jasper-camilla.service", "jasper-voice.service",
-    ]
-
-
 def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None:
     root = tmp_path / "cgroup"
     system_slice = root / "system.slice"
@@ -387,13 +371,6 @@ def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None
     assert by_unit["jasper-control.service"]["group"] == "Control"
     assert "not-tracked.service" not in by_unit
     assert "dbus.service" not in by_unit
-
-
-def test_list_jasper_cgroups_returns_empty_when_slice_missing(tmp_path) -> None:
-    # macOS dev box, or cgroup-v1 system — slice dir simply isn't there.
-    assert SystemSampler._list_jasper_cgroups(
-        str(tmp_path / "no-such-slice"),
-    ) == []
 
 
 def test_read_cgroup_cpu_usec_parses_usage_line(tmp_path) -> None:
@@ -441,7 +418,7 @@ def test_read_cgroup_memory_bytes_returns_none_on_missing(tmp_path) -> None:
 
 def test_tick_services_first_sample_has_no_cpu_pct(tmp_path) -> None:
     """First call after a service appears yields cpu_pct=None — delta
-    math needs two samples. RSS works on the first tick."""
+    math needs two samples. Cgroup memory works on the first tick."""
     slice_dir = _make_fake_slice(str(tmp_path), {
         "jasper-voice.service": {
             "cpu.stat": "usage_usec 1000000\n",
@@ -455,7 +432,7 @@ def test_tick_services_first_sample_has_no_cpu_pct(tmp_path) -> None:
     assert out[0]["group"] == "Voice"
     assert out[0]["cgroup"] == "/jasper-voice.service"
     assert out[0]["cpu_pct"] is None
-    assert out[0]["rss_mb"] == 100.0
+    assert out[0]["memory_mb"] == 100.0
 
 
 def test_tick_services_second_sample_computes_cpu_pct(
