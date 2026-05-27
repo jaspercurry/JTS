@@ -174,6 +174,13 @@ It is a recent-health view, not a full diagnostics runner:
   recent-event ring. There is no database and no dashboard-poll-time
   journal scan. The socket-activated `jasper-system-web` process only
   formats the already-digested `/system/snapshot` payload.
+- The canonical deploy wrapper writes a bounded maintenance marker at
+  `/run/jasper-airplay-health-suppress-until`. While it is active, the
+  sampler still reads current fan-in / MPRIS / Camilla state, but it
+  does not count fan-in xrun deltas or shairport/Camilla journal
+  recovery lines into the recent AirPlay-health buckets. This keeps
+  deploy-induced restarts from polluting reliability data without
+  hiding the post-deploy live state.
 
 Status meanings:
 

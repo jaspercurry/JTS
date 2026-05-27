@@ -137,6 +137,70 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
     assert snap["events"][-1]["type"] == "fanin_airplay_xrun"
 
 
+def test_deploy_maintenance_suppresses_events_and_advances_journal_cursor(
+    tmp_path,
+) -> None:
+    marker = tmp_path / "airplay-health-suppress-until"
+    marker.write_text("1020\n", encoding="utf-8")
+    now = [1000.0]
+    statuses = [
+        _fanin_status(airplay_frames=0, airplay_xruns=0, output_frames=0),
+        _fanin_status(
+            airplay_frames=240000,
+            airplay_xruns=2,
+            output_frames=240000,
+        ),
+        _fanin_status(
+            airplay_frames=1680000,
+            airplay_xruns=3,
+            output_frames=1680000,
+        ),
+    ]
+    journal_calls: list[tuple[str, float, float]] = []
+
+    def journal(unit: str, since: float, until: float) -> list[str]:
+        journal_calls.append((unit, since, until))
+        if unit == "shairport-sync":
+            return ["recovering from a previous underrun"]
+        return []
+
+    sampler = AirPlayHealthSampler(
+        fanin_probe=lambda: statuses.pop(0),
+        journal_reader=journal,
+        mpris_probe=lambda: {"playing": False},
+        camilla_probe=lambda: None,
+        maintenance_suppress_path=str(marker),
+        time_fn=lambda: now[0],
+    )
+
+    sampler._tick()
+    now[0] += 5.0
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["maintenance_suppressed"] is True
+    assert snap["maintenance_suppressed_until"] == 1020.0
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 0
+    assert snap["summary_5m"]["shairport_underruns"] == 0
+    assert snap["events"] == []
+    assert journal_calls == []
+
+    marker.write_text("1000\n", encoding="utf-8")
+    now[0] = 1035.0
+    sampler._tick()
+
+    snap = sampler.snapshot()
+    assert snap["maintenance_suppressed"] is False
+    assert snap["maintenance_suppressed_until"] is None
+    assert snap["summary_5m"]["fanin_airplay_xruns"] == 1
+    assert snap["summary_5m"]["shairport_underruns"] == 1
+    assert snap["events"][-1]["type"] == "shairport_underrun"
+    shairport_calls = [
+        call for call in journal_calls if call[0] == "shairport-sync"
+    ]
+    assert shairport_calls[0][1] == 1005.0
+
+
 def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
     now = [2000.0]
 

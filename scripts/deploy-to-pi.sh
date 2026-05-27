@@ -26,8 +26,25 @@ set -euo pipefail
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+AIRPLAY_HEALTH_SUPPRESS_PATH="/run/jasper-airplay-health-suppress-until"
+AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC:-2700}"
+AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC="${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC:-120}"
 
 cd "$REPO_ROOT"
+
+mark_airplay_health_maintenance() {
+    local ttl_sec="$1"
+    if [[ "${SKIP_AIRPLAY_HEALTH_SUPPRESS:-}" == "1" ]]; then
+        return 0
+    fi
+    ssh "${PI_USER}@${PI_HOST}" \
+        "sudo sh -c 'printf \"%s\n\" \$((\$(date +%s) + ${ttl_sec})) > ${AIRPLAY_HEALTH_SUPPRESS_PATH}; chmod 0644 ${AIRPLAY_HEALTH_SUPPRESS_PATH}'" || \
+        echo "  (airplay health maintenance marker failed — deploy continuing)"
+}
+
+finish_airplay_health_maintenance() {
+    mark_airplay_health_maintenance "${AIRPLAY_HEALTH_POST_DEPLOY_SUPPRESS_SEC}"
+}
 
 # Capture git info BEFORE rsync (which excludes .git/).
 if ! git rev-parse --git-dir >/dev/null 2>&1; then
@@ -77,6 +94,16 @@ fi
 # answer for the speaker's hostname.
 HOSTNAME_FOR_INSTALL="${JASPER_HOSTNAME:-${PI_HOST}}"
 echo "==> Running install.sh on ${PI_HOST}..."
+
+# A deploy intentionally restarts shairport-sync, jasper-fanin, and
+# friends. Mark a bounded AirPlay-health maintenance window so the
+# dashboard keeps sampling current state but does not count self-
+# inflicted restart underruns as AirPlay reliability incidents. The
+# EXIT trap shortens the long in-progress TTL even if install.sh exits
+# early, so stale deploy noise does not hide real problems for long.
+mark_airplay_health_maintenance "${AIRPLAY_HEALTH_DEPLOY_SUPPRESS_SEC}"
+trap 'finish_airplay_health_maintenance >/dev/null 2>&1 || true' EXIT
+
 ssh "${PI_USER}@${PI_HOST}" \
     "sudo JASPER_DEPLOY_SHA='${SHA}${DIRTY}' \
           JASPER_DEPLOY_SHA_FULL='${SHA_FULL}${DIRTY}' \
@@ -101,6 +128,8 @@ ssh "${PI_USER}@${PI_HOST}" 'sudo cat /var/lib/jasper/build.txt 2>/dev/null || e
 #     code on the next request.
 if [[ "${SKIP_RESTART:-}" == "1" ]]; then
     echo "==> SKIP_RESTART=1 — leaving daemons on prior code"
+    finish_airplay_health_maintenance
+    trap - EXIT
     echo "==> Done."
     exit 0
 fi
@@ -113,4 +142,6 @@ echo "==> Reconciling mic/AEC/voice state"
 ssh "${PI_USER}@${PI_HOST}" "sudo systemctl start jasper-aec-reconcile.service" || \
     echo "  (jasper-aec-reconcile returned non-zero — see scripts/fetch-pi-logs.sh)"
 
+finish_airplay_health_maintenance
+trap - EXIT
 echo "==> Done."

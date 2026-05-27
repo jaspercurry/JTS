@@ -41,6 +41,7 @@ EVENT_RING_SIZE = 20
 FANIN_SOCKET = "/run/jasper-fanin/control.sock"
 FANIN_TIMEOUT_SEC = 1.0
 SUBPROCESS_TIMEOUT_SEC = 2.0
+MAINTENANCE_SUPPRESS_UNTIL_PATH = "/run/jasper-airplay-health-suppress-until"
 
 # Fan-in's 4096-frame input buffer is load-bearing for AirPlay burst
 # absorption. See docs/HANDOFF-airplay.md Pattern A3.
@@ -207,6 +208,7 @@ class AirPlayHealthSampler:
         camilla_probe: Callable[[], dict[str, Any] | None] | None = None,
         camilla_host: str = "127.0.0.1",
         camilla_port: int = 1234,
+        maintenance_suppress_path: str | None = MAINTENANCE_SUPPRESS_UNTIL_PATH,
         time_fn: Callable[[], float] = time.time,
     ) -> None:
         self._sample_interval = sample_interval_sec
@@ -221,6 +223,7 @@ class AirPlayHealthSampler:
         self._camilla_probe = camilla_probe or (
             lambda: self._read_camilla_state(camilla_host, camilla_port)
         )
+        self._maintenance_suppress_path = maintenance_suppress_path
         self._time = time_fn
 
         self._lock = threading.Lock()
@@ -238,6 +241,8 @@ class AirPlayHealthSampler:
             CAMILLA_UNIT: self._time(),
         }
         self._last_fanin_counts: dict[str, Any] | None = None
+        self._maintenance_suppressed = False
+        self._maintenance_suppressed_until: float | None = None
 
         self._stopped = False
         self._thread = threading.Thread(
@@ -265,6 +270,8 @@ class AirPlayHealthSampler:
                 "bucket_seconds": self._bucket_seconds,
                 "history_points": self._history_points,
                 "last_sample_at": self._last_sample_at,
+                "maintenance_suppressed": self._maintenance_suppressed,
+                "maintenance_suppressed_until": self._maintenance_suppressed_until,
                 "status": status,
                 "reason": reason,
                 "current": {
@@ -290,20 +297,26 @@ class AirPlayHealthSampler:
 
     def _tick(self) -> None:
         now = self._time()
+        suppress_until = self._read_maintenance_suppress_until(now)
+        suppress_events = suppress_until is not None
         self._ensure_bucket(now)
-        self._sample_fanin(now)
+        self._sample_fanin(now, suppress_events=suppress_events)
 
         if now - self._last_mpris_sample_at >= self._mpris_interval:
             self._sample_mpris(now)
         if now - self._last_camilla_sample_at >= self._camilla_interval:
             self._sample_camilla(now)
-        if now - self._last_journal_scan_at >= self._journal_interval:
+        if suppress_events:
+            self._advance_journal_cursors(now)
+        elif now - self._last_journal_scan_at >= self._journal_interval:
             self._scan_journals(now)
 
         with self._lock:
             self._last_sample_at = now
+            self._maintenance_suppressed = suppress_events
+            self._maintenance_suppressed_until = suppress_until
 
-    def _sample_fanin(self, now: float) -> None:
+    def _sample_fanin(self, now: float, *, suppress_events: bool = False) -> None:
         status = self._fanin_probe()
         if not isinstance(status, dict):
             with self._lock:
@@ -342,7 +355,7 @@ class AirPlayHealthSampler:
 
             airplay_delta = airplay_xruns - _as_int(prev.get("airplay_xruns"))
             output_delta = output_xruns - _as_int(prev.get("output_xruns"))
-            if airplay_delta > 0:
+            if airplay_delta > 0 and not suppress_events:
                 self._record_event(
                     now,
                     {
@@ -354,7 +367,7 @@ class AirPlayHealthSampler:
                     },
                     count=airplay_delta,
                 )
-            if output_delta > 0:
+            if output_delta > 0 and not suppress_events:
                 self._record_event(
                     now,
                     {
@@ -432,6 +445,11 @@ class AirPlayHealthSampler:
             self._current_camilla = current if isinstance(current, dict) else None
         self._last_camilla_sample_at = now
 
+    def _advance_journal_cursors(self, now: float) -> None:
+        for unit in (SHAIRPORT_UNIT, CAMILLA_UNIT):
+            self._journal_since[unit] = max(self._journal_since.get(unit, now), now)
+        self._last_journal_scan_at = now
+
     def _scan_journals(self, now: float) -> None:
         for unit in (SHAIRPORT_UNIT, CAMILLA_UNIT):
             since = self._journal_since.get(unit, now)
@@ -446,6 +464,19 @@ class AirPlayHealthSampler:
                     self._record_event(now, event)
             self._journal_since[unit] = now
         self._last_journal_scan_at = now
+
+    def _read_maintenance_suppress_until(self, now: float) -> float | None:
+        path = self._maintenance_suppress_path
+        if not path:
+            return None
+        try:
+            with open(path, encoding="utf-8") as f:
+                suppress_until = float(f.read().strip())
+        except (FileNotFoundError, OSError, ValueError):
+            return None
+        if suppress_until <= now:
+            return None
+        return suppress_until
 
     def _record_event(
         self,
