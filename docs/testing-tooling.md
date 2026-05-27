@@ -22,7 +22,7 @@
 |---|---|
 | Capture the AEC bridge's three streams (raw mic / AEC ON / reference) | [Capture: 3-stream bridge captures](#capture-3-stream-bridge-captures) |
 | Audit the deliberate wake-corpus recorder output after rsync | [Wake-corpus audit (deliberate recordings)](#wake-corpus-audit-deliberate-recordings) |
-| Analyze wake-corpus audio artifacts / quality | [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md) |
+| Analyze wake-corpus audio artifacts / quality | [Wake-corpus quality analyzer](#wake-corpus-quality-analyzer) |
 | Count wake-word detections on captured audio offline | [Wake-word scoring (offline)](#wake-word-scoring-offline) |
 | Pull production wake events + clips from the Pi | [Wake-event telemetry (production)](#wake-event-telemetry-production) |
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
@@ -153,9 +153,55 @@ gate before Phase 0a/0c work.
 For deeper signal-quality analysis of artifacts, tears/clicks, AGC
 pumping, clipping, cross-leg event coincidence, and human review
 packages, use [`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md).
-That doc is the source of truth for the future analyzer; extend the
+That doc is the source of truth for analyzer methodology; extend the
 existing corpus audit only when the new check still belongs in the
 quick integrity gate.
+
+---
+
+## Wake-corpus quality analyzer
+
+[`scripts/analyze-wake-corpus-quality.sh`](../scripts/analyze-wake-corpus-quality.sh)
+wraps [`scripts/_analyze_wake_corpus_quality.py`](../scripts/_analyze_wake_corpus_quality.py)
+and runs the first deterministic quality pass described in
+[`HANDOFF-wake-corpus-quality.md`](HANDOFF-wake-corpus-quality.md).
+
+Run it after rsyncing the Pi corpus locally:
+
+```sh
+bash scripts/analyze-wake-corpus-quality.sh \
+  data/enrollment_positives --latest
+```
+
+Useful variants:
+
+```sh
+# Analyze a specific session.
+bash scripts/analyze-wake-corpus-quality.sh \
+  data/enrollment_positives --session 20260527T131954Z-7469
+
+# Put report artifacts somewhere explicit.
+bash scripts/analyze-wake-corpus-quality.sh \
+  data/enrollment_positives --latest \
+  --output-dir logs/wake-corpus-quality/latest
+```
+
+Outputs:
+
+- `metrics.csv` — one row per WAV/leg with deterministic sample,
+  spectral, envelope, transient, and flag metrics.
+- `cross_leg.csv` — per-utterance sibling-leg deltas, alignment
+  confidence, transient deltas, and event coincidence counts.
+- `events.json` — flagged legs and transient candidate timestamps.
+- `summary.md` — human-readable triage summary sorted by review
+  priority.
+
+This analyzer is a **review-prioritization tool**, not an auto-reject
+gate. Exact clipping and format failures are strong evidence; AGC,
+Nyquist-edge, and transient-candidate flags are prompts for listening
+review until we have more labeled corpus data. The next planned upgrade
+is LPC residual confirmation for transient candidates, then optional
+offline neural metrics such as SQUIM.
 
 ---
 

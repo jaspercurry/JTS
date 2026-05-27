@@ -20,6 +20,12 @@ answers "did the corpus record what we think it recorded?" It checks
 metadata, expected legs, coverage, WAV format, duration, RMS, and peak.
 It is not a deep audio-quality analyzer.
 
+**The first quality analyzer is shipped.**
+`scripts/analyze-wake-corpus-quality.sh` runs the deterministic first
+pass and writes `metrics.csv`, `cross_leg.csv`, `events.json`, and
+`summary.md`. Use it after rsyncing the Pi corpus locally; keep heavy
+analysis off the 1 GB Pi.
+
 **Quality analysis starts with deterministic signal metrics.** For 1-3 s
 wake-word clips, trust sample-domain and frame-domain facts first:
 exact clipping, near-clipping, flat-top runs, DC offset, RMS, crest
@@ -350,9 +356,47 @@ clearly marked as advisory.
 
 ---
 
-## 11. Implementation Plan
+## 11. Current Tooling And Implementation Plan
 
-Phase 0: promote this methodology into tests and fixtures.
+Current command:
+
+```sh
+bash scripts/analyze-wake-corpus-quality.sh \
+  data/enrollment_positives --latest
+```
+
+For a specific session:
+
+```sh
+bash scripts/analyze-wake-corpus-quality.sh \
+  data/enrollment_positives --session 20260527T131954Z-7469
+```
+
+The first-pass analyzer currently computes:
+
+- sample-domain metrics: duration, peak, approximate true peak,
+  RMS, crest factor, DC offset, exact clipping, near-clipping,
+  flat-top runs, near-zero/dropout runs, and repeated-sample runs;
+- spectral metrics: flatness, high-band ratio, Nyquist-edge ratio,
+  and spectral flux;
+- envelope metrics: RMS-envelope modulation peak/prominence and
+  crest-vs-RMS correlation;
+- transient candidates from local MAD on sample deltas;
+- cross-leg deltas and alignment confidence for sibling legs such
+  as `usb_webrtc-usb_raw`, `usb_dtln-usb_raw`, `on-off`, and
+  `dtln-off`.
+
+The analyzer is a review-prioritization tool. It should sort clips for
+listening review and explain why, not silently reject clips.
+
+Shipped Phase 0/1:
+
+- Deterministic analyzer CLI and shell wrapper.
+- CSV/JSON/Markdown artifacts.
+- Synthetic tests for clipping, transient candidates, corpus artifact
+  writing, and latest-session filtering.
+
+Next Phase 1b: fixtures and detector calibration.
 
 - Add synthetic fixtures for hard clipping, soft clipping, isolated
   click, click burst, dropout, repeated samples, DC offset, AGC pumping,
@@ -360,19 +404,10 @@ Phase 0: promote this methodology into tests and fixtures.
   only artifact.
 - Lock expected detector behavior before running on the real corpus.
 
-Phase 1: deterministic analyzer.
-
-- Build a laptop-side script that reads `data/enrollment_positives/`.
-- Emit JSON and CSV.
-- Compute Tier A and selected Tier B metrics.
-- Keep dependencies small: Python stdlib WAV reading plus numpy/scipy is
-  the right first shape.
-
 Phase 2: cross-leg analyzer and HTML review.
 
 - Group utterances by metadata.
-- Align sibling legs.
-- Build event coincidence tables and processed-minus-baseline deltas.
+- Improve sibling-leg alignment and event coincidence tables.
 - Generate review packages with audio players and plots.
 
 Phase 3: optional neural metrics.
@@ -444,9 +479,11 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v2):** Added the shipped first-pass analyzer command,
+  outputs, current metric coverage, and next implementation phases.
 - **2026-05-27 (v1):** Initial methodology doc for deterministic and
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v1 - seeded from local research reports and
-the 2026-05-27 USB AGC pilot context)
+Last verified: 2026-05-27 (v2 - first-pass analyzer shipped and checked
+against the 2026-05-27 latest-session corpus)
