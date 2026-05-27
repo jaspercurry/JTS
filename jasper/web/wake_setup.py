@@ -61,6 +61,7 @@ from ._common import (
     PAGE_STYLE,
     TOGGLE_CSS,
     begin_request,
+    csrf_fetch_helpers_js,
     csrf_field_html,
     csrf_meta_html,
     delete_env_file,
@@ -366,7 +367,7 @@ def _layers_card_html() -> str:
 # the voice daemon on every pixel.
 _LAYERS_SCRIPT = r"""
 (() => {
-  const CSRF = document.querySelector('meta[name=jts-csrf]').content;
+  __CSRF_FETCH_HELPERS__
   const LAYERS = ['aec', 'raw', 'dtln'];
   const POLL_MS = 3000;
   const dirty = {};
@@ -450,10 +451,7 @@ _LAYERS_SCRIPT = r"""
     try {
       const r = await fetch('layer/' + name, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': CSRF,
-        },
+        headers: jsonHeaders(),
         body: JSON.stringify({ enabled: wanted }),
       });
       const body = await r.json();
@@ -509,10 +507,7 @@ _LAYERS_SCRIPT = r"""
     try {
       const r = await fetch('sensitivity', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': CSRF,
-        },
+        headers: jsonHeaders(),
         body: JSON.stringify({ value: v }),
       });
       const body = await r.json();
@@ -688,7 +683,7 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     btn.textContent = 'Saving…';
   }});
 </script>
-<script>{_LAYERS_SCRIPT}</script>
+<script>{_LAYERS_SCRIPT.replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())}</script>
 """
     return _wrap_wake_page(
         "Wake word", body, status_msg=status_msg,

@@ -30,7 +30,16 @@ from jasper.sound.profile import (
     save_profile,
 )
 
-from ._common import TOGGLE_CSS, begin_request, send_html_response, wrap_page
+from ._common import (
+    TOGGLE_CSS,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+    wrap_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,8 +199,9 @@ _PAGE_CSS = f"""
 """
 
 
-def _index_html() -> bytes:
-    body = _PAGE_CSS + """
+def _index_html(csrf_token: str = "") -> bytes:
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
+    body = _PAGE_CSS + csrf + """
 <p class="sub">Set the speaker's sound curve and preference EQ independently
 from room correction.</p>
 
@@ -249,6 +259,7 @@ from room correction.</p>
   var applying = false;
   var previewTimer = null;
   function el(id) { return document.getElementById(id); }
+  {csrf_fetch_helpers_js}
   function fmtDb(v) { return (Number(v) || 0).toFixed(1) + ' dB'; }
   function status(msg, isErr) {
     var node = el('status');
@@ -380,7 +391,7 @@ from room correction.</p>
       var profile = profileFromInputs();
       var resp = await fetch('./preview', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: jsonHeaders(),
         body: JSON.stringify(profile)
       });
       var payload = await resp.json();
@@ -409,7 +420,7 @@ from room correction.</p>
     try {
       var resp = await fetch('./apply', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
+        headers: jsonHeaders(),
         body: JSON.stringify(profile)
       });
       var payload = await resp.json();
@@ -440,7 +451,10 @@ from room correction.</p>
 })();
 </script>
 """
-    return wrap_page("Sound", body)
+    return wrap_page(
+        "Sound",
+        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()),
+    )
 
 
 def _make_handler(
@@ -476,8 +490,8 @@ def _make_handler(
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
-                begin_request(self)
-                self._send_html(_index_html())
+                ctx = begin_request(self)
+                self._send_html(_index_html(ctx["csrf_token"]))
                 return
             if path == "/state":
                 self._send_json(_state_payload(load_profile(profile_path)))
@@ -488,6 +502,9 @@ def _make_handler(
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path not in {"/apply", "/preview"}:
                 self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not verify_csrf(self):
+                reject_csrf(self)
                 return
             try:
                 profile = SoundProfile.from_mapping(self._read_json())

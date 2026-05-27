@@ -11,10 +11,6 @@ exec real systemd in unit tests.
 """
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import pytest
-
 from jasper.web import sources_setup
 
 
@@ -31,6 +27,17 @@ def test_usbsink_in_valid_sources():
     }
 
 
+def test_index_html_uses_shared_toggle_markup_and_csrf_meta():
+    html = sources_setup._index_html("csrf-token").decode("utf-8")
+
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
+    assert html.count('class="toggle"') == 4
+    assert 'id="t-airplay"' in html
+    assert 'id="t-bluetooth"' in html
+    assert "{toggle_" not in html
+    assert "headers: jsonHeaders()" in html
+
+
 # ----------------------------------------------------------------------
 # _usbsink_available — dtoverlay presence in config.txt
 # ----------------------------------------------------------------------
@@ -45,7 +52,6 @@ def _patch_config(monkeypatch, content: str | None):
             lambda *a, **kw: (_ for _ in ()).throw(FileNotFoundError()),
         )
         return
-    import io
     monkeypatch.setattr(
         sources_setup, "BOOT_CONFIG_PATH", "/tmp/test-config.txt",
     )

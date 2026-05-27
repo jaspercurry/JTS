@@ -153,6 +153,47 @@ right place. Read this before adding or restructuring docs.
 
 ---
 
+## Web wizard conventions
+
+The setup pages under `jasper/web/` are intentionally small stdlib
+servers, not a frontend framework. Keep that architecture, but do not
+copy older one-off markup patterns when adding a new wizard or touching
+an existing one.
+
+Use [`jasper/web/_common.py`](jasper/web/_common.py) as the shared
+primitive layer:
+
+- Render state-changing forms with `csrf_field_html()`.
+- Render `fetch()` pages with `csrf_meta_html()` plus
+  `csrf_fetch_helpers_js()`.
+- Send mutating JSON POSTs with `jsonHeaders()`.
+- Send mutating non-JSON POSTs, such as `audio/wav`, with
+  `csrfHeaders({...})`.
+- Route-check unknown POST paths before `verify_csrf()` so bogus
+  paths return 404 without revealing CSRF state.
+- Use `send_html_response()` / `send_see_other()` rather than
+  hand-rolled response helpers.
+
+Switch controls must use the shared checkbox-based toggle:
+`TOGGLE_CSS` plus `toggle_html()` where server-rendered markup is
+convenient. Avoid clickable `<div class="switch">` controls. Native
+checkboxes give keyboard interaction, focus state, and accessibility
+semantics for free.
+
+Treat device names, SSIDs, USB descriptors, Bluetooth MAC-adjacent
+metadata, and browser-provided labels as untrusted. Escape before
+assigning to `innerHTML`, or use DOM/text APIs where practical. Do not
+put untrusted strings into generated inline JavaScript such as
+`onclick="handler('...')"`. Prefer escaped `data-*` attributes with a
+delegated click handler.
+
+Static regression coverage for these conventions lives in
+[`tests/test_web_wizard_conventions.py`](tests/test_web_wizard_conventions.py).
+If that test catches a new page, change the page to use the shared
+primitive unless there is a documented, reviewed reason not to.
+
+---
+
 ## Deploying code changes to the Pi
 
 From the laptop, one command:

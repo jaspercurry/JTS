@@ -8,7 +8,6 @@ to skip flashing without any user-facing warning."""
 from __future__ import annotations
 
 import os
-import time
 
 
 def test_read_firmware_status_present(tmp_path):
@@ -101,3 +100,25 @@ def test_setup_html_html_escapes_paths():
     html_str = html_bytes.decode("utf-8")
     assert "&lt;weird&gt;" in html_str
     assert "<weird>" not in html_str
+
+
+def test_setup_html_escapes_usb_device_fields_before_rendering():
+    """USB descriptors come from attached hardware, so the browser-side
+    template must escape them before assigning innerHTML."""
+    from jasper.web.dial_setup import _setup_html
+
+    firmware = {
+        "present": True,
+        "path": "/opt/jasper/firmware/dial/jasper-dial.bin",
+        "size_bytes": 1024,
+        "mtime_iso": "2026-05-23 15:45 UTC",
+    }
+    html_str = _setup_html(
+        ssid="HomeWiFi", firmware=firmware, csrf_token="csrf-token",
+    ).decode("utf-8")
+
+    assert 'meta name="jts-csrf" content="csrf-token"' in html_str
+    assert "${escapeHtml(d.port)}" in html_str
+    assert "${escapeHtml(d.description)}" in html_str
+    assert 'data-action="provision"' in html_str
+    assert 'onclick="provision' not in html_str

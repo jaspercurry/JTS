@@ -44,7 +44,17 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from ._common import TOGGLE_CSS, begin_request, send_html_response, wrap_page
+from ._common import (
+    TOGGLE_CSS,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    toggle_html,
+    verify_csrf,
+    wrap_page,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -219,11 +229,12 @@ _PAGE_CSS = f"""
 """
 
 
-def _index_html() -> bytes:
+def _index_html(csrf_token: str = "") -> bytes:
     """Render the sources page. Initial state is loaded from the server
     on first poll (one extra round trip on page load — keeps the HTML
     static and cache-friendly)."""
-    body = _PAGE_CSS + """
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
+    body = _PAGE_CSS + csrf + """
 <p class="sub">Turn each playback source on or off. AirPlay and Spotify
 Connect persist across reboots; Bluetooth comes back on after a reboot
 (use this for runtime mute, not permanent disable). USB Audio Input
@@ -235,10 +246,7 @@ computer plugged into the Pi's USB-C port.</p>
     <div>
       <div class="source-name">AirPlay</div>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="t-airplay" disabled>
-      <span class="track"></span>
-    </label>
+    {toggle_airplay}
   </div>
   <div class="source-row">
     <div>
@@ -247,19 +255,13 @@ computer plugged into the Pi's USB-C port.</p>
         Bluetooth adapter not available on this device.
       </div>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="t-bluetooth" disabled>
-      <span class="track"></span>
-    </label>
+    {toggle_bluetooth}
   </div>
   <div class="source-row">
     <div>
       <div class="source-name">Spotify Connect</div>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="t-spotify_connect" disabled>
-      <span class="track"></span>
-    </label>
+    {toggle_spotify}
   </div>
   <div class="source-row">
     <div>
@@ -273,10 +275,7 @@ computer plugged into the Pi's USB-C port.</p>
         re-run install.sh and reboot.
       </div>
     </div>
-    <label class="toggle">
-      <input type="checkbox" id="t-usbsink" disabled>
-      <span class="track"></span>
-    </label>
+    {toggle_usbsink}
   </div>
 </div>
 
@@ -292,8 +291,8 @@ computer plugged into the Pi's USB-C port.</p>
     var dirty = {};
     var ignorePollUntil = 0;
     var latestState = {};
-
     function el(id) { return document.getElementById(id); }
+    {csrf_fetch_helpers_js}
 
     function applyState(state) {
       latestState = state;
@@ -334,7 +333,7 @@ computer plugged into the Pi's USB-C port.</p>
       try {
         var resp = await fetch('./set', {
           method: 'POST',
-          headers: {'Content-Type': 'application/json'},
+          headers: jsonHeaders(),
           body: JSON.stringify({source: name, enabled: want}),
         });
         if (resp.ok) {
@@ -383,6 +382,12 @@ computer plugged into the Pi's USB-C port.</p>
   })();
 </script>
 """
+    body = (body
+        .replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js())
+        .replace("{toggle_airplay}", toggle_html("t-airplay", disabled=True))
+        .replace("{toggle_bluetooth}", toggle_html("t-bluetooth", disabled=True))
+        .replace("{toggle_spotify}", toggle_html("t-spotify_connect", disabled=True))
+        .replace("{toggle_usbsink}", toggle_html("t-usbsink", disabled=True)))
     return wrap_page("Sources", body)
 
 
@@ -415,13 +420,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
-                # Mint the CSRF cookie even though this page's POSTs are
-                # JSON-bodied and protected by Content-Type + SameSite=Strict
-                # rather than the form-token check — keeps cookie state
-                # consistent across wizards so a refresh from one page
-                # doesn't drop the token used by another.
-                begin_request(self)
-                self._send_html(_index_html())
+                ctx = begin_request(self)
+                self._send_html(_index_html(ctx["csrf_token"]))
                 return
             if path == "/state":
                 try:
@@ -435,6 +435,9 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/set":
+                if not verify_csrf(self):
+                    reject_csrf(self)
+                    return
                 body = self._read_json()
                 source = str(body.get("source") or "")
                 enabled = bool(body.get("enabled"))

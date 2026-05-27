@@ -33,10 +33,20 @@ import os
 import threading
 from concurrent.futures import Future
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ._common import NAV_BACK_CSS, NAV_BACK_HTML
+from ._common import (
+    NAV_BACK_CSS,
+    NAV_BACK_HTML,
+    TOGGLE_CSS,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+)
 from ..bluetooth.adapter import (
     DISCOVERABLE_AUTO_OFF_SEC,
     set_discoverable,
@@ -150,7 +160,7 @@ def _dispatch() -> _AsyncDispatcher:
 # HTML
 # ============================================================
 
-_PAGE_STYLE = """
+_PAGE_STYLE = TOGGLE_CSS + """
   :root {
     --green: #1db954; --red: #c44; --grey: #999; --soft: #666;
     --bg: #fafafa; --card: #fff; --border: #e6e6e6;
@@ -195,20 +205,6 @@ _PAGE_STYLE = """
   .toggle-row .label { font-weight: 600; }
   .toggle-row .hint { color: var(--soft); font-size: 0.85em;
                       margin-top: 0.15em; }
-  .switch {
-    position: relative; width: 50px; height: 28px;
-    background: #ccc; border-radius: 14px; cursor: pointer;
-    transition: background 0.15s;
-  }
-  .switch.on { background: var(--green); }
-  .switch.disabled { opacity: 0.5; cursor: not-allowed; }
-  .switch .nub {
-    position: absolute; top: 2px; left: 2px;
-    width: 24px; height: 24px; background: white;
-    border-radius: 50%; transition: left 0.15s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-  }
-  .switch.on .nub { left: 24px; }
 
   .device-list { background: var(--card); border: 1px solid var(--border);
                  border-radius: 8px; overflow: hidden; margin: 0.5em 0; }
@@ -290,7 +286,7 @@ _PAGE_STYLE = """
 """ + NAV_BACK_CSS
 
 
-def _landing_html() -> bytes:
+def _landing_html(csrf_token: str = "") -> bytes:
     body = """
 <p class="sub">Pair phones (to use this as a Bluetooth speaker), volume
 knobs, headphones, anything that speaks Bluetooth.</p>
@@ -301,9 +297,10 @@ knobs, headphones, anything that speaks Bluetooth.</p>
       <div class="label">Bluetooth</div>
       <div class="hint" id="bt-hint">Loading…</div>
     </div>
-    <div class="switch" id="sw-power" onclick="togglePower()">
-      <div class="nub"></div>
-    </div>
+    <label class="toggle">
+      <input type="checkbox" id="sw-power" aria-label="Bluetooth" disabled>
+      <span class="track"></span>
+    </label>
   </div>
   <div class="toggle-row">
     <div>
@@ -313,9 +310,10 @@ knobs, headphones, anything that speaks Bluetooth.</p>
         Auto-turns off after 5&nbsp;min.
       </div>
     </div>
-    <div class="switch" id="sw-disc" onclick="toggleDisc()">
-      <div class="nub"></div>
-    </div>
+    <label class="toggle">
+      <input type="checkbox" id="sw-disc" aria-label="Discoverable" disabled>
+      <span class="track"></span>
+    </label>
   </div>
 </div>
 
@@ -346,6 +344,7 @@ let stateTimer = null;
 let scanIntentUntil = 0;  // ms; client-side window where we treat
                            // the button as scanning even before the
                            // server polling catches up
+{csrf_fetch_helpers_js}
 
 // -------- adapter state + toggles --------
 
@@ -361,10 +360,12 @@ async function fetchState() {
 }
 
 function renderToggles() {
-  document.getElementById('sw-power').classList.toggle('on', state.powered);
+  const power = document.getElementById('sw-power');
+  power.checked = !!state.powered;
+  power.disabled = false;
   const sd = document.getElementById('sw-disc');
-  sd.classList.toggle('on', state.discoverable);
-  sd.classList.toggle('disabled', !state.powered);
+  sd.checked = !!state.discoverable;
+  sd.disabled = !state.powered;
   let hint = state.powered ? `On — adapter ${state.adapter || 'hci0'}` : 'Off';
   if (state.discovering) hint += ' · scanning…';
   document.getElementById('bt-hint').textContent = hint;
@@ -410,7 +411,13 @@ function pairedHidNames() {
 }
 
 async function togglePower() {
-  const target = !state.powered;
+  const input = document.getElementById('sw-power');
+  const previous = !!state.powered;
+  const target = !!input.checked;
+  function restoreToggle() {
+    input.checked = previous;
+  }
+  if (target === previous) return;
   // Warn before turning Bluetooth off while a wireless remote
   // (volume knob, etc.) is paired — otherwise the remote silently
   // stops working until BT is turned back on.
@@ -425,24 +432,58 @@ async function togglePower() {
         '. Wireless remotes will not work again until Bluetooth ' +
         'is turned back on.\\n\\nTurn Bluetooth off anyway?',
       );
-      if (!ok) return;
+      if (!ok) {
+        restoreToggle();
+        return;
+      }
     }
   }
-  await fetch('power', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({on: target}),
-  });
-  setTimeout(fetchState, 300);
+  try {
+    const r = await fetch('power', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({on: target}),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      restoreToggle();
+      alert('Bluetooth toggle failed: ' + (data.error || data.message || r.status));
+    }
+  } catch (e) {
+    restoreToggle();
+    alert('Network error talking to the Bluetooth backend.');
+  } finally {
+    setTimeout(fetchState, 300);
+  }
 }
 
 async function toggleDisc() {
-  if (!state.powered) return;
-  const target = !state.discoverable;
-  await fetch('discoverable', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({on: target}),
-  });
-  setTimeout(fetchState, 300);
+  const input = document.getElementById('sw-disc');
+  if (!state.powered) {
+    input.checked = false;
+    return;
+  }
+  const previous = !!state.discoverable;
+  const target = !!input.checked;
+  function restoreToggle() {
+    input.checked = previous;
+  }
+  if (target === previous) return;
+  try {
+    const r = await fetch('discoverable', {
+      method: 'POST', headers: jsonHeaders(),
+      body: JSON.stringify({on: target}),
+    });
+    if (!r.ok) {
+      const data = await r.json().catch(() => ({}));
+      restoreToggle();
+      alert('Discoverable toggle failed: ' + (data.error || data.message || r.status));
+    }
+  } catch (e) {
+    restoreToggle();
+    alert('Network error talking to the Bluetooth backend.');
+  } finally {
+    setTimeout(fetchState, 300);
+  }
 }
 
 async function toggleScan() {
@@ -456,7 +497,7 @@ async function toggleScan() {
   }
   renderToggles();
   await fetch('scan', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({action}),
   });
   // Pull fresh state a beat after the POST so the button label
@@ -532,11 +573,11 @@ function deviceRow(d, isPaired) {
   let actions = '';
   if (isPaired) {
     actions = d.connected
-      ? `<button class="secondary" onclick="connectDevice('${d.address}', false)">Disconnect</button>`
-      : `<button onclick="connectDevice('${d.address}', true)">Connect</button>`;
-    actions += ` <button class="danger" onclick="forget('${d.address}', '${escapeHtml(label)}')">Forget</button>`;
+      ? `<button class="secondary" data-action="disconnect" data-mac="${escapeHtml(d.address)}">Disconnect</button>`
+      : `<button data-action="connect" data-mac="${escapeHtml(d.address)}">Connect</button>`;
+    actions += ` <button class="danger" data-action="forget" data-mac="${escapeHtml(d.address)}" data-label="${escapeHtml(label)}">Forget</button>`;
   } else {
-    actions = `<button onclick="startPair('${d.address}', '${escapeHtml(label)}')">Pair</button>`;
+    actions = `<button data-action="pair" data-mac="${escapeHtml(d.address)}">Pair</button>`;
   }
   // Metrics. Render each label only when bluez actually has a value
   // for it — surfacing a "—" placeholder suggests we're polling for
@@ -575,7 +616,7 @@ function deviceRow(d, isPaired) {
   }
   return `
     <div class="device" id="d-${cssIdSafe(d.address)}">
-      <div class="icon icon-${d.icon}"></div>
+      <div class="icon icon-${iconSlug(d.icon)}"></div>
       <div class="info">
         <div class="name">${escapeHtml(label)} ${badges}</div>
         ${metaLine}
@@ -596,7 +637,7 @@ function rssiBars(rssi) {
 
 // -------- pair flow --------
 
-async function startPair(mac, label) {
+async function startPair(mac) {
   if (pairStreams.has(mac)) return; // already pairing this device
   const slot = document.getElementById(`pair-${cssIdSafe(mac)}`);
   if (!slot) return;
@@ -607,7 +648,7 @@ async function startPair(mac, label) {
   </div>`;
 
   await fetch('pair', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({mac}),
   });
 
@@ -667,8 +708,8 @@ function renderPairStage(mac, data, card) {
       <div>Confirm that this code matches what's shown on the device:</div>
       <div class="passkey">${formatPasskey(data.passkey)}</div>
       <div class="prompt-buttons">
-        <button onclick="respondPair('${mac}', true)">Yes, matches</button>
-        <button class="danger" onclick="respondPair('${mac}', false)">No</button>
+        <button data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="true">Yes, matches</button>
+        <button class="danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">No</button>
       </div>
     `;
   } else if (data.stage === 'request_passkey') {
@@ -678,8 +719,8 @@ function renderPairStage(mac, data, card) {
              style="font-size:1.5em;text-align:center;padding:0.3em;
                     margin:0.5em auto;display:block;width:6em;">
       <div class="prompt-buttons">
-        <button onclick="submitPasskey('${mac}')">Enter</button>
-        <button class="danger" onclick="respondPair('${mac}', false)">Cancel</button>
+        <button data-pair-action="passkey" data-mac="${escapeHtml(mac)}">Enter</button>
+        <button class="danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">Cancel</button>
       </div>
     `;
   } else if (data.stage === 'request_pincode') {
@@ -691,8 +732,8 @@ function renderPairStage(mac, data, card) {
              style="font-size:1.3em;text-align:center;padding:0.3em;
                     margin:0.5em auto;display:block;width:10em;">
       <div class="prompt-buttons">
-        <button onclick="submitPincode('${mac}')">Enter</button>
-        <button class="danger" onclick="respondPair('${mac}', false)">Cancel</button>
+        <button data-pair-action="pincode" data-mac="${escapeHtml(mac)}">Enter</button>
+        <button class="danger" data-pair-action="respond" data-mac="${escapeHtml(mac)}" data-accept="false">Cancel</button>
       </div>
     `;
   } else if (data.stage === 'display_passkey') {
@@ -739,7 +780,7 @@ function renderPairStage(mac, data, card) {
 
 async function respondPair(mac, accept) {
   await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({accept}),
   });
 }
@@ -747,7 +788,7 @@ async function respondPair(mac, accept) {
 async function submitPasskey(mac) {
   const v = document.getElementById(`pk-${cssIdSafe(mac)}`).value;
   await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({accept: true, value: parseInt(v, 10) || 0}),
   });
 }
@@ -755,7 +796,7 @@ async function submitPasskey(mac) {
 async function submitPincode(mac) {
   const v = document.getElementById(`pc-${cssIdSafe(mac)}`).value;
   await fetch(`pair/${encodeURIComponent(mac)}/respond`, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({accept: true, value: v}),
   });
 }
@@ -765,7 +806,7 @@ async function submitPincode(mac) {
 async function connectDevice(mac, connect) {
   const path = connect ? 'connect' : 'disconnect';
   await fetch(path, {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({mac}),
   });
 }
@@ -773,12 +814,37 @@ async function connectDevice(mac, connect) {
 async function forget(mac, label) {
   if (!confirm(`Forget "${label}"? You'll need to re-pair to use it.`)) return;
   const r = await fetch('forget', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
+    method: 'POST', headers: jsonHeaders(),
     body: JSON.stringify({mac}),
   });
   const data = await r.json();
   if (data.error) alert('Forget failed: ' + data.error);
 }
+
+document.addEventListener('click', function(e) {
+  const actionBtn = e.target.closest('button[data-action]');
+  if (actionBtn) {
+    const mac = actionBtn.dataset.mac || '';
+    if (actionBtn.dataset.action === 'pair') startPair(mac);
+    if (actionBtn.dataset.action === 'connect') connectDevice(mac, true);
+    if (actionBtn.dataset.action === 'disconnect') connectDevice(mac, false);
+    if (actionBtn.dataset.action === 'forget') {
+      forget(mac, actionBtn.dataset.label || 'Unknown device');
+    }
+    return;
+  }
+
+  const pairBtn = e.target.closest('button[data-pair-action]');
+  if (!pairBtn) return;
+  const mac = pairBtn.dataset.mac || '';
+  if (pairBtn.dataset.pairAction === 'respond') {
+    respondPair(mac, pairBtn.dataset.accept === 'true');
+  } else if (pairBtn.dataset.pairAction === 'passkey') {
+    submitPasskey(mac);
+  } else if (pairBtn.dataset.pairAction === 'pincode') {
+    submitPincode(mac);
+  }
+});
 
 // -------- helpers --------
 
@@ -788,22 +854,31 @@ function escapeHtml(s) {
   })[c]);
 }
 function cssIdSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
+function iconSlug(s) { return String(s || 'device').replace(/[^a-zA-Z0-9_-]/g, '') || 'device'; }
 function formatPasskey(p) {
   // Bluez passkey is uint32 0..999999; zero-pad to 6.
-  return String(p ?? 0).padStart(6, '0');
+  const n = Number.parseInt(p, 10);
+  return String(Number.isFinite(n) ? n : 0).padStart(6, '0');
 }
 
 // -------- bootstrap --------
 
+document.getElementById('sw-power').addEventListener('change', togglePower);
+document.getElementById('sw-disc').addEventListener('change', toggleDisc);
 fetchState();
 startDeviceStream();
 schedulePoll(5000);
 </script>
 """
-    return _wrap_page("Bluetooth", body)
+    return _wrap_page(
+        "Bluetooth",
+        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()),
+        csrf_token,
+    )
 
 
-def _wrap_page(title: str, body: str) -> bytes:
+def _wrap_page(title: str, body: str, csrf_token: str = "") -> bytes:
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -813,6 +888,7 @@ def _wrap_page(title: str, body: str) -> bytes:
 <style>{_PAGE_STYLE}</style>
 </head>
 <body>
+{csrf}
 {NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {body}
@@ -840,7 +916,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self._send(status, body, "text/html; charset=utf-8")
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -880,7 +956,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/":
-                self._send_html(_landing_html())
+                ctx = begin_request(self)
+                self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/state":
                 try:
@@ -905,6 +982,18 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
+            if not (
+                path in {
+                    "/power", "/discoverable", "/scan", "/pair",
+                    "/connect", "/disconnect", "/forget",
+                }
+                or (path.startswith("/pair/") and path.endswith("/respond"))
+            ):
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not verify_csrf(self):
+                reject_csrf(self)
+                return
             body = self._read_json()
             try:
                 if path == "/power":

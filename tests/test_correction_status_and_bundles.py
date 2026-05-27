@@ -32,6 +32,7 @@ from jasper.correction.session import (
     parse_current_correction,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
+from ._web_test_helpers import json_post_with_csrf
 
 
 # ---------- parse_current_correction ---------------------------------------
@@ -487,13 +488,11 @@ def test_start_handler_resets_to_base_before_sweep(
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        req = urllib.request.Request(
-            f"http://127.0.0.1:{port}/start",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        resp = json_post_with_csrf(
+            f"http://127.0.0.1:{port}",
+            "/start",
+            {},
         )
-        resp = urllib.request.urlopen(req, timeout=10)
         body = json.loads(resp.read())
     finally:
         server.shutdown()

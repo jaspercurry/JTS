@@ -10,7 +10,6 @@ from __future__ import annotations
 import http
 from email.message import Message
 from io import BytesIO
-from typing import Any
 
 import pytest
 
@@ -240,6 +239,15 @@ def test_csrf_meta_html_escapes_token():
     assert "&quot;" in out
 
 
+def test_csrf_fetch_helpers_js_defines_shared_header_helpers():
+    out = _common.csrf_fetch_helpers_js()
+
+    assert "function csrfHeaders(headers)" in out
+    assert "function jsonHeaders()" in out
+    assert "X-CSRF-Token" in out
+    assert "'Content-Type': 'application/json'" in out
+
+
 def test_csrf_field_html_escapes_token_value():
     # Defense-in-depth — secrets.token_urlsafe never produces HTML-active
     # chars, but if the cookie was poisoned by a man-in-the-middle the
@@ -249,6 +257,12 @@ def test_csrf_field_html_escapes_token_value():
     assert "&quot;" in out
     assert "alert(1)" in out  # the text survives, just escaped
     assert '" onclick="' not in out  # but the attribute injection doesn't
+
+
+def test_shared_toggle_css_respects_reduced_motion():
+    assert "@media (prefers-reduced-motion: reduce)" in _common.TOGGLE_CSS
+    assert ".toggle .track" in _common.TOGGLE_CSS
+    assert "transition: none" in _common.TOGGLE_CSS
 
 
 def test_reject_csrf_sends_403():

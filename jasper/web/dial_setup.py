@@ -34,10 +34,19 @@ import os
 import shutil
 import subprocess
 from http import HTTPStatus
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from typing import Any
 
-from ._common import NAV_BACK_CSS, NAV_BACK_HTML
+from ._common import (
+    NAV_BACK_CSS,
+    NAV_BACK_HTML,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +182,8 @@ _PAGE_STYLE = """
 """ + NAV_BACK_CSS
 
 
-def _wrap_page(title: str, body: str) -> bytes:
+def _wrap_page(title: str, body: str, csrf_token: str = "") -> bytes:
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -183,6 +193,7 @@ def _wrap_page(title: str, body: str) -> bytes:
 <style>{_PAGE_STYLE}</style>
 </head>
 <body>
+{csrf}
 {NAV_BACK_HTML}
 <h1>{html.escape(title)}</h1>
 {body}
@@ -190,7 +201,7 @@ def _wrap_page(title: str, body: str) -> bytes:
 </html>""".encode()
 
 
-def _landing_html() -> bytes:
+def _landing_html(csrf_token: str = "") -> bytes:
     body = """
 <p class="sub">JTS supports a small family of wireless accessories. This
 page can onboard an ELECROW CrowPanel ESP32-S3 <strong>rotary
@@ -216,10 +227,12 @@ This wizard runs <code>jasper-dial-onboard</code> behind the scenes —
 the same CLI tool also works directly from the Pi shell if you
 prefer.</p>
 """
-    return _wrap_page("Accessories", body)
+    return _wrap_page("Accessories", body, csrf_token)
 
 
-def _setup_html(*, ssid: str, firmware: dict[str, Any]) -> bytes:
+def _setup_html(
+    *, ssid: str, firmware: dict[str, Any], csrf_token: str = "",
+) -> bytes:
     ssid_disp = html.escape(ssid) if ssid else "(unknown — check Pi WiFi)"
     if firmware["present"]:
         size_kb = (firmware["size_bytes"] or 0) // 1024
@@ -263,6 +276,7 @@ const resultEl = document.getElementById('result');
 let pollTimer = null;
 let lastDevices = [];
 let busy = false;
+{csrf_fetch_helpers_js()}
 
 async function scan() {{
   if (busy) return;
@@ -289,14 +303,14 @@ function render(devices) {{
   statusEl.textContent = devices.length + ' device(s) detected:';
   devicesEl.innerHTML = devices.map(d => `
     <div class="device-card">
-      <div class="port">${{d.port}}</div>
+      <div class="port">${{escapeHtml(d.port)}}</div>
       <div class="meta">
-        VID ${{d.vid}} · PID ${{d.pid}} · Serial ${{d.serial || '(none)'}}<br>
-        ${{d.description}}
+        VID ${{escapeHtml(d.vid)}} · PID ${{escapeHtml(d.pid)}} · Serial ${{escapeHtml(d.serial || '(none)')}}<br>
+        ${{escapeHtml(d.description)}}
       </div>
       <p style="margin-top: 0.8em;">
-        <button onclick="provision('${{d.port}}', false)">Provision (smart)</button>
-        <button class="secondary" onclick="provision('${{d.port}}', true)">Force flash + provision</button>
+        <button data-action="provision" data-port="${{escapeHtml(d.port)}}" data-force="false">Provision (smart)</button>
+        <button class="secondary" data-action="provision" data-port="${{escapeHtml(d.port)}}" data-force="true">Force flash + provision</button>
       </p>
       <p class="sub" style="margin-top: 0.4em; font-size: 0.85em;">
         <strong>Smart</strong> probes the device first — if it's already
@@ -308,17 +322,23 @@ function render(devices) {{
   `).join('');
 }}
 
+devicesEl.addEventListener('click', function(e) {{
+  const btn = e.target.closest('button[data-action="provision"]');
+  if (!btn) return;
+  provision(btn.dataset.port || '', btn.dataset.force === 'true');
+}});
+
 async function provision(port, force) {{
   if (busy) return;
   busy = true;
   // Stop polling while we run — the onboard call will reset the chip,
   // and the polling loop would interfere.
   clearInterval(pollTimer);
-  resultEl.innerHTML = '<div class="msg"><span class="spinner"></span>Provisioning ' + port + '…<br><small>This can take 30-90 seconds. Don\\'t unplug.</small></div>';
+  resultEl.innerHTML = '<div class="msg"><span class="spinner"></span>Provisioning ' + escapeHtml(port) + '…<br><small>This can take 30-90 seconds. Don\\'t unplug.</small></div>';
   try {{
     const r = await fetch('onboard', {{
       method: 'POST',
-      headers: {{ 'Content-Type': 'application/json' }},
+      headers: jsonHeaders(),
       body: JSON.stringify({{ port: port, force_flash: force }}),
     }});
     const data = await r.json();
@@ -358,7 +378,7 @@ scan();
 pollTimer = setInterval(scan, 2000);
 </script>
 """
-    return _wrap_page("Onboard a Rotary Dial", body)
+    return _wrap_page("Onboard a Rotary Dial", body, csrf_token)
 
 
 # ============================================================
@@ -445,7 +465,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self._send(status, body, "text/html; charset=utf-8")
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -464,12 +484,16 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/":
-                self._send_html(_landing_html())
+                ctx = begin_request(self)
+                self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/setup":
+                ctx = begin_request(self)
                 ssid = _read_pi_ssid()
                 firmware = _read_firmware_status()
-                self._send_html(_setup_html(ssid=ssid, firmware=firmware))
+                self._send_html(_setup_html(
+                    ssid=ssid, firmware=firmware, csrf_token=ctx["csrf_token"],
+                ))
                 return
             if path == "/scan":
                 self._send_json({"devices": _list_esp32_s3_ports()})
@@ -479,6 +503,9 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0].rstrip("/") or "/"
             if path == "/onboard":
+                if not verify_csrf(self):
+                    reject_csrf(self)
+                    return
                 body = self._read_json()
                 port = (body.get("port") or "").strip()
                 force = bool(body.get("force_flash"))

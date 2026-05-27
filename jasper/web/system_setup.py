@@ -36,6 +36,7 @@ from typing import Any
 from ._common import (
     DEFAULT_CONTROL_BASE,
     begin_request,
+    csrf_fetch_helpers_js,
     csrf_meta_html,
     proxy_get,
     proxy_post,
@@ -845,12 +846,7 @@ _SCRIPT = r"""
   poll();
   setInterval(poll, POLL_MS);
 
-  // Action buttons. Each state-changing POST carries the CSRF token
-  // from the page's <meta name="jts-csrf"> so the server's double-
-  // submit check can confirm we're same-origin (a cross-origin
-  // attacker can't read the cookie or the meta and can't forge the
-  // X-CSRF-Token header on a no-CORS POST).
-  const CSRF = (document.querySelector('meta[name=jts-csrf]') || {}).content || '';
+  __CSRF_FETCH_HELPERS__
   async function postAction(path, btn) {
     if (!btn) return;
     btn.disabled = true;
@@ -859,7 +855,7 @@ _SCRIPT = r"""
     try {
       const r = await fetch(path, {
         method: 'POST',
-        headers: { 'X-CSRF-Token': CSRF },
+        headers: csrfHeaders(),
       });
       const body = await r.json();
       btn.textContent = r.ok ? 'Sent' : ('Failed: ' + (body.error || r.status));
@@ -942,15 +938,13 @@ def _render_page(csrf_token: str = "") -> bytes:
     # a <style> tag at the top of body — valid HTML5 and avoids forking
     # wrap_page's signature for a one-off feature.
     #
-    # The CSRF token rides in a <meta> tag inside the body — the JS
-    # picks it up via `document.querySelector('meta[name=jts-csrf]')`
-    # and sends it as `X-CSRF-Token` on every state-changing POST.
-    # See _common.csrf_meta_html / verify_csrf.
     body = (
         f"<style>{_EXTRA_STYLE}</style>\n"
         + (csrf_meta_html(csrf_token) if csrf_token else "")
         + _PAGE_BODY
-        + f"\n<script>{_SCRIPT}</script>\n"
+        + "\n<script>"
+        + _SCRIPT.replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())
+        + "</script>\n"
     )
     return wrap_page("System", body)
 

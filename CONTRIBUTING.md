@@ -78,6 +78,9 @@ blank SD card to working speaker.
 - Format with `ruff format`; lint with `ruff check`. Both are dev deps.
 - Match the surrounding style. Don't refactor working code that
   isn't part of your change.
+- Web setup pages follow AGENTS.md "Web wizard conventions" — shared
+  CSRF helpers, checkbox-based toggles, and no generated inline JS for
+  untrusted device/network metadata.
 - See AGENTS.md "Behavioral rules for working in this codebase" —
   that's the authoritative style guide for both humans and AI agents.
 

@@ -31,8 +31,9 @@ Every wizard's request handler should look like this:
 
 Every `<form method="post">` includes `{csrf_field_html(csrf_token)}`
 inside it. Every page that uses fetch() for state changes includes
-`{csrf_meta_html(csrf_token)}` in the <body> and the JS sends the
-token as `X-CSRF-Token` on POST.
+`{csrf_meta_html(csrf_token)}` in the document and
+`{csrf_fetch_helpers_js()}` in its script, then uses `jsonHeaders()`
+or `csrfHeaders({...})` on state-changing POSTs.
 
 DO NOT:
 * redirect to `./?msg=Saved…` — that pollutes browser history. Use
@@ -46,9 +47,12 @@ DO NOT:
   cookie + the double-submit check is what stops it.
 
 JSON-bodied POSTs (Content-Type: application/json) are CORS-preflighted
-by browsers, which already blocks cross-origin attackers — wifi /
-bluetooth / dial / correction skip CSRF on those endpoints because of
-this. If a wizard adds a form-bodied POST, it MUST add the CSRF check.
+by browsers, which blocks simple cross-origin form attacks, but new
+mutating fetch() endpoints should still send the shared `X-CSRF-Token`
+header. That keeps every write path under one obvious rule. Read-only
+probe endpoints may skip CSRF when they don't reveal secrets or mutate
+speaker state. If a wizard adds a form-bodied POST, it MUST add the
+CSRF check.
 
 See `tests/test_web_common.py` for the helpers' behavior contracts.
 """
@@ -244,6 +248,14 @@ PAGE_STYLE = """
     border-bottom-right-radius: 8px;
     background: #fff;
   }
+  @media (prefers-reduced-motion: reduce) {
+    .copy-feedback,
+    details.account > summary::before,
+    details.disclosure > summary,
+    details.disclosure > summary::after {
+      transition: none;
+    }
+  }
 """
 
 
@@ -317,6 +329,12 @@ TOGGLE_CSS = """
   .toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
   .toggle input:focus-visible + .track {
     outline: 2px solid #1db954; outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .toggle .track,
+    .toggle .track::before {
+      transition: none;
+    }
   }
 """
 
@@ -652,6 +670,32 @@ def csrf_meta_html(token: str) -> str:
     `document.querySelector('meta[name=jts-csrf]').content` and sends
     it as the `X-CSRF-Token` header on every state-changing POST."""
     return f'<meta name="jts-csrf" content="{html.escape(token)}">'
+
+
+def csrf_fetch_helpers_js() -> str:
+    """JavaScript helpers for fetch()-driven wizard POSTs.
+
+    Pages render `csrf_meta_html()` once, include this snippet in their
+    script, and use:
+
+      * `jsonHeaders()` for JSON-bodied mutating POSTs.
+      * `csrfHeaders({...})` when the POST has a non-JSON content type
+        such as `audio/wav`.
+
+    The helpers tolerate a missing meta tag so static render tests can
+    call page renderers without minting a token."""
+    return """
+function csrfHeaders(headers) {
+  var out = headers || {};
+  var tokenEl = document.querySelector('meta[name=jts-csrf]');
+  var token = tokenEl ? tokenEl.content : '';
+  if (token) out['X-CSRF-Token'] = token;
+  return out;
+}
+function jsonHeaders() {
+  return csrfHeaders({'Content-Type': 'application/json'});
+}
+""".strip()
 
 
 def reject_csrf(handler: BaseHTTPRequestHandler) -> None:

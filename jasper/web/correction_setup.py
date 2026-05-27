@@ -51,7 +51,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from ._common import NAV_BACK_CSS, NAV_BACK_HTML, PAGE_STYLE, send_html_response
+from ._common import (
+    NAV_BACK_CSS,
+    NAV_BACK_HTML,
+    PAGE_STYLE,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +331,7 @@ _PAGE_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+__CSRF_META__
 <title>Room correction — JTS speaker</title>
 <style>__STYLE__</style>
 </head>
@@ -1540,10 +1551,12 @@ __NAV_BACK__
 
   // -- Network --
 
+  __CSRF_FETCH_HELPERS__
+
   async function postJson(path, body) {
     var resp = await fetch(path, {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: JSON.stringify(body || {})
     });
     if (!resp.ok) {
@@ -1741,7 +1754,7 @@ __NAV_BACK__
       console.log('autolevel lock signal:', reason);
       fetch('autolevel/lock', {
         method: 'POST',
-        headers: {'Content-Type':'application/json'},
+        headers: jsonHeaders(),
         body: '{}'
       }).catch(function (e) { console.warn('lock POST failed', e); });
     };
@@ -1975,7 +1988,7 @@ __NAV_BACK__
     try {
       var resp = await fetch('upload-capture', {
         method: 'POST',
-        headers: {'Content-Type': 'audio/wav'},
+        headers: csrfHeaders({'Content-Type': 'audio/wav'}),
         body: wav
       });
       if (!resp.ok) {
@@ -2109,7 +2122,7 @@ __NAV_BACK__
 """
 
 
-def _render_page(hostname: str) -> bytes:
+def _render_page(hostname: str, csrf_token: str = "") -> bytes:
     from jasper.correction.calibration import SUPPORTED_MODELS
     from jasper.correction.strategy import (
         DEFAULT_CORRECTION_STRATEGY_ID,
@@ -2154,6 +2167,11 @@ def _render_page(hostname: str) -> bytes:
     return (
         _PAGE_HTML
         .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
+        .replace(
+            "__CSRF_META__",
+            csrf_meta_html(csrf_token) if csrf_token else "",
+        )
+        .replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())
         .replace("__NAV_BACK__", NAV_BACK_HTML)
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
@@ -2852,7 +2870,10 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
-                self._send_html(_render_page(cfg["hostname"]))
+                ctx = begin_request(self)
+                self._send_html(_render_page(
+                    cfg["hostname"], ctx["csrf_token"],
+                ))
                 return
             if path == "/healthz":
                 body = b"ok\n"
@@ -2887,6 +2908,25 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             path = urlparse(self.path).path.rstrip("/") or "/"
+            if path not in {
+                "/start",
+                "/next-position",
+                "/verify",
+                "/test-tone",
+                "/autolevel/start",
+                "/autolevel/lock",
+                "/autolevel/cancel",
+                "/upload-capture",
+                "/calibration/fetch",
+                "/calibration/upload",
+                "/apply",
+                "/reset",
+            }:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not verify_csrf(self):
+                reject_csrf(self)
+                return
             try:
                 if path == "/start":
                     try:

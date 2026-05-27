@@ -39,6 +39,13 @@ def test_index_html_exposes_simple_eq_language_only():
     assert "curve-description" in html
 
 
+def test_index_html_embeds_csrf_meta_for_json_posts():
+    html = sound_setup._index_html("csrf-token").decode()
+
+    assert 'meta name="jts-csrf" content="csrf-token"' in html
+    assert "headers: jsonHeaders()" in html
+
+
 def test_state_payload_contains_stock_curves_and_preview():
     payload = sound_setup._state_payload(SoundProfile(curve_id="harman"))
 

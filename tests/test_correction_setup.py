@@ -26,6 +26,7 @@ from http.server import ThreadingHTTPServer
 import pytest
 
 from jasper.web import correction_setup
+from ._web_test_helpers import request_with_csrf
 
 
 # ---------- Page render ----------------------------------------------------
@@ -54,8 +55,19 @@ def test_render_page_no_unfilled_placeholders():
     assert "__STYLE__" not in body
     assert "__HOSTNAME__" not in body
     assert "__REQUIRED_SR__" not in body
+    assert "__CSRF_META__" not in body
+    assert "__CSRF_FETCH_HELPERS__" not in body
     assert "__TARGET_PROFILE_OPTIONS__" not in body
     assert "__CORRECTION_STRATEGY_OPTIONS__" not in body
+
+
+def test_render_page_embeds_csrf_meta_and_fetch_helpers():
+    body = correction_setup._render_page("jts.local", "csrf-token").decode()
+    assert 'meta name="jts-csrf" content="csrf-token"' in body
+    assert "function csrfHeaders(headers)" in body
+    assert "function jsonHeaders()" in body
+    assert "headers: jsonHeaders()" in body
+    assert "headers: csrfHeaders({'Content-Type': 'audio/wav'})" in body
 
 
 def test_render_page_includes_ca_download_link():
@@ -474,13 +486,12 @@ def test_e2e_calibration_upload_parses_and_stores(tmp_path, monkeypatch):
             "label": "Lab mic",
             "sign_convention": "correction",
         }).encode()
-        req = urllib.request.Request(
-            f"{base}/calibration/upload",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        resp = request_with_csrf(
+            base,
+            "/calibration/upload",
+            payload,
+            content_type="application/json",
         )
-        resp = urllib.request.urlopen(req)
         assert resp.status == 200
         data = json.loads(resp.read().decode())
         assert data["calibration"]["provider"] == "manual_upload"
@@ -502,20 +513,15 @@ def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
             "model": "other",
             "label": "Lab mic",
         }).encode()
-        req = urllib.request.Request(
-            f"{base}/calibration/upload",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        e = request_with_csrf(
+            base,
+            "/calibration/upload",
+            payload,
+            content_type="application/json",
+            expect_status=400,
         )
-        try:
-            urllib.request.urlopen(req)
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-            body = json.loads(e.read().decode())
-            assert "at least 2 rows" in body["error"]
-        else:
-            raise AssertionError("expected HTTP 400")
+        body = json.loads(e.read().decode())
+        assert "at least 2 rows" in body["error"]
     finally:
         server.shutdown()
         server.server_close()
@@ -524,20 +530,15 @@ def test_e2e_calibration_upload_bad_file_returns_400(tmp_path, monkeypatch):
 def test_e2e_invalid_json_returns_400():
     server, base = _start_server()
     try:
-        req = urllib.request.Request(
-            f"{base}/calibration/upload",
-            data=b"{not json",
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        e = request_with_csrf(
+            base,
+            "/calibration/upload",
+            b"{not json",
+            content_type="application/json",
+            expect_status=400,
         )
-        try:
-            urllib.request.urlopen(req)
-        except urllib.error.HTTPError as e:
-            assert e.code == 400
-            body = json.loads(e.read().decode())
-            assert "invalid JSON" in body["error"]
-        else:
-            raise AssertionError("expected HTTP 400")
+        body = json.loads(e.read().decode())
+        assert "invalid JSON" in body["error"]
     finally:
         server.shutdown()
         server.server_close()
@@ -560,20 +561,15 @@ def test_e2e_calibration_fetch_upstream_failure_returns_502(monkeypatch):
             "model": "minidsp_umik2",
             "serial": "810-8494",
         }).encode()
-        req = urllib.request.Request(
-            f"{base}/calibration/fetch",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST",
+        e = request_with_csrf(
+            base,
+            "/calibration/fetch",
+            payload,
+            content_type="application/json",
+            expect_status=502,
         )
-        try:
-            urllib.request.urlopen(req)
-        except urllib.error.HTTPError as e:
-            assert e.code == 502
-            body = json.loads(e.read().decode())
-            assert body["error"] == "miniDSP unavailable"
-        else:
-            raise AssertionError("expected HTTP 502")
+        body = json.loads(e.read().decode())
+        assert body["error"] == "miniDSP unavailable"
     finally:
         server.shutdown()
         server.server_close()
@@ -633,25 +629,40 @@ def test_e2e_upload_quality_failure_returns_422(tmp_path, monkeypatch):
 
     server, base = _start_server()
     try:
+        e = request_with_csrf(
+            base,
+            "/upload-capture",
+            b"not really a wav",
+            content_type="audio/wav",
+            expect_status=422,
+        )
+        body = json.loads(e.read().decode())
+        assert "capture quality failed" in body["error"]
+        assert body["state"] == "failed"
+        assert body["capture_quality"][0]["capture_kind"] == "measurement"
+        assert body["capture_quality"][0]["issues"][0]["code"] == (
+            "capture_clipped"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_e2e_correction_posts_require_csrf():
+    server, base = _start_server()
+    try:
         req = urllib.request.Request(
-            f"{base}/upload-capture",
-            data=b"not really a wav",
-            headers={"Content-Type": "audio/wav"},
+            f"{base}/calibration/upload",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
         try:
             urllib.request.urlopen(req)
         except urllib.error.HTTPError as e:
-            assert e.code == 422
-            body = json.loads(e.read().decode())
-            assert "capture quality failed" in body["error"]
-            assert body["state"] == "failed"
-            assert body["capture_quality"][0]["capture_kind"] == "measurement"
-            assert body["capture_quality"][0]["issues"][0]["code"] == (
-                "capture_clipped"
-            )
+            assert e.code == 403
         else:
-            raise AssertionError("expected HTTP 422")
+            raise AssertionError("expected HTTP 403")
     finally:
         server.shutdown()
         server.server_close()

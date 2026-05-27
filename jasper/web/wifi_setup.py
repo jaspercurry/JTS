@@ -60,7 +60,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .. import wifi_guardian_persistence, wifi_scan_repair
-from ._common import NAV_BACK_CSS, NAV_BACK_HTML
+from ._common import (
+    NAV_BACK_CSS,
+    NAV_BACK_HTML,
+    TOGGLE_CSS,
+    begin_request,
+    csrf_fetch_helpers_js,
+    csrf_meta_html,
+    reject_csrf,
+    send_html_response,
+    verify_csrf,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1025,7 +1035,7 @@ def gather_state() -> dict[str, Any]:
 # ============================================================
 
 
-_PAGE_STYLE = """
+_PAGE_STYLE = TOGGLE_CSS + """
   :root {
     --green: #1db954; --red: #c44; --grey: #999; --soft: #666;
     --bg: #fafafa; --card: #fff; --border: #e6e6e6; --warn: #fff3cd;
@@ -1094,21 +1104,6 @@ _PAGE_STYLE = """
     border-top: 1px solid var(--border);
   }
   .radio-row .label { font-weight: 600; }
-  .switch {
-    position: relative; width: 50px; height: 28px;
-    background: #ccc; border-radius: 14px; cursor: pointer;
-    transition: background 0.15s;
-  }
-  .switch.on { background: var(--green); }
-  .switch.disabled { opacity: 0.5; cursor: not-allowed; }
-  .switch .nub {
-    position: absolute; top: 2px; left: 2px;
-    width: 24px; height: 24px; background: white;
-    border-radius: 50%; transition: left 0.15s;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-  }
-  .switch.on .nub { left: 24px; }
-
   /* Network list rows (available + saved). */
   .net-list { background: var(--card); border: 1px solid var(--border);
               border-radius: 8px; overflow: hidden; margin: 0.5em 0; }
@@ -1248,7 +1243,7 @@ _PAGE_STYLE = """
 """ + NAV_BACK_CSS
 
 
-def _landing_html() -> bytes:
+def _landing_html(csrf_token: str = "") -> bytes:
     body = """
 <p class="sub">Switch the speaker's Wi-Fi network or manage saved
 networks. Changes take effect immediately.</p>
@@ -1308,12 +1303,12 @@ let autoScanned = false;
 let openSsid = null;     // available-list inline panel currently open
 let openSavedName = null;// saved-list inline panel currently open
 let stateTimer = null;
-
 function escapeHtml(s) {
   return String(s ?? '').replace(/[&<>"']/g, c => ({
     '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
   })[c]);
 }
+{csrf_fetch_helpers_js}
 function cssIdSafe(s) { return String(s).replace(/[^a-zA-Z0-9]/g, '_'); }
 function signalBars(sig) {
   if (sig == null) return '';
@@ -1397,15 +1392,20 @@ function renderCurrent() {
   // user actually tries to turn the radio off (see toggleRadio()).
   // Persistent red copy here just spooks people who weren't going to
   // touch it.
-  const switchClass = 'switch' + (state.radioOn ? ' on' : '');
+  const checked = state.radioOn ? ' checked' : '';
   inner += '<div class="radio-row">' +
            '  <div class="label">Wi-Fi radio</div>' +
-           '  <div class="' + switchClass +
-                '" onclick="toggleRadio()"><div class="nub"></div></div>' +
+           '  <label class="toggle">' +
+           '    <input type="checkbox" id="radio-toggle" ' +
+                  'aria-label="Wi-Fi radio"' + checked + '>' +
+           '    <span class="track"></span>' +
+           '  </label>' +
            '</div>';
 
   wrap.className = '';
   wrap.innerHTML = '<div class="' + cardClass + '">' + inner + '</div>';
+  const radioToggle = document.getElementById('radio-toggle');
+  if (radioToggle) radioToggle.addEventListener('change', toggleRadio);
 }
 
 function renderSaved() {
@@ -1431,9 +1431,8 @@ function renderSaved() {
       '    <div class="ssid">' + escapeHtml(p.ssid || p.name) + badge + '</div>' +
       '  </div>' +
       '  <div class="actions">' +
-      '    <button class="danger" onclick="' +
-              "openForget('" + jsArg(p.name) + "')" +
-            '">Forget</button>' +
+      '    <button class="danger" data-action="open-forget" ' +
+             'data-name="' + escapeHtml(p.name) + '">Forget</button>' +
       '  </div>' +
       '</div>' +
       '<div id="sv-panel-' + idsafe + '"></div>' +
@@ -1445,15 +1444,6 @@ function renderSaved() {
   if (openSavedName) {
     openForget(openSavedName, /*keepOpen*/true);
   }
-}
-
-function jsArg(s) {
-  // Escape a string for safe inclusion inside `'...'` in an onclick
-  // HTML attribute. Two layers: JS-string escape (\\ and ') then HTML
-  // attribute escape (& and "). The double-quoted HTML attribute
-  // doesn't need ' escaped at the HTML layer; the double-quote does.
-  var jsEsc = String(s).replace(/\\\\/g, '\\\\\\\\').replace(/'/g, "\\\\'");
-  return jsEsc.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
 
 // Available networks list --------------------------------------------
@@ -1506,8 +1496,8 @@ function renderAvail() {
     const lock = n.secured ? ' 🔒' : '';
     const inUseBadge = n.inUse ? '<span class="badge">Connected</span>' : '';
     return '<div class="net-row" id="av-' + idsafe + '">' +
-      '<div class="head" onclick="' +
-            "openConnect('" + jsArg(n.ssid) + "')" + '">' +
+      '<div class="head" data-action="open-connect" ' +
+           'data-ssid="' + escapeHtml(n.ssid) + '">' +
       '  <div class="info">' +
       '    <div class="ssid">' + escapeHtml(n.ssid) + lock + inUseBadge + '</div>' +
       '    <div class="meta">' + escapeHtml(n.security) +
@@ -1540,7 +1530,7 @@ async function rescan() {
   try {
     const r = await fetch('./scan', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: '{}',
     });
     const data = await r.json();
@@ -1614,7 +1604,8 @@ function openConnect(ssid, keepOpen) {
     pwBlock =
       '<label for="pw-' + idsafe + '">Password</label>' +
       '<input id="pw-' + idsafe + '" type="password" autocomplete="off" autocapitalize="off" spellcheck="false">' +
-      '<span class="show-pw" onclick="togglePw(\\'' + jsArg(ssid) + '\\')">' +
+      '<span class="show-pw" data-action="toggle-pw" ' +
+           'data-ssid="' + escapeHtml(ssid) + '">' +
       'Show password</span>';
   } else {
     pwBlock = '<div class="meta" style="margin:0.4em 0">Open network — no password required.</div>';
@@ -1625,9 +1616,11 @@ function openConnect(ssid, keepOpen) {
     warn +
     pwBlock +
     '<div class="btns">' +
-    '  <button onclick="submitConnect(\\'' + jsArg(ssid) + '\\', ' +
-        (net.secured ? 'true' : 'false') + ')">Connect</button>' +
-    '  <button class="secondary" onclick="closeConnect(\\'' + jsArg(ssid) + '\\')">Cancel</button>' +
+    '  <button data-action="submit-connect" ' +
+          'data-ssid="' + escapeHtml(ssid) + '" ' +
+          'data-secured="' + (net.secured ? 'true' : 'false') + '">Connect</button>' +
+    '  <button class="secondary" data-action="close-connect" ' +
+          'data-ssid="' + escapeHtml(ssid) + '">Cancel</button>' +
     '</div>' +
     '</div>';
 }
@@ -1665,7 +1658,7 @@ async function submitConnect(ssid, secured) {
   try {
     const r = await fetch('./connect', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: JSON.stringify(password === null ? {ssid: ssid} : {ssid: ssid, password: password}),
     });
     const data = await r.json();
@@ -1686,7 +1679,8 @@ async function submitConnect(ssid, secured) {
         '<div class="panel"><div class="result err">' +
         escapeHtml(data.message || data.error || 'Connection failed') +
         '</div><div class="btns"><button class="secondary" ' +
-        'onclick="dismissPanel(\\'' + jsArg(ssid) + '\\')">Dismiss</button>' +
+        'data-action="dismiss-connect" ' +
+        'data-ssid="' + escapeHtml(ssid) + '">Dismiss</button>' +
         '</div></div>';
       slot.dataset.locked = '1';
       setTimeout(fetchState, 500);
@@ -1696,7 +1690,8 @@ async function submitConnect(ssid, secured) {
       '<div class="panel"><div class="result err">' +
       'Network error talking to the Wi-Fi backend.' +
       '</div><div class="btns"><button class="secondary" ' +
-      'onclick="dismissPanel(\\'' + jsArg(ssid) + '\\')">Dismiss</button>' +
+      'data-action="dismiss-connect" ' +
+      'data-ssid="' + escapeHtml(ssid) + '">Dismiss</button>' +
       '</div></div>';
     slot.dataset.locked = '1';
   }
@@ -1747,7 +1742,7 @@ async function submitManualConnect() {
   try {
     const r = await fetch('./connect', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: JSON.stringify(payload),
     });
     const data = await r.json();
@@ -1799,8 +1794,10 @@ function openForget(name, keepOpen) {
     '<div>Forget <strong>' + escapeHtml(displayName) + '</strong>? ' +
     'You\\'ll need the password again to reconnect.</div>' +
     '<div class="btns">' +
-    '  <button class="danger" onclick="submitForget(\\'' + jsArg(name) + '\\')">Forget</button>' +
-    '  <button class="secondary" onclick="closeForget(\\'' + jsArg(name) + '\\')">Cancel</button>' +
+    '  <button class="danger" data-action="submit-forget" ' +
+          'data-name="' + escapeHtml(name) + '">Forget</button>' +
+    '  <button class="secondary" data-action="close-forget" ' +
+          'data-name="' + escapeHtml(name) + '">Cancel</button>' +
     '</div></div>';
 }
 
@@ -1819,7 +1816,7 @@ async function submitForget(name) {
   try {
     const r = await fetch('./forget', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: JSON.stringify({name: name}),
     });
     const data = await r.json();
@@ -1836,7 +1833,8 @@ async function submitForget(name) {
         '<div class="panel"><div class="result err">' +
         escapeHtml(data.message || data.error || 'Failed') + '</div>' +
         '<div class="btns"><button class="secondary" ' +
-        'onclick="dismissForget(\\'' + jsArg(name) + '\\')">Dismiss</button>' +
+        'data-action="dismiss-forget" ' +
+        'data-name="' + escapeHtml(name) + '">Dismiss</button>' +
         '</div></div>';
     }
   } catch (e) {
@@ -1844,7 +1842,8 @@ async function submitForget(name) {
       '<div class="panel"><div class="result err">' +
       'Network error talking to the Wi-Fi backend.</div>' +
       '<div class="btns"><button class="secondary" ' +
-      'onclick="dismissForget(\\'' + jsArg(name) + '\\')">Dismiss</button>' +
+      'data-action="dismiss-forget" ' +
+      'data-name="' + escapeHtml(name) + '">Dismiss</button>' +
       '</div></div>';
   }
 }
@@ -1857,7 +1856,13 @@ function dismissForget(name) {
 
 // Radio toggle -------------------------------------------------------
 async function toggleRadio() {
-  const target = !state.radioOn;
+  const input = document.getElementById('radio-toggle');
+  const previous = !!state.radioOn;
+  const target = input ? !!input.checked : !previous;
+  function restoreToggle() {
+    if (input) input.checked = previous;
+  }
+  if (target === previous) return;
   // Off path: the kill warning. We block in two places: when there's
   // no ethernet (existential — the user loses access), and otherwise
   // a milder confirm (annoying but recoverable).
@@ -1872,47 +1877,80 @@ async function toggleRadio() {
         'use a keyboard and monitor).\\n\\n' +
         'Continue?',
       );
-      if (!ok) return;
+      if (!ok) {
+        restoreToggle();
+        return;
+      }
     } else {
       const ok = window.confirm(
         'Turn Wi-Fi off? The Pi will stay reachable on Ethernet, ' +
         'but any Wi-Fi-only renderers (AirPlay from a phone, etc.) ' +
         'will disconnect.',
       );
-      if (!ok) return;
+      if (!ok) {
+        restoreToggle();
+        return;
+      }
     }
   }
   try {
     const r = await fetch('./radio', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers: jsonHeaders(),
       body: JSON.stringify({on: target}),
     });
     if (!r.ok) {
       const data = await r.json().catch(() => ({}));
+      restoreToggle();
       alert('Radio toggle failed: ' + (data.message || data.error || r.status));
     }
   } catch (e) {
     // If we just turned off Wi-Fi and there's no ethernet, the fetch
     // never returns — that's expected. Don't alert.
+    if (target || state.hasEthernet) {
+      restoreToggle();
+      alert('Network error talking to the Wi-Fi backend.');
+    }
   }
   setTimeout(fetchState, 600);
 }
 
 // Bootstrap ----------------------------------------------------------
+document.addEventListener('click', function(e) {
+  const el = e.target.closest('[data-action]');
+  if (!el) return;
+  const action = el.dataset.action;
+  if (action === 'open-connect') openConnect(el.dataset.ssid || '');
+  if (action === 'toggle-pw') togglePw(el.dataset.ssid || '');
+  if (action === 'submit-connect') {
+    submitConnect(el.dataset.ssid || '', el.dataset.secured === 'true');
+  }
+  if (action === 'close-connect') closeConnect(el.dataset.ssid || '');
+  if (action === 'dismiss-connect') dismissPanel(el.dataset.ssid || '');
+  if (action === 'open-forget') openForget(el.dataset.name || '');
+  if (action === 'submit-forget') submitForget(el.dataset.name || '');
+  if (action === 'close-forget') closeForget(el.dataset.name || '');
+  if (action === 'dismiss-forget') dismissForget(el.dataset.name || '');
+});
 fetchState();
 schedulePoll(7000);
 </script>
 """
-    return _wrap_page("Wi-Fi", body)
+    return _wrap_page(
+        "Wi-Fi",
+        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()),
+        csrf_token,
+    )
 
 
-def _wrap_page(title: str, body: str) -> bytes:
+def _wrap_page(title: str, body: str, csrf_token: str = "") -> bytes:
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{csrf}
 <title>{title}</title>
 <style>{_PAGE_STYLE}</style>
 </head>
@@ -1944,7 +1982,7 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             self.wfile.write(body)
 
         def _send_html(self, body: bytes, *, status: int = 200) -> None:
-            self._send(status, body, "text/html; charset=utf-8")
+            send_html_response(self, body, status=status)
 
         def _send_json(self, payload: dict[str, Any], *, status: int = 200) -> None:
             body = json.dumps(payload).encode("utf-8")
@@ -1962,7 +2000,8 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
             if path == "/":
-                self._send_html(_landing_html())
+                ctx = begin_request(self)
+                self._send_html(_landing_html(ctx["csrf_token"]))
                 return
             if path == "/state":
                 try:
@@ -1975,6 +2014,12 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+            if path not in {"/scan", "/connect", "/forget", "/radio"}:
+                self.send_error(HTTPStatus.NOT_FOUND)
+                return
+            if not verify_csrf(self):
+                reject_csrf(self)
+                return
             body = self._read_json()
             try:
                 if path == "/scan":

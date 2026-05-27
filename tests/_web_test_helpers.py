@@ -1,13 +1,15 @@
 """Helpers for end-to-end web wizard tests.
 
-The wizards now require a CSRF token on every POST (double-submit cookie
-pattern: token in `jts_csrf` cookie + matching `csrf_token` form field).
-These helpers handle the GET-then-POST handshake so each test can stay
-focused on what it's actually verifying.
+The wizards now require a CSRF token on every mutating POST
+(double-submit cookie pattern: token in `jts_csrf` cookie plus either a
+matching `csrf_token` form field or `X-CSRF-Token` header). These
+helpers handle the GET-then-POST handshake so each test can stay focused
+on what it's actually verifying.
 """
 from __future__ import annotations
 
 import http.cookiejar
+import json
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -100,3 +102,64 @@ def post_with_csrf(
             f"{e.read()[:200]!r}"
         )
         return session["jar"]
+
+
+def request_with_csrf(
+    base_url: str,
+    path: str,
+    data: bytes,
+    *,
+    content_type: str,
+    session: dict | None = None,
+    expect_status: int = 200,
+):
+    """POST arbitrary bytes with the CSRF cookie + X-CSRF-Token header.
+
+    Useful for JSON endpoints and non-form uploads such as audio/wav.
+    Returns the urllib response object for 2xx statuses, or the HTTPError
+    object when `expect_status` is an error code."""
+    if session is None:
+        session = make_csrf_session(base_url, page_path="/")
+    req = urllib.request.Request(
+        base_url + path,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": content_type,
+            "X-CSRF-Token": session["token"],
+        },
+    )
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(session["jar"]),
+    )
+    try:
+        resp = opener.open(req)
+        assert resp.status == expect_status, (
+            f"POST {path} got {resp.status}, wanted {expect_status}"
+        )
+        return resp
+    except urllib.error.HTTPError as e:
+        assert e.code == expect_status, (
+            f"POST {path} got HTTP {e.code}, wanted {expect_status}: "
+            f"{e.read()[:200]!r}"
+        )
+        return e
+
+
+def json_post_with_csrf(
+    base_url: str,
+    path: str,
+    payload: dict,
+    *,
+    session: dict | None = None,
+    expect_status: int = 200,
+):
+    """POST a JSON body with the CSRF cookie + X-CSRF-Token header."""
+    return request_with_csrf(
+        base_url,
+        path,
+        json.dumps(payload).encode(),
+        content_type="application/json",
+        session=session,
+        expect_status=expect_status,
+    )
