@@ -27,8 +27,28 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
+
+---
+
+## Supply-chain provenance
+
+[`scripts/check-provenance.py`](../scripts/check-provenance.py)
+validates [`deploy/provenance.toml`](../deploy/provenance.toml)
+against the fetch-bearing install/build surfaces JTS owns directly:
+`deploy/install.sh`, Python direct URL dependencies, firmware
+PlatformIO inputs, and the wake/DTLN model registries.
+
+Run it when touching install/build downloads or dependency declarations:
+
+```sh
+python3 scripts/check-provenance.py
+```
+
+The policy and update workflow live in
+[`docs/HANDOFF-supply-chain.md`](HANDOFF-supply-chain.md).
 
 ---
 

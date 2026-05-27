@@ -41,14 +41,34 @@ CAMILLA_URL="https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_
 # speakers). See docs/HANDOFF-volume.md for full rationale.
 RASPOTIFY_VERSION="0.48.1"
 RASPOTIFY_URL="https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
+RASPOTIFY_SHA256="dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
 SHAIRPORT_SYNC_VERSION="4.3.7"
+SHAIRPORT_SYNC_COMMIT="0b1c4391ffd398e7b145eb4b98416261380adeea"
 NQPTP_REPO="https://github.com/mikebrady/nqptp.git"
+NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
 SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
+WEBRTC_AEC3_VERSION="v2.1"
+WEBRTC_AEC3_REPO="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
+WEBRTC_AEC3_COMMIT="c5a2a02a196d1c9dbe5e28b393b5cf634a35e711"
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
         echo "this script must be run as root (use sudo)" >&2
         exit 1
+    fi
+}
+
+verify_git_head() {
+    local repo_dir="$1"
+    local expected="$2"
+    local label="$3"
+    local actual
+
+    actual=$(git -C "${repo_dir}" rev-parse HEAD)
+    if [[ "${actual}" != "${expected}" ]]; then
+        echo "  ERROR: ${label} resolved to ${actual}, expected ${expected}" >&2
+        echo "  Refusing to build a supply-chain input that does not match deploy/provenance.toml." >&2
+        return 1
     fi
 }
 
@@ -121,13 +141,26 @@ build_webrtc_v2_for_aec3() {
     local src_dir="${cache_dir}/src"
     local build_dir="${src_dir}/builddir"
     local static_archive="${build_dir}/webrtc/modules/audio_processing/libwebrtc-audio-processing-2.a"
-    local repo_url="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
-    local repo_tag="v2.1"
+    local provenance_marker="${cache_dir}/source.commit"
+    local repo_url="${WEBRTC_AEC3_REPO}"
+    local repo_tag="${WEBRTC_AEC3_VERSION}"
 
     if [[ -f "${static_archive}" ]]; then
-        echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
-        export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
-        return 0
+        if [[ -f "${provenance_marker}" ]] \
+           && [[ "$(cat "${provenance_marker}")" == "${WEBRTC_AEC3_COMMIT}" ]]; then
+            echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
+            export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
+            return 0
+        fi
+        if [[ -d "${src_dir}/.git" ]] \
+           && [[ "$(git -C "${src_dir}" rev-parse HEAD)" == "${WEBRTC_AEC3_COMMIT}" ]]; then
+            echo "${WEBRTC_AEC3_COMMIT}" > "${provenance_marker}"
+            echo "  webrtc-audio-processing v2.1 already built at ${static_archive}"
+            export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
+            return 0
+        fi
+        echo "  webrtc-audio-processing cache lacks expected provenance; rebuilding"
+        rm -rf "${src_dir}"
     fi
 
     echo "  building webrtc-audio-processing ${repo_tag} statically (first run, ~3-5 min)..."
@@ -139,6 +172,7 @@ build_webrtc_v2_for_aec3() {
     else
         echo "    source tree present; reusing"
     fi
+    verify_git_head "${src_dir}" "${WEBRTC_AEC3_COMMIT}" "webrtc-audio-processing ${repo_tag}"
 
     if [[ ! -f "${build_dir}/build.ninja" ]]; then
         echo "    meson setup builddir/"
@@ -159,6 +193,7 @@ build_webrtc_v2_for_aec3() {
         return 1
     fi
 
+    echo "${WEBRTC_AEC3_COMMIT}" > "${provenance_marker}"
     echo "  → static archive: ${static_archive} ($(du -h "${static_archive}" | cut -f1))"
     export JASPER_WEBRTC_V2_PREFIX="${cache_dir}"
 }
@@ -391,6 +426,7 @@ install_renderers() {
         local tmpdir
         tmpdir="$(mktemp -d)"
         curl -fsSL -o "${tmpdir}/raspotify.deb" "${RASPOTIFY_URL}"
+        echo "${RASPOTIFY_SHA256}  ${tmpdir}/raspotify.deb" | sha256sum -c -
         DEBIAN_FRONTEND=noninteractive apt install -y "${tmpdir}/raspotify.deb"
         rm -rf "${tmpdir}"
         # Disable raspotify's default service; we run our own unit.
@@ -407,7 +443,11 @@ install_renderers() {
         echo "Building nqptp from source..."
         local tmpdir
         tmpdir="$(mktemp -d)"
-        git clone --depth 1 "${NQPTP_REPO}" "${tmpdir}/nqptp"
+        git init "${tmpdir}/nqptp"
+        git -C "${tmpdir}/nqptp" remote add origin "${NQPTP_REPO}"
+        git -C "${tmpdir}/nqptp" fetch --depth 1 origin "${NQPTP_COMMIT}"
+        git -C "${tmpdir}/nqptp" checkout --detach FETCH_HEAD
+        verify_git_head "${tmpdir}/nqptp" "${NQPTP_COMMIT}" "nqptp"
         (
             cd "${tmpdir}/nqptp"
             autoreconf -fi
@@ -441,6 +481,7 @@ install_renderers() {
         tmpdir="$(mktemp -d)"
         git clone --depth 1 --branch "${SHAIRPORT_SYNC_VERSION}" \
             "${SHAIRPORT_SYNC_REPO}" "${tmpdir}/sps"
+        verify_git_head "${tmpdir}/sps" "${SHAIRPORT_SYNC_COMMIT}" "shairport-sync ${SHAIRPORT_SYNC_VERSION}"
         (
             cd "${tmpdir}/sps"
             autoreconf -fi
@@ -898,24 +939,43 @@ EOF
     # root:root mirrors the wake-models dir above.
     install -d -m 0755 -o root -g root /var/lib/jasper/wake-events
     if ! "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import hashlib
 import os
 import sys
 import urllib.request
 
 from jasper.wake_models import downloadable
 
+def sha256_file(p: str) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 failures = 0
 for entry in downloadable():
     dest = entry.model
     if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        print(f"  wake model present: {entry.key} -> {dest}")
-        continue
+        if not entry.download_sha256 or sha256_file(dest) == entry.download_sha256:
+            print(f"  wake model present: {entry.key} -> {dest}")
+            continue
+        print(f"  wake model hash mismatch, re-downloading: {entry.key}")
+        os.unlink(dest)
     print(f"  downloading wake model: {entry.key}")
     print(f"    from: {entry.download_url}")
     print(f"    to:   {dest}")
     tmp = dest + ".tmp"
     try:
         urllib.request.urlretrieve(entry.download_url, tmp)
+        if entry.download_sha256:
+            got = sha256_file(tmp)
+            if got != entry.download_sha256:
+                print(f"  hash mismatch after download: got {got}, "
+                      f"expected {entry.download_sha256}", file=sys.stderr)
+                os.unlink(tmp)
+                failures += 1
+                continue
         os.replace(tmp, dest)
         os.chmod(dest, 0o644)
     except Exception as e:  # noqa: BLE001
@@ -2344,12 +2404,21 @@ install_camillagui() {
     # only). The landing page links straight to http://${HOSTNAME}:5005.
     local CAMILLAGUI_VERSION="4.1.0"
     local CAMILLAGUI_DIR="/opt/camillagui"
-    local arch bundle
+    local arch bundle bundle_sha256
     arch=$(uname -m)
     case "${arch}" in
-        aarch64) bundle="bundle_linux_aarch64.tar.gz" ;;
-        x86_64)  bundle="bundle_linux_amd64.tar.gz"   ;;
-        armv7l)  bundle="bundle_linux_armv7.tar.gz"   ;;
+        aarch64)
+            bundle="bundle_linux_aarch64.tar.gz"
+            bundle_sha256="9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7"
+            ;;
+        x86_64)
+            bundle="bundle_linux_amd64.tar.gz"
+            bundle_sha256="86fd3cde575038f312ede7bad0910dc5e46b974cafc048c26115ec3cb9f54792"
+            ;;
+        armv7l)
+            bundle="bundle_linux_armv7.tar.gz"
+            bundle_sha256="22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1"
+            ;;
         *)
             echo "  WARNING: no CamillaGUI bundle for ${arch} — skipping"
             return 0
@@ -2365,6 +2434,11 @@ install_camillagui() {
         local url="https://github.com/HEnquist/camillagui-backend/releases/download/v${CAMILLAGUI_VERSION}/${bundle}"
         if ! curl -fsSL -o "${tmpdir}/cg.tar.gz" "${url}"; then
             echo "  WARNING: CamillaGUI download failed — skipping"
+            rm -rf "${tmpdir}"
+            return 0
+        fi
+        if ! echo "${bundle_sha256}  ${tmpdir}/cg.tar.gz" | sha256sum -c -; then
+            echo "  WARNING: CamillaGUI checksum mismatch — skipping" >&2
             rm -rf "${tmpdir}"
             return 0
         fi

@@ -23,7 +23,9 @@ dependencies = [
     # Conditional on 3.13+ so 3.11/3.12 environments (older Pi OS,
     # CI) keep using the stdlib version transparently.
     "audioop-lts>=0.2; python_version >= '3.13'",
-    "camilladsp @ git+https://github.com/HEnquist/pycamilladsp@v4.0.0",
+    # pycamilladsp v4.0.0, pinned to the tag commit so deploys do not
+    # trust a mutable ref name. See deploy/provenance.toml.
+    "camilladsp @ git+https://github.com/HEnquist/pycamilladsp@fdc0d163e02dd73206a493402b43c83502ad83d7",
     # openwakeword==0.6.0 is installed by deploy/install.sh with --no-deps
     # because its transitive tflite-runtime dep has no Python 3.13 wheel
     # (PiOS Trixie's default python). We use ONNX models exclusively, so

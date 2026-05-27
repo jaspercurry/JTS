@@ -25,6 +25,9 @@ jobs:
           python-version: "3.13"
           cache: pip
 
+      - name: Supply-chain provenance check
+        run: python3 scripts/check-provenance.py
+
       - name: Install openwakeword without its tflite-runtime dep
         # openwakeword 0.6.0 hard-requires tflite-runtime, which has no
         # Python 3.13 wheel. We use ONNX models exclusively, so tflite is
