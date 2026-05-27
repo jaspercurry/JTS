@@ -56,7 +56,7 @@ building:
 - `shairport-sync` tag `4.3.7`, commit
   `0b1c4391ffd398e7b145eb4b98416261380adeea`.
 - `webrtc-audio-processing` tag `v2.1`, commit
-  `c5a2a02a196d1c9dbe5e28b393b5cf634a35e711`.
+  `846fe90a289f58b7c9303a635142aa2c7caa93e5`.
 
 The Python direct git dependency for `pycamilladsp` is pinned to the
 `v4.0.0` tag commit in `pyproject.toml` rather than the tag name.

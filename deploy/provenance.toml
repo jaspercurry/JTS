@@ -48,7 +48,9 @@ kind = "git-source"
 consumer = "deploy/install.sh: build_webrtc_v2_for_aec3"
 repository = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
 ref = "v2.1"
-commit = "c5a2a02a196d1c9dbe5e28b393b5cf634a35e711"
+# Peeled commit for refs/tags/v2.1^{}; refs/tags/v2.1 itself is an
+# annotated tag object and is not what `git rev-parse HEAD` verifies.
+commit = "846fe90a289f58b7c9303a635142aa2c7caa93e5"
 verification = "git rev-parse HEAD in deploy/install.sh"
 
 [[artifact]]
