@@ -78,9 +78,10 @@ pub struct Mixer {
     /// Cumulative output xrun events.
     pub output_xrun_count: Arc<AtomicU64>,
     /// Selected input index. -1 means auto/mix all active inputs;
-    /// non-negative means pass only that source's lane. The
-    /// correction/test lane is always mixed so diagnostics keep
-    /// working even if the household selected a renderer manually.
+    /// -2 means pass no renderer lanes; non-negative means pass only
+    /// that source's lane. The correction/test lane is always mixed so
+    /// diagnostics keep working even if the household selected a
+    /// renderer manually or mux temporarily selected NONE.
     selected_input_index: Arc<AtomicI32>,
     /// Channel for forwarding xrun events to the off-thread log
     /// writer. `try_send` is non-blocking on an unbounded channel
@@ -164,7 +165,7 @@ impl Mixer {
             output_buf: vec![0i16; period_samples],
             frames_written: Arc::new(AtomicU64::new(0)),
             output_xrun_count: Arc::new(AtomicU64::new(0)),
-            selected_input_index: Arc::new(AtomicI32::new(-1)),
+            selected_input_index: Arc::new(AtomicI32::new(-2)),
             xrun_tx,
             period_frames: config.period_frames,
         })
@@ -299,7 +300,7 @@ fn input_selected(
     input_index: usize,
     label: &str,
 ) -> bool {
-    selected_input < 0
+    selected_input == -1
         || selected_input == input_index as i32
         || label == "correction"
 }
@@ -603,5 +604,7 @@ mod tests {
         assert!(input_selected(1, 1, "airplay"));
         assert!(!input_selected(1, 0, "spotify"));
         assert!(input_selected(1, 4, "correction"));
+        assert!(!input_selected(-2, 0, "spotify"));
+        assert!(input_selected(-2, 4, "correction"));
     }
 }

@@ -3416,10 +3416,10 @@ async def run() -> None:
             cfg.hostname,
         )
     # Volume coordinator: owns the canonical listening_level (0-100),
-    # dispatches voice/dial-driven changes to the active source's own
-    # attenuator (AirPlay DBus / Spotify HTTP / BT DBus) instead of
-    # only adjusting CamillaDSP main_volume. Boot path applies a
-    # safety regression to extreme stale values.
+    # follows mux's effective source, and dispatches voice/dial-driven
+    # changes to the right volume carrier (Camilla-master for
+    # AirPlay/USB/idle, push-mode for Spotify/BT). Boot path applies
+    # a safety regression to extreme stale values.
     volume_persistence = VolumePersistence(cfg.volume_state_path)
     # Build the multi-account Spotify router once; reused by both the
     # coordinator (for outbound volume control via Web API) and the

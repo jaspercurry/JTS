@@ -561,16 +561,19 @@ def check_dongle_headphone_at_max() -> CheckResult:
 
 def check_jasper_mux() -> CheckResult:
     """jasper-mux arbitrates which renderer plays when. Without it,
-    starting Spotify while AirPlay is playing produces mixed audio
-    until session_timeout expires."""
+    source selection and guarded handoff stop working; if fan-in has
+    restarted into its safe NONE state, music may stay silent."""
     p = _run(["systemctl", "is-active", "jasper-mux.service"])
     state = p.stdout.strip()
     if state == "active":
-        return CheckResult("jasper-mux", "ok", "active (latest-source-wins)")
+        return CheckResult(
+            "jasper-mux", "ok",
+            "active (source selection + latest-source-wins)",
+        )
     return CheckResult(
-        "jasper-mux", "warn",
-        f"state={state}. Renderer preemption disabled — multiple "
-        f"sources will play concurrently if active.",
+        "jasper-mux", "fail",
+        f"state={state}. Source selection and guarded handoff are "
+        f"unavailable; fan-in may remain silent until mux is restarted.",
     )
 
 

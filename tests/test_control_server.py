@@ -810,6 +810,53 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["satellites"]["dial"]["online"] is False
 
 
+def test_state_prefers_mux_winner_over_raw_renderer_probe(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    """Mux owns the audible source; /state should not fall back to raw
+    renderer priority when mux reports an auto winner."""
+    import jasper.control.server as srv_mod
+
+    base, _ = server_with_coordinator
+    spotify_state = tmp_path / "spotify.json"
+    spotify_state.write_text(json.dumps({
+        "playing": True,
+        "session_active": True,
+        "uri": "spotify:track:test",
+    }))
+    monkeypatch.setenv("JASPER_LIBRESPOT_STATE", str(spotify_state))
+    monkeypatch.setenv(
+        "JASPER_USBSINK_STATE_PATH", str(tmp_path / "missing_usb.json"),
+    )
+    monkeypatch.setenv(
+        "JASPER_VOLUME_STATE_PATH", str(tmp_path / "vol.json"),
+    )
+
+    async def fake_mux_status(cmd: str, **kwargs):  # noqa: ARG001
+        assert cmd == "STATUS"
+        return {
+            "mode": "auto",
+            "selected_source": None,
+            "winner": "airplay",
+            "active_source": "airplay",
+            "sources": {
+                "airplay": {"playing": True},
+                "spotify": {"playing": True},
+                "bluetooth": {"playing": False},
+                "usbsink": {"playing": False},
+            },
+        }
+
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["renderers"]["spotify"]["playing"] is True
+    assert body["active_source"] == "airplay"
+    assert body["source_selection"]["winner"] == "airplay"
+
+
 def test_state_usbsink_section_null_when_disabled(
     server_with_coordinator, monkeypatch, tmp_path,
 ):

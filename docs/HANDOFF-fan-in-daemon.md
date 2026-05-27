@@ -351,7 +351,7 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |
 | `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
 | `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
-| `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto`) | INFO |
+| `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto` / `selected=none`) | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
 | `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
@@ -368,12 +368,18 @@ line command:
 - `STATUS` returns the current counters/config snapshot.
 - `SELECT <label>` passes only that renderer lane to the sum.
 - `AUTO` clears the selected lane and returns to summing active inputs.
+- `NONE` passes no renderer lanes. The correction/test lane still
+  passes; this is a mux-owned safety primitive, not a user-facing source.
 
-`jasper-mux` is the only production caller for `SELECT` / `AUTO`.
-The fan-in daemon does not decide what source should win; it only
-executes the cheap audio gate. The `correction` lane is always mixed
-so room-correction/test sweeps still work while a household source is
-manually selected.
+`jasper-mux` is the only production caller for `SELECT` / `AUTO` /
+`NONE`. The fan-in daemon does not decide what source should win and
+does not know about volume policy; it only executes the cheap audio
+gate. It starts in `NONE`, and mux keeps it in `NONE` while no source
+has a guarded winner so a renderer that starts between mux polls cannot
+leak through at stale volume. Mux prepares the safe volume carrier
+before moving the gate. The `correction` lane is always mixed so
+room-correction/test sweeps still work while a household source is
+manually selected or while the mux has temporarily selected `NONE`.
 
 `STATUS` JSON:
 
@@ -381,6 +387,7 @@ manually selected.
 {
   "uptime_seconds": 1234.56,
   "input_buffer_frames": 4096,
+  "selection_mode": "select",
   "selected_input": "airplay",
   "inputs": [
     {"label": "spotify", "pcm": "hw:Loopback,1,0", "frames_read": 0, "xrun_count": 0},
@@ -877,4 +884,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-26.
+Last verified: 2026-05-27 (source selection NONE gate + status shape rechecked).

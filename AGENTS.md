@@ -340,15 +340,20 @@ latest-source-wins preemption: when a new source transitions to playing
 while another is already active, it pauses the older one. The landing
 page's Source selector can switch mux into manual mode; mux then asks
 `jasper-fanin` to pass one renderer lane without turning any source on
-or off. The `/sources/` wizard remains the on/off surface.
+or off. Before moving the fan-in gate, mux asks `VolumeCoordinator` to
+prepare the target source's volume carrier; after the gate moves, it
+finalizes the steady-state carrier. This is the source-switch transient
+guard. While no source has a guarded winner, mux keeps fan-in in `NONE`
+so a renderer cannot leak through between polls. The `/sources/`
+wizard remains the on/off surface.
 
 All music/content sources enter the fan-in topology through a private
 snd-aloop lane. Before adding another playback source, read
 [`docs/audio-paths.md`](docs/audio-paths.md#adding-a-new-music-source);
-that checklist is the single source of truth for lane assignment,
-fan-in config, mux, volume, `/sources/`, doctor, and correction
-measurement-window updates, including `/source/select` landing-page
-selection wiring.
+that checklist is the single source of truth for `jasper/music_sources.py`
+source metadata, lane assignment, fan-in config, mux, volume,
+`/sources/`, doctor, and correction measurement-window updates,
+including `/source/select` landing-page selection wiring.
 
 Spotify volume control goes via the Spotify Web API (the multi-
 account `spotify_router`) since librespot has no local control
@@ -1849,12 +1854,14 @@ Pi side: `jasper-control` daemon binds `0.0.0.0:8780`, exposes
 `POST /volume/adjust` (and `/volume/set`, `/healthz`). Volume
 requests route through `VolumeCoordinator` (see
 [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md)), which dispatches
-to the active source's own slider (AirPlay DBus, Spotify HTTP, BT
-DBus) — not just CamillaDSP. Persistence is incidental — voice_daemon's debounced poller
-catches external main_volume changes and writes them to the same
-state file used by voice tools, so dial-driven volume survives
-restarts without the control daemon knowing about the persistence
-layer. Service file at `deploy/systemd/jasper-control.service`.
+according to mux's effective source and
+[`jasper/music_sources.py`](jasper/music_sources.py)'s `VolumeMode`:
+AirPlay/USB use CamillaDSP as master; Spotify/Bluetooth push their
+source-side volume and use Camilla only as a degraded-safe guard.
+Persistence is explicit shared state in
+`/var/lib/jasper/speaker_volume.json`, so dial-driven volume survives
+restarts and converges with voice-daemon observers. Service file at
+`deploy/systemd/jasper-control.service`.
 No auth — home LAN only.
 
 Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native

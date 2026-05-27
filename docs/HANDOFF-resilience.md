@@ -381,7 +381,7 @@ JTS ladder, descending priority:
 | `jasper-aec-bridge` | -700 | Real-time mic processing |
 | `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
 | `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
-| `jasper-mux`, `jasper-input` | -300 | Transient outage is graceful |
+| `jasper-mux`, `jasper-input` | -300 | Restartable control-plane daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane |
 | `sshd` | -1000 (Debian default) | Recovery path; never killable |
 
 Critical: **no jasper-* daemon is at -1000** because that fully

@@ -364,9 +364,15 @@ they will on live albums.
 
 ### Step 5: Mux + volume + source_state integration
 
-Add `Source.APPLE_MUSIC` to `mux.py`, `volume_coordinator.py`,
-`source_state.py`, `renderer.py`. Same patterns as USB sink
-(state file detection, camilla-as-master volume, direct pause).
+Start with
+[`audio-paths.md`](audio-paths.md#adding-a-new-music-source); that is
+the canonical add-a-music-source checklist. This section only adds the
+Apple-specific notes.
+
+Add `Source.APPLE_MUSIC` metadata in `music_sources.py`, then wire
+`source_state.py`, `renderer.py`, and any source-specific mux pause /
+preempt behavior. Same patterns as USB sink: state file detection,
+camilla-as-master volume, direct pause.
 
 ### Step 6: Voice tools + transport routing
 
@@ -411,8 +417,9 @@ jasper/
 
   source_state.py                       EDIT — add apple_music_playing()
   renderer.py                           EDIT — add to active_renderers
-  mux.py                                EDIT — add Source.APPLE_MUSIC
-  volume_coordinator.py                 EDIT — add Source.APPLE_MUSIC (camilla-as-master)
+  music_sources.py                      EDIT — add Source.APPLE_MUSIC metadata (camilla-master)
+  mux.py                                EDIT — source-specific pause/preempt behavior if needed
+  volume_coordinator.py                 EDIT — source-specific volume I/O only if not camilla-master
   config.py                             EDIT — add apple_music_* fields
   voice_daemon.py                       EDIT — register tools, SYSTEM_INSTRUCTION routing
 

@@ -42,9 +42,14 @@ from typing import Any, Awaitable, Callable, Optional
 
 from ..http_security import management_read_allowed, mutating_request_allowed
 from . import shairport_supervisor, system_supervisor, wifi_guardian_state
+from ..music_sources import MUSIC_SOURCE_SPECS
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
+SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
+SOURCE_AVAILABILITY_TTL_SEC = 10.0
+_source_availability_cache: tuple[float, dict[str, Any]] | None = None
+_source_availability_lock = threading.Lock()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -640,18 +645,23 @@ def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     sources = payload.get("sources")
     if not isinstance(sources, dict):
         return payload
-    try:
-        from ..web.sources_setup import _gather_state as _sources_state
-        wizard_state = _sources_state()
-    except Exception as e:  # noqa: BLE001
-        logger.debug("source availability read failed: %s", e)
-        return payload
-    for wizard_key, mux_key in (
-        ("airplay", "airplay"),
-        ("bluetooth", "bluetooth"),
-        ("spotify_connect", "spotify"),
-        ("usbsink", "usbsink"),
-    ):
+    global _source_availability_cache
+    now = time.monotonic()
+    with _source_availability_lock:
+        cached = _source_availability_cache
+        if cached is not None and now - cached[0] < SOURCE_AVAILABILITY_TTL_SEC:
+            wizard_state = cached[1]
+        else:
+            try:
+                from ..web.sources_setup import _gather_state as _sources_state
+                wizard_state = _sources_state()
+            except Exception as e:  # noqa: BLE001
+                logger.debug("source availability read failed: %s", e)
+                return payload
+            _source_availability_cache = (now, wizard_state)
+    for spec in MUSIC_SOURCE_SPECS:
+        wizard_key = spec.wizard_key
+        mux_key = spec.id.value
         state = wizard_state.get(wizard_key)
         if not isinstance(state, dict):
             continue
@@ -923,19 +933,23 @@ async def _get_state(
         pass
 
     voice_session = bool(voice_st) and voice_st.get("state") == "SESSION"
-    # Active-source picks. USB sink takes precedence over idle but
-    # below the other named renderers — same priority chain as the
-    # volume coordinator's _active_source.
-    mux_manual_source = None
-    if isinstance(mux_st, dict) and mux_st.get("mode") == "manual":
+    # Active-source picks. Mux owns the effective audible source in
+    # both manual and auto mode. Fall back to raw renderer probes only
+    # when mux is unavailable or has no selected winner yet.
+    mux_effective_source = None
+    if isinstance(mux_st, dict):
         raw_selected = mux_st.get("selected_source")
         if isinstance(raw_selected, str):
-            mux_manual_source = raw_selected
+            mux_effective_source = raw_selected
+        else:
+            raw_winner = mux_st.get("winner")
+            if isinstance(raw_winner, str):
+                mux_effective_source = raw_winner
 
     if voice_session:
         active_source: str = "voice"
-    elif mux_manual_source:
-        active_source = mux_manual_source
+    elif mux_effective_source:
+        active_source = mux_effective_source
     elif spotify["playing"]:
         active_source = "spotify"
     elif airplay:
@@ -1579,21 +1593,23 @@ def _make_handler(
                 source = str(body.get("source") or "").strip().lower()
                 if source == "auto":
                     cmd = "AUTO"
-                elif source in ("airplay", "bluetooth", "spotify", "usbsink"):
+                elif source in SOURCE_SELECT_IDS:
                     cmd = f"SELECT {source}"
                 else:
+                    choices = ", ".join(sorted(SOURCE_SELECT_IDS))
                     self._send_json(
                         {
                             "error": (
-                                "source must be airplay, bluetooth, spotify, "
-                                "usbsink, or auto"
+                                f"source must be {choices}, or auto"
                             ),
                         },
                         status=400,
                     )
                     return
                 try:
-                    result = asyncio.run(_mux_socket_command(cmd))
+                    result = asyncio.run(
+                        _mux_socket_command(cmd, timeout=6.0),
+                    )
                 except (
                     FileNotFoundError,
                     ConnectionRefusedError,

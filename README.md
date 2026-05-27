@@ -132,6 +132,12 @@ source transitions to playing while another is already active, it pauses
 the older one so the user gets "latest source wins" UX. The landing page
 also exposes a lightweight Source selector: manual mode gates one
 renderer lane through `jasper-fanin` without turning any source on/off.
+Before mux moves the fan-in gate, it asks `VolumeCoordinator` to make the
+target source's volume carrier safe, so switching between push-volume
+sources (Spotify/Bluetooth) and Camilla-master sources (AirPlay/USB)
+cannot expose a full-scale transient. When no source has a guarded
+winner yet, mux keeps fan-in in `NONE` so a newly started renderer does
+not leak through between polls.
 
 There's also a reconciler-managed software AEC bridge
 (`jasper-aec-bridge`) that taps the music chain via a
@@ -151,7 +157,7 @@ when the configured AEC mic is present with 6-channel firmware — see
   source-built shairport-sync + nqptp, librespot (rust, via raspotify
   .deb) with log volume curve, and bluez-alsa
 - ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
-  landing-page source selection
+  landing-page source selection with guarded volume handoff
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)

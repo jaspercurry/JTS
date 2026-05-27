@@ -66,13 +66,24 @@ deploy/index.html
 
 Ownership is deliberately split:
 
-- `jasper-mux` owns policy: auto mode is latest-source-wins; manual
-  mode is the user-selected source. It maps public source IDs
-  (`spotify`, `airplay`, `bluetooth`, `usbsink`) to fan-in labels
-  (`spotify`, `airplay`, `bluealsa`, `usbsink`).
+- `jasper-mux` owns policy and the source-handoff transaction. Auto
+  mode is latest-source-wins; manual mode is the user-selected source.
+  Source metadata lives in `jasper/music_sources.py`, including the
+  fan-in lane label and whether `listening_level` is carried by
+  CamillaDSP or by a push-to-source volume API.
+- Before mux exposes a new lane, it asks
+  `VolumeCoordinator.prepare_source_handoff(...)` to make the target
+  volume carrier safe. Only then does it send `SELECT <label>` to
+  fan-in. After the gate moves,
+  `VolumeCoordinator.finalize_source_handoff(...)` converges the
+  steady-state carrier. This is the guard against loud source-switch
+  transients such as Spotify (Camilla 0 dB) → AirPlay
+  (Camilla-as-master).
 - `jasper-fanin` owns only the cheap audio gate: `AUTO` sums active
-  lanes; `SELECT <label>` passes one renderer lane. The correction/test
-  lane is always mixed so diagnostics and room correction still work.
+  lanes; `SELECT <label>` passes one renderer lane; `NONE` passes no
+  renderer lane. The correction/test lane is always mixed so
+  diagnostics and room correction still work. Fan-in starts in `NONE`,
+  and mux keeps it there whenever no source has a guarded winner.
 - `jasper-control` is the HTTP proxy for the web UI. It also merges
   `/sources/` availability into `/source/state` so unavailable/off
   renderers can be disabled in the landing-page selector.
@@ -116,37 +127,43 @@ mixer, a second output device, or a new volume model.
    `False` plus debug logging. This state feeds mux, volume, transport,
    dashboards, and voice tools, so avoid duplicating probes in each
    caller.
-5. **Define preemption.** Add the source to `jasper/mux.py`. Prefer a
-   real pause/silence API. If the source cannot be paused from the Pi,
-   document the intentional fallback ("may briefly mix") and expose an
-   operator escape hatch only when the failure mode justifies one.
-6. **Wire manual source selection.** Add the source to
-   `jasper.mux.Source`, `SOURCE_TO_FANIN_LABEL`, the mux status payload,
-   `jasper/control/server.py`'s `/source/select` allow-list, and the
-   landing-page selector in `deploy/index.html`. The `/sources/` wizard
-   remains the on/off surface; `/source/select` only picks the lane the
-   speaker should currently pass.
-7. **Choose the volume model.** Update `VolumeCoordinator`: either the
-   source is **push-mode** (its own slider carries `listening_level`
-   and CamillaDSP stays at 0 dB) or **camilla-as-master** (CamillaDSP
-   carries `listening_level`). Add inbound observation only if the
-   source has a reliable user-facing volume surface.
-8. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
+5. **Declare the source once.** Add one `Source` enum member and one
+   `MusicSourceSpec` in `jasper/music_sources.py`: public ID, fan-in
+   label, renderer active key, `/sources/` wizard key, display name,
+   and `volume_mode`. `VolumeMode.PUSH` means the source's own volume
+   API carries `listening_level` and CamillaDSP returns to 0 dB.
+   `VolumeMode.CAMILLA_MASTER` means CamillaDSP carries
+   `listening_level`.
+6. **Define preemption.** Add the source-specific pause/silence path to
+   `jasper/mux.py`. Prefer a real pause/silence API. If the source
+   cannot be paused from the Pi, document the intentional fallback
+   ("may briefly mix") and expose an operator escape hatch only when the
+   failure mode justifies one.
+7. **Wire manual source selection.** The mux/control allow-lists derive
+   from `jasper/music_sources.py`; add the landing-page button in
+   `deploy/index.html` and keep `/sources/` as the on/off surface.
+   `/source/select` only picks the lane the speaker should currently
+   pass.
+8. **Teach the coordinator source-specific volume I/O.** The handoff
+   safety policy comes from `volume_mode`, but push-mode sources still
+   need one `_set_<source>` dispatcher. Add inbound observation only if
+   the source has a reliable user-facing volume surface.
+9. **Decide transport/metadata truthfully.** If voice `pause`, `next`,
    `previous`, or `now playing` can control the source, wire
    `jasper/tools/transport.py` and document the backend in
    `HANDOFF-voice-music-control.md`. If not, return a concrete "not
    supported for this source" response.
-9. **Add operator surfaces and observability.** Update `/sources/` if
+10. **Add operator surfaces and observability.** Update `/sources/` if
    the source can be enabled/disabled, `/state` if it has useful live
    state, `jasper-doctor` for topology drift and runtime health, and
    `jts-audio.slice` / no-swap checks for any resident audio-path
    daemon.
-10. **Protect measurements and tests.** Add the source to the
+11. **Protect measurements and tests.** Add the source to the
    correction `measurement_window()` pause list if it can emit during a
    sweep. Add tests for asound wiring, fan-in config, source-state
-   fail-soft behavior, mux preemption, volume dispatch, and any source
-   wizard toggles.
-11. **Update docs in one place, then link.** This section covers the
+   fail-soft behavior, mux preemption, source-handoff safety, volume
+   dispatch, and any source wizard toggles.
+12. **Update docs in one place, then link.** This section covers the
     cross-cutting checklist. Source-specific quirks belong in a
     focused HANDOFF only when they are non-obvious, as USB sink does in
     `HANDOFF-usbsink.md`. README's documentation map should link the
@@ -376,4 +393,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-26 (updated the future-source checklist for fan-in plus manual source selection)
+Last verified: 2026-05-27 (source handoff guard + future-source checklist rechecked)

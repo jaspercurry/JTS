@@ -37,13 +37,17 @@ sync with whatever attenuator is actually doing the work.
 
 When the voice tool / dial / "louder" wants to change volume:
 
-1. Coordinator queries `backend.active_renderers()`.
-2. Picks the active source: priority
+1. Coordinator asks `backend.selected_source()` for mux's effective
+   audible source: manual `selected_source` when the user picked one,
+   or auto `winner` when latest-source-wins owns the gate.
+2. If mux is unavailable or has no winner yet, falls back to raw
+   `backend.active_renderers()` with priority
    `airplay > spotify > bluetooth > usbsink > idle`.
 3. Decides whether the source is **push-mode** (it has a slider we
    can drive — camilla pinned at 0 dB) or **camilla-as-master** (we
    can't drive its slider — camilla carries listening_level on the
-   −50..0 dB scale). The decision lives in
+   −50..0 dB scale). The decision lives in the source registry at
+   `jasper/music_sources.py` (`VolumeMode`), consumed by
    `_camilla_carries_level(source)`:
    - **IDLE** → camilla-as-master
    - **AIRPLAY** → camilla-as-master *always* (see "AirPlay is always
@@ -58,9 +62,12 @@ When the voice tool / dial / "louder" wants to change volume:
    - **Bluetooth** → `org.bluez.MediaTransport1.Volume` property on the active a2dpsnk path (uint16 0..127)
    - **USB sink** → CamillaDSP `main_volume`
    - **Idle** → CamillaDSP `main_volume`
-5. In push-mode, **CamillaDSP `main_volume` is pinned at 0 dB** so
-   there's no double-attenuation. In camilla-as-master mode (idle or
-   AirPlay), `main_volume` IS the user-facing knob.
+5. In push-mode, **CamillaDSP `main_volume` is normally pinned at
+   0 dB** so there's no double-attenuation. If a source-side push
+   fails, Camilla remains a degraded-safe fallback guard at the
+   canonical level until a later handoff or recovery path can clear it.
+   In camilla-as-master mode (idle, AirPlay, USB), `main_volume` IS the
+   user-facing knob.
 
 ### Inbound observation
 
@@ -187,7 +194,8 @@ session end it reads disk → `get_camilla_target_db()` → camilla
 lands at the user's intended level. The defer log lines distinguish
 the two paths: `camilla main_volume deferred to ducker.restore`
 (flag path) vs `event=volume.deferred reason=session_signaled`
-(probe path).
+(probe path). Both `jasper-control` and `jasper-mux` build this
+probe when they construct per-request/per-handoff coordinators.
 
 #### Why the probe replaced the prior dB-comparison heuristic
 
@@ -229,6 +237,47 @@ at turn-start (no change). Building real-time TTS responsiveness to
 user input requires a delta-based tracker refactor; not justified
 for the use frequency observed in production.
 
+### Source handoff guard
+
+`jasper-mux` owns source policy, but `VolumeCoordinator` owns the
+handoff safety invariant: **a fan-in lane must not become audible until
+the correct volume carrier is safe for the current `listening_level`.**
+The mux calls `prepare_source_handoff(prev, current, reason=...)`
+before `SELECT <label>` for selectable music sources and
+`finalize_source_handoff(...)` after the fan-in gate moves.
+
+The two cases:
+
+- **Push-mode target** (`spotify`, `bluetooth`): push
+  `listening_level` to the source first. After fan-in selects that
+  lane, keep the prior Camilla guard for a short propagation window
+  (`JASPER_SOURCE_PUSH_SETTLE_SEC`, default 0.75 s), then return
+  CamillaDSP to 0 dB. If the push fails, lower CamillaDSP to the
+  canonical guard level and still allow the switch in a `degraded_safe`
+  state; this is quieter than ideal, never louder. The guarded
+  `main_volume_db` is persisted, and `get_camilla_target_db()`
+  preserves it through `Ducker.restore()` instead of unmasking a source
+  whose own volume could not be set.
+- **Camilla-master target** (`airplay`, `usbsink`; `idle` is the
+  coordinator's internal fallback, not a mux-selectable lane): lower
+  CamillaDSP to the canonical guard level first and wait slightly past
+  CamillaDSP's 400 ms default ramp before mux exposes the lane. This
+  covers the real Spotify → AirPlay failure mode: Spotify leaves
+  Camilla at 0 dB, but AirPlay depends on Camilla for receiver-side
+  volume. During a voice duck, the prepare step succeeds only if the
+  current ducked Camilla level is already at/below the guard; otherwise
+  mux leaves fan-in closed/on the prior source and retries later.
+
+The source registry in `jasper/music_sources.py` declares each source's
+`VolumeMode`; source-specific push I/O remains in the coordinator
+dispatchers. Successful/final handoff logs use `event=source.handoff`
+with `prev_mode`, `target_mode`, `guard_db`, `camilla_before`,
+`push_ok`, `settled_ms`, and `result`; early prepare/fan-in failures
+log the compact `from/to/reason/result/detail` shape. Mux status also
+exposes `last_handoff` with the richer fields, so `/source/state` and
+`/state.source_selection` have the same recent diagnostic even for
+failure paths.
+
 ## Self-healing reconciler (backstop)
 
 `VolumeCoordinator.maybe_reconcile_camilla()` is the resilience
@@ -269,10 +318,12 @@ active" flag set by the cue manager, mirroring `note_voice_session`.
 `source=`, `level=`, `current_db=`, `expected_db=`, `drift_db=`.
 Visible in `journalctl -u jasper-voice` for drift forensics.
 
-The reconciler does NOT replace `apply_active_source_transition`'s
-explicit boundary handling — transitions still go through the
-canonical path. The reconciler is the safety net for everything
-else.
+The reconciler does NOT replace mux-owned source handoff. Mux
+`prepare_source_handoff(...)` / `finalize_source_handoff(...)` is the
+primary path for landing-page selection and latest-source-wins fan-in
+changes. `apply_active_source_transition(...)` remains an observer
+backstop for raw renderer-state changes, boot convergence, and older
+paths that report activity outside mux's control.
 
 ## Hearing-safety belt
 
@@ -324,12 +375,13 @@ visibly move when the dial turns. The audio at the speaker does.
 Voice volume control and the rotary dial share the same coordinator
 path, so both remain reliable during AirPlay.
 
-**The four transitions** at the camilla-as-master / push-mode
-boundary all flow through `apply_active_source_transition`:
+Mux-owned source handoff is the primary boundary path. The observer
+backstop, `apply_active_source_transition`, still follows the same
+rules for raw active-source transitions:
 
 | Edge | What happens |
 |---|---|
-| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | camilla → 0 dB (clear residual), then push level to new source |
+| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; clear camilla to 0 dB only after the push succeeds |
 | push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) (take over) |
 | push → push (e.g. Spotify → BT) | camilla already at 0 dB; push level to new source |
 | camilla → camilla (idle ↔ AirPlay) | no change; camilla already carries level |
@@ -412,17 +464,19 @@ If you're adding another audio source, start with
 [`audio-paths.md`](audio-paths.md#adding-a-new-music-source), then hook
 into the volume-specific pieces here:
 
-- `Source` enum in `volume_coordinator.py`
-- `_active_source()` priority chain. Manual source selection is an
-  audible fan-in gate owned by mux; volume follows mux's
-  `selected_source` when mux is in manual mode, then falls back to raw
-  renderer probes in auto mode or when mux is unreachable.
+- `MusicSourceSpec` in `jasper/music_sources.py`, including
+  `volume_mode` and fan-in label.
+- `_active_source()` priority chain. Source selection is an audible
+  fan-in gate owned by mux; volume follows mux's effective
+  `selected_source`/`winner` when mux is reachable, then falls back to
+  raw renderer probes.
 - One `_set_<source>` dispatcher
 - One `_read_<source>_*` observer reader, or a source-local bridge like
   `jasper-usbsink` if polling from `VolumeObserver` would be the wrong
   ownership boundary
 - Echo-prevention: `_stamp_outbound(Source.NEW, level)` in the
   dispatcher
+- Handoff tests for both push-mode and camilla-master transitions
 
 If you're changing the staleness semantics (idle reset thresholds),
 the field of authority is `last_used_at` in the persistence record,
@@ -431,4 +485,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-26 (re-verified after fan-in-only source checklist; USB sink volume path included)
+Last verified: 2026-05-27 (source handoff guard + mux effective-source path rechecked)

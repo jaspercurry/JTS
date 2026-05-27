@@ -12,14 +12,62 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from jasper.music_sources import VolumeMode
 from jasper.mux import Mux, Source
+
+
+class _FakeHandoff:
+    def __init__(self, prev, current, *, level=50, result="ok"):
+        self.prev_source = prev
+        self.current_source = current
+        self.reason = "test"
+        self.level = level
+        self.prev_mode = VolumeMode.CAMILLA_MASTER
+        self.current_mode = VolumeMode.CAMILLA_MASTER
+        self.guard_db = -25.0
+        self.camilla_before_db = 0.0
+        self.push_ok = None
+        self.settled_ms = 0
+        self.result = result
+        self.detail = ""
+
+    @property
+    def ok(self):
+        return self.result in {"ok", "degraded_safe", "noop"}
+
+
+class _FakeVolumeCoordinator:
+    def __init__(self):
+        self.prepared: list[tuple[Source, Source, str]] = []
+        self.finalized: list[_FakeHandoff] = []
+        self.events: list[str] = []
+        self.next_result = "ok"
+
+    async def prepare_source_handoff(self, prev, current, *, reason):
+        self.prepared.append((prev, current, reason))
+        self.events.append(f"prepare:{current.value}")
+        return _FakeHandoff(prev, current, result=self.next_result)
+
+    async def finalize_source_handoff(self, handoff):
+        self.finalized.append(handoff)
+        self.events.append(f"finalize:{handoff.current_source.value}")
+        return True
+
+    async def aclose(self):
+        pass
 
 
 @pytest.fixture
 def mux(tmp_path):
     # State file path is per-test (tmp_path) so we don't accidentally
     # touch /run/librespot if a test forgets to stub the probes.
-    m = Mux(librespot_state_path=str(tmp_path / "librespot.state.json"))
+    m = Mux(
+        librespot_state_path=str(tmp_path / "librespot.state.json"),
+        volume_coordinator=_FakeVolumeCoordinator(),
+    )
+    m._fanin_select = AsyncMock(return_value={})
+    m._fanin_auto = AsyncMock(return_value={})
+    m._fanin_none = AsyncMock(return_value={})
     return m
 
 
@@ -481,6 +529,135 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
 
 
 @pytest.mark.asyncio
+async def test_select_source_prepares_volume_before_fanin_gate(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    coord = mux._volume_coordinator
+
+    async def select_with_order(source):
+        coord.events.append(f"select:{source.value}")
+        return {}
+
+    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+
+    await mux.select_source(Source.AIRPLAY)
+
+    assert coord.events == [
+        "prepare:airplay",
+        "select:airplay",
+        "finalize:airplay",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_select_source_does_not_open_fanin_when_handoff_fails(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    coord = mux._volume_coordinator
+    coord.next_result = "failed"
+
+    status = await mux.select_source(Source.AIRPLAY)
+
+    mux._fanin_select.assert_not_awaited()
+    assert coord.finalized == []
+    assert mux._manual_source is None
+    assert mux._winner is None
+    assert status["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_startup_handoff_failure_uses_fanin_none(
+    mux, patched_probes,
+):
+    _stub_probes(patched_probes, airplay=True)
+    _stub_pauses(mux)
+    coord = mux._volume_coordinator
+    coord.next_result = "failed"
+
+    await mux._tick()
+
+    mux._fanin_select.assert_not_awaited()
+    mux._fanin_none.assert_awaited_once()
+    mux._pause.assert_not_awaited()
+    assert mux._winner is None
+
+
+@pytest.mark.asyncio
+async def test_failed_auto_handoff_retries_target_on_next_tick(
+    mux, patched_probes,
+):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+    assert mux._winner is Source.SPOTIFY
+
+    coord = mux._volume_coordinator
+    coord.next_result = "failed"
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+    await mux._tick()
+
+    assert mux._pending_auto_target is Source.AIRPLAY
+    assert mux._winner is Source.SPOTIFY
+
+    coord.next_result = "ok"
+    await mux._tick()
+
+    assert mux._pending_auto_target is None
+    assert mux._winner is Source.AIRPLAY
+    assert [event for event in coord.events if event == "prepare:airplay"] == [
+        "prepare:airplay",
+        "prepare:airplay",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
+    mux, patched_probes,
+):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, spotify=True)
+    await mux._tick()
+
+    coord = mux._volume_coordinator
+    coord.events.clear()
+
+    async def select_with_order(source):
+        coord.events.append(f"select:{source.value}")
+        return {}
+
+    mux._fanin_select = AsyncMock(side_effect=select_with_order)
+    _stub_probes(patched_probes, spotify=True, airplay=True)
+
+    await mux._tick()
+
+    assert coord.events == [
+        "prepare:airplay",
+        "select:airplay",
+        "finalize:airplay",
+    ]
+    mux._pause.assert_awaited_with(Source.SPOTIFY)
+    assert mux._winner is Source.AIRPLAY
+
+
+@pytest.mark.asyncio
+async def test_winner_stopping_holds_fanin_none(
+    mux, patched_probes,
+):
+    _stub_pauses(mux)
+    _stub_probes(patched_probes, airplay=True)
+    await mux._tick()
+    assert mux._winner is Source.AIRPLAY
+
+    _stub_probes(patched_probes)
+    await mux._tick()
+
+    mux._fanin_none.assert_awaited()
+    assert mux._winner is None
+
+
+@pytest.mark.asyncio
 async def test_manual_tick_keeps_selected_source_when_other_source_starts(
     mux, patched_probes,
 ):
@@ -507,12 +684,12 @@ async def test_auto_select_clears_manual_source_and_releases_fanin_gate(
 ):
     mux._manual_source = Source.SPOTIFY
     mux._winner = Source.SPOTIFY
-    mux._fanin_auto = AsyncMock(return_value={})
+    mux._fanin_select = AsyncMock(return_value={})
     _stub_probes(patched_probes, spotify=False, airplay=True)
 
     status = await mux.auto_select()
 
-    mux._fanin_auto.assert_awaited_once_with()
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
     assert mux._manual_source is None
     assert status["mode"] == "auto"
     assert status["selected_source"] is None
@@ -524,14 +701,31 @@ async def test_auto_select_preempts_other_active_sources_before_auto_gate(
     mux, patched_probes,
 ):
     mux._manual_source = Source.AIRPLAY
-    mux._fanin_auto = AsyncMock(return_value={})
+    mux._fanin_select = AsyncMock(return_value={})
     _stub_pauses(mux)
     _stub_probes(patched_probes, spotify=True, airplay=True)
 
     status = await mux.auto_select()
 
     mux._pause.assert_awaited_once_with(Source.SPOTIFY)
-    mux._fanin_auto.assert_awaited_once_with()
+    mux._fanin_select.assert_awaited_once_with(Source.AIRPLAY)
     assert mux._manual_source is None
     assert mux._winner is Source.AIRPLAY
+    assert status["mode"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_auto_select_with_no_active_sources_holds_fanin_none(
+    mux, patched_probes,
+):
+    mux._manual_source = Source.AIRPLAY
+    mux._winner = Source.AIRPLAY
+    _stub_probes(patched_probes)
+
+    status = await mux.auto_select()
+
+    mux._fanin_none.assert_awaited_once()
+    mux._fanin_auto.assert_not_awaited()
+    assert mux._manual_source is None
+    assert mux._winner is None
     assert status["mode"] == "auto"

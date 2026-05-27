@@ -9,7 +9,9 @@ explains the design and the non-obvious cases.
 
 | File | Role |
 |---|---|
+| `jasper/music_sources.py` | Canonical source IDs, fan-in labels, wizard keys, and volume mode (`push` vs `camilla_master`) |
 | `jasper/renderer.py` | `RendererClient` — per-source state queries (DBus / state-file / subprocess) |
+| `jasper/mux.py` | Latest-source-wins/manual source policy plus guarded source handoff before fan-in selection |
 | `jasper/tools/transport.py` | `make_transport_tools(renderer, router)` and `make_transport_dispatcher` — source-aware next/prev/pause/play |
 | `jasper/tools/spotify.py` | `make_spotify_tools(...)` — search-and-play, with the AirPlay-carrying-Spotify shortcut |
 | `jasper/spotify_routing.py` | `resolve_target` and `_match_track` — picks the right Spotify device for `start_playback` |
@@ -128,4 +130,4 @@ invite further conversation.
 
 ---
 
-Last verified: 2026-05-26 (source list re-checked after USB sink and fan-in-only topology)
+Last verified: 2026-05-27 (source registry + guarded handoff path rechecked)

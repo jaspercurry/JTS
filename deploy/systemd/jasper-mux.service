@@ -1,5 +1,5 @@
 [Unit]
-Description=Jasper renderer source-arbiter (latest-source-wins preemption)
+Description=Jasper renderer source-arbiter (auto/manual source selection)
 After=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
 Wants=jasper-fanin.service librespot.service shairport-sync.service bluealsa.service
 
@@ -12,7 +12,7 @@ EnvironmentFile=-/var/lib/jasper/speaker_name.env
 # UDS out of /run/jasper-fanin/control.sock.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 ExecStart=/opt/jasper/.venv/bin/jasper-mux
-Restart=on-failure
+Restart=always
 RestartSec=2
 # 1 Hz polling of three sources is light; stay under typical
 # python+httpx idle footprint. CPU should be <1%.
@@ -23,9 +23,10 @@ RuntimeDirectory=jasper-mux
 RuntimeDirectoryMode=0750
 
 # OOM protection (Stage 1 of memory-resilience plan, see
-# docs/HANDOFF-resilience.md). Mux arbitration is a graceful-fail
-# subsystem — when it's gone, latest-source-wins stops working but
-# AirPlay/Spotify/BT each still play. Moderate protection only.
+# docs/HANDOFF-resilience.md). Mux is restartable but now sits on the
+# audible source-selection path: fan-in starts safe/closed and mux
+# opens the chosen renderer lane after volume handoff. Keep moderate
+# protection, but restart on every exit.
 # NOTE: MemoryHigh/MemoryMax above are silent no-ops until the
 # memory cgroup is enabled (Stage 2 of plan). Kept here as
 # documentation of intent.

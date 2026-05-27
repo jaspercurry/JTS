@@ -8,6 +8,7 @@
 //!   `STATUS\n`  → responds with a JSON snapshot, closes connection.
 //!   `SELECT <label>\n` → pass only one renderer lane to the sum.
 //!   `AUTO\n`    → return to summing all active lanes.
+//!   `NONE\n`    → pass no renderer lanes (correction/test still passes).
 //!
 //! Other input is rejected with `{"error": "unknown command"}`.
 //!
@@ -214,6 +215,14 @@ impl StateServer {
                 }
                 self.snapshot_json()
             }
+            "NONE" => {
+                let previous =
+                    self.selected_input_index.swap(-2, Ordering::Relaxed);
+                if previous != -2 {
+                    info!("event=fanin.source_select selected=none");
+                }
+                self.snapshot_json()
+            }
             cmd if cmd.starts_with("SELECT ") => {
                 let label = cmd.trim_start_matches("SELECT ").trim();
                 self.select_input_json(label)
@@ -284,11 +293,22 @@ impl StateServer {
         buf.push(',');
 
         // selected_input: null in auto mode, otherwise the selected
-        // label. Invalid values should not happen (only SELECT can set
-        // non-negative indices), but render null if a future version
-        // changes the input list under us.
-        buf.push_str(r#""selected_input":"#);
+        // label. NONE also renders null; selection_mode distinguishes
+        // it from auto. Invalid values should not happen (only SELECT
+        // can set non-negative indices), but render null if a future
+        // version changes the input list under us.
+        buf.push_str(r#""selection_mode":"#);
         let selected = self.selected_input_index.load(Ordering::Relaxed);
+        if selected == -1 {
+            buf.push_str(r#""auto""#);
+        } else if selected == -2 {
+            buf.push_str(r#""none""#);
+        } else {
+            buf.push_str(r#""select""#);
+        }
+        buf.push(',');
+
+        buf.push_str(r#""selected_input":"#);
         if selected >= 0 {
             if let Some(input) = self.inputs.get(selected as usize) {
                 buf.push('"');
@@ -465,6 +485,7 @@ mod tests {
         let j = server.snapshot_json();
         for key in &[
             "uptime_seconds",
+            "selection_mode",
             "selected_input",
             "inputs",
             "output",
@@ -503,12 +524,17 @@ mod tests {
     fn snapshot_json_reports_selected_input() {
         let server = make_test_server();
         assert!(server.snapshot_json().contains(r#""selected_input":null"#));
+        assert!(server.snapshot_json().contains(r#""selection_mode":"auto""#));
         server.selected_input_index.store(1, Ordering::Relaxed);
         assert!(
             server
                 .snapshot_json()
                 .contains(r#""selected_input":"airplay""#)
         );
+        assert!(server.snapshot_json().contains(r#""selection_mode":"select""#));
+        server.selected_input_index.store(-2, Ordering::Relaxed);
+        assert!(server.snapshot_json().contains(r#""selected_input":null"#));
+        assert!(server.snapshot_json().contains(r#""selection_mode":"none""#));
     }
 
     #[test]
@@ -517,6 +543,30 @@ mod tests {
         let j = server.select_input_json("spotify");
         assert_eq!(server.selected_input_index.load(Ordering::Relaxed), 0);
         assert!(j.contains(r#""selected_input":"spotify""#));
+    }
+
+    #[test]
+    fn none_command_updates_selection() {
+        use std::io::{Read, Write};
+        use std::net::Shutdown;
+        use std::os::unix::net::UnixStream;
+
+        let server = make_test_server();
+        server.selected_input_index.store(1, Ordering::Relaxed);
+        let (mut client, server_stream) = UnixStream::pair().unwrap();
+
+        client.write_all(b"NONE\n").unwrap();
+        client.shutdown(Shutdown::Write).unwrap();
+        server.handle_connection(server_stream).unwrap();
+
+        assert_eq!(
+            server.selected_input_index.load(Ordering::Relaxed),
+            -2,
+        );
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.contains(r#""selection_mode":"none""#));
+        assert!(response.contains(r#""selected_input":null"#));
     }
 
     #[test]

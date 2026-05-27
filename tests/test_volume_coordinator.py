@@ -130,19 +130,21 @@ class _RecordingCoordinator(VolumeCoordinator):
         self.bt_writes: list[int] = []
         self.camilla_writes: list[int] = []
 
-    async def _set_airplay(self, level: int) -> None:
+    async def _set_airplay(self, level: int) -> bool:
         self.airplay_writes.append(level)
-        await self._set_camilla(level)
+        return await self._set_camilla(level)
 
-    async def _set_spotify(self, level: int) -> None:
+    async def _set_spotify(self, level: int) -> bool:
         self.spotify_writes.append(level)
         self._stamp_outbound(Source.SPOTIFY, level)
+        return True
 
-    async def _set_bluetooth(self, level: int) -> None:
+    async def _set_bluetooth(self, level: int) -> bool:
         self.bt_writes.append(level)
         self._stamp_outbound(Source.BLUETOOTH, level)
+        return True
 
-    async def _set_camilla(self, level: int) -> None:
+    async def _set_camilla(self, level: int) -> bool:
         from jasper.volume_persistence import percent_to_db
         db = percent_to_db(level)
         # Mirror production: best_effort=True so a camilla restart-blip
@@ -150,6 +152,7 @@ class _RecordingCoordinator(VolumeCoordinator):
         await self._camilla.set_volume_db(db, best_effort=True)
         self._persistence.save_now(db)
         self.camilla_writes.append(level)
+        return True
 
 
 def _coord(
@@ -167,6 +170,7 @@ def _coord(
         persistence=persistence,
         backend=backend,
         spotify_router=None,  # tests bypass _set_spotify dispatch
+        handoff_settle_sec=0.0,
     )
     return coord, cam, persistence
 
@@ -217,6 +221,23 @@ async def test_set_volume_spotify_active_routes_to_spotify(tmp_path):
     await coord.set_listening_level(40)
     assert coord.spotify_writes == [40]
     assert cam.set_calls == []  # Spotify is push-mode; camilla untouched
+
+
+async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
+    """If the active push source cannot accept volume, normal user
+    volume changes still keep the audible path guarded by Camilla."""
+    coord, cam, _ = _coord(
+        tmp_path, active={"spotactive": True}, db=0.0,
+    )
+
+    async def fail_spotify(_level: int) -> bool:
+        return False
+
+    coord._set_spotify = fail_spotify
+
+    await coord.set_listening_level(25)
+
+    assert cam.set_calls[-1] == pytest.approx(-37.5)
 
 
 async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path):
@@ -537,6 +558,198 @@ async def test_transition_spotify_to_airplay_restores_camilla(tmp_path):
     await coord.apply_active_source_transition(Source.SPOTIFY, Source.AIRPLAY)
     assert coord.airplay_writes == []
     assert cam.set_calls and abs(cam.set_calls[-1] - (-25.0)) < 0.01
+
+
+async def test_handoff_spotify_to_airplay_guards_camilla_before_gate(tmp_path):
+    """Push-mode → camilla-master handoff lowers Camilla before mux
+    exposes the AirPlay lane."""
+    coord, cam, _ = _coord(tmp_path, active={"spotactive": True}, db=0.0)
+    await coord.set_listening_level(50)
+
+    handoff = await coord.prepare_source_handoff(
+        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
+    )
+
+    assert handoff.ok
+    assert handoff.guard_db == pytest.approx(-25.0)
+    assert cam.set_calls[-1] == pytest.approx(-25.0)
+
+
+async def test_handoff_catches_lower_level_during_guard_settle(tmp_path):
+    """If the user lowers volume while Camilla is settling, handoff
+    catches down before mux opens the target lane."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=0.0,
+    )
+    await coord.set_listening_level(50)
+    original_set_camilla_db = coord._set_camilla_db
+    lowered = False
+
+    async def set_and_lower_once(db, *, context, persist):
+        nonlocal lowered
+        ok = await original_set_camilla_db(
+            db, context=context, persist=persist,
+        )
+        if context == "source_handoff_guard" and not lowered:
+            persistence.save_listening_level(20, mark_user_change=True)
+            lowered = True
+        return ok
+
+    coord._set_camilla_db = set_and_lower_once
+
+    handoff = await coord.prepare_source_handoff(
+        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
+    )
+
+    assert handoff.ok
+    assert handoff.level == 20
+    assert handoff.guard_db == pytest.approx(-40.0)
+    assert cam.set_calls[-1] == pytest.approx(-40.0)
+
+
+async def test_handoff_airplay_to_spotify_pushes_before_finalize(tmp_path):
+    """Camilla-master → push-mode handoff pushes the source volume
+    before mux opens the source, then finalize pins Camilla to 0 dB."""
+    coord, cam, _ = _coord(tmp_path, active={"aplactive": True}, db=-25.0)
+    await coord.set_listening_level(60)
+    coord.spotify_writes.clear()
+
+    handoff = await coord.prepare_source_handoff(
+        Source.AIRPLAY, Source.SPOTIFY, reason="manual",
+    )
+
+    assert handoff.ok
+    assert handoff.push_ok is True
+    assert coord.spotify_writes == [60]
+    await coord.finalize_source_handoff(handoff)
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+
+
+async def test_handoff_push_failure_keeps_camilla_guarded(tmp_path):
+    """If a push-mode source cannot accept volume, handoff degrades
+    safe by keeping downstream Camilla at the canonical guard."""
+    coord, cam, _ = _coord(tmp_path, active={"aplactive": True}, db=0.0)
+    await coord.set_listening_level(40)
+
+    async def fail_spotify(_level: int) -> bool:
+        return False
+
+    coord._set_spotify = fail_spotify
+    handoff = await coord.prepare_source_handoff(
+        Source.AIRPLAY, Source.SPOTIFY, reason="manual",
+    )
+
+    assert handoff.result == "degraded_safe"
+    assert handoff.push_ok is False
+    assert cam.set_calls[-1] == pytest.approx(-30.0)
+    await coord.finalize_source_handoff(handoff)
+    assert cam.set_calls[-1] == pytest.approx(-30.0)
+
+
+async def test_observer_transition_push_failure_preserves_guard(tmp_path):
+    """The observer backstop must not undo mux's degraded-safe guard.
+
+    If Spotify/Bluetooth cannot accept a source-side volume write,
+    Camilla remains the fallback safety carrier instead of being
+    cleared to 0 dB on the next active-source observer tick.
+    """
+    coord, cam, _ = _coord(tmp_path, active={"aplactive": True}, db=0.0)
+    await coord.set_listening_level(40)
+
+    async def fail_spotify(_level: int) -> bool:
+        return False
+
+    coord._set_spotify = fail_spotify
+    coord._backend = _FakeBackend(active={"spotactive": True})
+
+    await coord.apply_active_source_transition(Source.AIRPLAY, Source.SPOTIFY)
+
+    assert cam.set_calls
+    assert 0.0 not in cam.set_calls
+    assert cam.set_calls[-1] == pytest.approx(-30.0)
+
+
+async def test_handoff_ducked_camilla_master_waits_until_guard_safe(tmp_path):
+    """During a voice duck, a camilla-master target is only safe if the
+    current ducked Camilla level is already below the target guard.
+    The target is still persisted so Ducker.restore lands safe."""
+    coord, cam, persistence = _coord(
+        tmp_path,
+        active={"spotactive": True},
+        selected="airplay",
+        db=-25.0,
+    )
+    coord._level = 20  # target guard is -40 dB; current duck is too loud
+    coord._persistence.save_listening_level(20, mark_user_change=True)
+    persistence.save_now(0.0)
+
+    async def duck_active():
+        return True
+
+    coord._duck_active_probe = duck_active
+
+    handoff = await coord.prepare_source_handoff(
+        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
+    )
+
+    assert not handoff.ok
+    assert handoff.detail == "camilla_guard_failed"
+    assert cam.set_calls == []
+    rec = persistence.load()
+    assert rec is not None
+    assert rec.main_volume_db == pytest.approx(-40.0)
+
+
+async def test_handoff_ducked_safe_guard_reports_restore_target(tmp_path):
+    """If the duck has already made Camilla quiet enough, prepare may
+    succeed and Ducker.restore still targets the selected source level."""
+    coord, _, persistence = _coord(
+        tmp_path,
+        active={"spotactive": True},
+        selected="airplay",
+        db=-45.0,
+    )
+    coord._level = 20
+    persistence.save_listening_level(20, mark_user_change=True)
+
+    async def duck_active():
+        return True
+
+    coord._duck_active_probe = duck_active
+
+    handoff = await coord.prepare_source_handoff(
+        Source.SPOTIFY, Source.AIRPLAY, reason="manual",
+    )
+
+    assert handoff.ok
+    assert await coord.get_camilla_target_db() == pytest.approx(-40.0)
+
+
+async def test_ducker_restore_preserves_degraded_push_guard(tmp_path):
+    """Push-mode normally restores Camilla to 0 dB, but a degraded
+    handoff guard is intentional safety state and must survive restore."""
+    coord, cam, _ = _coord(
+        tmp_path,
+        active={"spotactive": True},
+        selected="spotify",
+        db=0.0,
+    )
+    await coord.set_listening_level(35)
+    guard_db = -32.5
+    await coord._set_camilla_db(
+        guard_db,
+        context="test_degraded_guard",
+        persist=True,
+    )
+
+    assert await coord.get_camilla_target_db() == pytest.approx(guard_db)
+
+    await coord._set_camilla_db(
+        0.0,
+        context="test_normal_push",
+        persist=True,
+    )
+    assert await coord.get_camilla_target_db() == pytest.approx(0.0)
 
 
 async def test_transition_idle_to_airplay_keeps_camilla_level(tmp_path):

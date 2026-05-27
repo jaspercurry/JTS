@@ -57,13 +57,14 @@ import contextlib
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import Any, Optional
 
 import httpx
 
 from . import librespot_state
+from .music_sources import MUSIC_SOURCES, SOURCE_TO_FANIN_LABEL, Source
 from .source_state import (
     airplay_playing,
     bluetooth_playing,
@@ -72,28 +73,6 @@ from .source_state import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class Source(str, Enum):
-    SPOTIFY = "spotify"
-    AIRPLAY = "airplay"
-    BLUETOOTH = "bluetooth"
-    # USBSINK comes last in the enum so its iteration order matches
-    # the rest of the file. The enum order is also the tie-break for
-    # multi-source-active-on-boot — last-defined wins. For USB
-    # specifically this is reasonable: USB requires deliberate
-    # hardware action (plug a cable in), so if both AirPlay and USB
-    # somehow appear simultaneously on boot, USB taking the speaker
-    # matches "the thing that was just plugged in".
-    USBSINK = "usbsink"
-
-
-SOURCE_TO_FANIN_LABEL = {
-    Source.SPOTIFY: "spotify",
-    Source.AIRPLAY: "airplay",
-    Source.BLUETOOTH: "bluealsa",
-    Source.USBSINK: "usbsink",
-}
 
 
 # Host:port the usbsink daemon's preempt endpoint listens on. Keep
@@ -156,7 +135,7 @@ class _State:
     `prev → current` transitions to drive preemption — we only act
     when a source goes from not-playing to playing."""
     playing: dict[Source, bool] = field(
-        default_factory=lambda: {s: False for s in Source},
+        default_factory=lambda: {s: False for s in MUSIC_SOURCES},
     )
 
 
@@ -172,6 +151,7 @@ class Mux:
     def __init__(
         self,
         librespot_state_path: str = librespot_state.DEFAULT_PATH,
+        volume_coordinator: Any | None = None,
     ) -> None:
         self._librespot_state_path = librespot_state_path
         self._state = _State()
@@ -192,13 +172,17 @@ class Mux:
         # The url is fixed; reusing the client across POSTs avoids
         # one socket-setup per tick when preempt is changing rapidly.
         self._http = httpx.AsyncClient(timeout=2.0)
+        self._volume_coordinator = volume_coordinator
+        self._last_handoff: dict[str, Any] | None = None
+        self._transition_lock = asyncio.Lock()
+        self._pending_auto_target: Source | None = None
 
     async def run(self) -> None:
         logger.info(
             "jasper-mux starting (poll=%.1fs, librespot_state=%s)",
             self.POLL_INTERVAL_SEC, self._librespot_state_path,
         )
-        await self._fanin_auto_best_effort(reason="startup")
+        await self._fanin_none_best_effort(reason="startup")
         control_task = asyncio.create_task(self._run_control_server())
         try:
             while True:
@@ -213,6 +197,11 @@ class Mux:
             control_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await control_task
+            if self._volume_coordinator is not None:
+                with contextlib.suppress(Exception):
+                    await self._volume_coordinator.aclose()
+            with contextlib.suppress(Exception):
+                await self._http.aclose()
 
     async def _probe_sources(self) -> dict[Source, bool]:
         spotify, airplay, bluetooth, usbsink = await asyncio.gather(
@@ -244,43 +233,83 @@ class Mux:
         self._winner_age_ticks += 1
 
         if self._manual_source is not None:
-            await self._fanin_select_best_effort(
-                self._manual_source, reason="manual_tick",
-            )
-            if self._usbsink_preempted:
-                await self._usbsink_set_preempt(False, reason="manual_mode")
-            self._winner = self._manual_source
+            await self._reassert_manual_source()
             return
 
-        if newly_started:
-            new_winner = newly_started[-1]
-            prev_winner = self._winner
+        target: Source | None = None
+        transition_reason = ""
+        if (
+            self._pending_auto_target is not None
+            and current.get(self._pending_auto_target, False)
+            and self._pending_auto_target != self._winner
+        ):
+            target = self._pending_auto_target
+            transition_reason = "auto_retry"
+        elif self._pending_auto_target is not None:
+            self._pending_auto_target = None
+
+        if target is None and newly_started:
+            target = newly_started[-1]
+            transition_reason = "auto_new_source"
             logger.info(
                 "source transition: %s started (was %s, age=%d ticks)",
-                new_winner.value,
-                prev_winner.value if prev_winner else "none",
+                target.value,
+                self._winner.value if self._winner else "none",
                 self._winner_age_ticks,
             )
+        elif self._winner is not None and not current.get(self._winner, False):
+            active_sources = self._active_sources(current)
+            target = active_sources[-1] if active_sources else None
+            transition_reason = "auto_winner_stopped"
+        elif self._winner is None:
+            active_sources = self._active_sources(current)
+            if active_sources:
+                target = active_sources[-1]
+                transition_reason = "auto_startup_active"
 
+        if target is not None and target != self._winner:
             # If the new winner is USBSINK and it's currently in our
             # preempted set, the daemon's bridge is silent. The fresh
             # inactive→active edge means the user did "pause then
             # play" on the host — release the preempt so we forward
             # audio again.
-            if new_winner == Source.USBSINK and self._usbsink_preempted:
+            if target == Source.USBSINK and self._usbsink_preempted:
                 await self._usbsink_set_preempt(False, reason="new_transition")
 
-            # Pause every OTHER source that's currently active. Note
-            # we iterate over `current` not `newly_started` — if
-            # Spotify started while AirPlay was already playing for
-            # 30 s, we want to pause AirPlay even though it didn't
-            # transition this tick.
-            for source, is_playing in current.items():
-                if source != new_winner and is_playing:
-                    await self._pause(source)
+            async with self._transition_lock:
+                if self._manual_source is not None:
+                    return
+                prev_winner = self._winner or Source.IDLE
+                selected = await self._transition_to_source_locked(
+                    prev_winner, target, reason=transition_reason,
+                )
+                if selected:
+                    self._winner = target
+                    self._pending_auto_target = None
+                    self._winner_age_ticks = 0
+                else:
+                    self._pending_auto_target = target
+                    if self._winner is None:
+                        await self._fanin_none_best_effort(
+                            reason="handoff_prepare_failed",
+                        )
+            if not selected:
+                self._state.playing = current
+                return
 
-            self._winner = new_winner
-            self._winner_age_ticks = 0
+            # Pause every OTHER source that's currently active after
+            # the fan-in gate has moved. Slow cloud/Web API pause
+            # paths should not delay a safe source switch.
+            for source, is_playing in current.items():
+                if source != target and is_playing:
+                    await self._pause(source)
+        elif target is None:
+            if self._winner is not None and current.get(self._winner, False):
+                await self._reassert_auto_winner(current)
+            else:
+                self._winner = None
+                self._pending_auto_target = None
+                await self._fanin_none_best_effort(reason="auto_idle")
 
         # Release USB preempt when all other sources have gone idle.
         # Without this, the daemon would stay silent indefinitely
@@ -307,41 +336,82 @@ class Mux:
         chooses what the speaker passes through, while the `/sources/`
         wizard remains the on/off surface.
         """
-        await self._fanin_select(source)
-        self._manual_source = source
+        async with self._transition_lock:
+            previous = self._winner or self._manual_source or Source.IDLE
+            self._pending_auto_target = None
+            selected = await self._transition_to_source_locked(
+                previous, source, reason="manual",
+            )
+            if selected:
+                self._manual_source = source
+                self._pending_auto_target = None
+                self._winner = source
+                self._winner_age_ticks = 0
+                if self._usbsink_preempted:
+                    await self._usbsink_set_preempt(
+                        False, reason="manual_select",
+                    )
+            elif self._winner is None:
+                await self._fanin_none_best_effort(
+                    reason="manual_handoff_failed",
+                )
+        if not selected:
+            current = await self._probe_sources()
+            self._state.playing = current
+            logger.warning(
+                "event=source.manual_select_failed source=%s", source.value,
+            )
+            return self._status_payload(current)
         current = await self._probe_sources()
         self._state.playing = current
-
-        if self._usbsink_preempted:
-            await self._usbsink_set_preempt(False, reason="manual_select")
-
-        self._winner = source
-        self._winner_age_ticks = 0
         logger.info("event=source.manual_select source=%s", source.value)
         return self._status_payload(current)
 
     async def auto_select(self) -> dict[str, Any]:
         """Return to latest-source-wins behavior."""
         current = await self._probe_sources()
-        active_sources = [
-            source for source, is_playing in current.items() if is_playing
-        ]
+        active_sources = self._active_sources(current)
         if active_sources:
             new_winner = active_sources[-1]
+            async with self._transition_lock:
+                previous = self._winner or self._manual_source or Source.IDLE
+                selected = await self._transition_to_source_locked(
+                    previous, new_winner, reason="auto_select",
+                )
+                if selected:
+                    if new_winner == Source.USBSINK and self._usbsink_preempted:
+                        await self._usbsink_set_preempt(
+                            False, reason="auto_select",
+                        )
+                    self._winner = new_winner
+                    self._manual_source = None
+                    self._pending_auto_target = None
+                    self._winner_age_ticks = 0
+                else:
+                    self._pending_auto_target = new_winner
+                    if self._winner is None:
+                        await self._fanin_none_best_effort(
+                            reason="auto_select_handoff_failed",
+                        )
+            if not selected:
+                self._state.playing = current
+                logger.warning(
+                    "event=source.auto_select_failed source=%s",
+                    new_winner.value,
+                )
+                return self._status_payload(current)
             for source in active_sources:
                 if source != new_winner:
                     await self._pause_best_effort(
                         source, reason="auto_select",
                     )
-            if new_winner == Source.USBSINK and self._usbsink_preempted:
-                await self._usbsink_set_preempt(False, reason="auto_select")
-            self._winner = new_winner
-            self._winner_age_ticks = 0
         else:
-            self._winner = None
+            async with self._transition_lock:
+                self._winner = None
+                self._manual_source = None
+                self._pending_auto_target = None
+                await self._fanin_none()
 
-        await self._fanin_auto()
-        self._manual_source = None
         self._state.playing = current
         if self._usbsink_preempted:
             others_playing = any(
@@ -368,9 +438,10 @@ class Mux:
             ),
             "active_source": active,
             "winner": self._winner.value if self._winner else None,
+            "last_handoff": self._last_handoff,
             "sources": {
                 source.value: {"playing": bool(current.get(source, False))}
-                for source in Source
+                for source in MUSIC_SOURCES
             },
         }
 
@@ -379,15 +450,161 @@ class Mux:
             return self._manual_source.value
         if self._winner is not None and current.get(self._winner, False):
             return self._winner.value
-        for source in (
-            Source.AIRPLAY,
-            Source.SPOTIFY,
-            Source.BLUETOOTH,
-            Source.USBSINK,
-        ):
-            if current.get(source, False):
-                return source.value
         return "idle"
+
+    def _active_sources(self, current: dict[Source, bool]) -> list[Source]:
+        return [source for source in MUSIC_SOURCES if current.get(source, False)]
+
+    async def _reassert_manual_source(self) -> None:
+        async with self._transition_lock:
+            source = self._manual_source
+            if source is None:
+                return
+            await self._fanin_select_best_effort(
+                source, reason="manual_tick",
+            )
+            if self._usbsink_preempted:
+                await self._usbsink_set_preempt(False, reason="manual_mode")
+            self._winner = source
+            self._pending_auto_target = None
+
+    async def _reassert_auto_winner(
+        self, current: dict[Source, bool],
+    ) -> None:
+        async with self._transition_lock:
+            if self._manual_source is not None:
+                return
+            winner = self._winner
+            if winner is None or not current.get(winner, False):
+                return
+            await self._fanin_select_best_effort(winner, reason="auto_tick")
+
+    def _ensure_volume_coordinator(self) -> Any:
+        if self._volume_coordinator is not None:
+            return self._volume_coordinator
+        from .camilla import CamillaController
+        from .renderer import RendererClient
+        from .speaker_name import runtime_name as speaker_runtime_name
+        from .volume_coordinator import VolumeCoordinator
+        from .volume_persistence import VolumePersistence
+
+        camilla = CamillaController(
+            host=os.environ.get("JASPER_CAMILLA_HOST", "127.0.0.1"),
+            port=int(os.environ.get("JASPER_CAMILLA_PORT", "1234")),
+        )
+        persistence = VolumePersistence(
+            os.environ.get(
+                "JASPER_VOLUME_STATE_PATH",
+                "/var/lib/jasper/speaker_volume.json",
+            ),
+        )
+        backend = RendererClient(librespot_state_path=self._librespot_state_path)
+        coordinator = VolumeCoordinator(
+            camilla=camilla,
+            persistence=persistence,
+            backend=backend,
+            spotify_router=self._ensure_spotify_router(),
+            spotify_device_name=speaker_runtime_name(),
+            duck_active_probe=_make_duck_active_probe(),
+            handoff_settle_sec=float(os.environ.get(
+                "JASPER_SOURCE_HANDOFF_SETTLE_SEC", "0.45",
+            )),
+            push_settle_sec=float(os.environ.get(
+                "JASPER_SOURCE_PUSH_SETTLE_SEC", "0.75",
+            )),
+        )
+        coordinator.load_persisted_level()
+        self._volume_coordinator = coordinator
+        return coordinator
+
+    async def _transition_to_source(
+        self, prev_source: Source, source: Source, *, reason: str,
+    ) -> bool:
+        async with self._transition_lock:
+            return await self._transition_to_source_locked(
+                prev_source, source, reason=reason,
+            )
+
+    async def _transition_to_source_locked(
+        self, prev_source: Source, source: Source, *, reason: str,
+    ) -> bool:
+        started = time.monotonic()
+        coordinator = self._ensure_volume_coordinator()
+        handoff = await coordinator.prepare_source_handoff(
+            prev_source, source, reason=reason,
+        )
+        if not getattr(handoff, "ok", False):
+            self._record_handoff(handoff, started, result=handoff.result)
+            logger.warning(
+                "event=source.handoff from=%s to=%s reason=%s "
+                "result=%s detail=%s",
+                prev_source.value, source.value, reason,
+                handoff.result, handoff.detail,
+            )
+            return False
+        try:
+            await self._fanin_select(source)
+        except Exception as e:  # noqa: BLE001
+            with contextlib.suppress(Exception):
+                await coordinator.abort_source_handoff(handoff)
+            self._record_handoff(
+                handoff, started, result="fanin_select_failed",
+            )
+            logger.warning(
+                "event=source.handoff from=%s to=%s reason=%s "
+                "result=fanin_select_failed detail=%s",
+                prev_source.value, source.value, reason, e,
+            )
+            return False
+        try:
+            finalized = await coordinator.finalize_source_handoff(handoff)
+        except Exception as e:  # noqa: BLE001
+            finalized = False
+            logger.warning(
+                "event=source.handoff_finalize_failed from=%s to=%s "
+                "reason=%s detail=%s",
+                prev_source.value, source.value, reason, e,
+            )
+        result = handoff.result if finalized else "finalize_failed"
+        self._record_handoff(handoff, started, result=result)
+        logger.info(
+            "event=source.handoff from=%s to=%s reason=%s "
+            "level=%d guard_db=%s camilla_before=%s prev_mode=%s "
+            "target_mode=%s push_ok=%s settled_ms=%d result=%s "
+            "elapsed_ms=%d",
+            prev_source.value,
+            source.value,
+            reason,
+            handoff.level,
+            _fmt_db(handoff.guard_db),
+            _fmt_db(handoff.camilla_before_db),
+            handoff.prev_mode.value,
+            handoff.current_mode.value,
+            handoff.push_ok,
+            handoff.settled_ms,
+            result,
+            round((time.monotonic() - started) * 1000),
+        )
+        return True
+
+    def _record_handoff(
+        self, handoff: Any, started: float, *, result: str,
+    ) -> None:
+        self._last_handoff = {
+            "from": handoff.prev_source.value,
+            "to": handoff.current_source.value,
+            "reason": handoff.reason,
+            "level": handoff.level,
+            "guard_db": handoff.guard_db,
+            "camilla_before_db": handoff.camilla_before_db,
+            "prev_mode": handoff.prev_mode.value,
+            "target_mode": handoff.current_mode.value,
+            "push_ok": handoff.push_ok,
+            "settled_ms": handoff.settled_ms,
+            "result": result,
+            "detail": handoff.detail,
+            "elapsed_ms": round((time.monotonic() - started) * 1000),
+        }
 
     async def _pause_best_effort(self, source: Source, *, reason: str) -> None:
         try:
@@ -405,6 +622,9 @@ class Mux:
     async def _fanin_auto(self) -> dict[str, Any]:
         return await _fanin_command("AUTO")
 
+    async def _fanin_none(self) -> dict[str, Any]:
+        return await _fanin_command("NONE")
+
     async def _fanin_select_best_effort(
         self, source: Source, *, reason: str,
     ) -> None:
@@ -421,6 +641,12 @@ class Mux:
             await self._fanin_auto()
         except Exception as e:  # noqa: BLE001
             logger.warning("fanin AUTO reset failed reason=%s: %s", reason, e)
+
+    async def _fanin_none_best_effort(self, *, reason: str) -> None:
+        try:
+            await self._fanin_none()
+        except Exception as e:  # noqa: BLE001
+            logger.warning("fanin NONE failed reason=%s: %s", reason, e)
 
     async def _run_control_server(self) -> None:
         try:
@@ -462,7 +688,14 @@ class Mux:
                 except ValueError:
                     payload = {"error": f"unknown source {source_name!r}"}
                 else:
-                    payload = await self.select_source(source)
+                    if source not in MUSIC_SOURCES:
+                        payload = {
+                            "error": (
+                                f"not a selectable source {source_name!r}"
+                            ),
+                        }
+                    else:
+                        payload = await self.select_source(source)
             else:
                 payload = {"error": f"unknown command {command!r}"}
             writer.write((json.dumps(payload) + "\n").encode("utf-8"))
@@ -798,6 +1031,58 @@ async def _fanin_command(cmd: str) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("jasper-fanin returned non-object JSON")
     return payload
+
+
+def _fmt_db(value: float | None) -> str:
+    return "none" if value is None else f"{value:.1f}"
+
+
+async def _voice_socket_command(
+    socket_path: str, cmd: str, *, timeout: float = 1.0,
+) -> dict[str, Any]:
+    reader, writer = await asyncio.open_unix_connection(socket_path)
+    try:
+        writer.write((cmd + "\n").encode("ascii"))
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=timeout)
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except Exception:  # noqa: BLE001
+            pass
+    if not line:
+        raise RuntimeError("voice daemon returned no response")
+    payload = json.loads(line.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("voice daemon returned non-object JSON")
+    return payload
+
+
+def _make_duck_active_probe() -> Any:
+    socket_path = os.environ.get(
+        "JASPER_VOICE_CONTROL_SOCKET", "/run/jasper/voice.sock",
+    )
+
+    async def probe() -> bool | None:
+        try:
+            response = await _voice_socket_command(
+                socket_path, "STATUS", timeout=1.0,
+            )
+        except (
+            FileNotFoundError,
+            ConnectionRefusedError,
+            asyncio.TimeoutError,
+            OSError,
+            RuntimeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            return None
+        duck_active = response.get("duck_active")
+        return duck_active if isinstance(duck_active, bool) else None
+
+    return probe
 
 
 async def _amain(args: argparse.Namespace) -> None:

@@ -90,10 +90,10 @@ async def test_selected_source_reads_manual_mux_status(renderer):
 
 
 @pytest.mark.asyncio
-async def test_selected_source_returns_none_in_auto_mode(renderer):
+async def test_selected_source_reads_auto_winner(renderer):
     reader = MagicMock()
     reader.readline = AsyncMock(
-        return_value=b'{"mode":"auto","selected_source":null}\n',
+        return_value=b'{"mode":"auto","selected_source":null,"winner":"airplay"}\n',
     )
     writer = MagicMock()
     writer.write = MagicMock()
@@ -105,7 +105,7 @@ async def test_selected_source_returns_none_in_auto_mode(renderer):
         "asyncio.open_unix_connection",
         new=AsyncMock(return_value=(reader, writer)),
     ):
-        assert await renderer.selected_source() is None
+        assert await renderer.selected_source() == "airplay"
 
 
 @pytest.mark.asyncio

@@ -76,13 +76,13 @@ class RendererClient:
         }
 
     async def selected_source(self) -> str | None:
-        """Return mux's manual selected source, or None in auto mode.
+        """Return mux's effective audible source, or None if unknown/idle.
 
-        This is intentionally separate from `active_renderers()`,
-        which reports raw renderer activity. Manual source selection
-        controls the audible fan-in lane even when a non-selected
-        renderer is still producing audio, so volume/dashboard callers
-        may need this effective policy layer.
+        This is intentionally separate from `active_renderers()`, which
+        reports raw renderer activity. Mux controls the audible fan-in
+        lane in both manual mode and auto mode once a winner has been
+        selected, so volume/dashboard callers should prefer this policy
+        layer when it is available.
         """
         socket_path = os.environ.get(
             "JASPER_MUX_CONTROL_SOCKET", MUX_CONTROL_SOCKET,
@@ -110,10 +110,11 @@ class RendererClient:
             payload = json.loads(line.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return None
-        if payload.get("mode") != "manual":
-            return None
         selected = payload.get("selected_source")
-        return selected if isinstance(selected, str) else None
+        if isinstance(selected, str):
+            return selected
+        winner = payload.get("winner")
+        return winner if isinstance(winner, str) else None
 
     # ------------------------------------------------------------------
     # Currentsong — cascades by active source. Returns a dict with at
