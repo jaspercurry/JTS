@@ -2525,28 +2525,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 600;
       padding: 0.4em 0;
     }
-    .notice {
-      margin: 0.8em 0 0;
-      padding: 0.7em 0.8em;
-      border: 1px solid #d7d1bd;
-      border-radius: 6px;
-      background: #fbf7e8;
-      color: #5b4a1d;
-      font-size: 0.9em;
-      line-height: 1.35;
-    }
-    .notice.warn {
-      border-color: #d9a441;
-      background: #fff4d6;
-      color: #6f3f00;
-      font-weight: 600;
-    }
-    .notice.subtle {
-      border-color: #e1ded2;
-      background: #f7f6ef;
-      color: #625f52;
-      font-weight: 400;
-    }
     /* Live mic-level bar shown above the record button. Greyed out
        while idle so the operator always knows the meter is alive +
        knows what it'll look like once recording. */
@@ -2682,10 +2660,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         records the USB raw and reference companion legs.</span>
       </label>
     </div>
-    <div class="notice" id="usb-mic-note" role="status">
-      USB raw records the cheap mic hardware signal resampled to 16 kHz;
-      JTS applies no software AGC before saving it.
-    </div>
     <div class="session-primary-actions">
       <button id="session-begin" class="primary">
         Enter corpus test mode &amp; begin session
@@ -2779,15 +2753,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       'on', 'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
       'usb_dtln', 'ref',
     ];
-    const USB_RAW_NOTE =
-      'USB raw is stored at 16 kHz to match the wake/AEC pipeline; ' +
-      'JTS applies no software AGC before saving it.';
-    function usbCaptureSelected() {
-      if (latestStatus?.session_id) {
-        return Boolean(latestStatus.include_usb_mic || latestStatus.include_usb_dtln);
-      }
-      return Boolean($('include-usb-mic').checked || $('include-usb-dtln').checked);
-    }
     function resetSessionForm() {
       $('member').value = 'jasper';
       $('include-raw-mic-0').checked = false;
@@ -2835,37 +2800,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     function showErr(msg) {
       $('err').textContent = msg || '';
       if (msg) console.error(msg);
-    }
-
-    async function refreshUsbMicStatus() {
-      const node = $('usb-mic-note');
-      if (!node) return;
-      if (!usbCaptureSelected()) {
-        node.style.display = 'none';
-        return;
-      }
-      node.style.display = 'block';
-      node.textContent = USB_RAW_NOTE;
-      node.className = 'notice subtle';
-      try {
-        const s = await api('GET', 'api/usb-mic/status');
-        const agc = s.hardware_agc || {};
-        if (agc.enabled === true) {
-          node.textContent = USB_RAW_NOTE + ' USB mic hardware Auto Gain ' +
-            `Control is ON (${agc.mixer_card}); this can cause pumping ` +
-            'or top-end artifacts in USB raw clips.';
-          node.className = 'notice warn';
-        } else if (agc.enabled === false) {
-          node.textContent = USB_RAW_NOTE +
-            ' USB mic hardware Auto Gain Control is off.';
-        } else if (agc.error) {
-          node.textContent = USB_RAW_NOTE +
-            ` Hardware AGC status is unavailable (${agc.error}).`;
-        }
-      } catch (e) {
-        node.textContent = USB_RAW_NOTE +
-          ' Hardware AGC status is unavailable.';
-      }
     }
 
     async function refreshStatus() {
@@ -2989,7 +2923,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           $('record-btn').classList.add('primary');
           $('record-btn').disabled = !s.session_id || voiceActive || !sessionBridgeReady;
         }
-        await refreshUsbMicStatus();
       } catch (e) { showErr(`status: ${e.message}`); }
     }
 
@@ -3289,8 +3222,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     $('session-begin').onclick = beginSession;
     $('session-unload').onclick = unloadSession;
     $('record-btn').onclick = toggleRecord;
-    $('include-usb-mic').onchange = refreshUsbMicStatus;
-    $('include-usb-dtln').onchange = refreshUsbMicStatus;
 
     // Spacebar toggles recording when a session is active + we're not
     // typing in an input. Convenient for hands-on-room workflows.
@@ -3349,7 +3280,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     refreshStatus();
     refreshClips();
     refreshSessions();
-    refreshUsbMicStatus();
     setInterval(refreshStatus, 2000);
     // Sessions list changes slowly (only on begin/load/delete) — refresh
     // every 30 s so external SSH edits show up without being chatty.

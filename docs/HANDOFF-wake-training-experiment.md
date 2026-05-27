@@ -390,9 +390,8 @@ offer to enable the matching bridge flags, restart
 `jasper-aec-bridge`, and only then begin the session.
 The recorder labels WebRTC legs as **WebRTC AEC3** so they are not
 confused with raw or DTLN outputs. The `usb_raw` leg is JTS-unprocessed
-except for resampling to 16 kHz; the UI warns when the USB mic's own
-ALSA hardware Auto Gain Control is enabled because that can create
-pumping or top-end artifacts before JTS ever sees the samples.
+except for resampling to 16 kHz, which matches the wake/AEC model
+contract and keeps the corpus legs directly comparable.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -1081,8 +1080,7 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
   (`:9880`-`:9882`), session-level leg metadata, and all-leg playback
   selector
 - 2026-05-27 polish — playback labels now distinguish WebRTC AEC3
-  from raw/DTLN legs, Reference is listed last, and the UI surfaces
-  the USB raw/no-JTS-AGC contract plus USB hardware AGC status
+  from raw/DTLN legs and Reference is listed last
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1098,8 +1096,6 @@ Recorder UX status:
   playback selector for every WAV recorded on a clip
 - ✅ Playback selector labels WebRTC paths as WebRTC AEC3 and puts the
   speaker Reference leg last
-- ✅ USB raw operator note + ALSA hardware Auto Gain Control warning
-  before recording cheap-mic sessions
 - ✅ Corpus test-mode transition wired: selected optional legs are
   applied before session creation; exiting disables recorder-owned
   bridge outputs, restarts `jasper-voice`, and unloads the session
@@ -1138,6 +1134,11 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v14):** USB note removal:
+  - Removed the visible USB raw / hardware Auto Gain Control status note
+    from the recorder page. The backend diagnostic endpoint remains, but
+    the page no longer polls it or shifts layout while the operator is
+    setting up a recording session.
 - **2026-05-27 (v13):** Fresh-state session UX:
   - Added an explicit active-session marker for crash recovery so
     recent historical metadata no longer makes a new page visit look
@@ -1145,8 +1146,6 @@ where available.
   - Exiting corpus test mode now unloads the session after returning
     bridge outputs and `jasper-voice` to production mode. A separate
     Unload button clears a loaded session without deleting WAVs.
-  - USB raw note is contextual to USB capture and neutral unless the
-    cheap mic's hardware Auto Gain Control is actually enabled.
 - **2026-05-27 (v12):** Loaded-session UX:
   - Clarified Load semantics: loading a session selects it as the
     recording target but does not stop `jasper-voice` or enable corpus
@@ -1174,11 +1173,8 @@ where available.
 - **2026-05-27 (v9):** Wake-corpus recording-day polish:
   - Playback labels now say WebRTC AEC3 for the WebRTC AEC paths and
     keep the speaker Reference leg last in the clip selector.
-  - UI surfaces that USB raw is hardware-captured/resampled with no
-    JTS software AGC before saving.
-  - UI warns when the cheap USB mic's ALSA Auto Gain Control is
-    enabled, because that can explain pumping or top-end artifacts in
-    USB raw clips.
+  - UI labels clarify that USB capture is paired with the 16 kHz
+    reference leg consumed by AEC.
   - `ref_fullband` archival reference capture is recorded as a
     follow-up; the current `ref` leg remains the exact 16 kHz mono AEC
     input frame.
@@ -1310,4 +1306,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v13 — fresh-state session UX verified)
+Last verified: 2026-05-27 (v14 — USB note removal verified)
