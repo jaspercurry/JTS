@@ -210,6 +210,52 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .confidence-card .gate.blocked { background:#f7e4e4; color:#8a1f1f; }
   .confidence-card ul { margin:0.4em 0 0; padding-left:1.2em; }
 
+  .results-summary { border:1px solid #ddd; border-radius:6px;
+                     background:#fafafa; padding:0.75em 0.9em;
+                     margin:0.8em 0; }
+  .results-summary.hidden { display:none; }
+  .results-summary h3 { margin:0 0 0.45em; }
+  .metric-grid { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr));
+                 gap:0.5em; margin:0.6em 0; }
+  .metric { background:white; border:1px solid #e2e2e2; border-radius:6px;
+            padding:0.55em 0.65em; }
+  .metric .label { display:block; color:#666; font-size:0.82em; }
+  .metric .value { display:block; font-size:1.08em; font-weight:700;
+                   font-variant-numeric:tabular-nums; margin-top:0.1em; }
+  .band-table { width:100%; border-collapse:collapse; margin-top:0.55em;
+                font-size:0.9em; }
+  .band-table th, .band-table td { padding:0.35em 0.45em;
+                                   border-bottom:1px solid #eee;
+                                   text-align:right; }
+  .band-table th:first-child, .band-table td:first-child { text-align:left; }
+  @media (max-width: 520px) {
+    .band-table, .band-table thead, .band-table tbody,
+    .band-table tr, .band-table th, .band-table td { display:block; }
+    .band-table thead { display:none; }
+    .band-table tr { border:1px solid #e2e2e2; border-radius:6px;
+                     padding:0.4em 0.55em; margin:0.55em 0;
+                     background:#fff; }
+    .band-table td { display:flex; justify-content:space-between;
+                     gap:1em; border-bottom:1px solid #f0f0f0;
+                     text-align:right; padding:0.3em 0; }
+    .band-table td:first-child { font-weight:700; }
+    .band-table td:last-child { border-bottom:0; }
+    .band-table td::before { content:attr(data-label); color:#666;
+                             font-weight:600; text-align:left; }
+    .band-table td:first-child::before { content:''; }
+  }
+  .band-pill { display:inline-block; border-radius:4px; padding:0.1em 0.35em;
+               font-size:0.82em; background:#eee; color:#555; }
+  .band-pill.high { background:#e4f5e9; color:#176f36; }
+  .band-pill.medium { background:#fff8e1; color:#5f4500; }
+  .band-pill.low { background:#f7e4e4; color:#8a1f1f; }
+  .chart-controls { display:flex; gap:0.7em; flex-wrap:wrap;
+                    align-items:end; margin:0.6em 0; }
+  .chart-controls label { display:flex; gap:0.35em; align-items:center;
+                          font-size:0.9em; }
+  .chart-controls label.stacked { display:block; }
+  .chart-controls select { min-width:135px; }
+
   .mic-panel { background:#f7f7f7; border:1px solid #ddd;
                border-radius:6px; padding:0.8em 0.9em; margin:1em 0; }
   .mic-grid { display:grid; grid-template-columns: minmax(0, 1fr);
@@ -424,12 +470,27 @@ __NAV_BACK__
   </div>
   <div id="result-section" class="hidden">
     <div id="confidence-panel" class="confidence-card hidden"></div>
+    <div id="results-summary" class="results-summary hidden"></div>
     <h3>Frequency response</h3>
+    <div class="chart-controls">
+      <label class="stacked" for="chart-smoothing">Display smoothing<br>
+        <select id="chart-smoothing">
+          <option value="none">Saved 1/48-oct</option>
+          <option value="1/12" selected>1/12-oct</option>
+          <option value="1/6">1/6-oct</option>
+          <option value="1/3">1/3-oct</option>
+        </select>
+      </label>
+      <label><input id="chart-show-spread" type="checkbox" checked> spatial spread</label>
+      <label><input id="chart-show-filter" type="checkbox" checked> filter effect</label>
+      <label><input id="chart-show-band" type="checkbox" checked> correction band</label>
+    </div>
     <div class="chart-wrap"><canvas id="chart"></canvas></div>
     <p class="hint">
       <span style="color:#d44">red</span> = measured (averaged across positions),
       <span style="color:#888">gray dashed</span> = target,
       <span style="color:#1db954">green</span> = predicted post-correction.
+      <span style="color:#2b7bb9">blue dashed</span> = filter effect.
       After Verify: <span style="color:#a050d0">purple dashed</span> = post-correction measurement.
     </p>
     <p id="verify-summary" class="hint hidden"></p>
@@ -503,6 +564,11 @@ __NAV_BACK__
   var positionCurrent = document.getElementById('position-current');
   var positionTotal = document.getElementById('position-total');
   var resultSection = document.getElementById('result-section');
+  var resultsSummary = document.getElementById('results-summary');
+  var chartSmoothing = document.getElementById('chart-smoothing');
+  var chartShowSpread = document.getElementById('chart-show-spread');
+  var chartShowFilter = document.getElementById('chart-show-filter');
+  var chartShowBand = document.getElementById('chart-show-band');
   var canvas = document.getElementById('chart');
   var peqList = document.getElementById('peq-list');
   var verifySummary = document.getElementById('verify-summary');
@@ -1144,7 +1210,178 @@ __NAV_BACK__
       findingsHtml;
   }
 
-  function drawChart(measured, target, predicted) {
+  function numberOrNull(value) {
+    var n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function formatHz(value) {
+    var n = numberOrNull(value);
+    if (n === null) return '—';
+    if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + ' kHz';
+    return n.toFixed(n >= 100 ? 0 : 1) + ' Hz';
+  }
+
+  function formatDb(value) {
+    var n = numberOrNull(value);
+    if (n === null) return '—';
+    return (n > 0 ? '+' : '') + n.toFixed(1) + ' dB';
+  }
+
+  function chartPayload(payload) {
+    payload = payload || lastResult || {};
+    return {
+      confidence: payload.confidence_report ||
+        (payload.design_report && payload.design_report.confidence_report) ||
+        null,
+      design: payload.design_report || null,
+      position: payload.position_analysis ||
+        (payload.design_report && payload.design_report.position_report) ||
+        null,
+      peqs: payload.peqs || []
+    };
+  }
+
+  function recommendedNextAction(payload) {
+    var p = chartPayload(payload);
+    var confidence = p.confidence || {};
+    var level = confidence.level || 'low';
+    var failed = (confidence.findings || []).some(function (finding) {
+      return finding.severity === 'fail';
+    });
+    if (failed || level === 'low') {
+      return 'Remeasure before trusting aggressive correction.';
+    }
+    if (!p.peqs.length) {
+      return 'No correction is needed from this measurement.';
+    }
+    if (level === 'medium') {
+      return 'Apply only a conservative strategy, then verify.';
+    }
+    return 'Apply the proposed correction, then verify from the main seat.';
+  }
+
+  function renderResultsSummary(payload) {
+    if (!payload || !payload.measured) {
+      resultsSummary.className = 'results-summary hidden';
+      resultsSummary.innerHTML = '';
+      return;
+    }
+    var p = chartPayload(payload);
+    var confidence = p.confidence || {};
+    var design = p.design || {};
+    var improvement = design.improvement || {};
+    var strategy = design.correction_strategy || {};
+    var position = p.position || {};
+    var bands = (position.bands || []).filter(function (band) {
+      return band.available;
+    }).slice(0, 5);
+    var flags = position.feature_flags || [];
+    var flagText = flags.length
+      ? flags.slice(0, 3).map(function (flag) {
+          return escapeText(flag.reason || flag.kind);
+        }).join('<br>')
+      : 'No rejected high-risk features were flagged.';
+    var bandRows = bands.map(function (band) {
+      var confidenceLevel = band.confidence_level || 'low';
+      var residual = band.residual || {};
+      return '<tr><td data-label="Band">' +
+        escapeText(band.label || band.band_id) + '</td>' +
+        '<td data-label="Range">' + formatHz((band.band_hz || [])[0]) + '-' +
+        formatHz((band.band_hz || [])[1]) + '</td>' +
+        '<td data-label="Confidence"><span class="band-pill ' + escapeText(confidenceLevel) + '">' +
+        escapeText(confidenceLevel) + '</span></td>' +
+        '<td data-label="Spread">' + formatDb(band.p90_std_db) + '</td>' +
+        '<td data-label="RMS error">' + formatDb(residual.rms_db) + '</td></tr>';
+    }).join('');
+
+    resultsSummary.className = 'results-summary';
+    resultsSummary.innerHTML =
+      '<h3>Correction readout</h3>' +
+      '<p class="hint"><strong>Recommended next action:</strong> ' +
+      escapeText(recommendedNextAction(payload)) + '</p>' +
+      '<div class="metric-grid">' +
+        '<div class="metric"><span class="label">Confidence</span>' +
+        '<span class="value">' + escapeText(confidence.level || '—') +
+        ' · ' + Number(confidence.score || 0).toFixed(0) + '/100</span></div>' +
+        '<div class="metric"><span class="label">Positions</span>' +
+        '<span class="value">' + Number(position.position_count || 0) +
+        '</span></div>' +
+        '<div class="metric"><span class="label">Strategy</span>' +
+        '<span class="value">' + escapeText(strategy.label || strategy.strategy_id || '—') +
+        '</span></div>' +
+        '<div class="metric"><span class="label">Filters</span>' +
+        '<span class="value">' + Number(p.peqs.length || 0) + '</span></div>' +
+        '<div class="metric"><span class="label">Predicted RMS change</span>' +
+        '<span class="value">' + formatDb(improvement.rms_db) + '</span></div>' +
+      '</div>' +
+      (bandRows
+        ? '<table class="band-table"><thead><tr><th>Band</th><th>Range</th>' +
+          '<th>Confidence</th><th>Spread</th><th>RMS error</th></tr></thead>' +
+          '<tbody>' + bandRows + '</tbody></table>'
+        : '<p class="hint">Band confidence is unavailable for this run.</p>') +
+      '<p class="hint"><strong>Rejected / caution areas:</strong><br>' +
+      flagText + '</p>';
+  }
+
+  function smoothingWidthOctaves() {
+    var mode = chartSmoothing ? chartSmoothing.value : 'none';
+    if (mode === '1/3') return 1 / 3;
+    if (mode === '1/6') return 1 / 6;
+    if (mode === '1/12') return 1 / 12;
+    return 0;
+  }
+
+  function smoothValues(freqs, values) {
+    var width = smoothingWidthOctaves();
+    if (!width || !freqs || !values || freqs.length !== values.length) {
+      return values ? values.slice() : [];
+    }
+    var half = width / 2;
+    return values.map(function (_value, i) {
+      var f0 = Number(freqs[i]);
+      if (!Number.isFinite(f0) || f0 <= 0) return Number(values[i] || 0);
+      var sum = 0;
+      var count = 0;
+      for (var j = 0; j < values.length; j++) {
+        var f = Number(freqs[j]);
+        var v = Number(values[j]);
+        if (!Number.isFinite(f) || f <= 0 || !Number.isFinite(v)) continue;
+        if (Math.abs(Math.log2(f / f0)) <= half) {
+          sum += v;
+          count += 1;
+        }
+      }
+      return count ? sum / count : Number(values[i] || 0);
+    });
+  }
+
+  function smoothCurve(curve) {
+    if (!curve || !curve.freqs_hz || !curve.magnitude_db) return curve;
+    return {
+      freqs_hz: curve.freqs_hz,
+      magnitude_db: smoothValues(curve.freqs_hz, curve.magnitude_db)
+    };
+  }
+
+  function filterEffectCurve(measured, predicted) {
+    if (
+      !measured || !predicted ||
+      !measured.freqs_hz || !measured.magnitude_db ||
+      !predicted.magnitude_db ||
+      measured.magnitude_db.length !== predicted.magnitude_db.length
+    ) {
+      return null;
+    }
+    return {
+      freqs_hz: measured.freqs_hz,
+      magnitude_db: measured.magnitude_db.map(function (value, idx) {
+        return Number(predicted.magnitude_db[idx] || 0) - Number(value || 0);
+      })
+    };
+  }
+
+  function drawChart(measured, target, predicted, payload) {
     var dpr = window.devicePixelRatio || 1;
     var rect = canvas.getBoundingClientRect();
     // Defensive: a hidden canvas (display:none ancestor) reports
@@ -1172,6 +1409,18 @@ __NAV_BACK__
 
     function fx(f) { return ml + W * (Math.log2(f / fMin) / Math.log2(fMax / fMin)); }
     function fy(db) { return mt + H * (1 - (db - dbMin) / (dbMax - dbMin)); }
+    var displayMeasured = smoothCurve(measured);
+    var displayTarget = smoothCurve(target);
+    var displayPredicted = smoothCurve(predicted);
+    var p = chartPayload(payload);
+    var band = p.design && p.design.band_hz;
+
+    if (chartShowBand && chartShowBand.checked && band && band.length === 2) {
+      c.fillStyle = 'rgba(29, 185, 84, 0.08)';
+      var x0 = fx(Math.max(fMin, Number(band[0])));
+      var x1 = fx(Math.min(fMax, Number(band[1])));
+      c.fillRect(x0, mt, Math.max(0, x1 - x0), H);
+    }
 
     // Grid
     c.strokeStyle = '#e6e6e6'; c.fillStyle = '#888';
@@ -1191,10 +1440,34 @@ __NAV_BACK__
     c.strokeStyle = '#bbb';
     c.beginPath(); c.moveTo(ml, fy(0)); c.lineTo(ml + W, fy(0)); c.stroke();
 
-    function drawCurve(curve, color, dashed) {
+    function drawSpread(chart) {
+      if (
+        !chart || !chart.freqs_hz || !chart.min_db || !chart.max_db ||
+        chart.freqs_hz.length !== chart.min_db.length ||
+        chart.freqs_hz.length !== chart.max_db.length
+      ) return;
+      var minDb = smoothValues(chart.freqs_hz, chart.min_db);
+      var maxDb = smoothValues(chart.freqs_hz, chart.max_db);
+      c.fillStyle = 'rgba(212, 68, 68, 0.14)';
+      c.beginPath();
+      var first = true;
+      for (var i = 0; i < chart.freqs_hz.length; i++) {
+        var x = fx(chart.freqs_hz[i]);
+        var y = fy(maxDb[i]);
+        if (first) { c.moveTo(x, y); first = false; }
+        else c.lineTo(x, y);
+      }
+      for (var j = chart.freqs_hz.length - 1; j >= 0; j--) {
+        c.lineTo(fx(chart.freqs_hz[j]), fy(minDb[j]));
+      }
+      c.closePath();
+      c.fill();
+    }
+
+    function drawCurve(curve, color, dashed, width) {
       if (!curve || !curve.freqs_hz) return;
       c.strokeStyle = color;
-      c.lineWidth = 2;
+      c.lineWidth = width || 2;
       if (dashed) c.setLineDash([4, 4]); else c.setLineDash([]);
       c.beginPath();
       var first = true;
@@ -1208,12 +1481,60 @@ __NAV_BACK__
       c.setLineDash([]);
     }
 
-    drawCurve(target, '#888', true);
-    drawCurve(measured, '#d44', false);
-    drawCurve(predicted, '#1db954', false);
+    if (
+      chartShowSpread && chartShowSpread.checked &&
+      p.position && p.position.chart
+    ) {
+      drawSpread(p.position.chart);
+    }
+
+    drawCurve(displayTarget, '#888', true, 2);
+    drawCurve(displayMeasured, '#d44', false, 2);
+    drawCurve(displayPredicted, '#1db954', false, 2);
+    if (chartShowFilter && chartShowFilter.checked) {
+      drawCurve(
+        filterEffectCurve(displayMeasured, displayPredicted),
+        '#2b7bb9',
+        true,
+        1.6,
+      );
+    }
     // Phase 2: post-correction verify pass overlay (purple dashed).
     if (lastVerify) {
-      drawCurve(lastVerify, '#a050d0', true);
+      drawCurve(smoothCurve(lastVerify), '#a050d0', true, 2);
+    }
+
+    (p.peqs || []).forEach(function (peq, idx) {
+      var freq = Number(peq.freq_hz);
+      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
+      var x = fx(freq);
+      c.strokeStyle = 'rgba(43, 123, 185, 0.45)';
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
+      c.fillStyle = '#2b7bb9';
+      c.fillText(String(idx + 1), x - 3, mt + 11);
+    });
+
+    var flags = (p.position && p.position.feature_flags) || [];
+    flags.slice(0, 6).forEach(function (flag) {
+      var freq = Number(flag.freq_hz || flag.worst_freq_hz);
+      if (!Number.isFinite(freq) || freq < fMin || freq > fMax) return;
+      var x = fx(freq);
+      c.strokeStyle = 'rgba(214, 130, 0, 0.55)';
+      c.setLineDash([2, 3]);
+      c.beginPath(); c.moveTo(x, mt); c.lineTo(x, mt + H); c.stroke();
+      c.setLineDash([]);
+    });
+  }
+
+  function redrawLatestChart() {
+    if (lastResult && lastResult.measured) {
+      drawChart(
+        lastResult.measured,
+        lastResult.target,
+        lastResult.predicted,
+        lastResult,
+      );
     }
   }
 
@@ -1284,6 +1605,8 @@ __NAV_BACK__
     resultSection.classList.add('hidden');
     positionPrompt.classList.add('hidden');
     verifySummary.classList.add('hidden');
+    resultsSummary.className = 'results-summary hidden';
+    resultsSummary.innerHTML = '';
     designReport.classList.add('hidden');
     designReport.innerHTML = '';
     confidencePanel.className = 'confidence-card hidden';
@@ -1680,6 +2003,7 @@ __NAV_BACK__
       }
       renderDesignReport(data.design_report);
       renderConfidence(data);
+      renderResultsSummary(data);
       renderQuality(data);
       renderBrowserAudioReport(data.browser_audio_report);
       resultSection.classList.remove('hidden');
@@ -1687,10 +2011,10 @@ __NAV_BACK__
         // Force a layout flush so getBoundingClientRect returns
         // real dimensions on the first draw.
         void canvas.offsetWidth;
-        drawChart(data.measured, data.target, data.predicted);
+        drawChart(data.measured, data.target, data.predicted, data);
         // Safety redraw next frame.
         requestAnimationFrame(function () {
-          drawChart(data.measured, data.target, data.predicted);
+          drawChart(data.measured, data.target, data.predicted, data);
         });
       }
       pollState();
@@ -1769,13 +2093,15 @@ __NAV_BACK__
   function scheduleChartRedraw() {
     if (resizeTimer) clearTimeout(resizeTimer);
     resizeTimer = setTimeout(function () {
-      if (lastResult && lastResult.measured) {
-        drawChart(lastResult.measured, lastResult.target, lastResult.predicted);
-      }
+      redrawLatestChart();
     }, 150);
   }
   window.addEventListener('resize', scheduleChartRedraw);
   window.addEventListener('orientationchange', scheduleChartRedraw);
+  chartSmoothing.addEventListener('change', redrawLatestChart);
+  chartShowSpread.addEventListener('change', redrawLatestChart);
+  chartShowFilter.addEventListener('change', redrawLatestChart);
+  chartShowBand.addEventListener('change', redrawLatestChart);
 })();
 </script>
 </body>
@@ -2414,6 +2740,7 @@ def _handle_upload_capture(
         "verify_quality": sess.verify_quality,
         "browser_audio_report": sess.browser_audio_report,
         "confidence_report": sess.confidence_report,
+        "position_analysis": sess.position_analysis,
         "peqs": [p.__dict__ for p in sess.peqs],
         "design_report": sess.design_report,
     }

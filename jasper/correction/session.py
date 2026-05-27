@@ -437,10 +437,13 @@ class MeasurementSession:
         )
 
     def _write_info_json(self) -> None:
-        """Atomically rewrite info.json with the current session
-        snapshot. Cheap (a few hundred bytes) and called on every
-        state transition so a bundle copied off the Pi mid-session
-        is always self-describing."""
+        """Atomically rewrite info.json with the current session snapshot.
+
+        Keep this to summary-level metadata: detailed replay artifacts
+        belong in sibling JSON files such as `position_analysis.json`.
+        Called on every state transition so a bundle copied off the Pi
+        mid-session is always self-describing.
+        """
         bundle = self._ensure_bundle_dir()
         if bundle is None:
             return
@@ -670,6 +673,13 @@ class MeasurementSession:
             "position_count": len(self.position_magnitudes),
             "freq_count": int(freqs.shape[0]),
             "variance": variance_summary,
+            "chart": {
+                "freqs_hz": round_list(freqs),
+                "min_db": round_list(np.min(spatial_matrix.magnitudes_db, axis=0)),
+                "max_db": round_list(np.max(spatial_matrix.magnitudes_db, axis=0)),
+                "std_db": round_list(std_db),
+                "range_db": round_list(range_db),
+            },
             "bands": position_report["bands"],
             "feature_flags": position_report["feature_flags"],
         }

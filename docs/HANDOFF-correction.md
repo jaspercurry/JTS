@@ -135,6 +135,18 @@
   block correction before a user wastes time measuring. This is still
   metadata confidence, not an acoustic loopback proof; real phone/Pi
   capture smoke testing remains outstanding.
+- 🔄 **Phase 2.10 — correction visualization + confidence UX.**
+  Active 2026-05-27. Goal: make the existing measurement and design
+  facts legible before adding more correction power. The first slice
+  should extend `/correction/` results with smoothing/display controls,
+  spatial spread overlays, filter-effect visibility, band-confidence
+  summaries, rejected-feature warnings, and a deterministic recommended
+  next action. Prior art: REW's measured/target/predicted/filter
+  overlays and configurable smoothing, HouseCurve's average + faded
+  individual measurements and coherence/quality blanking, Dirac's
+  target/curtain/spread controls, and RoomPerfect-style confidence
+  wording. Keep it lightweight: no heavy plotting dependency in the
+  socket-activated web process.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -148,13 +160,14 @@
 **Current sequencing note (2026-05-27):** after the latest research
 intake, the next room-correction priority is still measurement trust
 before more filter types. The multi-position confidence layer and
-browser-audio metadata substrate have landed. The remaining near-term
-work is acoustic browser smoke testing, SNR/repeatability evidence,
-room-correction visualization polish, and FIR readiness validation.
+browser-audio metadata substrate have landed. The active near-term
+phase is room-correction visualization and confidence UX; then acoustic
+browser smoke testing, SNR/repeatability evidence, and FIR readiness
+validation.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
-**Outstanding Phases 0-2.9 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.10 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before

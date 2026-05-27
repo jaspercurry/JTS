@@ -352,6 +352,10 @@ async def test_design_writes_result_json(tmp_path: Path):
     )
     assert "std_db" in position_analysis["variance"]
     assert "range_db" in position_analysis["variance"]
+    chart = result["position_analysis"]["chart"]
+    assert set(chart) >= {"freqs_hz", "min_db", "max_db", "std_db", "range_db"}
+    assert len(chart["freqs_hz"]) == len(position_analysis["freqs_hz"])
+    assert len(chart["min_db"]) == len(chart["freqs_hz"])
     assert "bands" in position_analysis
     assert any(
         band["band_id"] == "correction_band"

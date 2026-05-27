@@ -258,6 +258,18 @@ def test_render_page_includes_strategy_and_design_audit_controls():
     assert "renderDesignReport" in body
 
 
+def test_render_page_includes_results_visualization_controls():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="results-summary"' in body
+    assert 'id="chart-smoothing"' in body
+    assert 'id="chart-show-spread"' in body
+    assert 'id="chart-show-filter"' in body
+    assert 'id="chart-show-band"' in body
+    assert "renderResultsSummary" in body
+    assert "recommendedNextAction" in body
+    assert "spatial spread" in body
+
+
 def test_render_page_shows_result_before_drawing_chart():
     """Bug fix pin: drawChart() must run AFTER `resultSection` is
     shown, otherwise the canvas's getBoundingClientRect returns
