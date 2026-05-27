@@ -353,7 +353,7 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     time.sleep(0.05)
     clip = backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     assert len(json_files) == 1
     assert json_files[0].name.startswith("enroll_jasper_")
 
@@ -375,7 +375,7 @@ def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
     clip = backend.stop_recording()
     backend.delete_clip(clip.clip_id)
 
-    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     data = json.loads(json_files[0].read_text())
     # The clip is still in the metadata list, marked deleted (audit trail)
     matching = [c for c in data["clips"] if c["clip_id"] == clip.clip_id]
@@ -390,7 +390,7 @@ def test_metadata_atomic_no_tmp_left_behind(backend, tmp_path: Path) -> None:
     backend.stop_recording()
 
     md_dir = tmp_path / "out" / "metadata"
-    json_files = list(md_dir.glob("*.json"))
+    json_files = list(md_dir.glob("enroll_*.json"))
     tmp_files = list(md_dir.glob("*.tmp"))
     assert len(json_files) == 1
     assert tmp_files == []
@@ -654,6 +654,9 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
     }
     md_file = md_dir / "enroll_jasper_20260525T120000Z.json"
     md_file.write_text(json.dumps(session_data))
+    (md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "20260525T120000Z",
+    }))
 
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     b.start()
@@ -667,8 +670,34 @@ def test_recovery_loads_recent_session(tmp_path: Path) -> None:
         b.shutdown()
 
 
+def test_recovery_ignores_recent_session_without_active_marker(
+    tmp_path: Path,
+) -> None:
+    """Recent metadata alone is historical, not an append target.
+
+    A graceful corpus test-mode exit clears the active marker; after
+    that, reopening the page should show a fresh new-session form even
+    if the last corpus session was moments ago.
+    """
+    out = tmp_path / "out"
+    md_dir = out / "metadata"
+    md_dir.mkdir(parents=True)
+    (md_dir / "enroll_jasper_recent.json").write_text(json.dumps({
+        "session_id": "recent", "member": "jasper",
+        "ports": {}, "clips": [],
+    }))
+
+    b = wake_corpus_setup.RecordingBackend(output_dir=out)
+    b.start()
+    try:
+        assert b.session_id() is None
+        assert b.member() is None
+    finally:
+        b.shutdown()
+
+
 def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
-    """A metadata file older than RESUME_WINDOW_SEC must NOT be
+    """An active marker older than RESUME_WINDOW_SEC must NOT be
     loaded — operator opens the UI tomorrow shouldn't see clips
     from a session they abandoned overnight."""
     out = tmp_path / "out"
@@ -678,9 +707,12 @@ def test_recovery_ignores_stale_session(tmp_path: Path) -> None:
     md_file.write_text(json.dumps({
         "session_id": "old", "member": "jasper", "ports": {}, "clips": [],
     }))
+    marker = md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER
+    marker.write_text(json.dumps({"session_id": "old"}))
     # Force mtime to be old
     old_mtime = time.time() - (wake_corpus_setup.RESUME_WINDOW_SEC + 60)
     os.utime(md_file, (old_mtime, old_mtime))
+    os.utime(marker, (old_mtime, old_mtime))
 
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     b.start()
@@ -729,6 +761,9 @@ def test_begin_session_after_recovery_starts_fresh(
     (md_dir / "enroll_jasper_old.json").write_text(json.dumps({
         "session_id": "recovered", "member": "jasper",
         "ports": {}, "clips": [],
+    }))
+    (md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "recovered",
     }))
 
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
@@ -1743,7 +1778,7 @@ def test_metadata_persists_include_raw_mic_0_flag(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     data = json.loads(json_files[0].read_text())
     assert data["include_raw_mic_0"] is True
     assert data["include_dtln"] is True
@@ -1758,7 +1793,7 @@ def test_metadata_persists_include_usb_mic_flag(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     data = json.loads(json_files[0].read_text())
     assert data["include_usb_mic"] is True
     assert data["include_usb_dtln"] is False
@@ -1777,7 +1812,7 @@ def test_metadata_persists_dtln_session_flags(
     time.sleep(0.05)
     backend.stop_recording()
 
-    json_files = list((tmp_path / "out" / "metadata").glob("*.json"))
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     data = json.loads(json_files[0].read_text())
     assert data["include_dtln"] is False
     assert data["include_usb_dtln"] is True
@@ -1796,6 +1831,9 @@ def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
         "ports": {"on": 9876, "off": 9877, "dtln": 9878, "raw0": 9879},
         "include_raw_mic_0": True,
         "clips": [],
+    }))
+    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "x",
     }))
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     b.start()
@@ -1820,6 +1858,9 @@ def test_recovery_restores_usb_dtln_flag(tmp_path: Path) -> None:
         "include_usb_dtln": True,
         "clips": [],
     }))
+    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "x",
+    }))
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     b.start()
     try:
@@ -1842,6 +1883,9 @@ def test_recovery_handles_pre_raw0_session_metadata(tmp_path: Path) -> None:
         "ports": {"on": 9876, "off": 9877, "dtln": 9878},
         "clips": [],
         # NO include_raw_mic_0 key
+    }))
+    (md / wake_corpus_setup.ACTIVE_SESSION_MARKER).write_text(json.dumps({
+        "session_id": "old",
     }))
     b = wake_corpus_setup.RecordingBackend(output_dir=out)
     b.start()
@@ -2029,6 +2073,31 @@ def test_delete_active_session_clears_in_memory_state(
     assert backend.include_usb_dtln() is False
 
 
+def test_unload_session_clears_state_but_keeps_metadata(
+    backend, tmp_path: Path,
+) -> None:
+    """Unload is the non-destructive end-of-session operation."""
+    backend.begin_session("jasper", include_raw_mic_0=True)
+    backend.start_recording("quiet", "near")
+    time.sleep(0.05)
+    backend.stop_recording()
+    sid = backend.session_id()
+    md_dir = tmp_path / "out" / "metadata"
+    md_path = md_dir / f"enroll_jasper_{sid}.json"
+    marker = md_dir / wake_corpus_setup.ACTIVE_SESSION_MARKER
+    assert md_path.is_file()
+    assert marker.is_file()
+
+    assert backend.unload_session() == sid
+
+    assert md_path.is_file()
+    assert not marker.exists()
+    assert backend.session_id() is None
+    assert backend.member() is None
+    assert backend.list_clips() == []
+    assert backend.include_raw_mic_0() is False
+
+
 def test_delete_session_refuses_during_recording(backend) -> None:
     backend.begin_session("jasper")
     backend.start_recording("quiet", "near")
@@ -2116,9 +2185,12 @@ def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     legs instead of beginning a second session.
     """
     html_text = wake_corpus_setup._render_index_html("t")
-    assert "Enter corpus test mode for loaded session" in html_text
-    assert "Apply loaded session bridge outputs" in html_text
-    assert "Loaded session ready" in html_text
+    assert "Enter corpus test mode" in html_text
+    assert "Apply bridge outputs" in html_text
+    assert "Ready to record" in html_text
+    assert "Enter corpus test mode for loaded session" not in html_text
+    assert 'id="session-unload"' in html_text
+    assert "api/session/unload" in html_text
     assert "'Loaded session'" in html_text
     assert "sessionBridgeReady" in html_text
     assert "latestStatus?.session_id" in html_text
@@ -2154,6 +2226,7 @@ def test_html_js_calls_sessions_endpoints() -> None:
     html_text = wake_corpus_setup._render_index_html("t")
     assert "'api/sessions'" in html_text or '"api/sessions"' in html_text
     assert "'api/session/load'" in html_text or '"api/session/load"' in html_text
+    assert "'api/session/unload'" in html_text or '"api/session/unload"' in html_text
     assert "api/session/${" in html_text  # DELETE template literal
 
 
@@ -2213,6 +2286,40 @@ def test_api_session_load_round_trip(backend) -> None:
             conn.close()
         # Backend's active session swapped
         assert backend.session_id() == first_id
+        marker = (
+            backend._output_dir  # noqa: SLF001
+            / "metadata"
+            / wake_corpus_setup.ACTIVE_SESSION_MARKER
+        )
+        assert json.loads(marker.read_text())["session_id"] == first_id
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_session_unload_round_trip(backend) -> None:
+    import http.client
+
+    backend.begin_session("jasper")
+    sid = backend.session_id()
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session/unload",
+            json.dumps({}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body["unloaded_session"] == sid
+        finally:
+            conn.close()
+        assert backend.session_id() is None
     finally:
         server.shutdown()
         server.server_close()
@@ -2506,6 +2613,8 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
 ) -> None:
     import http.client
 
+    backend.begin_session("jasper", include_usb_mic=True)
+    sid = backend.session_id()
     _use_tmp_bridge_env(
         monkeypatch,
         tmp_path,
@@ -2544,10 +2653,13 @@ def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
             assert resp.status == 200
             assert body["voice_daemon_active"] is True
             assert body["bridge_outputs"]["active"] is False
+            assert body["action"] == "exit"
             assert voice_actions == ["start"]
             assert restarts == ["restart"]
         finally:
             conn.close()
+        assert backend.session_id() is None
+        assert sid is not None
     finally:
         server.shutdown()
         server.server_close()

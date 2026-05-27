@@ -112,6 +112,7 @@ DEFAULT_PORT = 8782
 
 DEFAULT_OUTPUT_DIR = Path("data/enrollment_positives")
 DEFAULT_METADATA_SUBDIR = "metadata"
+ACTIVE_SESSION_MARKER = ".active_session.json"
 
 # Validated input domains. Match the upstream extract/score/review
 # pipeline's expectations exactly so files land where downstream tools
@@ -1022,10 +1023,10 @@ class RecordingBackend:
         )
         self._loop_thread.start()
         self._loop_ready.wait()
-        # Recover from a previous run if there's a recent metadata
-        # file on disk — operator-friendly behavior after a crash
-        # or accidental Ctrl-C. Done AFTER the loop is up so any
-        # future async work can run.
+        # Recover from a previous run only when the prior process left
+        # an active-session marker behind. A plain recent metadata file
+        # is not enough: after a graceful test-mode exit, reopening the
+        # page should feel like a fresh start.
         self._maybe_load_recent_session()
 
     def _run_loop(self) -> None:
@@ -1078,65 +1079,73 @@ class RecordingBackend:
 
     # ----- crash recovery -------------------------------------------
 
-    def _maybe_load_recent_session(
-        self, now: float | None = None,
-    ) -> None:
-        """If the metadata dir has a JSON file modified within
-        RESUME_WINDOW_SEC, load it as the current session. Lets the
-        operator pick up after a crash without losing earlier clips
-        in the same recording window.
+    def _active_session_marker_path(self) -> Path:
+        return self._metadata_dir / ACTIVE_SESSION_MARKER
 
-        Called automatically from `start()`. Safe to call multiple
-        times (only triggers if no session is currently set).
+    def _write_active_session_marker(self) -> None:
+        """Persist the session currently open for appending.
 
-        Subsequent `begin_session()` calls always start fresh —
-        recovery is a one-shot at startup, not a re-attach feature.
+        Metadata files are historical artifacts. This marker is the
+        narrow crash-recovery signal: if the web process dies while a
+        session is open, startup can reattach; if the operator unloads
+        or exits test mode cleanly, the marker is removed.
         """
         with self._lock:
-            if self._session_id is not None:
-                return  # already have a session, nothing to recover
-        if not self._metadata_dir.is_dir():
+            session_id = self._session_id
+            member = self._member
+        if session_id is None:
             return
+        self._metadata_dir.mkdir(parents=True, exist_ok=True)
+        path = self._active_session_marker_path()
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        data = {
+            "session_id": session_id,
+            "member": member,
+            "updated_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds",
+            ),
+        }
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        tmp.replace(path)
 
-        now = now if now is not None else time.time()
-        candidates = sorted(
-            self._metadata_dir.glob("enroll_*.json"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if not candidates:
-            return
-        newest = candidates[0]
-        age = now - newest.stat().st_mtime
-        if age > RESUME_WINDOW_SEC:
-            logger.info(
-                "skipping recovery: newest metadata %s is %.0fs old "
-                "(window=%.0fs)", newest.name, age, RESUME_WINDOW_SEC,
-            )
-            return
-
+    def _clear_active_session_marker(self) -> None:
         try:
-            data = json.loads(newest.read_text())
-        except (OSError, json.JSONDecodeError) as e:
-            logger.warning(
-                "recovery skipped: failed to read %s: %s", newest, e,
-            )
+            self._active_session_marker_path().unlink()
+        except FileNotFoundError:
             return
+        except OSError as e:
+            logger.warning("failed to clear active session marker: %s", e)
 
+    def _clear_session_state_locked(self) -> None:
+        self._session_id = None
+        self._member = None
+        self._clips = []
+        self._include_raw_mic_0 = False
+        self._include_dtln = False
+        self._include_usb_mic = False
+        self._include_usb_dtln = False
+        self._enabled_legs = _default_enabled_legs(self._ports)
+
+    def _find_session_metadata(self, session_id: str) -> Path | None:
+        for p in self._metadata_dir.glob("enroll_*.json"):
+            try:
+                data = json.loads(p.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            if data.get("session_id") == session_id:
+                return p
+        return None
+
+    def _load_session_data(self, data: dict[str, Any]) -> dict[str, Any]:
         try:
             session_id = data["session_id"]
             member = data["member"]
             clips = [
-                ClipMetadata(**clip) for clip in data.get("clips", [])
+                ClipMetadata(**c) for c in data.get("clips", [])
             ]
         except (KeyError, TypeError) as e:
-            logger.warning(
-                "recovery skipped: %s schema mismatch: %s", newest, e,
-            )
-            return
-
-        # include_raw_mic_0 is optional in older session JSONs; default
-        # False for any pre-raw0 session being recovered.
+            raise ValueError(f"session schema mismatch: {e}") from e
         include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
         include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
@@ -1153,14 +1162,78 @@ class RecordingBackend:
             self._include_usb_mic = include_usb_mic
             self._include_usb_dtln = include_usb_dtln
             self._enabled_legs = enabled_legs
+        return {
+            "session_id": session_id,
+            "member": member,
+            "clip_count": sum(1 for c in clips if not c.deleted),
+            "include_raw_mic_0": include_raw_mic_0,
+            "include_dtln": include_dtln,
+            "include_usb_mic": include_usb_mic,
+            "include_usb_dtln": include_usb_dtln,
+            "enabled_legs": list(enabled_legs),
+        }
+
+    def _maybe_load_recent_session(
+        self, now: float | None = None,
+    ) -> None:
+        """Recover the marked active session after a server crash.
+
+        Called automatically from `start()`. Safe to call multiple
+        times (only triggers if no session is currently set).
+        """
+        with self._lock:
+            if self._session_id is not None:
+                return  # already have a session, nothing to recover
+        if not self._metadata_dir.is_dir():
+            return
+
+        now = now if now is not None else time.time()
+        marker = self._active_session_marker_path()
+        if not marker.is_file():
+            return
+        age = now - marker.stat().st_mtime
+        if age > RESUME_WINDOW_SEC:
+            logger.info(
+                "skipping recovery: active session marker is %.0fs old "
+                "(window=%.0fs)", age, RESUME_WINDOW_SEC,
+            )
+            self._clear_active_session_marker()
+            return
+
+        try:
+            marker_data = json.loads(marker.read_text())
+            session_id = str(marker_data["session_id"])
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning(
+                "recovery skipped: failed to read %s: %s", marker, e,
+            )
+            return
+        except KeyError:
+            logger.warning(
+                "recovery skipped: %s lacks session_id", marker,
+            )
+            return
+
+        target = self._find_session_metadata(session_id)
+        if target is None:
+            logger.warning(
+                "recovery skipped: active session metadata missing for %s",
+                session_id,
+            )
+            self._clear_active_session_marker()
+            return
+
+        try:
+            result = self._load_session_data(json.loads(target.read_text()))
+        except (OSError, json.JSONDecodeError, ValueError) as e:
+            logger.warning(
+                "recovery skipped: failed to restore %s: %s", target, e,
+            )
+            return
         logger.info(
-            "recovered session %s for %s with %d clip(s) (%d non-deleted) "
-            "include_raw_mic_0=%s include_dtln=%s include_usb_mic=%s "
-            "include_usb_dtln=%s legs=%s",
-            session_id, member, len(clips),
-            sum(1 for c in clips if not c.deleted), include_raw_mic_0,
-            include_dtln, include_usb_mic, include_usb_dtln,
-            ",".join(enabled_legs),
+            "recovered active session %s for %s clips=%d legs=%s",
+            result["session_id"], result["member"], result["clip_count"],
+            ",".join(result["enabled_legs"]),
         )
 
     def begin_session(
@@ -1226,6 +1299,7 @@ class RecordingBackend:
             self._enabled_legs = enabled_legs
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         self._save_metadata()  # write the per-session flag before clips arrive
+        self._write_active_session_marker()
         return self._session_id
 
     def include_raw_mic_0(self) -> bool:
@@ -1552,63 +1626,47 @@ class RecordingBackend:
                 raise StateError(
                     "can't load session: recording in progress",
                 )
-        # Find by session_id, not by filename — operator-pasted IDs
-        # should work even if the filename format ever changes.
-        target: Path | None = None
-        for p in self._metadata_dir.glob("enroll_*.json"):
-            try:
-                data = json.loads(p.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if data.get("session_id") == session_id:
-                target = p
-                break
+        target = self._find_session_metadata(session_id)
         if target is None:
             raise ValueError(f"session not found: {session_id}")
 
         data = json.loads(target.read_text())
         try:
-            member = data["member"]
-            clips = [
-                ClipMetadata(**c) for c in data.get("clips", [])
-            ]
-        except (KeyError, TypeError) as e:
+            result = self._load_session_data(data)
+        except ValueError as e:
             raise ValueError(
                 f"session {session_id} schema mismatch: {e}",
             ) from e
-        include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
-        include_usb_mic = bool(data.get("include_usb_mic", False))
-        enabled_legs = _enabled_legs_from_metadata(data, self._ports)
-        include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
-        include_usb_dtln = _metadata_flag(
-            data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
-        )
-        with self._lock:
-            self._session_id = session_id
-            self._member = member
-            self._clips = clips
-            self._include_raw_mic_0 = include_raw_mic_0
-            self._include_dtln = include_dtln
-            self._include_usb_mic = include_usb_mic
-            self._include_usb_dtln = include_usb_dtln
-            self._enabled_legs = enabled_legs
+        self._write_active_session_marker()
         logger.info(
             "loaded session %s for %s with %d clip(s) include_raw_mic_0=%s "
             "include_dtln=%s include_usb_mic=%s include_usb_dtln=%s legs=%s",
-            session_id, member,
-            sum(1 for c in clips if not c.deleted),
-            include_raw_mic_0, include_dtln, include_usb_mic,
-            include_usb_dtln, ",".join(enabled_legs),
+            session_id, result["member"], result["clip_count"],
+            result["include_raw_mic_0"], result["include_dtln"],
+            result["include_usb_mic"], result["include_usb_dtln"],
+            ",".join(result["enabled_legs"]),
         )
-        return {
-            "session_id": session_id, "member": member,
-            "clip_count": sum(1 for c in clips if not c.deleted),
-            "include_raw_mic_0": include_raw_mic_0,
-            "include_dtln": include_dtln,
-            "include_usb_mic": include_usb_mic,
-            "include_usb_dtln": include_usb_dtln,
-            "enabled_legs": list(enabled_legs),
-        }
+        return result
+
+    def unload_session(self) -> str | None:
+        """Clear the in-memory append target without deleting WAVs.
+
+        This is the graceful end-of-session path for the web UI. The
+        session remains in the Sessions list and can be explicitly
+        loaded later, but a page refresh or server restart starts from
+        a blank new-session form.
+        """
+        with self._lock:
+            if self._current is not None or self._starting_clip_id is not None:
+                raise StateError(
+                    "can't unload session: recording in progress",
+                )
+            session_id = self._session_id
+            self._clear_session_state_locked()
+        self._clear_active_session_marker()
+        if session_id is not None:
+            logger.info("unloaded session %s", session_id)
+        return session_id
 
     def delete_session(self, session_id: str) -> dict[str, int]:
         """Hard-delete every WAV referenced by a session + remove the
@@ -1627,15 +1685,7 @@ class RecordingBackend:
                 raise StateError(
                     "can't delete session: recording in progress",
                 )
-        target: Path | None = None
-        for p in self._metadata_dir.glob("enroll_*.json"):
-            try:
-                data = json.loads(p.read_text())
-            except (OSError, json.JSONDecodeError):
-                continue
-            if data.get("session_id") == session_id:
-                target = p
-                break
+        target = self._find_session_metadata(session_id)
         if target is None:
             raise ValueError(f"session not found: {session_id}")
 
@@ -1662,14 +1712,8 @@ class RecordingBackend:
         # If we just deleted the in-memory active session, clear state.
         with self._lock:
             if self._session_id == session_id:
-                self._session_id = None
-                self._member = None
-                self._clips = []
-                self._include_raw_mic_0 = False
-                self._include_dtln = False
-                self._include_usb_mic = False
-                self._include_usb_dtln = False
-                self._enabled_legs = _default_enabled_legs(self._ports)
+                self._clear_session_state_locked()
+                self._clear_active_session_marker()
         logger.info(
             "deleted session %s: %d wavs removed, %d missing",
             session_id, wavs_deleted, wavs_missing,
@@ -2058,6 +2102,15 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(result)
             return
 
+        if path == "/api/session/unload":
+            try:
+                unloaded = self.backend.unload_session()
+            except StateError as e:
+                self._send_error_json(409, str(e))
+                return
+            self._send_json({"unloaded_session": unloaded})
+            return
+
         if path == "/api/clip/start":
             condition = (body.get("condition") or "").strip()
             distance = (body.get("distance") or "").strip()
@@ -2137,6 +2190,7 @@ class _Handler(BaseHTTPRequestHandler):
                     )
                 else:
                     exit_corpus_test_mode()
+                    self.backend.unload_session()
             except subprocess.CalledProcessError as e:
                 detail = (e.stderr or e.stdout or str(e)).strip()
                 msg = f"corpus test mode {action} failed"
@@ -2150,6 +2204,9 @@ class _Handler(BaseHTTPRequestHandler):
                     f"corpus test mode {action} timed out while restarting "
                     f"{BRIDGE_UNIT}",
                 )
+                return
+            except StateError as e:
+                self._send_error_json(409, str(e))
                 return
             except OSError as e:
                 self._send_error_json(
@@ -2484,6 +2541,12 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       color: #6f3f00;
       font-weight: 600;
     }
+    .notice.subtle {
+      border-color: #e1ded2;
+      background: #f7f6ef;
+      color: #625f52;
+      font-weight: 400;
+    }
     /* Live mic-level bar shown above the record button. Greyed out
        while idle so the operator always knows the meter is alive +
        knows what it'll look like once recording. */
@@ -2546,6 +2609,15 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     .row.checkbox label { min-width: 0; font-weight: 500; cursor: pointer; }
     .row.checkbox input[type=checkbox] { width: 18px; height: 18px; cursor: pointer; }
     .row.checkbox .hint { color: #888; font-size: 0.85em; }
+    .session-primary-actions {
+      display: flex;
+      gap: 0.5em;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-start;
+      margin-top: 0.9em;
+    }
+    .session-primary-actions button { width: auto; }
   </style>
 </head>
 <body>
@@ -2614,11 +2686,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       USB raw records the cheap mic hardware signal resampled to 16 kHz;
       JTS applies no software AGC before saving it.
     </div>
-    <div class="row">
-      <label></label>
+    <div class="session-primary-actions">
       <button id="session-begin" class="primary">
         Enter corpus test mode &amp; begin session
       </button>
+      <button id="session-unload" style="display:none">Unload session</button>
     </div>
   </div>
 
@@ -2708,8 +2780,21 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       'usb_dtln', 'ref',
     ];
     const USB_RAW_NOTE =
-      'USB raw records the cheap mic hardware signal resampled to 16 kHz; ' +
+      'USB raw is stored at 16 kHz to match the wake/AEC pipeline; ' +
       'JTS applies no software AGC before saving it.';
+    function usbCaptureSelected() {
+      if (latestStatus?.session_id) {
+        return Boolean(latestStatus.include_usb_mic || latestStatus.include_usb_dtln);
+      }
+      return Boolean($('include-usb-mic').checked || $('include-usb-dtln').checked);
+    }
+    function resetSessionForm() {
+      $('member').value = 'jasper';
+      $('include-raw-mic-0').checked = false;
+      $('include-dtln').checked = true;
+      $('include-usb-mic').checked = false;
+      $('include-usb-dtln').checked = false;
+    }
     function orderedLegs(files) {
       const present = files || {};
       const known = LEG_ORDER.filter(leg =>
@@ -2755,8 +2840,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function refreshUsbMicStatus() {
       const node = $('usb-mic-note');
       if (!node) return;
+      if (!usbCaptureSelected()) {
+        node.style.display = 'none';
+        return;
+      }
+      node.style.display = 'block';
       node.textContent = USB_RAW_NOTE;
-      node.className = 'notice';
+      node.className = 'notice subtle';
       try {
         const s = await api('GET', 'api/usb-mic/status');
         const agc = s.hardware_agc || {};
@@ -2786,6 +2876,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const voiceEl = $('voice-status');
         const exitEl = $('corpus-mode-exit');
         const bridgeEl = $('bridge-output-status');
+        const unloadEl = $('session-unload');
         const bridgeOutputs = s.bridge_outputs || {};
         const recorderOutputs = bridgeOutputs.recorder_outputs || {};
         const bridgeActive = Boolean(bridgeOutputs.active);
@@ -2849,19 +2940,22 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         }
         for (const input of sessionInputs) input.disabled = sessionLoaded;
         const beginEl = $('session-begin');
+        unloadEl.style.display = sessionLoaded && !inCorpusMode
+          ? 'inline-block' : 'none';
+        unloadEl.disabled = s.is_recording;
         if (sessionLoaded) {
           if (voiceActive) {
-            beginEl.textContent = 'Enter corpus test mode for loaded session';
+            beginEl.textContent = 'Enter corpus test mode';
             beginEl.disabled = s.is_recording;
           } else if (!sessionBridgeReady) {
-            beginEl.textContent = 'Apply loaded session bridge outputs';
+            beginEl.textContent = 'Apply bridge outputs';
             beginEl.disabled = s.is_recording;
           } else {
-            beginEl.textContent = 'Loaded session ready';
+            beginEl.textContent = 'Ready to record';
             beginEl.disabled = true;
           }
         } else {
-          beginEl.textContent = 'Enter corpus test mode & begin session';
+          beginEl.textContent = 'Enter corpus test mode & begin';
           beginEl.disabled = s.is_recording;
         }
         const sessionLabel = s.session_id
@@ -2895,6 +2989,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           $('record-btn').classList.add('primary');
           $('record-btn').disabled = !s.session_id || voiceActive || !sessionBridgeReady;
         }
+        await refreshUsbMicStatus();
       } catch (e) { showErr(`status: ${e.message}`); }
     }
 
@@ -2910,8 +3005,22 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function exitCorpusTestMode() {
       try {
         await api('POST', 'api/corpus-test-mode', {action: 'exit'});
+        resetSessionForm();
         await refreshStatus();
+        await refreshClips();
+        await refreshSessions();
       } catch (e) { showErr(`corpus test mode exit: ${e.message}`); }
+    }
+
+    async function unloadSession() {
+      try {
+        await api('POST', 'api/session/unload', {});
+        resetSessionForm();
+        showErr('');
+        await refreshStatus();
+        await refreshClips();
+        await refreshSessions();
+      } catch (e) { showErr(`unload: ${e.message}`); }
     }
 
     async function beginSession() {
@@ -3178,7 +3287,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
 
     $('session-begin').onclick = beginSession;
+    $('session-unload').onclick = unloadSession;
     $('record-btn').onclick = toggleRecord;
+    $('include-usb-mic').onchange = refreshUsbMicStatus;
+    $('include-usb-dtln').onchange = refreshUsbMicStatus;
 
     // Spacebar toggles recording when a session is active + we're not
     // typing in an input. Convenient for hands-on-room workflows.
