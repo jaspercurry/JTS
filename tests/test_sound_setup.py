@@ -16,7 +16,7 @@ class FakeCamilla:
         self.fail_set = fail_set
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
-        return self.current_path
+        return self.loaded_path or self.current_path
 
     async def set_config_file_path(self, path: str, *, best_effort: bool = False) -> bool:
         self.set_calls.append(path)
@@ -48,7 +48,11 @@ def test_state_payload_contains_stock_curves_and_preview():
     assert payload["headroom_db"] > 0
 
 
-async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path):
+async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"
@@ -90,7 +94,14 @@ async def test_apply_profile_rejects_unknown_active_config(tmp_path: Path):
         raise AssertionError("expected unknown config rejection")
 
 
-async def test_apply_profile_rolls_back_when_reload_fails(tmp_path: Path):
+async def test_apply_profile_rolls_back_when_reload_fails(
+    tmp_path: Path,
+    monkeypatch,
+):
+    monkeypatch.setenv(
+        "JASPER_DSP_APPLY_STATE_PATH",
+        str(tmp_path / "dsp_apply_state.json"),
+    )
     config_dir = tmp_path / "configs"
     config_dir.mkdir()
     current = config_dir / "correction_abc_123.yml"

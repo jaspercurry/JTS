@@ -716,6 +716,7 @@ async def _get_state(
 
     sound_profile: dict[str, Any] | None
     try:
+        from ..dsp_apply import last_dsp_apply_state
         from ..sound.profile import (
             build_sound_filters,
             estimate_headroom_db,
@@ -731,6 +732,7 @@ async def _get_state(
             "filter_count": len(build_sound_filters(profile)),
             "headroom_db": estimate_headroom_db(profile),
             "updated_at": profile.updated_at or None,
+            "last_dsp_apply": last_dsp_apply_state(),
         }
     except Exception:  # noqa: BLE001
         logger.exception("sound profile state probe failed")

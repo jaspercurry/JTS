@@ -3272,6 +3272,36 @@ def check_sound_profile() -> CheckResult:
     return CheckResult("sound profile", status, detail)
 
 
+def check_dsp_apply_state() -> CheckResult:
+    from jasper.dsp_apply import last_dsp_apply_state
+
+    state = last_dsp_apply_state()
+    if state is None:
+        return CheckResult(
+            "DSP apply state",
+            "ok",
+            "no DSP apply attempts recorded yet",
+        )
+
+    result = str(state.get("result") or "unknown")
+    phase = str(state.get("phase") or "unknown")
+    source = str(state.get("source") or "unknown")
+    candidate = state.get("candidate_config_path")
+    op_id = str(state.get("op_id") or "")[:8]
+
+    if state.get("rollback_attempted") and state.get("rollback_succeeded") is False:
+        status = "fail"
+    elif result == "success":
+        status = "ok"
+    else:
+        status = "warn"
+
+    detail = f"source={source} result={result} phase={phase} op={op_id}"
+    if candidate:
+        detail += f" config={candidate}"
+    return CheckResult("DSP apply state", status, detail)
+
+
 def check_correction_latest_bundle() -> CheckResult:
     from jasper.correction import bundles
 
@@ -3417,6 +3447,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         check_correction_state_dirs,
         check_correction_current_config,
         check_sound_profile,
+        check_dsp_apply_state,
         check_correction_latest_bundle,
         check_ram,
         # Stage 1 memory-pressure resilience (docs/HANDOFF-resilience.md

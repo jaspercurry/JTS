@@ -22,6 +22,7 @@ from typing import Any, Callable
 from jasper.sound.profile import (
     PROFILE_PATH,
     SoundProfile,
+    build_sound_filters,
     curve_payload,
     estimate_headroom_db,
     load_profile,
@@ -46,11 +47,14 @@ def _camilla():
 
 
 def _state_payload(profile: SoundProfile) -> dict[str, Any]:
+    from jasper.dsp_apply import last_dsp_apply_state
+
     return {
         "profile": profile.to_dict(),
         "curves": curve_payload(),
         "preview": response_preview(profile),
         "headroom_db": estimate_headroom_db(profile),
+        "last_dsp_apply": last_dsp_apply_state(),
     }
 
 
@@ -68,65 +72,73 @@ async def _apply_profile(
         is_base_config,
         is_jts_generated_config,
         sound_config_path,
-        validate_camilla_config,
     )
-
-    cam = camilla_factory()
-    current_path = await cam.get_config_file_path(best_effort=False)
-    if not current_path:
-        raise RuntimeError("CamillaDSP did not report a loaded config path")
+    from jasper.dsp_apply import apply_dsp_config
 
     config_path = Path(config_dir)
     config_path.mkdir(parents=True, exist_ok=True)
     profile_id = str(time.time_ns())
     out_path = sound_config_path(config_path)
     stamped = profile.with_timestamp()
+    cam = camilla_factory()
 
-    if is_base_config(current_path):
-        room_peqs = []
-    elif is_jts_generated_config(current_path, config_dir=config_path):
-        room_peqs = extract_room_peqs_from_config(current_path)
-    else:
-        raise RuntimeError(
-            "CamillaDSP is running a custom config that JTS cannot safely "
-            f"preserve ({current_path}). Reset to {BASE_CONFIG_PATH} or apply "
-            "room correction before changing sound EQ."
+    async def _prepare_config() -> dict[str, Any]:
+        current_path = await cam.get_config_file_path(best_effort=False)
+        if not current_path:
+            raise RuntimeError("CamillaDSP did not report a loaded config path")
+
+        if is_base_config(current_path):
+            room_peqs = []
+        elif is_jts_generated_config(current_path, config_dir=config_path):
+            room_peqs = extract_room_peqs_from_config(current_path)
+        else:
+            raise RuntimeError(
+                "CamillaDSP is running a custom config that JTS cannot safely "
+                f"preserve ({current_path}). Reset to {BASE_CONFIG_PATH} or apply "
+                "room correction before changing sound EQ."
+            )
+
+        emit_sound_config(
+            stamped,
+            room_peqs=room_peqs,
+            out_path=out_path,
+            profile_id=profile_id,
         )
+        return {
+            "prior_config_path": current_path,
+            "room_peq_count": len(room_peqs),
+            "sound_filter_count": len(build_sound_filters(stamped)),
+        }
 
-    emit_sound_config(
-        stamped,
-        room_peqs=room_peqs,
-        out_path=out_path,
-        profile_id=profile_id,
+    apply_state = await apply_dsp_config(
+        source="sound",
+        candidate_path=out_path,
+        prepare=_prepare_config,
+        load_config=lambda path: cam.set_config_file_path(
+            path, best_effort=False,
+        ),
+        get_current_config_path=lambda: cam.get_config_file_path(
+            best_effort=True,
+        ),
+        persist=lambda: save_profile(stamped, profile_path),
+        sound_filter_count=len(build_sound_filters(stamped)),
     )
-    if not validate_camilla_config(out_path):
-        raise RuntimeError(f"generated CamillaDSP config failed validation: {out_path}")
-    try:
-        ok = await cam.set_config_file_path(str(out_path), best_effort=False)
-        if not ok:
-            raise RuntimeError("CamillaDSP rejected the generated sound config")
-    except Exception:
-        logger.exception("sound apply failed after YAML write; restoring prior config")
-        try:
-            await cam.set_config_file_path(str(current_path), best_effort=True)
-        except Exception:  # noqa: BLE001
-            logger.exception("sound apply rollback failed: %s", current_path)
-        raise
-    save_profile(stamped, profile_path)
     logger.info(
         "event=sound.apply enabled=%s curve=%s bass=%.1f mid=%.1f treble=%.1f "
-        "room_peqs=%d config=%s",
+        "room_peqs=%d config=%s op_id=%s",
         stamped.enabled,
         stamped.curve_id,
         stamped.simple_eq.bass_db,
         stamped.simple_eq.mid_db,
         stamped.simple_eq.treble_db,
-        len(room_peqs),
+        apply_state.room_peq_count or 0,
         out_path,
+        apply_state.op_id,
     )
     payload = _state_payload(stamped)
     payload["active_config_path"] = str(out_path)
-    payload["preserved_room_peqs"] = len(room_peqs)
+    payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
+    payload["last_dsp_apply"] = apply_state.to_dict()
     return payload
 
 

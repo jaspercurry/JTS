@@ -28,6 +28,9 @@ exposes only Flat / Harman-style / B&K-style plus Bass / Mid / Treble.
 - `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
+- `jasper/dsp_apply.py` — import-cheap shared DSP apply substrate:
+  typed CamillaDSP validation, config reload, rollback, file locking,
+  and compact last-result persistence.
 - `jasper/web/sound_setup.py` — `/sound/` page, `/state`, `/preview`,
   and `/apply`.
 - `jasper/camilla_config_contract.py` — shared import-cheap CamillaDSP
@@ -67,18 +70,24 @@ silently overwritten. This is intentional fail-closed behavior.
 
 1. Reads the active CamillaDSP config path with `best_effort=False`.
 2. Rejects unknown/custom active configs.
-3. Emits `sound_current.yml` atomically.
-4. Runs `camilladsp -c <config> --check` when the binary is available.
-5. Loads the config through the CamillaDSP websocket.
-6. Rolls back to the prior config path if reload fails.
-7. Persists `/var/lib/jasper/sound_profile.json` only after a successful
-   reload.
+3. Enters the shared DSP apply path in `jasper/dsp_apply.py`.
+4. Emits `sound_current.yml` atomically inside the DSP apply lock.
+5. Runs `camilladsp --check <config>` when the binary is available.
+   The config file is positional; `--check` is the validation flag.
+6. Loads the config through the CamillaDSP websocket.
+7. Confirms the active config path when CamillaDSP is reachable.
+8. Rolls back to the prior config path if reload/confirm/persist fails.
+9. Persists `/var/lib/jasper/sound_profile.json` only after a successful
+   reload and confirmation.
 
 `/correction/apply`:
 
 1. Designs room PEQs from the measurement session.
 2. Loads the saved `SoundProfile`.
-3. Emits a combined config to the correction filename so current
+3. Uses the same shared DSP apply path as `/sound/apply`, including
+   locked YAML emission, validation, reload, rollback, and last-result
+   persistence.
+4. Emits a combined config to the correction filename so current
    correction status still works.
 
 ## Observability
@@ -90,8 +99,12 @@ silently overwritten. This is intentional fail-closed behavior.
 - `sound profile` — reports saved profile, filter count, estimated
   headroom, and warns when a saved active profile is not reflected in a
   generated active config.
+- `DSP apply state` — reports the most recent DSP config apply result
+  from `/var/lib/jasper/dsp_apply_state.json`; rollback failure is a
+  doctor failure.
 
-`/state` exposes:
+`/state` and `/sound/state` expose the saved sound profile plus the
+latest DSP apply record:
 
 ```json
 {
@@ -103,11 +116,19 @@ silently overwritten. This is intentional fail-closed behavior.
       "parametric_band_count": 0,
       "filter_count": 0,
       "headroom_db": 0.0,
-      "updated_at": null
+      "updated_at": null,
+      "last_dsp_apply": {
+        "source": "sound",
+        "result": "success",
+        "candidate_config_path": "/var/lib/camilladsp/configs/sound_current.yml"
+      }
     }
   }
 }
 ```
+
+`/correction/status` also includes `last_dsp_apply` so a failed apply
+can be diagnosed without scraping journal logs.
 
 ## Guardrails
 
@@ -130,4 +151,4 @@ silently overwritten. This is intentional fail-closed behavior.
 - Better level-matched compare/proposal flow.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27
