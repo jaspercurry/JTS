@@ -15,9 +15,10 @@ operational checks.
 
 ## 1. Security and Privacy Quick Wins
 
-**Status.** First hardening slice shipped in PR #339. Remaining
-pre-public-launch polish: configure a concrete private vulnerability
-reporting channel or maintainer contact.
+**Status.** First hardening slice shipped in PR #339. The current
+private vulnerability reporting path is documented in `SECURITY.md` as
+`jc@jasper.tech`. GitHub private vulnerability reporting remains an
+optional repository setting to enable later.
 
 **Why it matters.** JTS stores API keys, OAuth tokens, Wi-Fi recovery
 PSKs, Home Assistant tokens, and short wake-event audio recordings.
@@ -31,7 +32,7 @@ private reporting path, so they may either disappear or file details
 publicly.
 
 **Current definition of done.**
-- `SECURITY.md` defines scope, interim reporting, support, and current
+- `SECURITY.md` defines scope, current reporting, support, and current
   limits.
 - Diagnostic scripts redact current and future env-style secret
   assignments in fetched logs/config snapshots before writing to disk.
@@ -84,8 +85,8 @@ started: important direct dependencies are pinned or bounded in
 `pyproject.toml`, `pycamilladsp` is pinned to a commit, and
 CONTRIBUTING recommends `uv sync` for local development. There is not
 yet a committed lock artifact that deploy or CI consume. Remaining
-work: Python lock/hash install adoption, openWakeWord helper model
-hashes, apt snapshots, and PlatformIO transitive/toolchain lock depth.
+work: openWakeWord helper model hashes, Python lock/hash install
+adoption, apt snapshots, and PlatformIO transitive/toolchain lock depth.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
 firmware tools, `.deb` artifacts, and source repos. OSS users need to
@@ -113,10 +114,15 @@ The benefit is high repeatability and easier security review.
 checked by `scripts/check-provenance.py`, closing the Rust fan-in crate
 gap without changing Pi runtime behavior.
 
-**Next slice.** Treat Python lock adoption as a design slice: choose one
-shared artifact (`uv.lock` or generated hash requirements), make deploy
-consume it deliberately, and avoid introducing a second parallel
-dependency-management story.
+**Next slice.** Replace the `openwakeword.utils.download_models()`
+helper path with explicit stock model entries whose downloaded bytes are
+hash-checked through JTS's provenance manifest.
+
+**Deferred deliberately.** Python lock adoption is still valuable, but
+it should wait until active `main` dependency churn calms down enough to
+avoid creating a fragmented dependency-management story. When resumed,
+choose one shared artifact (`uv.lock` or generated hash requirements)
+and make deploy/CI consume it deliberately.
 
 ## 4. Tooling Enforcement
 

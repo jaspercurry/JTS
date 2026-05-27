@@ -92,9 +92,10 @@ These are real and intentionally left for later slices:
   resolution from `pyproject.toml`, and `jasper_aec3` build isolation
   resolves `jasper_aec3/pyproject.toml` requirements. Do not duplicate
   the local-development `uv sync` story with an unrelated deploy-only
-  lock. The next Python supply-chain slice should choose one shared
-  artifact (`uv.lock` or generated hash requirements), commit it, and
-  make install/CI consume it deliberately.
+  lock. Python lock adoption is deliberately deferred while `main` is
+  moving quickly; when resumed, choose one shared artifact (`uv.lock` or
+  generated hash requirements), commit it, and make install/CI consume
+  it deliberately.
 - **openWakeWord bundled model helper.** `openwakeword.utils.download_models()`
   still downloads the package's stock models outside JTS's explicit
   registry. Replacing that helper with an explicit hash-checked model
@@ -132,11 +133,15 @@ current project shape and would slow the Pi bring-up path. The value
 here is smaller and concrete: the artifacts JTS downloads directly are
 now visible, mostly immutable, and checked before use.
 
-Python install determinism remains the highest-leverage supply-chain
-follow-up, but it needs a deliberate design choice: either promote
-`uv.lock` to the shared source of truth or generate hash requirements
-from it, then update install/CI together so there is only one
-dependency-management story.
+The next low-risk supply-chain follow-up is openWakeWord stock model
+provenance: replace the package helper download path with explicit
+hash-checked model entries owned by JTS's manifest.
+
+Python install determinism remains valuable, but it is intentionally not
+the next slice while `main` is changing quickly. When it comes back, it
+needs a deliberate design choice: either promote `uv.lock` to the shared
+source of truth or generate hash requirements from it, then update
+install/CI together so there is only one dependency-management story.
 
 For the current private fleet, this slice is intentionally fresh/rebuild
 focused. Existing installed renderer binaries are not fingerprinted and

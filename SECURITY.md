@@ -15,10 +15,14 @@ release branches or patch trains yet.
 Please do not publish exploit details, secrets, wake-event audio, or
 private network data in a public issue.
 
-Preferred path: use GitHub private vulnerability reporting if it is
-enabled for the repository. Until a private channel is configured, open
-a minimal public issue titled `Security report` with no sensitive
-details so the maintainer can move the discussion to a private channel.
+Preferred path today: email `jc@jasper.tech` with a short subject such
+as `JTS security report`. Do not include secrets, wake-event audio,
+Wi-Fi PSKs, API keys, OAuth tokens, or private network data unless the
+maintainer asks for a safer transfer path.
+
+GitHub private vulnerability reporting may become the preferred path
+once it is enabled for the repository. Until then, use the email path
+above rather than filing sensitive details in a public issue.
 
 Include:
 - the affected commit or approximate date of the checkout;
