@@ -152,6 +152,44 @@ sudo journalctl -u shairport-sync --since '10 minutes ago' -o cat \
 
 A tight cluster (most events within ~3 ms of each other, around 0.118 s) — combined with 1:1 "Player: packets out of sequence" warnings — is Pattern A3 (dmix-induced burst-head drops). A wide spread (50-500 ms varied) is network/sender (Pattern D).
 
+### System dashboard readout
+
+`/system/` has an AirPlay card backed by
+[`jasper/control/airplay_health.py`](../jasper/control/airplay_health.py).
+It is a recent-health view, not a full diagnostics runner:
+
+- Fan-in `STATUS` is sampled every 5 s over UDS with a short timeout.
+  The card uses `airplay.frames_read` deltas for "currently receiving
+  frames", `airplay.xrun_count` deltas for AirPlay input recovery
+  events, output `xrun_count` deltas for downstream pressure, the
+  configured fan-in buffers, and watchdog progress age.
+- Shairport and CamillaDSP journals are scanned incrementally every
+  30 s and classified into the same patterns this document uses:
+  packet drops / packet order, large sync corrections, shairport ALSA
+  underruns, Camilla capture short reads, and Camilla playback
+  underruns.
+- MPRIS and CamillaDSP live probes run at the slower 30 s cadence.
+  These are useful context, not the hot-path truth source.
+- History is in-memory only: 10 s buckets for 30 min plus a small
+  recent-event ring. There is no database and no dashboard-poll-time
+  journal scan. The socket-activated `jasper-system-web` process only
+  formats the already-digested `/system/snapshot` payload.
+
+Status meanings:
+
+| Status | Meaning |
+|---|---|
+| `ok` | Fan-in is reachable, buffer contract is intact, and the 5 m/30 m windows have no AirPlay-path recovery events. |
+| `inactive` | Fan-in is reachable but the AirPlay lane is not receiving frames. |
+| `watch` | Non-fatal evidence appeared, usually Camilla short reads or older 30 m shairport/fan-in events. Treat it as "keep listening and correlate," not "change config immediately." |
+| `issue` | Recent recovery event in the last 5 m, fan-in input buffer below 4096, stale fan-in watchdog, shairport sync/drop/underrun event, fan-in xrun, or Camilla playback underrun. |
+| `unknown` | The sampler cannot read fan-in state, `/system/snapshot` caught an AirPlay-health sampler failure, or the sampler is still waiting for its first fan-in frame-rate baseline after startup. If it persists beyond one sample interval, check `jasper-fanin.service` and the control socket before interpreting higher-level AirPlay symptoms. |
+
+Use the card for "is anything happening right now / recently?" If it
+shows `watch` or `issue`, use the fast scan above or the full polling
+diagnostic below to prove the mechanism before changing shairport,
+CamillaDSP, WiFi, or buffer settings.
+
 ### Full polling diagnostic (5-min run, ~5 min wall time)
 
 Use this when log signatures are inconclusive or you want to characterize
@@ -1420,4 +1458,4 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27

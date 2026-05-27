@@ -64,6 +64,7 @@ def upstream_control():
         "/system/snapshot": {
             "build": {"JASPER_GIT_SHA": "abc1234"},
             "metrics": {"current": {"mem_total_mb": 2048}},
+            "airplay_health": {"status": "ok", "reason": "clean"},
             "cloud": {"available": False, "reason": "no usage.db yet"},
             "voice_provider": "gemini",
         },
@@ -141,6 +142,8 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "<!doctype html>" in text
     assert "id=\"spark-memory\"" in text  # sparkline target present
     assert "data.json" in text  # polling URL referenced from JS
+    assert "id=\"airplay-card\"" in text
+    assert "id=\"ap-events\"" in text
     assert "Restart voice" in text  # action button present
 
 
@@ -151,6 +154,7 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     payload = json.loads(body)
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
+    assert payload["airplay_health"]["status"] == "ok"
     assert ("GET", "/system/snapshot") in received
 
 

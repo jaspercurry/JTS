@@ -1097,6 +1097,7 @@ def _make_handler(
     camilla_port: int,
     voice_socket_path: str,
     sampler: Any = None,
+    airplay_health_sampler: Any = None,
 ) -> type[BaseHTTPRequestHandler]:
 
     # One probe instance per handler — it's stateless (just closes
@@ -1401,11 +1402,24 @@ def _make_handler(
                         "error": "probe failed",
                     }
 
+                try:
+                    airplay_health = (
+                        airplay_health_sampler.snapshot()
+                        if airplay_health_sampler is not None else None
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception("airplay health snapshot failed")
+                    airplay_health = {
+                        "status": "unknown",
+                        "reason": "AirPlay health sampler failed",
+                    }
+
                 payload: dict[str, Any] = {
                     "build": read_build_info(),
                     "metrics": (
                         sampler.snapshot() if sampler is not None else None
                     ),
+                    "airplay_health": airplay_health,
                     "cloud": _read_cloud_activity(),
                     "voice_provider": os.environ.get(
                         "JASPER_VOICE_PROVIDER", "gemini",
@@ -2011,10 +2025,17 @@ def build_server(
     camilla_port: int,
     voice_socket_path: str = "/run/jasper/voice.sock",
     sampler: Any = None,
+    airplay_health_sampler: Any = None,
 ) -> ThreadingHTTPServer:
     return ThreadingHTTPServer(
         (host, port),
-        _make_handler(camilla_host, camilla_port, voice_socket_path, sampler),
+        _make_handler(
+            camilla_host,
+            camilla_port,
+            voice_socket_path,
+            sampler,
+            airplay_health_sampler,
+        ),
     )
 
 
@@ -2112,12 +2133,21 @@ def main(argv: list[str] | None = None) -> int:
     from .system_metrics import SystemSampler
     sampler = SystemSampler()
     sampler.start()
+    # AirPlay health sampler — cheap fan-in counters at 5 s, slower
+    # journal/MPRIS/Camilla probes for the /system AirPlay card.
+    from .airplay_health import AirPlayHealthSampler
+    airplay_health_sampler = AirPlayHealthSampler(
+        camilla_host=args.camilla_host,
+        camilla_port=args.camilla_port,
+    )
+    airplay_health_sampler.start()
 
     server = build_server(
         args.host, args.port,
         args.camilla_host, args.camilla_port,
         args.voice_socket,
         sampler=sampler,
+        airplay_health_sampler=airplay_health_sampler,
     )
     run_dial_log_listener(args.dial_log_host, args.dial_log_port)
     # Multi-device peering daemon. No-op (no thread, no asyncio loop,

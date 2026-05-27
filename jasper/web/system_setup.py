@@ -81,6 +81,20 @@ _EXTRA_STYLE = """
 .card .kv .k { color: #666; }
 .card .kv .v { color: #222; font-variant-numeric: tabular-nums; }
 
+.ap-pill { display: inline-block; min-width: 5.5em; text-align: center;
+  border-radius: 999px; padding: 0.12em 0.55em; font-size: 0.82em;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.ap-pill.ok { color: #14542a; background: #dff5e7; }
+.ap-pill.watch, .ap-pill.unknown { color: #6a4a10; background: #fff1cc; }
+.ap-pill.issue { color: #8a1f1f; background: #ffdede; }
+.ap-pill.inactive { color: #555; background: #eee; }
+.ap-events { margin-top: 0.65em; display: grid; gap: 0.25em; }
+.ap-event { border-left: 3px solid #ddd; padding-left: 0.55em;
+  font-size: 0.84em; color: #333; }
+.ap-event.watch { border-left-color: #f0c060; }
+.ap-event.issue { border-left-color: #e08080; }
+.ap-event .when { color: #888; font-variant-numeric: tabular-nums; }
+
 .cloud-table, .nx-table, .svc-table { width: 100%; border-collapse: collapse; font-size: 0.88em; margin-top: 0.4em; }
 .cloud-table th, .cloud-table td, .nx-table th, .nx-table td, .svc-table th, .svc-table td {
   text-align: left; padding: 0.3em 0.5em; border-bottom: 1px solid #eee;
@@ -215,6 +229,19 @@ _PAGE_BODY = """
   </p>
 </div>
 
+<div class="card" id="airplay-card">
+  <h2>AirPlay</h2>
+  <div class="kv">
+    <div class="k">Status</div><div class="v" id="ap-status">—</div>
+    <div class="k">Now</div><div class="v" id="ap-now">—</div>
+    <div class="k">Last 5m</div><div class="v" id="ap-5m">—</div>
+    <div class="k">Last 30m</div><div class="v" id="ap-30m">—</div>
+    <div class="k">Fan-in</div><div class="v" id="ap-fanin">—</div>
+    <div class="k">Camilla</div><div class="v" id="ap-camilla">—</div>
+  </div>
+  <div class="ap-events" id="ap-events"></div>
+</div>
+
 <div class="card">
   <h2>Network</h2>
   <div class="kv">
@@ -305,9 +332,22 @@ _SCRIPT = r"""
     parts.push(m + 'm');
     return parts.join(' ');
   }
+  function fmtEpochAgo(epochSec) {
+    if (epochSec == null) return '—';
+    const sec = Math.max(0, Math.round(Date.now() / 1000 - Number(epochSec)));
+    if (sec < 60) return sec + 's ago';
+    if (sec < 3600) return Math.round(sec / 60) + 'm ago';
+    if (sec < 86400) return Math.round(sec / 3600) + 'h ago';
+    return Math.round(sec / 86400) + 'd ago';
+  }
   function fmtUSD(n) {
     if (n == null) return '—';
     return '$' + Number(n).toFixed(2);
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[ch]));
   }
 
   // Pi 5 pwm-fan cooling-levels table — values come from the device
@@ -391,8 +431,93 @@ _SCRIPT = r"""
     if (status === 'fail') el.classList.add('fail');
   }
 
+  function renderAirPlay(h) {
+    const statusEl = document.getElementById('ap-status');
+    const nowEl = document.getElementById('ap-now');
+    const fiveEl = document.getElementById('ap-5m');
+    const thirtyEl = document.getElementById('ap-30m');
+    const faninEl = document.getElementById('ap-fanin');
+    const camillaEl = document.getElementById('ap-camilla');
+    const eventsEl = document.getElementById('ap-events');
+    if (!statusEl) return;
+    if (!h) {
+      statusEl.innerHTML = '<span class="ap-pill unknown">Unknown</span>';
+      nowEl.textContent = 'sampler unavailable';
+      fiveEl.textContent = '—';
+      thirtyEl.textContent = '—';
+      faninEl.textContent = '—';
+      camillaEl.textContent = '—';
+      eventsEl.innerHTML = '';
+      return;
+    }
+
+    let status = h.status || 'unknown';
+    if (!['ok', 'watch', 'issue', 'inactive', 'unknown'].includes(status)) {
+      status = 'unknown';
+    }
+    statusEl.innerHTML =
+      '<span class="ap-pill ' + status + '">' + esc(status) + '</span> ' +
+      '<span class="muted">' + esc(h.reason || '') + '</span>';
+
+    const cur = h.current || {};
+    const fanin = cur.fanin || {};
+    const airplay = fanin.airplay || {};
+    const output = fanin.output || {};
+    const rate = airplay.frames_per_sec;
+    const mpris = cur.mpris || {};
+    const isStreaming = rate != null && rate >= 1000;
+    nowEl.textContent = isStreaming
+      ? Math.round(rate).toLocaleString() + ' frames/s'
+      : (mpris.playing ? 'MPRIS playing · no fan-in frames' : 'idle');
+
+    function summarize(s) {
+      if (!s) return '—';
+      const parts = [];
+      if (s.shairport_packet_drops) parts.push(s.shairport_packet_drops + ' packet drops');
+      if (s.shairport_sync_errors) parts.push(s.shairport_sync_errors + ' sync corrections');
+      if (s.shairport_underruns) parts.push(s.shairport_underruns + ' shairport underruns');
+      if (s.fanin_airplay_xruns) parts.push(s.fanin_airplay_xruns + ' AirPlay fan-in xruns');
+      if (s.fanin_output_xruns) parts.push(s.fanin_output_xruns + ' output xruns');
+      if (s.camilla_short_reads) parts.push(s.camilla_short_reads + ' Camilla short reads');
+      if (s.camilla_playback_underruns) parts.push(s.camilla_playback_underruns + ' Camilla underruns');
+      return parts.length ? parts.join(' · ') : 'clean';
+    }
+    fiveEl.textContent = summarize(h.summary_5m);
+    thirtyEl.textContent = summarize(h.summary_30m);
+
+    faninEl.textContent = fanin.available
+      ? 'input ' + (fanin.input_buffer_frames || '—') +
+        ' / output ' + (output.buffer_frames || fanin.output_buffer_frames || '—') +
+        ' frames · xruns ' + (airplay.xrun_count || 0) +
+        '/' + (output.xrun_count || 0)
+      : 'unavailable';
+
+    const camilla = cur.camilla || null;
+    camillaEl.textContent = camilla
+      ? 'buffer ' + (camilla.buffer_level || 0) +
+        ' · rate ' + (camilla.rate_adjust == null ? '—' : Number(camilla.rate_adjust).toFixed(6))
+      : 'journal only';
+
+    const events = (h.events || []).slice(-5).reverse();
+    if (events.length) {
+      eventsEl.innerHTML = events.map(ev => {
+        const sev = ['watch', 'issue'].includes(ev.severity)
+          ? ev.severity : 'watch';
+        return '<div class="ap-event ' + sev + '">' +
+          '<strong>' + esc(ev.title || ev.type || 'event') + '</strong> ' +
+          '<span class="muted">' + esc(ev.detail || '') + '</span> ' +
+          '<span class="when">' + fmtEpochAgo(ev.ts) + '</span>' +
+        '</div>';
+      }).join('');
+    } else {
+      eventsEl.innerHTML =
+        '<div class="ap-event"><span class="muted">No recent AirPlay events.</span></div>';
+    }
+  }
+
   function render(snap) {
     if (!snap || !snap.metrics) {
+      renderAirPlay(snap && snap.airplay_health);
       document.getElementById('staleness').textContent =
         'No metrics yet (jasper-control sampler still warming up?).';
       return;
@@ -605,6 +730,8 @@ _SCRIPT = r"""
       versionEl.textContent = '—';
       detailEl.textContent = ha.error || 'Connection failed.';
     }
+
+    renderAirPlay(snap.airplay_health);
 
     // Network
     document.getElementById('net-rx').textContent = fmtBytes(cur.net_rx_bytes);
