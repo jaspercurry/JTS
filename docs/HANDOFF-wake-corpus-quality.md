@@ -21,10 +21,11 @@ metadata, expected legs, coverage, WAV format, duration, RMS, and peak.
 It is not a deep audio-quality analyzer.
 
 **The first quality analyzer is shipped.**
-`scripts/analyze-wake-corpus-quality.sh` runs the deterministic first
+`scripts/analyze-wake-corpus-quality.sh` runs the deterministic quality
 pass and writes `metrics.csv`, `cross_leg.csv`, `events.json`, and
-`summary.md`. Use it after rsyncing the Pi corpus locally; keep heavy
-analysis off the 1 GB Pi.
+`summary.md`. It now includes LPC-confirmed transient damage hints and a
+composite perceptual-damage review score. Use it after rsyncing the Pi
+corpus locally; keep heavy analysis off the 1 GB Pi.
 
 **Quality analysis starts with deterministic signal metrics.** For 1-3 s
 wake-word clips, trust sample-domain and frame-domain facts first:
@@ -382,9 +383,15 @@ The first-pass analyzer currently computes:
 - envelope metrics: RMS-envelope modulation peak/prominence and
   crest-vs-RMS correlation;
 - transient candidates from local MAD on sample deltas;
+- LPC residual outliers on 30 ms speech frames, with confirmed events
+  only when residual outliers align with local-MAD transient candidates;
+- a bounded perceptual-damage review score that combines LPC-confirmed
+  events, clipping/flat-top evidence, transient density, Nyquist-edge
+  energy, and spectral flux, with reference-leg review priority
+  down-weighted because the reference is not clean speech;
 - cross-leg deltas and alignment confidence for sibling legs such
   as `usb_webrtc-usb_raw`, `usb_dtln-usb_raw`, `on-off`, and
-  `dtln-off`.
+  `dtln-off`, including LPC-confirmed and damage-score deltas.
 
 The analyzer is a review-prioritization tool. It should sort clips for
 listening review and explain why, not silently reject clips.
@@ -393,15 +400,15 @@ Shipped Phase 0/1:
 
 - Deterministic analyzer CLI and shell wrapper.
 - CSV/JSON/Markdown artifacts.
-- Synthetic tests for clipping, transient candidates, corpus artifact
-  writing, and latest-session filtering.
+- Synthetic tests for clipping, transient candidates, LPC-confirmed
+  damage, noisy negative control, corpus artifact writing, and
+  latest-session filtering.
 
-Next Phase 1b: fixtures and detector calibration.
+Next Phase 1b: broader fixtures and detector calibration.
 
-- Add synthetic fixtures for hard clipping, soft clipping, isolated
-  click, click burst, dropout, repeated samples, DC offset, AGC pumping,
-  pure fricative negative, plosive negative, aliasing, and processed-leg-
-  only artifact.
+- Add synthetic fixtures for soft clipping, click bursts, dropout,
+  repeated samples, DC offset, AGC pumping, pure fricative negative,
+  plosive negative, aliasing, and processed-leg-only artifact.
 - Lock expected detector behavior before running on the real corpus.
 
 Phase 2: cross-leg analyzer and HTML review.
@@ -479,11 +486,14 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v3):** Added LPC-confirmed transient damage detection,
+  a bounded perceptual-damage review score, cross-leg damage deltas, and
+  synthetic positive/negative tests.
 - **2026-05-27 (v2):** Added the shipped first-pass analyzer command,
   outputs, current metric coverage, and next implementation phases.
 - **2026-05-27 (v1):** Initial methodology doc for deterministic and
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v2 - first-pass analyzer shipped and checked
-against the 2026-05-27 latest-session corpus)
+Last verified: 2026-05-27 (v3 - LPC-confirmed perceptual damage layer
+shipped and checked against the 2026-05-27 latest-session corpus)

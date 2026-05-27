@@ -108,6 +108,8 @@ def test_analyze_wav_flags_exact_clipping(tmp_path: Path) -> None:
     )
 
     assert row["exact_clip_count"] == 6
+    assert row["near_clip_1db"] >= 6
+    assert row["near_clip_3db"] >= 6
     assert "exact_clip" in row["flags"]
     assert "peak_gt_-1dbfs" in row["flags"]
 
@@ -140,6 +142,69 @@ def test_analyze_wav_finds_transient_candidate(tmp_path: Path) -> None:
     assert row["events"][0]["t_s"] == pytest_approx(3000 / 16000, abs=0.01)
 
 
+def test_analyze_wav_confirms_lpc_residual_damage(tmp_path: Path) -> None:
+    root = tmp_path / "enrollment_positives"
+    path = root / "aec_usb_webrtc_music" / "clip.aec-usb_webrtc.wav"
+    samples = _sine(amp=0.06)
+    samples[4200] = 30000
+    samples[4201] = -30000
+    _write_wav(path, samples)
+    clip = analyzer.ClipRef(
+        session_id="s1",
+        seq=1,
+        clip_id="clip-1",
+        condition="music",
+        distance="near",
+        files={"usb_webrtc": str(path)},
+    )
+
+    row, _ = analyzer.analyze_wav(
+        corpus_dir=root,
+        clip=clip,
+        leg="usb_webrtc",
+        path_str=str(path),
+        config=analyzer.AnalyzerConfig(
+            event_z=8.0,
+            event_min_jump=0.010,
+            lpc_z=8.0,
+            lpc_min_residual=0.006,
+        ),
+    )
+
+    assert row["lpc_residual_event_count"] >= 1
+    assert row["lpc_confirmed_event_count"] >= 1
+    assert row["perceptual_damage_score"] > 0
+    assert "lpc_residual_damage" in row["flags"]
+    assert any(event.get("kind") == "lpc_confirmed" for event in row["events"])
+
+
+def test_analyze_wav_does_not_overconfirm_noise_as_lpc_damage(tmp_path: Path) -> None:
+    root = tmp_path / "enrollment_positives"
+    path = root / "aec_usb_raw_music" / "clip.aec-usb_raw.wav"
+    rng = np.random.default_rng(1234)
+    samples = np.round(rng.normal(0.0, 0.035, 16000) * 32767).astype(np.int16)
+    _write_wav(path, samples)
+    clip = analyzer.ClipRef(
+        session_id="s1",
+        seq=1,
+        clip_id="clip-1",
+        condition="music",
+        distance="near",
+        files={"usb_raw": str(path)},
+    )
+
+    row, _ = analyzer.analyze_wav(
+        corpus_dir=root,
+        clip=clip,
+        leg="usb_raw",
+        path_str=str(path),
+        config=analyzer.AnalyzerConfig(),
+    )
+
+    assert row["lpc_confirmed_event_count"] == 0
+    assert "lpc_residual_damage" not in row["flags"]
+
+
 def test_analyze_corpus_writes_repeatable_artifacts(tmp_path: Path) -> None:
     root = tmp_path / "enrollment_positives"
     files = {
@@ -154,6 +219,7 @@ def test_analyze_corpus_writes_repeatable_artifacts(tmp_path: Path) -> None:
     _write_wav(Path(files["usb_raw"]), _sine(amp=0.20, freq=480.0))
     usb_webrtc = _sine(amp=0.22, freq=480.0)
     usb_webrtc[2000] = 29000
+    usb_webrtc[2001] = -29000
     _write_wav(Path(files["usb_webrtc"]), usb_webrtc)
     _write_session(root, files=files)
     out = tmp_path / "quality"
@@ -167,8 +233,18 @@ def test_analyze_corpus_writes_repeatable_artifacts(tmp_path: Path) -> None:
     summary = result["summary_path"].read_text()
     assert "Wake Corpus Quality Summary" in summary
     assert "`usb_webrtc-usb_raw`" in summary
+    assert "LPC/s" in summary
+    header = result["metrics_path"].read_text().splitlines()[0]
+    assert "lpc_confirmed_event_count" in header
+    assert "perceptual_damage_score" in header
+    assert "damage_score_delta" in result["cross_path"].read_text()
     events = json.loads(result["events_path"].read_text())
     assert events["events"]
+    assert any(
+        event.get("kind") == "lpc_confirmed"
+        for item in events["events"]
+        for event in item["events"]
+    )
 
 
 def test_latest_session_filter_selects_newest_session(tmp_path: Path) -> None:

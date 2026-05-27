@@ -189,19 +189,24 @@ bash scripts/analyze-wake-corpus-quality.sh \
 Outputs:
 
 - `metrics.csv` — one row per WAV/leg with deterministic sample,
-  spectral, envelope, transient, and flag metrics.
+  spectral, envelope, transient, LPC-confirmed damage, and flag
+  metrics.
 - `cross_leg.csv` — per-utterance sibling-leg deltas, alignment
-  confidence, transient deltas, and event coincidence counts.
-- `events.json` — flagged legs and transient candidate timestamps.
+  confidence, transient/LPC/damage deltas, and event coincidence counts.
+- `events.json` — flagged legs, transient candidate timestamps, and
+  LPC-confirmed event timestamps.
 - `summary.md` — human-readable triage summary sorted by review
   priority.
 
 This analyzer is a **review-prioritization tool**, not an auto-reject
 gate. Exact clipping and format failures are strong evidence; AGC,
-Nyquist-edge, and transient-candidate flags are prompts for listening
-review until we have more labeled corpus data. The next planned upgrade
-is LPC residual confirmation for transient candidates, then optional
-offline neural metrics such as SQUIM.
+Nyquist-edge, transient-candidate, and LPC-confirmed damage flags are
+prompts for listening review until we have more labeled corpus data.
+Reference-leg metrics are kept for integrity checks but down-weighted in
+review priority because the reference is not clean speech.
+The next planned upgrades are broader synthetic fixture calibration,
+HTML/listening review packages, and optional offline neural metrics such
+as SQUIM.
 
 ---
 

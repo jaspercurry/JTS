@@ -100,6 +100,12 @@ METRIC_FIELDS = (
     "transient_event_count",
     "transient_event_rate_s",
     "max_delta_robust_z",
+    "lpc_residual_event_count",
+    "lpc_residual_event_rate_s",
+    "lpc_confirmed_event_count",
+    "lpc_confirmed_event_rate_s",
+    "max_lpc_residual_z",
+    "perceptual_damage_score",
 )
 
 
@@ -120,6 +126,12 @@ class AnalyzerConfig:
     event_merge_ms: float = 5.0
     coincidence_ms: float = 20.0
     max_alignment_lag_ms: float = 250.0
+    lpc_order: int = 12
+    lpc_frame_ms: float = 30.0
+    lpc_hop_ms: float = 10.0
+    lpc_z: float = 12.0
+    lpc_min_residual: float = 0.015
+    lpc_silence_dbfs: float = -55.0
 
 
 def _db20(value: float) -> float:
@@ -184,32 +196,43 @@ def _longest_true_run(mask: np.ndarray) -> int:
     return int(np.max(idx[ends] - idx[starts] + 1))
 
 
-def _cluster_events(
+def _cluster_scored_events(
     sample_indices: np.ndarray,
+    scores: np.ndarray,
     sample_rate: int,
     *,
     merge_ms: float,
+    kind: str,
     max_events: int = 50,
-) -> list[dict[str, float]]:
+) -> list[dict[str, float | str]]:
     if sample_indices.size == 0:
         return []
     merge_samples = max(1, int(sample_rate * merge_ms / 1000.0))
-    idx = np.sort(sample_indices.astype(np.int64))
-    clusters: list[tuple[int, int]] = []
+    order = np.argsort(sample_indices.astype(np.int64))
+    idx = sample_indices.astype(np.int64)[order]
+    ordered_scores = scores.astype(np.float64)[order]
+    clusters: list[tuple[int, int, float]] = []
     start = prev = int(idx[0])
-    for value in idx[1:]:
+    max_score = float(ordered_scores[0])
+    for value, score in zip(idx[1:], ordered_scores[1:]):
         current = int(value)
         if current - prev <= merge_samples:
             prev = current
+            max_score = max(max_score, float(score))
         else:
-            clusters.append((start, prev))
+            clusters.append((start, prev, max_score))
             start = prev = current
-    clusters.append((start, prev))
-    events: list[dict[str, float]] = []
-    for start, end in clusters[:max_events]:
+            max_score = float(score)
+    clusters.append((start, prev, max_score))
+
+    events: list[dict[str, float | str]] = []
+    for start, end, score in clusters[:max_events]:
         events.append({
             "t_s": (start + end) / (2.0 * sample_rate),
             "duration_ms": (end - start + 1) * 1000.0 / sample_rate,
+            "kind": kind,
+            "confidence": min(1.0, max(0.0, (score - 8.0) / 20.0)),
+            "score": score,
         })
     return events
 
@@ -340,7 +363,7 @@ def _transient_events(
     samples: np.ndarray,
     sample_rate: int,
     config: AnalyzerConfig,
-) -> tuple[list[dict[str, float]], float]:
+) -> tuple[list[dict[str, float | str]], float]:
     if samples.size < 300:
         return [], 0.0
     delta = np.diff(samples)
@@ -353,12 +376,159 @@ def _transient_events(
         (robust_z > config.event_z)
         & (deviation > config.event_min_jump)
     )
-    events = _cluster_events(
+    events = _cluster_scored_events(
         candidates,
+        robust_z[candidates],
         sample_rate,
         merge_ms=config.event_merge_ms,
+        kind="delta_mad",
     )
     return events, float(np.max(robust_z)) if robust_z.size else 0.0
+
+
+def _lpc_coefficients(frame: np.ndarray, order: int) -> np.ndarray | None:
+    if frame.size <= order + 1:
+        return None
+    centered = frame - float(np.mean(frame))
+    if float(np.max(np.abs(centered))) < 1e-6:
+        return None
+    windowed = centered * np.hanning(centered.size)
+    autocorr = np.correlate(windowed, windowed, mode="full")[windowed.size - 1:]
+    r = autocorr[:order + 1].astype(np.float64)
+    if not math.isfinite(float(r[0])) or float(r[0]) <= 1e-12:
+        return None
+
+    # Small diagonal loading keeps near-tonal frames numerically stable.
+    r[0] *= 1.0001
+    coeffs = np.zeros(order + 1, dtype=np.float64)
+    coeffs[0] = 1.0
+    error = float(r[0])
+    for i in range(1, order + 1):
+        acc = float(r[i])
+        if i > 1:
+            acc += float(np.dot(coeffs[1:i], r[i - 1:0:-1]))
+        reflection = -acc / max(error, 1e-12)
+        reflection = float(np.clip(reflection, -0.98, 0.98))
+        previous = coeffs.copy()
+        coeffs[1:i] = previous[1:i] + reflection * previous[i - 1:0:-1]
+        coeffs[i] = reflection
+        error *= max(1.0 - reflection * reflection, 1e-6)
+    return coeffs
+
+
+def _lpc_residual_events(
+    samples: np.ndarray,
+    sample_rate: int,
+    config: AnalyzerConfig,
+) -> tuple[list[dict[str, float | str]], float]:
+    frame_len = max(config.lpc_order + 8, int(sample_rate * config.lpc_frame_ms / 1000.0))
+    hop = max(1, int(sample_rate * config.lpc_hop_ms / 1000.0))
+    if samples.size < frame_len:
+        return [], 0.0
+
+    silence_rms = 10.0 ** (config.lpc_silence_dbfs / 20.0)
+    candidate_indices: list[np.ndarray] = []
+    candidate_scores: list[np.ndarray] = []
+    max_z = 0.0
+    for start in range(0, samples.size - frame_len + 1, hop):
+        frame = samples[start:start + frame_len]
+        frame_rms = float(np.sqrt(np.mean(frame * frame) + 1e-18))
+        if frame_rms < silence_rms:
+            continue
+        coeffs = _lpc_coefficients(frame, config.lpc_order)
+        if coeffs is None:
+            continue
+        residual = signal.lfilter(coeffs, [1.0], frame)
+        residual = residual[config.lpc_order:]
+        if residual.size < 8:
+            continue
+        abs_residual = np.abs(residual)
+        med = float(np.median(abs_residual))
+        mad = float(np.median(np.abs(abs_residual - med)))
+        robust_z = (abs_residual - med) / (1.4826 * mad + 1e-6)
+        if robust_z.size:
+            max_z = max(max_z, float(np.max(robust_z)))
+        local = np.flatnonzero(
+            (robust_z > config.lpc_z)
+            & (abs_residual > config.lpc_min_residual)
+        )
+        if local.size:
+            candidate_indices.append(local + start + config.lpc_order)
+            candidate_scores.append(robust_z[local])
+
+    if not candidate_indices:
+        return [], max_z
+    return (
+        _cluster_scored_events(
+            np.concatenate(candidate_indices),
+            np.concatenate(candidate_scores),
+            sample_rate,
+            merge_ms=config.event_merge_ms,
+            kind="lpc_residual",
+        ),
+        max_z,
+    )
+
+
+def _confirm_lpc_events(
+    delta_events: list[dict[str, float | str]],
+    lpc_events: list[dict[str, float | str]],
+    *,
+    window_ms: float,
+) -> list[dict[str, float | str]]:
+    if not delta_events or not lpc_events:
+        return []
+    window_s = window_ms / 1000.0
+    confirmed: list[dict[str, float | str]] = []
+    for lpc_event in lpc_events:
+        lpc_t = float(lpc_event["t_s"])
+        matching_delta = min(
+            (
+                delta_event
+                for delta_event in delta_events
+                if abs(float(delta_event["t_s"]) - lpc_t) <= window_s
+            ),
+            key=lambda event: abs(float(event["t_s"]) - lpc_t),
+            default=None,
+        )
+        if matching_delta is None:
+            continue
+        score = max(float(lpc_event.get("score", 0.0)), float(matching_delta.get("score", 0.0)))
+        confirmed.append({
+            "t_s": (lpc_t + float(matching_delta["t_s"])) / 2.0,
+            "duration_ms": max(
+                float(lpc_event["duration_ms"]),
+                float(matching_delta["duration_ms"]),
+            ),
+            "kind": "lpc_confirmed",
+            "confidence": min(1.0, max(0.0, (score - 8.0) / 20.0)),
+            "score": score,
+        })
+    return confirmed
+
+
+def _perceptual_damage_score(row: dict[str, Any]) -> float:
+    score = 0.0
+    score += min(35.0, row["lpc_confirmed_event_count"] * 8.0)
+    score += min(15.0, row["lpc_confirmed_event_rate_s"] * 8.0)
+    score += min(15.0, max(0.0, row["max_lpc_residual_z"] - 12.0) * 0.5)
+    score += min(20.0, row["transient_event_count"] * 3.0)
+    if row["exact_clip_count"] > 0:
+        score += 25.0
+    elif row["flat_top_run"] >= 6 and row["peak_dbfs"] > -9.0:
+        score += 12.0
+    elif row["near_clip_0_5db"] > 5:
+        score += 8.0
+    nyq = row.get("nyquist_ratio_db_p90")
+    if nyq is not None:
+        if nyq > -20.0:
+            score += 8.0
+        elif nyq > -25.0:
+            score += 4.0
+    flux = row.get("spectral_flux_p95")
+    if flux is not None and flux > 0.75:
+        score += 5.0
+    return min(100.0, score)
 
 
 def _alignment(
@@ -421,6 +591,10 @@ def _flags(row: dict[str, Any]) -> list[str]:
         flags.append("repeated_samples")
     if row["transient_event_rate_s"] > 2.0 or row["transient_event_count"] >= 4:
         flags.append("transient_candidates")
+    if row["lpc_confirmed_event_rate_s"] > 1.0 or row["lpc_confirmed_event_count"] >= 2:
+        flags.append("lpc_residual_damage")
+    elif row["lpc_confirmed_event_count"] >= 1 and row["max_lpc_residual_z"] >= 20.0:
+        flags.append("lpc_residual_damage")
     corr = row.get("crest_rms_corr")
     if corr is not None and corr < -0.3:
         flags.append("agc_corr_suspect")
@@ -430,6 +604,8 @@ def _flags(row: dict[str, Any]) -> list[str]:
     nyq = row.get("nyquist_ratio_db_p90")
     if nyq is not None and nyq > -25.0:
         flags.append("nyquist_edge_energy")
+    if row.get("perceptual_damage_score", 0.0) >= 35.0:
+        flags.append("perceptual_damage_review")
     return flags
 
 
@@ -451,9 +627,12 @@ def analyze_wav(
     true_peak = float(np.max(np.abs(signal.resample_poly(samples, 4, 1)))) if samples.size else 0.0
 
     near_counts: dict[str, int] = {}
-    for db in (0.5, 1.0, 3.0):
+    for db, key in (
+        (0.5, "near_clip_0_5db"),
+        (1.0, "near_clip_1db"),
+        (3.0, "near_clip_3db"),
+    ):
         threshold = FULL_SCALE * (10.0 ** (-db / 20.0))
-        key = f"near_clip_{str(db).replace('.', '_')}db"
         near_counts[key] = int(np.sum(abs_pcm >= threshold))
 
     flat_threshold = peak_int * (10.0 ** (-0.1 / 20.0)) if peak_int else 0
@@ -461,7 +640,13 @@ def analyze_wav(
     near_zero_run = _longest_true_run(abs_pcm <= 2)
     repeated_mask = np.r_[False, (np.diff(pcm.astype(np.int32)) == 0) & (abs_pcm[1:] > 2)]
     repeated_run = _longest_true_run(repeated_mask)
-    events, max_z = _transient_events(samples, sample_rate, config)
+    transient_events, max_z = _transient_events(samples, sample_rate, config)
+    lpc_events, max_lpc_z = _lpc_residual_events(samples, sample_rate, config)
+    lpc_confirmed_events = _confirm_lpc_events(
+        transient_events,
+        lpc_events,
+        window_ms=max(config.event_merge_ms, 2.0),
+    )
 
     row: dict[str, Any] = {
         "session_id": clip.session_id,
@@ -488,36 +673,49 @@ def analyze_wav(
         "repeated_sample_run_ms": repeated_run * 1000.0 / sample_rate if sample_rate else 0.0,
         **_spectral_metrics(samples, sample_rate),
         **_envelope_metrics(samples, sample_rate),
-        "transient_event_count": len(events),
-        "transient_event_rate_s": len(events) / duration_s if duration_s else 0.0,
+        "transient_event_count": len(transient_events),
+        "transient_event_rate_s": len(transient_events) / duration_s if duration_s else 0.0,
         "max_delta_robust_z": max_z,
-        "events": events,
+        "lpc_residual_event_count": len(lpc_events),
+        "lpc_residual_event_rate_s": len(lpc_events) / duration_s if duration_s else 0.0,
+        "lpc_confirmed_event_count": len(lpc_confirmed_events),
+        "lpc_confirmed_event_rate_s": (
+            len(lpc_confirmed_events) / duration_s if duration_s else 0.0
+        ),
+        "max_lpc_residual_z": max_lpc_z,
+        "events": [*transient_events, *lpc_confirmed_events],
     }
+    row["perceptual_damage_score"] = _perceptual_damage_score(row)
     row["flags"] = _flags(row)
     row["review_priority"] = (
         30 * int("exact_clip" in row["flags"])
         + 20 * int("peak_gt_-1dbfs" in row["flags"])
         + 15 * int("transient_candidates" in row["flags"])
+        + 15 * int("lpc_residual_damage" in row["flags"])
         + 10 * int("agc_corr_suspect" in row["flags"])
         + 5 * len(row["flags"])
         + min(20.0, row["transient_event_rate_s"] * 2.0)
+        + min(30.0, row["perceptual_damage_score"] * 0.5)
     )
+    if leg == "ref":
+        row["review_priority"] *= 0.25
     return row, samples
 
 
 def _coincident_event_count(
-    events_a: list[dict[str, float]],
-    events_b: list[dict[str, float]],
+    events_a: list[dict[str, float | str]],
+    events_b: list[dict[str, float | str]],
     *,
     window_ms: float,
 ) -> int:
     if not events_a or not events_b:
         return 0
     window_s = window_ms / 1000.0
-    b_times = [e["t_s"] for e in events_b]
+    b_times = [float(e["t_s"]) for e in events_b]
     count = 0
     for event in events_a:
-        if any(abs(event["t_s"] - b_time) <= window_s for b_time in b_times):
+        event_t = float(event["t_s"])
+        if any(abs(event_t - b_time) <= window_s for b_time in b_times):
             count += 1
     return count
 
@@ -562,6 +760,12 @@ def _cross_leg_rows(
                 ),
                 "transient_delta": (
                     left["transient_event_count"] - right["transient_event_count"]
+                ),
+                "lpc_confirmed_delta": (
+                    left["lpc_confirmed_event_count"] - right["lpc_confirmed_event_count"]
+                ),
+                "damage_score_delta": (
+                    left["perceptual_damage_score"] - right["perceptual_damage_score"]
                 ),
                 "coincident_events": _coincident_event_count(
                     left["events"],
@@ -688,6 +892,12 @@ def analyze_corpus(
             "event_merge_ms": config.event_merge_ms,
             "coincidence_ms": config.coincidence_ms,
             "max_alignment_lag_ms": config.max_alignment_lag_ms,
+            "lpc_order": config.lpc_order,
+            "lpc_frame_ms": config.lpc_frame_ms,
+            "lpc_hop_ms": config.lpc_hop_ms,
+            "lpc_z": config.lpc_z,
+            "lpc_min_residual": config.lpc_min_residual,
+            "lpc_silence_dbfs": config.lpc_silence_dbfs,
         },
         "issues": issues,
         "events": [
@@ -752,9 +962,9 @@ def _build_summary(
     lines.append("")
     lines.append(
         "| Session | Leg | n | RMS dBFS | Peak dBFS | Crest dB | "
-        "Events/s | HB p50 | Nyq p50 | Flags |"
+        "Events/s | LPC/s | Damage | HB p50 | Nyq p50 | Flags |"
     )
-    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---|")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for session_id in sorted({r["session_id"] for r in metric_rows}):
         for leg in LEG_ORDER:
             rows = [r for r in metric_rows if r["session_id"] == session_id and r["leg"] == leg]
@@ -770,6 +980,8 @@ def _build_summary(
                 f"| {_fmt(_median([r['peak_dbfs'] for r in rows]))} "
                 f"| {_fmt(_median([r['crest_db'] for r in rows]))} "
                 f"| {_fmt(_median([r['transient_event_rate_s'] for r in rows]), 2)} "
+                f"| {_fmt(_median([r['lpc_confirmed_event_rate_s'] for r in rows]), 2)} "
+                f"| {_fmt(_median([r['perceptual_damage_score'] for r in rows]), 1)} "
                 f"| {_fmt(_median([r.get('high_ratio_db_p50') for r in rows]))} "
                 f"| {_fmt(_median([r.get('nyquist_ratio_db_p50') for r in rows]))} "
                 f"| {flag_text} |"
@@ -780,9 +992,9 @@ def _build_summary(
         lines.append("")
         lines.append(
             "| Pair | n | RMS delta | Peak delta | Crest delta | "
-            "HB delta | Nyq delta | Event delta | Align conf |"
+            "HB delta | Nyq delta | Event delta | LPC delta | Damage delta | Align conf |"
         )
-        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|")
         for pair in sorted({r["pair"] for r in cross_rows}):
             rows = [r for r in cross_rows if r["pair"] == pair]
             lines.append(
@@ -793,6 +1005,8 @@ def _build_summary(
                 f"| {_fmt(_median([r['high_ratio_delta_db'] for r in rows]), 1)} "
                 f"| {_fmt(_median([r['nyquist_ratio_delta_db'] for r in rows]), 1)} "
                 f"| {_fmt(_median([r['transient_delta'] for r in rows]), 1)} "
+                f"| {_fmt(_median([r['lpc_confirmed_delta'] for r in rows]), 1)} "
+                f"| {_fmt(_median([r['damage_score_delta'] for r in rows]), 1)} "
                 f"| {_fmt(_median([r.get('alignment_confidence') for r in rows]), 2)} |"
             )
         lines.append("")
@@ -812,7 +1026,9 @@ def _build_summary(
             f"priority {_fmt(row['review_priority'], 1)}, flags {flags}, "
             f"peak {_fmt(row['peak_dbfs'])} dBFS, rms {_fmt(row['rms_dbfs'])} dBFS, "
             f"crest {_fmt(row['crest_db'])} dB, events/s "
-            f"{_fmt(row['transient_event_rate_s'], 2)}"
+            f"{_fmt(row['transient_event_rate_s'], 2)}, LPC/s "
+            f"{_fmt(row['lpc_confirmed_event_rate_s'], 2)}, damage "
+            f"{_fmt(row['perceptual_damage_score'], 1)}"
         )
     if issues:
         lines.append("")
@@ -828,12 +1044,18 @@ def _build_summary(
         "as review hints until calibrated on paired AGC-on/off data."
     )
     lines.append(
-        "- Transient candidates are local-MAD candidates. LPC residual "
-        "confirmation is the next planned upgrade."
+        "- LPC residual events are local-MAD transient candidates confirmed "
+        "by short-frame LPC prediction-error outliers. They are stronger "
+        "artifact review hints than raw sample deltas alone, but still need "
+        "listening review."
     )
     lines.append(
         "- Cross-leg deltas are most meaningful between sibling legs "
         "from the same mic path, such as `usb_webrtc-usb_raw`."
+    )
+    lines.append(
+        "- Reference-leg metrics are kept for integrity checks, but reference "
+        "audio is not clean speech and is down-weighted in review priority."
     )
     return "\n".join(lines) + "\n"
 
@@ -876,6 +1098,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--event-min-jump", type=float, default=0.020)
     parser.add_argument("--event-merge-ms", type=float, default=5.0)
     parser.add_argument("--coincidence-ms", type=float, default=20.0)
+    parser.add_argument("--lpc-order", type=int, default=12)
+    parser.add_argument("--lpc-frame-ms", type=float, default=30.0)
+    parser.add_argument("--lpc-hop-ms", type=float, default=10.0)
+    parser.add_argument("--lpc-z", type=float, default=12.0)
+    parser.add_argument("--lpc-min-residual", type=float, default=0.015)
     args = parser.parse_args(argv)
 
     if args.session and args.latest is not None:
@@ -886,6 +1113,11 @@ def main(argv: list[str] | None = None) -> int:
         event_min_jump=args.event_min_jump,
         event_merge_ms=args.event_merge_ms,
         coincidence_ms=args.coincidence_ms,
+        lpc_order=args.lpc_order,
+        lpc_frame_ms=args.lpc_frame_ms,
+        lpc_hop_ms=args.lpc_hop_ms,
+        lpc_z=args.lpc_z,
+        lpc_min_residual=args.lpc_min_residual,
     )
     try:
         result = analyze_corpus(
