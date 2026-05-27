@@ -1243,7 +1243,7 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9901")
     monkeypatch.setenv(
-        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_NEAREND_FAST_PORT", "9902",
+        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_EDGE_COMBO_PORT", "9902",
     )
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_SLOW_ATTACK_PORT", "9903")
 
@@ -1257,7 +1257,7 @@ def test_combined_web_entrypoint_includes_raw0_port(
         "usb_webrtc": 7700,
         "usb_dtln": 8800,
         "aec3_hf_relaxed": 9901,
-        "aec3_nearend_fast": 9902,
+        "aec3_edge_combo": 9902,
         "aec3_slow_attack": 9903,
     }
 
@@ -2365,6 +2365,7 @@ def test_html_playback_uses_leg_selector() -> None:
     assert 'encodeURIComponent(ev.target.value)' in html_text
     assert "on: 'XVF WebRTC AEC3'" in html_text
     assert "aec3_hf_relaxed" in html_text
+    assert "aec3_edge_combo" in html_text
     assert "aec3_nearend_fast" in html_text
     assert "aec3_slow_attack" in html_text
     assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text

@@ -47,6 +47,7 @@ LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_default_gain_08",
     "aec3_hf_mask_upstream",
     "aec3_hf_wide_open",
+    "aec3_nearend_fast",
 )
 KNOWN_LEGS = (
     BASE_LEGS

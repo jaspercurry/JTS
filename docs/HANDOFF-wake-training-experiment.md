@@ -378,7 +378,7 @@ written into per-leg quadrant directories at
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
 | `aec3_hf_relaxed` | UDP `:9884` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
-| `aec3_nearend_fast` | UDP `:9885` | chip ch1 → parallel SW AEC3 with relaxed HF plus faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`) |
+| `aec3_edge_combo` | UDP `:9885` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`) |
 | `aec3_slow_attack` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
@@ -1114,6 +1114,9 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
 - 2026-05-27 late tuning pass — AEC3 sweep variants retargeted to
   edge-preservation under far+music: `aec3_hf_relaxed`,
   `aec3_nearend_fast`, and `aec3_slow_attack`
+- 2026-05-27 edge-combo pass — AEC3 sweep variants retargeted to
+  test the combined promising direction: `aec3_hf_relaxed`,
+  `aec3_edge_combo`, and `aec3_slow_attack`
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1124,7 +1127,7 @@ Recorder UX status:
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Per-session AEC3 sweep toggle for pilot tuning: baseline plus
-  `aec3_hf_relaxed`, `aec3_nearend_fast`, and
+  `aec3_hf_relaxed`, `aec3_edge_combo`, and
   `aec3_slow_attack`
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
@@ -1349,4 +1352,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v17 — AEC3 edge-preservation sweep verified against code)
+Last verified: 2026-05-27 (v18 — AEC3 edge-combo sweep verified against code)

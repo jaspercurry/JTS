@@ -143,6 +143,7 @@ LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_default_gain_08",
     "aec3_hf_mask_upstream",
     "aec3_hf_wide_open",
+    "aec3_nearend_fast",
 )
 LEGS = (
     "on", *AEC3_SWEEP_LEGS, *LEGACY_AEC3_SWEEP_LEGS,
@@ -161,6 +162,7 @@ LEG_LABELS = {
     "aec3_default_gain_08": "AEC3 default gain 0.8 (legacy)",
     "aec3_hf_mask_upstream": "AEC3 HF mask upstream (legacy)",
     "aec3_hf_wide_open": "AEC3 HF wide open (legacy)",
+    "aec3_nearend_fast": "AEC3 near-end fast (legacy)",
     "off": "XVF raw",
     "dtln": "XVF DTLN",
     "raw0": "XVF raw0",
@@ -3424,12 +3426,13 @@ def _render_index_html(csrf_token: str = "") -> str:
     # `secrets.token_hex` only produces hex chars (no HTML metachars).
     # The nav-back CSS + HTML are static (no user input) so no
     # escaping needed for those.
+    aec3_playback_legs = AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS
     aec3_sweep_js_labels = "\n      ".join(
-        f"{json.dumps(variant.leg)}: {json.dumps(variant.label)},"
-        for variant in AEC3_SWEEP_VARIANTS
+        f"{json.dumps(leg)}: {json.dumps(LEG_LABELS[leg])},"
+        for leg in aec3_playback_legs
     )
     aec3_sweep_js_order = "".join(
-        f"{json.dumps(variant.leg)}, " for variant in AEC3_SWEEP_VARIANTS
+        f"{json.dumps(leg)}, " for leg in aec3_playback_legs
     )
     return (
         _INDEX_HTML_TEMPLATE

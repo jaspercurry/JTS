@@ -32,12 +32,14 @@ AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
         env_overrides={"JASPER_AEC_CONSERVATIVE_HF": "0"},
     ),
     Aec3SweepVariant(
-        leg="aec3_nearend_fast",
-        label="AEC3 near-end fast",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_NEAREND_FAST",
+        leg="aec3_edge_combo",
+        label="AEC3 edge combo",
+        port_env="JASPER_AEC_UDP_PORT_AEC3_EDGE_COMBO",
         default_port=9885,
         env_overrides={
             "JASPER_AEC_CONSERVATIVE_HF": "0",
+            "JASPER_AEC_MAX_DEC_LF": "0.02",
+            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
             "JASPER_AEC_DND_SNR_THRESHOLD": "15",
             "JASPER_AEC_DND_ENR_THRESHOLD": "0.50",
             "JASPER_AEC_DND_HOLD_DURATION": "100",
