@@ -17,7 +17,9 @@ import json
 import logging
 import math
 import os
+import re
 import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -26,20 +28,29 @@ from typing import Any, Iterable
 logger = logging.getLogger(__name__)
 
 PROFILE_PATH = "/var/lib/jasper/sound_profile.json"
+PROFILE_LIBRARY_PATH = "/var/lib/jasper/sound_profiles.json"
 
 SIMPLE_EQ_LIMIT_DB = 6.0
 ADVANCED_GAIN_LIMIT_DB = 12.0
 MAX_PARAMETRIC_BANDS = 8
+MAX_CUSTOM_PROFILES = 24
+MAX_PROFILE_NAME_CHARS = 48
 MIN_FREQ_HZ = 20.0
 MAX_FREQ_HZ = 20000.0
 MIN_Q = 0.2
 MAX_Q = 10.0
 FILTER_EPSILON_DB = 0.05
+STOCK_PROFILE_PREFIX = "stock:"
+CUSTOM_PROFILE_PREFIX = "custom_"
+_CUSTOM_PROFILE_ID_RE = re.compile(r"^custom_[a-f0-9]{12}$")
+PREVIEW_POINT_COUNT = 121
 
-DEFAULT_PREVIEW_FREQS: tuple[float, ...] = (
-    20, 25, 31.5, 40, 50, 63, 80, 100, 125, 160, 200, 250, 315, 400,
-    500, 630, 800, 1000, 1250, 1600, 2000, 2500, 3150, 4000, 5000,
-    6300, 8000, 10000, 12500, 16000, 20000,
+DEFAULT_PREVIEW_FREQS: tuple[float, ...] = tuple(
+    round(
+        MIN_FREQ_HZ * ((MAX_FREQ_HZ / MIN_FREQ_HZ) ** (i / (PREVIEW_POINT_COUNT - 1))),
+        3,
+    )
+    for i in range(PREVIEW_POINT_COUNT)
 )
 
 
@@ -278,15 +289,241 @@ class SoundProfile:
         }
 
 
-def curve_payload() -> list[dict[str, str]]:
+@dataclass(frozen=True)
+class ProfileLibraryEntry:
+    """One named preference profile.
+
+    Built-in stock entries are generated from ``CURVE_PRESETS`` at
+    runtime. Only custom entries are persisted on disk.
+    """
+
+    id: str
+    name: str
+    profile: SoundProfile
+    created_at: str
+    updated_at: str
+    builtin: bool = False
+    description: str = ""
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "ProfileLibraryEntry | None":
+        raw = raw if isinstance(raw, dict) else {}
+        profile_id = str(raw.get("id") or "").strip()
+        if not _CUSTOM_PROFILE_ID_RE.match(profile_id):
+            return None
+        created_at = str(raw.get("created_at") or _utc_now_iso())
+        updated_at = str(raw.get("updated_at") or created_at)
+        return cls(
+            id=profile_id,
+            name=_normalize_profile_name(raw.get("name")),
+            profile=SoundProfile.from_mapping(raw.get("profile")),
+            created_at=created_at,
+            updated_at=updated_at,
+            builtin=False,
+            description=str(raw.get("description") or ""),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "profile": self.profile.to_dict(),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "kind": "stock" if self.builtin else "custom",
+            "editable": not self.builtin,
+            "description": self.description,
+            "profile": self.profile.to_dict(),
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+        }
+
+
+def curve_payload() -> list[dict[str, Any]]:
     return [
         {
             "id": preset.id,
             "label": preset.label,
             "description": preset.description,
+            "filters": [
+                {
+                    "type": spec.biquad_type,
+                    "freq_hz": spec.freq,
+                    "gain_db": spec.gain,
+                    "q": spec.q,
+                    "slope": spec.slope,
+                }
+                for spec in preset.filters
+            ],
         }
         for preset in CURVE_PRESETS
     ]
+
+
+def _normalize_profile_name(value: Any, default: str = "Custom Profile") -> str:
+    name = " ".join(str(value or "").split())
+    if not name:
+        name = default
+    return name[:MAX_PROFILE_NAME_CHARS]
+
+
+def _stock_profile_entries() -> tuple[ProfileLibraryEntry, ...]:
+    return tuple(
+        ProfileLibraryEntry(
+            id=f"{STOCK_PROFILE_PREFIX}{preset.id}",
+            name=preset.label,
+            profile=SoundProfile(curve_id=preset.id, updated_at=""),
+            created_at="",
+            updated_at="",
+            builtin=True,
+            description=preset.description,
+        )
+        for preset in CURVE_PRESETS
+    )
+
+
+def profile_library_payload(
+    custom_entries: Iterable[ProfileLibraryEntry] = (),
+) -> list[dict[str, Any]]:
+    return [
+        *(entry.to_payload() for entry in _stock_profile_entries()),
+        *(entry.to_payload() for entry in custom_entries),
+    ]
+
+
+def load_profile_library(path: str | Path | None = None) -> tuple[ProfileLibraryEntry, ...]:
+    library_path = Path(
+        path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
+    )
+    try:
+        raw = json.loads(library_path.read_text())
+    except FileNotFoundError:
+        return ()
+    except (OSError, json.JSONDecodeError) as e:
+        logger.warning("could not read sound profile library %s: %s", library_path, e)
+        return ()
+    raw_profiles = raw.get("profiles") if isinstance(raw, dict) else raw
+    if not isinstance(raw_profiles, list):
+        return ()
+    entries: list[ProfileLibraryEntry] = []
+    seen: set[str] = set()
+    for item in raw_profiles:
+        entry = ProfileLibraryEntry.from_mapping(item)
+        if entry is None or entry.id in seen:
+            continue
+        entries.append(entry)
+        seen.add(entry.id)
+        if len(entries) >= MAX_CUSTOM_PROFILES:
+            break
+    return tuple(entries)
+
+
+def save_profile_library(
+    entries: Iterable[ProfileLibraryEntry],
+    path: str | Path | None = None,
+) -> None:
+    library_path = Path(
+        path or os.environ.get("JASPER_SOUND_PROFILE_LIBRARY_PATH", PROFILE_LIBRARY_PATH)
+    )
+    library_path.parent.mkdir(parents=True, exist_ok=True)
+    custom_entries = [entry for entry in entries if not entry.builtin][
+        :MAX_CUSTOM_PROFILES
+    ]
+    data = (
+        json.dumps(
+            {
+                "version": 1,
+                "profiles": [entry.to_dict() for entry in custom_entries],
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    )
+    _atomic_write_text(library_path, data)
+
+
+def _new_custom_profile_id(existing: Iterable[ProfileLibraryEntry]) -> str:
+    seen = {entry.id for entry in existing}
+    while True:
+        profile_id = f"{CUSTOM_PROFILE_PREFIX}{uuid.uuid4().hex[:12]}"
+        if profile_id not in seen:
+            return profile_id
+
+
+def save_named_profile(
+    profile: SoundProfile,
+    *,
+    name: str | None,
+    path: str | Path | None = None,
+    profile_id: str | None = None,
+) -> ProfileLibraryEntry:
+    entries = list(load_profile_library(path))
+    now = _utc_now_iso()
+    normalized = _normalize_profile_name(name)
+    stamped = profile.with_timestamp()
+    if profile_id and _CUSTOM_PROFILE_ID_RE.match(profile_id):
+        for index, entry in enumerate(entries):
+            if entry.id == profile_id:
+                updated = ProfileLibraryEntry(
+                    id=entry.id,
+                    name=normalized if name is not None else entry.name,
+                    profile=stamped,
+                    created_at=entry.created_at,
+                    updated_at=now,
+                )
+                entries[index] = updated
+                save_profile_library(entries, path)
+                return updated
+    if len(entries) >= MAX_CUSTOM_PROFILES:
+        raise ValueError(f"profile library is limited to {MAX_CUSTOM_PROFILES} customs")
+    entry = ProfileLibraryEntry(
+        id=_new_custom_profile_id(entries),
+        name=normalized,
+        profile=stamped,
+        created_at=now,
+        updated_at=now,
+    )
+    entries.append(entry)
+    save_profile_library(entries, path)
+    return entry
+
+
+def rename_named_profile(
+    profile_id: str,
+    *,
+    name: str,
+    path: str | Path | None = None,
+) -> ProfileLibraryEntry:
+    entries = list(load_profile_library(path))
+    now = _utc_now_iso()
+    for index, entry in enumerate(entries):
+        if entry.id == profile_id:
+            renamed = ProfileLibraryEntry(
+                id=entry.id,
+                name=_normalize_profile_name(name),
+                profile=entry.profile,
+                created_at=entry.created_at,
+                updated_at=now,
+            )
+            entries[index] = renamed
+            save_profile_library(entries, path)
+            return renamed
+    raise ValueError(f"unknown custom sound profile: {profile_id}")
+
+
+def delete_named_profile(profile_id: str, *, path: str | Path | None = None) -> None:
+    entries = list(load_profile_library(path))
+    kept = [entry for entry in entries if entry.id != profile_id]
+    if len(kept) == len(entries):
+        raise ValueError(f"unknown custom sound profile: {profile_id}")
+    save_profile_library(kept, path)
 
 
 def _curve_filters(curve_id: str) -> tuple[FilterSpec, ...]:
@@ -489,13 +726,17 @@ def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
     )
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n"
+    _atomic_write_text(profile_path, data)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
     with tempfile.NamedTemporaryFile(
         "w",
-        dir=profile_path.parent,
-        prefix=f".{profile_path.name}.",
+        dir=path.parent,
+        prefix=f".{path.name}.",
         suffix=".tmp",
         delete=False,
     ) as f:
-        f.write(data)
+        f.write(text)
         tmp_name = f.name
-    os.replace(tmp_name, profile_path)
+    os.replace(tmp_name, path)

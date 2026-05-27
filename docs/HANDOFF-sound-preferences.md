@@ -7,8 +7,9 @@ Current operational truth for the `/sound/` preference-EQ layer.
 The sound-preference wizard is the independent preference-tuning layer
 for users who want to shape the speaker without running room
 correction. It lets users apply stock sound curves, simple Bass / Mid /
-Treble, and bounded advanced PEQ bands. It is deliberately separate
-from `/correction/`:
+Treble, bounded advanced PEQ bands, and named custom profiles copied
+from any stock or edited draft. It is deliberately separate from
+`/correction/`:
 
 - `/correction/` measures the room and emits room PEQs.
 - `/sound/` applies user preference shaping after those room PEQs.
@@ -20,7 +21,34 @@ The advanced parametric editor is intentionally touch-first: users
 adjust filter type, frequency, gain, and Q/width with controls while the
 graph visualizes the total curve and highlights the selected band.
 Dragging points on the graph is deferred; the graph is a display
-surface, not the state authority.
+surface, not the state authority. Advanced PEQ bands show a vertical
+frequency marker and, for peaking filters, a translucent width region
+even when gain is still 0 dB, so a newly-added band has a visible place
+on the response chart before it changes the sound.
+
+The editable taste layer has two exclusive modes:
+
+- **Basic** — Bass / Mid / Treble.
+- **Advanced PEQ** — bounded parametric bands with exact Hz entry plus
+  a log-frequency slider for fast touch adjustment.
+
+The saved `SoundProfile` schema can represent both simple EQ and PEQ
+for compatibility, but the `/sound/` UI submits one mode at a time:
+Basic omits PEQ from the outgoing draft, and Advanced PEQ zeros
+Bass / Mid / Treble in the outgoing draft. Stock sound curves remain
+available in either mode. There is one compatibility exception: profiles
+created before this split that already contain both Basic EQ and PEQ are
+preserved as mixed profiles until the user explicitly taps Basic or
+Advanced PEQ, which normalizes the draft into the selected mode.
+
+The profile picker has two layers:
+
+- **Stock** profiles are generated from built-in curves: Flat,
+  Harman-style, and B&K-style. They are not persisted or editable.
+- **Custom** profiles live in `/var/lib/jasper/sound_profiles.json`.
+  Users can save a copy from any stock/draft state, update it, rename
+  it, or delete it. Custom profile edits do not touch CamillaDSP until
+  the user auditions or saves/applies the draft.
 
 The page now has explicit compare semantics:
 
@@ -85,6 +113,19 @@ inspect:
 Anything else is treated as a custom config and rejected rather than
 silently overwritten. This is intentional fail-closed behavior.
 
+The active saved profile and named profile library are intentionally
+separate files:
+
+```text
+/var/lib/jasper/sound_profile.json
+/var/lib/jasper/sound_profiles.json
+```
+
+`sound_profile.json` answers "what preference profile is currently
+saved/applied?" `sound_profiles.json` answers "which named custom
+profiles can the user load as a draft?" This separation keeps Bypass /
+Saved / Draft and future AI proposals simple.
+
 ## Apply Semantics
 
 `/sound/preview`:
@@ -92,6 +133,15 @@ silently overwritten. This is intentional fail-closed behavior.
 1. Parses and clamps the posted `SoundProfile`.
 2. Returns approximate total and component response previews.
 3. Does not touch CamillaDSP or disk.
+
+`/sound/profiles/save`, `/sound/profiles/rename`, and
+`/sound/profiles/delete`:
+
+1. Require the shared JSON CSRF header.
+2. Mutate only `/var/lib/jasper/sound_profiles.json`.
+3. Never load a CamillaDSP config and never change
+   `/var/lib/jasper/sound_profile.json`.
+4. Return the refreshed profile-library payload for the UI picker.
 
 `/sound/audition`:
 
@@ -146,7 +196,7 @@ silently overwritten. This is intentional fail-closed behavior.
   doctor failure.
 
 `/state` and `/sound/state` expose the saved sound profile plus the
-latest DSP apply record:
+profile-library picker payload and latest DSP apply record:
 
 ```json
 {
@@ -186,6 +236,13 @@ can be diagnosed without scraping journal logs.
   correction.
 - The graph is visualization only. The canonical editable state is the
   bounded `SoundProfile` JSON model.
+- Basic and Advanced PEQ are exclusive for newly-created drafts. Existing
+  mixed profiles from the older combined UI must not silently lose their
+  hidden Basic EQ; preserve them until an explicit mode switch normalizes
+  the draft.
+- Named custom profiles are draft templates. Loading, renaming, saving,
+  or deleting one must not change live audio unless the user explicitly
+  auditions or applies.
 - Unsaved auditions must never persist profile state. They may leave
   `sound_audition.yml` active until the user switches Bypass/Saved/Draft
   or saves; that is expected and observable via the DSP apply record.
@@ -194,8 +251,7 @@ can be diagnosed without scraping journal logs.
 
 - AI helper that proposes bounded `SoundProfile` edits and asks the user
   to approve before applying.
-- Named user presets / profile library. Today there is one editable
-  saved custom profile built from stock curve + simple EQ + PEQ bands.
+- Optional profile export/import once we know what users want to share.
 - More precise loudness matching if listening tests show the common
   headroom anchor is not enough.
 - Optional desktop-only draggable graph handles. Keep mobile/touch
