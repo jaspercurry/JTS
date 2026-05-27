@@ -124,9 +124,29 @@ def _reset_shutdown_and_stub_sd(monkeypatch):
     sd_mod = MagicMock()
     sd_mod.RawOutputStream = MagicMock(return_value=out_stream)
     monkeypatch.setattr(aec_bridge, "sd", sd_mod)
+    aec_bridge._bridge_stats.reset()
     yield
     aec_bridge._shutdown.clear()
     _shutdown.clear()
+    aec_bridge._bridge_stats.reset()
+
+
+def test_bridge_stats_snapshot_writes_monotonic_counters(tmp_path):
+    path = tmp_path / "aec_bridge_stats.json"
+    stats = aec_bridge._BridgeStats()
+    stats.inc("frames_processed", 3)
+    stats.inc_nested("queue_drops", "mic", 2)
+    stats.inc_nested("packets_sent_by_leg", "on", 1)
+
+    stats.write_snapshot(path)
+
+    import json
+    data = json.loads(path.read_text())
+    assert data["schema_version"] == aec_bridge.BRIDGE_STATS_SCHEMA_VERSION
+    assert data["pid"] > 0
+    assert data["counters"]["frames_processed"] == 3
+    assert data["counters"]["queue_drops"]["mic"] == 2
+    assert data["counters"]["packets_sent_by_leg"]["on"] == 1
 
 
 def test_raises_bridge_stalled_at_threshold(monkeypatch):

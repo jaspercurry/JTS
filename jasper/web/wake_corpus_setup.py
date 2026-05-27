@@ -55,7 +55,7 @@ import threading
 import time
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -174,8 +174,18 @@ BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
     "JASPER_WAKE_CORPUS_BRIDGE_ENV",
     "/var/lib/jasper/wake_corpus_bridge.env",
 ))
+BRIDGE_STATS_PATH = Path(os.environ.get(
+    "JASPER_AEC_BRIDGE_STATS_PATH",
+    "/run/jasper/aec_bridge_stats.json",
+))
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
+BRIDGE_CORPUS_OUTPUT_VARS = (
+    "JASPER_AEC_DTLN_ENABLED",
+    "JASPER_AEC_CORPUS_REF_ENABLED",
+    "JASPER_AEC_CORPUS_USB_ENABLED",
+    "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
+)
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
 USB_AGC_CONTROL = "Auto Gain Control"
@@ -210,14 +220,27 @@ def bridge_output_status() -> dict[str, Any]:
     """Current bridge corpus-output flags, as the UI should present
     them before beginning a session.
     """
-    env = _read_bridge_env()
-    return {
+    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    corpus_env = read_env_file(str(BRIDGE_CORPUS_ENV_PATH))
+    env: dict[str, str] = {}
+    env.update(system_env)
+    env.update(corpus_env)
+    recorder_outputs = {
+        "dtln": _env_truthy(corpus_env.get("JASPER_AEC_DTLN_ENABLED")),
+        "ref": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
+        "usb": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
+        "usb_dtln": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
+    }
+    status = {
         "dtln": _env_truthy(env.get("JASPER_AEC_DTLN_ENABLED")),
         "ref": _env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
+        "recorder_outputs": recorder_outputs,
     }
+    status["active"] = any(key in corpus_env for key in BRIDGE_CORPUS_OUTPUT_VARS)
+    return status
 
 
 def missing_bridge_outputs_for_session(
@@ -295,6 +318,192 @@ def usb_mic_status() -> dict[str, Any]:
     return status
 
 
+def read_bridge_stats_snapshot() -> dict[str, Any] | None:
+    """Read the bridge's monotonic capture counters from tmpfs.
+
+    Returns None when the deployed bridge predates stats support, is not
+    running, or the file is mid-write/corrupt. The recorder stores that
+    as `capture_health.status=unknown` instead of pretending the clip is
+    clean.
+    """
+    try:
+        data = json.loads(BRIDGE_STATS_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    counters = data.get("counters")
+    if not isinstance(counters, dict):
+        return None
+    return data
+
+
+def _nested_int(data: dict[str, Any], *path: str) -> int:
+    current: Any = data
+    for key in path:
+        if not isinstance(current, dict):
+            return 0
+        current = current.get(key, 0)
+    try:
+        return int(current)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _bridge_counter_delta(
+    start: dict[str, Any] | None,
+    stop: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if start is None or stop is None:
+        return {
+            "available": False,
+            "same_process": False,
+            "reason": "bridge stats unavailable",
+        }
+    same_process = (
+        start.get("pid") == stop.get("pid")
+        and start.get("started_epoch_sec") == stop.get("started_epoch_sec")
+    )
+    if not same_process:
+        return {
+            "available": True,
+            "same_process": False,
+            "reason": "bridge restarted during recording",
+            "start": _bridge_identity(start),
+            "stop": _bridge_identity(stop),
+        }
+    start_counters = start.get("counters") if isinstance(start.get("counters"), dict) else {}
+    stop_counters = stop.get("counters") if isinstance(stop.get("counters"), dict) else {}
+
+    def diff(*path: str) -> int:
+        return max(0, _nested_int(stop_counters, *path) - _nested_int(start_counters, *path))
+
+    queue_drops = {
+        key: diff("queue_drops", key)
+        for key in ("mic", "raw0", "usb", "ref")
+    }
+    udp_drops = {
+        leg: diff("udp_send_drops_by_leg", leg)
+        for leg in LEGS
+    }
+    packets_sent = {
+        leg: diff("packets_sent_by_leg", leg)
+        for leg in LEGS
+    }
+    return {
+        "available": True,
+        "same_process": True,
+        "start": _bridge_identity(start),
+        "stop": _bridge_identity(stop),
+        "frames_processed": diff("frames_processed"),
+        "ref_starved_frames": diff("ref_starved_frames"),
+        "queue_drops": queue_drops,
+        "udp_send_drops_by_leg": udp_drops,
+        "packets_sent_by_leg": packets_sent,
+    }
+
+
+def _bridge_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pid": snapshot.get("pid"),
+        "started_epoch_sec": snapshot.get("started_epoch_sec"),
+        "updated_epoch_sec": snapshot.get("updated_epoch_sec"),
+    }
+
+
+def _leg_bridge_drop_counts(leg: str, bridge_delta: dict[str, Any]) -> dict[str, int]:
+    queue_drops = bridge_delta.get("queue_drops")
+    udp_drops = bridge_delta.get("udp_send_drops_by_leg")
+    if not isinstance(queue_drops, dict):
+        queue_drops = {}
+    if not isinstance(udp_drops, dict):
+        udp_drops = {}
+    counts: dict[str, int] = {}
+    if leg in ("on", "off", "dtln"):
+        counts["mic_queue_full"] = int(queue_drops.get("mic", 0))
+    if leg in ("on", "dtln", "ref", "usb_webrtc", "usb_dtln"):
+        counts["ref_queue_full"] = int(queue_drops.get("ref", 0))
+    if leg == "raw0":
+        counts["raw0_queue_full"] = int(queue_drops.get("raw0", 0))
+    if leg in ("usb_raw", "usb_webrtc", "usb_dtln"):
+        counts["usb_queue_full"] = int(queue_drops.get("usb", 0))
+    counts["udp_send_drops"] = int(udp_drops.get(leg, 0))
+    if leg in ("on", "dtln", "usb_webrtc", "usb_dtln"):
+        counts["ref_starved_frames"] = int(bridge_delta.get("ref_starved_frames", 0))
+    return counts
+
+
+def build_capture_health(
+    *,
+    wall_duration_sec: float,
+    buffers: dict[str, list[np.ndarray]],
+    bridge_start: dict[str, Any] | None,
+    bridge_stop: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build per-clip capture provenance for metadata sidecars."""
+    bridge_delta = _bridge_counter_delta(bridge_start, bridge_stop)
+    overall_status = "clean"
+    notes: list[str] = []
+    if not bridge_delta.get("available"):
+        overall_status = "unknown"
+        notes.append("bridge stats unavailable")
+    elif not bridge_delta.get("same_process"):
+        overall_status = "compromised"
+        notes.append("bridge restarted during recording")
+
+    legs: dict[str, Any] = {}
+    max_reasonable_delta = max(0.25, wall_duration_sec * 0.20)
+    for leg, frames in buffers.items():
+        samples = int(sum(len(frame) for frame in frames))
+        packets = len(frames)
+        audio_duration_sec = samples / SAMPLE_RATE_HZ if SAMPLE_RATE_HZ else 0.0
+        delta_sec = audio_duration_sec - wall_duration_sec
+        leg_status = "clean"
+        leg_notes: list[str] = []
+        if packets == 0:
+            leg_status = "compromised"
+            leg_notes.append("no packets received")
+        elif abs(delta_sec) > max_reasonable_delta:
+            leg_status = "warning"
+            leg_notes.append("audio duration differs from wall duration")
+
+        drop_counts = _leg_bridge_drop_counts(leg, bridge_delta)
+        hard_drop_total = sum(
+            count for key, count in drop_counts.items()
+            if key != "ref_starved_frames"
+        )
+        if hard_drop_total > 0:
+            leg_status = "compromised"
+            leg_notes.append("bridge reported upstream drop(s)")
+        elif drop_counts.get("ref_starved_frames", 0) > 0 and leg_status == "clean":
+            leg_status = "warning"
+            leg_notes.append("bridge reused stale reference frame(s)")
+
+        if leg_status == "compromised":
+            overall_status = "compromised"
+        elif leg_status == "warning" and overall_status == "clean":
+            overall_status = "warning"
+
+        legs[leg] = {
+            "status": leg_status,
+            "packets": packets,
+            "samples": samples,
+            "audio_duration_sec": audio_duration_sec,
+            "duration_delta_sec": delta_sec,
+            "bridge_drop_counts": drop_counts,
+            "notes": leg_notes,
+        }
+
+    return {
+        "schema_version": 1,
+        "status": overall_status,
+        "wall_duration_sec": wall_duration_sec,
+        "legs": legs,
+        "bridge_delta": bridge_delta,
+        "notes": notes,
+    }
+
+
 def restart_aec_bridge() -> None:
     """Restart the bridge and wait for systemd to report the outcome.
 
@@ -368,6 +577,52 @@ def enable_bridge_outputs_for_session(
             logger.warning(
                 "bridge env rollback restart failed after corpus-output "
                 "enable failure: %s",
+                rollback_error,
+            )
+        raise
+
+
+def disable_bridge_corpus_outputs() -> None:
+    """Return the bridge to production-light corpus output mode.
+
+    We remove only recorder-owned output overrides so the bridge falls
+    back to the reconciler's production intent. This matters for DTLN:
+    `JASPER_AEC_DTLN_ENABLED` is also the underlying production wake-leg
+    flag written by `jasper-aec-reconcile`, so cleanup must not force it
+    off when the /system Wake detection card intentionally enabled it.
+    Unrelated settings such as the selected USB mic device are preserved.
+    """
+    env_path = str(BRIDGE_CORPUS_ENV_PATH)
+    existed = BRIDGE_CORPUS_ENV_PATH.exists()
+    old_values = read_env_file(env_path)
+    values = dict(old_values)
+    for key in BRIDGE_CORPUS_OUTPUT_VARS:
+        values.pop(key, None)
+    if values:
+        write_env_file(env_path, values, mode=0o644)
+    else:
+        delete_env_file(env_path)
+    try:
+        restart_aec_bridge()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ):
+        if existed:
+            write_env_file(env_path, old_values, mode=0o644)
+        else:
+            delete_env_file(env_path)
+        try:
+            restart_aec_bridge()
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as rollback_error:
+            logger.warning(
+                "bridge env rollback restart failed after corpus-output "
+                "disable failure: %s",
                 rollback_error,
             )
         raise
@@ -458,6 +713,7 @@ class ClipMetadata:
     deleted: bool = False
     auto_stopped: bool = False
     notes: str = ""
+    capture_health: dict[str, Any] = field(default_factory=dict)
 
     def to_json(self) -> dict[str, Any]:
         return asdict(self)
@@ -509,6 +765,8 @@ class RecordingTask:
         self._task: asyncio.Task | None = None
         self._stack: AsyncExitStack | None = None
         self._start_monotonic: float = 0.0
+        self._bridge_stats_start: dict[str, Any] | None = None
+        self._bridge_stats_stop: dict[str, Any] | None = None
         # Live RMS of the most recent AEC ON frame, read by the SSE
         # level-meter handler. Written from the asyncio loop thread,
         # read from HTTP handler threads — single-float reads/writes
@@ -538,6 +796,7 @@ class RecordingTask:
             raise
 
         self._start_monotonic = time.monotonic()
+        self._bridge_stats_start = read_bridge_stats_snapshot()
         self._task = asyncio.create_task(self._collect_all())
 
     async def _collect_all(self) -> None:
@@ -592,7 +851,16 @@ class RecordingTask:
             except Exception as e:
                 logger.warning("cleanup raised: %s", e)
             self._stack = None
+        self._bridge_stats_stop = read_bridge_stats_snapshot()
         return result
+
+    def capture_health(self, wall_duration_sec: float) -> dict[str, Any]:
+        return build_capture_health(
+            wall_duration_sec=wall_duration_sec,
+            buffers=self._buffers,
+            bridge_start=self._bridge_stats_start,
+            bridge_stop=self._bridge_stats_stop,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1015,6 +1283,7 @@ class RecordingBackend:
         pcm_per_leg = self._submit(task.stop())
         stop_ts = datetime.now(timezone.utc).isoformat(timespec="milliseconds")
         duration_sec = task.elapsed_sec()
+        capture_health = task.capture_health(duration_sec)
 
         # Pick the next sequence number. Sequence is per-session, not
         # per-condition, so filenames stay unique across the whole
@@ -1056,6 +1325,7 @@ class RecordingBackend:
             files=files,
             deleted=False,
             auto_stopped=auto,
+            capture_health=capture_health,
         )
         with self._lock:
             self._clips.append(clip)
@@ -1689,11 +1959,51 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(clip.to_json())
             return
 
+        if path == "/api/bridge-outputs":
+            action = (body.get("action") or "").strip()
+            if action != "disable":
+                self._send_error_json(400, "action must be disable")
+                return
+            if self.backend.is_recording():
+                self._send_error_json(
+                    409,
+                    "stop the current recording before disabling bridge outputs",
+                )
+                return
+            try:
+                disable_bridge_corpus_outputs()
+            except subprocess.CalledProcessError as e:
+                detail = (e.stderr or e.stdout or str(e)).strip()
+                msg = (
+                    f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                    "restart failed and the env was rolled back"
+                )
+                if detail:
+                    msg = f"{msg}: {detail[-500:]}"
+                self._send_error_json(500, msg)
+                return
+            except subprocess.TimeoutExpired:
+                self._send_error_json(
+                    500,
+                    f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                    "restart timed out and the env was rolled back",
+                )
+                return
+            except OSError as e:
+                self._send_error_json(
+                    500,
+                    f"failed to disable bridge outputs: {e}",
+                )
+                return
+            self._send_json({"bridge_outputs": bridge_output_status()})
+            return
+
         if path == "/api/voice-daemon":
             action = (body.get("action") or "").strip()
             if action not in ("start", "stop"):
                 self._send_error_json(400, "action must be start or stop")
                 return
+            disable_outputs = bool(body.get("disable_bridge_outputs", False))
             # Refuse to start jasper-voice while a recording is in
             # progress: starting it would try to bind UDP ports the
             # recording owns, sending the daemon into a restart loop
@@ -1707,6 +2017,32 @@ class _Handler(BaseHTTPRequestHandler):
                     "can't bind UDP ports the recording is using",
                 )
                 return
+            if action == "start" and disable_outputs:
+                try:
+                    disable_bridge_corpus_outputs()
+                except subprocess.CalledProcessError as e:
+                    detail = (e.stderr or e.stdout or str(e)).strip()
+                    msg = (
+                        f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                        "restart failed and the env was rolled back"
+                    )
+                    if detail:
+                        msg = f"{msg}: {detail[-500:]}"
+                    self._send_error_json(500, msg)
+                    return
+                except subprocess.TimeoutExpired:
+                    self._send_error_json(
+                        500,
+                        f"could not disable bridge outputs; {BRIDGE_UNIT} "
+                        "restart timed out and the env was rolled back",
+                    )
+                    return
+                except OSError as e:
+                    self._send_error_json(
+                        500,
+                        f"failed to disable bridge outputs: {e}",
+                    )
+                    return
             try:
                 subprocess.run(
                     ["systemctl", action, VOICE_UNIT], check=True,
@@ -1717,6 +2053,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({
                 "action": action,
                 "voice_daemon_active": voice_daemon_active(),
+                "bridge_outputs": bridge_output_status(),
             })
             return
 
@@ -2056,6 +2393,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       <button id="voice-toggle" style="margin-left:auto">…</button>
     </div>
     <div class="row">
+      <label>Corpus bridge:</label>
+      <span id="bridge-output-status" class="pill gray">checking…</span>
+      <button id="bridge-output-disable" style="margin-left:auto">Return to production mode</button>
+    </div>
+    <div class="row">
       <label>Session:</label>
       <span id="session-id">(no session)</span>
     </div>
@@ -2261,6 +2603,29 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const s = await api('GET', 'api/status');
         const voiceEl = $('voice-status');
         const toggleEl = $('voice-toggle');
+        const bridgeEl = $('bridge-output-status');
+        const bridgeBtn = $('bridge-output-disable');
+        const bridgeOutputs = s.bridge_outputs || {};
+        const recorderOutputs = bridgeOutputs.recorder_outputs || {};
+        const activeBridgeLabels = [];
+        if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
+        if (recorderOutputs.ref) activeBridgeLabels.push('ref');
+        if (recorderOutputs.usb) activeBridgeLabels.push('USB');
+        if (recorderOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
+        if (activeBridgeLabels.length) {
+          bridgeEl.textContent = `ON: ${activeBridgeLabels.join(', ')}`;
+          bridgeEl.className = 'pill red';
+          bridgeBtn.disabled = s.is_recording;
+        } else if (bridgeOutputs.active) {
+          bridgeEl.textContent = 'cleanup pending';
+          bridgeEl.className = 'pill red';
+          bridgeBtn.disabled = s.is_recording;
+        } else {
+          bridgeEl.textContent = 'production mode';
+          bridgeEl.className = 'pill green';
+          bridgeBtn.disabled = true;
+        }
+        bridgeBtn.onclick = disableBridgeOutputs;
         if (s.voice_daemon_active) {
           voiceEl.textContent = 'RUNNING';
           voiceEl.className = 'pill red';
@@ -2272,7 +2637,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           voiceEl.textContent = 'stopped';
           voiceEl.className = 'pill green';
           toggleEl.textContent = 'Start jasper-voice';
-          toggleEl.onclick = () => toggleVoice('start');
+          toggleEl.onclick = () => toggleVoice('start', bridgeOutputs.active);
           // Disable the start-jasper-voice button while a recording is
           // in progress — starting it would try to bind UDP ports the
           // recording owns, sending the daemon into a restart loop.
@@ -2308,9 +2673,25 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       } catch (e) { showErr(`status: ${e.message}`); }
     }
 
-    async function toggleVoice(action) {
+    async function disableBridgeOutputs() {
       try {
-        await api('POST', 'api/voice-daemon', {action});
+        await api('POST', 'api/bridge-outputs', {action: 'disable'});
+        await refreshStatus();
+      } catch (e) { showErr(`bridge outputs: ${e.message}`); }
+    }
+
+    async function toggleVoice(action, bridgeOutputsActive = false) {
+      const payload = {action};
+      if (action === 'start' && bridgeOutputsActive) {
+        const ok = confirm(
+          'Corpus bridge outputs are still enabled.\\n\\n' +
+          'Return to production bridge mode before starting jasper-voice?'
+        );
+        if (!ok) return;
+        payload.disable_bridge_outputs = true;
+      }
+      try {
+        await api('POST', 'api/voice-daemon', payload);
         await refreshStatus();
       } catch (e) { showErr(`voice-daemon ${action}: ${e.message}`); }
     }
