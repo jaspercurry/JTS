@@ -1,7 +1,9 @@
 # JTS Calibration Implementation Ladder
 
-> **Status: distilled from 2026-05-25 deep-research intake and
-> updated 2026-05-26 for active-speaker proposal v3.**
+> **Status: distilled from 2026-05-25 deep-research intake,
+> updated 2026-05-26 for active-speaker proposal v3, and updated
+> 2026-05-27 after the browser audio / target curve / FIR /
+> multi-position confidence research intake.**
 > This is the staged product/architecture path, not a task list for
 > one PR.
 
@@ -39,6 +41,60 @@ types. The immediate priority is Stage 3: first-class confidence
 reporting, per-position variance, repeatability flags, and bundle
 artifacts that let deterministic code and future LLM tools explain
 what the measurement can and cannot support.
+
+As of 2026-05-27, the first Stage 3 slice has landed: deterministic
+per-band spatial summaries, high-variance and deep-null feature flags,
+per-filter spatial-confidence annotations, and richer
+`position_analysis.json` artifacts. The remaining Stage 3 work is to
+connect browser-audio smoke-test evidence and repeatability/SNR checks
+into the same confidence model.
+
+## 2026-05-27 Sequencing Update
+
+The 2026-05-27 research intake did not change the broad architecture:
+separate room correction, target curves, preference EQ, FIR, and active
+speaker commissioning. It did change the recommended sequencing.
+
+Before this intake, the practical next-work ordering was:
+
+1. tighten room-correction UX and visualization;
+2. improve browser audio path / device confidence;
+3. expand per-position analysis and confidence reporting;
+4. keep `/sound/` target curves and preference EQ separate and usable;
+5. defer FIR / phase correction until measurement and hardware evidence
+   improved.
+
+After the intake, the recommended order is:
+
+1. **Multi-position confidence and reporting.** Make per-band and
+   per-filter confidence real: spatial variance, accepted and rejected
+   features, strategy gates, and deterministic rationale.
+2. **Browser audio smoke-test integration.** Feed mic/device/capture
+   reliability into the same confidence model: clipping, SNR,
+   processing flags, calibration status, and sample-rate mismatch.
+3. **Room-correction visualization.** Show per-position spread,
+   average, target, proposed filters, rejected nulls, confidence, and
+   recommended next action.
+4. **Sound curve / preference polish.** Keep `/sound/` independent from
+   `/correction/`, with editable preset curves, level-matched A/B, and
+   future proposed-vs-current compare.
+5. **FIR Stage 0 and readiness validation.** Add import/export and
+   runtime benchmarking before generated FIR; generated FIR waits for
+   bundle provenance, timing, spatial stability, latency/headroom, and
+   pre-ringing gates.
+
+The reason for the reorder is that confidence is the substrate that
+protects every later feature. It tells JTS whether a correction strategy
+is allowed, whether a dip is a null to refuse, whether FIR is eligible,
+whether a browser capture is trustworthy, and what deterministic facts a
+future LLM assistant can explain.
+
+Source syntheses:
+
+- [`../../research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md`](../../research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md`](../../research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md`](../../research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md`](../../research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md)
 
 ## DSP Pipeline Boundary
 
@@ -148,4 +204,4 @@ The LLM must not:
 - DRC-FIR and rePhase prior art.
 - Toole / Olive / Welti room-correction and preference research.
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27

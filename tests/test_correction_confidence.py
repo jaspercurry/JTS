@@ -28,6 +28,9 @@ def test_confidence_high_for_calibrated_multi_position_clean_capture():
     assert report["score"] >= 80
     assert report["position_variance"]["available"] is True
     assert report["position_variance"]["confidence_level"] == "high"
+    assert {
+        band["band_id"] for band in report["position_bands"]
+    } >= {"sub_bass", "bass", "upper_bass", "correction_band"}
     assert report["strategy_gates"]["balanced"]["allowed"] is True
     assert report["strategy_gates"]["assertive"]["allowed"] is True
 
@@ -79,6 +82,10 @@ def test_confidence_reports_low_position_variance_level():
 
     assert report["position_variance"]["available"] is True
     assert report["position_variance"]["confidence_level"] == "low"
+    assert any(
+        flag["kind"] == "high_position_variance"
+        for flag in report["feature_flags"]
+    )
     assert report["strategy_gates"]["assertive"]["allowed"] is False
     assert any(
         finding["code"] == "high_position_variance"
@@ -125,3 +132,52 @@ def test_confidence_variance_handles_mismatched_position_shapes():
     assert report["position_variance"]["available"] is False
     assert report["position_variance"]["reason"] == "position curve shapes differ"
     assert report["strategy_gates"]["assertive"]["allowed"] is False
+
+
+def test_confidence_variance_rejects_empty_frequency_grid():
+    report = confidence.build_confidence_report(
+        total_positions=2,
+        completed_positions=2,
+        has_mic_calibration=True,
+        input_device={"label": "USB measurement mic"},
+        capture_quality=[],
+        strategy_choice="balanced",
+        position_magnitudes=[np.array([]), np.array([])],
+        freqs_hz=np.array([]),
+    )
+
+    assert report["position_variance"]["available"] is False
+    assert report["position_variance"]["reason"] == "freqs must be non-empty 1-D"
+
+
+def test_position_report_flags_deep_nulls_and_residual_bands():
+    freqs = np.array([40.0, 80.0, 120.0, 160.0, 240.0])
+    positions = [
+        np.array([0.0, -7.0, 3.0, 2.0, 0.0]),
+        np.array([0.5, -8.0, 2.0, 2.5, -0.5]),
+        np.array([-0.5, -6.5, 3.2, 1.5, 0.2]),
+    ]
+    measured = np.mean(np.vstack(positions), axis=0)
+    target = np.zeros_like(measured)
+
+    report = confidence.build_position_report(
+        position_magnitudes=positions,
+        freqs_hz=freqs,
+        measured_db=measured,
+        target_db=target,
+        correction_band_hz=(20.0, 250.0),
+    )
+
+    assert report["available"] is True
+    correction_band = next(
+        band for band in report["bands"]
+        if band["band_id"] == "correction_band"
+    )
+    assert correction_band["residual"]["deepest_null_db"] < -6.0
+    deep_nulls = [
+        flag for flag in report["feature_flags"]
+        if flag["kind"] == "deep_null"
+    ]
+    assert deep_nulls
+    assert deep_nulls[0]["decision"] == "do_not_boost_by_default"
+    assert deep_nulls[0]["region_hz"] == [80.0, 80.0]

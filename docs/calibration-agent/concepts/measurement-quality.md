@@ -1,6 +1,6 @@
 # Measurement Quality
 
-> **Status: current guidance, updated 2026-05-26.** This file captures
+> **Status: current guidance, updated 2026-05-27.** This file captures
 > the measurement checks the correction engine and a future
 > calibration/tuning agent should understand before making
 > recommendations.
@@ -34,14 +34,16 @@ designing filters from ambiguous data.
   calibrated-mic presence, input-device metadata, capture-quality
   issues, per-position variance, and strategy gates.
 - Write `position_analysis.json` with per-position magnitude curves,
-  spatial average, and variance arrays for replayable seat-variance
-  review.
+  spatial average, variance arrays, per-band spatial-confidence
+  summaries, deep-null flags, and high-variance flags for replayable
+  seat-variance review.
+- Annotate designed filters with local spatial confidence when
+  multiple listening positions are available.
 
 ## Quality Flags To Add
 
-- Research-tuned confidence thresholds for per-filter correction
-  decisions, rather than today's intentionally simple report-level
-  heuristics.
+- Research-tuned thresholds for per-band and per-filter confidence,
+  rather than today's intentionally simple spread heuristics.
 - Sweep SNR estimate against pre-sweep ambient noise.
 - Repeatability score between nearby positions or repeated sweeps.
 - Calibration coverage warning when the selected curve does not span
@@ -97,10 +99,11 @@ The agent should say "measure again" when:
 ## Sources
 
 - 2026-05-25 deep-research reports.
+- 2026-05-27 room-correction research intake and syntheses.
 - [HouseCurve file formats](https://housecurve.com/docs/manual/file_formats)
 - [Dayton Audio Microphone Calibration Tool](https://support.daytonaudio.com/MicrophoneCalibrationTool)
 - [Dayton Audio iMM-6C](https://www.daytonaudio.com/product/1974/imm-6c-idevice-usb-c-calibrated-microphone)
 - [miniDSP UMIK-1](https://www.minidsp.com/products/acoustic-measurement/umik-1?format=pdf&type=raw)
 - [miniDSP UMIK-2 manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf)
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27

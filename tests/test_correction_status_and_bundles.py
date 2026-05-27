@@ -336,6 +336,16 @@ async def test_design_writes_result_json(tmp_path: Path):
     )
     assert "std_db" in position_analysis["variance"]
     assert "range_db" in position_analysis["variance"]
+    assert "bands" in position_analysis
+    assert any(
+        band["band_id"] == "correction_band"
+        for band in position_analysis["bands"]
+    )
+    assert "feature_flags" in position_analysis
+    assert result["position_analysis"]["bands"] == position_analysis["bands"]
+    assert result["design_report"]["position_report"]["artifact_path"] == (
+        "position_analysis.json"
+    )
 
 
 # ---------- /start auto-reset + /sessions endpoint -------------------------

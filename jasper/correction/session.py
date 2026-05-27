@@ -56,6 +56,7 @@ from . import (
     confidence,
     deconv,
     quality,
+    spatial,
     strategy,
     sweep,
 )
@@ -593,11 +594,19 @@ class MeasurementSession:
             return
 
         freqs = np.asarray(self.position_freqs, dtype=float)
-        matrix = np.vstack([
-            np.asarray(mag, dtype=float) for mag in self.position_magnitudes
-        ])
-        std_db = np.std(matrix, axis=0)
-        range_db = np.ptp(matrix, axis=0)
+        spatial_matrix, spatial_error = spatial.build_spatial_matrix(
+            self.position_magnitudes,
+            freqs,
+        )
+        if spatial_matrix is None:
+            logger.warning(
+                "position_analysis unavailable for session %s: %s",
+                self.session_id, spatial_error,
+            )
+            self.position_analysis = None
+            return
+        std_db = spatial_matrix.std_db
+        range_db = spatial_matrix.range_db
 
         def round_list(values: np.ndarray) -> list[float]:
             return [round(float(v), 3) for v in values]
@@ -605,6 +614,18 @@ class MeasurementSession:
         variance_summary = (
             (self.confidence_report or {})
             .get("position_variance")
+        )
+        target_db = (
+            np.asarray(self.target_curve.magnitude_db, dtype=float)
+            if self.target_curve is not None
+            else None
+        )
+        position_report = confidence.build_position_report(
+            position_magnitudes=self.position_magnitudes,
+            freqs_hz=freqs,
+            measured_db=np.asarray(self.measured_curve.magnitude_db, dtype=float),
+            target_db=target_db,
+            correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
         )
         payload = {
             "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
@@ -627,6 +648,8 @@ class MeasurementSession:
                 "range_db": round_list(range_db),
                 "summary": variance_summary,
             },
+            "bands": position_report["bands"],
+            "feature_flags": position_report["feature_flags"],
         }
         target_path = bundle / "position_analysis.json"
         tmp_path = target_path.with_suffix(".json.tmp")
@@ -639,7 +662,17 @@ class MeasurementSession:
             "position_count": len(self.position_magnitudes),
             "freq_count": int(freqs.shape[0]),
             "variance": variance_summary,
+            "bands": position_report["bands"],
+            "feature_flags": position_report["feature_flags"],
         }
+        if self.design_report is not None:
+            self.design_report["position_report"] = {
+                "artifact_path": "position_analysis.json",
+                "artifact_schema_version": 1,
+                "position_count": len(self.position_magnitudes),
+                "bands": position_report["bands"],
+                "feature_flags": position_report["feature_flags"],
+            }
 
     def _copy_applied_yaml(self) -> None:
         """Copy the just-emitted correction YAML into the bundle. We
@@ -969,6 +1002,7 @@ class MeasurementSession:
             log_freqs,
             target_choice=self.target_choice,
             strategy_choice=self.strategy_choice,
+            position_magnitudes=self.position_magnitudes,
         )
 
         self.measured_curve = CurveJSON(

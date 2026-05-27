@@ -114,6 +114,16 @@
   spatial average, and per-frequency variance arrays so future FIR and
   LLM tooling can inspect seat-to-seat behavior without re-running
   deconvolution.
+- ✅ **Phase 2.8 — multi-position confidence detail.** Implemented
+  2026-05-27. Adds shared spatial-spread helpers, per-band
+  multi-position summaries (`sub_bass`, `bass`, `upper_bass`,
+  `transition`, and the active correction band), deep-null and
+  high-variance feature flags, and per-filter spatial-confidence
+  annotations in `design_report`. The full report is persisted in
+  `position_analysis.json` and summarized in `result.json`, giving
+  deterministic code and future LLM tools the same explanation-ready
+  facts about which features were accepted, avoided, or too unstable
+  for aggressive correction.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -124,7 +134,15 @@
   work.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
-**Outstanding Phases 0-2.7 hardware verification** (see "Hardware
+**Current sequencing note (2026-05-27):** after the latest research
+intake, the next room-correction priority is not more filter types; it
+is a richer multi-position confidence/reporting layer. That work should
+land before browser-audio smoke-test integration, room-correction
+visualization polish, and FIR readiness validation. The rationale and
+source links live in
+[`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
+
+**Outstanding Phases 0-2.8 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
