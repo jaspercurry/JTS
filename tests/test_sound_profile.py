@@ -7,10 +7,16 @@ from jasper.sound.profile import (
     SimpleEq,
     SoundProfile,
     build_sound_filters,
+    delete_named_profile,
     estimate_compare_headroom_db,
     estimate_headroom_db,
     load_profile,
+    load_profile_library,
+    profile_library_payload,
+    rename_named_profile,
     response_component_payload,
+    response_preview,
+    save_named_profile,
     save_profile,
 )
 
@@ -140,6 +146,52 @@ def test_save_and_load_profile_round_trip(tmp_path):
     assert raw["curve_id"] == "bk"
     assert raw["simple_eq"]["bass_db"] == 2.0
     assert load_profile(path).curve_id == "bk"
+
+
+def test_profile_library_includes_stock_profiles():
+    payload = profile_library_payload()
+
+    assert [entry["id"] for entry in payload[:3]] == [
+        "stock:flat",
+        "stock:harman",
+        "stock:bk",
+    ]
+    assert payload[0]["editable"] is False
+    assert payload[1]["profile"]["curve_id"] == "harman"
+
+
+def test_preview_uses_dense_log_frequency_grid():
+    preview = response_preview(SoundProfile())
+
+    assert len(preview) == 121
+    assert preview[0]["freq_hz"] == 20.0
+    assert preview[-1]["freq_hz"] == 20000.0
+
+
+def test_named_profile_library_lifecycle(tmp_path):
+    path = tmp_path / "sound_profiles.json"
+    profile = SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0))
+
+    created = save_named_profile(profile, name="  Evening  Tune  ", path=path)
+
+    assert created.id.startswith("custom_")
+    assert created.name == "Evening Tune"
+    assert load_profile_library(path)[0].profile.curve_id == "harman"
+
+    updated = save_named_profile(
+        SoundProfile(curve_id="bk"),
+        name=None,
+        path=path,
+        profile_id=created.id,
+    )
+    assert updated.name == "Evening Tune"
+    assert updated.profile.curve_id == "bk"
+
+    renamed = rename_named_profile(created.id, name="Late Night", path=path)
+    assert renamed.name == "Late Night"
+
+    delete_named_profile(created.id, path=path)
+    assert load_profile_library(path) == ()
 
 
 def test_missing_profile_has_no_applied_timestamp(tmp_path):

@@ -5,6 +5,9 @@ URL surface (after nginx strips /sound/):
   GET  /state    persisted profile + preview + stock curve metadata
   POST /preview  preview a draft profile without touching live audio
   POST /audition validate and load a draft/bypass config without persisting
+  POST /profiles/save save or update a named custom profile
+  POST /profiles/rename rename a named custom profile
+  POST /profiles/delete delete a named custom profile
   POST /apply    validate, persist, emit CamillaDSP config, load it
 """
 
@@ -29,16 +32,22 @@ from jasper.sound.profile import (
     MAX_Q,
     MIN_FREQ_HZ,
     MIN_Q,
+    PROFILE_LIBRARY_PATH,
     PROFILE_PATH,
     SIMPLE_EQ_LIMIT_DB,
     SoundProfile,
     build_sound_filters,
     curve_payload,
+    delete_named_profile,
     estimate_compare_headroom_db,
     estimate_headroom_db,
+    load_profile_library,
     load_profile,
+    profile_library_payload,
+    rename_named_profile,
     response_component_payload,
     response_preview,
+    save_named_profile,
     save_profile,
 )
 
@@ -67,10 +76,15 @@ def _camilla():
     return CamillaController(host, port)
 
 
-def _state_payload(profile: SoundProfile) -> dict[str, Any]:
+def _state_payload(
+    profile: SoundProfile,
+    *,
+    library_path: str | Path | None = None,
+    include_library: bool = False,
+) -> dict[str, Any]:
     from jasper.dsp_apply import last_dsp_apply_state
 
-    return {
+    payload = {
         "profile": profile.to_dict(),
         "curves": curve_payload(),
         "preview": response_preview(profile),
@@ -87,12 +101,18 @@ def _state_payload(profile: SoundProfile) -> dict[str, Any]:
         },
         "last_dsp_apply": last_dsp_apply_state(),
     }
+    if include_library:
+        payload["profile_library"] = profile_library_payload(
+            load_profile_library(library_path)
+        )
+    return payload
 
 
 async def _apply_profile(
     profile: SoundProfile,
     *,
     profile_path: str | Path,
+    library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
@@ -116,7 +136,11 @@ async def _apply_profile(
         out_path,
         apply_state.op_id,
     )
-    payload = _state_payload(stamped)
+    payload = _state_payload(
+        stamped,
+        library_path=library_path,
+        include_library=library_path is not None,
+    )
     payload["active_config_path"] = str(out_path)
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
     payload["last_dsp_apply"] = apply_state.to_dict()
@@ -128,6 +152,7 @@ async def _audition_profile(
     *,
     compare_profiles: list[SoundProfile],
     profile_path: str | Path,
+    library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
@@ -154,7 +179,11 @@ async def _audition_profile(
         apply_state.op_id,
     )
     saved = load_profile(profile_path)
-    payload = _state_payload(saved)
+    payload = _state_payload(
+        saved,
+        library_path=library_path,
+        include_library=library_path is not None,
+    )
     payload.update(
         {
             "audition_profile": loaded.to_dict(),
@@ -259,6 +288,11 @@ _PAGE_CSS = f"""
   .eq-grid {{ display: grid; grid-template-columns: 1fr; gap: 1em; }}
   .eq-grid > * {{ min-width: 0; }}
   .field {{ margin: 1.1em 0; }}
+  .profile-panel {{
+    display: grid; gap: 0.55em; padding: 1em 0; border-bottom: 1px solid #eee;
+  }}
+  .profile-panel label {{ margin-top: 0; }}
+  .profile-actions {{ display: flex; flex-wrap: wrap; gap: 0.55em; }}
   select, input[type=number] {{ max-width: 100%; }}
   input[type=number] {{
     width: 100%; padding: 0.45em; border: 1px solid #bbb;
@@ -280,6 +314,16 @@ _PAGE_CSS = f"""
     background: #1db954; color: white; font-weight: 700;
   }}
   .compare-note {{ color: #666; font-size: 0.92em; }}
+  .mode-row {{
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.35em;
+    margin: 1em 0 0.25em;
+  }}
+  .mode-row button {{
+    background: #ededed; color: #222; min-height: 44px; padding: 0.65em 0.4em;
+  }}
+  .mode-row button.active {{
+    background: #0b7285; color: white; font-weight: 700;
+  }}
   .slider-row {{
     display: grid;
     grid-template-columns: minmax(3.7em, 4.5em) minmax(0, 1fr) minmax(3.8em, 4.2em);
@@ -302,18 +346,19 @@ _PAGE_CSS = f"""
   .plot .component {{ fill: none; stroke: #9aa1a8; stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.7; }}
   .plot .component.selected {{ stroke: #0b7285; stroke-width: 2; stroke-dasharray: none; opacity: 0.95; }}
   .plot .curve {{ fill: none; stroke: #1db954; stroke-width: 2.5; }}
+  .plot .band-width {{ fill: #0b7285; opacity: 0.08; }}
+  .plot .band-width.selected {{ opacity: 0.13; }}
+  .plot .band-marker {{ stroke: #0b7285; stroke-width: 1.2; stroke-dasharray: 3 4; opacity: 0.85; }}
+  .plot .band-dot {{ fill: #fbfbfb; stroke: #0b7285; stroke-width: 2; }}
+  .plot .band-dot.selected {{ fill: #0b7285; }}
   .plot.off .curve {{ stroke: #888; stroke-dasharray: 5 4; }}
   .meta-row {{
     display: flex; flex-wrap: wrap; gap: 0.8em; color: #666;
     font-size: 0.92em; margin-top: 0.5em;
   }}
   .curve-description {{ color: #666; margin-top: 0.35em; }}
-  details.advanced-eq {{
+  .advanced-eq {{
     border: 1px solid #e2e2e2; border-radius: 6px; overflow: hidden;
-  }}
-  details.advanced-eq > summary {{
-    cursor: pointer; padding: 0.8em 0.9em; background: #f7f7f7;
-    font-weight: 700; user-select: none; -webkit-user-select: none;
   }}
   .advanced-body {{ padding: 0.9em; }}
   .advanced-top {{
@@ -343,6 +388,10 @@ _PAGE_CSS = f"""
   }}
   .band-type-row label {{ margin: 0; }}
   button.tiny {{ padding: 0.45em 0.7em; font-size: 0.92em; min-height: 44px; }}
+  .freq-number {{
+    width: 100%;
+    font-variant-numeric: tabular-nums;
+  }}
   .sr-only {{
     position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
     overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
@@ -355,10 +404,15 @@ _PAGE_CSS = f"""
     }}
     .value {{ text-align: left; }}
     .band-type-row {{ grid-template-columns: 1fr; gap: 0.35em; }}
-    .segmented {{ grid-template-columns: 1fr; }}
+    .segmented, .mode-row {{ grid-template-columns: 1fr; }}
     .band-head {{ flex-wrap: wrap; }}
     .band-head label {{ flex: 1 1 100%; }}
     .band-head button {{ flex: 1 1 calc(50% - 0.3em); }}
+    .profile-actions {{
+      display: grid;
+      grid-template-columns: 1fr;
+    }}
+    .profile-actions button {{ width: 100%; min-height: 44px; }}
     .button-row {{
       display: grid;
       grid-template-columns: 1fr;
@@ -384,6 +438,17 @@ from room correction.</p>
     <input type="checkbox" id="eq-enabled" aria-label="Turn preference EQ on or off" disabled>
     <span class="track"></span>
   </label>
+</div>
+
+<div class="profile-panel">
+  <label for="profile-select">Profile</label>
+  <select id="profile-select" disabled></select>
+  <div class="compare-note" id="profile-description"></div>
+  <div class="profile-actions">
+    <button type="button" id="save-profile" class="secondary" disabled>Save Copy</button>
+    <button type="button" id="rename-profile" class="secondary" disabled>Rename</button>
+    <button type="button" id="delete-profile" class="secondary" disabled>Delete</button>
+  </div>
 </div>
 
 <div class="compare-row">
@@ -415,24 +480,30 @@ from room correction.</p>
     <span id="updated">Not applied yet</span>
   </div>
 
-  <div class="slider-row">
-    <label for="bass">Bass</label>
-    <input type="range" id="bass" min="-6" max="6" step="0.5" disabled>
-    <div class="value" id="bass-value">0.0 dB</div>
-  </div>
-  <div class="slider-row">
-    <label for="mid">Mid</label>
-    <input type="range" id="mid" min="-6" max="6" step="0.5" disabled>
-    <div class="value" id="mid-value">0.0 dB</div>
-  </div>
-  <div class="slider-row">
-    <label for="treble">Treble</label>
-    <input type="range" id="treble" min="-6" max="6" step="0.5" disabled>
-    <div class="value" id="treble-value">0.0 dB</div>
+  <div class="mode-row" role="group" aria-label="EQ editing mode">
+    <button type="button" id="mode-basic" data-mode="basic" disabled>Basic</button>
+    <button type="button" id="mode-advanced" data-mode="advanced" disabled>Advanced PEQ</button>
   </div>
 
-  <details class="advanced-eq" id="advanced-eq">
-    <summary>Advanced PEQ</summary>
+  <div id="basic-controls">
+    <div class="slider-row">
+      <label for="bass">Bass</label>
+      <input type="range" id="bass" min="-6" max="6" step="0.5" disabled>
+      <div class="value" id="bass-value">0.0 dB</div>
+    </div>
+    <div class="slider-row">
+      <label for="mid">Mid</label>
+      <input type="range" id="mid" min="-6" max="6" step="0.5" disabled>
+      <div class="value" id="mid-value">0.0 dB</div>
+    </div>
+    <div class="slider-row">
+      <label for="treble">Treble</label>
+      <input type="range" id="treble" min="-6" max="6" step="0.5" disabled>
+      <div class="value" id="treble-value">0.0 dB</div>
+    </div>
+  </div>
+
+  <section class="advanced-eq" id="advanced-controls" hidden>
     <div class="advanced-body">
       <div class="advanced-top">
         <span id="band-count">No advanced bands</span>
@@ -440,7 +511,7 @@ from room correction.</p>
       </div>
       <div class="band-list" id="band-list"></div>
     </div>
-  </details>
+  </section>
 
   <div class="button-row">
     <button id="apply" disabled>Save &amp; Apply</button>
@@ -455,10 +526,17 @@ from room correction.</p>
   var savedProfile = null;
   var draftBands = [];
   var curvesById = {};
+  var profileLibrary = [];
+  var selectedProfileId = 'stock:flat';
   var applying = false;
   var previewTimer = null;
+  var previewSeq = 0;
   var selectedBand = 0;
   var liveMode = 'saved';
+  var eqMode = 'basic';
+  var legacyMixedProfile = false;
+  var controlsEnabled = false;
+  var localPreviewFreqs = null;
   var limits = {
     simple_gain_db: 6,
     advanced_gain_db: 12,
@@ -475,18 +553,39 @@ from room correction.</p>
     v = Number(v) || 0;
     return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + ' kHz' : Math.round(v) + ' Hz';
   }
+  function fmtFreqInput(v) {
+    return String(Math.round(clamp(v, limits.min_freq_hz, limits.max_freq_hz)));
+  }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
   function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
   function clone(obj) { return JSON.parse(JSON.stringify(obj || {})); }
+  function zeroSimpleEq() {
+    return {bass_db: 0, mid_db: 0, treble_db: 0};
+  }
+  function simpleHasGain(profile) {
+    var simple = (normalizeProfile(profile).simple_eq || {});
+    return Math.abs(simple.bass_db || 0) >= 0.05 ||
+           Math.abs(simple.mid_db || 0) >= 0.05 ||
+           Math.abs(simple.treble_db || 0) >= 0.05;
+  }
+  function modeForProfile(profile) {
+    profile = normalizeProfile(profile);
+    return profile.parametric_bands.length ? 'advanced' : 'basic';
+  }
+  function escapeHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch];
+    });
+  }
   function freqToSlider(freq) {
     var lo = Math.log10(limits.min_freq_hz);
     var hi = Math.log10(limits.max_freq_hz);
-    return Math.round((Math.log10(clamp(freq, limits.min_freq_hz, limits.max_freq_hz)) - lo) / (hi - lo) * 1000);
+    return Math.round((Math.log10(clamp(freq, limits.min_freq_hz, limits.max_freq_hz)) - lo) / (hi - lo) * 4000);
   }
   function sliderToFreq(pos) {
     var lo = Math.log10(limits.min_freq_hz);
     var hi = Math.log10(limits.max_freq_hz);
-    return Math.pow(10, lo + clamp(pos, 0, 1000) / 1000 * (hi - lo));
+    return Math.pow(10, lo + clamp(pos, 0, 4000) / 4000 * (hi - lo));
   }
   function status(msg, isErr) {
     var node = el('status');
@@ -494,15 +593,20 @@ from room correction.</p>
     node.className = 'status-line' + (isErr ? ' err' : '');
   }
   function setControlsEnabled(on) {
+    controlsEnabled = !!on;
     [
       'eq-enabled', 'curve', 'bass', 'mid', 'treble', 'apply', 'revert', 'reset',
-      'add-band', 'listen-bypass', 'listen-saved', 'listen-draft'
+      'add-band', 'listen-bypass', 'listen-saved', 'listen-draft',
+      'profile-select', 'save-profile', 'rename-profile', 'delete-profile',
+      'mode-basic', 'mode-advanced'
     ].forEach(function(id) {
       el(id).disabled = !on || applying;
     });
     Array.prototype.forEach.call(el('band-list').querySelectorAll('input, select, button'), function(node) {
       node.disabled = !on || applying;
     });
+    renderMode();
+    updateProfileActions();
   }
   function normalizeProfile(raw) {
     raw = raw || {};
@@ -527,15 +631,16 @@ from room correction.</p>
     };
   }
   function profileFromInputs() {
+    var simple = eqMode === 'advanced' && !legacyMixedProfile ? zeroSimpleEq() : {
+      bass_db: Number(el('bass').value || 0),
+      mid_db: Number(el('mid').value || 0),
+      treble_db: Number(el('treble').value || 0)
+    };
     return normalizeProfile({
       enabled: el('eq-enabled').checked,
       curve_id: el('curve').value || 'flat',
-      simple_eq: {
-        bass_db: Number(el('bass').value || 0),
-        mid_db: Number(el('mid').value || 0),
-        treble_db: Number(el('treble').value || 0)
-      },
-      parametric_bands: draftBands
+      simple_eq: simple,
+      parametric_bands: eqMode === 'advanced' ? draftBands : []
     });
   }
   function bypassProfile() {
@@ -554,6 +659,56 @@ from room correction.</p>
     if (mode === 'bypass') return bypassProfile();
     if (mode === 'saved') return normalizeProfile(savedProfile);
     return profileFromInputs();
+  }
+  function profileKey(profile) {
+    return JSON.stringify(normalizeProfile(profile));
+  }
+  function profileEntry(id) {
+    return profileLibrary.find(function(entry) { return entry.id === id; }) || null;
+  }
+  function selectedProfileEntry() {
+    return profileEntry(selectedProfileId);
+  }
+  function findProfileIdFor(profile) {
+    var key = profileKey(profile);
+    var custom = profileLibrary.find(function(entry) {
+      return entry.kind === 'custom' && profileKey(entry.profile) === key;
+    });
+    if (custom) return custom.id;
+    var stock = profileLibrary.find(function(entry) {
+      return entry.kind === 'stock' && profileKey(entry.profile) === key;
+    });
+    if (stock) return stock.id;
+    return 'stock:' + (normalizeProfile(profile).curve_id || 'flat');
+  }
+  function profileNameForSave(entry) {
+    if (entry && entry.kind === 'stock') return entry.name + ' Custom';
+    if (entry) return entry.name;
+    return 'Custom Profile';
+  }
+  function updateProfileActions() {
+    var select = el('profile-select');
+    var entry = selectedProfileEntry();
+    if (select && select.value !== selectedProfileId) select.value = selectedProfileId;
+    el('profile-description').textContent = entry ? entry.description || '' : '';
+    el('save-profile').textContent = entry && entry.kind === 'custom' ? 'Update Profile' : 'Save Copy';
+    el('rename-profile').disabled = applying || !entry || entry.kind !== 'custom';
+    el('delete-profile').disabled = applying || !entry || entry.kind !== 'custom';
+  }
+  function renderMode() {
+    var isAdvanced = eqMode === 'advanced';
+    var disabled = applying || !controlsEnabled;
+    el('basic-controls').hidden = isAdvanced;
+    el('advanced-controls').hidden = !isAdvanced;
+    el('mode-basic').classList.toggle('active', !isAdvanced);
+    el('mode-advanced').classList.toggle('active', isAdvanced);
+    ['bass', 'mid', 'treble'].forEach(function(id) {
+      el(id).disabled = disabled || isAdvanced;
+    });
+    Array.prototype.forEach.call(el('band-list').querySelectorAll('input, select, button'), function(node) {
+      node.disabled = disabled || !isAdvanced;
+    });
+    el('add-band').disabled = disabled || !isAdvanced;
   }
   function syncLabels() {
     el('bass-value').textContent = fmtDb(el('bass').value);
@@ -579,7 +734,10 @@ from room correction.</p>
   }
   function syncInputs(payload) {
     limits = Object.assign(limits, payload.limits || {});
+    localPreviewFreqs = null;
+    if (payload.profile_library) populateProfiles(payload.profile_library);
     savedProfile = normalizeProfile(payload.profile || {});
+    selectedProfileId = findProfileIdFor(savedProfile);
     setFormFromProfile(savedProfile);
     renderBands();
     el('headroom').textContent = fmtDb(payload.headroom_db || 0);
@@ -588,10 +746,13 @@ from room correction.</p>
     updateAdvancedNote(savedProfile);
     renderPreview(payload, savedProfile.enabled !== false);
     updateCompareButtons(liveMode, payload.headroom_db || 0);
+    updateProfileActions();
   }
   function setFormFromProfile(profile) {
     profile = normalizeProfile(profile);
     var simple = profile.simple_eq || {};
+    eqMode = modeForProfile(profile);
+    legacyMixedProfile = eqMode === 'advanced' && simpleHasGain(profile);
     el('eq-enabled').checked = profile.enabled !== false;
     el('curve').value = profile.curve_id || 'flat';
     el('bass').value = simple.bass_db || 0;
@@ -601,6 +762,7 @@ from room correction.</p>
     syncLabels();
     updateCurveDescription(profile.curve_id || 'flat');
     updateAdvancedNote(profile);
+    renderMode();
   }
   function renderPreview(payload, enabled) {
     el('headroom').textContent = fmtDb(payload.headroom_db || 0);
@@ -611,12 +773,131 @@ from room correction.</p>
     el('plot-summary').textContent = 'Preference EQ preview. Peak boost ' + fmtDb(peak) +
       ', headroom ' + fmtDb(payload.headroom_db || 0) + '.';
   }
+  function previewFrequencies() {
+    if (localPreviewFreqs) return localPreviewFreqs;
+    localPreviewFreqs = [];
+    for (var i = 0; i <= 120; i += 1) {
+      localPreviewFreqs.push(limits.min_freq_hz * Math.pow(limits.max_freq_hz / limits.min_freq_hz, i / 120));
+    }
+    return localPreviewFreqs;
+  }
+  function specActive(spec) {
+    return Math.abs(Number(spec.gain_db || 0)) >= 0.05;
+  }
+  function responseDb(spec, freq) {
+    var safeFreq = Math.max(Number(freq) || 0, 1e-6);
+    var center = Math.max(Number(spec.freq_hz || spec.freq || 1000), 1e-6);
+    var gain = Number(spec.gain_db || spec.gain || 0);
+    var type = spec.type || spec.biquad_type || 'Peaking';
+    var x = Math.log(safeFreq / center) / Math.log(2);
+    if (type === 'Lowshelf') return gain / (1 + Math.exp(3 * x));
+    if (type === 'Highshelf') return gain / (1 + Math.exp(-3 * x));
+    var q = Math.max(Number(spec.q || 1), 1e-3);
+    var bw = 1 / q;
+    return gain / (1 + Math.pow(x / bw, 2));
+  }
+  function simpleSpecs(profile) {
+    var simple = profile.simple_eq || zeroSimpleEq();
+    return [
+      {type: 'Lowshelf', freq_hz: 105, gain_db: simple.bass_db || 0},
+      {type: 'Peaking', freq_hz: 1000, gain_db: simple.mid_db || 0, q: 0.8},
+      {type: 'Highshelf', freq_hz: 4000, gain_db: simple.treble_db || 0}
+    ];
+  }
+  function advancedSpecs(profile) {
+    return (profile.parametric_bands || []).filter(function(band) {
+      return band && band.enabled !== false;
+    }).map(function(band) {
+      return {
+        type: band.type || band.biquad_type || 'Peaking',
+        freq_hz: band.freq_hz,
+        gain_db: band.gain_db,
+        q: band.q
+      };
+    });
+  }
+  function pointsForSpecs(specs, freqs, emptyWhenFlat) {
+    specs = specs || [];
+    var active = specs.some(specActive);
+    if (emptyWhenFlat && !active) return [];
+    return freqs.map(function(freq) {
+      var db = specs.reduce(function(sum, spec) {
+        return specActive(spec) ? sum + responseDb(spec, freq) : sum;
+      }, 0);
+      return {freq_hz: Math.round(freq * 1000) / 1000, db: Math.round(db * 1000) / 1000};
+    });
+  }
+  function localPreviewPayload(profile) {
+    profile = normalizeProfile(profile);
+    var freqs = previewFrequencies();
+    if (profile.enabled === false) {
+      return {preview: pointsForSpecs([], freqs, false), components: {curve: [], simple: [], advanced: []}, headroom_db: 0};
+    }
+    var curveSpecs = ((curvesById[profile.curve_id] || {}).filters || []);
+    var simple = simpleSpecs(profile);
+    var advanced = advancedSpecs(profile);
+    var preview = pointsForSpecs(curveSpecs.concat(simple, advanced), freqs, false);
+    var peak = preview.reduce(function(max, point) {
+      return Math.max(max, Number(point.db) || 0);
+    }, 0);
+    return {
+      preview: preview,
+      components: {
+        curve: pointsForSpecs(curveSpecs, freqs, true),
+        simple: pointsForSpecs(simple, freqs, true),
+        advanced: (profile.parametric_bands || []).map(function(band, index) {
+          return {
+            index: index,
+            enabled: band.enabled !== false,
+            preview: pointsForSpecs(advancedSpecs({parametric_bands: [band]}), freqs, true)
+          };
+        })
+      },
+      headroom_db: Math.round(Math.max(0, peak) * 1000) / 1000
+    };
+  }
   function drawPath(points, cls, x, y, minDb, maxDb) {
     if (!points || !points.length) return '';
-    var d = points.map(function(p, i) {
-      return (i ? 'L' : 'M') + x(p.freq_hz) + ' ' + y(Math.max(minDb, Math.min(maxDb, p.db)));
-    }).join(' ');
+    var coords = points.map(function(p) {
+      return [x(p.freq_hz), y(Math.max(minDb, Math.min(maxDb, p.db)))];
+    });
+    var d = 'M' + coords[0][0] + ' ' + coords[0][1];
+    if (coords.length === 2) {
+      d += ' L' + coords[1][0] + ' ' + coords[1][1];
+    } else {
+      for (var i = 1; i < coords.length - 1; i += 1) {
+        var midX = (coords[i][0] + coords[i + 1][0]) / 2;
+        var midY = (coords[i][1] + coords[i + 1][1]) / 2;
+        d += ' Q' + coords[i][0] + ' ' + coords[i][1] + ' ' + midX + ' ' + midY;
+      }
+      d += ' Q' + coords[coords.length - 1][0] + ' ' + coords[coords.length - 1][1] +
+           ' ' + coords[coords.length - 1][0] + ' ' + coords[coords.length - 1][1];
+    }
     return '<path class="' + cls + '" d="' + d + '"></path>';
+  }
+  function drawBandMarkers(x, y, top, bottom, minDb, maxDb) {
+    var html = '';
+    if (eqMode !== 'advanced') return html;
+    draftBands.forEach(function(band, index) {
+      if (!band || band.enabled === false) return;
+      var selected = index === selectedBand ? ' selected' : '';
+      var freq = clamp(band.freq_hz, limits.min_freq_hz, limits.max_freq_hz);
+      var gain = clamp(band.gain_db, minDb, maxDb);
+      var cx = x(freq);
+      var cy = y(gain);
+      if ((band.type || 'Peaking') === 'Peaking') {
+        var q = Math.max(Number(band.q || 1), 0.2);
+        var lo = x(clamp(freq / Math.pow(2, 1 / q), limits.min_freq_hz, limits.max_freq_hz));
+        var hi = x(clamp(freq * Math.pow(2, 1 / q), limits.min_freq_hz, limits.max_freq_hz));
+        html += '<rect class="band-width' + selected + '" x="' + Math.min(lo, hi) + '" y="' + top +
+                '" width="' + Math.abs(hi - lo) + '" height="' + (bottom - top) + '"></rect>';
+      }
+      html += '<line class="band-marker" x1="' + cx + '" x2="' + cx + '" y1="' + top +
+              '" y2="' + bottom + '"></line>';
+      html += '<circle class="band-dot' + selected + '" cx="' + cx + '" cy="' + cy +
+              '" r="' + (selected ? 4.5 : 3.5) + '"></circle>';
+    });
+    return html;
   }
   function drawPlot(points, enabled, components) {
     var svg = el('plot');
@@ -648,6 +929,7 @@ from room correction.</p>
       html += drawPath(item.preview || [], item.index === selectedBand ? 'component selected' : 'component', x, y, minDb, maxDb);
     });
     html += drawPath(points, 'curve', x, y, minDb, maxDb);
+    html += drawBandMarkers(x, y, top, h - bottom, minDb, maxDb);
     svg.innerHTML = html;
   }
   function populateCurves(curves) {
@@ -656,6 +938,58 @@ from room correction.</p>
     el('curve').innerHTML = (curves || []).map(function(c) {
       return '<option value="' + c.id + '">' + c.label + '</option>';
     }).join('');
+  }
+  function profileOptions(entries, kind, label) {
+    var items = entries.filter(function(entry) { return entry.kind === kind; });
+    if (!items.length) return '';
+    return '<optgroup label="' + escapeHtml(label) + '">' + items.map(function(entry) {
+      return '<option value="' + escapeHtml(entry.id) + '">' + escapeHtml(entry.name) + '</option>';
+    }).join('') + '</optgroup>';
+  }
+  function populateProfiles(entries) {
+    profileLibrary = entries || [];
+    el('profile-select').innerHTML =
+      profileOptions(profileLibrary, 'stock', 'Stock') +
+      profileOptions(profileLibrary, 'custom', 'Custom');
+    updateProfileActions();
+  }
+  function loadProfileEntry(entry) {
+    if (!entry) return;
+    selectedProfileId = entry.id;
+    setFormFromProfile(entry.profile);
+    renderBands();
+    preview();
+    updateProfileActions();
+    status('Loaded ' + entry.name + ' as draft.');
+  }
+  async function mutateProfileLibrary(path, body) {
+    applying = true;
+    setControlsEnabled(true);
+    try {
+      var resp = await fetch(path, {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify(body || {})
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'profile update failed');
+      if (payload.profile_library) populateProfiles(payload.profile_library);
+      if (payload.profile_entry) selectedProfileId = payload.profile_entry.id;
+      if (payload.deleted_profile_id && selectedProfileId === payload.deleted_profile_id) {
+        selectedProfileId = findProfileIdFor(profileFromInputs());
+      }
+      if (!profileEntry(selectedProfileId) && profileLibrary.length) {
+        selectedProfileId = profileLibrary[0].id;
+      }
+      updateProfileActions();
+      return payload;
+    } catch (e) {
+      status('Could not update profiles: ' + e.message, true);
+      return null;
+    } finally {
+      applying = false;
+      setControlsEnabled(true);
+    }
   }
   function bandSummary(band, index) {
     var state = band.enabled === false ? 'off' : 'on';
@@ -680,7 +1014,6 @@ from room correction.</p>
       return '<div class="band-item' + selected + '" data-index="' + index + '">' +
         '<div class="band-head">' +
           '<label><input type="checkbox" data-kind="enabled" data-index="' + index + '"' + checked + '> Band ' + (index + 1) + '</label>' +
-          '<button type="button" class="secondary tiny" data-action="focus" data-index="' + index + '">Focus</button>' +
           '<button type="button" class="secondary tiny" data-action="delete" data-index="' + index + '">Delete</button>' +
         '</div>' +
         '<div class="band-controls" aria-label="' + bandSummary(band, index) + '">' +
@@ -689,7 +1022,7 @@ from room correction.</p>
             '<option value="Lowshelf"' + (band.type === 'Lowshelf' ? ' selected' : '') + '>Low shelf</option>' +
             '<option value="Highshelf"' + (band.type === 'Highshelf' ? ' selected' : '') + '>High shelf</option>' +
           '</select></div>' +
-          '<div class="slider-row"><label>Freq</label><input type="range" min="0" max="1000" step="1" value="' + freqToSlider(band.freq_hz) + '" data-kind="freq" data-index="' + index + '"><div class="value" data-readout="freq">' + fmtFreq(band.freq_hz) + '</div></div>' +
+          '<div class="slider-row"><label>Freq</label><input type="range" min="0" max="4000" step="1" value="' + freqToSlider(band.freq_hz) + '" data-kind="freq-slider" data-index="' + index + '"><input class="freq-number" type="number" min="' + limits.min_freq_hz + '" max="' + limits.max_freq_hz + '" step="1" value="' + fmtFreqInput(band.freq_hz) + '" data-kind="freq-number" data-index="' + index + '" aria-label="Band ' + (index + 1) + ' frequency in Hz"></div>' +
           '<div class="slider-row"><label>Gain</label><input type="range" min="-' + limits.advanced_gain_db + '" max="' + limits.advanced_gain_db + '" step="0.5" value="' + band.gain_db + '" data-kind="gain" data-index="' + index + '"><div class="value" data-readout="gain">' + fmtDb(band.gain_db) + '</div></div>' +
           '<div class="slider-row"><label>Width</label><input type="range" min="' + limits.min_q + '" max="' + limits.max_q + '" step="0.1" value="' + band.q + '" data-kind="q" data-index="' + index + '"' + qDisabled + '><div class="value" data-readout="q">' + (band.type === 'Peaking' ? fmtQ(band.q) : 'Shelf') + '</div></div>' +
         '</div>' +
@@ -702,19 +1035,25 @@ from room correction.</p>
     var item = el('band-list').querySelector('[data-index="' + index + '"]');
     var band = draftBands[index];
     if (!item || !band) return;
-    item.querySelector('[data-readout="freq"]').textContent = fmtFreq(band.freq_hz);
+    var slider = item.querySelector('[data-kind="freq-slider"]');
+    var number = item.querySelector('[data-kind="freq-number"]');
+    if (slider && document.activeElement !== slider) slider.value = freqToSlider(band.freq_hz);
+    if (number && document.activeElement !== number) number.value = fmtFreqInput(band.freq_hz);
     item.querySelector('[data-readout="gain"]').textContent = fmtDb(band.gain_db);
     item.querySelector('[data-readout="q"]').textContent = band.type === 'Peaking' ? fmtQ(band.q) : 'Shelf';
   }
   function schedulePreview() {
+    var profile = profileFromInputs();
     syncLabels();
     updateCurveDescription(el('curve').value || 'flat');
-    updateAdvancedNote(profileFromInputs());
+    updateAdvancedNote(profile);
+    renderPreview(localPreviewPayload(profile), profile.enabled !== false);
     status('Unsaved changes.');
     window.clearTimeout(previewTimer);
-    previewTimer = window.setTimeout(preview, 120);
+    previewTimer = window.setTimeout(preview, 90);
   }
   async function preview() {
+    var seq = ++previewSeq;
     try {
       var profile = profileFromInputs();
       var resp = await fetch('./preview', {
@@ -724,8 +1063,10 @@ from room correction.</p>
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'preview failed');
+      if (seq !== previewSeq) return;
       renderPreview(payload, profile.enabled !== false);
     } catch (e) {
+      if (seq !== previewSeq) return;
       status('Could not preview EQ: ' + e.message, true);
     }
   }
@@ -801,6 +1142,22 @@ from room correction.</p>
     el(id).addEventListener('input', schedulePreview);
   });
   el('curve').addEventListener('change', schedulePreview);
+  ['basic', 'advanced'].forEach(function(mode) {
+    el('mode-' + mode).addEventListener('click', function() {
+      if (eqMode === mode && !legacyMixedProfile) return;
+      eqMode = mode;
+      legacyMixedProfile = false;
+      if (mode === 'advanced') {
+        el('bass').value = 0;
+        el('mid').value = 0;
+        el('treble').value = 0;
+      }
+      syncLabels();
+      renderBands();
+      renderMode();
+      schedulePreview();
+    });
+  });
   el('apply').addEventListener('click', function() { apply(profileFromInputs()); });
   el('eq-enabled').addEventListener('change', function() {
     schedulePreview();
@@ -809,6 +1166,46 @@ from room correction.</p>
   ['bypass', 'saved', 'draft'].forEach(function(mode) {
     el('listen-' + mode).addEventListener('click', function() { audition(mode); });
   });
+  el('profile-select').addEventListener('change', function() {
+    selectedProfileId = el('profile-select').value;
+    loadProfileEntry(selectedProfileEntry());
+  });
+  el('save-profile').addEventListener('click', async function() {
+    var entry = selectedProfileEntry();
+    var profile = profileFromInputs();
+    var id = entry && entry.kind === 'custom' ? entry.id : null;
+    var name = entry && entry.kind === 'custom' ? entry.name :
+      window.prompt('Name this profile', profileNameForSave(entry));
+    if (!id && name === null) return;
+    var payload = await mutateProfileLibrary('./profiles/save', {
+      id: id,
+      name: name || profileNameForSave(entry),
+      profile: profile
+    });
+    if (payload && payload.profile_entry) {
+      status('Saved profile ' + payload.profile_entry.name + '.');
+    }
+  });
+  el('rename-profile').addEventListener('click', async function() {
+    var entry = selectedProfileEntry();
+    if (!entry || entry.kind !== 'custom') return;
+    var name = window.prompt('Rename profile', entry.name);
+    if (name === null) return;
+    var payload = await mutateProfileLibrary('./profiles/rename', {
+      id: entry.id,
+      name: name
+    });
+    if (payload && payload.profile_entry) {
+      status('Renamed profile to ' + payload.profile_entry.name + '.');
+    }
+  });
+  el('delete-profile').addEventListener('click', async function() {
+    var entry = selectedProfileEntry();
+    if (!entry || entry.kind !== 'custom') return;
+    if (!window.confirm('Delete profile "' + entry.name + '"?')) return;
+    var payload = await mutateProfileLibrary('./profiles/delete', {id: entry.id});
+    if (payload) status('Deleted profile.');
+  });
   el('add-band').addEventListener('click', function() {
     if (draftBands.length >= limits.max_parametric_bands) {
       status('Advanced EQ is limited to ' + limits.max_parametric_bands + ' bands.', true);
@@ -816,7 +1213,7 @@ from room correction.</p>
     }
     draftBands.push({enabled: true, type: 'Peaking', freq_hz: 1000, gain_db: 0, q: 1});
     selectedBand = draftBands.length - 1;
-    el('advanced-eq').open = true;
+    eqMode = 'advanced';
     renderBands();
     schedulePreview();
   });
@@ -824,11 +1221,7 @@ from room correction.</p>
     var action = ev.target.getAttribute('data-action');
     if (!action) return;
     var index = Number(ev.target.getAttribute('data-index'));
-    if (action === 'focus') {
-      selectedBand = index;
-      renderBands();
-      preview();
-    } else if (action === 'delete') {
+    if (action === 'delete') {
       draftBands.splice(index, 1);
       selectedBand = Math.max(0, Math.min(selectedBand, draftBands.length - 1));
       renderBands();
@@ -842,7 +1235,11 @@ from room correction.</p>
     if (!band || !kind) return;
     selectedBand = index;
     if (kind === 'enabled') band.enabled = ev.target.checked;
-    if (kind === 'freq') band.freq_hz = sliderToFreq(ev.target.value);
+    if (kind === 'freq-slider') band.freq_hz = sliderToFreq(ev.target.value);
+    if (kind === 'freq-number') {
+      if (String(ev.target.value).trim() === '') return;
+      band.freq_hz = clamp(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
+    }
     if (kind === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
     if (kind === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
     updateBandReadouts(index);
@@ -869,6 +1266,8 @@ from room correction.</p>
     setFormFromProfile({enabled: true, curve_id: 'flat',
                         simple_eq: {bass_db: 0, mid_db: 0, treble_db: 0},
                         parametric_bands: []});
+    selectedProfileId = 'stock:flat';
+    updateProfileActions();
     renderBands();
     preview();
     status('Draft reset to Flat. Save & Apply when ready.');
@@ -887,6 +1286,7 @@ from room correction.</p>
 def _make_handler(
     *,
     profile_path: str | Path,
+    library_path: str | Path,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> type[BaseHTTPRequestHandler]:
@@ -921,13 +1321,26 @@ def _make_handler(
                 self._send_html(_index_html(ctx["csrf_token"]))
                 return
             if path == "/state":
-                self._send_json(_state_payload(load_profile(profile_path)))
+                self._send_json(
+                    _state_payload(
+                        load_profile(profile_path),
+                        library_path=library_path,
+                        include_library=True,
+                    )
+                )
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
             path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
-            if path not in {"/apply", "/audition", "/preview"}:
+            if path not in {
+                "/apply",
+                "/audition",
+                "/preview",
+                "/profiles/save",
+                "/profiles/rename",
+                "/profiles/delete",
+            }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
             if not verify_csrf(self):
@@ -935,6 +1348,48 @@ def _make_handler(
                 return
             try:
                 raw = self._read_json()
+                if path.startswith("/profiles/"):
+                    try:
+                        if path == "/profiles/save":
+                            entry = save_named_profile(
+                                SoundProfile.from_mapping(raw.get("profile")),
+                                name=raw.get("name"),
+                                path=library_path,
+                                profile_id=raw.get("id"),
+                            )
+                            payload = _state_payload(
+                                load_profile(profile_path),
+                                library_path=library_path,
+                                include_library=True,
+                            )
+                            payload["profile_entry"] = entry.to_payload()
+                        elif path == "/profiles/rename":
+                            entry = rename_named_profile(
+                                str(raw.get("id") or ""),
+                                name=str(raw.get("name") or ""),
+                                path=library_path,
+                            )
+                            payload = _state_payload(
+                                load_profile(profile_path),
+                                library_path=library_path,
+                                include_library=True,
+                            )
+                            payload["profile_entry"] = entry.to_payload()
+                        else:
+                            deleted_id = str(raw.get("id") or "")
+                            delete_named_profile(deleted_id, path=library_path)
+                            payload = _state_payload(
+                                load_profile(profile_path),
+                                library_path=library_path,
+                                include_library=True,
+                            )
+                            payload["deleted_profile_id"] = deleted_id
+                    except OSError as e:
+                        logger.exception("sound profile library update failed")
+                        self._send_json({"error": str(e)}, status=502)
+                        return
+                    self._send_json(payload)
+                    return
                 if path == "/audition":
                     raw_profile = raw.get("profile", raw)
                 else:
@@ -959,6 +1414,7 @@ def _make_handler(
                             profile,
                             compare_profiles=compare_profiles,
                             profile_path=profile_path,
+                            library_path=library_path,
                             config_dir=config_dir,
                             camilla_factory=camilla_factory,
                         )
@@ -968,6 +1424,7 @@ def _make_handler(
                         _apply_profile(
                             profile,
                             profile_path=profile_path,
+                            library_path=library_path,
                             config_dir=config_dir,
                             camilla_factory=camilla_factory,
                         )
@@ -985,6 +1442,7 @@ def make_server(
     target,
     *,
     profile_path: str | Path | None = None,
+    library_path: str | Path | None = None,
     config_dir: str | Path | None = None,
 ) -> ThreadingHTTPServer:
     from . import _systemd
@@ -996,6 +1454,11 @@ def make_server(
             or os.environ.get(
                 "JASPER_SOUND_PROFILE_PATH",
                 PROFILE_PATH,
+            ),
+            library_path=library_path
+            or os.environ.get(
+                "JASPER_SOUND_PROFILE_LIBRARY_PATH",
+                PROFILE_LIBRARY_PATH,
             ),
             config_dir=config_dir
             or os.environ.get(
@@ -1025,6 +1488,13 @@ def main(argv: list[str] | None = None) -> int:
         default=os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH),
     )
     parser.add_argument(
+        "--library-path",
+        default=os.environ.get(
+            "JASPER_SOUND_PROFILE_LIBRARY_PATH",
+            PROFILE_LIBRARY_PATH,
+        ),
+    )
+    parser.add_argument(
         "--config-dir",
         default=os.environ.get("JASPER_SOUND_CONFIG_DIR", DEFAULT_CONFIG_DIR),
     )
@@ -1036,6 +1506,7 @@ def main(argv: list[str] | None = None) -> int:
     server = make_server(
         (args.host, args.port),
         profile_path=args.profile_path,
+        library_path=args.library_path,
         config_dir=args.config_dir,
     )
     logger.info("jasper-sound-web listening on http://%s:%d", args.host, args.port)

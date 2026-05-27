@@ -4,7 +4,13 @@ from pathlib import Path
 
 from jasper.correction.camilla_yaml import emit_correction_config
 from jasper.correction.peq import PEQ
-from jasper.sound.profile import ParametricBand, SimpleEq, SoundProfile, load_profile
+from jasper.sound.profile import (
+    ParametricBand,
+    SimpleEq,
+    SoundProfile,
+    load_profile,
+    load_profile_library,
+)
 from jasper.web import sound_setup
 
 
@@ -38,11 +44,22 @@ def test_index_html_exposes_simple_eq_language_only():
     assert "aria-label=\"Turn preference EQ on or off\"" in html
     assert "curve-description" in html
     assert "Live compare" in html
+    assert "Profile" in html
+    assert "Save Copy" in html
     assert "Bypass" in html
     assert "Saved" in html
     assert "Draft" in html
+    assert "EQ editing mode" in html
+    assert "Basic" in html
     assert "Advanced PEQ" in html
+    assert "legacyMixedProfile" in html
+    assert "eqMode === 'advanced' && !legacyMixedProfile" in html
+    assert "Focus" not in html
+    assert "freq-number" in html
     assert "Save &amp; Apply" in html
+    assert "./profiles/save" in html
+    assert "./profiles/rename" in html
+    assert "./profiles/delete" in html
     assert "@media (max-width: 520px)" in html
     assert ".button-row button { width: 100%; min-height: 44px; }" in html
 
@@ -54,10 +71,19 @@ def test_index_html_embeds_csrf_meta_for_json_posts():
     assert "headers: jsonHeaders()" in html
 
 
-def test_state_payload_contains_stock_curves_and_preview():
-    payload = sound_setup._state_payload(SoundProfile(curve_id="harman"))
+def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path):
+    payload = sound_setup._state_payload(
+        SoundProfile(curve_id="harman"),
+        library_path=tmp_path / "sound_profiles.json",
+        include_library=True,
+    )
 
     assert [curve["id"] for curve in payload["curves"]] == ["flat", "harman", "bk"]
+    assert [entry["id"] for entry in payload["profile_library"][:3]] == [
+        "stock:flat",
+        "stock:harman",
+        "stock:bk",
+    ]
     assert payload["profile"]["curve_id"] == "harman"
     assert payload["preview"]
     assert payload["components"]["curve"]
@@ -177,3 +203,21 @@ async def test_apply_profile_rolls_back_when_reload_fails(
 
     assert fake.set_calls[-1] == str(current)
     assert not (tmp_path / "sound_profile.json").exists()
+
+
+def test_profile_library_route_helpers_create_rename_delete(tmp_path: Path):
+    library_path = tmp_path / "sound_profiles.json"
+
+    created = sound_setup.save_named_profile(
+        SoundProfile(curve_id="harman"),
+        name="Library Test",
+        path=library_path,
+    )
+    renamed = sound_setup.rename_named_profile(
+        created.id,
+        name="Library Renamed",
+        path=library_path,
+    )
+    sound_setup.delete_named_profile(renamed.id, path=library_path)
+
+    assert load_profile_library(library_path) == ()
