@@ -49,7 +49,7 @@ NQPTP_COMMIT="c925f27c1fd12e4033ac477e5a405969b0b0260b"
 SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
 WEBRTC_AEC3_VERSION="v2.1"
 WEBRTC_AEC3_REPO="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
-WEBRTC_AEC3_COMMIT="c5a2a02a196d1c9dbe5e28b393b5cf634a35e711"
+WEBRTC_AEC3_COMMIT="846fe90a289f58b7c9303a635142aa2c7caa93e5"
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
