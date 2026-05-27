@@ -167,6 +167,13 @@ validation.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
+**Correction / preference composition note:** `/correction/` owns room
+measurement and room PEQ design; `/sound/` owns stock sound curves,
+user preference EQ, Bypass/Saved/Draft auditioning, and the combined
+CamillaDSP config ordering when both layers are present. Current
+operational truth for that composition lives in
+[docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md).
+
 **Outstanding Phases 0-2.10 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /

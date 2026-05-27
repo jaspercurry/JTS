@@ -5,6 +5,7 @@ room-correction PEQs, then appends preference filters. That ordering is
 intentional: room correction fixes the room; preference EQ shapes what
 the listener likes after that correction.
 """
+
 from __future__ import annotations
 
 import logging
@@ -32,7 +33,10 @@ logger = logging.getLogger(__name__)
 
 BASE_CONFIG_PATH = Path("/etc/camilladsp/v1.yml")
 SOUND_CONFIG_NAME = "sound_current.yml"
-_JTS_GENERATED_RE = re.compile(r"^(?:correction_[A-Za-z0-9]+_\d+|sound_current)\.yml$")
+SOUND_AUDITION_CONFIG_NAME = "sound_audition.yml"
+_JTS_GENERATED_RE = re.compile(
+    r"^(?:correction_[A-Za-z0-9]+_\d+|sound_current|sound_audition)\.yml$"
+)
 
 
 def _fmt(value: float) -> str:
@@ -78,6 +82,9 @@ def _emit_filter_spec(spec: FilterSpec) -> list[str]:
 def _emit_filter_definitions(
     profile: SoundProfile,
     room_peqs: Iterable[PeqFilter],
+    *,
+    headroom_override_db: float | None = None,
+    emit_preamp_without_sound: bool = False,
 ) -> tuple[str, list[str], float]:
     lines: list[str] = []
     chain_names: list[str] = []
@@ -90,9 +97,12 @@ def _emit_filter_definitions(
         lines.extend(_emit_peq_filter(name, peq))
         chain_names.append(name)
 
-    headroom_db = estimate_headroom_db(profile)
+    natural_headroom_db = estimate_headroom_db(profile)
+    headroom_db = natural_headroom_db
+    if headroom_override_db is not None:
+        headroom_db = max(natural_headroom_db, max(0.0, float(headroom_override_db)))
     sound_filters = build_sound_filters(profile)
-    if sound_filters:
+    if sound_filters or emit_preamp_without_sound:
         if headroom_db > 0.0:
             lines.extend(_emit_gain_filter("sound_preamp", -headroom_db))
             chain_names.append("sound_preamp")
@@ -132,11 +142,16 @@ def emit_sound_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
+    headroom_override_db: float | None = None,
+    emit_preamp_without_sound: bool = False,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile."""
 
     filter_yaml, chain_names, headroom_db = _emit_filter_definitions(
-        profile, room_peqs or [],
+        profile,
+        room_peqs or [],
+        headroom_override_db=headroom_override_db,
+        emit_preamp_without_sound=emit_preamp_without_sound,
     )
     pipeline_yaml = _emit_pipeline(chain_names)
     header_id = f" (id={profile_id})" if profile_id else ""
@@ -194,7 +209,9 @@ pipeline:
         _atomic_write_text(out_path, yaml)
         logger.info(
             "wrote sound config: %s (room_peqs=%d sound_filters=%d headroom=%.3f)",
-            out_path, len(room_peqs or []), len(build_sound_filters(profile)),
+            out_path,
+            len(room_peqs or []),
+            len(build_sound_filters(profile)),
             headroom_db,
         )
     return yaml
@@ -215,6 +232,10 @@ def _atomic_write_text(path: Path, text: str) -> None:
 
 def sound_config_path(config_dir: str | Path) -> Path:
     return Path(config_dir) / SOUND_CONFIG_NAME
+
+
+def sound_audition_config_path(config_dir: str | Path) -> Path:
+    return Path(config_dir) / SOUND_AUDITION_CONFIG_NAME
 
 
 def is_base_config(path: str | Path | None) -> bool:
@@ -279,7 +300,9 @@ def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
     for name, block in blocks:
         if not (re.fullmatch(r"peq_\d+", name) or re.fullmatch(r"room_peq_\d+", name)):
             continue
-        if "type: Biquad" not in block or not re.search(r"^\s+type:\s+Peaking\s*$", block, re.M):
+        if "type: Biquad" not in block or not re.search(
+            r"^\s+type:\s+Peaking\s*$", block, re.M
+        ):
             continue
         values: dict[str, float] = {}
         for key in ("freq", "q", "gain"):

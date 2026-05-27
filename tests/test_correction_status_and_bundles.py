@@ -83,20 +83,22 @@ def test_parse_current_correction_extracts_id_timestamp_peq_count(
 def test_parse_current_correction_counts_room_peqs_in_sound_config(tmp_path: Path):
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
-    yaml_path = cfg_dir / "sound_current.yml"
-    yaml_path.write_text(
-        "filters:\n"
-        "  flat:\n"
-        "    type: Gain\n"
-        "  room_peq_1:\n"
-        "    type: Biquad\n"
-    )
 
-    cc = parse_current_correction(str(yaml_path), config_dir=cfg_dir)
+    for filename in ("sound_current.yml", "sound_audition.yml"):
+        yaml_path = cfg_dir / filename
+        yaml_path.write_text(
+            "filters:\n"
+            "  flat:\n"
+            "    type: Gain\n"
+            "  room_peq_1:\n"
+            "    type: Biquad\n"
+        )
 
-    assert cc is not None
-    assert cc["session_id"] == "sound"
-    assert cc["peq_count"] == 1
+        cc = parse_current_correction(str(yaml_path), config_dir=cfg_dir)
+
+        assert cc is not None
+        assert cc["session_id"] == "sound"
+        assert cc["peq_count"] == 1
 
 
 def test_parse_current_correction_ignores_sound_config_without_room_peqs(

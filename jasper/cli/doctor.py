@@ -3369,7 +3369,8 @@ def check_sound_profile() -> CheckResult:
     _, active_path = _active_camilla_config_path()
     active_name = Path(active_path).name if active_path else ""
     active_generated = (
-        active_name.startswith("correction_") or active_name == "sound_current.yml"
+        active_name.startswith("correction_")
+        or active_name in {"sound_current.yml", "sound_audition.yml"}
     )
     status = "ok"
     drift = ""

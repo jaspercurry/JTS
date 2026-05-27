@@ -4,10 +4,11 @@ Current operational truth for the `/sound/` preference-EQ layer.
 
 ## Status
 
-The sound-preference wizard is a simple first slice of the larger
-room-correction / target-curve / AI tuning vision. It lets users apply
-stock sound curves plus Bass, Mid, and Treble without running room
-correction. It is deliberately separate from `/correction/`:
+The sound-preference wizard is the independent preference-tuning layer
+for users who want to shape the speaker without running room
+correction. It lets users apply stock sound curves, simple Bass / Mid /
+Treble, and bounded advanced PEQ bands. It is deliberately separate
+from `/correction/`:
 
 - `/correction/` measures the room and emits room PEQs.
 - `/sound/` applies user preference shaping after those room PEQs.
@@ -15,16 +16,29 @@ correction. It is deliberately separate from `/correction/`:
   room-correction PEQs first, preference EQ second, final `flat`
   terminator last.
 
-This is not the advanced parametric editor yet. The backend data model
-already includes bounded parametric bands so a future advanced UI or AI
-helper can propose deterministic edits, but the shipped page currently
-exposes only Flat / Harman-style / B&K-style plus Bass / Mid / Treble.
+The advanced parametric editor is intentionally touch-first: users
+adjust filter type, frequency, gain, and Q/width with controls while the
+graph visualizes the total curve and highlights the selected band.
+Dragging points on the graph is deferred; the graph is a display
+surface, not the state authority.
+
+The page now has explicit compare semantics:
+
+- **Saved** — the persisted `/var/lib/jasper/sound_profile.json`.
+- **Draft** — the current unsaved form state.
+- **Bypass** — preference EQ disabled while preserving room correction.
+
+Draft / Bypass auditions emit `sound_audition.yml` and load it through
+the same validation/rollback substrate, but do **not** persist the
+profile. `Save & Apply` emits `sound_current.yml` and persists only
+after the CamillaDSP reload is confirmed.
 
 ## Files
 
 - `jasper/sound/profile.py` — import-cheap persisted contract:
   `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
-  preview response, and conservative headroom estimate.
+  preview response, component overlays, conservative headroom estimate,
+  and common compare-headroom estimate for level-matched auditions.
 - `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
   generated-config inspector. It must stay import-cheap; do not import
   NumPy/SciPy here.
@@ -32,7 +46,7 @@ exposes only Flat / Harman-style / B&K-style plus Bass / Mid / Treble.
   typed CamillaDSP validation, config reload, rollback, file locking,
   and compact last-result persistence.
 - `jasper/web/sound_setup.py` — `/sound/` page, `/state`, `/preview`,
-  and `/apply`.
+  `/audition`, and `/apply`.
 - `jasper/camilla_config_contract.py` — shared import-cheap CamillaDSP
   defaults and `PeqFilter` type used by generated config emitters.
 - `jasper/correction/session.py` — correction apply now emits through
@@ -47,10 +61,16 @@ CamillaDSP has one active config path, so composition is load-bearing.
 Do not add another writer that emits directly to CamillaDSP without
 going through the same room-plus-preference ordering.
 
-The generated sound filename is stable:
+The generated saved sound filename is stable:
 
 ```text
 /var/lib/camilladsp/configs/sound_current.yml
+```
+
+The generated unsaved audition filename is stable:
+
+```text
+/var/lib/camilladsp/configs/sound_audition.yml
 ```
 
 `/sound/apply` only preserves room PEQs from configs it knows how to
@@ -60,11 +80,33 @@ inspect:
 - `/var/lib/camilladsp/configs/correction_<session>_<ts>.yml` → extract
   room PEQs.
 - `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.
+- `/var/lib/camilladsp/configs/sound_audition.yml` → extract room PEQs.
 
 Anything else is treated as a custom config and rejected rather than
 silently overwritten. This is intentional fail-closed behavior.
 
 ## Apply Semantics
+
+`/sound/preview`:
+
+1. Parses and clamps the posted `SoundProfile`.
+2. Returns approximate total and component response previews.
+3. Does not touch CamillaDSP or disk.
+
+`/sound/audition`:
+
+1. Parses and clamps the posted draft/bypass `SoundProfile`.
+2. Computes one common compare-headroom anchor across Bypass / Saved /
+   Draft. This is deterministic clipping-safe level matching, not a
+   psychoacoustic loudness model.
+3. Reads the active CamillaDSP config path with `best_effort=False`.
+4. Rejects unknown/custom active configs.
+5. Emits `sound_audition.yml` atomically inside the DSP apply lock.
+6. Runs CamillaDSP validation when available.
+7. Loads the config through the CamillaDSP websocket.
+8. Confirms the active config path when CamillaDSP is reachable.
+9. Rolls back to the prior config path if reload/confirm fails.
+10. Does **not** persist `/var/lib/jasper/sound_profile.json`.
 
 `/sound/apply`:
 
@@ -94,8 +136,8 @@ silently overwritten. This is intentional fail-closed behavior.
 
 `jasper-doctor` includes:
 
-- `current correction` — recognizes correction configs and
-  `sound_current.yml` when room PEQs are present.
+- `current correction` — recognizes correction configs plus
+  `sound_current.yml` / `sound_audition.yml` when room PEQs are present.
 - `sound profile` — reports saved profile, filter count, estimated
   headroom, and warns when a saved active profile is not reflected in a
   generated active config.
@@ -142,13 +184,22 @@ can be diagnosed without scraping journal logs.
   contract must keep them distinct.
 - A/B bypass should toggle only preference EQ, not erase room
   correction.
+- The graph is visualization only. The canonical editable state is the
+  bounded `SoundProfile` JSON model.
+- Unsaved auditions must never persist profile state. They may leave
+  `sound_audition.yml` active until the user switches Bypass/Saved/Draft
+  or saves; that is expected and observable via the DSP apply record.
 
 ## Future Work
 
-- Advanced parametric UI with explicit Q/frequency/gain controls.
 - AI helper that proposes bounded `SoundProfile` edits and asks the user
   to approve before applying.
-- Better level-matched compare/proposal flow.
+- Named user presets / profile library. Today there is one editable
+  saved custom profile built from stock curve + simple EQ + PEQ bands.
+- More precise loudness matching if listening tests show the common
+  headroom anchor is not enough.
+- Optional desktop-only draggable graph handles. Keep mobile/touch
+  controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
 Last verified: 2026-05-27

@@ -205,9 +205,10 @@ when the configured AEC mic is present with 6-channel firmware — see
   prompt fires on the Power switch at `http://jts.local/bluetooth/`.
 - ✅ Sound curve + preference EQ wizard at `http://jts.local/sound/` —
   stock Flat / Harman-style / B&K-style curves plus Bass, Mid, and
-  Treble controls. Applying emits a CamillaDSP config that preserves
-  any active room-correction PEQs; the EQ toggle bypasses preference
-  shaping without clearing room correction. See
+  Treble controls, a touch-first advanced PEQ editor, and level-matched
+  Bypass / Saved / Draft auditioning. Applying emits a CamillaDSP config
+  that preserves any active room-correction PEQs; Bypass turns off only
+  preference shaping without clearing room correction. See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract and observability hooks.
 - ✅ Speaker-name wizard at `http://jts.local/speaker/` — one display
@@ -641,9 +642,9 @@ reference. Currently:
   in flight.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
   — `/sound/` preference-EQ layer: stock sound curves, Bass/Mid/Treble,
-  room-correction composition order, generated config ownership,
-  A/B bypass semantics, doctor and `/state` observability, and the
-  future AI/advanced-parametric boundary.
+  advanced PEQ, room-correction composition order, generated config
+  ownership, level-matched Bypass / Saved / Draft audition semantics,
+  doctor and `/state` observability, and the future AI boundary.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal
   for a guided speaker-tuning system layered on top of

@@ -49,6 +49,24 @@ def test_disabled_sound_config_bypasses_preference_eq_but_keeps_room_peqs():
     assert "names: [room_peq_1, flat]" in yaml
 
 
+def test_audition_headroom_can_level_match_disabled_bypass():
+    profile = SoundProfile(
+        enabled=False,
+        curve_id="harman",
+        simple_eq=SimpleEq(bass_db=6.0),
+    )
+    yaml = emit_sound_config(
+        profile,
+        headroom_override_db=4.0,
+        emit_preamp_without_sound=True,
+    )
+
+    assert "sound_preamp:" in yaml
+    assert "gain: -4.0000" in yaml
+    assert "sound_curve_harman_bass" not in yaml
+    assert "names: [sound_preamp, flat]" in yaml
+
+
 def test_extract_room_peqs_from_legacy_correction_config():
     old_yaml = emit_correction_config([
         PEQ(freq=80.0, q=4.0, gain=-3.0),

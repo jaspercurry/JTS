@@ -7,8 +7,10 @@ from jasper.sound.profile import (
     SimpleEq,
     SoundProfile,
     build_sound_filters,
+    estimate_compare_headroom_db,
     estimate_headroom_db,
     load_profile,
+    response_component_payload,
     save_profile,
 )
 
@@ -96,6 +98,36 @@ def test_headroom_samples_narrow_off_grid_advanced_boosts():
     )
 
     assert estimate_headroom_db(profile) >= 8.9
+
+
+def test_compare_headroom_uses_loudest_profile_anchor():
+    saved = SoundProfile(simple_eq=SimpleEq(bass_db=2.0))
+    draft = SoundProfile(simple_eq=SimpleEq(bass_db=5.0))
+    bypass = SoundProfile(enabled=False, simple_eq=SimpleEq(bass_db=6.0))
+
+    assert estimate_compare_headroom_db([saved, draft, bypass]) == (
+        estimate_headroom_db(draft)
+    )
+
+
+def test_response_component_payload_splits_advanced_bands():
+    profile = SoundProfile(
+        curve_id="harman",
+        simple_eq=SimpleEq(treble_db=-1.0),
+        parametric_bands=(
+            ParametricBand(freq_hz=2000.0, gain_db=-2.0, q=2.0),
+            ParametricBand(enabled=False, freq_hz=3000.0, gain_db=3.0, q=1.0),
+        ),
+    )
+
+    payload = response_component_payload(profile)
+
+    assert payload["curve"]
+    assert payload["simple"]
+    assert payload["advanced"][0]["index"] == 0
+    assert payload["advanced"][0]["preview"]
+    assert payload["advanced"][1]["index"] == 1
+    assert payload["advanced"][1]["preview"] == []
 
 
 def test_save_and_load_profile_round_trip(tmp_path):

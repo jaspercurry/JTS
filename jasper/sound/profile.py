@@ -10,6 +10,7 @@ The curve/preset labels are user-facing, but the output is deliberately
 deterministic DSP data. Future AI help should propose bounded edits to
 this model, not own a parallel EQ representation.
 """
+
 from __future__ import annotations
 
 import json
@@ -178,9 +179,8 @@ class SimpleEq:
 class ParametricBand:
     """One advanced EQ band.
 
-    The v1 page does not expose the full parametric editor yet, but the
-    backend contract starts here so future UI and AI proposals use the
-    same deterministic filter substrate.
+    The touch UI and future AI proposals both use this deterministic
+    bounded filter substrate; neither path owns a parallel EQ model.
     """
 
     enabled: bool = True
@@ -385,6 +385,55 @@ def response_preview(
     ]
 
 
+def response_component_payload(
+    profile: SoundProfile,
+    freqs: Iterable[float] = DEFAULT_PREVIEW_FREQS,
+) -> dict[str, Any]:
+    """Approximate component responses for UI overlays.
+
+    This is intentionally the same cheap preview math used by
+    ``response_preview``. The graph is an interaction aid, not the DSP
+    authority; CamillaDSP owns the actual filter implementation.
+    """
+
+    freq_list = [float(freq) for freq in freqs]
+
+    def _points(specs: Iterable[FilterSpec]) -> list[dict[str, float]]:
+        totals = [0.0 for _ in freq_list]
+        active = False
+        for spec in specs:
+            if not spec.active():
+                continue
+            active = True
+            for i, db in enumerate(_filter_response_db(spec, freq_list)):
+                totals[i] += db
+        if not active:
+            return []
+        return [
+            {"freq_hz": round(freq, 3), "db": round(db, 3)}
+            for freq, db in zip(freq_list, totals)
+        ]
+
+    if not profile.enabled:
+        return {"curve": [], "simple": [], "advanced": []}
+
+    advanced = []
+    for index, band in enumerate(profile.parametric_bands):
+        specs = _advanced_filters((band,))
+        advanced.append(
+            {
+                "index": index,
+                "enabled": band.enabled,
+                "preview": _points(specs),
+            }
+        )
+    return {
+        "curve": _points(_curve_filters(profile.curve_id)),
+        "simple": _points(_simple_filters(profile.simple_eq)),
+        "advanced": advanced,
+    }
+
+
 def estimate_headroom_db(profile: SoundProfile) -> float:
     """Digital preamp attenuation needed before preference boosts."""
 
@@ -407,8 +456,24 @@ def estimate_headroom_db(profile: SoundProfile) -> float:
     return round(max(0.0, max_boost), 3)
 
 
+def estimate_compare_headroom_db(profiles: Iterable[SoundProfile]) -> float:
+    """Common attenuation anchor for level-matched A/B auditions.
+
+    The compare path uses one shared preamp across Bypass / Saved /
+    Draft so the louder-seeming option is not just the one with less
+    safety attenuation. This is not a psychoacoustic loudness model; it
+    is a deterministic, clipping-safe comparison anchor.
+    """
+
+    return round(
+        max((estimate_headroom_db(profile) for profile in profiles), default=0.0), 3
+    )
+
+
 def load_profile(path: str | Path | None = None) -> SoundProfile:
-    profile_path = Path(path or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH))
+    profile_path = Path(
+        path or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH)
+    )
     try:
         return SoundProfile.from_mapping(json.loads(profile_path.read_text()))
     except FileNotFoundError:
@@ -419,7 +484,9 @@ def load_profile(path: str | Path | None = None) -> SoundProfile:
 
 
 def save_profile(profile: SoundProfile, path: str | Path | None = None) -> None:
-    profile_path = Path(path or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH))
+    profile_path = Path(
+        path or os.environ.get("JASPER_SOUND_PROFILE_PATH", PROFILE_PATH)
+    )
     profile_path.parent.mkdir(parents=True, exist_ok=True)
     data = json.dumps(profile.to_dict(), indent=2, sort_keys=True) + "\n"
     with tempfile.NamedTemporaryFile(

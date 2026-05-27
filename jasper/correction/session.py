@@ -70,7 +70,7 @@ logger = logging.getLogger(__name__)
 _CORRECTION_FILENAME_RE = re.compile(
     r"^correction_(?P<id>[A-Za-z0-9]+)_(?P<ts>\d+)\.yml$"
 )
-_SOUND_FILENAME_RE = re.compile(r"^sound_current\.yml$")
+_SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
 
 
