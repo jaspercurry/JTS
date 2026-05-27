@@ -25,25 +25,34 @@ class Aec3SweepVariant:
 
 AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
-        leg="aec3_ns_off",
-        label="AEC3 NS off",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_NS_OFF",
-        default_port=9884,
-        env_overrides={"JASPER_AEC_NS_ENABLED": "0"},
-    ),
-    Aec3SweepVariant(
-        leg="aec3_default_gain_08",
-        label="AEC3 default gain 0.8",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_DEFAULT_GAIN_08",
-        default_port=9885,
-        env_overrides={"JASPER_AEC_DEFAULT_GAIN": "0.8"},
-    ),
-    Aec3SweepVariant(
         leg="aec3_hf_relaxed",
         label="AEC3 HF relaxed",
         port_env="JASPER_AEC_UDP_PORT_AEC3_HF_RELAXED",
-        default_port=9886,
+        default_port=9884,
         env_overrides={"JASPER_AEC_CONSERVATIVE_HF": "0"},
+    ),
+    Aec3SweepVariant(
+        leg="aec3_hf_mask_upstream",
+        label="AEC3 HF mask upstream",
+        port_env="JASPER_AEC_UDP_PORT_AEC3_HF_MASK_UPSTREAM",
+        default_port=9885,
+        env_overrides={
+            "JASPER_AEC_MASK_HF_ENR_T": "0.07",
+            "JASPER_AEC_MASK_HF_ENR_S": "0.10",
+            "JASPER_AEC_MASK_HF_EMR_T": "0.30",
+        },
+    ),
+    Aec3SweepVariant(
+        leg="aec3_hf_wide_open",
+        label="AEC3 HF wide open",
+        port_env="JASPER_AEC_UDP_PORT_AEC3_HF_WIDE_OPEN",
+        default_port=9886,
+        env_overrides={
+            "JASPER_AEC_CONSERVATIVE_HF": "0",
+            "JASPER_AEC_MASK_HF_ENR_T": "0.07",
+            "JASPER_AEC_MASK_HF_ENR_S": "0.10",
+            "JASPER_AEC_MASK_HF_EMR_T": "0.30",
+        },
     ),
 )
 

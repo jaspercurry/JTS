@@ -1241,11 +1241,11 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT", "6600")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT", "7700")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
-    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_NS_OFF_PORT", "9901")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9901")
     monkeypatch.setenv(
-        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_DEFAULT_GAIN_08_PORT", "9902",
+        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_MASK_UPSTREAM_PORT", "9902",
     )
-    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9903")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_WIDE_OPEN_PORT", "9903")
 
     assert web_main._wake_corpus_ports_from_env() == {
         "on": 1100,
@@ -1256,9 +1256,9 @@ def test_combined_web_entrypoint_includes_raw0_port(
         "usb_raw": 6600,
         "usb_webrtc": 7700,
         "usb_dtln": 8800,
-        "aec3_ns_off": 9901,
-        "aec3_default_gain_08": 9902,
-        "aec3_hf_relaxed": 9903,
+        "aec3_hf_relaxed": 9901,
+        "aec3_hf_mask_upstream": 9902,
+        "aec3_hf_wide_open": 9903,
     }
 
 
@@ -1275,8 +1275,8 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     assert ports["raw0"] == 4400
     assert ports["ref"] == wake_corpus_setup.DEFAULT_AEC_REF_PORT
     assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
-    assert ports["aec3_ns_off"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
-        "aec3_ns_off"
+    assert ports["aec3_hf_relaxed"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
+        "aec3_hf_relaxed"
     ]
 
 
@@ -1830,6 +1830,7 @@ def test_build_capture_health_marks_bridge_drop_compromised() -> None:
 def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
     """AEC3 sweep legs use the same XVF mic/ref frames as the baseline
     AEC leg, so their per-leg health must inherit mic/ref bridge drops."""
+    leg = wake_corpus_setup.AEC3_SWEEP_LEGS[0]
     frame = np.zeros(1280, dtype=np.int16)
     start = {
         "pid": 123,
@@ -1839,8 +1840,8 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
             "frames_processed": 10,
             "ref_starved_frames": 0,
             "queue_drops": {"mic": 0, "raw0": 0, "usb": 0, "ref": 0},
-            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
-            "packets_sent_by_leg": {"aec3_ns_off": 0},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 0},
         },
     }
     stop = {
@@ -1851,21 +1852,21 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
             "frames_processed": 20,
             "ref_starved_frames": 0,
             "queue_drops": {"mic": 1, "raw0": 0, "usb": 0, "ref": 2},
-            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
-            "packets_sent_by_leg": {"aec3_ns_off": 1},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 1},
         },
     }
 
     health = wake_corpus_setup.build_capture_health(
         wall_duration_sec=0.08,
-        buffers={"aec3_ns_off": [frame]},
+        buffers={leg: [frame]},
         bridge_start=start,
         bridge_stop=stop,
     )
 
-    drop_counts = health["legs"]["aec3_ns_off"]["bridge_drop_counts"]
+    drop_counts = health["legs"][leg]["bridge_drop_counts"]
     assert health["status"] == "compromised"
-    assert health["legs"]["aec3_ns_off"]["status"] == "compromised"
+    assert health["legs"][leg]["status"] == "compromised"
     assert drop_counts["mic_queue_full"] == 1
     assert drop_counts["ref_queue_full"] == 2
 
@@ -2363,7 +2364,9 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "'usb_dtln', 'ref'" in html_text
     assert 'encodeURIComponent(ev.target.value)' in html_text
     assert "on: 'XVF WebRTC AEC3'" in html_text
-    assert "aec3_ns_off" in html_text
+    assert "aec3_hf_relaxed" in html_text
+    assert "aec3_hf_mask_upstream" in html_text
+    assert "aec3_hf_wide_open" in html_text
     assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text
     assert "usb_dtln: 'USB DTLN'" in html_text
 

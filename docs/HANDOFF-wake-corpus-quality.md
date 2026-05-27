@@ -93,9 +93,9 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
-| `aec3_ns_off` | XVF mic path through a parallel WebRTC AEC3 instance with NS disabled | No | Corpus-only same-utterance AEC3 tuning sweep. Pilot data, not train/eval. |
-| `aec3_default_gain_08` | XVF mic path through a parallel WebRTC AEC3 instance with residual `default_gain=0.8` | No | Corpus-only same-utterance AEC3 tuning sweep. |
-| `aec3_hf_relaxed` | XVF mic path through a parallel WebRTC AEC3 instance with conservative HF suppression off | No | Corpus-only same-utterance AEC3 tuning sweep. |
+| `aec3_hf_relaxed` | XVF mic path through a parallel WebRTC AEC3 instance with conservative HF suppression off | No | Corpus-only same-utterance AEC3 tuning sweep. Pilot data, not train/eval. |
+| `aec3_hf_mask_upstream` | XVF mic path through a parallel WebRTC AEC3 instance using upstream HF mask values (`0.07/0.10/0.30`) | No | Tests whether BEST_A's HF mask parity is muffling wake-word onset. |
+| `aec3_hf_wide_open` | XVF mic path with conservative HF suppression off plus upstream HF mask values | No | Extreme HF-preservation endpoint; expect more music leakage. |
 
 Leg names in future metadata should stay stable and explicit. Display
 labels can be friendlier, but the machine-readable names should not
@@ -447,10 +447,13 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v3):** Retargeted corpus-only AEC3 sweep legs to the
+  HF-preservation 2×2 (`hf_relaxed`, `hf_mask_upstream`,
+  `hf_wide_open`).
 - **2026-05-27 (v2):** Added corpus-only AEC3 sweep legs to the
   leg-aware quality-analysis contract.
 - **2026-05-27 (v1):** Initial methodology doc for deterministic and
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v2 - AEC3 sweep legs added)
+Last verified: 2026-05-27 (v3 - AEC3 HF sweep legs updated)

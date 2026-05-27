@@ -137,8 +137,11 @@ DISTANCES = ("near", "mid", "far")
 # experiment streams emitted by jasper-aec-bridge when explicitly
 # enabled; they are never production wake-detection inputs.
 AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
+# Keep old pilot legs playable when loading earlier same-day sessions.
+LEGACY_AEC3_SWEEP_LEGS = ("aec3_ns_off", "aec3_default_gain_08")
 LEGS = (
-    "on", *AEC3_SWEEP_LEGS, "off", "dtln", "raw0", "ref",
+    "on", *AEC3_SWEEP_LEGS, *LEGACY_AEC3_SWEEP_LEGS,
+    "off", "dtln", "raw0", "ref",
     "usb_raw", "usb_webrtc", "usb_dtln",
 )
 BASE_LEGS = ("on", "off")
@@ -149,6 +152,8 @@ USB_DTLN_LEG = "usb_dtln"
 LEG_LABELS = {
     "on": "XVF WebRTC AEC3",
     **{variant.leg: variant.label for variant in AEC3_SWEEP_VARIANTS},
+    "aec3_ns_off": "AEC3 NS off (legacy)",
+    "aec3_default_gain_08": "AEC3 default gain 0.8 (legacy)",
     "off": "XVF raw",
     "dtln": "XVF DTLN",
     "raw0": "XVF raw0",

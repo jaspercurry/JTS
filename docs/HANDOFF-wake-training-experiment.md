@@ -377,9 +377,9 @@ written into per-leg quadrant directories at
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
-| `aec3_ns_off` | UDP `:9884` | chip ch1 → parallel SW AEC3 with WebRTC NS disabled (corpus-only AEC3 tuning sweep) |
-| `aec3_default_gain_08` | UDP `:9885` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_DEFAULT_GAIN=0.8` (corpus-only AEC3 tuning sweep) |
-| `aec3_hf_relaxed` | UDP `:9886` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
+| `aec3_hf_relaxed` | UDP `:9884` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
+| `aec3_hf_mask_upstream` | UDP `:9885` | chip ch1 → parallel SW AEC3 with WebRTC's upstream HF mask values (`0.07/0.10/0.30`) |
+| `aec3_hf_wide_open` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed conservative HF suppression plus upstream HF mask values |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -402,10 +402,14 @@ selected, `jasper-aec-bridge` runs three additional warmed WebRTC AEC3
 instances in parallel with the baseline `on` leg, all fed the same
 mic/ref frames for the same utterance. Keep this mode quarantined as
 pilot data: it is for Jasper listening + offline analysis, not Session
-A/B training/eval. The shipped first-pass variants are intentionally
-small and one-axis-at-a-time: NS off, residual `default_gain=0.8`, and
-relaxed HF suppression. Use AEC3 sweep separately from DTLN to protect
-the 1 GB Pi resource budget and keep listening comparisons readable.
+A/B training/eval. The current sweep is a focused HF-preservation 2×2:
+baseline `on`, relaxed conservative HF suppression, upstream HF mask
+values, and both together. This replaced the first-pass NS-off /
+`default_gain=0.8` variants after far+music pilot clips showed
+`aec3_hf_relaxed` preserved more of the leading "J" transient while
+the gain variant was effectively a duplicate of baseline. Use AEC3
+sweep separately from DTLN to protect the 1 GB Pi resource budget and
+keep listening comparisons readable.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -1104,6 +1108,9 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
   from raw/DTLN legs and Reference is listed last
 - 2026-05-27 tuning pilot — corpus-only AEC3 sweep mode adds three
   same-utterance WebRTC AEC3 variants on `:9884`-`:9886`
+- 2026-05-27 evening tuning pass — AEC3 sweep variants retargeted to
+  the HF-preservation 2×2: `aec3_hf_relaxed`,
+  `aec3_hf_mask_upstream`, and `aec3_hf_wide_open`
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1114,7 +1121,8 @@ Recorder UX status:
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Per-session AEC3 sweep toggle for pilot tuning: baseline plus
-  `aec3_ns_off`, `aec3_default_gain_08`, and `aec3_hf_relaxed`
+  `aec3_hf_relaxed`, `aec3_hf_mask_upstream`, and
+  `aec3_hf_wide_open`
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
@@ -1338,4 +1346,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v15 — AEC3 sweep mode verified against code)
+Last verified: 2026-05-27 (v16 — AEC3 HF sweep verified against code)
