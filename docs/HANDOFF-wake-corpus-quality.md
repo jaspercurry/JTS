@@ -28,10 +28,10 @@ MAD transient candidates, and LPC residual outliers.
 
 **Cross-leg comparison is the superpower.** JTS captures simultaneous
 legs for the same utterance: XVF-derived raw/WebRTC-AEC/DTLN/raw0,
-optional cheap-USB raw/WebRTC-AEC/DTLN, and reference. A suspicious
-event that exists only in one processed leg means something very
-different from an event that appears at the same aligned timestamp in
-every mic leg.
+optional AEC3 sweep variants, optional cheap-USB raw/WebRTC-AEC/DTLN,
+and reference. A suspicious event that exists only in one processed leg
+means something very different from an event that appears at the same
+aligned timestamp in every mic leg.
 
 **MOS-style neural predictors are advisory only.** SQUIM, DNSMOS, NISQA,
 UTMOS, SRMR, and related no-reference metrics can help rank clips, but
@@ -93,6 +93,9 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
+| `aec3_ns_off` | XVF mic path through a parallel WebRTC AEC3 instance with NS disabled | No | Corpus-only same-utterance AEC3 tuning sweep. Pilot data, not train/eval. |
+| `aec3_default_gain_08` | XVF mic path through a parallel WebRTC AEC3 instance with residual `default_gain=0.8` | No | Corpus-only same-utterance AEC3 tuning sweep. |
+| `aec3_hf_relaxed` | XVF mic path through a parallel WebRTC AEC3 instance with conservative HF suppression off | No | Corpus-only same-utterance AEC3 tuning sweep. |
 
 Leg names in future metadata should stay stable and explicit. Display
 labels can be friendlier, but the machine-readable names should not
@@ -444,9 +447,10 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v2):** Added corpus-only AEC3 sweep legs to the
+  leg-aware quality-analysis contract.
 - **2026-05-27 (v1):** Initial methodology doc for deterministic and
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v1 - seeded from local research reports and
-the 2026-05-27 USB AGC pilot context)
+Last verified: 2026-05-27 (v2 - AEC3 sweep legs added)

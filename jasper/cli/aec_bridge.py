@@ -96,6 +96,10 @@ import numpy as np
 import sounddevice as sd
 from scipy.signal import butter, resample_poly, sosfilt
 
+from jasper.aec_sweep import (
+    AEC3_SWEEP_ENV_FLAG,
+    AEC3_SWEEP_VARIANTS,
+)
 from jasper.watchdog import Heartbeat
 from ..mics import xvf3800 as _mic_profile
 
@@ -210,6 +214,10 @@ OUT_PORT_REF = int(os.environ.get("JASPER_AEC_UDP_PORT_REF", "9880"))
 OUT_PORT_USB_RAW = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_RAW", "9881"))
 OUT_PORT_USB_WEBRTC = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_WEBRTC", "9882"))
 OUT_PORT_USB_DTLN = int(os.environ.get("JASPER_AEC_UDP_PORT_USB_DTLN", "9883"))
+OUT_PORT_AEC3_SWEEP = {
+    variant.leg: int(os.environ.get(variant.port_env, str(variant.default_port)))
+    for variant in AEC3_SWEEP_VARIANTS
+}
 USB_MIC_DEVICE = os.environ.get("JASPER_AEC_USB_MIC_DEVICE", "USB PnP Sound Device")
 USB_MIC_RATE = int(float(os.environ.get("JASPER_AEC_USB_MIC_RATE", "0")))
 # Voice consumes 1280-sample (80 ms) chunks. Aggregating four
@@ -268,6 +276,7 @@ class _BridgeStats:
                     "usb_raw": 0,
                     "usb_webrtc": 0,
                     "usb_dtln": 0,
+                    **{variant.leg: 0 for variant in AEC3_SWEEP_VARIANTS},
                 },
                 "packets_sent_by_leg": {
                     "on": 0,
@@ -278,6 +287,7 @@ class _BridgeStats:
                     "usb_raw": 0,
                     "usb_webrtc": 0,
                     "usb_dtln": 0,
+                    **{variant.leg: 0 for variant in AEC3_SWEEP_VARIANTS},
                 },
             }
 
@@ -377,6 +387,26 @@ def _env_bool(name: str, default: str) -> bool:
     )
 
 
+def _cfg_value(
+    name: str,
+    default: str,
+    overrides: dict[str, str] | None = None,
+) -> str:
+    if overrides is not None and name in overrides:
+        return overrides[name]
+    return os.environ.get(name, default)
+
+
+def _cfg_bool(
+    name: str,
+    default: str,
+    overrides: dict[str, str] | None = None,
+) -> bool:
+    return _cfg_value(name, default, overrides).strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
 class _Aec3Engine:
     """WebRTC AEC3 via the jasper_aec3 v1.3-3 (legacy) pybind11 binding.
 
@@ -387,21 +417,23 @@ class _Aec3Engine:
     access). Fallback engine when the v2 binding isn't built.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        overrides: dict[str, str] | None = None,
+        label: str = "aec3_v1",
+    ) -> None:
         from jasper_aec3 import Aec3
 
-        ns_enabled = _env_bool("JASPER_AEC_NS_ENABLED", "1")
-        ns_level = os.environ.get(
-            "JASPER_AEC_NS_LEVEL", "low",
-        ).strip().lower()
-        agc1_enabled = _env_bool("JASPER_AEC_AGC1_ENABLED", "0")
-        agc1_target_dbfs = int(os.environ.get(
-            "JASPER_AEC_AGC1_TARGET_DBFS", "9",
+        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
+        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
+        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "0", overrides)
+        agc1_target_dbfs = int(_cfg_value(
+            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
         ))
-        agc1_max_gain_db = int(os.environ.get(
-            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18",
+        agc1_max_gain_db = int(_cfg_value(
+            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
         ))
-        enable_agc2 = _env_bool("JASPER_AEC_AGC2", "0")
+        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
         self._aec = Aec3(
             enable_agc2=enable_agc2,
             ns_enabled=ns_enabled,
@@ -411,8 +443,9 @@ class _Aec3Engine:
             agc1_max_gain_db=agc1_max_gain_db,
         )
         logger.info(
-            "engine=aec3_v1 ns=%s/%s agc1=%s(target=%d,max=%ddB) "
+            "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
             "agc2=%s frame=%d rate=%d",
+            label,
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
             agc1_target_dbfs, agc1_max_gain_db,
@@ -467,30 +500,44 @@ class _Aec3V2Engine:
         JASPER_AEC_MAX_DEC_LF           (float, default 0.05)
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        overrides: dict[str, str] | None = None,
+        label: str = "aec3_v2(BEST_A)",
+    ) -> None:
         from jasper_aec3 import Aec3V2
 
         # Top-level (shared with v1)
-        ns_enabled = _env_bool("JASPER_AEC_NS_ENABLED", "1")
-        ns_level = os.environ.get("JASPER_AEC_NS_LEVEL", "low").strip().lower()
-        agc1_enabled = _env_bool("JASPER_AEC_AGC1_ENABLED", "1")  # BEST_A default
-        agc1_target_dbfs = int(os.environ.get("JASPER_AEC_AGC1_TARGET_DBFS", "9"))
-        agc1_max_gain_db = int(os.environ.get("JASPER_AEC_AGC1_MAX_GAIN_DB", "18"))
-        enable_agc2 = _env_bool("JASPER_AEC_AGC2", "0")
+        ns_enabled = _cfg_bool("JASPER_AEC_NS_ENABLED", "1", overrides)
+        ns_level = _cfg_value("JASPER_AEC_NS_LEVEL", "low", overrides).strip().lower()
+        agc1_enabled = _cfg_bool("JASPER_AEC_AGC1_ENABLED", "1", overrides)
+        agc1_target_dbfs = int(_cfg_value(
+            "JASPER_AEC_AGC1_TARGET_DBFS", "9", overrides,
+        ))
+        agc1_max_gain_db = int(_cfg_value(
+            "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
+        ))
+        enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
 
         # Deep EchoCanceller3Config — defaults from BEST_A
-        filter_length = int(os.environ.get("JASPER_AEC_FILTER_LENGTH", "30"))
-        bounded_erl = _env_bool("JASPER_AEC_BOUNDED_ERL", "0")
-        default_gain = float(os.environ.get("JASPER_AEC_DEFAULT_GAIN", "0.3"))
-        erle_max_l = float(os.environ.get("JASPER_AEC_ERLE_MAX_L", "1.5"))
-        erle_max_h = float(os.environ.get("JASPER_AEC_ERLE_MAX_H", "1.0"))
-        erle_onset = _env_bool("JASPER_AEC_ERLE_ONSET", "0")
-        use_stationarity = _env_bool("JASPER_AEC_USE_STATIONARITY", "1")
-        conservative_hf = _env_bool("JASPER_AEC_CONSERVATIVE_HF", "1")
-        mask_hf_enr_t = float(os.environ.get("JASPER_AEC_MASK_HF_ENR_T", "0.3"))
-        mask_hf_enr_s = float(os.environ.get("JASPER_AEC_MASK_HF_ENR_S", "0.4"))
-        mask_hf_emr_t = float(os.environ.get("JASPER_AEC_MASK_HF_EMR_T", "0.3"))
-        max_dec_lf = float(os.environ.get("JASPER_AEC_MAX_DEC_LF", "0.05"))
+        filter_length = int(_cfg_value("JASPER_AEC_FILTER_LENGTH", "30", overrides))
+        bounded_erl = _cfg_bool("JASPER_AEC_BOUNDED_ERL", "0", overrides)
+        default_gain = float(_cfg_value("JASPER_AEC_DEFAULT_GAIN", "0.3", overrides))
+        erle_max_l = float(_cfg_value("JASPER_AEC_ERLE_MAX_L", "1.5", overrides))
+        erle_max_h = float(_cfg_value("JASPER_AEC_ERLE_MAX_H", "1.0", overrides))
+        erle_onset = _cfg_bool("JASPER_AEC_ERLE_ONSET", "0", overrides)
+        use_stationarity = _cfg_bool("JASPER_AEC_USE_STATIONARITY", "1", overrides)
+        conservative_hf = _cfg_bool("JASPER_AEC_CONSERVATIVE_HF", "1", overrides)
+        mask_hf_enr_t = float(_cfg_value(
+            "JASPER_AEC_MASK_HF_ENR_T", "0.3", overrides,
+        ))
+        mask_hf_enr_s = float(_cfg_value(
+            "JASPER_AEC_MASK_HF_ENR_S", "0.4", overrides,
+        ))
+        mask_hf_emr_t = float(_cfg_value(
+            "JASPER_AEC_MASK_HF_EMR_T", "0.3", overrides,
+        ))
+        max_dec_lf = float(_cfg_value("JASPER_AEC_MAX_DEC_LF", "0.05", overrides))
 
         self._aec = Aec3V2(
             stream_delay_ms=40,
@@ -514,10 +561,11 @@ class _Aec3V2Engine:
             normal_max_dec_factor_lf=max_dec_lf,
         )
         logger.info(
-            "engine=aec3_v2(BEST_A) ns=%s/%s agc1=%s(target=%d,max=%ddB) "
+            "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
             "agc2=%s filter_len=%d bounded_erl=%s default_gain=%.2f "
             "erle=%.2f/%.2f onset=%s stationarity=%s conservative_hf=%s "
             "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f",
+            label,
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
             agc1_target_dbfs, agc1_max_gain_db,
@@ -538,7 +586,10 @@ class _Aec3V2Engine:
         pass
 
 
-def _select_engine():
+def _select_engine(
+    overrides: dict[str, str] | None = None,
+    label: str | None = None,
+):
     """Pick the AEC engine to use.
 
     JASPER_AEC_BINDING=v2 forces v2; =v1 forces v1; default (=auto)
@@ -547,20 +598,26 @@ def _select_engine():
     """
     pref = os.environ.get("JASPER_AEC_BINDING", "auto").strip().lower()
     if pref == "v1":
-        return _Aec3Engine()
+        return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
     if pref == "v2":
-        return _Aec3V2Engine()
+        return _Aec3V2Engine(
+            overrides=overrides,
+            label=label or "aec3_v2(BEST_A)",
+        )
     # auto
     try:
         import jasper_aec3
         if jasper_aec3.HAS_V2:
-            return _Aec3V2Engine()
+            return _Aec3V2Engine(
+                overrides=overrides,
+                label=label or "aec3_v2(BEST_A)",
+            )
     except ImportError:
         pass
     logger.info(
         "jasper_aec3._aec3_v2 not available — falling back to v1 binding"
     )
-    return _Aec3Engine()
+    return _Aec3Engine(overrides=overrides, label=label or "aec3_v1")
 
 
 class _SimpleAGC:
@@ -1047,6 +1104,38 @@ def _aec_loop(  # noqa: PLR0915
                     e,
                 )
 
+    aec3_sweep_paths: list[dict[str, object]] = []
+    if _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
+        for variant in AEC3_SWEEP_VARIANTS:
+            try:
+                variant_engine = _select_engine(
+                    overrides=variant.env_overrides,
+                    label=f"aec3_sweep/{variant.leg}",
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "AEC3 sweep variant %s couldn't load: %s. "
+                    "Continuing without this variant.",
+                    variant.leg, e,
+                )
+                continue
+            variant_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            variant_sock.setblocking(False)
+            variant_port = OUT_PORT_AEC3_SWEEP[variant.leg]
+            aec3_sweep_paths.append({
+                "variant": variant,
+                "engine": variant_engine,
+                "sock": variant_sock,
+                "dest": (OUT_HOST, variant_port),
+                "batch": bytearray(),
+            })
+            logger.info(
+                "AEC3 corpus sweep variant enabled: leg=%s label=%s "
+                "udp out=%s:%d overrides=%s",
+                variant.leg, variant.label, OUT_HOST, variant_port,
+                variant.env_overrides,
+            )
+
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
     # for the streaming algorithm.
@@ -1088,6 +1177,11 @@ def _aec_loop(  # noqa: PLR0915
         output_parts.append(f"usb_webrtc={OUT_HOST}:{OUT_PORT_USB_WEBRTC}")
     if usb_dtln_engine is not None:
         output_parts.append(f"usb_dtln={OUT_HOST}:{OUT_PORT_USB_DTLN}")
+    for path in aec3_sweep_paths:
+        variant = path["variant"]
+        output_parts.append(
+            f"{variant.leg}={OUT_HOST}:{OUT_PORT_AEC3_SWEEP[variant.leg]}"
+        )
     logger.info(
         "udp outputs: %s frame=%d samples (%d bytes)",
         " ".join(output_parts), OUT_FRAME_SAMPLES, OUT_FRAME_BYTES,
@@ -1328,6 +1422,48 @@ def _aec_loop(  # noqa: PLR0915
                             )
                         del out_batch_dtln[:OUT_FRAME_BYTES]
 
+            for path in list(aec3_sweep_paths):
+                variant = path["variant"]
+                engine_variant = path["engine"]
+                try:
+                    variant_clean = engine_variant.process(mic_bytes, ref_bytes)
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "AEC3 sweep variant %s process() crashed; "
+                        "disabling this path: %s",
+                        variant.leg, e,
+                    )
+                    try:
+                        engine_variant.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        path["sock"].close()
+                    except OSError:
+                        pass
+                    aec3_sweep_paths.remove(path)
+                    continue
+                batch = path["batch"]
+                batch.extend(variant_clean)
+                if len(batch) >= OUT_FRAME_BYTES:
+                    try:
+                        path["sock"].sendto(
+                            bytes(batch[:OUT_FRAME_BYTES]),
+                            path["dest"],
+                        )
+                        _bridge_stats.inc_nested(
+                            "packets_sent_by_leg", variant.leg,
+                        )
+                    except BlockingIOError:
+                        _bridge_stats.inc_nested(
+                            "udp_send_drops_by_leg", variant.leg,
+                        )
+                        logger.warning(
+                            "udp %s sendto would block, dropping frame",
+                            variant.leg,
+                        )
+                    del batch[:OUT_FRAME_BYTES]
+
             if usb_raw_q is not None:
                 try:
                     usb_bytes = usb_raw_q.get_nowait()
@@ -1519,6 +1655,15 @@ def _aec_loop(  # noqa: PLR0915
             usb_dtln_engine.close()
         if out_sock_dtln is not None:
             out_sock_dtln.close()
+        for path in aec3_sweep_paths:
+            try:
+                path["sock"].close()
+            except OSError:
+                pass
+            try:
+                path["engine"].close()
+            except Exception:  # noqa: BLE001
+                pass
         for w in (mic_wav, aec_wav, ref_wav):
             if w is not None:
                 try:
@@ -1539,16 +1684,19 @@ def main() -> int:
     corpus_usb_dtln_enabled = _env_bool(
         "JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0",
     )
+    corpus_aec3_sweep_enabled = _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
     logger.info(
         "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
         "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d "
-        "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s",
+        "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s "
+        "corpus_aec3_sweep=%s",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
         "on" if corpus_ref_enabled else "off",
         "on" if corpus_usb_enabled else "off",
         "on" if corpus_usb_dtln_enabled else "off",
+        "on" if corpus_aec3_sweep_enabled else "off",
     )
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(

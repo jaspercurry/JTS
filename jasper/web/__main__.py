@@ -126,6 +126,13 @@ def _wake_corpus_ports_from_env() -> dict[str, int]:
             "JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT",
             str(wake_ports.DEFAULT_AEC_USB_DTLN_PORT),
         )),
+        aec3_sweep_ports={
+            leg: int(os.environ.get(
+                f"JASPER_WAKE_CORPUS_AEC3_SWEEP_{leg.upper()}_PORT",
+                str(port),
+            ))
+            for leg, port in wake_ports.DEFAULT_AEC3_SWEEP_PORTS.items()
+        },
         include_dtln=os.environ.get("JASPER_WAKE_CORPUS_DTLN", "1") != "0",
         include_usb=os.environ.get("JASPER_WAKE_CORPUS_USB", "1") != "0",
     )
