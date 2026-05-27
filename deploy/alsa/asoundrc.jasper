@@ -194,13 +194,13 @@ pcm.jasper_capture {
 
 # Plug-wrapped alias for the AEC bridge's reference capture.
 #
-# `plug` transparently resamples whatever the dsnoop delivers to
-# whatever the bridge opens with. The bridge opens at 48 kHz S16_LE
-# (per REF_RATE in jasper/cli/aec_bridge.py); plug converts from
-# the dsnoop's actual delivered rate (typically 44.1 kHz today due
-# to shairport native, sometimes 48 kHz with Spotify Connect) to
-# the requested 48 kHz. CPU cost is sub-1% of a Pi 5 core at S16
-# stereo / speech rates; latency cost is a few ms of buffer.
+# `plug` keeps the bridge tolerant of topology drift and operator
+# mistakes: the bridge opens at 48 kHz S16_LE (per REF_RATE in
+# jasper/cli/aec_bridge.py), and production fan-in pins the shared
+# dsnoop source to that same shape. In the normal path this wrapper is
+# effectively format/rate-stable; if a future source or diagnostic path
+# hands dsnoop a different shape, ALSA applies the configured
+# libsamplerate converter instead of feeding mismatched samples to AEC.
 #
 # Without this wrapper, the bridge would receive distorted or
 # silent samples when the loopback's locked rate ≠ 48 kHz —
