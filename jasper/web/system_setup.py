@@ -421,6 +421,10 @@ _SCRIPT = r"""
     if (pct >= warnAt) return 'warn';
     return 'ok';
   }
+  function capacityPercent(totalPct, coreCount) {
+    if (!coreCount) return 0;
+    return totalPct / coreCount;
+  }
 
   // Pi 5 pwm-fan cooling levels. The card stays intentionally terse;
   // the temperature tile is the alarm surface for thermal pressure.
@@ -682,7 +686,7 @@ _SCRIPT = r"""
       const totalCpu = cores.reduce((a, b) => a + b, 0);
       const maxCore = Math.max(...cores);
       document.getElementById('cpu-value').textContent =
-        Math.round(totalCpu) + '% total';
+        Math.round(capacityPercent(totalCpu, cores.length)) + '% total';
       document.getElementById('cpu-sub').textContent = '';
       let cpuStatus = 'ok';
       // Mirror the load thresholds: total = 3 cores ≈ warn, total = 4
@@ -901,13 +905,14 @@ _SCRIPT = r"""
       if (corePcts.length) {
         const systemCpu = corePcts.reduce((a, b) => a + b, 0);
         const maxScale = corePcts.length * 100;
+        const systemCapacity = capacityPercent(systemCpu, corePcts.length);
         const headroom = Math.max(0, maxScale - systemCpu);
         const nonJasper = Math.max(0, systemCpu - jasperCpu);
         totalsLine =
           '<tr class="totals">' +
           '<td>System total · jasper / non-jasper / free</td>' +
           '<td class="num">' +
-            Math.round(systemCpu) + '% (' +
+            Math.round(systemCapacity) + '% (' +
             Math.round(jasperCpu) + ' + ' + Math.round(nonJasper) +
             ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)' +
           '</td>' +
