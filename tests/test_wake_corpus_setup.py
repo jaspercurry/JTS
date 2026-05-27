@@ -2051,10 +2051,20 @@ def test_delete_session_unknown_raises(backend) -> None:
 
 
 def test_html_has_sessions_card() -> None:
-    """The wizard's top-of-page Sessions card must exist."""
+    """The collapsible Sessions card sits below the new-session form."""
     html_text = wake_corpus_setup._render_index_html("t")
+    assert html_text.index('id="session-card"') < html_text.index(
+        'id="sessions-card"',
+    )
+    assert "<details" in html_text
     assert 'id="sessions-card"' in html_text
     assert 'id="sessions-list"' in html_text
+
+
+def test_html_labels_speaker_as_name_not_member() -> None:
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert '<label for="member">Name:</label>' in html_text
+    assert '<label for="member">Member:</label>' not in html_text
 
 
 def test_html_has_include_raw_mic_0_checkbox() -> None:
@@ -2097,6 +2107,23 @@ def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     assert "api/corpus-test-mode" in html_text
     assert "voice-toggle" not in html_text
     assert "bridge-output-disable" not in html_text
+
+
+def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
+    """Loaded sessions should not be labeled as newly-started sessions.
+
+    The button enters corpus test mode using the loaded session's saved
+    legs instead of beginning a second session.
+    """
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert "Enter corpus test mode for loaded session" in html_text
+    assert "Apply loaded session bridge outputs" in html_text
+    assert "Loaded session ready" in html_text
+    assert "'Loaded session'" in html_text
+    assert "sessionBridgeReady" in html_text
+    assert "latestStatus?.session_id" in html_text
+    assert "latestStatus.include_dtln" in html_text
+    assert "Session active" not in html_text
 
 
 def test_html_confirm_enables_missing_bridge_outputs() -> None:

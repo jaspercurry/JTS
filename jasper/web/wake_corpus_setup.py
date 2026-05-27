@@ -2572,19 +2572,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     </div>
   </div>
 
-  <div class="card" id="sessions-card">
-    <h2 style="margin-top:0">Sessions</h2>
-    <div id="sessions-list">(loading…)</div>
-    <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
-      Tap <strong>Load</strong> to resume an existing session, or
-      <strong>Delete</strong> to remove its WAVs + metadata permanently.
-    </p>
-  </div>
-
   <div class="card" id="session-card">
-    <h2 style="margin-top:0">Begin a new session</h2>
+    <h2 id="session-card-title" style="margin-top:0">Begin a new session</h2>
     <div class="row">
-      <label for="member">Member:</label>
+      <label for="member">Name:</label>
       <input type="text" id="member" value="jasper" maxlength="20">
     </div>
     <div class="row checkbox">
@@ -2630,6 +2621,20 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       </button>
     </div>
   </div>
+
+  <details class="card" id="sessions-card">
+    <summary style="cursor:pointer">
+      <strong>Sessions</strong>
+      <span style="color:#888; font-size:0.86em; margin-left:0.4em">
+        load or delete previous recordings
+      </span>
+    </summary>
+    <div id="sessions-list" style="margin-top:0.8em">(loading…)</div>
+    <p style="margin:0.6em 0 0; color:#888; font-size:0.86em">
+      Tap <strong>Load</strong> to resume an existing session, or
+      <strong>Delete</strong> to remove its WAVs + metadata permanently.
+    </p>
+  </details>
 
   <div class="card" id="record-card" style="display:none">
     <h2 style="margin-top:0">Record a clip</h2>
@@ -2686,6 +2691,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
   <script>
     const $ = id => document.getElementById(id);
     let elapsedTimer = null;
+    let latestStatus = null;
     const LEG_LABELS = {
       on: 'XVF WebRTC AEC3',
       off: 'XVF raw',
@@ -2775,6 +2781,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function refreshStatus() {
       try {
         const s = await api('GET', 'api/status');
+        latestStatus = s;
         const modeEl = $('corpus-mode-status');
         const voiceEl = $('voice-status');
         const exitEl = $('corpus-mode-exit');
@@ -2784,6 +2791,17 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const bridgeActive = Boolean(bridgeOutputs.active);
         const voiceActive = Boolean(s.voice_daemon_active);
         const inCorpusMode = !voiceActive || bridgeActive;
+        const sessionLoaded = Boolean(s.session_id);
+        const sessionInputs = [
+          $('member'), $('include-raw-mic-0'), $('include-dtln'),
+          $('include-usb-mic'), $('include-usb-dtln'),
+        ];
+        const sessionNeedsUsb = Boolean(s.include_usb_mic || s.include_usb_dtln);
+        const sessionBridgeReady = !sessionLoaded || (
+          (!s.include_dtln || bridgeOutputs.dtln) &&
+          (!sessionNeedsUsb || (bridgeOutputs.ref && bridgeOutputs.usb)) &&
+          (!s.include_usb_dtln || bridgeOutputs.usb_dtln)
+        );
         const activeBridgeLabels = [];
         if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
         if (recorderOutputs.ref) activeBridgeLabels.push('ref');
@@ -2819,11 +2837,33 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           voiceEl.textContent = 'stopped';
           voiceEl.className = 'pill gray';
         }
+        $('session-card-title').textContent = sessionLoaded
+          ? 'Loaded session'
+          : 'Begin a new session';
+        if (sessionLoaded) {
+          $('member').value = s.member || '';
+          $('include-raw-mic-0').checked = Boolean(s.include_raw_mic_0);
+          $('include-dtln').checked = Boolean(s.include_dtln);
+          $('include-usb-mic').checked = Boolean(s.include_usb_mic);
+          $('include-usb-dtln').checked = Boolean(s.include_usb_dtln);
+        }
+        for (const input of sessionInputs) input.disabled = sessionLoaded;
         const beginEl = $('session-begin');
-        beginEl.textContent = s.session_id
-          ? 'Session active'
-          : 'Enter corpus test mode & begin session';
-        beginEl.disabled = Boolean(s.session_id) || s.is_recording;
+        if (sessionLoaded) {
+          if (voiceActive) {
+            beginEl.textContent = 'Enter corpus test mode for loaded session';
+            beginEl.disabled = s.is_recording;
+          } else if (!sessionBridgeReady) {
+            beginEl.textContent = 'Apply loaded session bridge outputs';
+            beginEl.disabled = s.is_recording;
+          } else {
+            beginEl.textContent = 'Loaded session ready';
+            beginEl.disabled = true;
+          }
+        } else {
+          beginEl.textContent = 'Enter corpus test mode & begin session';
+          beginEl.disabled = s.is_recording;
+        }
         const sessionLabel = s.session_id
           ? `${s.member} / ${s.session_id}`
             + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
@@ -2833,10 +2873,14 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             + (s.enabled_legs?.length ? ` · ${s.enabled_legs.map(legLabel).join(', ')}` : '')
           : '(no session)';
         $('session-id').textContent = sessionLabel;
-        if (s.session_id) {
+        if (sessionLoaded) {
           $('record-card').style.display = 'block';
           $('counts-card').style.display = 'block';
           $('clips-card').style.display = 'block';
+        } else {
+          $('record-card').style.display = 'none';
+          $('counts-card').style.display = 'none';
+          $('clips-card').style.display = 'none';
         }
         if (s.is_recording) {
           $('recording-info').style.display = 'block';
@@ -2849,7 +2893,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           $('record-btn').textContent = '● RECORD';
           $('record-btn').classList.remove('recording');
           $('record-btn').classList.add('primary');
-          $('record-btn').disabled = !s.session_id || voiceActive;
+          $('record-btn').disabled = !s.session_id || voiceActive || !sessionBridgeReady;
         }
       } catch (e) { showErr(`status: ${e.message}`); }
     }
@@ -2871,6 +2915,21 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     }
 
     async function beginSession() {
+      if (latestStatus?.session_id) {
+        try {
+          await enterCorpusTestMode({
+            includeDtln: Boolean(latestStatus.include_dtln),
+            includeUsbMic: Boolean(latestStatus.include_usb_mic),
+            includeUsbDtln: Boolean(latestStatus.include_usb_dtln),
+          });
+          showErr('');
+          await refreshStatus();
+          return;
+        } catch (e) {
+          showErr(`corpus test mode enter: ${e.message}`);
+          return;
+        }
+      }
       const member = $('member').value.trim();
       const includeRawMic0 = $('include-raw-mic-0').checked;
       const includeDtln = $('include-dtln').checked;
@@ -2951,7 +3010,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             : '';
           const legsText = (s.enabled_legs || []).map(legLabel).join(', ');
           const activeMark = s.is_active
-            ? '<span class="pill tiny green">active</span> ' : '';
+            ? '<span class="pill tiny green">loaded</span> ' : '';
           const date = new Date(s.mtime * 1000).toLocaleString();
           row.innerHTML = `
             <div class="session-meta">

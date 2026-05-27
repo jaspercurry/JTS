@@ -499,11 +499,15 @@ speaker reference before downsampling, but that changes the bridge,
 recorder, and audit surface. Track it as a post-corpus follow-up rather
 than changing the main recording protocol tonight.
 
-**Sessions management UX (PR #323).** The recorder's top-of-page
-Sessions card lists every recorded session (member, timestamp,
-clip count, condition breakdown, leg indicators). Each row has
-Load (resume) + Delete (hard-remove WAVs + JSON) buttons. Cleanup
-of pre-raw0 sessions = one click each before starting fresh.
+**Sessions management UX (PR #323, refined 2026-05-27).** The
+recorder's collapsible Sessions card sits below the new-session setup
+and lists every recorded session (name/member, timestamp, clip count,
+condition breakdown, leg indicators). Each row has Load (resume) +
+Delete (hard-remove WAVs + JSON) buttons. Load makes the selected
+session the in-memory recording target but does not enter corpus test
+mode; the page then offers to enter test mode using that loaded
+session's saved leg selection. Cleanup of pre-raw0 sessions = one
+click each before starting fresh.
 
 Plus **~15 min hard-negative recording in Session B**: Jasper
 records similar-sounding words/phrases that should NOT trigger:
@@ -1086,7 +1090,7 @@ Recorder UX status:
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
-  confirm)
+  confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
   playback selector for every WAV recorded on a clip
 - ✅ Playback selector labels WebRTC paths as WebRTC AEC3 and puts the
@@ -1096,6 +1100,8 @@ Recorder UX status:
 - ✅ Corpus test-mode transition wired: selected optional legs are
   applied before session creation; exiting disables recorder-owned
   bridge outputs and restarts `jasper-voice`
+- ✅ Loaded sessions show as loaded (not newly active) and can enter
+  corpus test mode using their saved leg set
 
 Recording-day audit tooling:
 - ✅ `bash scripts/audit-wake-corpus.sh data/enrollment_positives
@@ -1127,6 +1133,13 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v12):** Loaded-session UX:
+  - Clarified Load semantics: loading a session selects it as the
+    recording target but does not stop `jasper-voice` or enable corpus
+    bridge outputs.
+  - Sessions card moved below setup, made collapsible, and loaded
+    sessions now offer a separate enter-test-mode action using saved
+    leg selections.
 - **2026-05-27 (v11):** Corpus test-mode UX:
   - Replaced separate voice/start-stop and return-to-production controls
     with a single recorder-page mode transition. The operator selects
@@ -1283,4 +1296,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v11 — corpus test-mode UX verified)
+Last verified: 2026-05-27 (v12 — loaded-session UX verified)
