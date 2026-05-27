@@ -38,7 +38,7 @@ def test_snapshot_shape_with_no_samples_yet() -> None:
     # History present but empty.
     for key in (
         "t", "mem_available_mb", "mem_used_mb", "swap_used_mb", "load_1m",
-        "fan_rpm", "fan_pwm",
+        "fan_rpm", "fan_pwm", "temp_c",
     ):
         assert snap["history"][key] == []
     # Current present with sensible defaults.
@@ -179,6 +179,33 @@ def test_read_throttled_handles_missing_vcgencmd() -> None:
         system_metrics.subprocess, "run", side_effect=FileNotFoundError(),
     ):
         assert SystemSampler._read_throttled() == (0, 0)
+
+
+def test_vcgencmd_tick_records_temperature_history() -> None:
+    s = SystemSampler(
+        sample_interval_sec=5.0,
+        vcgencmd_interval_sec=30.0,
+        history_points=12,
+    )
+    with patch.object(
+        SystemSampler,
+        "_read_temp_c",
+        side_effect=[41.0, 42.0, 43.0],
+    ), patch.object(
+        SystemSampler,
+        "_read_throttled",
+        return_value=(0, 0),
+    ):
+        s._tick_vcgencmd()
+        s._tick_vcgencmd()
+        s._tick_vcgencmd()
+
+    snap = s.snapshot()
+    assert snap["current"]["temp_c"] == 43.0
+    # 12 points at the 5-second main cadence covers one minute; with
+    # vcgencmd sampled every 30 seconds, the temperature history keeps
+    # the matching two most recent samples.
+    assert snap["history"]["temp_c"] == [42.0, 43.0]
 
 
 # ---------- fan reader (fake sysfs trees) -------------------------------

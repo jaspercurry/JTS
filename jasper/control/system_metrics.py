@@ -10,9 +10,8 @@ Why in-process here:
     nothing else in the daemon was already collecting it.
   - jasper-control is the natural place — it's the always-on HTTP
     aggregator for state, volume, transport, etc.
-  - Cost: ~0.05% of one core idle, plus ~28 KB RAM for the ring buffer
-    (six float64 arrays × 720 points × 8 bytes ≈ 33 KB; measured 30
-    KB Pss on the Pi).
+  - Cost: ~0.05% of one core idle, plus ~35 KB RAM for the ring buffer
+    (six 5-second arrays plus the slower temperature history).
 
 What we DON'T do here:
   - No psutil dep. /proc + vcgencmd via subprocess.run is enough.
@@ -24,6 +23,7 @@ What we DON'T do here:
 from __future__ import annotations
 
 import logging
+import math
 import os
 import subprocess
 import threading
@@ -93,6 +93,13 @@ class SystemSampler:
         self._sample_interval = sample_interval_sec
         self._vcgencmd_interval = vcgencmd_interval_sec
         self._history_points = history_points
+        vcgencmd_interval = max(vcgencmd_interval_sec, 0.001)
+        self._temp_history_points = max(
+            1,
+            math.ceil(
+                history_points * sample_interval_sec / vcgencmd_interval,
+            ),
+        )
         self._lock = threading.Lock()
         # Ring buffers (5-second resolution).
         self._t = array("d")  # epoch seconds
@@ -102,8 +109,9 @@ class SystemSampler:
         self._load_1m = array("d")
         self._fan_rpm = array("d")  # 0 when fan absent
         self._fan_pwm = array("d")  # 0 when fan absent
-        # Current-only (no history): cheap to keep up to date but not
-        # worth a sparkline.
+        self._temp_c_history = array("d")
+        # Current snapshot values that are not stored in the main
+        # 5-second ring buffers.
         self._mem_total_mb = 0
         self._disk_used_pct = 0.0
         self._disk_total_gb = 0.0
@@ -162,6 +170,7 @@ class SystemSampler:
                     "load_1m": list(self._load_1m),
                     "fan_rpm": list(self._fan_rpm),
                     "fan_pwm": list(self._fan_pwm),
+                    "temp_c": list(self._temp_c_history),
                 },
                 "current": {
                     "mem_total_mb": self._mem_total_mb,
@@ -278,12 +287,14 @@ class SystemSampler:
         throttled_now, throttled_history = self._read_throttled()
         with self._lock:
             self._temp_c = temp
+            self._append(self._temp_c_history, temp, self._temp_history_points)
             self._throttled_now = throttled_now
             self._throttled_history = throttled_history
 
-    def _append(self, buf: array, val: float) -> None:
+    def _append(self, buf: array, val: float, limit: int | None = None) -> None:
         buf.append(float(val))
-        if len(buf) > self._history_points:
+        max_len = limit if limit is not None else self._history_points
+        if len(buf) > max_len:
             del buf[0]
 
     # --- raw readers ---
