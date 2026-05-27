@@ -634,31 +634,34 @@ for Pi 5 radios whose scan cache is broken by brcmfmac suppression.
 
 **Scanning returns only the connected SSID? Known Pi 5 brcmfmac
 firmware bug.** When the kernel logs `brcmf_cfg80211_scan:
-Scanning suppressed: status (4)` continuously and the per-phy
-regdom is stuck at `country 99: DFS-UNSET`, that's the
-`BRCMF_SCAN_STATUS_SUPPRESS` bit getting stuck on after a DHCP
-exchange or Bluetooth-coexistence event. The driver returns
-`-EAGAIN` to every scan request until the bit clears, but the
-closed-source chip firmware on the Pi 5 doesn't always clear it.
+Scanning suppressed: status (4)` continuously, that's the
+`BRCMF_SCAN_STATUS_SUPPRESS` bit getting stuck after a DHCP exchange
+or Bluetooth-coexistence event. The driver returns `-EAGAIN` to every
+scan request until the bit clears, but the closed-source chip firmware
+on the Pi 5 doesn't always clear it.
 
-The standard documented fix (`cfg80211.ieee80211_regdom=US` in
-`/boot/firmware/cmdline.txt`, written by Pi Imager + `raspi-config
-nonint do_wifi_country`) sets cfg80211's global regdom but
-doesn't always propagate to the chip's per-phy regdom. We
-verified this on a Pi 5 — cmdline has the right value, global
-regdom = US, but phy0 stays at country 99. Nobody has a clean
-fix per the [Raspberry Pi forum thread on this exact
-issue](https://forums.raspberrypi.com/viewtopic.php?p=2371774):
-*"there is no definitive upstream patch since the firmware is
-closed-source."*
+Do not confuse scan suppression with `iw reg get` showing
+`phy#0 country 99: DFS-UNSET`. Linux uses the `99` alpha2 for a
+driver-built regulatory domain whose specific ISO country cannot be
+determined. On Pi 5 brcmfmac that per-phy value can remain `99` even
+when the real, actionable cfg80211 global country is set correctly by
+Pi Imager or `raspi-config nonint do_wifi_country`. We verified this
+on hardware: cmdline has `cfg80211.ieee80211_regdom=US`, global
+regdom = US, phy0 = 99, and scanning can still work after the
+suppression repair.
 
-`jasper-doctor`'s `check_wifi_regdom` reports the stuck state.
+`jasper-doctor`'s `check_wifi_regdom` warns only when the global
+regdom is unset (`00` / `99`) or cannot be parsed. A per-phy `99`
+with a valid global country is reported as OK detail, not a warning.
 Diagnostic:
 
 ```sh
-sudo iw reg get | grep -A1 'phy#0'
-# Healthy: country US: DFS-FCC   (or DE / GB / etc.)
-# Stuck:   country 99: DFS-UNSET
+sudo iw reg get
+# Fine as long as the global section is a real country:
+# global
+# country US: DFS-FCC
+# phy#0
+# country 99: DFS-UNSET
 ```
 
 The `/wifi/scan` backend productionizes the least disruptive repair we

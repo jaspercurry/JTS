@@ -1436,15 +1436,80 @@ def test_parse_bluealsa_device_from_dropin(tmp_path, monkeypatch):
     assert doctor._renderer_device_bluealsa() == "bluealsa_substream"
 
 
+# ---------------------------------------------------- check_wifi_regdom
+
+def _patch_doctor_iw_reg_get(monkeypatch, stdout: str, returncode: int = 0):
+    def fake_run(cmd, timeout=5.0):
+        assert cmd == ["iw", "reg", "get"]
+        return subprocess.CompletedProcess(
+            cmd,
+            returncode,
+            stdout=stdout,
+            stderr="boom" if returncode else "",
+        )
+
+    monkeypatch.setattr(doctor, "_run", fake_run)
+
+
+def test_check_wifi_regdom_ok_when_global_country_valid_and_phy_unlabeled(
+    monkeypatch,
+):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country US: DFS-FCC
+\t(2400 - 2472 @ 40), (N/A, 30), (N/A)
+
+phy#0
+country 99: DFS-UNSET
+\t(2402 - 2482 @ 40), (6, 20), (N/A)
+""",
+    )
+    r = doctor.check_wifi_regdom()
+    assert r.status == "ok"
+    assert "global country=US" in r.detail
+    assert "phy0 country=99" in r.detail
+    assert "not actionable by itself" in r.detail
+
+
+def test_check_wifi_regdom_warns_when_global_country_unset(monkeypatch):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country 00: DFS-UNSET
+
+phy#0
+country 99: DFS-UNSET
+""",
+    )
+    r = doctor.check_wifi_regdom()
+    assert r.status == "warn"
+    assert "global regdom is '00'" in r.detail
+    assert "do_wifi_country <CC>" in r.detail
+
+
+def test_check_wifi_regdom_ok_with_valid_global_and_no_phy(monkeypatch):
+    _patch_doctor_iw_reg_get(
+        monkeypatch,
+        """global
+country DE: DFS-ETSI
+""",
+    )
+    r = doctor.check_wifi_regdom()
+    assert r.status == "ok"
+    assert "global country=DE" in r.detail
+    assert "no per-phy regdom reported" in r.detail
+
+
 # ---------------------------------------------------- check_wifi_guardian
 #
 # The check has four happy/warn paths to cover (matches the design
 # doc §3.7 (F)):
 #   - ok: stash present, active SSID matches
 #   - ok: no stash and no active WiFi (Ethernet-only Pi)
-#   - warn: WiFi up, no stash → wizard never saved
-#   - warn: stash present, active WiFi on a different SSID → drift
-#   - warn: stash present, no active WiFi → last guardian failed
+#   - warn: WiFi up, no stash -> wizard never saved
+#   - warn: stash present, active WiFi on a different SSID -> drift
+#   - warn: stash present, no active WiFi -> last guardian failed
 # Skip path:
 #   - ok with detail "skipped" when nmcli isn't on PATH
 
