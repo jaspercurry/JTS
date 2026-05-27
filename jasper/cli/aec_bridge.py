@@ -86,8 +86,11 @@ import os
 import signal
 import sys
 import threading
+import time
 from queue import Queue, Empty, Full
+from pathlib import Path
 from typing import Optional
+import json
 
 import numpy as np
 import sounddevice as sd
@@ -216,6 +219,10 @@ USB_MIC_RATE = int(float(os.environ.get("JASPER_AEC_USB_MIC_RATE", "0")))
 # still works on 320-sample windows internally.
 OUT_FRAME_SAMPLES = 1280
 OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
+BRIDGE_STATS_PATH = Path(
+    os.environ.get("JASPER_AEC_BRIDGE_STATS_PATH", "/run/jasper/aec_bridge_stats.json")
+)
+BRIDGE_STATS_SCHEMA_VERSION = 1
 
 # Drop-frame threshold. If queues fill faster than they drain,
 # something's wrong (CPU starvation, clock drift exceeded our
@@ -223,6 +230,100 @@ OUT_FRAME_BYTES = OUT_FRAME_SAMPLES * 2  # int16
 QUEUE_MAXSIZE = 32
 
 _shutdown = threading.Event()
+
+
+class _BridgeStats:
+    """Low-cost monotonic counters for capture provenance.
+
+    The wake-corpus recorder snapshots this JSON file at clip
+    start/stop and stores counter deltas in clip metadata. Counters are
+    intentionally monotonic for the lifetime of one bridge process;
+    the PID + start epoch let consumers reject deltas across restarts.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._started_epoch_sec = time.time()
+        self._counters: dict[str, object] = {}
+        self.reset()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._started_epoch_sec = time.time()
+            self._counters = {
+                "frames_processed": 0,
+                "ref_starved_frames": 0,
+                "queue_drops": {
+                    "mic": 0,
+                    "raw0": 0,
+                    "usb": 0,
+                    "ref": 0,
+                },
+                "udp_send_drops_by_leg": {
+                    "on": 0,
+                    "off": 0,
+                    "dtln": 0,
+                    "raw0": 0,
+                    "ref": 0,
+                    "usb_raw": 0,
+                    "usb_webrtc": 0,
+                    "usb_dtln": 0,
+                },
+                "packets_sent_by_leg": {
+                    "on": 0,
+                    "off": 0,
+                    "dtln": 0,
+                    "raw0": 0,
+                    "ref": 0,
+                    "usb_raw": 0,
+                    "usb_webrtc": 0,
+                    "usb_dtln": 0,
+                },
+            }
+
+    def inc(self, key: str, amount: int = 1) -> None:
+        with self._lock:
+            self._counters[key] = int(self._counters.get(key, 0)) + amount
+
+    def inc_nested(self, group: str, key: str, amount: int = 1) -> None:
+        with self._lock:
+            values = self._counters.get(group)
+            if not isinstance(values, dict):
+                return
+            values[key] = int(values.get(key, 0)) + amount
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            counters = json.loads(json.dumps(self._counters))
+            started = self._started_epoch_sec
+        return {
+            "schema_version": BRIDGE_STATS_SCHEMA_VERSION,
+            "pid": os.getpid(),
+            "started_epoch_sec": started,
+            "updated_epoch_sec": time.time(),
+            "sample_rate_hz": SAMPLE_RATE,
+            "frame_samples": FRAME_SAMPLES,
+            "out_frame_samples": OUT_FRAME_SAMPLES,
+            "counters": counters,
+        }
+
+    def write_snapshot(self, path: Path = BRIDGE_STATS_PATH) -> None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(path.suffix + ".tmp")
+            tmp.write_text(json.dumps(self.snapshot(), sort_keys=True))
+            tmp.replace(path)
+        except OSError as e:
+            logger.debug("bridge stats snapshot write failed: %s", e)
+
+
+_bridge_stats = _BridgeStats()
+
+
+def _bridge_stats_writer(path: Path = BRIDGE_STATS_PATH) -> None:
+    while not _shutdown.wait(0.5):
+        _bridge_stats.write_snapshot(path)
+    _bridge_stats.write_snapshot(path)
 
 
 class BridgeStalled(RuntimeError):
@@ -679,6 +780,7 @@ def _ref_thread(ref_q: Queue) -> None:
                 try:
                     ref_q.put_nowait(mono16.tobytes())
                 except Full:
+                    _bridge_stats.inc_nested("queue_drops", "ref")
                     drops_in_window += 1
             now = _time.monotonic()
             if drops_in_window > 0 and now - last_drop_log >= 1.0:
@@ -713,6 +815,7 @@ def _mic_thread(mic_q: Queue, raw0_q: Optional[Queue] = None) -> None:
         try:
             mic_q.put_nowait(mono.tobytes())
         except Full:
+            _bridge_stats.inc_nested("queue_drops", "mic")
             logger.warning("mic queue full, dropping frame")
         if raw0_q is not None:
             # Channel 2 = raw mic 0 ADC output, bypasses chip's
@@ -722,6 +825,7 @@ def _mic_thread(mic_q: Queue, raw0_q: Optional[Queue] = None) -> None:
             try:
                 raw0_q.put_nowait(raw0.tobytes())
             except Full:
+                _bridge_stats.inc_nested("queue_drops", "raw0")
                 # The raw0 leg is observational; if it can't keep up,
                 # drop quietly so we don't spam the journal during a
                 # bridge stall that's already noisy via the mic_q path.
@@ -769,6 +873,7 @@ def _usb_mic_thread(usb_q: Queue) -> None:
             try:
                 usb_q.put_nowait(chunk.tobytes())
             except Full:
+                _bridge_stats.inc_nested("queue_drops", "usb")
                 logger.warning("usb corpus mic queue full, dropping frame")
 
     with sd.InputStream(
@@ -1106,6 +1211,7 @@ def _aec_loop(  # noqa: PLR0915
                 last_ref_bytes = ref_q.get_nowait()
             except Empty:
                 _ref_starved_frames += 1
+                _bridge_stats.inc("ref_starved_frames")
             ref_bytes = last_ref_bytes
             if emit_ref:
                 out_batch_ref.extend(ref_bytes)
@@ -1115,7 +1221,9 @@ def _aec_loop(  # noqa: PLR0915
                             bytes(out_batch_ref[:OUT_FRAME_BYTES]),
                             out_dest_ref,
                         )
+                        _bridge_stats.inc_nested("packets_sent_by_leg", "ref")
                     except BlockingIOError:
+                        _bridge_stats.inc_nested("udp_send_drops_by_leg", "ref")
                         logger.warning("udp ref sendto would block, dropping frame")
                     del out_batch_ref[:OUT_FRAME_BYTES]
 
@@ -1142,7 +1250,9 @@ def _aec_loop(  # noqa: PLR0915
                         bytes(out_batch_raw[:OUT_FRAME_BYTES]),
                         out_dest_raw,
                     )
+                    _bridge_stats.inc_nested("packets_sent_by_leg", "off")
                 except BlockingIOError:
+                    _bridge_stats.inc_nested("udp_send_drops_by_leg", "off")
                     logger.warning(
                         "udp raw sendto would block, dropping frame"
                     )
@@ -1168,7 +1278,9 @@ def _aec_loop(  # noqa: PLR0915
                             bytes(out_batch_raw0[:OUT_FRAME_BYTES]),
                             out_dest_raw0,
                         )
+                        _bridge_stats.inc_nested("packets_sent_by_leg", "raw0")
                     except BlockingIOError:
+                        _bridge_stats.inc_nested("udp_send_drops_by_leg", "raw0")
                         logger.warning(
                             "udp raw0 sendto would block, dropping frame"
                         )
@@ -1206,7 +1318,11 @@ def _aec_loop(  # noqa: PLR0915
                                 bytes(out_batch_dtln[:OUT_FRAME_BYTES]),
                                 out_dest_dtln,
                             )
+                            _bridge_stats.inc_nested("packets_sent_by_leg", "dtln")
                         except BlockingIOError:
+                            _bridge_stats.inc_nested(
+                                "udp_send_drops_by_leg", "dtln",
+                            )
                             logger.warning(
                                 "udp dtln sendto would block, dropping frame"
                             )
@@ -1225,7 +1341,13 @@ def _aec_loop(  # noqa: PLR0915
                                 bytes(out_batch_usb_raw[:OUT_FRAME_BYTES]),
                                 out_dest_usb_raw,
                             )
+                            _bridge_stats.inc_nested(
+                                "packets_sent_by_leg", "usb_raw",
+                            )
                         except BlockingIOError:
+                            _bridge_stats.inc_nested(
+                                "udp_send_drops_by_leg", "usb_raw",
+                            )
                             logger.warning(
                                 "udp usb_raw sendto would block, dropping frame"
                             )
@@ -1250,7 +1372,13 @@ def _aec_loop(  # noqa: PLR0915
                                         bytes(out_batch_usb_webrtc[:OUT_FRAME_BYTES]),
                                         out_dest_usb_webrtc,
                                     )
+                                    _bridge_stats.inc_nested(
+                                        "packets_sent_by_leg", "usb_webrtc",
+                                    )
                                 except BlockingIOError:
+                                    _bridge_stats.inc_nested(
+                                        "udp_send_drops_by_leg", "usb_webrtc",
+                                    )
                                     logger.warning(
                                         "udp usb_webrtc sendto would block, "
                                         "dropping frame"
@@ -1278,7 +1406,13 @@ def _aec_loop(  # noqa: PLR0915
                                         bytes(out_batch_usb_dtln[:OUT_FRAME_BYTES]),
                                         out_dest_usb_dtln,
                                     )
+                                    _bridge_stats.inc_nested(
+                                        "packets_sent_by_leg", "usb_dtln",
+                                    )
                                 except BlockingIOError:
+                                    _bridge_stats.inc_nested(
+                                        "udp_send_drops_by_leg", "usb_dtln",
+                                    )
                                     logger.warning(
                                         "udp usb_dtln sendto would block, "
                                         "dropping frame"
@@ -1315,10 +1449,13 @@ def _aec_loop(  # noqa: PLR0915
                 # frame).
                 try:
                     out_sock.sendto(bytes(out_batch[:OUT_FRAME_BYTES]), out_dest)
+                    _bridge_stats.inc_nested("packets_sent_by_leg", "on")
                 except BlockingIOError:
+                    _bridge_stats.inc_nested("udp_send_drops_by_leg", "on")
                     logger.warning("udp out sendto would block, dropping frame")
                 del out_batch[:OUT_FRAME_BYTES]
             frames_processed += 1
+            _bridge_stats.inc("frames_processed")
             if heartbeat is not None:
                 heartbeat.bump()
 
@@ -1395,6 +1532,8 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s aec-bridge %(levelname)s %(message)s",
     )
+    _bridge_stats.reset()
+    _bridge_stats.write_snapshot()
     corpus_ref_enabled = _env_bool("JASPER_AEC_CORPUS_REF_ENABLED", "0")
     corpus_usb_enabled = _env_bool("JASPER_AEC_CORPUS_USB_ENABLED", "0")
     corpus_usb_dtln_enabled = _env_bool(
@@ -1461,6 +1600,10 @@ def main() -> int:
     mic_t.start()
     if usb_t is not None:
         usb_t.start()
+    stats_t = threading.Thread(
+        target=_bridge_stats_writer, name="aec-bridge-stats", daemon=True,
+    )
+    stats_t.start()
 
     # Tier 1 of the resilience ladder. Bumped after each successful
     # frame in `_aec_loop`; if the loop wedges (e.g. mic InputStream
@@ -1495,10 +1638,12 @@ def main() -> int:
     finally:
         heartbeat.stop()
         engine.close()
+        _bridge_stats.write_snapshot()
         ref_t.join(timeout=2)
         mic_t.join(timeout=2)
         if usb_t is not None:
             usb_t.join(timeout=2)
+        stats_t.join(timeout=1)
     return 0
 
 

@@ -144,6 +144,8 @@ The audit checks:
 - Missing expected legs, especially raw0 in raw0-enabled sessions
 - Condition × distance coverage matrix
 - WAV existence, format (16 kHz mono int16), duration, RMS, and peak
+- Recorder `capture_health` metadata when present: compromised clips
+  fail the audit, while warning/unknown clips are surfaced for review
 
 This is separate from production wake-event telemetry. It does not
 read `wake-events.sqlite3` and does not score wake-word models; it is

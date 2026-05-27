@@ -204,6 +204,7 @@ def audit(
     all_alive_clips: list[dict[str, Any]] = []
     all_wav_stats: list[WavStats] = []
     leg_counts: Counter[str] = Counter()
+    health_counts: Counter[str] = Counter()
     session_raw0_count = 0
 
     for data in sessions:
@@ -255,6 +256,14 @@ def audit(
                 issues.append(f"{clip_id}: unknown condition {condition!r}")
             if distance not in DISTANCES:
                 issues.append(f"{clip_id}: unknown distance {distance!r}")
+            capture_health = clip.get("capture_health")
+            if isinstance(capture_health, dict):
+                health_status = str(capture_health.get("status", "unknown"))
+                health_counts[health_status] += 1
+                if health_status == "compromised":
+                    issues.append(f"{clip_id}: capture health compromised")
+                elif health_status in ("warning", "unknown"):
+                    warnings.append(f"{clip_id}: capture health {health_status}")
 
             files = clip.get("files") or {}
             missing = [leg for leg in expected_legs if leg not in files]
@@ -303,6 +312,8 @@ def audit(
 
     print(f"  raw0-enabled sessions: {session_raw0_count}/{len(sessions)}")
     print(f"  leg WAV counts: {dict(sorted(leg_counts.items()))}")
+    if health_counts:
+        print(f"  capture health: {dict(sorted(health_counts.items()))}")
 
     print("\n[2] Condition x distance coverage")
     counts = _matrix_counts(all_alive_clips)

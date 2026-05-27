@@ -38,6 +38,7 @@ def _write_session(
     enabled_legs: list[str] | None = None,
     files: dict[str, str] | None = None,
     ports: dict[str, int] | None = None,
+    capture_health: dict[str, object] | None = None,
 ) -> Path:
     metadata = root / "metadata"
     metadata.mkdir(parents=True, exist_ok=True)
@@ -69,6 +70,7 @@ def _write_session(
                 "deleted": False,
                 "auto_stopped": False,
                 "notes": "",
+                **({"capture_health": capture_health} if capture_health is not None else {}),
             },
         ],
     }
@@ -269,3 +271,27 @@ def test_audit_fails_when_expected_usb_leg_not_enabled(
     out = capsys.readouterr().out
     assert rc == 1
     assert "expected leg 'usb_webrtc' not enabled" in out
+
+
+def test_audit_fails_compromised_capture_health(tmp_path: Path, capsys) -> None:
+    root = tmp_path / "enrollment_positives"
+    files = {
+        "on": str(root / "aec_on_nomusic" / "clip.aec-on.wav"),
+        "off": str(root / "aec_off_nomusic" / "clip.aec-off.wav"),
+    }
+    for path_str in files.values():
+        _write_wav(Path(path_str))
+    _write_session(
+        root,
+        include_raw0=False,
+        files=files,
+        ports={"on": 9876, "off": 9877},
+        capture_health={"status": "compromised"},
+    )
+
+    rc = audit_wake_corpus.audit(root)
+
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "capture health: {'compromised': 1}" in out
+    assert "clip-1: capture health compromised" in out
