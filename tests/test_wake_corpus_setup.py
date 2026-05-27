@@ -2149,10 +2149,8 @@ def test_html_has_include_usb_mic_checkbox() -> None:
     assert 'id="include-usb-mic"' in html_text
     assert 'USB mic + reference' in html_text
     assert 'include_usb_mic' in html_text
-    assert 'id="usb-mic-note"' in html_text
-    assert 'no software AGC' in html_text
-    assert 'api/usb-mic/status' in html_text
-    assert 'Auto Gain Control' in html_text
+    assert '16 kHz reference' in html_text
+    assert 'id="usb-mic-note"' not in html_text
 
 
 def test_html_has_dtln_session_checkboxes() -> None:
