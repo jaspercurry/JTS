@@ -512,6 +512,62 @@ def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     usb_engine.close.assert_called_once()
 
 
+def test_aec_loop_emits_aec3_sweep_variants_when_enabled(monkeypatch):
+    """AEC3 corpus sweep runs three independent WebRTC engines on the
+    same mic/ref frames and emits each as its own UDP leg."""
+    import socket as real_socket
+    from jasper.aec_sweep import AEC3_SWEEP_ENV_FLAG, AEC3_SWEEP_VARIANTS
+    from jasper.cli.aec_bridge import OUT_PORT_AEC3_SWEEP
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    sweep_socks = [_mock_socket() for _ in AEC3_SWEEP_VARIANTS]
+    socket_factory = MagicMock(
+        side_effect=[aec_sock, raw_sock, raw0_sock, *sweep_socks],
+    )
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    sweep_outputs = [
+        [bytes([i + offset]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+        for offset in (130, 150, 170)
+    ]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+    sweep_engines = []
+    observed_overrides = []
+
+    for frames in sweep_outputs:
+        e = MagicMock()
+        e.process.side_effect = frames
+        sweep_engines.append(e)
+
+    def fake_select_engine(overrides=None, label=None):
+        observed_overrides.append((overrides, label))
+        return sweep_engines[len(observed_overrides) - 1]
+
+    monkeypatch.setattr(aec_bridge, "_select_engine", fake_select_engine)
+
+    _aec_loop(_AlwaysEmptyQ(), _ScriptedMicQ(mic_frames), engine)
+
+    assert socket_factory.call_count == 3 + len(AEC3_SWEEP_VARIANTS)
+    assert [item[0] for item in observed_overrides] == [
+        variant.env_overrides for variant in AEC3_SWEEP_VARIANTS
+    ]
+    for variant, sock, frames in zip(AEC3_SWEEP_VARIANTS, sweep_socks, sweep_outputs):
+        sock.sendto.assert_called_once_with(
+            b"".join(frames), (OUT_HOST, OUT_PORT_AEC3_SWEEP[variant.leg]),
+        )
+    for e in sweep_engines:
+        e.close.assert_called_once()
+
+
 def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     """USB DTLN is a separate opt-in neural leg, fed by cheap USB raw
     plus the same reference frame as the WebRTC corpus path."""

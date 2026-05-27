@@ -134,6 +134,7 @@ def backend(tmp_path: Path):
             "usb_raw": 9881,
             "usb_webrtc": 9882,
             "usb_dtln": 9883,
+            **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
         },
         max_duration_sec=10.0,  # long enough to not auto-stop during tests
     )
@@ -1192,7 +1193,7 @@ def test_default_ports_dict_includes_all_four_legs(tmp_path: Path) -> None:
     b = wake_corpus_setup.RecordingBackend(output_dir=tmp_path / "out")
     assert set(b._ports.keys()) == {
         "on", "off", "dtln", "raw0", "ref", "usb_raw",
-        "usb_webrtc", "usb_dtln",
+        "usb_webrtc", "usb_dtln", *wake_corpus_setup.AEC3_SWEEP_LEGS,
     }
 
 
@@ -1217,6 +1218,7 @@ def test_build_ports_keeps_raw0_when_dtln_disabled() -> None:
         "usb_raw": 6666,
         "usb_webrtc": 7777,
         "usb_dtln": 8888,
+        **wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS,
     }
 
 
@@ -1239,6 +1241,11 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT", "6600")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT", "7700")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_NS_OFF_PORT", "9901")
+    monkeypatch.setenv(
+        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_DEFAULT_GAIN_08_PORT", "9902",
+    )
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9903")
 
     assert web_main._wake_corpus_ports_from_env() == {
         "on": 1100,
@@ -1249,6 +1256,9 @@ def test_combined_web_entrypoint_includes_raw0_port(
         "usb_raw": 6600,
         "usb_webrtc": 7700,
         "usb_dtln": 8800,
+        "aec3_ns_off": 9901,
+        "aec3_default_gain_08": 9902,
+        "aec3_hf_relaxed": 9903,
     }
 
 
@@ -1265,6 +1275,9 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     assert ports["raw0"] == 4400
     assert ports["ref"] == wake_corpus_setup.DEFAULT_AEC_REF_PORT
     assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
+    assert ports["aec3_ns_off"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
+        "aec3_ns_off"
+    ]
 
 
 def test_combined_web_lazy_wake_corpus_serves_after_first_request(
@@ -1455,6 +1468,34 @@ def test_begin_session_with_usb_dtln_records_companion_legs(
     assert "usb_webrtc" not in clip.files
 
 
+def test_begin_session_with_aec3_sweep_records_variant_legs(
+    backend, tmp_path: Path,
+) -> None:
+    """AEC3 sweep captures baseline plus the three same-utterance
+    WebRTC variants without enabling the DTLN comparison leg."""
+    backend.begin_session(
+        "jasper", include_dtln=False, include_aec3_sweep=True,
+    )
+    assert backend.include_aec3_sweep() is True
+    assert backend.enabled_legs() == (
+        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    )
+
+    backend.start_recording("music", "far")
+    time.sleep(0.1)
+    clip = backend.stop_recording()
+
+    out = tmp_path / "out"
+    for leg in ("on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off"):
+        d = out / f"aec_{leg}_music"
+        assert d.is_dir(), f"missing dir: {d}"
+        assert len(list(d.glob("*.aec-*.wav"))) == 1
+    assert set(clip.files.keys()) == {
+        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    }
+    assert "dtln" not in clip.files
+
+
 def test_missing_bridge_outputs_detects_disabled_usb_and_dtln(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -1464,7 +1505,8 @@ def test_missing_bridge_outputs_detects_disabled_usb_and_dtln(
         include_dtln=True,
         include_usb_mic=True,
         include_usb_dtln=True,
-    ) == ["dtln", "ref", "usb", "usb_dtln"]
+        include_aec3_sweep=True,
+    ) == ["dtln", "ref", "usb", "usb_dtln", "aec3_sweep"]
 
 
 def test_missing_bridge_outputs_honors_overlay_order(
@@ -1485,6 +1527,7 @@ def test_missing_bridge_outputs_honors_overlay_order(
             "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n"
         ),
     )
 
@@ -1492,6 +1535,7 @@ def test_missing_bridge_outputs_honors_overlay_order(
         include_dtln=True,
         include_usb_mic=True,
         include_usb_dtln=True,
+        include_aec3_sweep=True,
     ) == []
 
 
@@ -1547,6 +1591,7 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
         include_dtln=True,
         include_usb_mic=False,
         include_usb_dtln=True,
+        include_aec3_sweep=True,
     )
 
     values = {
@@ -1557,6 +1602,7 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
     assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"] == "1"
     assert values["JASPER_AEC_USB_MIC_DEVICE"] == "USB PnP Sound Device"
     assert restarts == ["restart"]
 
@@ -1591,6 +1637,7 @@ def test_set_bridge_outputs_matches_selected_session_outputs(
             "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n"
             "JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n"
         ),
     )
@@ -1614,10 +1661,37 @@ def test_set_bridge_outputs_matches_selected_session_outputs(
     assert changed is True
     assert "JASPER_AEC_DTLN_ENABLED" not in values
     assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in values
+    assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED" not in values
     assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
     assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
     assert values["JASPER_AEC_USB_MIC_DEVICE"] == "Studio Mic"
     assert restarts == ["restart"]
+
+
+def test_set_bridge_outputs_enables_aec3_sweep_and_parks_dtln(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env="JASPER_AEC_DTLN_ENABLED=1\n",
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        include_dtln=False,
+        include_usb_mic=False,
+        include_usb_dtln=False,
+        include_aec3_sweep=True,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"] == "1"
 
 
 def test_enable_bridge_outputs_rolls_back_when_restart_fails(
@@ -1753,6 +1827,49 @@ def test_build_capture_health_marks_bridge_drop_compromised() -> None:
     assert health["legs"]["on"]["bridge_drop_counts"]["mic_queue_full"] == 1
 
 
+def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
+    """AEC3 sweep legs use the same XVF mic/ref frames as the baseline
+    AEC leg, so their per-leg health must inherit mic/ref bridge drops."""
+    frame = np.zeros(1280, dtype=np.int16)
+    start = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 2.0,
+        "counters": {
+            "frames_processed": 10,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 0, "raw0": 0, "usb": 0, "ref": 0},
+            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
+            "packets_sent_by_leg": {"aec3_ns_off": 0},
+        },
+    }
+    stop = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 3.0,
+        "counters": {
+            "frames_processed": 20,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 1, "raw0": 0, "usb": 0, "ref": 2},
+            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
+            "packets_sent_by_leg": {"aec3_ns_off": 1},
+        },
+    }
+
+    health = wake_corpus_setup.build_capture_health(
+        wall_duration_sec=0.08,
+        buffers={"aec3_ns_off": [frame]},
+        bridge_start=start,
+        bridge_stop=stop,
+    )
+
+    drop_counts = health["legs"]["aec3_ns_off"]["bridge_drop_counts"]
+    assert health["status"] == "compromised"
+    assert health["legs"]["aec3_ns_off"]["status"] == "compromised"
+    assert drop_counts["mic_queue_full"] == 1
+    assert drop_counts["ref_queue_full"] == 2
+
+
 def test_build_capture_health_unknown_without_bridge_stats() -> None:
     frame = np.zeros(1280, dtype=np.int16)
 
@@ -1817,6 +1934,25 @@ def test_metadata_persists_dtln_session_flags(
     assert data["include_dtln"] is False
     assert data["include_usb_dtln"] is True
     assert data["enabled_legs"] == ["on", "off", "ref", "usb_raw", "usb_dtln"]
+
+
+def test_metadata_persists_aec3_sweep_flags(
+    backend, tmp_path: Path,
+) -> None:
+    backend.begin_session(
+        "jasper", include_dtln=False, include_aec3_sweep=True,
+    )
+    backend.start_recording("music", "far")
+    time.sleep(0.05)
+    backend.stop_recording()
+
+    json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
+    data = json.loads(json_files[0].read_text())
+    assert data["include_aec3_sweep"] is True
+    assert data["enabled_legs"] == [
+        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    ]
+    assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
 
 
 def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
@@ -2163,12 +2299,24 @@ def test_html_has_dtln_session_checkboxes() -> None:
     assert 'USB DTLN' in html_text
 
 
+def test_html_has_aec3_sweep_checkbox() -> None:
+    """Begin-a-new-session form exposes the bounded AEC3 sweep mode."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    assert 'id="include-aec3-sweep"' in html_text
+    assert "AEC3 sweep" in html_text
+    assert "include_aec3_sweep" in html_text
+    for variant in wake_corpus_setup.AEC3_SWEEP_VARIANTS:
+        assert variant.leg in html_text
+        assert variant.label in html_text
+
+
 def test_html_test_mode_button_follows_capture_leg_choices() -> None:
     """The operator chooses capture legs before entering test mode."""
     html_text = wake_corpus_setup._render_index_html("t")
     button_idx = html_text.index('id="session-begin"')
     assert html_text.index('id="include-raw-mic-0"') < button_idx
     assert html_text.index('id="include-dtln"') < button_idx
+    assert html_text.index('id="include-aec3-sweep"') < button_idx
     assert html_text.index('id="include-usb-mic"') < button_idx
     assert html_text.index('id="include-usb-dtln"') < button_idx
     assert "api/corpus-test-mode" in html_text
@@ -2193,6 +2341,7 @@ def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     assert "sessionBridgeReady" in html_text
     assert "latestStatus?.session_id" in html_text
     assert "latestStatus.include_dtln" in html_text
+    assert "latestStatus.include_aec3_sweep" in html_text
     assert "Session active" not in html_text
 
 
@@ -2214,6 +2363,7 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "'usb_dtln', 'ref'" in html_text
     assert 'encodeURIComponent(ev.target.value)' in html_text
     assert "on: 'XVF WebRTC AEC3'" in html_text
+    assert "aec3_ns_off" in html_text
     assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text
     assert "usb_dtln: 'USB DTLN'" in html_text
 
@@ -2417,6 +2567,37 @@ def test_api_status_includes_include_usb_mic(
         th.join(timeout=2)
 
 
+def test_api_status_includes_aec3_sweep(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    backend.begin_session(
+        "jasper", include_dtln=False, include_aec3_sweep=True,
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/status")
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert body["include_aec3_sweep"] is True
+            assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
+            assert body["enabled_legs"] == [
+                "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+            ]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
 def test_api_session_begin_accepts_dtln_flags(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -2457,6 +2638,47 @@ def test_api_session_begin_accepts_dtln_flags(
         th.join(timeout=2)
 
 
+def test_api_session_begin_accepts_aec3_sweep(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup, "voice_daemon_active", lambda: False,
+    )
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env="JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n",
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/session",
+            json.dumps({
+                "member": "jasper",
+                "include_dtln": False,
+                "include_aec3_sweep": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["include_aec3_sweep"] is True
+            assert body["enabled_legs"] == [
+                "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+            ]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
 def test_api_status_includes_bridge_output_status(
     backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -2486,12 +2708,14 @@ def test_api_status_includes_bridge_output_status(
                 "ref": True,
                 "usb": False,
                 "usb_dtln": False,
+                "aec3_sweep": False,
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
                 "recorder_outputs": {
                     "dtln": True,
                     "ref": True,
                     "usb": False,
                     "usb_dtln": False,
+                    "aec3_sweep": False,
                 },
                 "active": True,
             }
@@ -2598,6 +2822,57 @@ def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
             assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
             assert "JASPER_AEC_DTLN_ENABLED" not in text
             assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in text
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_corpus_test_mode_enter_can_enable_aec3_sweep(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env="JASPER_AEC_DTLN_ENABLED=1\n",
+    )
+    voice_active = {"value": True}
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "voice_daemon_active",
+        lambda: voice_active["value"],
+    )
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "set_voice_daemon_state",
+        lambda action: voice_active.__setitem__("value", action == "start"),
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/corpus-test-mode",
+            json.dumps({
+                "action": "enter",
+                "include_dtln": False,
+                "include_aec3_sweep": True,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["voice_daemon_active"] is False
+            text = bridge_path.read_text()
+            assert "JASPER_AEC_DTLN_ENABLED=0" in text
+            assert "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1" in text
         finally:
             conn.close()
     finally:

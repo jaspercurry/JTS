@@ -1,6 +1,8 @@
 """Import-cheap wake-capture UDP port defaults."""
 from __future__ import annotations
 
+from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
+
 # Match jasper.cli.aec_bridge's default emit ports.
 DEFAULT_AEC_ON_PORT = 9876
 DEFAULT_AEC_OFF_PORT = 9877
@@ -17,6 +19,12 @@ DEFAULT_AEC_USB_RAW_PORT = 9881
 DEFAULT_AEC_USB_WEBRTC_PORT = 9882
 DEFAULT_AEC_USB_DTLN_PORT = 9883
 
+# Corpus-only parallel AEC3 tuning variants. Baseline stays on 9876;
+# these are extra same-utterance comparison legs.
+DEFAULT_AEC3_SWEEP_PORTS = {
+    variant.leg: variant.default_port for variant in AEC3_SWEEP_VARIANTS
+}
+
 
 def build_ports(
     *,
@@ -28,8 +36,10 @@ def build_ports(
     aec_usb_raw_port: int = DEFAULT_AEC_USB_RAW_PORT,
     aec_usb_webrtc_port: int = DEFAULT_AEC_USB_WEBRTC_PORT,
     aec_usb_dtln_port: int = DEFAULT_AEC_USB_DTLN_PORT,
+    aec3_sweep_ports: dict[str, int] | None = None,
     include_dtln: bool = True,
     include_usb: bool = True,
+    include_aec3_sweep: bool = True,
 ) -> dict[str, int]:
     """Return the UDP port map used by wake-capture tooling.
 
@@ -49,4 +59,6 @@ def build_ports(
         ports["usb_raw"] = aec_usb_raw_port
         ports["usb_webrtc"] = aec_usb_webrtc_port
         ports["usb_dtln"] = aec_usb_dtln_port
+    if include_aec3_sweep:
+        ports.update(aec3_sweep_ports or DEFAULT_AEC3_SWEEP_PORTS)
     return ports
