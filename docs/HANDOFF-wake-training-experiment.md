@@ -506,8 +506,11 @@ condition breakdown, leg indicators). Each row has Load (resume) +
 Delete (hard-remove WAVs + JSON) buttons. Load makes the selected
 session the in-memory recording target but does not enter corpus test
 mode; the page then offers to enter test mode using that loaded
-session's saved leg selection. Cleanup of pre-raw0 sessions = one
-click each before starting fresh.
+session's saved leg selection. The active append target is tracked by
+a narrow `.active_session.json` marker, not by "newest recent metadata";
+exiting corpus test mode or pressing Unload clears the marker and
+returns the page to a fresh new-session form. Cleanup of pre-raw0
+sessions = one click each before starting fresh.
 
 Plus **~15 min hard-negative recording in Session B**: Jasper
 records similar-sounding words/phrases that should NOT trigger:
@@ -1099,9 +1102,11 @@ Recorder UX status:
   before recording cheap-mic sessions
 - ✅ Corpus test-mode transition wired: selected optional legs are
   applied before session creation; exiting disables recorder-owned
-  bridge outputs and restarts `jasper-voice`
+  bridge outputs, restarts `jasper-voice`, and unloads the session
 - ✅ Loaded sessions show as loaded (not newly active) and can enter
   corpus test mode using their saved leg set
+- ✅ Recent metadata is not auto-loaded after a graceful exit; crash
+  recovery only reattaches when the active-session marker remains
 
 Recording-day audit tooling:
 - ✅ `bash scripts/audit-wake-corpus.sh data/enrollment_positives
@@ -1133,6 +1138,15 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v13):** Fresh-state session UX:
+  - Added an explicit active-session marker for crash recovery so
+    recent historical metadata no longer makes a new page visit look
+    like a loaded session.
+  - Exiting corpus test mode now unloads the session after returning
+    bridge outputs and `jasper-voice` to production mode. A separate
+    Unload button clears a loaded session without deleting WAVs.
+  - USB raw note is contextual to USB capture and neutral unless the
+    cheap mic's hardware Auto Gain Control is actually enabled.
 - **2026-05-27 (v12):** Loaded-session UX:
   - Clarified Load semantics: loading a session selects it as the
     recording target but does not stop `jasper-voice` or enable corpus
@@ -1296,4 +1310,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v12 — loaded-session UX verified)
+Last verified: 2026-05-27 (v13 — fresh-state session UX verified)
