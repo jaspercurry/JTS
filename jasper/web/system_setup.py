@@ -123,7 +123,7 @@ _EXTRA_STYLE = """
 .cpu-bar-fill.fail { background: #e08080; }
 .cpu-bar-label { font-size: 0.68em; line-height: 1; text-align: center; color: #666;
   font-variant-numeric: tabular-nums; }
-.mem-line { display: block; }
+.metric-line { display: block; }
 .tile-pill { display: none; width: max-content; margin-top: 0.45em;
   border-radius: 999px; padding: 0.12em 0.5em; font-size: 0.68em;
   font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
@@ -385,6 +385,42 @@ _SCRIPT = r"""
       '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
     }[ch]));
   }
+  function clearChildren(el) {
+    while (el.firstChild) el.removeChild(el.firstChild);
+  }
+  function makeEl(tagName, className, text) {
+    const el = document.createElement(tagName);
+    if (className) el.className = className;
+    if (text != null) el.textContent = text;
+    return el;
+  }
+  function setMetricLines(id, lines) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    clearChildren(el);
+    const frag = document.createDocumentFragment();
+    lines.forEach((line) => {
+      if (!line || line.text == null || line.text === '') return;
+      frag.appendChild(makeEl(
+        'span',
+        line.className || 'metric-line',
+        line.text,
+      ));
+    });
+    el.appendChild(frag);
+  }
+  function setPill(id, status, label) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.className = 'tile-pill';
+    el.textContent = label || '';
+    if (status === 'warn' || status === 'fail') el.classList.add(status);
+  }
+  function statusForPercent(pct, warnAt, failAt) {
+    if (pct >= failAt) return 'fail';
+    if (pct >= warnAt) return 'warn';
+    return 'ok';
+  }
 
   // Pi 5 pwm-fan cooling levels. The card stays intentionally terse;
   // the temperature tile is the alarm surface for thermal pressure.
@@ -414,27 +450,32 @@ _SCRIPT = r"""
   function renderCpuBars(percents) {
     const container = document.getElementById('cpu-bars');
     if (!container) return;
+    clearChildren(container);
     if (!percents || !percents.length) {
-      container.innerHTML = '';
       return;
     }
-    container.innerHTML = percents.map((p, i) => {
+    const frag = document.createDocumentFragment();
+    percents.forEach((p) => {
       const pct = Math.min(100, Math.max(0, p || 0));
-      let fillClass = 'cpu-bar-fill';
-      if (pct >= 90) fillClass += ' fail';
-      else if (pct >= 75) fillClass += ' warn';
-      return '<div class="cpu-bar-cell">' +
-             '<div class="cpu-bar"><div class="' + fillClass + '" style="height:' +
-             pct.toFixed(1) + '%"></div></div>' +
-             '<div class="cpu-bar-label">' + Math.round(pct) + '%</div>' +
-             '</div>';
-    }).join('');
+      const status = statusForPercent(pct, 75, 90);
+      const fillClass = 'cpu-bar-fill' + (status === 'ok' ? '' : ' ' + status);
+      const cell = makeEl('div', 'cpu-bar-cell');
+      const bar = makeEl('div', 'cpu-bar');
+      const fill = makeEl('div', fillClass);
+      const label = makeEl('div', 'cpu-bar-label', Math.round(pct) + '%');
+      fill.style.height = pct.toFixed(1) + '%';
+      bar.appendChild(fill);
+      cell.appendChild(bar);
+      cell.appendChild(label);
+      frag.appendChild(cell);
+    });
+    container.appendChild(frag);
   }
 
   function sparkline(svgId, values, opts) {
     const svg = document.getElementById(svgId);
     if (!svg) return;
-    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    clearChildren(svg);
     if (!values || !values.length) return;
     const min = opts && opts.min != null ? opts.min : Math.min(...values);
     let max = opts && opts.max != null ? opts.max : Math.max(...values);
@@ -605,14 +646,18 @@ _SCRIPT = r"""
     document.getElementById('mem-value').textContent =
       Math.round(memUsed) + ' / ' + Math.round(memTotal) + ' MB';
     const memLines = [
-      '<span class="mem-line">' + Math.round(memAvail) + ' MB available</span>',
+      {
+        className: 'metric-line',
+        text: Math.round(memAvail) + ' MB available',
+      },
     ];
     if (swap > 0) {
-      memLines.push(
-        '<span class="mem-line">' + Math.round(swap) + ' MB swap</span>',
-      );
+      memLines.push({
+        className: 'metric-line',
+        text: Math.round(swap) + ' MB swap',
+      });
     }
-    document.getElementById('mem-sub').innerHTML = memLines.join('');
+    setMetricLines('mem-sub', memLines);
     let memStatus = 'ok';
     if (memAvail < 150) memStatus = 'fail';
     else if (memAvail < 250 || swap > 150) memStatus = 'warn';
@@ -654,9 +699,10 @@ _SCRIPT = r"""
     // Temp tile — Pi-side reads °C; put Fahrenheit first for the UI.
     const temp = cur.temp_c || 0;
     const tempF = temp * 9 / 5 + 32;
-    document.getElementById('temp-value').innerHTML =
-      tempF.toFixed(0) + '°F<span class="temp-c">' +
-      temp.toFixed(1) + '°C</span>';
+    setMetricLines('temp-value', [
+      { className: 'metric-line', text: tempF.toFixed(0) + '°F' },
+      { className: 'metric-line temp-c', text: temp.toFixed(1) + '°C' },
+    ]);
     const throttledNow = cur.throttled_now || 0;
     const throttledHist = cur.throttled_history || 0;
     document.getElementById('temp-sub').textContent =
@@ -710,16 +756,11 @@ _SCRIPT = r"""
     if (diskPct > 90) diskStatus = 'fail';
     else if (diskPct > 75) diskStatus = 'warn';
     setTile('tile-disk', diskStatus);
-    const diskPill = document.getElementById('disk-pill');
-    diskPill.className = 'tile-pill';
-    diskPill.textContent = '';
-    if (diskStatus === 'fail') {
-      diskPill.textContent = 'Full';
-      diskPill.classList.add('fail');
-    } else if (diskStatus === 'warn') {
-      diskPill.textContent = 'High';
-      diskPill.classList.add('warn');
-    }
+    setPill(
+      'disk-pill',
+      diskStatus,
+      diskStatus === 'fail' ? 'Full' : (diskStatus === 'warn' ? 'High' : ''),
+    );
 
     // Software card
     const build = snap.build || {};

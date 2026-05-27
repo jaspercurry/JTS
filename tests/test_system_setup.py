@@ -191,7 +191,7 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "State warning:" in text
     assert "data-converter=\"samplerate_medium\"" in text
     assert "running + waiting tasks" in text
-    assert "mem-line" in text
+    assert "metric-line" in text
     assert "id=\"disk-pill\"" in text
     assert "tile-pill.warn" in text
     assert "queue depth" not in text
