@@ -32,7 +32,9 @@ What this adds:
     aware splits can JOIN via the JSON.
   - In-browser playback (HTML5 audio) for instant verification
   - One-click delete (hard-removes WAVs + marks deleted in metadata)
-  - Visual indicator of jasper-voice state + one-click start/stop
+  - Corpus test-mode control that stops jasper-voice, applies selected
+    optional bridge outputs, and restores the production-light state on
+    exit
 
 Usage:
   sudo /opt/jasper/.venv/bin/jasper-wake-corpus-web
@@ -582,7 +584,76 @@ def enable_bridge_outputs_for_session(
         raise
 
 
-def disable_bridge_corpus_outputs() -> None:
+def set_bridge_outputs_for_session(
+    *,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+) -> bool:
+    """Make recorder-owned bridge output overrides match a session.
+
+    Unlike the legacy enable helper, this treats the checkbox selection
+    as the desired test-mode bridge state. Production-owned settings in
+    /etc or the reconciler env are left alone; the recorder file only
+    carries the additional outputs needed for the selected corpus legs.
+    Returns True when the bridge was restarted.
+    """
+    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    env_path = str(BRIDGE_CORPUS_ENV_PATH)
+    existed = BRIDGE_CORPUS_ENV_PATH.exists()
+    old_values = read_env_file(env_path)
+    values = dict(old_values)
+    for key in BRIDGE_CORPUS_OUTPUT_VARS:
+        values.pop(key, None)
+
+    if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
+        values["JASPER_AEC_DTLN_ENABLED"] = "1"
+    if include_usb_mic or include_usb_dtln:
+        values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
+        values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
+        if (
+            "JASPER_AEC_USB_MIC_DEVICE" not in values
+            and "JASPER_AEC_USB_MIC_DEVICE" not in system_env
+        ):
+            values["JASPER_AEC_USB_MIC_DEVICE"] = DEFAULT_USB_MIC_DEVICE
+    if include_usb_dtln:
+        values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
+
+    if values == old_values:
+        return False
+
+    if values:
+        write_env_file(env_path, values, mode=0o644)
+    else:
+        delete_env_file(env_path)
+    try:
+        restart_aec_bridge()
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ):
+        if existed:
+            write_env_file(env_path, old_values, mode=0o644)
+        else:
+            delete_env_file(env_path)
+        try:
+            restart_aec_bridge()
+        except (
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+            OSError,
+        ) as rollback_error:
+            logger.warning(
+                "bridge env rollback restart failed after corpus-output "
+                "configure failure: %s",
+                rollback_error,
+            )
+        raise
+    return True
+
+
+def disable_bridge_corpus_outputs() -> bool:
     """Return the bridge to production-light corpus output mode.
 
     We remove only recorder-owned output overrides so the bridge falls
@@ -598,6 +669,8 @@ def disable_bridge_corpus_outputs() -> None:
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
+    if values == old_values:
+        return False
     if values:
         write_env_file(env_path, values, mode=0o644)
     else:
@@ -626,6 +699,7 @@ def disable_bridge_corpus_outputs() -> None:
                 rollback_error,
             )
         raise
+    return True
 
 
 def _default_enabled_legs(ports: dict[str, int]) -> tuple[str, ...]:
@@ -1618,6 +1692,51 @@ def voice_daemon_active() -> bool:
     return rc.returncode == 0 and rc.stdout.strip() == "active"
 
 
+def set_voice_daemon_state(action: str) -> None:
+    """Start or stop jasper-voice through systemd."""
+    if action not in ("start", "stop"):
+        raise ValueError("action must be start or stop")
+    subprocess.run(["systemctl", action, VOICE_UNIT], check=True)
+
+
+def enter_corpus_test_mode(
+    *,
+    include_dtln: bool,
+    include_usb_mic: bool,
+    include_usb_dtln: bool,
+) -> None:
+    """Stop jasper-voice and apply the selected optional bridge legs."""
+    voice_was_active = voice_daemon_active()
+    set_voice_daemon_state("stop")
+    try:
+        set_bridge_outputs_for_session(
+            include_dtln=include_dtln,
+            include_usb_mic=include_usb_mic,
+            include_usb_dtln=include_usb_dtln,
+        )
+    except (
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        OSError,
+    ):
+        if voice_was_active:
+            try:
+                set_voice_daemon_state("start")
+            except (subprocess.CalledProcessError, OSError) as start_error:
+                logger.warning(
+                    "failed to restart jasper-voice after corpus test-mode "
+                    "entry failed: %s",
+                    start_error,
+                )
+        raise
+
+
+def exit_corpus_test_mode() -> None:
+    """Disable recorder-owned bridge outputs and restart jasper-voice."""
+    disable_bridge_corpus_outputs()
+    set_voice_daemon_state("start")
+
+
 # ---------------------------------------------------------------------------
 # HTTP handlers
 # ---------------------------------------------------------------------------
@@ -1996,6 +2115,53 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             self._send_json({"bridge_outputs": bridge_output_status()})
+            return
+
+        if path == "/api/corpus-test-mode":
+            action = (body.get("action") or "").strip()
+            if action not in ("enter", "exit"):
+                self._send_error_json(400, "action must be enter or exit")
+                return
+            if self.backend.is_recording():
+                self._send_error_json(
+                    409,
+                    "stop the current recording before changing corpus test mode",
+                )
+                return
+            try:
+                if action == "enter":
+                    enter_corpus_test_mode(
+                        include_dtln=bool(body.get("include_dtln", True)),
+                        include_usb_mic=bool(body.get("include_usb_mic", False)),
+                        include_usb_dtln=bool(body.get("include_usb_dtln", False)),
+                    )
+                else:
+                    exit_corpus_test_mode()
+            except subprocess.CalledProcessError as e:
+                detail = (e.stderr or e.stdout or str(e)).strip()
+                msg = f"corpus test mode {action} failed"
+                if detail:
+                    msg = f"{msg}: {detail[-500:]}"
+                self._send_error_json(500, msg)
+                return
+            except subprocess.TimeoutExpired:
+                self._send_error_json(
+                    500,
+                    f"corpus test mode {action} timed out while restarting "
+                    f"{BRIDGE_UNIT}",
+                )
+                return
+            except OSError as e:
+                self._send_error_json(
+                    500,
+                    f"corpus test mode {action} failed: {e}",
+                )
+                return
+            self._send_json({
+                "action": action,
+                "voice_daemon_active": voice_daemon_active(),
+                "bridge_outputs": bridge_output_status(),
+            })
             return
 
         if path == "/api/voice-daemon":
@@ -2388,14 +2554,17 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
 
   <div class="card" id="status-card">
     <div class="row">
-      <label>jasper-voice:</label>
-      <span id="voice-status" class="pill gray">checking…</span>
-      <button id="voice-toggle" style="margin-left:auto">…</button>
+      <label>Mode:</label>
+      <span id="corpus-mode-status" class="pill gray">checking…</span>
+      <button id="corpus-mode-exit" style="margin-left:auto">Exit corpus test mode</button>
     </div>
     <div class="row">
-      <label>Corpus bridge:</label>
+      <label>jasper-voice:</label>
+      <span id="voice-status" class="pill gray">checking…</span>
+    </div>
+    <div class="row">
+      <label>Extra corpus outputs:</label>
       <span id="bridge-output-status" class="pill gray">checking…</span>
-      <button id="bridge-output-disable" style="margin-left:auto">Return to production mode</button>
     </div>
     <div class="row">
       <label>Session:</label>
@@ -2417,7 +2586,6 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="row">
       <label for="member">Member:</label>
       <input type="text" id="member" value="jasper" maxlength="20">
-      <button id="session-begin">Begin session</button>
     </div>
     <div class="row checkbox">
       <input type="checkbox" id="include-raw-mic-0">
@@ -2454,6 +2622,12 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="notice" id="usb-mic-note" role="status">
       USB raw records the cheap mic hardware signal resampled to 16 kHz;
       JTS applies no software AGC before saving it.
+    </div>
+    <div class="row">
+      <label></label>
+      <button id="session-begin" class="primary">
+        Enter corpus test mode &amp; begin session
+      </button>
     </div>
   </div>
 
@@ -2601,49 +2775,55 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     async function refreshStatus() {
       try {
         const s = await api('GET', 'api/status');
+        const modeEl = $('corpus-mode-status');
         const voiceEl = $('voice-status');
-        const toggleEl = $('voice-toggle');
+        const exitEl = $('corpus-mode-exit');
         const bridgeEl = $('bridge-output-status');
-        const bridgeBtn = $('bridge-output-disable');
         const bridgeOutputs = s.bridge_outputs || {};
         const recorderOutputs = bridgeOutputs.recorder_outputs || {};
+        const bridgeActive = Boolean(bridgeOutputs.active);
+        const voiceActive = Boolean(s.voice_daemon_active);
+        const inCorpusMode = !voiceActive || bridgeActive;
         const activeBridgeLabels = [];
         if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
         if (recorderOutputs.ref) activeBridgeLabels.push('ref');
         if (recorderOutputs.usb) activeBridgeLabels.push('USB');
         if (recorderOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
+        if (voiceActive && bridgeActive) {
+          modeEl.textContent = 'mixed: voice + test outputs';
+          modeEl.className = 'pill red';
+        } else if (!voiceActive) {
+          modeEl.textContent = 'corpus test mode';
+          modeEl.className = 'pill green';
+        } else {
+          modeEl.textContent = 'production ready';
+          modeEl.className = 'pill green';
+        }
+        exitEl.onclick = exitCorpusTestMode;
+        exitEl.disabled = s.is_recording || !inCorpusMode;
+        exitEl.style.visibility = inCorpusMode ? 'visible' : 'hidden';
         if (activeBridgeLabels.length) {
           bridgeEl.textContent = `ON: ${activeBridgeLabels.join(', ')}`;
           bridgeEl.className = 'pill red';
-          bridgeBtn.disabled = s.is_recording;
         } else if (bridgeOutputs.active) {
           bridgeEl.textContent = 'cleanup pending';
           bridgeEl.className = 'pill red';
-          bridgeBtn.disabled = s.is_recording;
         } else {
-          bridgeEl.textContent = 'production mode';
+          bridgeEl.textContent = 'off';
           bridgeEl.className = 'pill green';
-          bridgeBtn.disabled = true;
         }
-        bridgeBtn.onclick = disableBridgeOutputs;
-        if (s.voice_daemon_active) {
-          voiceEl.textContent = 'RUNNING';
-          voiceEl.className = 'pill red';
-          toggleEl.textContent = 'Stop jasper-voice';
-          toggleEl.onclick = () => toggleVoice('stop');
-          toggleEl.disabled = false;
-          $('record-btn').disabled = true;
+        if (voiceActive) {
+          voiceEl.textContent = 'running';
+          voiceEl.className = 'pill green';
         } else {
           voiceEl.textContent = 'stopped';
-          voiceEl.className = 'pill green';
-          toggleEl.textContent = 'Start jasper-voice';
-          toggleEl.onclick = () => toggleVoice('start', bridgeOutputs.active);
-          // Disable the start-jasper-voice button while a recording is
-          // in progress — starting it would try to bind UDP ports the
-          // recording owns, sending the daemon into a restart loop.
-          toggleEl.disabled = s.is_recording;
-          $('record-btn').disabled = !s.session_id;
+          voiceEl.className = 'pill gray';
         }
+        const beginEl = $('session-begin');
+        beginEl.textContent = s.session_id
+          ? 'Session active'
+          : 'Enter corpus test mode & begin session';
+        beginEl.disabled = Boolean(s.session_id) || s.is_recording;
         const sessionLabel = s.session_id
           ? `${s.member} / ${s.session_id}`
             + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
@@ -2669,31 +2849,25 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           $('record-btn').textContent = '● RECORD';
           $('record-btn').classList.remove('recording');
           $('record-btn').classList.add('primary');
+          $('record-btn').disabled = !s.session_id || voiceActive;
         }
       } catch (e) { showErr(`status: ${e.message}`); }
     }
 
-    async function disableBridgeOutputs() {
-      try {
-        await api('POST', 'api/bridge-outputs', {action: 'disable'});
-        await refreshStatus();
-      } catch (e) { showErr(`bridge outputs: ${e.message}`); }
+    async function enterCorpusTestMode(options) {
+      await api('POST', 'api/corpus-test-mode', {
+        action: 'enter',
+        include_dtln: options.includeDtln,
+        include_usb_mic: options.includeUsbMic,
+        include_usb_dtln: options.includeUsbDtln,
+      });
     }
 
-    async function toggleVoice(action, bridgeOutputsActive = false) {
-      const payload = {action};
-      if (action === 'start' && bridgeOutputsActive) {
-        const ok = confirm(
-          'Corpus bridge outputs are still enabled.\\n\\n' +
-          'Return to production bridge mode before starting jasper-voice?'
-        );
-        if (!ok) return;
-        payload.disable_bridge_outputs = true;
-      }
+    async function exitCorpusTestMode() {
       try {
-        await api('POST', 'api/voice-daemon', payload);
+        await api('POST', 'api/corpus-test-mode', {action: 'exit'});
         await refreshStatus();
-      } catch (e) { showErr(`voice-daemon ${action}: ${e.message}`); }
+      } catch (e) { showErr(`corpus test mode exit: ${e.message}`); }
     }
 
     async function beginSession() {
@@ -2711,6 +2885,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         include_usb_dtln: includeUsbDtln,
       };
       try {
+        await enterCorpusTestMode({includeDtln, includeUsbMic, includeUsbDtln});
         await api('POST', 'api/session', payload);
         showErr('');
         await refreshStatus();

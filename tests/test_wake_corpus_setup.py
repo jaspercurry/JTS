@@ -1545,6 +1545,46 @@ def test_enable_bridge_outputs_preserves_system_usb_device(
     assert "JASPER_AEC_USB_MIC_DEVICE" not in bridge_path.read_text()
 
 
+def test_set_bridge_outputs_matches_selected_session_outputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+            "JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n"
+        ),
+    )
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+
+    changed = wake_corpus_setup.set_bridge_outputs_for_session(
+        include_dtln=False,
+        include_usb_mic=True,
+        include_usb_dtln=False,
+    )
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert changed is True
+    assert "JASPER_AEC_DTLN_ENABLED" not in values
+    assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in values
+    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "1"
+    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "1"
+    assert values["JASPER_AEC_USB_MIC_DEVICE"] == "Studio Mic"
+    assert restarts == ["restart"]
+
+
 def test_enable_bridge_outputs_rolls_back_when_restart_fails(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -2046,6 +2086,19 @@ def test_html_has_dtln_session_checkboxes() -> None:
     assert 'USB DTLN' in html_text
 
 
+def test_html_test_mode_button_follows_capture_leg_choices() -> None:
+    """The operator chooses capture legs before entering test mode."""
+    html_text = wake_corpus_setup._render_index_html("t")
+    button_idx = html_text.index('id="session-begin"')
+    assert html_text.index('id="include-raw-mic-0"') < button_idx
+    assert html_text.index('id="include-dtln"') < button_idx
+    assert html_text.index('id="include-usb-mic"') < button_idx
+    assert html_text.index('id="include-usb-dtln"') < button_idx
+    assert "api/corpus-test-mode" in html_text
+    assert "voice-toggle" not in html_text
+    assert "bridge-output-disable" not in html_text
+
+
 def test_html_confirm_enables_missing_bridge_outputs() -> None:
     """The Begin flow offers a deliberate bridge enable/restart retry
     instead of silently starting a session with missing WAV legs."""
@@ -2347,6 +2400,124 @@ def test_api_bridge_outputs_disable(
             body = json.loads(resp.read())
             assert resp.status == 200
             assert body["bridge_outputs"]["active"] is False
+            assert restarts == ["restart"]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_corpus_test_mode_enter_stops_voice_and_sets_outputs(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+        ),
+    )
+    voice_active = {"value": True}
+    voice_actions: list[str] = []
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "voice_daemon_active",
+        lambda: voice_active["value"],
+    )
+
+    def fake_voice(action: str) -> None:
+        voice_actions.append(action)
+        voice_active["value"] = action == "start"
+
+    monkeypatch.setattr(wake_corpus_setup, "set_voice_daemon_state", fake_voice)
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/corpus-test-mode",
+            json.dumps({
+                "action": "enter",
+                "include_dtln": False,
+                "include_usb_mic": True,
+                "include_usb_dtln": False,
+            }),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["voice_daemon_active"] is False
+            assert voice_actions == ["stop"]
+            assert restarts == ["restart"]
+            text = bridge_path.read_text()
+            assert "JASPER_AEC_CORPUS_REF_ENABLED=1" in text
+            assert "JASPER_AEC_CORPUS_USB_ENABLED=1" in text
+            assert "JASPER_AEC_DTLN_ENABLED" not in text
+            assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in text
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_corpus_test_mode_exit_disables_outputs_and_starts_voice(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env="JASPER_AEC_CORPUS_USB_ENABLED=1\n",
+    )
+    voice_active = {"value": False}
+    voice_actions: list[str] = []
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "voice_daemon_active",
+        lambda: voice_active["value"],
+    )
+
+    def fake_voice(action: str) -> None:
+        voice_actions.append(action)
+        voice_active["value"] = action == "start"
+
+    monkeypatch.setattr(wake_corpus_setup, "set_voice_daemon_state", fake_voice)
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/corpus-test-mode",
+            json.dumps({"action": "exit"}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["voice_daemon_active"] is True
+            assert body["bridge_outputs"]["active"] is False
+            assert voice_actions == ["start"]
             assert restarts == ["restart"]
         finally:
             conn.close()
