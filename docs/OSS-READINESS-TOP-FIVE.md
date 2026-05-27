@@ -79,9 +79,13 @@ main compatibility risk is custom local hostnames; `JASPER_HOSTNAME` and
 **Status.** First provenance slice shipped: direct deploy-time
 release archives, model files, and source-build git inputs now have a
 canonical manifest, checksum/commit verification where JTS controls the
-fetch, and a local provenance check. Remaining work: apt snapshots,
-Python hash installs, Cargo lock generation, openWakeWord helper model
-hashes, and PlatformIO transitive/toolchain lock depth.
+fetch, and a local provenance check. Python determinism is partially
+started: important direct dependencies are pinned or bounded in
+`pyproject.toml`, `pycamilladsp` is pinned to a commit, and
+CONTRIBUTING recommends `uv sync` for local development. There is not
+yet a committed lock artifact that deploy or CI consume. Remaining
+work: Python lock/hash install adoption, openWakeWord helper model
+hashes, apt snapshots, and PlatformIO transitive/toolchain lock depth.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
 firmware tools, `.deb` artifacts, and source repos. OSS users need to
@@ -105,9 +109,22 @@ actually contain the same bits.
 about immutable artifacts, and checksum updates add maintainer work.
 The benefit is high repeatability and easier security review.
 
+**Recently completed.** `rust/jasper-fanin/Cargo.lock` is committed and
+checked by `scripts/check-provenance.py`, closing the Rust fan-in crate
+gap without changing Pi runtime behavior.
+
+**Next slice.** Treat Python lock adoption as a design slice: choose one
+shared artifact (`uv.lock` or generated hash requirements), make deploy
+consume it deliberately, and avoid introducing a second parallel
+dependency-management story.
+
 ## 4. Tooling Enforcement
 
-**Status.** Pending.
+**Status.** Deferred while `main` is moving quickly. Pytest and the
+supply-chain provenance check already run in GitHub Actions. Ruff is a
+dev dependency and documented locally, but CI lint is intentionally not
+enabled yet because `.github/workflows/tests.yml` records existing
+lint noise that would require a cleanup pass.
 
 **Why it matters.** The codebase already has strong conventions:
 hardware-free tests, CSRF helpers, env-file atomics, and documentation
@@ -119,9 +136,11 @@ tradition. Small regressions slip in, and reviewers spend attention on
 mechanical issues instead of behavior and design.
 
 **Definition of done.**
-- CI runs the hardware-free pytest suite on PRs.
-- Ruff or equivalent lint/format checks are enabled with scoped,
-  codebase-compatible rules.
+- Preserve the current PR pytest and provenance checks.
+- Add lint/format enforcement only after the active feature branches can
+  absorb the change without review churn.
+- Scope ruff or equivalent rules to low-noise, codebase-compatible
+  checks before making them merge-blocking.
 - Existing doc freshness and attribution checks are easy to run locally
   and, when ready, in CI.
 - CONTRIBUTING documents the exact local commands.

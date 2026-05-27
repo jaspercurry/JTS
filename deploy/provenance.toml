@@ -156,10 +156,10 @@ notes = "Python runtime dependencies and jasper_aec3 build requirements are reso
 
 [[surface]]
 id = "rust-fanin-crates"
-kind = "cargo-resolution"
-consumer = "rust/jasper-fanin/Cargo.toml"
-status = "accepted-gap"
-notes = "Cargo.lock is not committed yet; follow-up should generate and commit it from a Rust-capable host."
+kind = "cargo-lockfile"
+consumer = "rust/jasper-fanin/Cargo.toml and rust/jasper-fanin/Cargo.lock"
+status = "pinned"
+notes = "Cargo.lock is committed for the jasper-fanin binary crate. install.sh builds from rust/jasper-fanin with cargo --locked, so lock drift fails deploy instead of resolving live."
 
 [[surface]]
 id = "openwakeword-stock-models"

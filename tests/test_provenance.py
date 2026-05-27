@@ -84,3 +84,47 @@ def test_git_artifacts_have_immutable_commits() -> None:
     ]
 
     assert missing == []
+
+
+def test_rust_fanin_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
+    check_provenance = _load_check_module()
+    crate_dir = tmp_path / "rust" / "jasper-fanin"
+    crate_dir.mkdir(parents=True)
+    (crate_dir / "Cargo.toml").write_text(
+        """
+[package]
+name = "jasper-fanin"
+version = "0.1.0"
+
+[dependencies]
+foo = "1"
+bar = "1"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (crate_dir / "Cargo.lock").write_text(
+        """
+version = 3
+
+[[package]]
+name = "jasper-fanin"
+version = "0.1.0"
+dependencies = [
+ "foo",
+]
+""".lstrip(),
+        encoding="utf-8",
+    )
+    data = {
+        "surface": [
+            {
+                "id": "rust-fanin-crates",
+                "status": "pinned",
+            }
+        ]
+    }
+
+    errors: list[str] = []
+    check_provenance._validate_rust_fanin_lock(data, tmp_path, errors)
+
+    assert any("bar" in error for error in errors)

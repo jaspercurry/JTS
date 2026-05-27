@@ -236,7 +236,7 @@ build_install_jasper_fanin() {
     # Build as pi so cargo's user cache (~pi/.cargo) is used and the
     # generated artifacts under target/ are pi-owned (operator can
     # clean up without sudo).
-    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --quiet" \
+    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
         || { echo "  jasper-fanin build failed; see cargo output above"; return 1; }
 
     local built_bin="${cache_dir}/target/release/jasper-fanin"
