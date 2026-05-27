@@ -124,6 +124,17 @@
   deterministic code and future LLM tools the same explanation-ready
   facts about which features were accepted, avoided, or too unstable
   for aggressive correction.
+- ✅ **Phase 2.9 — browser audio-path confidence substrate.**
+  Implemented 2026-05-27. Adds `jasper.correction.browser_audio`, a
+  deterministic preflight report built from `getUserMedia()`
+  metadata: sample rate, mono channel count, processing flags, granted
+  input-device identity, and calibrated-mic presence. The report is
+  shown inline in `/correction/`, returned from start/status/upload
+  endpoints, persisted in `info.json` / `result.json`, and folded into
+  the confidence model so browser processing or sample-rate failures
+  block correction before a user wastes time measuring. This is still
+  metadata confidence, not an acoustic loopback proof; real phone/Pi
+  capture smoke testing remains outstanding.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -135,14 +146,15 @@
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
 **Current sequencing note (2026-05-27):** after the latest research
-intake, the next room-correction priority is not more filter types; it
-is a richer multi-position confidence/reporting layer. That work should
-land before browser-audio smoke-test integration, room-correction
-visualization polish, and FIR readiness validation. The rationale and
-source links live in
+intake, the next room-correction priority is still measurement trust
+before more filter types. The multi-position confidence layer and
+browser-audio metadata substrate have landed. The remaining near-term
+work is acoustic browser smoke testing, SNR/repeatability evidence,
+room-correction visualization polish, and FIR readiness validation.
+The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
-**Outstanding Phases 0-2.8 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.9 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
@@ -1117,4 +1129,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27

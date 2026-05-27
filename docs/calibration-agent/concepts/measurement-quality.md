@@ -25,6 +25,11 @@ designing filters from ambiguous data.
 - Pick the browser input device, fetch known mic
   calibration files by serial, upload unsupported mic calibration
   files manually, and record mic/device metadata in session bundles.
+- Build and persist a browser-audio preflight report from
+  `getUserMedia()` metadata: sample rate, channel count, processing
+  flags, granted-device identity, and calibrated-mic presence. The
+  report is shown in `/correction/`, saved in `info.json` /
+  `result.json`, and folded into confidence gating.
 - Assess capture quality before deconvolution, including clipping,
   low level, short captures, sample-rate mismatch, uncalibrated mic
   warnings, and browser-processing warnings.
@@ -45,11 +50,11 @@ designing filters from ambiguous data.
 - Research-tuned thresholds for per-band and per-filter confidence,
   rather than today's intentionally simple spread heuristics.
 - Sweep SNR estimate against pre-sweep ambient noise.
+- Acoustic browser smoke-test proof: known tone/sweep loopback,
+  capture-level sanity, and real iOS/Android verification.
 - Repeatability score between nearby positions or repeated sweeps.
 - Calibration coverage warning when the selected curve does not span
   the full analysis band.
-- Browser device mismatch warning when the selected USB mic is not the
-  track actually granted by `getUserMedia`.
 - Vendor lookup provenance: fetched URL, file hash, model, serial hash,
   orientation, and parser sign convention.
 - Windowing provenance: impulse window, smoothing, FDW settings where

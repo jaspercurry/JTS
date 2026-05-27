@@ -121,6 +121,14 @@ def test_render_page_includes_mic_picker_and_calibration_controls():
     assert "calibrationFileInput.addEventListener('change'" in body
 
 
+def test_render_page_includes_browser_audio_path_report():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="browser-audio-report"' in body
+    assert "function renderBrowserAudioReport(report)" in body
+    assert "renderBrowserAudioLocal(actual, problems)" in body
+    assert "browser_audio_report" in body
+
+
 def test_sanitize_input_device_hashes_browser_ids():
     raw = {
         "device_id": "raw-device-id",

@@ -85,6 +85,32 @@ def _quality_issues(
     return out
 
 
+def _browser_audio_issues(
+    browser_audio_report: dict[str, Any] | None,
+    *,
+    existing_severity_by_code: dict[str, str],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    if not isinstance(browser_audio_report, dict):
+        return out
+    severity_rank = {"info": 0, "warn": 1, "fail": 2}
+    for issue in browser_audio_report.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        code = str(issue.get("code") or "")
+        severity = str(issue.get("severity") or "info")
+        if (
+            code
+            and severity_rank.get(existing_severity_by_code.get(code, ""), -1)
+            >= severity_rank.get(severity, 0)
+        ):
+            continue
+        enriched = dict(issue)
+        enriched.setdefault("capture_kind", "browser_audio_path")
+        out.append(enriched)
+    return out
+
+
 def _position_variance(
     *,
     position_magnitudes: list[np.ndarray],
@@ -374,6 +400,7 @@ def build_confidence_report(
     input_device: dict[str, Any] | None,
     capture_quality: list[dict[str, Any]],
     strategy_choice: str,
+    browser_audio_report: dict[str, Any] | None = None,
     position_magnitudes: list[np.ndarray] | None = None,
     freqs_hz: np.ndarray | None = None,
     correction_band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
@@ -387,6 +414,21 @@ def build_confidence_report(
     score = 100
 
     issues = _quality_issues(capture_quality)
+    severity_rank = {"info": 0, "warn": 1, "fail": 2}
+    quality_severity_by_code: dict[str, str] = {}
+    for issue in issues:
+        code = str(issue.get("code") or "")
+        severity = str(issue.get("severity") or "info")
+        if not code:
+            continue
+        existing = quality_severity_by_code.get(code, "")
+        if severity_rank.get(severity, 0) > severity_rank.get(existing, -1):
+            quality_severity_by_code[code] = severity
+    browser_issues = _browser_audio_issues(
+        browser_audio_report,
+        existing_severity_by_code=quality_severity_by_code,
+    )
+    issues = issues + browser_issues
     failed_issues = [i for i in issues if i.get("severity") == "fail"]
     warn_issues = [i for i in issues if i.get("severity") == "warn"]
     browser_processing = [
@@ -451,6 +493,17 @@ def build_confidence_report(
             severity="fail",
             message="one or more captures had blocking quality failures",
             details={"count": len(failed_issues)},
+        ))
+
+    browser_audio_failures = [
+        i for i in browser_issues if i.get("severity") == "fail"
+    ]
+    if browser_audio_failures:
+        findings.append(ConfidenceFinding(
+            code="browser_audio_path_failed",
+            severity="fail",
+            message="browser audio-path preflight reported blocking failures",
+            details={"count": len(browser_audio_failures)},
         ))
 
     if warn_issues:
@@ -526,7 +579,9 @@ def build_confidence_report(
             "quality_issue_count": len(issues),
             "quality_warning_count": len(warn_issues),
             "quality_failure_count": len(failed_issues),
+            "browser_audio_issue_count": len(browser_issues),
         },
+        "browser_audio_report": browser_audio_report,
         "position_variance": variance,
         "position_bands": position_report["bands"],
         "feature_flags": position_report["feature_flags"],

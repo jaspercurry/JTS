@@ -61,6 +61,41 @@ def test_confidence_downgrades_single_uncalibrated_processed_capture():
     assert report["strategy_gates"]["assertive"]["allowed"] is False
 
 
+def test_confidence_includes_browser_audio_path_failures():
+    report = confidence.build_confidence_report(
+        total_positions=3,
+        completed_positions=3,
+        has_mic_calibration=True,
+        input_device={"label": "USB measurement mic"},
+        capture_quality=[
+            {"issues": [{
+                "code": "browser_echo_cancellation",
+                "severity": "warn",
+                "message": "browser reported echo cancellation enabled",
+            }]},
+            {"issues": []},
+            {"issues": []},
+        ],
+        strategy_choice="balanced",
+        browser_audio_report={
+            "level": "fail",
+            "issues": [{
+                "code": "browser_echo_cancellation",
+                "severity": "fail",
+                "message": "browser reported echo cancellation enabled",
+            }],
+        },
+    )
+
+    assert report["level"] == "low"
+    assert report["evidence"]["browser_audio_issue_count"] == 1
+    assert any(
+        finding["code"] == "browser_audio_path_failed"
+        for finding in report["findings"]
+    )
+    assert report["strategy_gates"]["safe"]["allowed"] is False
+
+
 def test_confidence_reports_low_position_variance_level():
     freqs = np.array([40.0, 80.0, 160.0, 320.0])
     positions = [
