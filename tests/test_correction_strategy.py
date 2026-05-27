@@ -92,6 +92,27 @@ def test_design_report_explains_filter_choices():
     assert first_filter["local_improvement_db"] > 0
 
 
+def test_design_report_adds_spatial_confidence_when_positions_provided():
+    freqs = _log_freqs()
+    measured = peq._bell_response_db(freqs, 80.0, 4.0, 6.0)
+    positions = [
+        measured,
+        measured + peq._bell_response_db(freqs, 80.0, 4.0, 0.5),
+        measured - peq._bell_response_db(freqs, 80.0, 4.0, 0.5),
+    ]
+
+    design = strategy.design_correction(
+        measured,
+        freqs,
+        position_magnitudes=positions,
+    )
+
+    first_filter = design.report["filters"][0]
+    assert first_filter["spatial_confidence"]["available"] is True
+    assert first_filter["spatial_confidence"]["confidence_level"] == "high"
+    assert first_filter["spatial_confidence"]["range_db"] > 0
+
+
 def test_unknown_choices_fall_back_to_safe_defaults():
     assert strategy.resolve_target_profile("bogus").target_id == "flat"
     assert (

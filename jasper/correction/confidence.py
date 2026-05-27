@@ -12,10 +12,35 @@ from typing import Any, Literal
 
 import numpy as np
 
+from . import spatial
+
 
 ConfidenceLevel = Literal["high", "medium", "low"]
 
 DEFAULT_BAND_HZ = (20.0, 350.0)
+
+POSITION_ANALYSIS_BANDS: tuple[dict[str, Any], ...] = (
+    {
+        "band_id": "sub_bass",
+        "label": "Sub bass",
+        "band_hz": (20.0, 80.0),
+    },
+    {
+        "band_id": "bass",
+        "label": "Bass",
+        "band_hz": (80.0, 160.0),
+    },
+    {
+        "band_id": "upper_bass",
+        "label": "Upper bass",
+        "band_hz": (160.0, 300.0),
+    },
+    {
+        "band_id": "transition",
+        "label": "Transition",
+        "band_hz": (300.0, 500.0),
+    },
+)
 
 
 @dataclass(frozen=True)
@@ -72,30 +97,18 @@ def _position_variance(
             "reason": "need at least two completed positions",
         }
 
-    curves = [np.asarray(m, dtype=float) for m in position_magnitudes]
-    freqs = np.asarray(freqs_hz, dtype=float)
-    if not curves or any(curve.ndim != 1 for curve in curves):
-        return {"available": False, "reason": "position curves must be 1-D"}
-    if any(curve.shape[0] != freqs.shape[0] for curve in curves):
-        return {"available": False, "reason": "position curve shapes differ"}
-    if not np.all(np.isfinite(freqs)) or any(
-        not np.all(np.isfinite(curve)) for curve in curves
-    ):
-        return {
-            "available": False,
-            "reason": "position curves contain non-finite values",
-        }
+    matrix, reason = spatial.build_spatial_matrix(position_magnitudes, freqs_hz)
+    if matrix is None:
+        return {"available": False, "reason": reason}
 
-    matrix = np.vstack(curves)
-
+    freqs = matrix.freqs_hz
     mask = (freqs >= band_hz[0]) & (freqs <= band_hz[1])
     if not np.any(mask):
         return {"available": False, "reason": "no points in correction band"}
 
     band_freqs = freqs[mask]
-    band_values = matrix[:, mask]
-    std_db = np.std(band_values, axis=0)
-    range_db = np.ptp(band_values, axis=0)
+    std_db = matrix.std_db[mask]
+    range_db = matrix.range_db[mask]
 
     median_std = float(np.median(std_db))
     p90_std = float(np.percentile(std_db, 90))
@@ -111,16 +124,9 @@ def _position_variance(
         for idx in worst_indices
     ]
 
-    if p90_std <= 4.0:
-        variance_confidence: ConfidenceLevel = "high"
-    elif p90_std <= 6.0:
-        variance_confidence = "medium"
-    else:
-        variance_confidence = "low"
-
     return {
         "available": True,
-        "confidence_level": variance_confidence,
+        "confidence_level": spatial.confidence_for_std(p90_std),
         "band_hz": [band_hz[0], band_hz[1]],
         "position_count": len(position_magnitudes),
         "median_std_db": round(median_std, 2),
@@ -179,6 +185,185 @@ def _strategy_gates(
     gates["assertive"]["reasons"] = assertive_reasons
 
     return gates
+
+
+def _residual_metrics_for_band(
+    *,
+    residual_db: np.ndarray | None,
+    freqs_hz: np.ndarray,
+    band_hz: tuple[float, float],
+) -> dict[str, Any] | None:
+    if residual_db is None:
+        return None
+    mask = (freqs_hz >= band_hz[0]) & (freqs_hz <= band_hz[1])
+    if not np.any(mask):
+        return None
+    values = residual_db[mask]
+    return {
+        "rms_db": round(float(np.sqrt(np.mean(values ** 2))), 2),
+        "max_abs_db": round(float(np.max(np.abs(values))), 2),
+        "peak_db": round(float(np.max(values)), 2),
+        "deepest_null_db": round(float(np.min(values)), 2),
+    }
+
+
+def _residual_curve(
+    measured_db: np.ndarray | None,
+    target_db: np.ndarray | None,
+    freqs_hz: np.ndarray,
+) -> np.ndarray | None:
+    if measured_db is None or target_db is None:
+        return None
+    measured = np.asarray(measured_db, dtype=float)
+    target_curve = np.asarray(target_db, dtype=float)
+    if measured.shape != target_curve.shape:
+        return None
+    if measured.ndim != 1 or measured.shape[0] != freqs_hz.shape[0]:
+        return None
+    if not np.all(np.isfinite(measured)) or not np.all(np.isfinite(target_curve)):
+        return None
+    return measured - target_curve
+
+
+def _contiguous_regions(indices: np.ndarray) -> list[np.ndarray]:
+    if indices.size == 0:
+        return []
+    regions: list[list[int]] = [[int(indices[0])]]
+    for raw_idx in indices[1:]:
+        idx = int(raw_idx)
+        if idx == regions[-1][-1] + 1:
+            regions[-1].append(idx)
+        else:
+            regions.append([idx])
+    return [np.asarray(region, dtype=int) for region in regions]
+
+
+def build_position_report(
+    *,
+    position_magnitudes: list[np.ndarray] | None,
+    freqs_hz: np.ndarray | None,
+    measured_db: np.ndarray | None = None,
+    target_db: np.ndarray | None = None,
+    correction_band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
+) -> dict[str, Any]:
+    """Build deterministic multi-position reporting.
+
+    This report is deliberately descriptive: it identifies where the
+    measurement is spatially stable, where it is not, and where deep
+    nulls should be treated as evidence rather than something to
+    blindly boost.
+    """
+    matrix, reason = spatial.build_spatial_matrix(
+        position_magnitudes or [],
+        freqs_hz,
+    )
+    if matrix is None:
+        return {
+            "version": 1,
+            "available": False,
+            "reason": reason,
+            "bands": [],
+            "feature_flags": [],
+        }
+
+    residual_db = _residual_curve(
+        measured_db,
+        target_db,
+        matrix.freqs_hz,
+    )
+    bands: list[dict[str, Any]] = []
+    for definition in POSITION_ANALYSIS_BANDS:
+        band_hz = definition["band_hz"]
+        summary = spatial.band_summary(
+            matrix,
+            band_hz=band_hz,
+            band_id=definition["band_id"],
+            label=definition["label"],
+        )
+        residual_metrics = _residual_metrics_for_band(
+            residual_db=residual_db,
+            freqs_hz=matrix.freqs_hz,
+            band_hz=band_hz,
+        )
+        if residual_metrics is not None:
+            summary["residual"] = residual_metrics
+        bands.append(summary)
+
+    correction_summary = spatial.band_summary(
+        matrix,
+        band_hz=correction_band_hz,
+        band_id="correction_band",
+        label="Current correction band",
+    )
+    residual_metrics = _residual_metrics_for_band(
+        residual_db=residual_db,
+        freqs_hz=matrix.freqs_hz,
+        band_hz=correction_band_hz,
+    )
+    if residual_metrics is not None:
+        correction_summary["residual"] = residual_metrics
+    bands.append(correction_summary)
+
+    feature_flags: list[dict[str, Any]] = []
+    for summary in bands:
+        if summary.get("available") and summary.get("confidence_level") == "low":
+            feature_flags.append({
+                "kind": "high_position_variance",
+                "band_id": summary.get("band_id"),
+                "label": summary.get("label"),
+                "band_hz": summary.get("band_hz"),
+                "worst_freq_hz": summary.get("worst_freq_hz"),
+                "p90_std_db": summary.get("p90_std_db"),
+                "max_range_db": summary.get("max_range_db"),
+                "decision": "avoid_aggressive_correction",
+                "reason": (
+                    "Seat-to-seat variation is high here, so this region "
+                    "should not drive aggressive or full-range correction."
+                ),
+            })
+
+    if residual_db is not None:
+        correction_mask = (
+            (matrix.freqs_hz >= correction_band_hz[0])
+            & (matrix.freqs_hz <= correction_band_hz[1])
+        )
+        null_regions = _contiguous_regions(
+            np.where(correction_mask & (residual_db <= -6.0))[0],
+        )
+        worst_nulls = sorted(
+            null_regions,
+            key=lambda region: float(np.min(residual_db[region])),
+        )[:5]
+        for region in worst_nulls:
+            idx = int(region[int(np.argmin(residual_db[region]))])
+            point = spatial.point_summary(
+                matrix,
+                freq_hz=float(matrix.freqs_hz[idx]),
+            )
+            feature_flags.append({
+                "kind": "deep_null",
+                "freq_hz": round(float(matrix.freqs_hz[idx]), 2),
+                "region_hz": [
+                    round(float(matrix.freqs_hz[int(region[0])]), 2),
+                    round(float(matrix.freqs_hz[int(region[-1])]), 2),
+                ],
+                "residual_db": round(float(residual_db[idx]), 2),
+                "spatial_confidence": point,
+                "decision": "do_not_boost_by_default",
+                "reason": (
+                    "Deep in-room nulls are often position-dependent "
+                    "cancellations; bounded correction should explain and "
+                    "usually leave them unboosted."
+                ),
+            })
+
+    return {
+        "version": 1,
+        "available": True,
+        "position_count": matrix.position_count,
+        "bands": bands,
+        "feature_flags": feature_flags,
+    }
 
 
 def build_confidence_report(
@@ -291,6 +476,11 @@ def build_confidence_report(
         freqs_hz=freqs_hz,
         band_hz=correction_band_hz,
     )
+    position_report = build_position_report(
+        position_magnitudes=position_magnitudes or [],
+        freqs_hz=freqs_hz,
+        correction_band_hz=correction_band_hz,
+    )
     if variance.get("available"):
         if variance.get("confidence_level") == "medium":
             score -= 10
@@ -338,6 +528,8 @@ def build_confidence_report(
             "quality_failure_count": len(failed_issues),
         },
         "position_variance": variance,
+        "position_bands": position_report["bands"],
+        "feature_flags": position_report["feature_flags"],
         "strategy_gates": gates,
         "findings": [finding.to_dict() for finding in findings],
     }

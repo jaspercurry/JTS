@@ -23,6 +23,11 @@ Raw 2026-05-25 research inputs are archived separately at
 Use those reports for traceability and re-review, but move only
 verified/distilled claims into this corpus.
 
+Follow-up 2026-05-27 research inputs and syntheses are archived at
+[`../research/2026-05-27-room-correction-research/README.md`](../research/2026-05-27-room-correction-research/README.md).
+They cover mobile browser capture reliability, target/preference
+tuning, FIR/phase correction, and multi-position confidence.
+
 ## Source Quality
 
 Use this ranking when adding claims:
@@ -102,5 +107,15 @@ Every concept file should have:
   a deterministic design report with per-filter rationale. This is the
   first assistant-facing bridge from measurement math to explainable,
   bounded recommendations.
+- 2026-05-27: archived and synthesized nine additional user-provided
+  research reports covering browser audio reliability, target curves
+  and preference tuning, FIR/phase correction, and multi-position
+  confidence. Consensus: keep PEQ conservative by default; turn
+  measurement confidence into a first-class per-band/per-filter
+  artifact; treat sound curves as editable preference presets; build
+  FIR as a staged ladder gated by bundle provenance, timing, spatial
+  stability, latency, headroom, and pre-ringing risk. Raw archive and
+  synthesis:
+  [`docs/research/2026-05-27-room-correction-research/`](../research/2026-05-27-room-correction-research/README.md).
 
-Last verified: 2026-05-26
+Last verified: 2026-05-27

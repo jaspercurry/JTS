@@ -14,7 +14,7 @@ from typing import Any
 
 import numpy as np
 
-from . import peq, target
+from . import peq, spatial, target
 
 
 @dataclass(frozen=True)
@@ -265,8 +265,16 @@ def _filter_audit(
     before_residual_db: np.ndarray,
     after_residual_db: np.ndarray,
     freqs: np.ndarray,
+    position_magnitudes: list[np.ndarray] | None = None,
 ) -> list[dict[str, Any]]:
     audit: list[dict[str, Any]] = []
+    spatial_matrix = None
+    spatial_error = None
+    if position_magnitudes is not None:
+        spatial_matrix, spatial_error = spatial.build_spatial_matrix(
+            position_magnitudes,
+            freqs,
+        )
     for idx, filt in enumerate(filters, start=1):
         nearest = int(np.argmin(np.abs(freqs - filt.freq)))
         before = float(before_residual_db[nearest])
@@ -282,7 +290,7 @@ def _filter_audit(
                 f"Added a bounded boost for a {before:.1f} dB dip near "
                 f"{filt.freq:.1f} Hz."
             )
-        audit.append({
+        entry: dict[str, Any] = {
             "index": idx,
             "freq_hz": filt.freq,
             "q": filt.q,
@@ -292,7 +300,19 @@ def _filter_audit(
             "residual_after_db": after,
             "local_improvement_db": abs(before) - abs(after),
             "rationale": rationale,
-        })
+        }
+        if position_magnitudes is not None:
+            if spatial_matrix is None:
+                entry["spatial_confidence"] = {
+                    "available": False,
+                    "reason": spatial_error,
+                }
+            else:
+                entry["spatial_confidence"] = spatial.point_summary(
+                    spatial_matrix,
+                    freq_hz=filt.freq,
+                )
+        audit.append(entry)
     return audit
 
 
@@ -386,6 +406,7 @@ def design_correction(
     *,
     target_choice: str | None = None,
     strategy_choice: str | None = None,
+    position_magnitudes: list[np.ndarray] | None = None,
 ) -> CorrectionDesign:
     """Design PEQs and return an assistant-readable audit report."""
     target_profile = resolve_target_profile(target_choice)
@@ -462,6 +483,7 @@ def design_correction(
             before_residual_db=before_residual,
             after_residual_db=after_residual,
             freqs=freqs,
+            position_magnitudes=position_magnitudes,
         ),
         "warnings": warnings,
     }

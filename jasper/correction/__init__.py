@@ -10,6 +10,7 @@ Public surface (everything else is implementation detail):
   - target.flat_target(freqs) / target.harman_target(freqs)
   - strategy.design_correction(...) → bounded PEQ design + audit report
   - confidence.build_confidence_report(...) → measurement confidence summary
+  - confidence.build_position_report(...) → per-band multi-position report
   - peq.design_peq(measured_db, target_db, freqs, **constraints) → list[PEQ]
   - camilla_yaml.emit_correction_config(base_yaml_path, peqs, out_path)
   - coordinator.measurement_window() — async context manager

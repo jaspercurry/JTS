@@ -677,6 +677,11 @@ reference. Currently:
   — Verbatim external calibration-wizard report preserved because
   `HANDOFF-mic-quality-v2.md` references it. Treat as source material,
   not operational truth.
+- [`docs/research/2026-05-27-room-correction-research/`](docs/research/2026-05-27-room-correction-research/README.md)
+  — Verbatim raw reports plus one synthesis per topic for mobile
+  browser audio reliability, target/preference tuning, FIR/phase room
+  correction, and multi-position confidence. Treat as source material
+  and research synthesis, not operational truth.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter
