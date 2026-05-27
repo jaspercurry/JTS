@@ -611,6 +611,12 @@ nmcli connection delete "<NAME>"
 The wizard polls `/state` every 7 s so SSH-driven changes show up in
 the UI without a manual reload.
 
+The Available networks list deliberately hides the currently-connected
+SSID. That network is already represented by the current-network card;
+keeping it out of the connectable list avoids a pointless "connect to
+what I am already using" action. Scan diagnostics still count the raw
+current-network row for suppression detection.
+
 **Manual SSID join is supported.** The "Join by name" form posts SSID
 and optional PSK to the same rollback-protected `/connect` path used
 by tap-to-connect. Its Hidden network checkbox passes `hidden yes` to
@@ -648,7 +654,21 @@ sudo iw reg get | grep -A1 'phy#0'
 # Stuck:   country 99: DFS-UNSET
 ```
 
-Workarounds with real trade-offs: reload brcmfmac (drops WiFi;
+The `/wifi/scan` backend productionizes the least disruptive repair we
+validated on hardware: after a scan is classified as
+`driver_scan_suppressed`, [`jasper/wifi_scan_repair.py`](jasper/wifi_scan_repair.py)
+sends `NL80211_CMD_CRIT_PROTOCOL_STOP` to `wlan0`, waits briefly, and
+retries the scan. This does not intentionally drop WiFi and is
+rate-limited by `/var/lib/jasper/wifi_scan_repair.json` so page reloads
+or repeated button taps do not spam the radio. Structured logs use
+`event=wifi_scan_repair.*`.
+
+The repair is intentionally narrow: it only runs for the brcmfmac
+driver, only after suppression evidence, and never reloads kernel
+modules. If it cannot repair the scan, the UI keeps "Join by name"
+available with rollback protection.
+
+Remaining workarounds with real trade-offs: reload brcmfmac (drops WiFi;
 [OpenWrt #23069](https://github.com/openwrt/openwrt/issues/23069)
 documents the chip wedging after repeated reloads on Pi 5),
 `sudo rpi-update` (newer firmware may help, may regress other
