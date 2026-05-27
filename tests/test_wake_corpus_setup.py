@@ -1458,6 +1458,43 @@ def test_missing_bridge_outputs_honors_overlay_order(
     ) == []
 
 
+def test_parse_amixer_bool_accepts_common_forms() -> None:
+    assert wake_corpus_setup._parse_amixer_bool("Mono: Capture [on]") is True
+    assert wake_corpus_setup._parse_amixer_bool(": values=off") is False
+    assert wake_corpus_setup._parse_amixer_bool("no boolean here") is None
+
+
+def test_usb_mic_status_reports_hardware_agc(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_USB_MIC_DEVICE=USB PnP Sound Device\n"
+            "JASPER_AEC_USB_MIXER_CARD=4\n"
+        ),
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(
+            cmd, 0, stdout="Mono: Capture [on]\n", stderr="",
+        )
+
+    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+
+    status = wake_corpus_setup.usb_mic_status()
+
+    assert status["device"] == "USB PnP Sound Device"
+    assert status["hardware_agc"]["mixer_card"] == "4"
+    assert status["hardware_agc"]["control"] == "Auto Gain Control"
+    assert status["hardware_agc"]["available"] is True
+    assert status["hardware_agc"]["enabled"] is True
+    assert calls == [["amixer", "-c", "4", "get", "Auto Gain Control"]]
+
+
 def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -1877,6 +1914,10 @@ def test_html_has_include_usb_mic_checkbox() -> None:
     assert 'id="include-usb-mic"' in html_text
     assert 'USB mic + reference' in html_text
     assert 'include_usb_mic' in html_text
+    assert 'id="usb-mic-note"' in html_text
+    assert 'no software AGC' in html_text
+    assert 'api/usb-mic/status' in html_text
+    assert 'Auto Gain Control' in html_text
 
 
 def test_html_has_dtln_session_checkboxes() -> None:
@@ -1903,7 +1944,11 @@ def test_html_playback_uses_leg_selector() -> None:
     html_text = wake_corpus_setup._render_index_html("t")
     assert 'data-audio-leg' in html_text
     assert 'legLabel(leg)' in html_text
+    assert 'orderedLegs(c.files || {})' in html_text
+    assert "'usb_dtln', 'ref'" in html_text
     assert 'encodeURIComponent(ev.target.value)' in html_text
+    assert "on: 'XVF WebRTC AEC3'" in html_text
+    assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text
     assert "usb_dtln: 'USB DTLN'" in html_text
 
 
@@ -2142,6 +2187,42 @@ def test_api_status_includes_bridge_output_status(
                 "usb_dtln": False,
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
             }
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_usb_mic_status_endpoint(
+    backend, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import http.client
+
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "usb_mic_status",
+        lambda: {
+            "device": "USB PnP Sound Device",
+            "hardware_agc": {
+                "control": "Auto Gain Control",
+                "mixer_card": "4",
+                "available": True,
+                "enabled": True,
+            },
+        },
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request("GET", "/api/usb-mic/status")
+        resp = conn.getresponse()
+        try:
+            assert resp.status == 200
+            body = json.loads(resp.read())
+            assert body["hardware_agc"]["enabled"] is True
+            assert body["hardware_agc"]["control"] == "Auto Gain Control"
         finally:
             conn.close()
     finally:

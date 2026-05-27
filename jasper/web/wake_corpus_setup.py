@@ -136,13 +136,13 @@ RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
 USB_DTLN_LEG = "usb_dtln"
 LEG_LABELS = {
-    "on": "XVF WebRTC",
+    "on": "XVF WebRTC AEC3",
     "off": "XVF raw",
     "dtln": "XVF DTLN",
     "raw0": "XVF raw0",
     "ref": "Reference",
     "usb_raw": "USB raw",
-    "usb_webrtc": "USB WebRTC",
+    "usb_webrtc": "USB WebRTC AEC3",
     "usb_dtln": "USB DTLN",
 }
 
@@ -177,11 +177,13 @@ BRIDGE_CORPUS_ENV_PATH = Path(os.environ.get(
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
+DEFAULT_USB_MIXER_CARD = "Device"
+USB_AGC_CONTROL = "Auto Gain Control"
 
 BRIDGE_OUTPUT_LABELS = {
     "dtln": "XVF DTLN",
     "ref": "reference",
-    "usb": "USB raw/WebRTC",
+    "usb": "USB raw/WebRTC AEC3",
     "usb_dtln": "USB DTLN",
 }
 
@@ -242,6 +244,55 @@ def missing_bridge_outputs_for_session(
     if include_usb_dtln and not status["usb_dtln"]:
         missing.append("usb_dtln")
     return missing
+
+
+def _parse_amixer_bool(output: str) -> bool | None:
+    """Parse common amixer boolean forms such as `[on]` or `values=off`."""
+    text = output.lower()
+    if "[on]" in text or "values=on" in text or ": values=on" in text:
+        return True
+    if "[off]" in text or "values=off" in text or ": values=off" in text:
+        return False
+    return None
+
+
+def usb_mic_status() -> dict[str, Any]:
+    """Return operator-facing cheap-USB-mic capture status.
+
+    The raw USB corpus leg is intentionally JTS-unprocessed; this check
+    only surfaces whether the mic's own ALSA hardware AGC is enabled.
+    """
+    env = _read_bridge_env()
+    device = env.get("JASPER_AEC_USB_MIC_DEVICE", DEFAULT_USB_MIC_DEVICE)
+    mixer_card = env.get("JASPER_AEC_USB_MIXER_CARD", DEFAULT_USB_MIXER_CARD)
+    status: dict[str, Any] = {
+        "device": device,
+        "hardware_agc": {
+            "control": USB_AGC_CONTROL,
+            "mixer_card": mixer_card,
+            "available": False,
+            "enabled": None,
+        },
+    }
+    try:
+        result = subprocess.run(
+            ["amixer", "-c", mixer_card, "get", USB_AGC_CONTROL],
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+    except (OSError, subprocess.TimeoutExpired) as e:
+        status["hardware_agc"]["error"] = str(e)
+        return status
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        if detail:
+            status["hardware_agc"]["error"] = detail[-300:]
+        return status
+    enabled = _parse_amixer_bool(result.stdout)
+    status["hardware_agc"]["available"] = enabled is not None
+    status["hardware_agc"]["enabled"] = enabled
+    return status
 
 
 def restart_aec_bridge() -> None:
@@ -1400,6 +1451,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json({"sessions": self.backend.list_sessions()})
             return
 
+        if path == "/api/usb-mic/status":
+            self._send_json(usb_mic_status())
+            return
+
         if path.startswith("/api/clip/") and path.endswith("/wav"):
             self._serve_wav(path, url)
             return
@@ -1910,6 +1965,22 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       font-weight: 600;
       padding: 0.4em 0;
     }
+    .notice {
+      margin: 0.8em 0 0;
+      padding: 0.7em 0.8em;
+      border: 1px solid #d7d1bd;
+      border-radius: 6px;
+      background: #fbf7e8;
+      color: #5b4a1d;
+      font-size: 0.9em;
+      line-height: 1.35;
+    }
+    .notice.warn {
+      border-color: #d9a441;
+      background: #fff4d6;
+      color: #6f3f00;
+      font-weight: 600;
+    }
     /* Live mic-level bar shown above the record button. Greyed out
        while idle so the operator always knows the meter is alive +
        knows what it'll look like once recording. */
@@ -2026,7 +2097,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       <input type="checkbox" id="include-usb-mic">
       <label for="include-usb-mic">
         Also capture <strong>USB mic + reference</strong>
-        <span class="hint">— corpus-only cheap mic raw, cheap mic WebRTC,
+        <span class="hint">— corpus-only cheap mic raw, cheap mic WebRTC AEC3,
         and the 16 kHz reference the bridge feeds into AEC.</span>
       </label>
     </div>
@@ -2037,6 +2108,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         <span class="hint">— cheap USB raw through neural AEC. This also
         records the USB raw and reference companion legs.</span>
       </label>
+    </div>
+    <div class="notice" id="usb-mic-note" role="status">
+      USB raw records the cheap mic hardware signal resampled to 16 kHz;
+      JTS applies no software AGC before saving it.
     </div>
   </div>
 
@@ -2096,16 +2171,31 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     const $ = id => document.getElementById(id);
     let elapsedTimer = null;
     const LEG_LABELS = {
-      on: 'XVF WebRTC',
+      on: 'XVF WebRTC AEC3',
       off: 'XVF raw',
       dtln: 'XVF DTLN',
       raw0: 'XVF raw0',
       ref: 'Reference',
       usb_raw: 'USB raw',
-      usb_webrtc: 'USB WebRTC',
+      usb_webrtc: 'USB WebRTC AEC3',
       usb_dtln: 'USB DTLN',
     };
     function legLabel(leg) { return LEG_LABELS[leg] || leg; }
+    const LEG_ORDER = [
+      'on', 'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
+      'usb_dtln', 'ref',
+    ];
+    const USB_RAW_NOTE =
+      'USB raw records the cheap mic hardware signal resampled to 16 kHz; ' +
+      'JTS applies no software AGC before saving it.';
+    function orderedLegs(files) {
+      const present = files || {};
+      const known = LEG_ORDER.filter(leg =>
+        Object.prototype.hasOwnProperty.call(present, leg)
+      );
+      const extra = Object.keys(present).filter(leg => !LEG_ORDER.includes(leg));
+      return known.concat(extra);
+    }
     // Read the CSRF token embedded in the page's meta tag; send it
     // on every mutating request. Defense against a cross-origin
     // site triggering recordings or daemon toggles from the
@@ -2138,6 +2228,32 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     function showErr(msg) {
       $('err').textContent = msg || '';
       if (msg) console.error(msg);
+    }
+
+    async function refreshUsbMicStatus() {
+      const node = $('usb-mic-note');
+      if (!node) return;
+      node.textContent = USB_RAW_NOTE;
+      node.className = 'notice';
+      try {
+        const s = await api('GET', 'api/usb-mic/status');
+        const agc = s.hardware_agc || {};
+        if (agc.enabled === true) {
+          node.textContent = USB_RAW_NOTE + ' USB mic hardware Auto Gain ' +
+            `Control is ON (${agc.mixer_card}); this can cause pumping ` +
+            'or top-end artifacts in USB raw clips.';
+          node.className = 'notice warn';
+        } else if (agc.enabled === false) {
+          node.textContent = USB_RAW_NOTE +
+            ' USB mic hardware Auto Gain Control is off.';
+        } else if (agc.error) {
+          node.textContent = USB_RAW_NOTE +
+            ` Hardware AGC status is unavailable (${agc.error}).`;
+        }
+      } catch (e) {
+        node.textContent = USB_RAW_NOTE +
+          ' Hardware AGC status is unavailable.';
+      }
     }
 
     async function refreshStatus() {
@@ -2371,7 +2487,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           counts[key] = (counts[key] || 0) + 1;
           const row = document.createElement('div');
           row.className = 'clip';
-          const fileLegs = Object.keys(c.files || {});
+          const fileLegs = orderedLegs(c.files || {});
           const firstLeg = fileLegs.includes('on') ? 'on' : fileLegs[0];
           const options = fileLegs.map(leg => (
             `<option value="${leg}" ${leg === firstLeg ? 'selected' : ''}>${legLabel(leg)}</option>`
@@ -2506,6 +2622,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     refreshStatus();
     refreshClips();
     refreshSessions();
+    refreshUsbMicStatus();
     setInterval(refreshStatus, 2000);
     // Sessions list changes slowly (only on begin/load/delete) — refresh
     // every 30 s so external SSH edits show up without being chatty.
