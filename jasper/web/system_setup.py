@@ -105,6 +105,8 @@ _EXTRA_STYLE = """
 .svc-table tr.totals td { border-top: 1px solid #ccc; border-bottom: 0;
   font-weight: 600; padding-top: 0.45em; }
 .svc-table tr.totals td.muted { font-weight: 400; }
+.svc-name { display: block; }
+.svc-group { display: block; color: #777; font-size: 0.78em; margin-top: 0.08em; }
 
 .warn-banner { background: #fff7e6; border: 1px solid #f0c060;
   border-radius: 4px; padding: 0.55em 0.7em; margin: 0 0 0.5em;
@@ -318,13 +320,12 @@ _PAGE_BODY = """
 <div class="card" id="services-card">
   <h2>Per-service usage</h2>
   <p class="muted" style="margin: 0 0 0.4em; font-size: 0.85em;">
-    Cgroup-reported CPU and resident memory for each running
-    <code>jasper-*</code> unit. CPU is per-core (100% = one fully
-    saturated core; 400% = all four). New services show "—" for CPU
-    until the next 5 s sample provides a delta. Sorted by CPU descending.
-    Totals row at the bottom compares the jasper subtotal against
-    total-system CPU so the gap (everything not in this table) is
-    visible.
+    Cgroup-reported CPU and resident memory for JTS daemons, audio
+    renderers, and key system support services. CPU is per-core
+    (100% = one fully saturated core; 400% = all four). New services
+    show "—" for CPU until the next 5 s sample provides a delta.
+    Sorted by CPU descending; the totals row shows what remains outside
+    the listed services.
   </p>
   <div id="svc-warn" class="warn-banner" style="display:none"></div>
   <table class="svc-table">
@@ -854,9 +855,8 @@ _SCRIPT = r"""
     // Per-service usage. Sort CPU% desc with null/unknown last so the
     // heavy hitters surface at the top — useful during experimental-
     // branch shakedowns where you want to know which daemon spiked.
-    // The totals row at the bottom shows jasper sum vs total-system
-    // CPU (from per-core sampler), making "where's the rest of the
-    // load coming from?" answerable at a glance.
+    // The sampler walks the cgroup tree recursively, so JTS services in
+    // jts-audio/jts-mic slices and non-jasper renderers are visible here.
     const services = m.services || [];
     const svcRows = document.getElementById('svc-rows');
     const svcWarn = document.getElementById('svc-warn');
@@ -869,7 +869,7 @@ _SCRIPT = r"""
         '<strong>RSS unavailable:</strong> the running kernel was ' +
         'booted with <code>cgroup_disable=memory</code> (Pi 5 default) ' +
         'and the memory cgroup controller is off, so ' +
-        '<code>/sys/fs/cgroup/system.slice/*/memory.current</code> ' +
+        '<code>/sys/fs/cgroup/**/memory.current</code> ' +
         "doesn't exist. <code>install.sh</code> has already added " +
         '<code>cgroup_enable=memory</code> to ' +
         '<code>/boot/firmware/cmdline.txt</code>; ' +
@@ -886,18 +886,19 @@ _SCRIPT = r"""
       const rows = sorted.map(s => {
         const cpu = s.cpu_pct == null ? '—' : s.cpu_pct.toFixed(1) + '%';
         const rss = s.rss_mb == null ? '—' : Math.round(s.rss_mb) + ' MB';
-        return '<tr><td>' + s.name + '</td>' +
+        return '<tr><td><span class="svc-name">' + esc(s.name) + '</span>' +
+               '<span class="svc-group">' + esc(s.group || 'Service') + '</span></td>' +
                '<td class="num">' + cpu + '</td>' +
                '<td class="num">' + rss + '</td></tr>';
       });
-      // Totals row. Jasper subtotal is the sum of known cpu_pct's
+      // Totals row. Shown subtotal is the sum of known cpu_pct's
       // (skips first-tick None values). System total comes from
       // per-core CPU (sum of all cores, max 4*100=400 on a 4-core
-      // Pi). Headroom is the gap; "not in this table" is everything
-      // else (kernel threads, audio renderers, etc.).
-      const jasperCpu = sorted.reduce((acc, s) =>
+      // Pi). Headroom is the idle capacity; unshown is the remaining
+      // userspace/kernel work outside this curated table.
+      const shownCpu = sorted.reduce((acc, s) =>
         acc + (s.cpu_pct == null ? 0 : s.cpu_pct), 0);
-      const jasperRss = sorted.reduce((acc, s) =>
+      const shownRss = sorted.reduce((acc, s) =>
         acc + (s.rss_mb == null ? 0 : s.rss_mb), 0);
       const anyRss = sorted.some(s => s.rss_mb != null);
       const corePcts = m.current.per_core_cpu_pct || [];
@@ -907,33 +908,33 @@ _SCRIPT = r"""
         const maxScale = corePcts.length * 100;
         const systemCapacity = capacityPercent(systemCpu, corePcts.length);
         const headroom = Math.max(0, maxScale - systemCpu);
-        const nonJasper = Math.max(0, systemCpu - jasperCpu);
+        const unshown = Math.max(0, systemCpu - shownCpu);
         totalsLine =
           '<tr class="totals">' +
-          '<td>System total · jasper / non-jasper / free</td>' +
+          '<td>System total · shown / unshown / free</td>' +
           '<td class="num">' +
             Math.round(systemCapacity) + '% (' +
-            Math.round(jasperCpu) + ' + ' + Math.round(nonJasper) +
+            Math.round(shownCpu) + ' + ' + Math.round(unshown) +
             ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)' +
           '</td>' +
           '<td class="num">' +
-            (anyRss ? Math.round(jasperRss) + ' MB' : '—') +
+            (anyRss ? Math.round(shownRss) + ' MB' : '—') +
           '</td></tr>';
       } else {
         // Per-core sampler hasn't produced a delta yet (first tick
-        // after boot or non-Linux). Show jasper-only totals.
+        // after boot or non-Linux). Show listed-service totals.
         totalsLine =
           '<tr class="totals">' +
-          '<td>Jasper subtotal</td>' +
-          '<td class="num">' + Math.round(jasperCpu) + '%</td>' +
+          '<td>Shown subtotal</td>' +
+          '<td class="num">' + Math.round(shownCpu) + '%</td>' +
           '<td class="num">' +
-            (anyRss ? Math.round(jasperRss) + ' MB' : '—') +
+            (anyRss ? Math.round(shownRss) + ' MB' : '—') +
           '</td></tr>';
       }
       svcRows.innerHTML = rows.join('') + totalsLine;
     } else {
       svcRows.innerHTML =
-        '<tr><td colspan="3" class="muted">No jasper-* cgroups visible (cgroup-v2 unavailable, or dev env).</td></tr>';
+        '<tr><td colspan="3" class="muted">No tracked service cgroups visible (cgroup-v2 unavailable, or dev env).</td></tr>';
     }
   }
 

@@ -54,14 +54,46 @@ PWMFAN_HWMON_NAME = "pwmfan"
 # attribute to read, so hardcode the well-known max.
 PWMFAN_DUTY_MAX = 255
 
-# cgroup-v2 unified hierarchy. systemd places .service units under
-# /sys/fs/cgroup/system.slice/<unit>.service/. We sample only our own
-# (jasper-* prefix) to keep the table focused on what the user can
-# act on — the audio renderers (shairport-sync, librespot, etc.) have
-# their own units that don't share this prefix and aren't included.
+# cgroup-v2 unified hierarchy. systemd places .service cgroups under
+# /sys/fs/cgroup, including nested slices such as jts.slice/jts-audio.slice.
+# The dashboard samples a curated service inventory: every jasper-* unit plus
+# the audio renderers and system support daemons that explain most of the
+# "non-jasper" CPU gap during audio/debugging sessions.
+CGROUP_ROOT = "/sys/fs/cgroup"
 SYS_SLICE_CGROUP = "/sys/fs/cgroup/system.slice"
 SERVICE_PREFIX = "jasper-"
 SERVICE_SUFFIX = ".service"
+
+JASPER_SERVICE_GROUPS = {
+    "jasper-aec-bridge.service": "Mic",
+    "jasper-voice.service": "Voice",
+    "jasper-camilla.service": "Audio",
+    "jasper-fanin.service": "Audio",
+    "jasper-mux.service": "Audio",
+    "jasper-usbsink.service": "Audio",
+    "jasper-control.service": "Control",
+    "jasper-web.service": "Control",
+    "jasper-system-web.service": "Control",
+    "jasper-input.service": "Hardware",
+    "jasper-headphone-monitor.service": "Hardware",
+}
+
+EXTRA_SERVICE_GROUPS = {
+    "shairport-sync.service": "Audio",
+    "librespot.service": "Audio",
+    "bluealsa.service": "Audio",
+    "bluealsa-aplay.service": "Audio",
+    "nqptp.service": "Audio",
+    "nginx.service": "Web",
+    "avahi-daemon.service": "Network",
+    "NetworkManager.service": "Network",
+    "wpa_supplicant.service": "Network",
+    "ssh.service": "System",
+    "dbus.service": "System",
+    "systemd-journald.service": "System",
+    "bluetooth.service": "System",
+    "bt-agent.service": "System",
+}
 
 # Memory cgroup controller probe. The Pi 5 device-tree blob injects
 # `cgroup_disable=memory` into the kernel cmdline by default; install.sh
@@ -123,7 +155,7 @@ class SystemSampler:
         self._uptime_sec = 0.0
         self._fan_present = False
         # Per-service cgroup state.
-        #   _service_samples — internal: name -> (usage_usec, mono_ts)
+        #   _service_samples — internal: cgroup path -> (usage_usec, mono_ts)
         #     used to compute the CPU% delta on the next tick. First
         #     tick after a service appears yields cpu_pct=None because
         #     we have no baseline.
@@ -210,7 +242,8 @@ class SystemSampler:
                     "memory_cgroup_enabled": self._memory_cgroup_enabled,
                 },
                 # Per-service cgroup stats. List of
-                #   {"name": "jasper-voice", "cpu_pct": 43.5, "rss_mb": 256.0}
+                #   {"name": "jasper-voice", "group": "Voice",
+                #    "cpu_pct": 43.5, "rss_mb": 256.0}
                 # cpu_pct is None on the first tick a service appears
                 # (delta math needs two samples). rss_mb is None only
                 # if memory.current was unreadable (race with cgroup
@@ -411,7 +444,7 @@ class SystemSampler:
             return 0.0
 
     def _tick_services(
-        self, slice_dir: str = SYS_SLICE_CGROUP,
+        self, root_dir: str = CGROUP_ROOT,
     ) -> list[dict[str, Any]]:
         """Sample per-service CPU + memory from cgroup-v2.
 
@@ -421,17 +454,20 @@ class SystemSampler:
         yield cpu_pct=None on the first sample (no baseline).
 
         Services that disappeared since the last tick (one-shot
-        finished, manual stop) fall out automatically — listdir gives
+        finished, manual stop) fall out automatically — cgroup walk gives
         the live set, prev-sample entries we no longer see get dropped
         when we rebuild the dict below."""
         now_mono = time.monotonic()
-        names = self._list_jasper_cgroups(slice_dir)
+        services = self._list_service_cgroups(root_dir)
         prev = self._service_samples
         new_samples: dict[str, tuple[int, float]] = {}
         out: list[dict[str, Any]] = []
-        for name in names:
-            usec = self._read_cgroup_cpu_usec(slice_dir, name)
-            rss_bytes = self._read_cgroup_memory_bytes(slice_dir, name)
+        for service in services:
+            unit = service["unit"]
+            path = service["path"]
+            sample_key = service["cgroup"]
+            usec = self._read_cgroup_cpu_usec_path(path)
+            rss_bytes = self._read_cgroup_memory_bytes_path(path)
             if usec is None and rss_bytes is None:
                 # Cgroup vanished between listdir and read — race
                 # with service teardown. Skip silently.
@@ -441,8 +477,8 @@ class SystemSampler:
                 if rss_bytes is not None else None
             )
             cpu_pct: float | None = None
-            if usec is not None and name in prev:
-                prev_usec, prev_mono = prev[name]
+            if usec is not None and sample_key in prev:
+                prev_usec, prev_mono = prev[sample_key]
                 wall_delta = now_mono - prev_mono
                 if wall_delta > 0:
                     pct = (usec - prev_usec) / (wall_delta * 1e6) * 100.0
@@ -451,9 +487,12 @@ class SystemSampler:
                     # never shows a nonsense value.
                     cpu_pct = round(max(0.0, pct), 1)
             if usec is not None:
-                new_samples[name] = (usec, now_mono)
+                new_samples[sample_key] = (usec, now_mono)
             out.append({
-                "name": name.removesuffix(SERVICE_SUFFIX),
+                "name": unit.removesuffix(SERVICE_SUFFIX),
+                "unit": unit,
+                "group": service["group"],
+                "cgroup": sample_key,
                 "cpu_pct": cpu_pct,
                 "rss_mb": rss_mb,
             })
@@ -475,11 +514,57 @@ class SystemSampler:
         )
 
     @staticmethod
+    def _service_group(unit: str) -> str | None:
+        """Return the dashboard group for a unit, or None to omit it."""
+        if unit.startswith(SERVICE_PREFIX) and unit.endswith(SERVICE_SUFFIX):
+            return JASPER_SERVICE_GROUPS.get(unit, "JTS")
+        return EXTRA_SERVICE_GROUPS.get(unit)
+
+    @classmethod
+    def _list_service_cgroups(
+        cls, root_dir: str = CGROUP_ROOT,
+    ) -> list[dict[str, str]]:
+        """Return service cgroups the dashboard should show.
+
+        Walks the unified hierarchy recursively so JTS services moved into
+        purpose-built slices (jts-audio, jts-mic, etc.) are still visible.
+        """
+        out: list[dict[str, str]] = []
+        for dirpath, _dirnames, filenames in os.walk(
+            root_dir, onerror=lambda _err: None,
+        ):
+            unit = os.path.basename(dirpath)
+            group = cls._service_group(unit)
+            if group is None:
+                continue
+            if "cpu.stat" not in filenames and "memory.current" not in filenames:
+                continue
+            cgroup = "/" + os.path.relpath(dirpath, root_dir)
+            if not unit.startswith(SERVICE_PREFIX) and not (
+                cgroup.startswith("/system.slice/")
+                or cgroup.startswith("/jts.slice/")
+            ):
+                continue
+            out.append({
+                "unit": unit,
+                "group": group,
+                "path": dirpath,
+                "cgroup": cgroup,
+            })
+        return sorted(out, key=lambda s: (s["group"], s["unit"], s["cgroup"]))
+
+    @staticmethod
     def _read_cgroup_cpu_usec(slice_dir: str, name: str) -> int | None:
         """Total CPU time consumed by the cgroup, in microseconds, or
         None if cpu.stat is unreadable. Cumulative since cgroup
         creation — the delta over wall time is what's meaningful."""
-        path = os.path.join(slice_dir, name, "cpu.stat")
+        return SystemSampler._read_cgroup_cpu_usec_path(
+            os.path.join(slice_dir, name),
+        )
+
+    @staticmethod
+    def _read_cgroup_cpu_usec_path(cgroup_dir: str) -> int | None:
+        path = os.path.join(cgroup_dir, "cpu.stat")
         try:
             with open(path) as f:
                 for line in f:
@@ -493,7 +578,13 @@ class SystemSampler:
     def _read_cgroup_memory_bytes(slice_dir: str, name: str) -> int | None:
         """Resident memory of the cgroup in bytes (memory.current).
         None if unreadable (race with cgroup teardown)."""
-        path = os.path.join(slice_dir, name, "memory.current")
+        return SystemSampler._read_cgroup_memory_bytes_path(
+            os.path.join(slice_dir, name),
+        )
+
+    @staticmethod
+    def _read_cgroup_memory_bytes_path(cgroup_dir: str) -> int | None:
+        path = os.path.join(cgroup_dir, "memory.current")
         try:
             with open(path) as f:
                 return int(f.read().strip())

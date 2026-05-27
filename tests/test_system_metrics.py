@@ -359,6 +359,36 @@ def test_list_jasper_cgroups_filters_by_prefix(tmp_path) -> None:
     ]
 
 
+def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None:
+    root = tmp_path / "cgroup"
+    system_slice = root / "system.slice"
+    audio_slice = root / "jts.slice" / "jts-audio.slice"
+    mic_slice = root / "jts.slice" / "jts-mic.slice"
+    for unit_dir in (
+        system_slice / "jasper-control.service",
+        root / "user.slice" / "user-1000.slice" / "dbus.service",
+        audio_slice / "shairport-sync.service",
+        audio_slice / "jasper-fanin.service",
+        mic_slice / "jasper-aec-bridge.service",
+        system_slice / "not-tracked.service",
+    ):
+        unit_dir.mkdir(parents=True)
+        (unit_dir / "cpu.stat").write_text("usage_usec 1\n")
+
+    services = SystemSampler._list_service_cgroups(str(root))
+    by_unit = {s["unit"]: s for s in services}
+
+    assert by_unit["jasper-aec-bridge.service"]["group"] == "Mic"
+    assert by_unit["jasper-aec-bridge.service"]["cgroup"] == (
+        "/jts.slice/jts-mic.slice/jasper-aec-bridge.service"
+    )
+    assert by_unit["jasper-fanin.service"]["group"] == "Audio"
+    assert by_unit["shairport-sync.service"]["group"] == "Audio"
+    assert by_unit["jasper-control.service"]["group"] == "Control"
+    assert "not-tracked.service" not in by_unit
+    assert "dbus.service" not in by_unit
+
+
 def test_list_jasper_cgroups_returns_empty_when_slice_missing(tmp_path) -> None:
     # macOS dev box, or cgroup-v1 system — slice dir simply isn't there.
     assert SystemSampler._list_jasper_cgroups(
@@ -422,6 +452,8 @@ def test_tick_services_first_sample_has_no_cpu_pct(tmp_path) -> None:
     out = s._tick_services(slice_dir)
     assert len(out) == 1
     assert out[0]["name"] == "jasper-voice"
+    assert out[0]["group"] == "Voice"
+    assert out[0]["cgroup"] == "/jasper-voice.service"
     assert out[0]["cpu_pct"] is None
     assert out[0]["rss_mb"] == 100.0
 
@@ -470,7 +502,7 @@ def test_tick_services_drops_disappeared_services(tmp_path) -> None:
     })
     s = SystemSampler()
     s._tick_services(slice_dir)
-    assert "jasper-dac-init.service" in s._service_samples
+    assert "/jasper-dac-init.service" in s._service_samples
 
     # One-shot exits — systemd removes the cgroup dir.
     import shutil
@@ -480,7 +512,7 @@ def test_tick_services_drops_disappeared_services(tmp_path) -> None:
     names = [s["name"] for s in out]
     assert "jasper-voice" in names
     assert "jasper-dac-init" not in names
-    assert "jasper-dac-init.service" not in s._service_samples
+    assert "/jasper-dac-init.service" not in s._service_samples
 
 
 def test_tick_services_handles_negative_delta(tmp_path, monkeypatch) -> None:
