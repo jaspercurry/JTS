@@ -1000,6 +1000,7 @@ class MeasurementSession:
     async def apply(
         self,
         camilla_set_config: Callable[[str], Awaitable[bool]],
+        camilla_get_config: Callable[[], Awaitable[str | None]] | None = None,
     ) -> None:
         async with self._lock:
             if self.state != SessionState.READY:
@@ -1018,35 +1019,47 @@ class MeasurementSession:
             ]
             from jasper.sound.camilla_yaml import (
                 emit_sound_config,
-                validate_camilla_config,
             )
-            from jasper.sound.profile import load_profile
-
-            emit_sound_config(
-                load_profile(),
-                room_peqs=peq_objs,
-                out_path=out_path,
-                profile_id=self.session_id,
-            )
-            if not validate_camilla_config(out_path):
-                raise RuntimeError(
-                    f"generated CamillaDSP config failed validation: {out_path}"
-                )
-            self.config_path = out_path
+            from jasper.sound.profile import build_sound_filters, load_profile
         except Exception as e:  # noqa: BLE001
             async with self._lock:
                 await self._fail(f"YAML emit failed: {e}")
             raise
 
+        def _prepare_config() -> dict[str, int]:
+            profile = load_profile()
+            emit_sound_config(
+                profile,
+                room_peqs=peq_objs,
+                out_path=out_path,
+                profile_id=self.session_id,
+            )
+            return {
+                "room_peq_count": len(peq_objs),
+                "sound_filter_count": len(build_sound_filters(profile)),
+            }
+
         try:
-            ok = await camilla_set_config(str(out_path))
-            if not ok:
+            from jasper.dsp_apply import DspApplyError, apply_dsp_config
+            await apply_dsp_config(
+                source="correction",
+                candidate_path=out_path,
+                load_config=camilla_set_config,
+                get_current_config_path=camilla_get_config,
+                prepare=_prepare_config,
+                room_peq_count=len(peq_objs),
+            )
+            self.config_path = out_path
+        except DspApplyError as e:
+            if e.state.result == "prepare_failed":
                 async with self._lock:
-                    await self._fail(
-                        "CamillaDSP rejected the config (set_config_file_path "
-                        "returned False)"
-                    )
+                    await self._fail(f"YAML emit failed: {e}")
+                raise
+            async with self._lock:
+                await self._fail(f"CamillaDSP reload failed: {e}")
+            if e.state.load_error == "CamillaDSP rejected candidate config path":
                 return
+            raise
         except Exception as e:  # noqa: BLE001
             async with self._lock:
                 await self._fail(f"CamillaDSP reload failed: {e}")

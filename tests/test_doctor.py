@@ -1696,6 +1696,42 @@ def test_check_sound_profile_fails_on_corrupt_json(monkeypatch, tmp_path):
     assert "could not read" in r.detail
 
 
+def test_check_dsp_apply_state_reports_success(monkeypatch, tmp_path):
+    state = tmp_path / "dsp_apply_state.json"
+    state.write_text(json.dumps({
+        "op_id": "abcdef123456",
+        "source": "sound",
+        "phase": "done",
+        "result": "success",
+        "candidate_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
+    }))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state))
+
+    r = doctor.check_dsp_apply_state()
+
+    assert r.status == "ok"
+    assert "source=sound" in r.detail
+    assert "result=success" in r.detail
+
+
+def test_check_dsp_apply_state_fails_on_rollback_failure(monkeypatch, tmp_path):
+    state = tmp_path / "dsp_apply_state.json"
+    state.write_text(json.dumps({
+        "op_id": "abcdef123456",
+        "source": "correction",
+        "phase": "load",
+        "result": "load_failed_rollback_failed",
+        "rollback_attempted": True,
+        "rollback_succeeded": False,
+    }))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state))
+
+    r = doctor.check_dsp_apply_state()
+
+    assert r.status == "fail"
+    assert "rollback_failed" in r.detail
+
+
 def test_check_correction_latest_bundle_warns_without_calibration(
     monkeypatch, tmp_path,
 ):
@@ -1749,4 +1785,5 @@ def test_correction_doctor_checks_registered():
     assert "check_correction_state_dirs" in src
     assert "check_correction_current_config" in src
     assert "check_sound_profile" in src
+    assert "check_dsp_apply_state" in src
     assert "check_correction_latest_bundle" in src

@@ -2277,6 +2277,7 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     (returns None if CamillaDSP is unreachable) so the page still
     renders something useful when the daemon is restarting."""
     from jasper.correction.session import parse_current_correction
+    from jasper.dsp_apply import last_dsp_apply_state
 
     sess = _get_or_create_session()
     snap = sess.snapshot()
@@ -2291,6 +2292,7 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     snap["current_correction"] = parse_current_correction(
         path, config_dir=sess.cfg.config_dir,
     )
+    snap["last_dsp_apply"] = last_dsp_apply_state()
     return snap
 
 
@@ -2405,7 +2407,10 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     async def _set(path: str) -> bool:
         return await cam.set_config_file_path(path, best_effort=False)
 
-    _run_async(sess.apply(_set), timeout=15.0)
+    async def _get() -> str | None:
+        return await cam.get_config_file_path(best_effort=True)
+
+    _run_async(sess.apply(_set, camilla_get_config=_get), timeout=15.0)
     _maybe_restore_main_volume(sess, cam)
     return {
         "session_id": sess.session_id,

@@ -784,7 +784,14 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     base, _ = server_with_coordinator
     state_path = tmp_path / "speaker_volume.json"
     state_path.write_text('{"listening_level": 73}')
+    dsp_apply = tmp_path / "dsp_apply_state.json"
+    dsp_apply.write_text(json.dumps({
+        "source": "sound",
+        "phase": "done",
+        "result": "success",
+    }))
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_apply))
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing_sound.json"))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")
     monkeypatch.setenv("JASPER_OPENAI_MODEL", "gpt-realtime-2")
@@ -805,6 +812,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["main_volume_db"] is None
     assert body["audio"]["sound"]["curve_id"] == "flat"
     assert body["audio"]["sound"]["filter_count"] == 0
+    assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False

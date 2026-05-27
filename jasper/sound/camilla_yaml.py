@@ -10,8 +10,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import shutil
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Iterable
@@ -234,37 +232,15 @@ def is_jts_generated_config(
 
 
 def validate_camilla_config(path: str | Path) -> bool:
-    """Validate a generated config when the CamillaDSP binary is present."""
+    """Compatibility wrapper for older callers.
 
-    binary = os.environ.get("JASPER_CAMILLADSP_BIN")
-    if not binary:
-        default_binary = Path("/opt/camilladsp/camilladsp")
-        binary = str(default_binary) if default_binary.exists() else None
-    if not binary:
-        binary = shutil.which("camilladsp")
-    if not binary:
-        logger.info("camilladsp binary not found; skipping config preflight")
-        return True
+    New apply paths use :mod:`jasper.dsp_apply` directly so they can
+    distinguish invalid configs from validator runner failures.
+    """
 
-    try:
-        result = subprocess.run(
-            [binary, "-c", str(path), "--check"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=10,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as e:
-        logger.error("camilladsp --check could not run for %s: %s", path, e)
-        return False
-    if result.returncode == 0:
-        return True
-    logger.error(
-        "camilladsp --check failed for %s: stdout=%r stderr=%r",
-        path, result.stdout[-500:], result.stderr[-500:],
-    )
-    return False
+    from jasper.dsp_apply import validate_camilla_config as _validate
+
+    return _validate(path).ok_to_apply
 
 
 def extract_room_peqs_from_config_text(text: str) -> list[PeqFilter]:
