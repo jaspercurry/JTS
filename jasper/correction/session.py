@@ -51,6 +51,7 @@ import numpy as np
 
 from . import (
     analysis,
+    browser_audio,
     bundles,
     calibration,
     confidence,
@@ -284,6 +285,11 @@ class MeasurementSession:
         ).strategy_id
         self.mic_calibration = mic_calibration
         self.input_device = input_device
+        self.browser_audio_report = browser_audio.assess_browser_audio_path(
+            input_device=input_device,
+            expected_sample_rate=self.cfg.sample_rate,
+            has_mic_calibration=mic_calibration is not None,
+        ).to_dict()
         # Per-position smoothed magnitude responses (dB on log grid).
         # Spatial-averaged at end of multi-position flow.
         self.position_magnitudes: list[np.ndarray] = []
@@ -462,6 +468,7 @@ class MeasurementSession:
                 if self.mic_calibration
                 else None
             ),
+            "browser_audio_report": self.browser_audio_report,
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
@@ -516,6 +523,7 @@ class MeasurementSession:
                 if self.mic_calibration
                 else None
             ),
+            "browser_audio_report": self.browser_audio_report,
             "measured": (
                 self.measured_curve.__dict__ if self.measured_curve else None
             ),
@@ -841,6 +849,7 @@ class MeasurementSession:
             input_device=self.input_device,
             capture_quality=self.capture_quality,
             strategy_choice=self.strategy_choice,
+            browser_audio_report=self.browser_audio_report,
             position_magnitudes=self.position_magnitudes,
             freqs_hz=self.position_freqs,
             correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
@@ -1513,6 +1522,7 @@ class MeasurementSession:
                 if self.mic_calibration
                 else None
             ),
+            "browser_audio_report": self.browser_audio_report,
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,

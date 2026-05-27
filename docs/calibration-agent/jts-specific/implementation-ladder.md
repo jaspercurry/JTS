@@ -42,12 +42,13 @@ reporting, per-position variance, repeatability flags, and bundle
 artifacts that let deterministic code and future LLM tools explain
 what the measurement can and cannot support.
 
-As of 2026-05-27, the first Stage 3 slice has landed: deterministic
+As of 2026-05-27, the first Stage 3 slices have landed: deterministic
 per-band spatial summaries, high-variance and deep-null feature flags,
-per-filter spatial-confidence annotations, and richer
-`position_analysis.json` artifacts. The remaining Stage 3 work is to
-connect browser-audio smoke-test evidence and repeatability/SNR checks
-into the same confidence model.
+per-filter spatial-confidence annotations, richer
+`position_analysis.json` artifacts, and a browser-audio metadata
+preflight report that feeds the same confidence model. The remaining
+Stage 3 work is to add acoustic browser smoke-test evidence,
+repeatability checks, and SNR estimates.
 
 ## 2026-05-27 Sequencing Update
 
@@ -69,9 +70,12 @@ After the intake, the recommended order is:
 1. **Multi-position confidence and reporting.** Make per-band and
    per-filter confidence real: spatial variance, accepted and rejected
    features, strategy gates, and deterministic rationale.
-2. **Browser audio smoke-test integration.** Feed mic/device/capture
-   reliability into the same confidence model: clipping, SNR,
-   processing flags, calibration status, and sample-rate mismatch.
+2. **Browser audio smoke-test integration.** Metadata-level
+   mic/device/capture reliability now feeds the confidence model:
+   processing flags, calibration status, channel count, device
+   mismatch, and sample-rate mismatch. The next slice is acoustic
+   proof: clipping, SNR, tone/sweep loopback sanity, and real mobile
+   browser verification.
 3. **Room-correction visualization.** Show per-position spread,
    average, target, proposed filters, rejected nulls, confidence, and
    recommended next action.

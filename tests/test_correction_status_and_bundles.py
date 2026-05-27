@@ -282,7 +282,18 @@ async def test_design_writes_result_json(tmp_path: Path):
     sess.input_device = {
         "label": "USB measurement mic",
         "device_id_hash": "abc123",
+        "sample_rate": 48000,
+        "channel_count": 1,
+        "echo_cancellation": False,
+        "noise_suppression": False,
+        "auto_gain_control": False,
     }
+    from jasper.correction import browser_audio
+    sess.browser_audio_report = browser_audio.assess_browser_audio_path(
+        input_device=sess.input_device,
+        expected_sample_rate=sess.cfg.sample_rate,
+        has_mic_calibration=sess.mic_calibration is not None,
+    ).to_dict()
     sess.total_positions = 1
 
     captured_paths: list[str] = []
@@ -309,6 +320,11 @@ async def test_design_writes_result_json(tmp_path: Path):
     assert result["session_id"] == sess.session_id
     assert result["bundle_schema_version"] == 2
     assert result["input_device"]["device_id_hash"] == "abc123"
+    assert result["browser_audio_report"]["level"] == "warn"
+    assert (
+        result["confidence_report"]["browser_audio_report"]
+        == result["browser_audio_report"]
+    )
     assert result["measured"] is not None
     assert "freqs_hz" in result["measured"]
     assert "magnitude_db" in result["measured"]

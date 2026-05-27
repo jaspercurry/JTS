@@ -179,6 +179,18 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .quality-banner ul { margin: 0.4em 0 0; padding-left: 1.2em; }
   .quality-banner.hidden { display: none; }
 
+  .browser-audio-card { border-radius: 6px; padding: 0.7em 0.9em;
+                        margin: 0.5em 0; font-size: 0.94em;
+                        background: #f7f7f7; border: 1px solid #ddd; }
+  .browser-audio-card.ok { background: #e6f4ea; border-color: #1db954;
+                           color: #176f36; }
+  .browser-audio-card.warn { background: #fff8e1; border-color: #d6b656;
+                             color: #5f4500; }
+  .browser-audio-card.fail { background: #ffe8e8; border-color: #d99;
+                             color: #800; }
+  .browser-audio-card.hidden { display: none; }
+  .browser-audio-card ul { margin: 0.4em 0 0; padding-left: 1.2em; }
+
   .confidence-card { border:1px solid #ddd; border-left:5px solid #999;
                      border-radius:6px; padding:0.75em 0.9em; margin:0.8em 0;
                      background:#fafafa; }
@@ -350,6 +362,7 @@ __NAV_BACK__
     <tbody id="constraint-rows"></tbody>
   </table>
   <div id="err-banner" class="err-banner hidden"></div>
+  <div id="browser-audio-report" class="browser-audio-card hidden"></div>
 
   <h2>Live mic level</h2>
   <p class="hint">Talk into the bottom of the phone — the bar should respond within 50 ms.</p>
@@ -465,6 +478,7 @@ __NAV_BACK__
   var constraintsBlock = document.getElementById('constraints');
   var rowsTbody = document.getElementById('constraint-rows');
   var errBanner = document.getElementById('err-banner');
+  var browserAudioReport = document.getElementById('browser-audio-report');
   var levelBar = document.getElementById('level-bar-fill');
   var levelReadout = document.getElementById('level-db');
   var measureSection = document.getElementById('measure-section');
@@ -739,6 +753,41 @@ __NAV_BACK__
       runBtn.disabled = false;
       autolevelBtn.disabled = false;
     }
+    renderBrowserAudioLocal(actual, problems);
+  }
+
+  function renderBrowserAudioLocal(actual, problems) {
+    var issues = problems.slice();
+    if (actual.channelCount !== 1) {
+      issues.push('channelCount is ' + actual.channelCount + ' (JTS will use the first channel)');
+    }
+    var level = problems.length ? 'fail' : (issues.length ? 'warn' : 'ok');
+    browserAudioReport.className = 'browser-audio-card ' + level;
+    browserAudioReport.innerHTML =
+      '<strong>Browser audio path: ' +
+      (level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
+      '</strong>' +
+      (issues.length
+        ? '<ul>' + issues.map(function (issue) {
+            return '<li>' + escapeText(issue) + '</li>';
+          }).join('') + '</ul>'
+        : '<p class="hint">Input metadata looks ready for measurement. Capture quality is still checked after each sweep.</p>');
+  }
+
+  function renderBrowserAudioReport(report) {
+    if (!report) return;
+    var level = report.level || (report.failed ? 'fail' : 'warn');
+    browserAudioReport.className = 'browser-audio-card ' + level;
+    var issues = report.issues || [];
+    browserAudioReport.innerHTML =
+      '<strong>Browser audio path: ' +
+      escapeText(level === 'ok' ? 'ready' : (level === 'fail' ? 'blocked' : 'usable with warnings')) +
+      '</strong><p class="hint">' + escapeText(report.summary || '') + '</p>' +
+      (issues.length
+        ? '<ul>' + issues.map(function (issue) {
+            return '<li>' + escapeText(issue.message || issue.code) + '</li>';
+          }).join('') + '</ul>'
+        : '');
   }
 
   async function startMicCapture() {
@@ -1554,6 +1603,7 @@ __NAV_BACK__
       }
       setStateBadge(s.state, detail);
       renderQuality(s);
+      renderBrowserAudioReport(s.browser_audio_report);
       renderConfidence(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
@@ -1631,6 +1681,7 @@ __NAV_BACK__
       renderDesignReport(data.design_report);
       renderConfidence(data);
       renderQuality(data);
+      renderBrowserAudioReport(data.browser_audio_report);
       resultSection.classList.remove('hidden');
       if (data.measured) {
         // Force a layout flush so getBoundingClientRect returns
@@ -1996,6 +2047,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         "target_profile": snapshot.get("target_profile"),
         "correction_strategy": snapshot.get("correction_strategy"),
         "input_device": sess.input_device,
+        "browser_audio_report": sess.browser_audio_report,
         "mic_calibration": (
             sess.mic_calibration.public_metadata()
             if sess.mic_calibration
@@ -2360,6 +2412,7 @@ def _handle_upload_capture(
         "verify_metrics": sess.verify_metrics,
         "capture_quality": sess.capture_quality,
         "verify_quality": sess.verify_quality,
+        "browser_audio_report": sess.browser_audio_report,
         "confidence_report": sess.confidence_report,
         "peqs": [p.__dict__ for p in sess.peqs],
         "design_report": sess.design_report,
@@ -2547,6 +2600,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             "total_positions": sess.total_positions,
                             "capture_quality": sess.capture_quality,
                             "verify_quality": sess.verify_quality,
+                            "browser_audio_report": getattr(
+                                sess, "browser_audio_report", None,
+                            ),
                         }, status=422)
                     except ValueError as e:
                         self._send_client_error(str(e))
