@@ -239,8 +239,11 @@ That flow exists historically but misses:
   only conditionally restarts `jasper-voice` when the AEC default
   flips — a one-time event)
 
-**Skip flags:** `SKIP_INSTALL=1` (rsync only), `SKIP_RESTART=1`
-(install but don't restart/reconcile), `PI_HOST=...`, `PI_USER=...`.
+**Skip / opt-in flags:** `SKIP_INSTALL=1` (rsync only),
+`SKIP_RESTART=1` (install but don't restart/reconcile),
+`JASPER_BUILD_OPTIONAL_FIRMWARE=1` (explicitly rebuild optional
+ESP32 dial/satellite firmware during install), `PI_HOST=...`,
+`PI_USER=...`.
 
 **Adding a wizard port to `jasper-web.socket`?** `install.sh`'s
 wizard-socket loop uses `systemctl restart` (not `start`) so a new
@@ -1948,13 +1951,19 @@ No auth — home LAN only.
 Dial side: PlatformIO project at `firmware/dial/`. ESP32-S3, native
 USB-CDC, Improv-over-Serial provisioning. WS2812 LED 0 = status
 indicator (magenta=boot, yellow=connecting, dim green=online,
-red blink=HTTP error, solid red=WiFi down).
+red blink=HTTP error, solid red=WiFi down). Normal speaker installs
+stage the firmware source but do **not** compile optional ESP32
+firmware; most speakers do not have accessory hardware, and first-run
+PlatformIO setup is a large accessory-specific download. Use
+`JASPER_BUILD_OPTIONAL_FIRMWARE=1` for an intentional install-time
+rebuild, or run `scripts/check-firmware-builds.sh` as a maintainer
+check when touching firmware or PlatformIO pins.
 
 To onboard a fresh dial, end-to-end:
 
 ```sh
-# One-time, on any machine with PlatformIO (or via the Pi venv):
-bash firmware/dial/build.sh
+# One-time, explicit accessory firmware build on the Pi:
+bash /opt/jasper/firmware/dial/build.sh
 # Stages bin to /opt/jasper/firmware/dial/jasper-dial.bin
 
 # Plug the dial into a Pi USB-C port, then on the Pi:

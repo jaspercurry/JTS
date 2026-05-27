@@ -27,6 +27,7 @@ Routes (paths after nginx strips /dial/):
 from __future__ import annotations
 
 import argparse
+import datetime
 import html
 import json
 import logging
@@ -70,25 +71,70 @@ ONBOARD_BIN = "/opt/jasper/.venv/bin/jasper-dial-onboard"
 # a missing or stale .bin caused the silent "auto mode short-circuit"
 # UX that hid firmware fixes from new dials.
 FIRMWARE_BIN = "/opt/jasper/firmware/dial/jasper-dial.bin"
+FIRMWARE_ROOT = "/opt/jasper/firmware/dial"
 
 
-def _read_firmware_status(bin_path: str = FIRMWARE_BIN) -> dict[str, Any]:
-    """Return {present, path, size_bytes, mtime_iso} for the dial
-    firmware .bin. Always returns a dict — fields are None when the
-    file is missing. The wizard surfaces this so users know whether
-    Force Flash will actually flash an up-to-date binary."""
-    import datetime
+def _format_mtime(ts: float | None) -> str | None:
+    if ts is None:
+        return None
+    return datetime.datetime.fromtimestamp(
+        ts, tz=datetime.timezone.utc,
+    ).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def _newest_firmware_source_mtime(root: str = FIRMWARE_ROOT) -> float | None:
+    """Return newest mtime among source inputs that should trigger a
+    rebuilt dial .bin. Missing source dirs are normal on development
+    hosts that call _read_firmware_status() against a temp bin."""
+    candidates: list[str] = [
+        os.path.join(root, "build.sh"),
+        os.path.join(root, "platformio.ini"),
+    ]
+    for dirname in ("include", "src"):
+        dirpath = os.path.join(root, dirname)
+        if not os.path.isdir(dirpath):
+            continue
+        for base, dirs, files in os.walk(dirpath):
+            dirs[:] = [d for d in dirs if d not in {".pio", "__pycache__"}]
+            candidates.extend(os.path.join(base, f) for f in files)
+
+    newest: float | None = None
+    for path in candidates:
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            continue
+        newest = mtime if newest is None else max(newest, mtime)
+    return newest
+
+
+def _read_firmware_status(
+    bin_path: str = FIRMWARE_BIN,
+    source_root: str = FIRMWARE_ROOT,
+) -> dict[str, Any]:
+    """Return firmware freshness metadata for the dial .bin. Always
+    returns a dict — fields are None when the file or source tree is
+    missing. The wizard surfaces this so users know whether Force Flash
+    will actually flash an up-to-date binary."""
+    source_mtime = _newest_firmware_source_mtime(source_root)
     try:
         st = os.stat(bin_path)
     except OSError:
-        return {"present": False, "path": bin_path, "size_bytes": None, "mtime_iso": None}
+        return {
+            "present": False,
+            "path": bin_path,
+            "size_bytes": None,
+            "mtime_iso": None,
+            "source_newer": False,
+            "source_mtime_iso": _format_mtime(source_mtime),
+        }
     return {
         "present": True,
         "path": bin_path,
         "size_bytes": st.st_size,
-        "mtime_iso": datetime.datetime.fromtimestamp(
-            st.st_mtime, tz=datetime.timezone.utc,
-        ).strftime("%Y-%m-%d %H:%M UTC"),
+        "mtime_iso": _format_mtime(st.st_mtime),
+        "source_newer": source_mtime is not None and source_mtime > st.st_mtime,
+        "source_mtime_iso": _format_mtime(source_mtime),
     }
 
 
@@ -236,19 +282,33 @@ def _setup_html(
     ssid_disp = html.escape(ssid) if ssid else "(unknown — check Pi WiFi)"
     if firmware["present"]:
         size_kb = (firmware["size_bytes"] or 0) // 1024
-        fw_banner = (
-            f'<div class="fw-banner ok">'
-            f'<strong>Firmware ready to flash:</strong> '
-            f'<code>{html.escape(firmware["path"])}</code> '
-            f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])})'
-            f'</div>'
-        )
+        if firmware.get("source_newer"):
+            source_mtime = html.escape(firmware.get("source_mtime_iso") or "unknown")
+            fw_banner = (
+                f'<div class="fw-banner warn">'
+                f'<strong>Firmware staged, but source is newer.</strong> '
+                f'Force Flash will use <code>{html.escape(firmware["path"])}</code> '
+                f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])}) until '
+                f'you rebuild from the source last changed {source_mtime}. Run on the Pi:'
+                f'<pre>sudo /opt/jasper/.venv/bin/pip install platformio\n'
+                f'bash /opt/jasper/firmware/dial/build.sh</pre>'
+                f'</div>'
+            )
+        else:
+            fw_banner = (
+                f'<div class="fw-banner ok">'
+                f'<strong>Firmware ready to flash:</strong> '
+                f'<code>{html.escape(firmware["path"])}</code> '
+                f'({size_kb} KB, built {html.escape(firmware["mtime_iso"])})'
+                f'</div>'
+            )
     else:
         fw_banner = (
             '<div class="fw-banner warn">'
             '<strong>No firmware staged.</strong> '
             'Force Flash will not flash anything until <code>jasper-dial.bin</code> '
-            'is built. Run once on the Pi (SSH in as <code>pi</code>):'
+            'is built. JTS skips optional accessory firmware builds during '
+            'base speaker installs; run once on the Pi (SSH in as <code>pi</code>):'
             '<pre>sudo /opt/jasper/.venv/bin/pip install platformio\n'
             'bash /opt/jasper/firmware/dial/build.sh</pre>'
             'then reload this page. (PlatformIO pulls ~300-500 MB of ESP32 '

@@ -4,17 +4,18 @@ The helpers can be sourced cleanly because install.sh's `main` call
 is guarded by `if [[ "${BASH_SOURCE[0]}" == "${0:-}" ]]`. Tests source
 the file and invoke individual functions.
 
-Currently covers `_compute_min_free_kbytes` (Concern 9 of the
-staff-eng review) — RAM-aware vm.min_free_kbytes computation. The
-formula's clamp behavior on edge cases (tiny systems, huge systems)
-is easy to regress with an off-by-one in awk.
+Coverage started with `_compute_min_free_kbytes` (Concern 9 of the
+staff-eng review) and now also pins install-time optional firmware
+build behavior. These bash helpers are small, but easy to regress
+because they sit on the deploy path.
 """
 from __future__ import annotations
 
+import os
+import re
+import shlex
 import subprocess
 from pathlib import Path
-
-import pytest
 
 
 _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
@@ -134,3 +135,57 @@ def test_compute_rejects_negative_or_garbage_input():
     # int(0 * 0.02 + 0.5) = 0, then clamped to 8192.
     result = _compute_min_free_kbytes(0)
     assert result == 8192
+
+
+def test_optional_firmware_builds_are_install_opt_in():
+    """ESP32 satellites are optional accessories. Base speaker installs
+    should stage firmware source but avoid PlatformIO builds unless the
+    operator explicitly opts in."""
+    text = _INSTALL_SH.read_text(encoding="utf-8")
+    assert "JASPER_BUILD_OPTIONAL_FIRMWARE" in text
+    assert re.search(
+        r'if \[\[ "\$\{JASPER_BUILD_OPTIONAL_FIRMWARE:-0\}" == "1" \]\]; then'
+        r'\s+_build_firmware_if_stale "dial" "jasper-dial\.bin"'
+        r'\s+_build_firmware_if_stale "satellite-amoled" '
+        r'"jasper-satellite-amoled\.bin"',
+        text,
+    )
+
+
+def test_firmware_staleness_includes_platformio_inputs(tmp_path):
+    """Dependency-pin changes live in platformio.ini, so the optional
+    rebuild freshness check must not look only at src/."""
+    fw_root = tmp_path / "firmware" / "dial"
+    (fw_root / "src").mkdir(parents=True)
+    (fw_root / "include").mkdir()
+    bin_path = fw_root / "jasper-dial.bin"
+    platformio = fw_root / "platformio.ini"
+    build_sh = fw_root / "build.sh"
+    bin_path.write_bytes(b"old")
+    platformio.write_text("[env]\nlib_deps = fastled/FastLED@3.10.3\n")
+    build_sh.write_text("#!/usr/bin/env bash\n")
+
+    os_old = 1_716_470_400
+    os_new = 1_716_556_800
+    os.utime(bin_path, (os_old, os_old))
+    os.utime(platformio, (os_new, os_new))
+    os.utime(build_sh, (os_old, os_old))
+
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            "source "
+            + shlex.quote(str(_INSTALL_SH))
+            + " >/dev/null && _newer_firmware_input "
+            + shlex.quote(str(fw_root))
+            + " "
+            + shlex.quote(str(bin_path)),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == str(platformio)

@@ -440,8 +440,26 @@ Local PlatformIO setup needs Python ≥ 3.10 (pioarduino requires it).
 On macOS: `brew install python@3.11` then make a venv with that
 Python, `pip install platformio`, and prefix `pio` invocations with
 `PATH="/opt/homebrew/bin:$PATH"` so PIO's subprocess can find git
-(needed for the Improv-WiFi library install). The Pi already has
-Python 3.13 + PIO at `/opt/jasper/.venv/bin/pio`.
+(needed for the Improv-WiFi library install). On the Pi, install PIO
+only when you are doing accessory firmware work:
+`sudo /opt/jasper/.venv/bin/pip install platformio`.
+
+Normal speaker installs copy `firmware/` into `/opt/jasper/firmware/`
+but do **not** build ESP32 binaries by default. Satellites are optional
+accessories, and first-run PlatformIO setup is a large
+accessory-specific download. When you intentionally want install-time
+rebuilds on a Pi, set `JASPER_BUILD_OPTIONAL_FIRMWARE=1` for
+`deploy/install.sh`. For normal maintainer verification, run the local
+explicit check instead:
+
+```sh
+scripts/check-firmware-builds.sh              # dial + AMOLED
+scripts/check-firmware-builds.sh dial         # just the rotary dial
+```
+
+This check is deliberately not part of always-on PR CI yet; it is the
+right thing to run when touching `firmware/`, `platformio.ini`, or the
+accessory onboarding flow.
 
 ### Discovery — `_jasper-control._tcp` over mDNS-SD
 
