@@ -29,6 +29,7 @@
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
+| Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
 
@@ -50,6 +51,27 @@ python3 scripts/check-provenance.py
 
 The policy and update workflow live in
 [`docs/HANDOFF-supply-chain.md`](HANDOFF-supply-chain.md).
+
+---
+
+## Optional ESP32 firmware builds
+
+[`scripts/check-firmware-builds.sh`](../scripts/check-firmware-builds.sh)
+builds the optional ESP32 satellite firmware projects without flashing
+hardware:
+
+```sh
+scripts/check-firmware-builds.sh              # dial + AMOLED
+scripts/check-firmware-builds.sh dial         # just the rotary dial
+scripts/check-firmware-builds.sh satellite-amoled
+```
+
+Run it when touching `firmware/`, PlatformIO dependency pins, or
+accessory onboarding. It is deliberately not part of always-on PR CI:
+most JTS installs do not use accessory hardware, and first-run
+PlatformIO toolchain setup is a large download. Normal `install.sh`
+stages firmware source but only rebuilds staged binaries when the
+operator opts in with `JASPER_BUILD_OPTIONAL_FIRMWARE=1`.
 
 ---
 

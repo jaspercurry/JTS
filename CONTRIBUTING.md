@@ -65,6 +65,11 @@ blank SD card to working speaker.
   required when touching install/build fetches, firmware dependency
   declarations, wake/DTLN model registries, or Python direct URL
   dependencies. See [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md).
+- **Optional ESP32 firmware build check**
+  (`scripts/check-firmware-builds.sh`) — run when touching
+  `firmware/`, PlatformIO pins, or accessory onboarding. This is
+  explicit instead of always-on CI because most PRs do not affect
+  optional dial/satellite hardware and PlatformIO is a large download.
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
   opens **paid** real-time LLM sessions (~$0.075/scenario on Gemini,
   ~$0.60 on OpenAI). Don't run on every PR; nightly at most with

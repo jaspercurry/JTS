@@ -654,13 +654,12 @@ tune_wifi_for_airplay() {
     echo "  WiFi power-save disabled on connection '$wlan_conn'."
 }
 
-# Rebuild a satellite firmware .bin from source if (a) it's missing,
-# or (b) any source file is newer than the staged .bin AND
-# PlatformIO is already installed on this Pi. We intentionally do NOT
-# auto-install PIO: a fresh install pulls ~300-500 MB of ESP32-S3
-# toolchain on first build, and most JTS households don't have any
-# satellite devices. The /dial/ wizard surfaces a copy-paste install
-# command for households that do.
+# Rebuild an optional satellite firmware .bin from source if (a) it's
+# missing, or (b) any firmware input is newer than the staged .bin. This
+# is opt-in via JASPER_BUILD_OPTIONAL_FIRMWARE=1; the base speaker
+# install should stay focused on appliance runtime, not accessory
+# toolchains. Most JTS households won't have ESP32 satellites, and
+# first-run PlatformIO pulls ~300-500 MB of ESP32-S3 toolchain.
 #
 # PIO can live in any of three places (mirrors build.sh's resolution
 # order): on PATH, at /opt/jasper/.venv/bin/pio (the wizard's install
@@ -672,22 +671,36 @@ tune_wifi_for_airplay() {
 # duplicate copy. Otherwise we run as whoever invoked install.sh.
 #
 # Soft-fails: a failed build prints a warning and lets install.sh
-# continue — the wizard surfaces the stale-bin state to the user.
+# continue. The accessory wizards surface missing/stale bins to the
+# user at the moment they choose to onboard accessory hardware.
+_newer_firmware_input() {
+    local fw_root="$1"
+    local bin_path="$2"
+    local -a inputs=()
+    local input
+    for input in "${fw_root}/src" "${fw_root}/include" \
+                 "${fw_root}/platformio.ini" "${fw_root}/build.sh"; do
+        [[ -e "$input" ]] && inputs+=("$input")
+    done
+    [[ ${#inputs[@]} -gt 0 ]] || return 0
+
+    find "${inputs[@]}" -type f -newer "${bin_path}" -print -quit 2>/dev/null || true
+}
+
 _build_firmware_if_stale() {
     local fw_dir="$1"
     local bin_name="$2"
     local fw_root="${INSTALL_DIR}/firmware/${fw_dir}"
     local bin_path="${fw_root}/${bin_name}"
-    local src_dir="${fw_root}/src"
     local build_script="${fw_root}/build.sh"
 
     [[ -f "$build_script" ]] || return 0
-    [[ -d "$src_dir" ]] || return 0
+    [[ -d "${fw_root}/src" ]] || return 0
 
     local need_build=0
     if [[ ! -f "$bin_path" ]]; then
         need_build=1
-    elif [[ -n "$(find "$src_dir" -type f -newer "$bin_path" 2>/dev/null | head -1)" ]]; then
+    elif [[ -n "$(_newer_firmware_input "$fw_root" "$bin_path")" ]]; then
         need_build=1
     fi
     [[ $need_build -eq 1 ]] || return 0
@@ -706,24 +719,30 @@ _build_firmware_if_stale() {
         echo "    skip flashing for ${fw_dir} until PIO is available."
         echo "    To enable, run once on the Pi:"
         echo "      sudo /opt/jasper/.venv/bin/pip install platformio"
-        echo "    Then re-run deploy/install.sh."
+        echo "    Then run:"
+        echo "      JASPER_BUILD_OPTIONAL_FIRMWARE=1 sudo -E bash deploy/install.sh"
         return 0
     fi
 
     # Pick the build user. Prefer pi when pi has any PIO state, so a
     # populated toolchain cache gets reused on each rebuild.
-    local build_user build_cmd
+    local build_user
+    local -a build_cmd
     if [[ -d "/home/pi/.platformio" ]]; then
         build_user="pi"
-        build_cmd="sudo -u pi -H bash ${build_script}"
+        build_cmd=(sudo -u pi -H bash "$build_script")
     else
         build_user="$(id -un)"
-        build_cmd="bash ${build_script}"
+        build_cmd=(bash "$build_script")
     fi
 
     echo "==> ${fw_dir} firmware: building as ${build_user} (~30 s incremental, ~5 min first run)"
-    if eval "$build_cmd"; then
-        echo "    Staged ${bin_path}"
+    if "${build_cmd[@]}"; then
+        if [[ -f "$bin_path" ]] && [[ -z "$(_newer_firmware_input "$fw_root" "$bin_path")" ]]; then
+            echo "    Staged ${bin_path}"
+        else
+            echo "==> ${fw_dir} firmware: build completed, but ${bin_path} is still missing or stale"
+        fi
     else
         echo "==> ${fw_dir} firmware: build FAILED — wizard will skip flash until next deploy"
     fi
@@ -809,16 +828,19 @@ EOF
     # staged .bin on every deploy. Verified failure mode: the /dial/
     # wizard's "Force flash" silently skipped flashing after re-deploy
     # because jasper-dial-onboard saw no bin and fell through to its
-    # creds-only path. Instead we (a) leave any locally-staged .bin in
-    # place, and (b) rebuild from source via _build_firmware_if_stale
-    # when the source is newer (PIO required; soft-fails without).
+    # creds-only path. Instead we leave any locally-staged .bin in
+    # place. Rebuilds are explicit accessory work: set
+    # JASPER_BUILD_OPTIONAL_FIRMWARE=1 when intentionally refreshing
+    # staged ESP32 firmware from source.
     if [[ -d "${REPO_DIR}/firmware" ]]; then
         rsync -a \
             --exclude='.pio' --exclude='.pioenvs' --exclude='.piolibdeps' \
             "${REPO_DIR}/firmware" "${INSTALL_DIR}/"
 
-        _build_firmware_if_stale "dial" "jasper-dial.bin"
-        _build_firmware_if_stale "satellite-amoled" "jasper-satellite-amoled.bin"
+        if [[ "${JASPER_BUILD_OPTIONAL_FIRMWARE:-0}" == "1" ]]; then
+            _build_firmware_if_stale "dial" "jasper-dial.bin"
+            _build_firmware_if_stale "satellite-amoled" "jasper-satellite-amoled.bin"
+        fi
     fi
 
     if [[ ! -d "${INSTALL_DIR}/.venv" ]]; then

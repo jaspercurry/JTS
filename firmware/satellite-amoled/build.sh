@@ -26,11 +26,14 @@ SAT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ENV_NAME="waveshare-amoled-1p8"
 DEST="/opt/jasper/firmware/satellite-amoled/jasper-satellite-amoled.bin"
 
-# Resolve `pio` — prefer the system one, fall back to the JTS venv.
+# Resolve `pio` — prefer PATH, then the JTS venv, then PlatformIO's
+# own installer-script location on the Pi.
 if command -v pio >/dev/null 2>&1; then
     PIO=pio
 elif [[ -x /opt/jasper/.venv/bin/pio ]]; then
     PIO=/opt/jasper/.venv/bin/pio
+elif [[ -x /home/pi/.platformio/penv/bin/pio ]]; then
+    PIO=/home/pi/.platformio/penv/bin/pio
 else
     echo "PlatformIO not found. Install with:" >&2
     echo "    /opt/jasper/.venv/bin/pip install platformio" >&2

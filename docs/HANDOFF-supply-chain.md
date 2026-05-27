@@ -77,6 +77,11 @@ The two PlatformIO firmware projects now pin their shared git library
 dependency by commit and use exact top-level registry versions rather
 than semver ranges. The pioarduino platform archive has a recorded hash
 in the manifest, but PlatformIO itself does not consume that hash yet.
+Normal speaker installs copy the optional firmware source tree but do
+not run PlatformIO unless the operator explicitly sets
+`JASPER_BUILD_OPTIONAL_FIRMWARE=1`; maintainers use
+`scripts/check-firmware-builds.sh` when touching firmware or
+PlatformIO pins.
 
 The Rust fan-in daemon commits `rust/jasper-fanin/Cargo.lock`.
 `install.sh` builds that binary crate from `rust/jasper-fanin` with

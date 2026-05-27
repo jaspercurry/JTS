@@ -716,8 +716,8 @@ To remove the CA from an iPhone (e.g., decommissioning a speaker):
 If you have the CrowPanel ESP32-S3 dial:
 
 ```sh
-# One-time, on any machine with PlatformIO (or the Pi venv):
-bash firmware/dial/build.sh
+# One-time, explicit accessory firmware build (not part of base install):
+bash /opt/jasper/firmware/dial/build.sh
 
 # Plug the dial into a Pi USB-C port, then on the Pi:
 sudo /opt/jasper/.venv/bin/jasper-dial-onboard
@@ -727,6 +727,11 @@ sudo /opt/jasper/.venv/bin/jasper-dial-onboard
 # Unplug from Pi, connect to USB power. Dial reconnects to WiFi
 # from NVS flash on every subsequent boot.
 ```
+
+The web wizard at `http://jts.local/dial/` shows whether
+`/opt/jasper/firmware/dial/jasper-dial.bin` is missing, current, or
+stale relative to the staged source and prints the same build command
+when a dial owner needs it.
 
 The dial's WS2812 LED 0 is a status indicator: magenta=boot,
 yellow=connecting, dim green=online, red blink=HTTP error, solid

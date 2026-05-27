@@ -19,12 +19,13 @@ def test_read_firmware_status_present(tmp_path):
     # Set a known mtime so the formatted output is predictable.
     os.utime(bin_path, (1716470400, 1716470400))  # 2024-05-23 12:00 UTC
 
-    status = _read_firmware_status(str(bin_path))
+    status = _read_firmware_status(str(bin_path), source_root=str(tmp_path / "missing-src"))
     assert status["present"] is True
     assert status["path"] == str(bin_path)
     assert status["size_bytes"] == 2048
     assert "2024-05-23" in status["mtime_iso"]
     assert status["mtime_iso"].endswith("UTC")
+    assert status["source_newer"] is False
 
 
 def test_read_firmware_status_missing(tmp_path):
@@ -33,10 +34,31 @@ def test_read_firmware_status_missing(tmp_path):
     from jasper.web.dial_setup import _read_firmware_status
 
     bin_path = tmp_path / "does-not-exist.bin"
-    status = _read_firmware_status(str(bin_path))
+    status = _read_firmware_status(str(bin_path), source_root=str(tmp_path / "missing-src"))
     assert status["present"] is False
     assert status["size_bytes"] is None
     assert status["mtime_iso"] is None
+    assert status["source_newer"] is False
+
+
+def test_read_firmware_status_marks_source_newer(tmp_path):
+    """If source files are newer than the staged bin, /dial/ should warn
+    that Force Flash would use stale firmware until rebuilt."""
+    from jasper.web.dial_setup import _read_firmware_status
+
+    bin_path = tmp_path / "jasper-dial.bin"
+    bin_path.write_bytes(b"\x00" * 2048)
+    src_dir = tmp_path / "srcroot" / "src"
+    src_dir.mkdir(parents=True)
+    source_file = src_dir / "main.cpp"
+    source_file.write_text("// newer source\n")
+    os.utime(bin_path, (1716470400, 1716470400))
+    os.utime(source_file, (1716556800, 1716556800))
+
+    status = _read_firmware_status(str(bin_path), source_root=str(tmp_path / "srcroot"))
+    assert status["present"] is True
+    assert status["source_newer"] is True
+    assert "2024-05-24" in status["source_mtime_iso"]
 
 
 def test_setup_html_present_renders_ready_banner():
@@ -62,6 +84,29 @@ def test_setup_html_present_renders_ready_banner():
     assert "pip install platformio" not in html_str
 
 
+def test_setup_html_stale_renders_rebuild_warning():
+    """When source is newer than the staged bin, the wizard should not
+    imply Force Flash is current."""
+    from jasper.web.dial_setup import _setup_html
+
+    firmware = {
+        "present": True,
+        "path": "/opt/jasper/firmware/dial/jasper-dial.bin",
+        "size_bytes": 2_056_607,
+        "mtime_iso": "2026-05-23 15:45 UTC",
+        "source_newer": True,
+        "source_mtime_iso": "2026-05-27 16:30 UTC",
+    }
+    html_bytes = _setup_html(ssid="HomeWiFi", firmware=firmware)
+    html_str = html_bytes.decode("utf-8")
+
+    assert "fw-banner warn" in html_str
+    assert "Firmware staged, but source is newer" in html_str
+    assert "Force Flash will use" in html_str
+    assert "bash /opt/jasper/firmware/dial/build.sh" in html_str
+    assert "Firmware ready to flash" not in html_str
+
+
 def test_setup_html_missing_renders_warning_with_install_command():
     """When the .bin is missing, the wizard surfaces a copy-paste
     install command. This closes the silent-skip-flash failure mode."""
@@ -78,6 +123,7 @@ def test_setup_html_missing_renders_warning_with_install_command():
 
     assert "fw-banner warn" in html_str
     assert "No firmware staged" in html_str
+    assert "skips optional accessory firmware builds" in html_str
     # `sudo` is required — pip can't write to the root-owned venv otherwise.
     assert "sudo /opt/jasper/.venv/bin/pip install platformio" in html_str
     assert "firmware/dial/build.sh" in html_str
