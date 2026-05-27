@@ -436,26 +436,26 @@ sessions on different days):**
 
 **Bridge env for USB/reference corpus sessions:**
 
-Preferred path: check the USB/reference and/or USB DTLN boxes in the
-recorder. If the bridge outputs are disabled, accept the recorder's
-enable-and-restart prompt. The prompt writes
+Preferred path: choose the optional corpus legs first, then use the
+recorder's **Enter corpus test mode & begin session** button. That
+single transition stops `jasper-voice`, writes the selected
+recorder-owned bridge-output overrides to
 `/var/lib/jasper/wake_corpus_bridge.env`, which
 `jasper-aec-bridge.service` sources after `/etc/jasper/jasper.env`.
 If the bridge cannot restart with the requested optional outputs
 (for example, the USB mic is missing), the recorder rolls that env
-file back and restarts the bridge with the prior config.
+file back and restarts the bridge with the prior config. The selected
+checkboxes are the desired test-mode state: stale optional outputs from
+an earlier session are removed unless they are selected again.
 
-When testing is done, use the wake-corpus page's **Return to
-production mode** button. It removes recorder-owned corpus output
-overrides from `/var/lib/jasper/wake_corpus_bridge.env` and restarts
-`jasper-aec-bridge`; the selected USB mic device is preserved so the
-next test session can turn the legs back on without re-discovery.
-Starting `jasper-voice` from the same page also offers to do this
-cleanup first when corpus outputs are still active. This is
-intentionally a recorder-page lifecycle, not a `jasper-doctor` warning:
-corpus outputs are on while the operator is testing, off when they are
-not. DTLN cleanup falls back to the reconciler's production wake-leg
-intent instead of forcing the production DTLN leg off.
+When testing is done, use the wake-corpus page's **Exit corpus test
+mode** button. It removes recorder-owned corpus output overrides from
+`/var/lib/jasper/wake_corpus_bridge.env`, restarts
+`jasper-aec-bridge`, and starts `jasper-voice`. This is intentionally a
+recorder-page lifecycle, not a `jasper-doctor` warning: corpus outputs
+are on while the operator is testing, off when they are not. DTLN
+cleanup falls back to the reconciler's production wake-leg intent
+instead of forcing the production DTLN leg off.
 
 Equivalent manual env:
 
@@ -1093,8 +1093,9 @@ Recorder UX status:
   speaker Reference leg last
 - ✅ USB raw operator note + ALSA hardware Auto Gain Control warning
   before recording cheap-mic sessions
-- ✅ jasper-voice start/stop wired (refuses start while recording —
-  would EADDRINUSE the UDP ports)
+- ✅ Corpus test-mode transition wired: selected optional legs are
+  applied before session creation; exiting disables recorder-owned
+  bridge outputs and restarts `jasper-voice`
 
 Recording-day audit tooling:
 - ✅ `bash scripts/audit-wake-corpus.sh data/enrollment_positives
@@ -1116,7 +1117,7 @@ Recording-day audit tooling:
 First two recording sessions scheduled for Jasper's next studio
 morning. Cleanup of pre-raw0 corpus is one-click per old session
 via the new Sessions card. Recorder-managed corpus bridge outputs can
-now be returned to production mode from the same page after testing,
+now be enabled/disabled through the page's corpus test-mode transition,
 and per-clip metadata records capture-health deltas from the bridge
 where available.
 
@@ -1126,6 +1127,12 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v11):** Corpus test-mode UX:
+  - Replaced separate voice/start-stop and return-to-production controls
+    with a single recorder-page mode transition. The operator selects
+    optional legs first, enters corpus test mode to stop `jasper-voice`
+    and apply those bridge outputs, then exits test mode to disable
+    recorder-owned outputs and restart `jasper-voice`.
 - **2026-05-27 (v10):** Capture-health + corpus bridge lifecycle:
   - `jasper-aec-bridge` emits monotonic per-leg packet/drop counters
     to `/run/jasper/aec_bridge_stats.json`; the recorder diffs those
@@ -1133,11 +1140,10 @@ where available.
     metadata.
   - Wake-corpus audit surfaces compromised capture health as a failure
     and warning/unknown capture health as review warnings.
-  - Wake-corpus page now has a recorder-owned **Return to production
-    mode** flow that disables corpus bridge outputs and restarts the
-    bridge by removing recorder-owned overrides. Starting `jasper-voice`
-    from the page offers to do the same cleanup first when experiment
-    outputs are still active.
+  - Wake-corpus page now has a recorder-owned corpus test-mode flow:
+    optional corpus legs are selected before entry, entry stops
+    `jasper-voice` and applies the desired bridge outputs, and exit
+    removes recorder-owned overrides before starting `jasper-voice`.
 - **2026-05-27 (v9):** Wake-corpus recording-day polish:
   - Playback labels now say WebRTC AEC3 for the WebRTC AEC paths and
     keep the speaker Reference leg last in the clip selector.
@@ -1277,4 +1283,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v10 — capture-health + corpus bridge lifecycle verified)
+Last verified: 2026-05-27 (v11 — corpus test-mode UX verified)
