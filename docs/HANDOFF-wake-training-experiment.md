@@ -446,14 +446,16 @@ If the bridge cannot restart with the requested optional outputs
 file back and restarts the bridge with the prior config.
 
 When testing is done, use the wake-corpus page's **Return to
-production mode** button. It writes explicit `0` values for the
-recorder-owned corpus output flags and restarts `jasper-aec-bridge`;
-the selected USB mic device is preserved so the next test session can
-turn the legs back on without re-discovery. Starting `jasper-voice`
-from the same page also offers to do this cleanup first when corpus
-outputs are still active. This is intentionally a recorder-page
-lifecycle, not a `jasper-doctor` warning: corpus outputs are on while
-the operator is testing, off when they are not.
+production mode** button. It removes recorder-owned corpus output
+overrides from `/var/lib/jasper/wake_corpus_bridge.env` and restarts
+`jasper-aec-bridge`; the selected USB mic device is preserved so the
+next test session can turn the legs back on without re-discovery.
+Starting `jasper-voice` from the same page also offers to do this
+cleanup first when corpus outputs are still active. This is
+intentionally a recorder-page lifecycle, not a `jasper-doctor` warning:
+corpus outputs are on while the operator is testing, off when they are
+not. DTLN cleanup falls back to the reconciler's production wake-leg
+intent instead of forcing the production DTLN leg off.
 
 Equivalent manual env:
 
@@ -1133,8 +1135,9 @@ where available.
     and warning/unknown capture health as review warnings.
   - Wake-corpus page now has a recorder-owned **Return to production
     mode** flow that disables corpus bridge outputs and restarts the
-    bridge. Starting `jasper-voice` from the page offers to do the same
-    cleanup first when experiment outputs are still active.
+    bridge by removing recorder-owned overrides. Starting `jasper-voice`
+    from the page offers to do the same cleanup first when experiment
+    outputs are still active.
 - **2026-05-27 (v9):** Wake-corpus recording-day polish:
   - Playback labels now say WebRTC AEC3 for the WebRTC AEC paths and
     keep the speaker Reference leg last in the clip selector.

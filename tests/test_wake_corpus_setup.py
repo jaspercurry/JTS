@@ -1579,7 +1579,7 @@ def test_enable_bridge_outputs_rolls_back_when_restart_fails(
     assert attempts == 2  # failed new config, then restarted rollback config
 
 
-def test_disable_bridge_outputs_writes_zeroes_and_preserves_device(
+def test_disable_bridge_outputs_removes_overrides_and_preserves_device(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     _, bridge_path = _use_tmp_bridge_env(
@@ -1606,12 +1606,36 @@ def test_disable_bridge_outputs_writes_zeroes_and_preserves_device(
         line.split("=", 1)[0]: line.split("=", 1)[1]
         for line in bridge_path.read_text().splitlines()
     }
-    assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
-    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "0"
-    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "0"
-    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "0"
+    assert "JASPER_AEC_DTLN_ENABLED" not in values
+    assert "JASPER_AEC_CORPUS_REF_ENABLED" not in values
+    assert "JASPER_AEC_CORPUS_USB_ENABLED" not in values
+    assert "JASPER_AEC_CORPUS_USB_DTLN_ENABLED" not in values
     assert values["JASPER_AEC_USB_MIC_DEVICE"] == "Studio Mic"
     assert restarts == ["restart"]
+
+
+def test_disable_bridge_outputs_restores_system_dtln_intent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        system_env="JASPER_AEC_DTLN_ENABLED=1\n",
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=0\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+        ),
+    )
+    monkeypatch.setattr(wake_corpus_setup, "restart_aec_bridge", lambda: None)
+
+    before = wake_corpus_setup.bridge_output_status()
+    wake_corpus_setup.disable_bridge_corpus_outputs()
+    after = wake_corpus_setup.bridge_output_status()
+
+    assert before["active"] is True
+    assert before["dtln"] is False
+    assert after["active"] is False
+    assert after["dtln"] is True
 
 
 def test_build_capture_health_marks_bridge_drop_compromised() -> None:
@@ -2278,6 +2302,12 @@ def test_api_status_includes_bridge_output_status(
                 "usb": False,
                 "usb_dtln": False,
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
+                "recorder_outputs": {
+                    "dtln": True,
+                    "ref": True,
+                    "usb": False,
+                    "usb_dtln": False,
+                },
                 "active": True,
             }
         finally:

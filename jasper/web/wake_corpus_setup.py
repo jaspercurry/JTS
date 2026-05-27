@@ -220,15 +220,26 @@ def bridge_output_status() -> dict[str, Any]:
     """Current bridge corpus-output flags, as the UI should present
     them before beginning a session.
     """
-    env = _read_bridge_env()
+    system_env = read_env_file(str(SYSTEM_ENV_PATH))
+    corpus_env = read_env_file(str(BRIDGE_CORPUS_ENV_PATH))
+    env: dict[str, str] = {}
+    env.update(system_env)
+    env.update(corpus_env)
+    recorder_outputs = {
+        "dtln": _env_truthy(corpus_env.get("JASPER_AEC_DTLN_ENABLED")),
+        "ref": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
+        "usb": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
+        "usb_dtln": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
+    }
     status = {
         "dtln": _env_truthy(env.get("JASPER_AEC_DTLN_ENABLED")),
         "ref": _env_truthy(env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
+        "recorder_outputs": recorder_outputs,
     }
-    status["active"] = any(bool(status[key]) for key in ("dtln", "ref", "usb", "usb_dtln"))
+    status["active"] = any(key in corpus_env for key in BRIDGE_CORPUS_OUTPUT_VARS)
     return status
 
 
@@ -574,18 +585,23 @@ def enable_bridge_outputs_for_session(
 def disable_bridge_corpus_outputs() -> None:
     """Return the bridge to production-light corpus output mode.
 
-    We write explicit `0` values into the recorder-owned env file so
-    the web UI can override stale experiment flags from earlier corpus
-    sessions without touching unrelated operator settings such as the
-    selected USB mic device.
+    We remove only recorder-owned output overrides so the bridge falls
+    back to the reconciler's production intent. This matters for DTLN:
+    `JASPER_AEC_DTLN_ENABLED` is also the underlying production wake-leg
+    flag written by `jasper-aec-reconcile`, so cleanup must not force it
+    off when the /system Wake detection card intentionally enabled it.
+    Unrelated settings such as the selected USB mic device are preserved.
     """
     env_path = str(BRIDGE_CORPUS_ENV_PATH)
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
     old_values = read_env_file(env_path)
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
-        values[key] = "0"
-    write_env_file(env_path, values, mode=0o644)
+        values.pop(key, None)
+    if values:
+        write_env_file(env_path, values, mode=0o644)
+    else:
+        delete_env_file(env_path)
     try:
         restart_aec_bridge()
     except (
@@ -2590,13 +2606,18 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         const bridgeEl = $('bridge-output-status');
         const bridgeBtn = $('bridge-output-disable');
         const bridgeOutputs = s.bridge_outputs || {};
+        const recorderOutputs = bridgeOutputs.recorder_outputs || {};
         const activeBridgeLabels = [];
-        if (bridgeOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
-        if (bridgeOutputs.ref) activeBridgeLabels.push('ref');
-        if (bridgeOutputs.usb) activeBridgeLabels.push('USB');
-        if (bridgeOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
+        if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
+        if (recorderOutputs.ref) activeBridgeLabels.push('ref');
+        if (recorderOutputs.usb) activeBridgeLabels.push('USB');
+        if (recorderOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
         if (activeBridgeLabels.length) {
           bridgeEl.textContent = `ON: ${activeBridgeLabels.join(', ')}`;
+          bridgeEl.className = 'pill red';
+          bridgeBtn.disabled = s.is_recording;
+        } else if (bridgeOutputs.active) {
+          bridgeEl.textContent = 'cleanup pending';
           bridgeEl.className = 'pill red';
           bridgeBtn.disabled = s.is_recording;
         } else {
