@@ -47,7 +47,8 @@ per-band spatial summaries, high-variance and deep-null feature flags,
 per-filter spatial-confidence annotations, richer
 `position_analysis.json` artifacts, and a browser-audio metadata
 preflight report that feeds the same confidence model. The remaining
-Stage 3 work is to add acoustic browser smoke-test evidence,
+Stage 3 work is to make those facts easier to inspect in the
+correction UI, then add acoustic browser smoke-test evidence,
 repeatability checks, and SNR estimates.
 
 ## 2026-05-27 Sequencing Update
@@ -76,9 +77,11 @@ After the intake, the recommended order is:
    mismatch, and sample-rate mismatch. The next slice is acoustic
    proof: clipping, SNR, tone/sweep loopback sanity, and real mobile
    browser verification.
-3. **Room-correction visualization.** Show per-position spread,
-   average, target, proposed filters, rejected nulls, confidence, and
-   recommended next action.
+3. **Room-correction visualization.** Active as of 2026-05-27. Show
+   per-position spread, average, target, proposed filters, rejected
+   nulls, confidence, and recommended next action. Borrow the useful
+   parts of REW / HouseCurve / Dirac style displays without turning the
+   socket-activated JTS web UI into a heavy pro workstation.
 4. **Sound curve / preference polish.** Keep `/sound/` independent from
    `/correction/`, with editable preset curves, level-matched A/B, and
    future proposed-vs-current compare.

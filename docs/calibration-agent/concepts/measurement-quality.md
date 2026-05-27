@@ -44,11 +44,17 @@ designing filters from ambiguous data.
   seat-variance review.
 - Annotate designed filters with local spatial confidence when
   multiple listening positions are available.
+- Display the most important measurement-confidence facts in
+  `/correction/`: response curves, target/predicted traces,
+  confidence findings, strategy gates, and browser audio-path state.
 
 ## Quality Flags To Add
 
 - Research-tuned thresholds for per-band and per-filter confidence,
   rather than today's intentionally simple spread heuristics.
+- Richer visualization controls: display smoothing, per-position
+  overlays, spatial spread, accepted/rejected features, and filter
+  response overlays without changing the saved measurement data.
 - Sweep SNR estimate against pre-sweep ambient noise.
 - Acoustic browser smoke-test proof: known tone/sweep loopback,
   capture-level sanity, and real iOS/Android verification.
