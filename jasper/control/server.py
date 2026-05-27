@@ -59,12 +59,10 @@ SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
-AUDIO_QUALITY_RESTART_UNITS = [
+AUDIO_QUALITY_RENDERER_UNITS = [
     "shairport-sync.service",
     "librespot.service",
     "bluealsa-aplay.service",
-]
-AUDIO_QUALITY_TRY_RESTART_UNITS = [
     "jasper-usbsink.service",
 ]
 
@@ -2060,14 +2058,13 @@ def _make_handler(
                     )
                     return
                 try:
-                    subprocess.Popen(
-                        ["systemctl", "restart", *AUDIO_QUALITY_RESTART_UNITS],
-                    )
+                    # Refresh active renderers without resurrecting sources the
+                    # household explicitly disabled in /sources/.
                     subprocess.Popen(
                         [
                             "systemctl",
                             "try-restart",
-                            *AUDIO_QUALITY_TRY_RESTART_UNITS,
+                            *AUDIO_QUALITY_RENDERER_UNITS,
                         ],
                     )
                 except (OSError, subprocess.SubprocessError) as e:
@@ -2083,8 +2080,7 @@ def _make_handler(
                 self._send_json({
                     "ok": True,
                     "action": "audio-quality",
-                    "units": AUDIO_QUALITY_RESTART_UNITS,
-                    "try_restart_units": AUDIO_QUALITY_TRY_RESTART_UNITS,
+                    "try_restart_units": AUDIO_QUALITY_RENDERER_UNITS,
                     "audio_quality": state,
                 })
                 return

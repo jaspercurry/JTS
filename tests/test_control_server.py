@@ -281,7 +281,7 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
     assert calls == []
 
 
-def test_system_audio_quality_applies_and_restarts_renderers(
+def test_system_audio_quality_applies_and_try_restarts_renderers(
     monkeypatch,
     server_with_coordinator,
 ):
@@ -318,12 +318,12 @@ def test_system_audio_quality_applies_and_restarts_renderers(
     assert body["audio_quality"]["converter"] == "samplerate_best"
     assert popens == [
         [
-            "systemctl", "restart",
+            "systemctl", "try-restart",
             "shairport-sync.service",
             "librespot.service",
             "bluealsa-aplay.service",
+            "jasper-usbsink.service",
         ],
-        ["systemctl", "try-restart", "jasper-usbsink.service"],
     ]
 
 

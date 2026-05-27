@@ -84,14 +84,15 @@ def _read_env_value(path: Path) -> str | None:
         text = path.read_text()
     except FileNotFoundError:
         return None
+    found: str | None = None
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#") or "=" not in stripped:
             continue
         key, value = stripped.split("=", 1)
         if key.strip() == STATE_ENV_KEY:
-            return value.strip()
-    return None
+            found = value.strip()
+    return found
 
 
 def read_requested_converter(

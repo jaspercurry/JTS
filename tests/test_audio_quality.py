@@ -16,6 +16,15 @@ def test_default_requested_converter_is_medium(tmp_path):
     )
 
 
+def test_requested_converter_uses_last_env_assignment(tmp_path):
+    path = tmp_path / "audio_quality.env"
+    path.write_text(
+        "JASPER_ALSA_RATE_CONVERTER=samplerate_best\n"
+        "JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n",
+    )
+    assert audio_quality.read_requested_converter(path) == "samplerate_medium"
+
+
 def test_write_requested_converter_accepts_human_alias(tmp_path):
     path = tmp_path / "audio_quality.env"
     assert audio_quality.write_requested_converter("best", path) == (

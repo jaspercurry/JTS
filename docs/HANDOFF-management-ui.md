@@ -127,16 +127,20 @@ Then 12 navigation cards stacked equally:
 | 12 | System › | `/system/` | Live metrics, cloud, actions, diagnostics |
 | 13 | (info panel) | — | CA cert install note |
 
-### 3.2 `/system/` dashboard — ~10 sub-cards
+### 3.2 `/system/` dashboard — ~12 sub-cards
 
 - Status line (sampler health)
-- 5 metric tiles: Memory, Load, Temp, Fan (if present), Disk — each with sparkline
+- 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
+  sparklines where history is useful
 - Software (sha · branch · install date · uptime · voice provider)
 - Cloud activity (sessions today, 24h spend, MTD spend, per-provider table)
-- AEC3 (toggle + body explainer)
+- Home Assistant connection status
+- AirPlay health (status, recent drop/xrun summary, fan-in/Camilla state)
+- Audio conversion (Medium/Best ALSA rate-converter preference)
 - Network (RX / TX bytes since boot, throttle bits)
 - Actions (Restart voice / Restart audio / Reboot speaker / Power off)
 - Diagnostics (collapsible — runs `jasper-doctor`)
+- Per-service usage (cgroup CPU + memory for JTS/audio/system support units)
 
 ### 3.3 Wizards under `jasper/web/`
 
@@ -214,7 +218,7 @@ System                                      health + admin
   Software        sha1234 · 3 days ago
   Diagnostics     Run jasper-doctor →
   Restart         Voice · Audio · Reboot
-  Advanced        AEC3 toggle (collapsed)
+  Advanced        Audio conversion · service usage
 ```
 
 ### 4.2 Why this shape
@@ -900,5 +904,5 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-27 (proposal status/footer check; implementation
-inventory remains dated 2026-05-22)
+Last verified: 2026-05-27 (proposal status/footer check; `/system/`
+implementation inventory refreshed against current dashboard cards)
