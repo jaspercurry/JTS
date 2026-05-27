@@ -916,11 +916,71 @@ EOF
         fi
     fi
 
-    # openWakeWord stock models (hey_jarvis + required feature models)
-    # don't auto-download on first model load. Pull them now so the daemon
-    # starts cleanly. Idempotent — re-running is fine.
-    "${INSTALL_DIR}/.venv/bin/python" -c \
-        "import openwakeword.utils as u; u.download_models()"
+    # openWakeWord package-resource ONNX files. JTS uses ONNX only
+    # (tflite-runtime has no Python 3.13 wheel), so we replace
+    # openwakeword.utils.download_models() with an explicit hash-
+    # checked manifest in jasper/wake_models.py.
+    local openwakeword_models_dir
+    openwakeword_models_dir="$("${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import importlib.util
+import pathlib
+
+spec = importlib.util.find_spec("openwakeword")
+if spec is None or spec.origin is None:
+    raise SystemExit("openwakeword package not installed")
+print(pathlib.Path(spec.origin).resolve().parent / "resources" / "models")
+PY
+)"
+    install -d -m 0755 -o root -g root "${openwakeword_models_dir}"
+    OPENWAKEWORD_MODELS_DIR="${openwakeword_models_dir}" \
+    "${INSTALL_DIR}/.venv/bin/python" - <<'PY'
+import hashlib
+import os
+import sys
+import urllib.request
+
+from jasper.wake_models import openwakeword_assets
+
+def sha256_file(p: str) -> str:
+    h = hashlib.sha256()
+    with open(p, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 16), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+models_dir = os.environ["OPENWAKEWORD_MODELS_DIR"]
+failures = 0
+for asset in openwakeword_assets():
+    dest = os.path.join(models_dir, asset.filename)
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        if sha256_file(dest) == asset.download_sha256:
+            print(f"  openWakeWord asset present: {asset.filename}")
+            continue
+        print(f"  openWakeWord asset hash mismatch, re-downloading: {asset.filename}")
+        os.unlink(dest)
+    print(f"  downloading openWakeWord asset: {asset.filename}")
+    print(f"    from: {asset.download_url}")
+    print(f"    to:   {dest}")
+    tmp = dest + ".tmp"
+    try:
+        urllib.request.urlretrieve(asset.download_url, tmp)
+        got = sha256_file(tmp)
+        if got != asset.download_sha256:
+            print(f"  hash mismatch after download: got {got}, "
+                  f"expected {asset.download_sha256}", file=sys.stderr)
+            os.unlink(tmp)
+            failures += 1
+            continue
+        os.replace(tmp, dest)
+        os.chmod(dest, 0o644)
+    except Exception as e:  # noqa: BLE001
+        print(f"  failed: {e}", file=sys.stderr)
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        failures += 1
+
+sys.exit(1 if failures else 0)
+PY
 
     # Curated non-bundled wake-word models. The registry lives in
     # jasper/wake_models.py (single source of truth — same data drives
@@ -988,7 +1048,7 @@ sys.exit(1 if failures else 0)
 PY
     then
         echo "  warning: one or more wake-word model downloads failed"
-        echo "  the daemon will fall back to the bundled hey_jarvis model"
+        echo "  affected registry rows may remain unavailable"
         echo "  re-run install.sh once you're online to retry the downloads"
     fi
 

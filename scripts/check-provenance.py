@@ -196,6 +196,7 @@ def registry_urls() -> set[str]:
     sys.path.insert(0, str(ROOT))
     from jasper.aec_engines.dtln_models import REGISTRY as DTLN_REGISTRY
     from jasper.wake_models import REGISTRY as WAKE_REGISTRY
+    from jasper.wake_models import OPENWAKEWORD_ASSETS
 
     urls: set[str] = set()
     for entry in WAKE_REGISTRY:
@@ -203,6 +204,8 @@ def registry_urls() -> set[str]:
             urls.add(entry.source_url)
         if entry.download_url:
             urls.add(entry.download_url)
+    for asset in OPENWAKEWORD_ASSETS:
+        urls.add(asset.download_url)
     for entry in DTLN_REGISTRY:
         urls.add(entry.stage1_url)
         urls.add(entry.stage2_url)
@@ -338,6 +341,7 @@ def _validate_model_registries(
     sys.path.insert(0, str(root))
     from jasper.aec_engines.dtln_models import REGISTRY as DTLN_REGISTRY
     from jasper.wake_models import REGISTRY as WAKE_REGISTRY
+    from jasper.wake_models import OPENWAKEWORD_ASSETS
 
     artifacts = iter_artifacts(data)
     for entry in WAKE_REGISTRY:
@@ -357,6 +361,22 @@ def _validate_model_registries(
                 entry.download_sha256,
                 f"jasper.wake_models {entry.key}",
             )
+
+    for asset in OPENWAKEWORD_ASSETS:
+        artifact = _find_artifact(artifacts, "download_url", asset.download_url)
+        if artifact is None:
+            errors.append(
+                f"openWakeWord asset {asset.filename}: "
+                f"{asset.download_url} missing artifact"
+            )
+            continue
+        _expect(
+            errors,
+            artifact,
+            "sha256",
+            asset.download_sha256,
+            f"jasper.wake_models OPENWAKEWORD_ASSETS {asset.filename}",
+        )
 
     for entry in DTLN_REGISTRY:
         for path, url, expected_sha in entry.files():

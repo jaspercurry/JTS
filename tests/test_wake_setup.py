@@ -48,9 +48,9 @@ def test_default_key_resolves():
 
 
 def test_at_least_one_bundled_entry():
-    """Bundled openWakeWord models are the always-available fallback.
-    Without one, an offline install (no internet at deploy time)
-    would have no working wake model — the daemon would crash."""
+    """Keep at least one stock openWakeWord row in the user-facing
+    registry. install.sh stages those package-resource ONNX files
+    explicitly via OPENWAKEWORD_ASSETS."""
     assert any(e.bundled for e in wake_models.REGISTRY)
 
 
@@ -77,13 +77,50 @@ def test_downloadable_entries_use_absolute_paths():
 
 def test_bundled_entries_use_bare_names():
     """openWakeWord resolves bare names like `hey_jarvis` against its
-    own packaged bundle. A path here would either crash on load or
-    point at a file that doesn't exist on the Pi."""
+    own package-resource bundle. install.sh owns those ONNX files via
+    OPENWAKEWORD_ASSETS, while the user-facing env var stays stable."""
     for entry in wake_models.REGISTRY:
         if entry.bundled:
             assert "/" not in entry.model
             assert not entry.model.endswith(".onnx")
             assert entry.download_url is None
+
+
+def test_openwakeword_assets_are_pinned():
+    """Stock openWakeWord assets are local model files too. They should
+    be explicit and hash-checked instead of fetched by the package
+    helper at install time."""
+    assets = list(wake_models.openwakeword_assets())
+    assert assets
+    filenames = [asset.filename for asset in assets]
+    assert len(filenames) == len(set(filenames))
+    assert "embedding_model.onnx" in filenames
+    assert "melspectrogram.onnx" in filenames
+    for asset in assets:
+        assert asset.download_url.startswith(wake_models.OPENWAKEWORD_RELEASE_BASE)
+        assert asset.filename.endswith(".onnx")
+        assert len(asset.download_sha256) == 64
+
+
+def test_openwakeword_assets_cover_stock_model_names():
+    """Operator-set stock names should continue to work even when they
+    are not surfaced in the curated picker."""
+    assets_by_key = {asset.key for asset in wake_models.openwakeword_assets()}
+    assert {
+        "alexa",
+        "hey_jarvis",
+        "hey_mycroft",
+        "hey_rhasspy",
+        "timer",
+        "weather",
+    }.issubset(assets_by_key)
+
+
+def test_bundled_registry_entries_have_package_assets():
+    assets_by_key = {asset.key for asset in wake_models.openwakeword_assets()}
+    for entry in wake_models.REGISTRY:
+        if entry.bundled:
+            assert entry.key in assets_by_key
 
 
 def test_lookup_by_key():
@@ -150,9 +187,9 @@ def test_active_model_falls_back_to_hey_jarvis(monkeypatch):
 
 
 def test_is_available_for_bundled():
-    """Bundled openWakeWord names report available even when the
-    underlying .onnx hasn't been auto-downloaded yet — the package
-    handles that lazily."""
+    """Bundled openWakeWord names report available without importing
+    openwakeword on every page render. install.sh is responsible for
+    staging those package-resource ONNX files."""
     entry = wake_models.by_key("hey_jarvis")
     assert entry is not None
     assert wake_setup._is_available(entry) is True

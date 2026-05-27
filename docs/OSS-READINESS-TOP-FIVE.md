@@ -85,8 +85,8 @@ started: important direct dependencies are pinned or bounded in
 `pyproject.toml`, `pycamilladsp` is pinned to a commit, and
 CONTRIBUTING recommends `uv sync` for local development. There is not
 yet a committed lock artifact that deploy or CI consume. Remaining
-work: openWakeWord helper model hashes, Python lock/hash install
-adoption, apt snapshots, and PlatformIO transitive/toolchain lock depth.
+work: Python lock/hash install adoption, apt snapshots, and PlatformIO
+transitive/toolchain lock depth.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
 firmware tools, `.deb` artifacts, and source repos. OSS users need to
@@ -112,11 +112,10 @@ The benefit is high repeatability and easier security review.
 
 **Recently completed.** `rust/jasper-fanin/Cargo.lock` is committed and
 checked by `scripts/check-provenance.py`, closing the Rust fan-in crate
-gap without changing Pi runtime behavior.
-
-**Next slice.** Replace the `openwakeword.utils.download_models()`
-helper path with explicit stock model entries whose downloaded bytes are
-hash-checked through JTS's provenance manifest.
+gap without changing Pi runtime behavior. openWakeWord stock ONNX
+package-resource assets are now explicit, hash-checked provenance
+artifacts instead of hidden downloads behind
+`openwakeword.utils.download_models()`.
 
 **Deferred deliberately.** Python lock adoption is still valuable, but
 it should wait until active `main` dependency churn calms down enough to

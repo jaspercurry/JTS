@@ -139,11 +139,14 @@ def _active_threshold(state: dict[str, str]) -> float:
 
 
 def _is_available(entry: wake_models.WakeModelEntry) -> bool:
-    """Bundled openWakeWord names are always considered available — the
-    package downloads them lazily on first use and install.sh primes
-    that cache. External files have to exist on disk to be loadable;
-    a missing file means a failed install-time download (rare, but
-    flagged in the UI so the household knows what's going on)."""
+    """Bundled openWakeWord names are install-owned package resources.
+
+    install.sh stages and hash-checks those ONNX files up front; checking
+    the package path here would require importing openwakeword on every
+    page render. External files have to exist on disk to be loadable; a
+    missing file means a failed install-time download (rare, but flagged
+    in the UI so the household knows what's going on).
+    """
     if entry.bundled:
         return True
     return os.path.exists(entry.model)

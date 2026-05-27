@@ -47,6 +47,10 @@ surfaces still have provenance entries:
 - CamillaGUI `4.1.0` Linux bundles for `aarch64`, `x86_64`, and
   `armv7l`.
 - Curated external wake model `jarvis_v2.onnx`.
+- openWakeWord ONNX package-resource assets from the upstream `v0.5.1`
+  release that JTS needs at runtime: `embedding_model.onnx`,
+  `melspectrogram.onnx`, and all six stock wake models (`alexa`,
+  `hey_jarvis`, `hey_mycroft`, `hey_rhasspy`, `timer`, `weather`).
 - DTLN-aec ONNX model stages listed in `jasper/aec_engines/dtln_models.py`.
 
 `deploy/install.sh` also verifies checked-out git source trees before
@@ -96,10 +100,6 @@ These are real and intentionally left for later slices:
   moving quickly; when resumed, choose one shared artifact (`uv.lock` or
   generated hash requirements), commit it, and make install/CI consume
   it deliberately.
-- **openWakeWord bundled model helper.** `openwakeword.utils.download_models()`
-  still downloads the package's stock models outside JTS's explicit
-  registry. Replacing that helper with an explicit hash-checked model
-  registry is the right follow-up.
 - **PlatformIO transitive/toolchain resolution.** Top-level firmware
   inputs are exact, but PlatformIO still consults its package registry
   for toolchains and metadata.
@@ -133,9 +133,10 @@ current project shape and would slow the Pi bring-up path. The value
 here is smaller and concrete: the artifacts JTS downloads directly are
 now visible, mostly immutable, and checked before use.
 
-The next low-risk supply-chain follow-up is openWakeWord stock model
-provenance: replace the package helper download path with explicit
-hash-checked model entries owned by JTS's manifest.
+The openWakeWord package-helper gap is closed without changing the
+operator-facing wake model strings. The `/wake/` picker can still save
+stock names like `hey_jarvis`, while install now stages the exact ONNX
+package-resource files those names resolve to and verifies their hashes.
 
 Python install determinism remains valuable, but it is intentionally not
 the next slice while `main` is changing quickly. When it comes back, it
