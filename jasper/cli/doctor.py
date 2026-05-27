@@ -2940,66 +2940,97 @@ def check_xvf_mixer_state() -> CheckResult:
     )
 
 
-def check_wifi_regdom() -> CheckResult:
-    """The Pi 5's brcmfmac firmware silently suppresses off-channel
-    WiFi scans when the chip's per-phy regulatory domain is unset
-    (`country 99: DFS-UNSET`). The user-visible symptom is that the
-    /wifi/ wizard's scan returns only the connected SSID even when
-    neighbors are clearly nearby — and kernel logs fill with
-    `brcmf_cfg80211_scan: Scanning suppressed: status (4)`.
+def _parse_iw_regdom(stdout: str) -> tuple[str | None, dict[str, str]]:
+    """Return the global country plus per-phy countries from `iw reg get`.
 
-    The standard documented fix is `cfg80211.ieee80211_regdom=US`
-    in /boot/firmware/cmdline.txt (written by Pi Imager and by
-    `raspi-config nonint do_wifi_country`). That sets cfg80211's
-    *global* regdom correctly, but on the Pi 5 brcmfmac firmware
-    the per-phy regdom doesn't always follow that hint. There is
-    no clean fix — the chip firmware is closed-source. See the
-    matching CLAUDE.md `Wi-Fi switching` section for trade-offs
-    of the known workarounds."""
+    `iw reg get` prints a global section followed by zero or more phy
+    sections. On Pi 5 brcmfmac, the phy section may report `country 99`
+    even when the global regulatory domain is correctly set; Linux uses
+    that alpha2 for driver-built regulatory domains whose specific ISO
+    country cannot be determined. The global country is the actionable
+    WLAN-country configuration for this doctor check.
+    """
+    global_country: str | None = None
+    phy_countries: dict[str, str] = {}
+    current_phy: str | None = None
+
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if line == "global":
+            current_phy = None
+            continue
+        if line.startswith("phy#"):
+            current_phy = line.removeprefix("phy#")
+            continue
+        if not line.startswith("country "):
+            continue
+
+        parts = line.split(None, 2)
+        if len(parts) < 2:
+            continue
+        country = parts[1].rstrip(":")
+        if current_phy is None:
+            if global_country is None:
+                global_country = country
+        elif current_phy not in phy_countries:
+            phy_countries[current_phy] = country
+
+    return global_country, phy_countries
+
+
+def _format_phy_regdom_detail(phy_countries: dict[str, str]) -> str:
+    if not phy_countries:
+        return "no per-phy regdom reported"
+    parts: list[str] = []
+    for phy, country in sorted(phy_countries.items()):
+        detail = f"phy{phy} country={country}"
+        if country == "99":
+            detail += " (driver custom/unlabeled; not actionable by itself)"
+        elif country == "00":
+            detail += " (world/unset; not actionable by itself)"
+        parts.append(detail)
+    return "; ".join(parts)
+
+
+def check_wifi_regdom() -> CheckResult:
+    """Verify the configured global WLAN regulatory country is known.
+
+    Raspberry Pi OS records the intended WiFi country in cfg80211's
+    global regulatory domain (normally via Pi Imager or
+    `raspi-config nonint do_wifi_country`). That value controls legal
+    channels, transmit power, and 5 GHz availability.
+
+    Do not treat Pi 5 brcmfmac's per-phy `country 99: DFS-UNSET` as a
+    product failure by itself. It is common for the Broadcom driver to
+    expose a custom/unlabeled per-radio domain while the global country
+    is valid. Actual scan suppression is detected by `/wifi/scan` from
+    scan failures and kernel `Scanning suppressed: status (4)` logs,
+    then repaired via `wifi_scan_repair`."""
     proc = _run(["iw", "reg", "get"], timeout=5)
     if proc.returncode != 0:
         return CheckResult(
             "WiFi reg domain", "warn",
-            "iw reg get failed; can't verify WiFi scanning is unblocked",
+            "iw reg get failed; can't verify WLAN country configuration",
         )
-    # `iw reg get` prints a global section followed by a per-phy section
-    # for each radio. We want the phy#0 country line; that's what
-    # brcmfmac actually uses to gate scans.
-    phy_country: str | None = None
-    in_phy = False
-    for raw in proc.stdout.splitlines():
-        line = raw.strip()
-        if line.startswith("phy#"):
-            in_phy = True
-            continue
-        if in_phy and line.startswith("country "):
-            # "country US: DFS-FCC" → grab the US
-            parts = line.split(None, 2)
-            if len(parts) >= 2:
-                phy_country = parts[1].rstrip(":")
-            break
-    if phy_country is None:
-        # No phy section parseable — maybe no WiFi adapter. Soft warn,
-        # not fail (Pi could legitimately be Ethernet-only).
+
+    global_country, phy_countries = _parse_iw_regdom(proc.stdout)
+    if global_country is None:
         return CheckResult(
             "WiFi reg domain", "warn",
-            "could not parse phy regdom from `iw reg get` "
-            "(no WiFi adapter? — Ethernet-only Pi is fine)",
+            "could not parse global regdom from `iw reg get` "
+            "(no WiFi adapter? Ethernet-only Pi is fine)",
         )
-    if phy_country in ("99", "00"):
+    phy_detail = _format_phy_regdom_detail(phy_countries)
+    if global_country in ("99", "00"):
         return CheckResult(
             "WiFi reg domain", "warn",
-            f"phy0 regdom is '{phy_country}' (unset) — WiFi scanning "
-            "is suppressed by brcmfmac; /wifi/ scan will only see "
-            "the connected network. Known Pi 5 firmware bug with no "
-            "clean software fix; cmdline.txt already has the standard "
-            "`cfg80211.ieee80211_regdom=` hint but it doesn't always "
-            "propagate to the chip's per-phy regdom. See CLAUDE.md "
-            "\"Wi-Fi switching\" for workarounds (rpi-update, USB WiFi).",
+            f"global regdom is '{global_country}' (unset); set WLAN "
+            "country with Pi Imager or `sudo raspi-config nonint "
+            f"do_wifi_country <CC>`. {phy_detail}",
         )
     return CheckResult(
         "WiFi reg domain", "ok",
-        f"phy0 country={phy_country} (scans permitted)",
+        f"global country={global_country}; {phy_detail}",
     )
 
 
