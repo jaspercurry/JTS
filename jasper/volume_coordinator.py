@@ -135,15 +135,12 @@ DuckActiveProbe = Callable[[], Awaitable[Optional[bool]]]
 # ignored (covers camilla's <0.1 dB jitter with safe margin). Below
 # human-noticeable, well above any normal jitter.
 #
-# `RECONCILE_DUCK_SKIP_DB` is the upper-magnitude cutoff. CueDuck plays
-# proactive cues without setting `_voice_session_active`, so the
-# reconciler can race a CueDuck (which lowers camilla by JASPER_DUCK_DB,
-# typically 25 dB). Treating large drift as "almost certainly a duck"
-# and skipping is the simplest safe guard — anything deeper than 10 dB
-# is not the kind of drift we're trying to catch (those are <10 dB
-# stale-state cases). The trade-off: if the operator configures
-# JASPER_DUCK_DB shallower than 10 dB, the reconciler may briefly
-# un-duck cues. Documented in docs/HANDOFF-volume.md.
+# `RECONCILE_DUCK_SKIP_DB` is directional. CueDuck plays proactive cues
+# without setting `_voice_session_active`, so the reconciler can race a
+# CueDuck (which lowers camilla by JASPER_DUCK_DB, typically 25 dB).
+# If Camilla is much QUIETER than expected, skip to avoid un-ducking.
+# If Camilla is much LOUDER than expected, always correct it; that is
+# exactly the safety case the reconciler exists to catch.
 RECONCILE_DRIFT_DB = 1.0
 RECONCILE_DUCK_SKIP_DB = 10.0
 
@@ -914,7 +911,6 @@ class VolumeCoordinator:
             )
             if not ok:
                 return latest_level, latest_guard_db, settled_ms, False
-            level = latest_level
             guard_db = latest_guard_db
             adjustments += 1
 
@@ -1129,13 +1125,11 @@ class VolumeCoordinator:
         3. `|main_volume_db − expected| > RECONCILE_DRIFT_DB` — dead
            band around camilla's normal jitter so we don't write on
            every tick.
-        4. `|main_volume_db − expected| < RECONCILE_DUCK_SKIP_DB` —
-           CueDuck plays proactive cues without setting
-           `_voice_session_active`. A CueDuck-in-progress puts
-           camilla `JASPER_DUCK_DB` below expected (default −25 dB).
-           Skipping anything that deep avoids fighting the cue's
-           ducked window. The remaining sub-10 dB band catches
-           genuine stale-state cases.
+        4. Deep QUIET drift is skipped (`expected - current >=
+           RECONCILE_DUCK_SKIP_DB`) because CueDuck can lower camilla
+           without `_voice_session_active`. Deep LOUD drift is always
+           corrected; a writer that left camilla far above the
+           canonical level is unsafe, not a duck.
 
         Emits `event=volume.reconciled` on every write so drift
         is visible in journalctl. Failures are logged at WARN and
@@ -1161,9 +1155,10 @@ class VolumeCoordinator:
         drift = expected_db - current_db
         if abs(drift) <= RECONCILE_DRIFT_DB:
             return
-        if abs(drift) >= RECONCILE_DUCK_SKIP_DB:
+        if drift >= RECONCILE_DUCK_SKIP_DB:
             # Looks like a duck (CueDuck without _voice_session_active,
             # or some other deep attenuation we don't own). Leave it.
+            # The loud direction intentionally does not skip.
             return
         # Converge.
         logger.info(

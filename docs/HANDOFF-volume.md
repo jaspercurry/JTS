@@ -302,10 +302,12 @@ self-healing property no matter how the drift was introduced.
    Push-mode sources pin camilla at 0 dB by design.
 3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
    normal jitter (~0.1 dB).
-4. `|drift| < RECONCILE_DUCK_SKIP_DB` (10 dB) — CueDuck plays
-   proactive cues without setting `_voice_session_active`, so we
-   skip anything that looks duck-deep. Below the default
-   `JASPER_DUCK_DB = -25 dB` by safe margin.
+4. Deep quiet drift is skipped (`expected - current >=
+   RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
+   setting `_voice_session_active`, so a 25 dB drop below expected can
+   be intentional. Deep loud drift is **not** skipped. If Camilla is
+   much louder than the canonical level, the reconciler pulls it back
+   even when the drift is larger than 10 dB.
 
 **Trade-off:** if an operator configures `JASPER_DUCK_DB` shallower
 than 10 dB (e.g., -5 dB), the reconciler may briefly un-duck cues
@@ -335,8 +337,15 @@ Multiple guardrails sit on top:
 - `TtsPlayout.set_gain_db` enforces a `MAX_TTS_GAIN_DB = -6 dB`
   hardware ceiling on the TTS path independent of any volume math.
 - `JASPER_TTS_GAIN_DB` is validated `<= 0` at config-load time.
-- `volume_limit: 0` in CamillaDSP YAML — `main_volume` cannot go
-  positive.
+- `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
+  room-correction, and sound-preference configs all cap the main fader
+  at full scale.
+- `CamillaController.set_volume_db` validates every Python write and
+  clamps positive gain to 0 dB as runtime defense in depth.
+- `jasper-doctor` checks the active Camilla config for
+  `devices.volume_limit <= 0` and fails if it is missing or positive.
+- `/state.audio` exposes Camilla playback RMS, playback peak, and
+  clipped-sample count for lightweight diagnostics.
 
 Don't bypass any of these. The user is volume-sensitive ("don't blow
 my eardrums out"); defense in depth is the design.

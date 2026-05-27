@@ -36,6 +36,9 @@ devices:
   # `event=camilla.playback_underrun` lines
   # appear at any rate above zero.
   target_level: 2048
+  # Product safety floor: CamillaDSP defaults the main fader limit to
+  # +50 dB when omitted. JTS never wants software gain above full scale.
+  volume_limit: 0.0
   # Capture rate (48 kHz, from snd-aloop) equals playback rate
   # (48 kHz, to dongle dmix), so no resampler is needed. With both
   # ends at the same rate, the canonical CamillaDSP config is

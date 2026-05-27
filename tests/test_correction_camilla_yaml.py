@@ -37,6 +37,7 @@ def test_empty_peqs_yields_pipeline_with_only_flat():
     # Devices.
     assert "samplerate: 48000" in yaml
     assert "target_level: 2048" in yaml
+    assert "volume_limit: 0.0" in yaml
     assert 'device: "plug:jasper_capture"' in yaml
     assert "format: S32_LE" in yaml
     assert 'device: "jasper_out"' in yaml

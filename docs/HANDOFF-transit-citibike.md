@@ -317,3 +317,6 @@ flag it on the second provider, do it on the third.
   one network, this question doesn't exist. At two+, we'd want
   the provider to inject context (system name in the response) so
   the LLM can disambiguate. Defer until two networks exist.
+
+Last verified: 2026-05-27 (footer/status check; transit code paths not
+changed in this PR)

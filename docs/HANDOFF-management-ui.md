@@ -899,3 +899,6 @@ Notes specific to JTS that the research doesn't cover:
   default if unreadable.
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
+
+Last verified: 2026-05-27 (proposal status/footer check; implementation
+inventory remains dated 2026-05-22)

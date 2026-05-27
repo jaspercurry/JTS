@@ -418,6 +418,9 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
+| [docs/audit-pending-followups.md](docs/audit-pending-followups.md) | Maintainers | Deferred/rejected follow-ups from the May 2026 architectural-pattern audit |
+| [docs/historical/](docs/historical/) | Maintainers / archaeology | Completed or superseded runbooks preserved for context; not current operational truth |
+| [docs/research/](docs/research/) | Maintainers / archaeology | Raw external or model-generated research inputs preserved for traceability; use canonical handoffs for shipped guidance |
 | [docs/HANDOFF-*.md](docs/) | Deep-dive on a subsystem | Investigation history + design rationale |
 
 The HANDOFF docs are the most engineer-relevant. Each one is the
@@ -663,6 +666,10 @@ reference. Currently:
   — Verbatim raw deep-research artifacts that seeded the
   room-correction, FIR, and active-speaker DSP handoffs. Treat as
   source material, not operational truth.
+- [`docs/research/mic-quality-v2-report.md`](docs/research/mic-quality-v2-report.md)
+  — Verbatim external calibration-wizard report preserved because
+  `HANDOFF-mic-quality-v2.md` references it. Treat as source material,
+  not operational truth.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
   Proposal (created 2026-05-22, not yet implemented) for
   restructuring the `jts.local` management surface into a tighter

@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Awaitable, Callable
+import math
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Awaitable, Callable
+
+from .camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
+
+if TYPE_CHECKING:
+    from camilladsp import CamillaClient
 
 # `camilladsp` is a Pi-side runtime dep (pycamilladsp wraps the Rust binary's
 # websocket API). Lazy-imported in `CamillaController._ensure` — the only
@@ -15,6 +22,44 @@ from typing import Awaitable, Callable
 # web setup / control server; tests use fakes.)
 
 logger = logging.getLogger(__name__)
+
+MIN_MAIN_VOLUME_DB = -150.0
+MAX_MAIN_VOLUME_DB = DEFAULT_VOLUME_LIMIT_DB
+
+
+def _coerce_main_volume_db(db: float) -> float:
+    """Validate and clamp Camilla's process-wide main fader.
+
+    CamillaDSP itself can accept positive gain unless the loaded YAML
+    has `devices.volume_limit` set. This wrapper is the runtime
+    defense-in-depth boundary for every Python caller.
+    """
+    try:
+        value = float(db)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"main_volume_db must be numeric, got {db!r}") from e
+    if not math.isfinite(value):
+        raise ValueError(f"main_volume_db must be finite, got {db!r}")
+    clamped = max(MIN_MAIN_VOLUME_DB, min(MAX_MAIN_VOLUME_DB, value))
+    if clamped != value:
+        logger.warning(
+            "camilla main_volume clamped: requested %.1f dB -> %.1f dB",
+            value, clamped,
+        )
+    return clamped
+
+
+def _level_pair(levels: Sequence[float | None] | None) -> tuple[float, float]:
+    """Normalize Camilla's channel-meter return shape."""
+    if not levels:
+        return float("-inf"), float("-inf")
+    left = float(levels[0]) if levels[0] is not None else float("-inf")
+    right = (
+        float(levels[1])
+        if len(levels) > 1 and levels[1] is not None
+        else left
+    )
+    return left, right
 
 
 class CamillaUnavailable(Exception):
@@ -122,10 +167,7 @@ class CamillaController:
         the chunk has no signal. Returns None if ``best_effort=True``
         and camilla is unreachable."""
         def read(c):
-            levels = c.levels.playback_rms()
-            l = float(levels[0]) if levels and levels[0] is not None else float("-inf")
-            r = float(levels[1]) if len(levels) > 1 and levels[1] is not None else l
-            return l, r
+            return _level_pair(c.levels.playback_rms())
         try:
             return await self._call(read)
         except CamillaUnavailable as e:
@@ -136,17 +178,54 @@ class CamillaController:
                 return None
             raise
 
+    async def get_playback_peak(
+        self, *, best_effort: bool = False,
+    ) -> tuple[float, float] | None:
+        """Per-channel playback peak in dBFS for the last processed chunk."""
+        def read(c):
+            return _level_pair(c.levels.playback_peak())
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_playback_peak -> None: %s", e,
+                )
+                return None
+            raise
+
+    async def get_clipped_samples(
+        self, *, best_effort: bool = False,
+    ) -> int | None:
+        """Number of clipped samples since the current config was loaded."""
+        try:
+            return int(await self._call(lambda c: c.status.clipped_samples()))
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_clipped_samples -> None: %s", e,
+                )
+                return None
+            raise
+
     async def set_volume_db(
         self, db: float, *, best_effort: bool = False,
     ) -> bool:
         try:
-            await self._call(lambda c: c.volume.set_main_volume(float(db)))
+            target = _coerce_main_volume_db(db)
+        except ValueError as e:
+            if best_effort:
+                logger.warning("camilla main_volume rejected: %s", e)
+                return False
+            raise
+        try:
+            await self._call(lambda c: c.volume.set_main_volume(target))
             return True
         except CamillaUnavailable as e:
             if best_effort:
                 logger.warning(
                     "camilla unavailable; set_volume_db(%.1f) skipped: %s",
-                    db, e,
+                    target, e,
                 )
                 return False
             raise
@@ -157,7 +236,13 @@ class CamillaController:
         current = await self.get_volume_db(best_effort=best_effort)
         if current is None:
             return None
-        target = current + float(delta_db)
+        try:
+            target = _coerce_main_volume_db(current + float(delta_db))
+        except ValueError as e:
+            if best_effort:
+                logger.warning("camilla main_volume adjust rejected: %s", e)
+                return None
+            raise
         if not await self.set_volume_db(target, best_effort=best_effort):
             return None
         return target

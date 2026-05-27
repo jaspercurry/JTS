@@ -535,3 +535,5 @@ Recommendation: do (a) first, ~30 min effort, definitive test of
   consideration, not used): [AGENTS.md](../AGENTS.md) "Mic mute" section
 - Prompting playbook (for the model-hallucination fix):
   [HANDOFF-prompting.md](HANDOFF-prompting.md)
+
+Last verified: 2026-05-24

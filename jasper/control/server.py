@@ -31,6 +31,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import os
 import socket
 import subprocess
@@ -768,12 +769,43 @@ async def _get_state(
         sound_profile = None
 
     # Slow probes — fan out in parallel.
-    async def _camilla_volume() -> float | None:
+    def _round_db(value: float | None) -> float | None:
+        if value is None:
+            return None
+        value = float(value)
+        if not math.isfinite(value):
+            return None
+        return round(value, 2)
+
+    def _round_pair(
+        pair: tuple[float, float] | None,
+    ) -> list[float | None] | None:
+        if pair is None:
+            return None
+        return [_round_db(pair[0]), _round_db(pair[1])]
+
+    async def _camilla_status() -> dict[str, Any]:
+        status: dict[str, Any] = {
+            "main_volume_db": None,
+            "playback_rms_dbfs": None,
+            "playback_peak_dbfs": None,
+            "clipped_samples": None,
+        }
         try:
             cam = CamillaController(host=camilla_host, port=camilla_port)
-            return await cam.get_volume_db(best_effort=True)
+            vol, rms, peak, clipped = await asyncio.gather(
+                cam.get_volume_db(best_effort=True),
+                cam.get_playback_rms(best_effort=True),
+                cam.get_playback_peak(best_effort=True),
+                cam.get_clipped_samples(best_effort=True),
+            )
+            status["main_volume_db"] = _round_db(vol)
+            status["playback_rms_dbfs"] = _round_pair(rms)
+            status["playback_peak_dbfs"] = _round_pair(peak)
+            status["clipped_samples"] = clipped
+            return status
         except Exception:  # noqa: BLE001
-            return None
+            return status
 
     async def _airplay_playing() -> bool | None:
         try:
@@ -881,7 +913,7 @@ async def _get_state(
             return None
 
     (
-        cam_db,
+        camilla_st,
         airplay,
         voice_st,
         ha_status,
@@ -889,7 +921,7 @@ async def _get_state(
         fanin_st,
         mux_st,
     ) = await asyncio.gather(
-        _camilla_volume(),
+        _camilla_status(),
         _airplay_playing(),
         _voice_status(),
         _ha_status(),
@@ -985,10 +1017,11 @@ async def _get_state(
             "reachable": voice_st is not None,
         },
         "audio": {
-            "main_volume_db": (
-                round(cam_db, 2) if cam_db is not None else None
-            ),
+            "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
+            "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
+            "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
+            "clipped_samples": camilla_st["clipped_samples"],
             "sound": sound_profile,
         },
         "renderers": {

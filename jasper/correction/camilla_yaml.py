@@ -32,6 +32,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
+    DEFAULT_VOLUME_LIMIT_DB,
 )
 
 from .peq import PEQ
@@ -109,6 +110,7 @@ def emit_correction_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int = DEFAULT_CHUNKSIZE,
     target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     measurement_id: str | None = None,
 ) -> str:
@@ -119,8 +121,9 @@ def emit_correction_config(
         Empty list ⇒ identity config (functionally equivalent to
         v1.yml).
       capture_device, playback_device, capture_format, playback_format,
-        sample_rate, chunksize, target_level: device + sample-rate config.
-        Defaults match v1.yml; override only if the audio path changes.
+        sample_rate, chunksize, target_level, volume_limit_db: device,
+        sample-rate, and safety config. Defaults match v1.yml; override
+        only if the audio path changes.
       out_path: write the YAML here as well as returning it. Parent
         directory must exist.
       measurement_id: opaque tag (e.g. timestamp) embedded in the
@@ -151,6 +154,7 @@ devices:
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
+  volume_limit: {volume_limit_db:.1f}
   enable_rate_adjust: true
   capture:
     type: Alsa

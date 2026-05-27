@@ -1653,6 +1653,51 @@ def test_check_correction_current_config_reports_generated_correction(
     assert "peqs=1" in r.detail
 
 
+def test_check_camilla_volume_limit_ok(monkeypatch, tmp_path):
+    config = tmp_path / "v1.yml"
+    config.write_text("devices:\n  samplerate: 48000\n  volume_limit: 0.0\n")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_volume_limit()
+
+    assert r.status == "ok"
+    assert "volume_limit=0.0" in r.detail
+
+
+def test_check_camilla_volume_limit_fails_when_missing(monkeypatch, tmp_path):
+    config = tmp_path / "v1.yml"
+    config.write_text("devices:\n  samplerate: 48000\n")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_volume_limit()
+
+    assert r.status == "fail"
+    assert "omits devices.volume_limit" in r.detail
+
+
+def test_check_camilla_volume_limit_fails_when_positive(monkeypatch, tmp_path):
+    config = tmp_path / "v1.yml"
+    config.write_text("devices:\n  samplerate: 48000\n  volume_limit: 6.0\n")
+    statefile = tmp_path / "statefile.yml"
+    statefile.write_text(f"config_path: {config}\n")
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))
+
+    r = doctor.check_camilla_volume_limit()
+
+    assert r.status == "fail"
+    assert "expected <=" in r.detail
+
+
+def test_check_camilla_volume_limit_registered_in_sync_checks():
+    import inspect
+    src = inspect.getsource(doctor.run_async)
+    assert "check_camilla_volume_limit" in src
+
+
 def test_check_sound_profile_reports_default_when_missing(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing.json"))
 

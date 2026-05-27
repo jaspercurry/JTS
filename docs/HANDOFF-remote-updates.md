@@ -609,3 +609,6 @@ GitHub-side mechanics:
   `https://api.github.com/repos/<owner>/<repo>/releases/latest`
   (unauthenticated, 60 req/hr/IP without a token).
 - `gh release create` for tag-and-publish in CI.
+
+Last verified: 2026-05-27 (research-only status/footer check; no
+implementation in flight)

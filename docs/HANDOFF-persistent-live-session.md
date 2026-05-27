@@ -252,3 +252,6 @@ bash scripts/deploy-to-pi.sh
 - New work committed to the branch with clear messages, pushed
 
 Don't break the working hardware bring-up while doing this. Don't change ALSA or CamillaDSP configs. Don't switch models. Don't pivot to a different LLM provider.
+
+Last verified: 2026-05-27 (historical status tag and current-truth
+pointers checked; snapshot body intentionally not revalidated)

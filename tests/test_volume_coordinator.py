@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timezone
-from typing import Any
 
 import pytest
 
@@ -1073,6 +1072,22 @@ async def test_reconcile_converges_when_camilla_above_expected(tmp_path):
     persistence.save_listening_level(70, mark_user_change=True)
     await coord.maybe_reconcile_camilla()
     assert cam.set_calls and abs(cam.set_calls[-1] - (-15.0)) < 0.01
+
+
+async def test_reconcile_corrects_deep_loud_drift(tmp_path):
+    """Deep quiet drift can be a cue duck; deep loud drift is unsafe
+    and should always be pulled back to the canonical level."""
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=0.0)  # 50 dB louder than expected for 0%
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 0
+    persistence.save_listening_level(0, mark_user_change=True)
+    await coord.maybe_reconcile_camilla()
+    assert cam.set_calls and cam.set_calls[-1] == pytest.approx(-50.0)
 
 
 async def test_reconcile_noop_when_drift_looks_like_duck(tmp_path):

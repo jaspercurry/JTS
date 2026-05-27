@@ -810,12 +810,54 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["listening_level_percent"] == 73
     # Camilla isn't reachable from the test → main_volume_db None.
     assert body["audio"]["main_volume_db"] is None
+    assert body["audio"]["playback_rms_dbfs"] is None
+    assert body["audio"]["playback_peak_dbfs"] is None
+    assert body["audio"]["clipped_samples"] is None
     assert body["audio"]["sound"]["curve_id"] == "flat"
     assert body["audio"]["sound"]["filter_count"] == 0
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
+
+
+def test_state_audio_metrics_sanitize_non_finite_values(
+    server_with_coordinator, monkeypatch, tmp_path,
+):
+    import jasper.camilla as camilla_mod
+
+    class FakeCamilla:
+        def __init__(self, *args, **kwargs):  # noqa: ANN002, ANN003
+            pass
+
+        async def get_volume_db(self, *, best_effort=False):  # noqa: ARG002
+            return -12.345
+
+        async def get_playback_rms(self, *, best_effort=False):  # noqa: ARG002
+            return float("-inf"), -32.1234
+
+        async def get_playback_peak(self, *, best_effort=False):  # noqa: ARG002
+            return float("nan"), -3.456
+
+        async def get_clipped_samples(self, *, best_effort=False):  # noqa: ARG002
+            return 7
+
+    base, _ = server_with_coordinator
+    state_path = tmp_path / "speaker_volume.json"
+    state_path.write_text('{"listening_level": 73}')
+    monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
+    monkeypatch.setenv(
+        "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
+    )
+    monkeypatch.setattr(camilla_mod, "CamillaController", FakeCamilla)
+
+    status, body = _get(f"{base}/state")
+
+    assert status == 200
+    assert body["audio"]["main_volume_db"] == -12.35
+    assert body["audio"]["playback_rms_dbfs"] == [None, -32.12]
+    assert body["audio"]["playback_peak_dbfs"] == [None, -3.46]
+    assert body["audio"]["clipped_samples"] == 7
 
 
 def test_state_prefers_mux_winner_over_raw_renderer_probe(

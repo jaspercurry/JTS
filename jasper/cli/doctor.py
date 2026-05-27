@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
 from ..env_load import load_env_files as _load_env_files
 from ..env_load import parse_env_file as _shared_parse_env_file
@@ -257,9 +258,22 @@ async def check_camilla_websocket(cfg: Config) -> CheckResult:
         client = CamillaClient(cfg.camilla_host, cfg.camilla_port)
         await asyncio.to_thread(client.connect)
         vol = await asyncio.to_thread(client.volume.main_volume)
+        try:
+            clipped = await asyncio.to_thread(client.status.clipped_samples)
+            clipped_msg = f" clipped_samples={clipped}"
+        except Exception:  # noqa: BLE001
+            clipped_msg = " clipped_samples=?"
+        if float(vol) > DEFAULT_VOLUME_LIMIT_DB + 0.1:
+            return CheckResult(
+                "CamillaDSP websocket", "fail",
+                f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB "
+                f"above {DEFAULT_VOLUME_LIMIT_DB:.1f} dB safety ceiling."
+                f"{clipped_msg}",
+            )
         return CheckResult(
             "CamillaDSP websocket", "ok",
-            f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB",
+            f"{cfg.camilla_host}:{cfg.camilla_port} volume={vol:.1f} dB"
+            f"{clipped_msg}",
         )
     except Exception as e:  # noqa: BLE001
         return CheckResult(
@@ -3183,16 +3197,86 @@ def _parse_camilla_statefile_config_path(path: Path) -> str | None:
     return match.group(1).strip().strip("'\"") or None
 
 
-def check_correction_current_config() -> CheckResult:
-    from jasper.correction.session import parse_current_correction
-
+def _active_camilla_config_path() -> tuple[Path, str | None]:
     statefile = Path(
         os.environ.get(
             "JASPER_CAMILLA_STATEFILE",
             "/var/lib/camilladsp/statefile.yml",
         )
     )
-    config_path = _parse_camilla_statefile_config_path(statefile)
+    return statefile, _parse_camilla_statefile_config_path(statefile)
+
+
+def _devices_volume_limit_from_text(text: str) -> float | None:
+    in_devices = False
+    for raw in text.splitlines():
+        line = raw.rstrip()
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not raw.startswith((" ", "\t")):
+            in_devices = stripped == "devices:"
+            continue
+        if not in_devices:
+            continue
+        match = re.match(r"^\s+volume_limit:\s*([^#]+)", raw)
+        if not match:
+            continue
+        value = match.group(1).strip().strip("'\"")
+        if value in {"", "null", "~"}:
+            return None
+        return float(value)
+    return None
+
+
+def check_camilla_volume_limit() -> CheckResult:
+    """Verify the active Camilla config has JTS's non-positive fader cap."""
+    statefile, config_path = _active_camilla_config_path()
+    if config_path is None:
+        return CheckResult(
+            "CamillaDSP volume_limit", "warn",
+            f"could not read config_path from {statefile}",
+        )
+    path = Path(config_path)
+    if not path.exists():
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"statefile points at missing config {config_path}",
+        )
+    try:
+        limit = _devices_volume_limit_from_text(path.read_text())
+    except ValueError as e:
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"invalid devices.volume_limit in {config_path}: {e}",
+        )
+    except OSError as e:
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"could not read {config_path}: {e}",
+        )
+    if limit is None:
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"{config_path} omits devices.volume_limit; CamillaDSP "
+            "defaults to +50 dB",
+        )
+    if limit > DEFAULT_VOLUME_LIMIT_DB:
+        return CheckResult(
+            "CamillaDSP volume_limit", "fail",
+            f"{config_path} sets devices.volume_limit={limit:.1f} dB "
+            f"(expected <= {DEFAULT_VOLUME_LIMIT_DB:.1f} dB)",
+        )
+    return CheckResult(
+        "CamillaDSP volume_limit", "ok",
+        f"{config_path} devices.volume_limit={limit:.1f} dB",
+    )
+
+
+def check_correction_current_config() -> CheckResult:
+    from jasper.correction.session import parse_current_correction
+
+    statefile, config_path = _active_camilla_config_path()
     if config_path is None:
         return CheckResult(
             "current correction", "warn",
@@ -3251,13 +3335,7 @@ def check_sound_profile() -> CheckResult:
     filter_count = len(build_sound_filters(profile))
     headroom_db = estimate_headroom_db(profile)
 
-    statefile = Path(
-        os.environ.get(
-            "JASPER_CAMILLA_STATEFILE",
-            "/var/lib/camilladsp/statefile.yml",
-        )
-    )
-    active_path = _parse_camilla_statefile_config_path(statefile)
+    _, active_path = _active_camilla_config_path()
     active_name = Path(active_path).name if active_path else ""
     active_generated = (
         active_name.startswith("correction_") or active_name == "sound_current.yml"
@@ -3448,6 +3526,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # correction session.
         check_correction_web_service,
         check_correction_state_dirs,
+        check_camilla_volume_limit,
         check_correction_current_config,
         check_sound_profile,
         check_dsp_apply_state,

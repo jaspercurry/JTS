@@ -52,6 +52,7 @@ if (( include_all )); then
     < <(find docs -maxdepth 1 -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
 
+missing_footer_rows=()
 stale_rows=()
 fresh_count=0
 
@@ -67,6 +68,9 @@ for doc in "${docs[@]}"; do
   if [[ -z "$verified" ]]; then
     verified=$(git log -1 --format='%cs' -- "$doc" 2>/dev/null || true)
     source="git"
+    if [[ -n "$verified" && "$doc" == docs/HANDOFF-*.md ]]; then
+      missing_footer_rows+=("${verified}|${doc}")
+    fi
   fi
 
   [[ -z "$verified" ]] && continue  # untracked + no footer — skip silently
@@ -82,6 +86,20 @@ for doc in "${docs[@]}"; do
 done
 
 stale_count=${#stale_rows[@]}
+missing_footer_count=${#missing_footer_rows[@]}
+
+printf 'HANDOFF docs missing a `Last verified:` footer:\n\n'
+if (( missing_footer_count == 0 )); then
+  printf '  (none)\n'
+else
+  printf '  %-12s  %s\n' 'Git date' 'Doc'
+  printf '  %-12s  %s\n' '------------' '---'
+  printf '%s\n' "${missing_footer_rows[@]}" | sort -t'|' -k1,1 | while IFS='|' read -r d doc; do
+    printf '  %-12s  %s\n' "$d" "$doc"
+  done
+fi
+
+printf '\n'
 
 printf 'Docs not verified/touched in >%d days:\n\n' "$days"
 if (( stale_count == 0 )); then
@@ -94,9 +112,14 @@ else
   done
 fi
 
-printf '\nSummary: %d stale, %d fresh (threshold %d days).\n' "$stale_count" "$fresh_count" "$days"
+printf '\nSummary: %d missing footer, %d stale, %d fresh (threshold %d days).\n' \
+  "$missing_footer_count" "$stale_count" "$fresh_count" "$days"
 if (( stale_count > 0 )); then
   printf '\nAction: for each stale doc, re-read it against the current code and either\n'
   printf '  (a) bump the footer to `Last verified: %s`, or\n' "$today_iso"
   printf '  (b) update the content. See AGENTS.md "Documentation paradigm".\n'
+fi
+if (( missing_footer_count > 0 )); then
+  printf '\nAction: add a final `Last verified: YYYY-MM-DD` footer to each missing\n'
+  printf '  HANDOFF after checking whether it is operational, historical, or superseded.\n'
 fi

@@ -772,3 +772,6 @@ Primary sources informing this work (cite in PRs / future ADRs):
 - HA services/conversation/process bug: [home-assistant/core#93754](https://github.com/home-assistant/core/issues/93754), [home-assistant/core#104122](https://github.com/home-assistant/core/issues/104122)
 - LLAT-too-long thread: [community.home-assistant.io/t/543626](https://community.home-assistant.io/t/long-lived-access-token-too-long/543626)
 - "WTH are all new entities exposed" thread: [community.home-assistant.io/t/803889](https://community.home-assistant.io/t/wth-are-all-new-entities-exposed-to-assist-by-default/803889)
+
+Last verified: 2026-05-27 (footer/status check; Home Assistant code
+paths not changed in this PR)

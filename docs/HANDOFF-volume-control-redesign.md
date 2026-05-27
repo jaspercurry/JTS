@@ -461,3 +461,6 @@ cleanup pass in the same PR or immediately after:
   over with different semantics.
 - Keep the mapping simple first. Tune perceptual curves only after the
   architecture is correct.
+
+Last verified: 2026-05-27 (superseded status and canonical volume link
+checked; redesign body intentionally not revalidated)

@@ -584,3 +584,6 @@ If you are a fresh Claude or LLM landing here:
 7. The pre-existing `docs/satellites.md` was the design hub for
    the multi-mic-around-one-Pi case. This doc is the multi-Pi
    variant.
+
+Last verified: 2026-05-27 (footer/status check; peering code paths not
+changed in this PR)

@@ -610,3 +610,6 @@ PRs 2-4; the second UDP stream just goes unconsumed. Nothing
 listens on 9877 until PR 2 ships. PR 2 alone (without PR 3) gives
 dual-stream wake triggering with no persistence — still useful
 but loses the funnel data. The full value lands with PR 3.
+
+Last verified: 2026-05-27 (footer/status check; wake telemetry code
+paths not changed in this PR)

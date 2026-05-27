@@ -18,6 +18,10 @@ DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000
 DEFAULT_CHUNKSIZE = 1024
 DEFAULT_TARGET_LEVEL = 2048
+# CamillaDSP defaults the main fader's maximum to +50 dB when omitted.
+# JTS treats 0 dB as the hard software ceiling; source/headroom logic
+# should attenuate below this, never boost above full scale.
+DEFAULT_VOLUME_LIMIT_DB = 0.0
 
 
 @dataclass(frozen=True)

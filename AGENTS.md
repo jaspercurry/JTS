@@ -359,6 +359,13 @@ Spotify volume control goes via the Spotify Web API (the multi-
 account `spotify_router`) since librespot has no local control
 HTTP — see [`docs/HANDOFF-volume.md`](docs/HANDOFF-volume.md).
 
+CamillaDSP configs must keep the project safety ceiling in place:
+`devices.volume_limit` is `0.0` in the base config and generated
+correction/sound configs, and `CamillaController.set_volume_db`
+clamps positive writes to 0 dB as runtime defense in depth.
+`jasper-doctor` checks the active config; do not remove this floor
+when adding new DSP config generators.
+
 ---
 
 ## Voice provider switching — read first

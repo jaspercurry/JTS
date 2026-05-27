@@ -22,6 +22,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
+    DEFAULT_VOLUME_LIMIT_DB,
     PeqFilter,
 )
 
@@ -128,6 +129,7 @@ def emit_sound_config(
     sample_rate: int = DEFAULT_SAMPLE_RATE,
     chunksize: int = DEFAULT_CHUNKSIZE,
     target_level: int = DEFAULT_TARGET_LEVEL,
+    volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
 ) -> str:
@@ -154,6 +156,7 @@ devices:
   chunksize: {chunksize}
   queuelimit: 4
   target_level: {target_level}
+  volume_limit: {volume_limit_db:.1f}
   enable_rate_adjust: true
   capture:
     type: Alsa
