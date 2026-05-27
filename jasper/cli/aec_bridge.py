@@ -484,6 +484,16 @@ class _Aec3V2Engine:
         normal_mask_hf_enr_suppress=0.4
         normal_mask_hf_emr_transparent=0.3
         normal_max_dec_factor_lf=0.05
+        nearend_average_blocks=4
+        nearend_mask_hf_enr_transparent=0.1
+        nearend_mask_hf_enr_suppress=0.3
+        nearend_mask_hf_emr_transparent=0.3
+        nearend_max_dec_factor_lf=0.25
+        nearend_max_inc_factor=2.0
+        dominant_nearend_snr_threshold=30
+        dominant_nearend_hold_duration=50
+        dominant_nearend_enr_threshold=0.25
+        dominant_nearend_trigger_threshold=12
 
     Env-var overrides (all optional; default to BEST_A):
         JASPER_AEC_FILTER_LENGTH        (int, default 30)
@@ -498,6 +508,16 @@ class _Aec3V2Engine:
         JASPER_AEC_MASK_HF_ENR_S        (float, default 0.4)
         JASPER_AEC_MASK_HF_EMR_T        (float, default 0.3)
         JASPER_AEC_MAX_DEC_LF           (float, default 0.05)
+        JASPER_AEC_NEAREND_AVERAGE_BLOCKS      (int, default 4)
+        JASPER_AEC_NEAREND_MASK_HF_ENR_T       (float, default 0.1)
+        JASPER_AEC_NEAREND_MASK_HF_ENR_S       (float, default 0.3)
+        JASPER_AEC_NEAREND_MASK_HF_EMR_T       (float, default 0.3)
+        JASPER_AEC_NEAREND_MAX_DEC_LF          (float, default 0.25)
+        JASPER_AEC_NEAREND_MAX_INC             (float, default 2.0)
+        JASPER_AEC_DND_SNR_THRESHOLD           (float, default 30)
+        JASPER_AEC_DND_HOLD_DURATION           (int, default 50)
+        JASPER_AEC_DND_ENR_THRESHOLD           (float, default 0.25)
+        JASPER_AEC_DND_TRIGGER_THRESHOLD       (int, default 12)
     """
 
     def __init__(
@@ -538,6 +558,36 @@ class _Aec3V2Engine:
             "JASPER_AEC_MASK_HF_EMR_T", "0.3", overrides,
         ))
         max_dec_lf = float(_cfg_value("JASPER_AEC_MAX_DEC_LF", "0.05", overrides))
+        nearend_avg_blocks = int(_cfg_value(
+            "JASPER_AEC_NEAREND_AVERAGE_BLOCKS", "4", overrides,
+        ))
+        nearend_mask_hf_enr_t = float(_cfg_value(
+            "JASPER_AEC_NEAREND_MASK_HF_ENR_T", "0.1", overrides,
+        ))
+        nearend_mask_hf_enr_s = float(_cfg_value(
+            "JASPER_AEC_NEAREND_MASK_HF_ENR_S", "0.3", overrides,
+        ))
+        nearend_mask_hf_emr_t = float(_cfg_value(
+            "JASPER_AEC_NEAREND_MASK_HF_EMR_T", "0.3", overrides,
+        ))
+        nearend_max_dec_lf = float(_cfg_value(
+            "JASPER_AEC_NEAREND_MAX_DEC_LF", "0.25", overrides,
+        ))
+        nearend_max_inc = float(_cfg_value(
+            "JASPER_AEC_NEAREND_MAX_INC", "2.0", overrides,
+        ))
+        dnd_snr_threshold = float(_cfg_value(
+            "JASPER_AEC_DND_SNR_THRESHOLD", "30", overrides,
+        ))
+        dnd_hold_duration = int(_cfg_value(
+            "JASPER_AEC_DND_HOLD_DURATION", "50", overrides,
+        ))
+        dnd_enr_threshold = float(_cfg_value(
+            "JASPER_AEC_DND_ENR_THRESHOLD", "0.25", overrides,
+        ))
+        dnd_trigger_threshold = int(_cfg_value(
+            "JASPER_AEC_DND_TRIGGER_THRESHOLD", "12", overrides,
+        ))
 
         self._aec = Aec3V2(
             stream_delay_ms=40,
@@ -559,12 +609,25 @@ class _Aec3V2Engine:
             normal_mask_hf_enr_suppress=mask_hf_enr_s,
             normal_mask_hf_emr_transparent=mask_hf_emr_t,
             normal_max_dec_factor_lf=max_dec_lf,
+            nearend_average_blocks=nearend_avg_blocks,
+            nearend_mask_hf_enr_transparent=nearend_mask_hf_enr_t,
+            nearend_mask_hf_enr_suppress=nearend_mask_hf_enr_s,
+            nearend_mask_hf_emr_transparent=nearend_mask_hf_emr_t,
+            nearend_max_dec_factor_lf=nearend_max_dec_lf,
+            nearend_max_inc_factor=nearend_max_inc,
+            dominant_nearend_snr_threshold=dnd_snr_threshold,
+            dominant_nearend_hold_duration=dnd_hold_duration,
+            dominant_nearend_enr_threshold=dnd_enr_threshold,
+            dominant_nearend_trigger_threshold=dnd_trigger_threshold,
         )
         logger.info(
             "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
             "agc2=%s filter_len=%d bounded_erl=%s default_gain=%.2f "
             "erle=%.2f/%.2f onset=%s stationarity=%s conservative_hf=%s "
-            "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f",
+            "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f "
+            "nearend_avg=%d nearend_mask_hf=%.2f/%.2f/%.2f "
+            "nearend_max_dec_lf=%.3f nearend_max_inc=%.2f "
+            "dnd=snr%.1f/enr%.2f/hold%d/trigger%d",
             label,
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
@@ -577,6 +640,12 @@ class _Aec3V2Engine:
             "on" if conservative_hf else "off",
             mask_hf_enr_t, mask_hf_enr_s, mask_hf_emr_t,
             max_dec_lf,
+            nearend_avg_blocks,
+            nearend_mask_hf_enr_t, nearend_mask_hf_enr_s,
+            nearend_mask_hf_emr_t,
+            nearend_max_dec_lf, nearend_max_inc,
+            dnd_snr_threshold, dnd_enr_threshold,
+            dnd_hold_duration, dnd_trigger_threshold,
         )
 
     def process(self, mic: bytes, ref: bytes) -> bytes:

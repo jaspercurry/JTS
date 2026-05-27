@@ -94,8 +94,8 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
 | `aec3_hf_relaxed` | XVF mic path through a parallel WebRTC AEC3 instance with conservative HF suppression off | No | Corpus-only same-utterance AEC3 tuning sweep. Pilot data, not train/eval. |
-| `aec3_hf_mask_upstream` | XVF mic path through a parallel WebRTC AEC3 instance using upstream HF mask values (`0.07/0.10/0.30`) | No | Tests whether BEST_A's HF mask parity is muffling wake-word onset. |
-| `aec3_hf_wide_open` | XVF mic path with conservative HF suppression off plus upstream HF mask values | No | Extreme HF-preservation endpoint; expect more music leakage. |
+| `aec3_nearend_fast` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF plus faster dominant-near-end detection | No | Tests whether AEC3 is recognizing the utterance onset as near-end speech early enough. |
+| `aec3_slow_attack` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF plus slower suppressor attack | No | Tests whether less abrupt suppression preserves wake-word edges while tolerating more residual music. |
 
 Leg names in future metadata should stay stable and explicit. Display
 labels can be friendlier, but the machine-readable names should not
@@ -447,6 +447,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v4):** Retargeted corpus-only AEC3 sweep legs to
+  edge-preservation under far+music (`hf_relaxed`, `nearend_fast`,
+  `slow_attack`).
 - **2026-05-27 (v3):** Retargeted corpus-only AEC3 sweep legs to the
   HF-preservation 2×2 (`hf_relaxed`, `hf_mask_upstream`,
   `hf_wide_open`).
@@ -456,4 +459,4 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v3 - AEC3 HF sweep legs updated)
+Last verified: 2026-05-27 (v4 - AEC3 edge-preservation sweep legs updated)

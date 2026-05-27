@@ -92,7 +92,17 @@ public:
            float normal_mask_hf_enr_transparent,
            float normal_mask_hf_enr_suppress,
            float normal_mask_hf_emr_transparent,
-           float normal_max_dec_factor_lf)
+           float normal_max_dec_factor_lf,
+           int nearend_average_blocks,
+           float nearend_mask_hf_enr_transparent,
+           float nearend_mask_hf_enr_suppress,
+           float nearend_mask_hf_emr_transparent,
+           float nearend_max_dec_factor_lf,
+           float nearend_max_inc_factor,
+           float dominant_nearend_snr_threshold,
+           int dominant_nearend_hold_duration,
+           float dominant_nearend_enr_threshold,
+           int dominant_nearend_trigger_threshold)
         : stream_cfg_(kSampleRate, kNumChannels),
           stream_delay_ms_(stream_delay_ms) {
         // Build the deep EchoCanceller3Config from kwargs.
@@ -116,6 +126,26 @@ public:
             normal_mask_hf_emr_transparent;
         aec3_cfg.suppressor.normal_tuning.max_dec_factor_lf =
             normal_max_dec_factor_lf;
+        aec3_cfg.suppressor.nearend_average_blocks =
+            static_cast<size_t>(nearend_average_blocks);
+        aec3_cfg.suppressor.nearend_tuning.mask_hf.enr_transparent =
+            nearend_mask_hf_enr_transparent;
+        aec3_cfg.suppressor.nearend_tuning.mask_hf.enr_suppress =
+            nearend_mask_hf_enr_suppress;
+        aec3_cfg.suppressor.nearend_tuning.mask_hf.emr_transparent =
+            nearend_mask_hf_emr_transparent;
+        aec3_cfg.suppressor.nearend_tuning.max_dec_factor_lf =
+            nearend_max_dec_factor_lf;
+        aec3_cfg.suppressor.nearend_tuning.max_inc_factor =
+            nearend_max_inc_factor;
+        aec3_cfg.suppressor.dominant_nearend_detection.snr_threshold =
+            dominant_nearend_snr_threshold;
+        aec3_cfg.suppressor.dominant_nearend_detection.hold_duration =
+            dominant_nearend_hold_duration;
+        aec3_cfg.suppressor.dominant_nearend_detection.enr_threshold =
+            dominant_nearend_enr_threshold;
+        aec3_cfg.suppressor.dominant_nearend_detection.trigger_threshold =
+            dominant_nearend_trigger_threshold;
 
         webrtc::AudioProcessingBuilder builder;
         builder.SetEchoControlFactory(
@@ -209,7 +239,8 @@ PYBIND11_MODULE(_aec3_v2, m) {
     py::class_<Aec3V2>(m, "Aec3V2")
         .def(py::init<int, bool, bool, std::string, bool, int, int,
                       int, bool, float, float, float, bool, bool, bool,
-                      float, float, float, float>(),
+                      float, float, float, float, int, float, float, float,
+                      float, float, float, int, float, int>(),
              py::arg("stream_delay_ms") = 40,
              // Top-level AudioProcessing (mirror v1 defaults)
              py::arg("enable_agc2") = false,
@@ -231,12 +262,23 @@ PYBIND11_MODULE(_aec3_v2, m) {
              py::arg("erle_onset_detection") = false,
              // EchoAudibility
              py::arg("use_stationarity_properties") = true,
-             // Suppressor — HF asymmetry fix + slow attack
+             // Suppressor — HF asymmetry fix, slow attack, and
+             // corpus-only near-end tuning.
              py::arg("conservative_hf_suppression") = true,
              py::arg("normal_mask_hf_enr_transparent") = 0.3f,  // LF parity (default 0.07)
              py::arg("normal_mask_hf_enr_suppress") = 0.4f,     // LF parity (default 0.1)
              py::arg("normal_mask_hf_emr_transparent") = 0.3f,
              py::arg("normal_max_dec_factor_lf") = 0.05f,        // 5× slower than default 0.25
+             py::arg("nearend_average_blocks") = 4,
+             py::arg("nearend_mask_hf_enr_transparent") = 0.1f,
+             py::arg("nearend_mask_hf_enr_suppress") = 0.3f,
+             py::arg("nearend_mask_hf_emr_transparent") = 0.3f,
+             py::arg("nearend_max_dec_factor_lf") = 0.25f,
+             py::arg("nearend_max_inc_factor") = 2.0f,
+             py::arg("dominant_nearend_snr_threshold") = 30.0f,
+             py::arg("dominant_nearend_hold_duration") = 50,
+             py::arg("dominant_nearend_enr_threshold") = 0.25f,
+             py::arg("dominant_nearend_trigger_threshold") = 12,
              "BEST_A AEC3 binding via vendored webrtc-audio-processing v2.1. "
              "All knobs default to the BEST_A canonical config from the "
              "2026-05-22 tuning campaign — see "

@@ -29,6 +29,8 @@ from typing import Any
 
 import numpy as np
 
+from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
+
 
 SAMPLE_RATE_HZ = 16000
 CHANNELS = 1
@@ -39,7 +41,21 @@ BASE_LEGS = ("on", "off", "dtln")
 RAW0_LEG = "raw0"
 USB_CORPUS_LEGS = ("ref", "usb_raw", "usb_webrtc")
 USB_DTLN_LEG = "usb_dtln"
-KNOWN_LEGS = BASE_LEGS + (RAW0_LEG,) + USB_CORPUS_LEGS + (USB_DTLN_LEG,)
+AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
+LEGACY_AEC3_SWEEP_LEGS = (
+    "aec3_ns_off",
+    "aec3_default_gain_08",
+    "aec3_hf_mask_upstream",
+    "aec3_hf_wide_open",
+)
+KNOWN_LEGS = (
+    BASE_LEGS
+    + (RAW0_LEG,)
+    + USB_CORPUS_LEGS
+    + (USB_DTLN_LEG,)
+    + AEC3_SWEEP_LEGS
+    + LEGACY_AEC3_SWEEP_LEGS
+)
 SILENCE_RMS = 30.0
 MAX_EXPECTED_DURATION_SEC = 30.5
 
@@ -140,6 +156,8 @@ def _expected_legs(session: dict[str, Any]) -> tuple[str, ...]:
             leg for leg in ("ref", "usb_raw", USB_DTLN_LEG)
             if not ports or leg in ports
         )
+    if session.get("include_aec3_sweep"):
+        legs.extend(leg for leg in AEC3_SWEEP_LEGS if not ports or leg in ports)
     # Preserve recorder order while de-duping shared ref/usb_raw
     # companion legs.
     legs = list(dict.fromkeys(legs))
