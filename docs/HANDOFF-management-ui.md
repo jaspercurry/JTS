@@ -246,8 +246,8 @@ System                                      health + admin
   playback better. Optional small now-playing chip in the sticky header is
   fine; making the whole page about it isn't.
 
-- **Sticky volume + mic.** Privacy literature + the
-  [silent-failure-unacceptable memory](.claude/projects/-Users-jaspercurry-Code-JTS/memory/feedback_silent_failure_unacceptable.md):
+- **Sticky volume + mic.** Privacy literature + the private memory note
+  `feedback_silent_failure_unacceptable.md`:
   mic state must be unambiguous. Sticky placement matches Sonos/HomePod
   chrome.
 
@@ -884,16 +884,16 @@ Pre-flight checklist for future-you:
 Notes specific to JTS that the research doesn't cover:
 
 - **The mic toggle is a privacy promise**, not just a feature. Its visual
-  state must be unambiguous on every viewport (see
-  [`memory/feedback_silent_failure_unacceptable.md`](.claude/projects/-Users-jaspercurry-Code-JTS/memory/feedback_silent_failure_unacceptable.md)).
+  state must be unambiguous on every viewport (captured in the private
+  memory note `feedback_silent_failure_unacceptable.md`).
   Don't bury it under a fold or behind a toggle whose state can be
   misread.
 - **All web pages are HTTP, not HTTPS, except `/correction/`** (which
   needs `getUserMedia`). Don't accidentally redirect the whole page to
-  HTTPS — surfaces the self-signed cert warning. See
-  [`memory/feedback_jts_http_not_https.md`](.claude/projects/-Users-jaspercurry-Code-JTS/memory/feedback_jts_http_not_https.md).
+  HTTPS — surfaces the self-signed cert warning. This comes from the
+  private memory note `feedback_jts_http_not_https.md`.
 - **State files live under `/var/lib/jasper/*.env`** with `EnvironmentFile=`
-  chaining in the systemd units (see CLAUDE.md "Voice provider switching"
+  chaining in the systemd units (see AGENTS.md "Voice provider switching"
   for the canonical pattern). The new `setup_state.json` should follow:
   atomic tempfile + rename, mode 0644 unless it carries secrets, fail-safe
   default if unreadable.

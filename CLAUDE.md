@@ -6,6 +6,5 @@
 > **Edit AGENTS.md, not this file.** Changes to CLAUDE.md may be
 > lost or ignored by rebasing agents.
 
-@README.md
 @AGENTS.md
 @CLAUDE.local.md

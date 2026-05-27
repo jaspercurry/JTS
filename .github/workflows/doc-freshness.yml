@@ -51,8 +51,14 @@ jobs:
             echo "$OUTPUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          STALE_COUNT=$(echo "$OUTPUT" | sed -nE 's/^Summary: ([0-9]+) stale.*/\1/p')
+          MISSING_COUNT=$(echo "$OUTPUT" | sed -nE 's/^Summary: ([0-9]+) missing footer, ([0-9]+) stale,.*/\1/p')
+          STALE_COUNT=$(echo "$OUTPUT" | sed -nE 's/^Summary: ([0-9]+) missing footer, ([0-9]+) stale,.*/\2/p')
+          MISSING_COUNT=${MISSING_COUNT:-0}
+          STALE_COUNT=${STALE_COUNT:-0}
+          ISSUE_COUNT=$(( MISSING_COUNT + STALE_COUNT ))
+          echo "missing_count=${MISSING_COUNT}" >> "$GITHUB_OUTPUT"
           echo "stale_count=${STALE_COUNT:-0}" >> "$GITHUB_OUTPUT"
+          echo "issue_count=${ISSUE_COUNT}" >> "$GITHUB_OUTPUT"
           {
             echo 'output<<DOCFRESHNESS_EOF'
             echo "$OUTPUT"
@@ -64,7 +70,9 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          MISSING_COUNT: ${{ steps.check.outputs.missing_count }}
           STALE_COUNT: ${{ steps.check.outputs.stale_count }}
+          ISSUE_COUNT: ${{ steps.check.outputs.issue_count }}
           OUTPUT: ${{ steps.check.outputs.output }}
         run: |
           set -euo pipefail
@@ -77,7 +85,7 @@ jobs:
           # indentation issues — keeps every bash line at the YAML
           # block-scalar indent).
           BODY_FILE="$(mktemp)"
-          if [[ "$STALE_COUNT" == "0" ]]; then
+          if [[ "$ISSUE_COUNT" == "0" ]]; then
             if [[ -z "$EXISTING_ID" ]]; then
               echo "No stale items, no existing comment — nothing to do."
               exit 0
@@ -93,7 +101,7 @@ jobs:
           else
             {
               echo "$MARKER"
-              echo "## Doc freshness: ${STALE_COUNT} doc(s) overdue for re-verification"
+              echo "## Doc freshness: ${STALE_COUNT} stale, ${MISSING_COUNT} missing footer"
               echo
               echo '```'
               echo "$OUTPUT"
@@ -109,8 +117,14 @@ jobs:
           if [[ -n "$EXISTING_ID" ]]; then
             echo "Updating existing sticky comment ${EXISTING_ID}"
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
-              -F "body=@${BODY_FILE}" > /dev/null
+              -F "body=@${BODY_FILE}" > /dev/null || {
+                echo "Could not update PR comment; leaving workflow non-blocking."
+                exit 0
+              }
           else
             echo "Creating new sticky comment"
-            gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE"
+            gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE" || {
+              echo "Could not create PR comment; leaving workflow non-blocking."
+              exit 0
+            }
           fi

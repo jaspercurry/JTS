@@ -86,7 +86,7 @@ blank SD card to working speaker.
 
 ## Documentation
 
-The repo has ~30 markdown files in a layered structure:
+The repo has a large Markdown corpus in a layered structure:
 
 - **[README.md](README.md)** — architecture, hardware, where things
   live. Read first.
