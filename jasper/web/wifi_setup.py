@@ -59,7 +59,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
-from .. import wifi_guardian_persistence
+from .. import wifi_guardian_persistence, wifi_scan_repair
 from ._common import NAV_BACK_CSS, NAV_BACK_HTML
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,8 @@ _CONNECT_TIMEOUT = 45
 _ROLLBACK_WAIT = 20
 _ROLLBACK_TIMEOUT = 30
 _SCAN_HEALTH_JOURNAL_LINES = 120
+_SCAN_REPAIR_IFACE = os.environ.get("JASPER_WIFI_SCAN_REPAIR_IFACE", "wlan0")
+_SCAN_REPAIR_RETRY_DELAYS = (2.0, 3.0)
 
 
 def _env_truthy(name: str) -> bool:
@@ -417,9 +419,15 @@ def _parse_scan_list(stdout: str) -> list[dict[str, Any]]:
             "secured": security not in ("", "--"),
             "inUse": in_use == "*",
         }
-        # Dedup by SSID, keep strongest signal.
+        # Dedup by SSID. Prefer the active BSSID so the current network
+        # stays classified as in-use even when a stronger AP with the
+        # same SSID is visible; otherwise keep the strongest signal.
         prev = by_ssid.get(ssid)
-        if prev is None or entry["signal"] > prev["signal"]:
+        if (
+            prev is None
+            or entry["inUse"]
+            or (not prev.get("inUse") and entry["signal"] > prev["signal"])
+        ):
             by_ssid[ssid] = entry
 
     networks = list(by_ssid.values())
@@ -427,19 +435,15 @@ def _parse_scan_list(stdout: str) -> list[dict[str, Any]]:
     return networks
 
 
+def _filter_available_networks(
+    networks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Hide the currently-connected SSID from the connectable list."""
+    return [network for network in networks if not network.get("inUse")]
+
+
 def _text_mentions_scan_suppression(*chunks: str | None) -> bool:
-    text = "\n".join(chunk or "" for chunk in chunks).lower()
-    return any(
-        marker in text
-        for marker in (
-            "brcmf_cfg80211_scan: scanning suppressed",
-            "scanning suppressed",
-            "resource temporarily unavailable",
-            "status (4)",
-            "(-11)",
-            "eagain",
-        )
-    )
+    return wifi_scan_repair.text_mentions_scan_suppression(*chunks)
 
 
 def _recent_kernel_scan_suppressed() -> bool | None:
@@ -469,12 +473,16 @@ def _recent_kernel_scan_suppressed() -> bool | None:
 
 def _scan_report(
     *,
-    networks: list[dict[str, Any]],
+    raw_networks: list[dict[str, Any]],
     rescan_proc: subprocess.CompletedProcess[str],
     list_proc: subprocess.CompletedProcess[str],
     recent_suppression_log: bool | None,
+    repair: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    only_current = len(networks) == 1 and bool(networks[0].get("inUse"))
+    available_networks = _filter_available_networks(raw_networks)
+    only_current = (
+        len(raw_networks) == 1 and bool(raw_networks[0].get("inUse"))
+    )
     nmcli_mentions_suppression = _text_mentions_scan_suppression(
         rescan_proc.stdout, rescan_proc.stderr,
         list_proc.stdout, list_proc.stderr,
@@ -505,16 +513,23 @@ def _scan_report(
         "debug": {
             "rescanReturncode": rescan_proc.returncode,
             "listReturncode": list_proc.returncode,
-            "networkCount": len(networks),
+            "networkCount": len(available_networks),
+            "rawNetworkCount": len(raw_networks),
+            "filteredCurrentCount": len(raw_networks) - len(available_networks),
             "onlyCurrentNetwork": only_current,
             "recentSuppressionLog": recent_suppression_log,
         },
     }
-    return {"networks": networks, "scan": scan}
+    if repair is not None:
+        scan["repair"] = repair
+    return {"networks": available_networks, "scan": scan}
 
 
-def scan_networks_report() -> dict[str, Any]:
-    """Trigger a fresh scan and return networks plus scan health.
+def _scan_networks_report_once(
+    *,
+    repair: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Trigger a fresh scan once and return networks plus scan health.
 
     The health block deliberately distinguishes definite driver
     suppression from the softer "we only saw the current network" hint.
@@ -536,15 +551,37 @@ def scan_networks_report() -> dict[str, Any]:
         timeout=_SCAN_TIMEOUT, log_argv=False,
     )
     if proc.returncode != 0:
-        networks: list[dict[str, Any]] = []
+        raw_networks: list[dict[str, Any]] = []
     else:
-        networks = _parse_scan_list(proc.stdout)
+        raw_networks = _parse_scan_list(proc.stdout)
     return _scan_report(
-        networks=networks,
+        raw_networks=raw_networks,
         rescan_proc=rescan_proc,
         list_proc=proc,
         recent_suppression_log=_recent_kernel_scan_suppressed(),
+        repair=repair,
     )
+
+
+def scan_networks_report(*, allow_repair: bool = True) -> dict[str, Any]:
+    """Trigger a fresh scan and optionally repair Pi 5 scan suppression."""
+    report = _scan_networks_report_once()
+    if not allow_repair or report["scan"].get("reason") != "driver_scan_suppressed":
+        return report
+
+    repair = wifi_scan_repair.maybe_repair_scan_suppression(_SCAN_REPAIR_IFACE)
+    repair_dict = repair.to_dict()
+    if not (repair.attempted and repair.ack):
+        report["scan"]["repair"] = repair_dict
+        return report
+
+    last_report = report
+    for delay_s in _SCAN_REPAIR_RETRY_DELAYS:
+        time.sleep(delay_s)
+        last_report = _scan_networks_report_once(repair=repair_dict)
+        if not last_report["scan"].get("degraded"):
+            return last_report
+    return last_report
 
 
 def scan_networks() -> list[dict[str, Any]]:
@@ -1266,6 +1303,8 @@ let state = { adapterPresent: true, radioOn: false, hasEthernet: false,
 let scanResults = [];
 let scanHealth = null;
 let scanning = false;
+let hasScanned = false;
+let autoScanned = false;
 let openSsid = null;     // available-list inline panel currently open
 let openSavedName = null;// saved-list inline panel currently open
 let stateTimer = null;
@@ -1293,6 +1332,7 @@ async function fetchState() {
     renderCurrent();
     renderScanHealth();
     renderSaved();
+    maybeAutoScan();
   } catch (e) {
     document.getElementById('current').innerHTML =
       '<div class="current-card disconnected">' +
@@ -1300,6 +1340,12 @@ async function fetchState() {
       '<div class="meta">Could not reach the Wi-Fi backend.</div>' +
       '</div>';
   }
+}
+
+function maybeAutoScan() {
+  if (autoScanned || scanning || !state.adapterPresent || !state.radioOn) return;
+  autoScanned = true;
+  rescan();
 }
 
 function schedulePoll(ms) {
@@ -1426,7 +1472,7 @@ function renderScanHealth() {
   if (scanHealth.degraded) {
     let msg = 'Wi-Fi scanning looks degraded. ';
     if (scanHealth.reason === 'driver_scan_suppressed') {
-      msg += 'The Pi radio is reporting scan suppression, so the list may only show the current network.';
+      msg += 'The Pi radio is reporting scan suppression, so nearby networks may not appear.';
     } else {
       msg += 'The scan command did not complete cleanly.';
     }
@@ -1444,9 +1490,15 @@ function renderScanHealth() {
 function renderAvail() {
   const list = document.getElementById('avail-list');
   if (!scanResults.length) {
-    list.innerHTML = scanning
-      ? '<div class="empty">Scanning…</div>'
-      : '<div class="empty">Tap Scan to look for nearby networks.</div>';
+    let msg = 'Tap Scan to look for nearby networks.';
+    if (scanning) {
+      msg = 'Scanning…';
+    } else if (hasScanned && scanHealth && scanHealth.degraded) {
+      msg = 'Scan degraded. Join by name is available below.';
+    } else if (hasScanned) {
+      msg = 'No other networks found.';
+    }
+    list.innerHTML = '<div class="empty">' + escapeHtml(msg) + '</div>';
     return;
   }
   list.innerHTML = scanResults.map(n => {
@@ -1503,6 +1555,7 @@ async function rescan() {
       debug: {},
     };
   } finally {
+    hasScanned = true;
     scanning = false;
     btn.classList.remove('scanning');
     btn.innerHTML = 'Scan';

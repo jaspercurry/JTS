@@ -226,7 +226,9 @@ when the configured AEC mic is present with 6-channel firmware — see
   network at top, scan + tap-to-connect for nearby networks,
   manual join-by-name fallback for hidden or scan-suppressed networks,
   saved networks in a collapse section with Forget. Backed by
-  `nmcli`. Connect rolls back to the previous network on failure
+  `nmcli`. On Pi 5 brcmfmac scan suppression, `/wifi/scan` attempts a
+  bounded non-disruptive self-heal before falling back to manual join.
+  Connect rolls back to the previous network on failure
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
   <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
   case only.
