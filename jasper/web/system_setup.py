@@ -67,8 +67,6 @@ _EXTRA_STYLE = """
 .tile .value { font-size: 1.4em; font-weight: 600; color: #222; margin: 0.15em 0 0.2em; }
 .tile .sub { font-size: 0.78em; color: #888; }
 .tile .sub:empty { display: none; }
-.tile.warn { background: #fff7e6; border-color: #f0c060; }
-.tile.fail { background: #ffeaea; border-color: #e08080; }
 .tile svg { width: 100%; height: 32px; display: block; margin-top: 0.4em; }
 .tile svg .area { fill: #1db95433; }
 .tile svg .line { stroke: #1db954; stroke-width: 1.5; fill: none; }
@@ -114,18 +112,23 @@ _EXTRA_STYLE = """
 .warn-banner code { background: rgba(0,0,0,0.06); padding: 0.05em 0.3em;
   border-radius: 3px; }
 
-/* Per-core CPU bars — one tall column per logical CPU. */
-.cpu-bars { display: flex; gap: 0.35em; height: 92px; margin-top: 0.45em; }
-.cpu-bar-cell { flex: 1; min-width: 0; }
-.cpu-bar { height: 100%; background: #e8e8e8; border-radius: 3px;
+/* Per-core CPU bars — one column per logical CPU. */
+.cpu-bars { display: flex; gap: 0.35em; height: 78px; margin-top: 0.45em; }
+.cpu-bar-cell { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.2em; }
+.cpu-bar { flex: 1; min-height: 0; background: #e8e8e8; border-radius: 3px;
   position: relative; overflow: hidden; }
 .cpu-bar-fill { position: absolute; bottom: 0; left: 0; right: 0;
   background: #1db954; transition: height 0.3s ease-out; }
-.tile.warn .cpu-bar-fill { background: #f0c060; }
-.tile.fail .cpu-bar-fill { background: #e08080; }
-.cpu-bar-label { position: absolute; left: 0; right: 0; bottom: 0.22em;
-  z-index: 1; font-size: 0.68em; text-align: center; color: #333;
-  font-variant-numeric: tabular-nums; text-shadow: 0 1px 1px rgba(255,255,255,0.85); }
+.cpu-bar-fill.warn { background: #f0c060; }
+.cpu-bar-fill.fail { background: #e08080; }
+.cpu-bar-label { font-size: 0.68em; line-height: 1; text-align: center; color: #666;
+  font-variant-numeric: tabular-nums; }
+.mem-line { display: block; }
+.tile-pill { display: none; width: max-content; margin-top: 0.45em;
+  border-radius: 999px; padding: 0.12em 0.5em; font-size: 0.68em;
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.tile-pill.warn { display: inline-block; color: #6a4a10; background: #fff1cc; }
+.tile-pill.fail { display: inline-block; color: #8a1f1f; background: #ffdede; }
 .temp-c { display: block; color: #666; font-size: 0.72em; line-height: 1.15; }
 
 .actions { display: flex; flex-wrap: wrap; gap: 0.5em; margin-top: 0.5em; }
@@ -196,6 +199,7 @@ _PAGE_BODY = """
     <div class="label">Disk</div>
     <div class="value"><span id="disk-value">—</span></div>
     <div class="sub"><span id="disk-sub">—</span></div>
+    <div class="tile-pill" id="disk-pill" aria-live="polite"></div>
   </div>
 </div>
 
@@ -406,7 +410,7 @@ _SCRIPT = r"""
     });
   }
 
-  // Per-core CPU bars renderer — one tall bar per logical CPU.
+  // Per-core CPU bars renderer — one bar per logical CPU, label below.
   function renderCpuBars(percents) {
     const container = document.getElementById('cpu-bars');
     if (!container) return;
@@ -416,10 +420,13 @@ _SCRIPT = r"""
     }
     container.innerHTML = percents.map((p, i) => {
       const pct = Math.min(100, Math.max(0, p || 0));
+      let fillClass = 'cpu-bar-fill';
+      if (pct >= 90) fillClass += ' fail';
+      else if (pct >= 75) fillClass += ' warn';
       return '<div class="cpu-bar-cell">' +
-             '<div class="cpu-bar"><div class="cpu-bar-fill" style="height:' +
-             pct.toFixed(1) + '%"></div>' +
-             '<div class="cpu-bar-label">' + Math.round(pct) + '%</div></div>' +
+             '<div class="cpu-bar"><div class="' + fillClass + '" style="height:' +
+             pct.toFixed(1) + '%"></div></div>' +
+             '<div class="cpu-bar-label">' + Math.round(pct) + '%</div>' +
              '</div>';
     }).join('');
   }
@@ -597,9 +604,15 @@ _SCRIPT = r"""
     const swap = hist.swap_used_mb[hist.swap_used_mb.length - 1] || 0;
     document.getElementById('mem-value').textContent =
       Math.round(memUsed) + ' / ' + Math.round(memTotal) + ' MB';
-    document.getElementById('mem-sub').textContent =
-      Math.round(memAvail) + ' MB available' +
-      (swap > 0 ? ' · ' + Math.round(swap) + ' MB swap' : '');
+    const memLines = [
+      '<span class="mem-line">' + Math.round(memAvail) + ' MB available</span>',
+    ];
+    if (swap > 0) {
+      memLines.push(
+        '<span class="mem-line">' + Math.round(swap) + ' MB swap</span>',
+      );
+    }
+    document.getElementById('mem-sub').innerHTML = memLines.join('');
     let memStatus = 'ok';
     if (memAvail < 150) memStatus = 'fail';
     else if (memAvail < 250 || swap > 150) memStatus = 'warn';
@@ -609,7 +622,8 @@ _SCRIPT = r"""
     // Load tile
     const load = hist.load_1m[hist.load_1m.length - 1] || 0;
     document.getElementById('load-value').textContent = load.toFixed(2);
-    document.getElementById('load-sub').textContent = '';
+    document.getElementById('load-sub').textContent =
+      'running + waiting tasks';
     let loadStatus = 'ok';
     if (load > 4) loadStatus = 'fail';
     else if (load > 3) loadStatus = 'warn';
@@ -696,6 +710,16 @@ _SCRIPT = r"""
     if (diskPct > 90) diskStatus = 'fail';
     else if (diskPct > 75) diskStatus = 'warn';
     setTile('tile-disk', diskStatus);
+    const diskPill = document.getElementById('disk-pill');
+    diskPill.className = 'tile-pill';
+    diskPill.textContent = '';
+    if (diskStatus === 'fail') {
+      diskPill.textContent = 'Full';
+      diskPill.classList.add('fail');
+    } else if (diskStatus === 'warn') {
+      diskPill.textContent = 'High';
+      diskPill.classList.add('warn');
+    }
 
     // Software card
     const build = snap.build || {};

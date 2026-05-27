@@ -190,9 +190,15 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "Medium saves CPU" in text
     assert "State warning:" in text
     assert "data-converter=\"samplerate_medium\"" in text
+    assert "running + waiting tasks" in text
+    assert "mem-line" in text
+    assert "id=\"disk-pill\"" in text
+    assert "tile-pill.warn" in text
     assert "queue depth" not in text
     assert "kernel-discrete" not in text
     assert "fan-footer" not in text
+    assert ".tile.warn { background" not in text
+    assert ".tile.fail { background" not in text
     assert "temp-c" in text
     assert "Restart voice" in text  # action button present
 
