@@ -320,6 +320,7 @@ deploy/
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
+  HANDOFF-wake-corpus-quality.md  Methodology for wake-corpus audio QA / artifact review
   HANDOFF-mic-quality-v2.md     Empirical history: AEC sweeps, BEST_A, triple-stream architecture
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
@@ -488,6 +489,12 @@ reference. Currently:
   a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
   for future cheaper-mic experiments. Read this before working on wake-
   word reliability, training data collection, or testing methodology.
+- [`HANDOFF-wake-corpus-quality.md`](docs/HANDOFF-wake-corpus-quality.md) —
+  Current methodology for programmatic audio-quality review of the
+  deliberate wake corpus: deterministic artifact metrics, tear/click
+  detection, clipping and AGC diagnostics, cross-leg comparison, scoring
+  schema, and human review packages. Read this before building or
+  expanding wake-corpus quality analyzers.
 - [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) —
   Active workstream (May 2026). The VAD / mic-stream A/B test matrix:
   why local Silero on the AEC stream (Cell 0) is the production default,
