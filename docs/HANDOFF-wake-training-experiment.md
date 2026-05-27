@@ -246,13 +246,13 @@ a `jarvis_jts_raw0_v1` model later if we ever ship JTS on cheaper mic
 hardware. Iteration 1 captures it but doesn't train on it; the value
 compounds across future iterations.
 
-**Optional cheap-USB corpus legs** (`ref`, `usb_raw`, `usb_webrtc`)
-are also available during Phase 0b. These are corpus-only comparison
-legs for the hardware-cost question: can a $10 single-channel USB mic
-plus software AEC get close enough to the XVF chain? They are not
-production wake-detection inputs, and a cheap-USB DTLN leg is deferred
-until WebRTC USB comparison clips justify the extra neural-engine
-resource cost.
+**Optional cheap-USB corpus legs** (`ref`, `usb_raw`, `usb_webrtc`,
+`usb_dtln`) are also available during Phase 0b. These are corpus-only
+comparison legs for the hardware-cost question: can a $10
+single-channel USB mic plus software AEC get close enough to the XVF
+chain? They are not production wake-detection inputs. USB DTLN is
+optional and high-resource-risk on the 1 GB Pi; use it when the extra
+comparison point is worth the neural-engine cost.
 
 **Fusion: existing OR-gate.** The triple-stream architecture shipped
 in PR #253 is unchanged. Each leg scores against its own specialized
@@ -373,7 +373,7 @@ written into per-leg quadrant directories at
 | `off` | UDP `:9877` | chip ch1 — **no software processing** |
 | `dtln` | UDP `:9878` | chip ch1 → SW DTLN-aec |
 | `raw0` | UDP `:9879` | chip ch2 — **truly raw, no chip OR software DSP** (gated by per-session toggle) |
-| `ref` | UDP `:9880` | 16 kHz mono speaker reference frame that SW AEC consumes (corpus-only; opt-in) |
+| `ref` | UDP `:9880` | 16 kHz mono speaker reference frame that SW AEC consumes (corpus-only; opt-in; playback selector lists it last) |
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
@@ -388,6 +388,11 @@ Opt into USB/reference when the cheap mic is connected. If the bridge
 is not already emitting the requested optional legs, the recorder will
 offer to enable the matching bridge flags, restart
 `jasper-aec-bridge`, and only then begin the session.
+The recorder labels WebRTC legs as **WebRTC AEC3** so they are not
+confused with raw or DTLN outputs. The `usb_raw` leg is JTS-unprocessed
+except for resampling to 16 kHz; the UI warns when the USB mic's own
+ALSA hardware Auto Gain Control is enabled because that can create
+pumping or top-end artifacts before JTS ever sees the samples.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -462,6 +467,13 @@ Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
 The bridge opens the USB mic at its PortAudio default sample rate
 (the test mic reported 44.1 kHz) and resamples to the corpus contract
 of 16 kHz mono before UDP emission.
+
+**Reference-quality follow-up.** The current `ref` leg is intentionally
+the exact 16 kHz mono frame the live AEC consumes. A future
+`ref_fullband` archival leg could preserve the original full-band
+speaker reference before downsampling, but that changes the bridge,
+recorder, and audit surface. Track it as a post-corpus follow-up rather
+than changing the main recording protocol tonight.
 
 **Sessions management UX (PR #323).** The recorder's top-of-page
 Sessions card lists every recorded session (member, timestamp,
@@ -1037,6 +1049,9 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
 - 2026-05-26 follow-up — corpus-only cheap USB mic + reference legs
   (`:9880`-`:9882`), session-level leg metadata, and all-leg playback
   selector
+- 2026-05-27 polish — playback labels now distinguish WebRTC AEC3
+  from raw/DTLN legs, Reference is listed last, and the UI surfaces
+  the USB raw/no-JTS-AGC contract plus USB hardware AGC status
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1050,6 +1065,10 @@ Recorder UX status:
   confirm)
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
   playback selector for every WAV recorded on a clip
+- ✅ Playback selector labels WebRTC paths as WebRTC AEC3 and puts the
+  speaker Reference leg last
+- ✅ USB raw operator note + ALSA hardware Auto Gain Control warning
+  before recording cheap-mic sessions
 - ✅ jasper-voice start/stop wired (refuses start while recording —
   would EADDRINUSE the UDP ports)
 
@@ -1080,6 +1099,17 @@ via the new Sessions card.
 
 ## Changelog
 
+- **2026-05-27 (v9):** Wake-corpus recording-day polish:
+  - Playback labels now say WebRTC AEC3 for the WebRTC AEC paths and
+    keep the speaker Reference leg last in the clip selector.
+  - UI surfaces that USB raw is hardware-captured/resampled with no
+    JTS software AGC before saving.
+  - UI warns when the cheap USB mic's ALSA Auto Gain Control is
+    enabled, because that can explain pumping or top-end artifacts in
+    USB raw clips.
+  - `ref_fullband` archival reference capture is recorded as a
+    follow-up; the current `ref` leg remains the exact 16 kHz mono AEC
+    input frame.
 - **2026-05-26 (v8):** Recorder-managed bridge-output enable flow:
   - `jasper-aec-bridge.service` now sources optional recorder-owned
     `/var/lib/jasper/wake_corpus_bridge.env` after
@@ -1208,4 +1238,4 @@ via the new Sessions card.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-26 (v8 — recorder-managed bridge-output enable flow verified)
+Last verified: 2026-05-27 (v9 — wake-corpus polish + USB AGC warning verified)
