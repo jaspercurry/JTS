@@ -13,9 +13,9 @@
 > pytest CI, many wizard CSRF helpers, and [CLAUDE.md](../CLAUDE.md) as a
 > thin import shim. This update intentionally leaves the original review
 > body intact; treat stale claims below as review history. Current
-> open easy wins are tracked in [LICENSE-third-party.md](../LICENSE-third-party.md)
-> and the remaining security/supply-chain hardening work should get its own
-> living docs when implemented.
+> open work is tracked in the living
+> [OSS readiness top five](OSS-READINESS-TOP-FIVE.md), with attribution
+> details in [LICENSE-third-party.md](../LICENSE-third-party.md).
 
 *A hypothetical assessment, written as if a Google staff software engineer
 were evaluating this repository for the company to take on open-source

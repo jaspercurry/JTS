@@ -609,6 +609,30 @@ def _custom_row_html(model: str, *, is_active: bool) -> str:
 </label>"""
 
 
+def _privacy_disclosure_html() -> str:
+    return """
+<details class="disclosure">
+  <summary>Wake recordings and privacy</summary>
+  <div class="disclosure-body">
+    <p>
+      JTS keeps a local wake-event corpus on this speaker: short WAV
+      windows around wake fires and near-misses plus SQLite metadata
+      under <code>/var/lib/jasper/wake-events/</code>. The WAV audio
+      is size-capped; metadata rows are kept for long-baseline wake
+      reliability stats.
+    </p>
+    <p>
+      The corpus does not leave the speaker automatically. Operators
+      can inspect or export it with <code>jasper-wake-review</code>,
+      <code>scripts/fetch-wake-events.sh</code>, and
+      <code>scripts/reset-wake-events.sh</code>. Reset archives the
+      corpus before starting fresh; delete old archives manually when
+      you want erasure.
+    </p>
+  </div>
+</details>"""
+
+
 def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str = "") -> bytes:
     active = _active_model(state)
     active_entry = wake_models.by_model(active)
@@ -647,6 +671,8 @@ def _index_html(state: dict[str, str], csrf_token: str = "", *, status_msg: str 
     <button type="submit" id="wake-save">Save and restart voice</button>
   </p>
 </form>
+
+{_privacy_disclosure_html()}
 
 <script>
   // Disable the Save button + change its label the instant the form

@@ -8,7 +8,7 @@
 #   PI_HOST=192.168.1.42 PI_USER=pi bash scripts/fetch-pi-logs.sh
 #
 # Each fetch overwrites ./logs/*-latest.* and also keeps a timestamped
-# copy under ./logs/. Secrets (API keys) are redacted before write.
+# copy under ./logs/. Secrets are redacted before writing to disk.
 
 set -euo pipefail
 
@@ -20,6 +20,9 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$REPO_ROOT/logs"
 mkdir -p "$OUT"
 TS="$(date -u +%Y%m%dT%H%M%SZ)"
+
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/_diagnostic_redaction.sh"
 
 echo "Fetching logs from ${PI_USER}@${PI_HOST} (since '$SINCE') → $OUT/" >&2
 
@@ -51,7 +54,8 @@ units=(
 
 for u in "${units[@]}"; do
     out="$OUT/${u}-${TS}.log"
-    if remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" > "$out"; then
+    if remote "journalctl -u $u --since '$SINCE' --no-pager --output=short-iso 2>/dev/null" \
+        | redact_jasper_diagnostics > "$out"; then
         size=$(wc -l < "$out")
         echo "  ${u}: ${size} lines" >&2
         ln -sf "$(basename "$out")" "$OUT/${u}-latest.log"
@@ -69,13 +73,24 @@ for u in "${units[@]}"; do
 done
 remote "journalctl --since '$SINCE' --no-pager --output=short-iso \
     ${combined_flags[*]} 2>/dev/null" \
+    | redact_jasper_diagnostics \
     > "$OUT/combined-${TS}.log"
 ln -sf "combined-${TS}.log" "$OUT/combined-latest.log"
 echo "  combined: $(wc -l < "$OUT/combined-${TS}.log") lines" >&2
 
-# Configs and runtime state — secrets redacted server-side.
-remote "sudo cat /etc/jasper/jasper.env 2>/dev/null \
-    | sed -E 's/^(GEMINI_API_KEY|SPOTIFY_CLIENT_SECRET)=.*/\1=<redacted>/'" \
+# Configs and runtime state — secrets redacted before write.
+remote "sudo sh -c 'for f in \
+        /etc/jasper/jasper.env \
+        /var/lib/jasper/voice_provider.env \
+        /var/lib/jasper/google_credentials.env \
+        /var/lib/jasper/home_assistant.env \
+        /var/lib/jasper/transit.env \
+        /var/lib/jasper/wifi_guardian.env; do \
+            [ -r \"\$f\" ] || continue; \
+            echo \"== \$f ==\"; \
+            cat \"\$f\"; \
+        done' 2>/dev/null" \
+    | redact_jasper_diagnostics \
     > "$OUT/jasper.env-${TS}.txt" 2>/dev/null || true
 ln -sf "jasper.env-${TS}.txt" "$OUT/jasper.env-latest.txt" 2>/dev/null || true
 
@@ -99,6 +114,7 @@ remote "echo '== aplay -L =='; aplay -L 2>/dev/null; \
 ln -sf "alsa-devices-${TS}.txt" "$OUT/alsa-devices-latest.txt"
 
 remote "systemctl status --no-pager ${units[*]} 2>/dev/null" \
+    | redact_jasper_diagnostics \
     > "$OUT/systemctl-${TS}.txt" 2>/dev/null || true
 ln -sf "systemctl-${TS}.txt" "$OUT/systemctl-latest.txt" 2>/dev/null || true
 

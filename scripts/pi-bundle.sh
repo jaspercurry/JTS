@@ -15,22 +15,38 @@ mkdir -p "$DIR"
 
 since="${SINCE:-2 hours ago}"
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+. "${SCRIPT_DIR}/_diagnostic_redaction.sh"
+
 units=(jasper-camilla jasper-voice shairport-sync)
 for u in "${units[@]}"; do
     journalctl -u "$u" --since "$since" --no-pager --output=short-iso \
-        > "$DIR/${u}.log" 2>/dev/null || true
+        2>/dev/null | redact_jasper_diagnostics > "$DIR/${u}.log" || true
 done
 journalctl --since "$since" --no-pager --output=short-iso \
     -u jasper-camilla -u jasper-voice -u shairport-sync \
-    > "$DIR/combined.log" 2>/dev/null || true
+    2>/dev/null | redact_jasper_diagnostics > "$DIR/combined.log" || true
 
-# kernel ring buffer (recent) — useful for USB/ALSA gremlins
-dmesg -T --since "$since" > "$DIR/dmesg.log" 2>/dev/null || \
-    dmesg > "$DIR/dmesg.log" 2>/dev/null || true
+# kernel ring buffer (recent) — useful for USB/ALSA issues
+dmesg -T --since "$since" 2>/dev/null | redact_jasper_diagnostics \
+    > "$DIR/dmesg.log" || \
+    dmesg 2>/dev/null | redact_jasper_diagnostics > "$DIR/dmesg.log" || true
 
 # configs (secrets redacted)
-sed -E 's/^(GEMINI_API_KEY|SPOTIFY_CLIENT_SECRET)=.*/\1=<redacted>/' \
-    /etc/jasper/jasper.env > "$DIR/jasper.env.txt" 2>/dev/null || true
+{
+    for f in \
+        /etc/jasper/jasper.env \
+        /var/lib/jasper/voice_provider.env \
+        /var/lib/jasper/google_credentials.env \
+        /var/lib/jasper/home_assistant.env \
+        /var/lib/jasper/transit.env \
+        /var/lib/jasper/wifi_guardian.env; do
+        [[ -r "$f" ]] || continue
+        echo "== $f =="
+        cat "$f"
+    done
+} | redact_jasper_diagnostics > "$DIR/jasper.env.txt" 2>/dev/null || true
 cp /etc/camilladsp/v1.yml "$DIR/camilladsp.yml" 2>/dev/null || true
 # /etc/asound.conf since PR #223 (2026-05-23); fall back to the
 # legacy /root/.asoundrc for older Pis.
@@ -39,9 +55,14 @@ cp /etc/asound.conf "$DIR/asoundrc" 2>/dev/null \
     || true
 cp /etc/modules-load.d/snd-aloop.conf "$DIR/snd-aloop.conf" 2>/dev/null || true
 
-# unit files for cross-version diff
-cp /etc/systemd/system/jasper-camilla.service "$DIR/" 2>/dev/null || true
-cp /etc/systemd/system/jasper-voice.service "$DIR/" 2>/dev/null || true
+# unit files for cross-version diff. Redact in case an operator hotfix
+# or older install used inline Environment=... secrets instead of
+# EnvironmentFile=.
+for unit in jasper-camilla.service jasper-voice.service; do
+    src="/etc/systemd/system/${unit}"
+    [[ -r "$src" ]] || continue
+    redact_jasper_diagnostics < "$src" > "$DIR/${unit}" 2>/dev/null || true
+done
 
 # ALSA discovery
 {
@@ -54,7 +75,7 @@ cp /etc/systemd/system/jasper-voice.service "$DIR/" 2>/dev/null || true
 # unit status
 systemctl status --no-pager \
     jasper-camilla jasper-voice shairport-sync \
-    > "$DIR/systemctl-status.txt" 2>&1 || true
+    2>&1 | redact_jasper_diagnostics > "$DIR/systemctl-status.txt" || true
 
 # voice sessions / spend
 sqlite3 /var/lib/jasper/usage.db \
