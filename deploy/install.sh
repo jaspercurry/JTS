@@ -17,8 +17,6 @@
 
 set -euo pipefail
 
-echo "==> install.sh starting"
-
 REPO_DIR="${REPO_DIR:-$(cd "$(dirname "$0")/.." && pwd)}"
 INSTALL_DIR="/opt/jasper"
 CAMILLA_DIR="/opt/camilladsp"
@@ -50,6 +48,126 @@ SHAIRPORT_SYNC_REPO="https://github.com/mikebrady/shairport-sync.git"
 WEBRTC_AEC3_VERSION="v2.1"
 WEBRTC_AEC3_REPO="https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
 WEBRTC_AEC3_COMMIT="846fe90a289f58b7c9303a635142aa2c7caa93e5"
+
+print_install_usage() {
+    cat <<'EOF'
+Usage: bash deploy/install.sh [--dry-run|--plan]
+
+Options:
+  --dry-run, --plan   Print the install plan and exit without requiring root.
+  -h, --help          Show this help.
+
+Environment:
+  JASPER_INSTALL_DRY_RUN=1   Same as --dry-run.
+EOF
+}
+
+print_install_plan() {
+    cat <<EOF
+==> JTS install plan (dry run)
+
+No host changes are made in this mode. The plan is intentionally static:
+it describes the installer surfaces and conditional checks, then exits
+before the root check, apt, downloads, file writes, systemd, or restarts.
+The real installer remains the source of truth for exact host-specific
+no-op decisions.
+
+Run for real:
+  sudo bash deploy/install.sh
+
+1. System packages
+   - apt-get update.
+   - Core runtime/build packages:
+     python3 python3-venv python3-dev build-essential libasound2-dev
+     libasound2 portaudio19-dev libasound2-plugins libsndfile1 curl
+     ca-certificates rsync dfu-util libwebrtc-audio-processing-dev
+     pkg-config meson ninja-build nginx-light openssl rustc cargo.
+   - Renderer and Bluetooth/AirPlay build packages:
+     autoconf automake libtool libpopt-dev libconfig-dev
+     libavahi-client-dev libssl-dev libsoxr-dev libplist-dev
+     libsodium-dev libgcrypt20-dev uuid-dev libmbedtls-dev
+     libglib2.0-dev libavutil-dev libavcodec-dev libavformat-dev
+     libswresample-dev xxd bluez-alsa-utils bluez-tools avahi-daemon
+     avahi-utils.
+
+2. Downloaded or built inputs
+   - CamillaDSP: ${CAMILLA_URL}
+     sha256=${CAMILLA_SHA256}
+   - Raspotify/librespot deb: ${RASPOTIFY_URL}
+     sha256=${RASPOTIFY_SHA256}
+   - nqptp: ${NQPTP_REPO}
+     commit=${NQPTP_COMMIT}
+   - shairport-sync: ${SHAIRPORT_SYNC_REPO}
+     ref=${SHAIRPORT_SYNC_VERSION}, commit=${SHAIRPORT_SYNC_COMMIT}
+   - WebRTC AEC3 v2 static archive: ${WEBRTC_AEC3_REPO}
+     ref=${WEBRTC_AEC3_VERSION}, commit=${WEBRTC_AEC3_COMMIT}
+   - CamillaGUI 4.1.0 bundle selected by uname -m, sha256-checked.
+   - openWakeWord ONNX assets, curated wake models, and DTLN AEC models
+     from the Python registries, sha256-checked before staging.
+   - Python runtime dependencies from pyproject.toml; openwakeword is
+     preinstalled without tflite-runtime because Pi OS Trixie ships
+     Python 3.13.
+   - jasper-fanin Rust daemon from rust/jasper-fanin with
+     cargo build --release --locked.
+   - Optional ESP32 dial/satellite firmware only when
+     JASPER_BUILD_OPTIONAL_FIRMWARE=1.
+
+3. Runtime files and state
+   - Create/update /opt/jasper, /etc/jasper, /var/lib/jasper,
+     /opt/camilladsp, /etc/camilladsp, /var/lib/camilladsp,
+     /usr/share/jasper-web, and feature-specific state directories.
+   - Write /var/lib/jasper/build.txt with deploy SHA/branch metadata
+     when available.
+   - Copy Python source, jasper_aec3, pyproject.toml, firmware sources,
+     landing pages, nginx config, Avahi service templates, systemd
+     units, udev rules, ALSA templates, and helper binaries.
+   - Render /etc/asound.conf through /usr/local/sbin/jasper-render-asound-conf.
+
+4. Config and migrations
+   - Seed /etc/jasper/jasper.env on fresh installs.
+   - Migrate wizard-owned keys out of /etc/jasper/jasper.env into
+     /var/lib/jasper/* env files for voice provider, transit, weather,
+     wake detection legs, and WiFi guardian recovery.
+   - Seed defaults for speaker name, AirPlay mode, ALSA quality,
+     wake model, AEC mode, peer_id, journald persistence, memory
+     resilience, and correction TLS CA/cert files.
+   - Add Pi boot/config changes when needed: USB gadget dtoverlay,
+     memory cgroup/PSI kernel args, MGLRU tmpfiles, sysctl values,
+     and rpi-swap zram sizing.
+
+5. Services and live actions
+   - Reload udev and systemd.
+   - Enable socket-activated setup wizards and always-on audio/control
+     services.
+   - Enable/start or restart renderer services, jasper-fanin, DAC init,
+     headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
+     guardian.
+   - Run the AEC/mic reconciler so voice follows attached hardware.
+   - Regenerate audio cues if jasper-cues is installed.
+   - Run jasper-doctor as a final non-blocking health summary.
+
+6. Provenance/checks
+   - Direct downloads and source-build inputs above are tracked in
+     deploy/provenance.toml and checked by:
+       python3 scripts/check-provenance.py
+   - This dry run is a planning aid for contributors; it is not a
+     substitute for a real Pi install/deploy validation before release.
+EOF
+}
+
+_is_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+_is_falsey_or_empty() {
+    case "${1:-}" in
+        ""|0|false|FALSE|no|NO|off|OFF) return 0 ;;
+        *) return 1 ;;
+    esac
+}
 
 require_root() {
     if [[ $EUID -ne 0 ]]; then
@@ -2612,6 +2730,36 @@ run_doctor_summary() {
 }
 
 main() {
+    local dry_run="${JASPER_INSTALL_DRY_RUN:-0}"
+    local arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --dry-run|--plan)
+                dry_run=1
+                ;;
+            -h|--help)
+                print_install_usage
+                return 0
+                ;;
+            *)
+                echo "unknown install.sh argument: ${arg}" >&2
+                print_install_usage >&2
+                return 2
+                ;;
+        esac
+    done
+
+    if _is_truthy "${dry_run}"; then
+        print_install_plan
+        return 0
+    fi
+    if ! _is_falsey_or_empty "${dry_run}"; then
+        echo "invalid JASPER_INSTALL_DRY_RUN value: ${dry_run}" >&2
+        echo "use 1/true/yes/on or 0/false/no/off" >&2
+        return 2
+    fi
+
+    echo "==> install.sh starting"
     require_root
     install_deps
     install_alsa  # exports DONGLE_CARD; must run before install_camilladsp

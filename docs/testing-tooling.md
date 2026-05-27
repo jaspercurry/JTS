@@ -28,12 +28,31 @@
 | Diagnose a bridge / AEC issue forensically | [AEC / bridge forensics](#aec--bridge-forensics) |
 | Generate a fixed audio test track for repeatable testing | [Test-track generation](#test-track-generation) |
 | Check live Pi state (services / config / mic / etc.) | [Pi-side diagnostics](#pi-side-diagnostics) |
+| Preview what install.sh would mutate | [Install dry-run plan](#install-dry-run-plan) |
 | Check install/build supply-chain provenance | [Supply-chain provenance](#supply-chain-provenance) |
 | Check optional ESP32 firmware still builds | [Optional ESP32 firmware builds](#optional-esp32-firmware-builds) |
 | Test the assistant's *behavior* (does it understand a question, call the right tool) | [Voice-eval (paid LLM tests)](#voice-eval-paid-llm-tests) |
 | Capture from a non-bridge source (satellite mic, raw chip) | [Capture: alternative sources](#capture-alternative-sources) |
 
 ---
+
+## Install dry-run plan
+
+[`deploy/install.sh`](../deploy/install.sh) has a non-mutating plan
+mode for contributors reviewing install/deploy changes:
+
+```sh
+bash deploy/install.sh --dry-run
+# or: JASPER_INSTALL_DRY_RUN=1 bash deploy/install.sh
+```
+
+It exits before the root check and lists the major install surfaces:
+apt package groups, direct downloads and source builds, runtime file
+writes, env migrations, boot/config writes, systemd actions, restarts,
+and post-install checks. Use it when touching deploy/install behavior
+or when explaining what a fresh Pi install will do. It is a planning
+surface only; real host-specific no-op decisions still live in
+`install.sh` itself.
 
 ## Supply-chain provenance
 

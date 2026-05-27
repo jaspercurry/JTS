@@ -23,11 +23,10 @@ _INSTALL_SH = Path(__file__).parent.parent / "deploy" / "install.sh"
 
 def _compute_min_free_kbytes(memtotal_kb: int) -> int:
     """Invoke the bash helper via subprocess; return its integer
-    output. Discards stdout from the sourcing step (install.sh has
-    a top-level banner echo) so we only capture the helper's output."""
-    # `source <file> >/dev/null` suppresses install.sh's banner.
-    # Then the bare invocation of _compute_min_free_kbytes goes to
-    # the outer stdout, which we capture.
+    output. Discards any stdout from the sourcing step so we only
+    capture the helper's output."""
+    # Then the bare invocation of _compute_min_free_kbytes goes to the
+    # outer stdout, which we capture.
     result = subprocess.run(
         ["bash", "-c",
          f"source {_INSTALL_SH} >/dev/null && _compute_min_free_kbytes {memtotal_kb}"],
@@ -189,3 +188,71 @@ def test_firmware_staleness_includes_platformio_inputs(tmp_path):
 
     assert result.returncode == 0
     assert result.stdout.strip() == str(platformio)
+
+
+def test_install_dry_run_exits_before_root_and_lists_major_surfaces():
+    """The install plan is contributor-facing safety gear: it must run
+    without sudo and summarize the installer blast radius."""
+    result = subprocess.run(
+        ["bash", str(_INSTALL_SH), "--dry-run"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.startswith("==> JTS install plan (dry run)\n")
+    assert "this script must be run as root" not in result.stderr
+    for expected in [
+        "JTS install plan (dry run)",
+        "No host changes are made in this mode",
+        "apt-get update",
+        "CamillaDSP:",
+        "Raspotify/librespot deb:",
+        "openWakeWord ONNX assets",
+        "cargo build --release --locked",
+        "/var/lib/jasper/build.txt",
+        "Migrate wizard-owned keys",
+        "Reload udev and systemd",
+        "python3 scripts/check-provenance.py",
+    ]:
+        assert expected in result.stdout
+
+
+def test_install_dry_run_env_alias_and_plan_flag_match():
+    """Both documented entry points should use the same no-mutation plan."""
+    by_flag = subprocess.run(
+        ["bash", str(_INSTALL_SH), "--plan"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    env = os.environ.copy()
+    env["JASPER_INSTALL_DRY_RUN"] = "1"
+    by_env = subprocess.run(
+        ["bash", str(_INSTALL_SH)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        env=env,
+    )
+
+    assert by_flag.returncode == 0
+    assert by_env.returncode == 0
+    assert by_flag.stdout == by_env.stdout
+
+
+def test_install_help_is_clean_and_non_root():
+    """Agentic flows often probe commands with --help; keep it quiet
+    and usable without sudo."""
+    result = subprocess.run(
+        ["bash", str(_INSTALL_SH), "--help"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.startswith("Usage: bash deploy/install.sh")
+    assert "install.sh starting" not in result.stdout
+    assert "this script must be run as root" not in result.stderr

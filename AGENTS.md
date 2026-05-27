@@ -245,6 +245,13 @@ That flow exists historically but misses:
 ESP32 dial/satellite firmware during install), `PI_HOST=...`,
 `PI_USER=...`.
 
+**Previewing install blast radius:** `bash deploy/install.sh --dry-run`
+prints the apt package groups, downloads/source builds, runtime file
+writes, env migrations, systemd actions, restarts, and post-install
+checks without requiring root or mutating the host. Use it when
+reviewing installer changes. It is a planning surface only — deploy
+and hardware validation still go through `bash scripts/deploy-to-pi.sh`.
+
 **Adding a wizard port to `jasper-web.socket`?** `install.sh`'s
 wizard-socket loop uses `systemctl restart` (not `start`) so a new
 `ListenStream=` line actually re-binds the live socket on deploy. A

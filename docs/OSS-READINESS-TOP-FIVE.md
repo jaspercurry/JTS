@@ -184,7 +184,7 @@ their head.
 | Hotspot | Why it is on the list | Good next slice | Avoid |
 |---|---|---|---|
 | `jasper/voice_daemon.py` | Owns wake detection, turn lifecycle, cues, telemetry, timers, mic mute, manual sessions, and control-socket behavior. It is the highest-churn file and the hardest one for a new contributor to hold in their head. | Extract only along already-visible seams: `SYSTEM_INSTRUCTION`, wake-loop config construction, control-socket handling, or cue coordination. Add regression coverage before moving behavior. | Replacing the state model wholesale or introducing a framework-y event bus. |
-| `deploy/install.sh` | Root install path for packages, systemd units, env migrations, source builds, audio topology, provenance-bearing downloads, and Pi runtime state. Small mistakes here affect fresh installs and deploys. | Add safer planning surfaces such as env-key merge support, provenance helpers, or a dry-run/plan mode that reports intended actions without mutating the host. | Rewriting the installer before the existing idempotent steps have test coverage. |
+| `deploy/install.sh` | Root install path for packages, systemd units, env migrations, source builds, audio topology, provenance-bearing downloads, and Pi runtime state. Small mistakes here affect fresh installs and deploys. Dry-run/plan mode now reports the major install surfaces without requiring root or mutating the host. | Keep the plan current when install surfaces change; good future slices are env-key merge support or more machine-derived provenance helpers. | Rewriting the installer before the existing idempotent steps have test coverage. |
 | `jasper/control/server.py` | LAN control plane for state, source selection, volume, restart/reboot, AEC toggles, cues, and dashboard integration. Security-sensitive and easy to grow accidentally. | Group route helpers and security checks when adding related endpoints; keep host/origin/body-size behavior centralized. | Mixing product UI restructuring with control-plane auth or privilege changes in one PR. |
 | `jasper/web/*_setup.py` wizards | The stdlib HTTP pattern is intentional, but page wrappers, CSRF/form handling, restart plumbing, and env-file persistence recur across many files. `correction_setup.py` and `wifi_setup.py` are especially large because they mix UI and domain logic. | Extract small shared helpers only when touching a second wizard for the same reason; move domain logic into subsystem modules when it already has tests. | A broad web-framework migration or generic wizard abstraction before repeated pain is clear. |
 | `jasper/voice/{gemini_session.py,openai_session.py,grok_session.py}` | Provider-specific protocol handling is real, but supervisor scaffolding, state logging, escalation cues, and reconnect mechanics overlap. | Share narrow primitives in `jasper/voice/_supervisor.py` after a provider change proves the duplication is active maintenance cost. | Sharing the provider loop bodies; `HANDOFF-voice-providers.md` explicitly rejects that. |
@@ -215,9 +215,9 @@ refactors safer.
   fake `LiveConnection` / `LiveTurn`.
 - A fake-ALSA or container test path that exercises Python install and the
   hardware-free test suite without touching host audio devices.
-- An `install.sh` dry-run or plan mode that reports packages, downloads,
-  env migrations, systemd writes, and restart actions without mutating the
-  host.
+- Keep `install.sh --dry-run` accurate as the installer changes; it
+  already reports packages, downloads, env migrations, systemd writes,
+  and restart actions without mutating the host.
 - Contributor docs that explain which behaviors can be tested locally and
   which still require a real Pi.
 

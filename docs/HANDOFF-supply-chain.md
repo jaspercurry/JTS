@@ -26,8 +26,22 @@ Run the local check before changing install/build fetches:
 python3 scripts/check-provenance.py
 ```
 
-That check validates manifest shape and verifies the known fetch-bearing
-surfaces still have provenance entries:
+To preview the install-time blast radius without mutating a host, run:
+
+```sh
+bash deploy/install.sh --dry-run
+# or: JASPER_INSTALL_DRY_RUN=1 bash deploy/install.sh
+```
+
+Dry-run mode exits before the root check and prints the planned apt
+package groups, direct downloads, source builds, runtime file writes,
+env migrations, boot/config writes, systemd actions, restarts, and
+post-install checks. It is a contributor planning aid, not a substitute
+for hardware validation: the real installer remains the source of truth
+for exact host-specific no-op decisions.
+
+The provenance check validates manifest shape and verifies the known
+fetch-bearing surfaces still have provenance entries:
 
 - `deploy/install.sh`
 - `pyproject.toml` direct URL dependencies
