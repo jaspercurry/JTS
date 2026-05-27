@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import socket
 import sys
 import threading
+import time
 import types
 import urllib.request
 from http.server import ThreadingHTTPServer
 
+import jasper.control.airplay_health as airplay_health
 from jasper.control.airplay_health import (
     AirPlayHealthSampler,
     classify_journal_line,
@@ -213,6 +216,53 @@ def test_mpris_playing_waits_for_fanin_rate_baseline() -> None:
 
     assert snap["status"] == "unknown"
     assert "baseline" in snap["reason"]
+
+
+def test_default_journal_reader_uses_since_and_until(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        calls.append(args)
+        return types.SimpleNamespace(returncode=0, stdout="one\ntwo\n")
+
+    monkeypatch.setattr(airplay_health.subprocess, "run", fake_run)
+
+    lines = AirPlayHealthSampler._read_journal_lines(
+        "shairport-sync",
+        10.1234,
+        40.5678,
+    )
+
+    assert lines == ["one", "two"]
+    assert calls
+    args = calls[0]
+    assert args[args.index("--since") + 1] == "@10.123"
+    assert args[args.index("--until") + 1] == "@40.568"
+
+
+def test_default_fanin_status_timeout_allows_state_server_poll_delay(tmp_path) -> None:
+    socket_path = tmp_path / "control.sock"
+    ready = threading.Event()
+
+    def serve_once() -> None:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(socket_path))
+            server.listen(1)
+            ready.set()
+            time.sleep(0.35)
+            conn, _addr = server.accept()
+            with conn:
+                assert conn.recv(1024) == b"STATUS\n"
+                conn.sendall(b'{"ok": true}\n')
+
+    thread = threading.Thread(target=serve_once, daemon=True)
+    thread.start()
+    assert ready.wait(timeout=1.0)
+
+    assert AirPlayHealthSampler._read_fanin_status(str(socket_path)) == {
+        "ok": True,
+    }
+    thread.join(timeout=1.0)
 
 
 def test_system_snapshot_endpoint_includes_airplay_health(monkeypatch) -> None:

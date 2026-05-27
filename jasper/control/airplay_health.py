@@ -39,7 +39,7 @@ HISTORY_SECONDS = 30 * 60.0
 EVENT_RING_SIZE = 20
 
 FANIN_SOCKET = "/run/jasper-fanin/control.sock"
-FANIN_TIMEOUT_SEC = 0.25
+FANIN_TIMEOUT_SEC = 1.0
 SUBPROCESS_TIMEOUT_SEC = 2.0
 
 # Fan-in's 4096-frame input buffer is load-bearing for AirPlay burst
@@ -598,7 +598,6 @@ class AirPlayHealthSampler:
 
     @staticmethod
     def _read_journal_lines(unit: str, since: float, now: float) -> list[str]:
-        del now
         try:
             proc = subprocess.run(
                 [
