@@ -112,8 +112,9 @@ def test_shairport_template_keeps_renderer_placeholder():
 
 def test_install_writes_fanin_asound_conf_and_retires_switcher():
     install = (REPO / "deploy" / "install.sh").read_text()
-    assert "> /etc/asound.conf" in install
-    assert "chmod 0644 /etc/asound.conf" in install
+    assert "/usr/local/sbin/jasper-render-asound-conf" in install
+    assert "ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf" in install
+    assert "chmod 0644 /var/lib/jasper-asound/asound.conf" in install
     assert 'grep -q "shairport_substream" /etc/asound.conf' in install
     assert "rm -f /usr/local/sbin/jasper-audio-topology" in install
     assert "retire_audio_topology_switch" in install
