@@ -281,6 +281,113 @@ def test_cross_site_get_rejects_diagnostics_before_subprocess(
     assert calls == []
 
 
+def test_system_audio_quality_applies_and_restarts_renderers(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    applied: list[str] = []
+    popens: list[list[str]] = []
+
+    def fake_apply(converter: str) -> dict:
+        applied.append(converter)
+        return {
+            "converter": converter,
+            "active_converter": converter,
+            "label": "Best",
+            "summary": "Maximum ultrasonic-band fidelity.",
+            "options": [],
+        }
+
+    class FakePopen:
+        def __init__(self, cmd):
+            popens.append(cmd)
+
+    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fake_apply)
+    monkeypatch.setattr(srv_mod.subprocess, "Popen", FakePopen)
+
+    status, body = _post(
+        f"{base}/system/audio-quality",
+        {"converter": "best"},
+    )
+
+    assert status == 200
+    assert applied == ["samplerate_best"]
+    assert body["audio_quality"]["converter"] == "samplerate_best"
+    assert popens == [
+        [
+            "systemctl", "restart",
+            "shairport-sync.service",
+            "librespot.service",
+            "bluealsa-aplay.service",
+        ],
+        ["systemctl", "try-restart", "jasper-usbsink.service"],
+    ]
+
+
+def test_system_audio_quality_rejects_unknown_converter(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def fail_apply(_converter: str) -> dict:
+        raise AssertionError("invalid converter should not apply")
+
+    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+
+    status, body = _post(
+        f"{base}/system/audio-quality",
+        {"converter": "linear"},
+    )
+
+    assert status == 400
+    assert "unsupported ALSA rate converter" in body["error"]
+
+
+def test_system_audio_quality_rejects_missing_converter(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def fail_apply(_converter: str) -> dict:
+        raise AssertionError("missing converter should not apply")
+
+    monkeypatch.setattr(srv_mod, "_apply_audio_quality", fail_apply)
+
+    status, body = _post(f"{base}/system/audio-quality", {})
+
+    assert status == 400
+    assert body["error"] == "converter is required"
+
+
+def test_system_snapshot_audio_quality_fails_soft(
+    monkeypatch,
+):
+    import jasper.control.server as srv_mod
+
+    def fail_state() -> dict:
+        raise ValueError("unsupported ALSA rate converter 'linear'")
+
+    monkeypatch.setattr(srv_mod, "_read_audio_quality_state", fail_state)
+    monkeypatch.setattr(
+        srv_mod,
+        "_read_active_audio_converter",
+        lambda: "samplerate_medium",
+    )
+
+    body = srv_mod._safe_audio_quality_state()
+
+    assert body["converter"] == "samplerate_medium"
+    assert body["active_converter"] == "samplerate_medium"
+    assert "unsupported ALSA rate converter" in body["error"]
+
+
 def test_post_allows_same_origin_browser_request(server_with_coordinator):
     base, fake = server_with_coordinator
     status, body = _post(

@@ -75,8 +75,9 @@ instead of leaving wake-word on an unfed UDP socket.
 > bridge shipped. All are fixed in current production. Briefly:
 >
 > 1. **ALSA linear resampler** (PR #150) — `libasound2-plugins` +
->    `defaults.pcm.rate_converter "samplerate_best"` in `/etc/asound.conf`
->    (legacy location was `/root/.asoundrc` before PR #223).
+>    the JTS audio-quality rate converter in `/etc/asound.conf`
+>    (default `samplerate_medium`; `samplerate_best` optional from
+>    `/system/`; legacy location was `/root/.asoundrc` before PR #223).
 >    Without these, the plug-layer 44.1→48 conversion lost ~12 dB
 >    of 4-8 kHz content.
 > 2. **Silence fallback on empty ref_q** (PR #154) — replaced
@@ -347,24 +348,31 @@ before any measurement was done — "this sounds pixel-crushed."
 ### The fix (current production)
 
 Installed `libasound2-plugins`, added one line at the top of
-`/etc/asound.conf`:
+`/etc/asound.conf`, rendered from `/var/lib/jasper/audio_quality.env`
+by `jasper-render-asound-conf`:
 
 ```
-defaults.pcm.rate_converter "samplerate_best"
+defaults.pcm.rate_converter "samplerate_medium"
 ```
 
 This replaces ALSA's linear interpolator with libsamplerate's
-`SRC_SINC_BEST_QUALITY` (sinc-best) for every `plug:` and
-`plughw:` rate conversion on the system. Effects:
-- shairport-sync's 44.1→48 write to plughw:Loopback is now sinc-best
-- bluealsa-aplay's rate conversion (if any) is sinc-best
+`SRC_SINC_MEDIUM_QUALITY` by default for every `plug:` and
+`plughw:` rate conversion on the system. `/system/` can flip the
+setting to `samplerate_best` when critical-listening CPU cost is
+acceptable. Effects:
+- shairport-sync's 44.1→48 write to plughw:Loopback now uses
+  libsamplerate sinc conversion
+- bluealsa-aplay's rate conversion (if any) uses the same configured
+  converter
 - `pcm.jasper_ref`'s plug wrapper (in case it ever does rate
-  conversion) is sinc-best
+  conversion) uses the same configured converter
 - Same fix benefits the speaker playback chain too — music quality
   is incidentally improved
 
-Cost on Pi 5: ~3-5% of one A76 core on the resampler thread,
-~15 MB resident memory.
+Historical cost for `samplerate_best` on Pi 5: ~3-5% of one A76
+core on the resampler thread, ~15 MB resident memory. The current
+`samplerate_medium` default is expected to be cheaper while keeping
+the speech/AEC band intact.
 
 Both the `libasound2-plugins` install and the rate_converter line
 are now baked into `deploy/install.sh` + `deploy/alsa/asoundrc.jasper`
@@ -595,7 +603,7 @@ failure mode is independently audible and measurable.
 
 | Layer | Symptom | Fix | PR |
 |---|---|---|---|
-| ALSA plug 44.1→48 | ~12 dB HF loss in ref | `libasound2-plugins` + `samplerate_best` rate_converter | [#150](https://github.com/jaspercurry/JTS/pull/150) |
+| ALSA plug 44.1→48 | ~12 dB HF loss in ref | `libasound2-plugins` + configured libsamplerate rate_converter (`samplerate_medium` default, `samplerate_best` optional) | [#150](https://github.com/jaspercurry/JTS/pull/150) |
 | `_aec_loop` empty-queue fallback to `silence` | 50 % of AEC frames received zero ref | Carry-forward `last_ref_bytes` | [#154](https://github.com/jaspercurry/JTS/pull/154) |
 | `_aec_loop` drain-newest discarded burst frames | 50 % of frames byte-identical duplicates | Consume one frame per iteration in order | [#157](https://github.com/jaspercurry/JTS/pull/157) |
 

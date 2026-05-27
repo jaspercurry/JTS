@@ -136,6 +136,16 @@ _EXTRA_STYLE = """
 .actions button.danger { background: #d44; }
 .actions button:disabled { background: #b8b8b8; cursor: wait; }
 
+.quality-toggle { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5em; margin-top: 0.75em; }
+.quality-toggle button { background: #f4f4f4; color: #222; border: 1px solid #d8d8d8;
+  text-align: left; padding: 0.65em 0.75em; border-radius: 6px; cursor: pointer; }
+.quality-toggle button strong { display: block; margin-bottom: 0.15em; }
+.quality-toggle button span { display: block; color: #666; font-size: 0.82em; line-height: 1.25; }
+.quality-toggle button.active { background: #e6f9ec; border-color: #1db954; }
+.quality-toggle button:disabled { opacity: 0.65; cursor: wait; }
+.quality-status { min-height: 1.2em; margin: 0.55em 0 0; font-size: 0.85em; }
+
 #diag-output { background: #fff; border: 1px solid #e6e6e6; border-radius: 4px;
   padding: 0.5em; margin-top: 0.5em; font-size: 0.85em; }
 #diag-output .ok { color: #1a8a3a; }
@@ -241,6 +251,30 @@ _PAGE_BODY = """
     <div class="k">Camilla</div><div class="v" id="ap-camilla">—</div>
   </div>
   <div class="ap-events" id="ap-events"></div>
+</div>
+
+<div class="card" id="audio-quality-card">
+  <h2>Audio conversion</h2>
+  <div class="kv">
+    <div class="k">Requested</div><div class="v" id="aq-requested">—</div>
+    <div class="k">Active</div><div class="v" id="aq-active">—</div>
+  </div>
+  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;">
+    Medium saves CPU and keeps the speech/AEC band clean. Best keeps
+    the extreme top edge of hearing for critical listening.
+    Changing this restarts music renderers briefly.
+  </p>
+  <div class="quality-toggle" role="group" aria-label="Audio conversion quality">
+    <button id="btn-aq-medium" data-converter="samplerate_medium" type="button">
+      <strong>Medium</strong>
+      <span>Lower CPU; expected to sound the same for normal listening.</span>
+    </button>
+    <button id="btn-aq-best" data-converter="samplerate_best" type="button">
+      <strong>Best</strong>
+      <span>Highest ultrasonic-band fidelity; uses more CPU.</span>
+    </button>
+  </div>
+  <p class="quality-status muted" id="aq-status"></p>
 </div>
 
 <div class="card">
@@ -516,6 +550,38 @@ _SCRIPT = r"""
     }
   }
 
+  function audioQualityLabel(converter) {
+    if (converter === 'samplerate_best') return 'Best';
+    if (converter === 'samplerate_medium') return 'Medium';
+    return converter || '—';
+  }
+
+  function renderAudioQuality(q) {
+    const reqEl = document.getElementById('aq-requested');
+    if (!reqEl) return;
+    const activeEl = document.getElementById('aq-active');
+    const statusEl = document.getElementById('aq-status');
+    const requested = q && q.converter;
+    const active = q && q.active_converter;
+    reqEl.textContent = audioQualityLabel(requested);
+    activeEl.textContent = active
+      ? audioQualityLabel(active)
+      : 'unknown';
+    if (statusEl && q && q.error) {
+      statusEl.textContent = 'State warning: ' + q.error;
+    } else if (statusEl && q && q.summary) {
+      statusEl.textContent = q.summary;
+    } else if (statusEl) {
+      statusEl.textContent = '';
+    }
+    ['samplerate_medium', 'samplerate_best'].forEach(converter => {
+      const btn = document.querySelector('[data-converter="' + converter + '"]');
+      if (!btn) return;
+      btn.classList.toggle('active', converter === requested);
+      btn.disabled = false;
+    });
+  }
+
   function render(snap) {
     if (!snap || !snap.metrics) {
       renderAirPlay(snap && snap.airplay_health);
@@ -733,6 +799,7 @@ _SCRIPT = r"""
     }
 
     renderAirPlay(snap.airplay_health);
+    renderAudioQuality(snap.audio_quality);
 
     // Network
     document.getElementById('net-rx').textContent = fmtBytes(cur.net_rx_bytes);
@@ -868,6 +935,30 @@ _SCRIPT = r"""
     }, 3000);
   }
 
+  async function setAudioQuality(converter) {
+    const buttons = Array.from(document.querySelectorAll('[data-converter]'));
+    buttons.forEach(b => { b.disabled = true; });
+    const status = document.getElementById('aq-status');
+    if (status) status.textContent = 'Applying…';
+    try {
+      const r = await fetch('audio-quality', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': CSRF,
+        },
+        body: JSON.stringify({ converter }),
+      });
+      const body = await r.json();
+      if (!r.ok) throw new Error(body.error || ('HTTP ' + r.status));
+      renderAudioQuality(body.audio_quality);
+      if (status) status.textContent = 'Applied. Music renderers are restarting briefly.';
+    } catch (e) {
+      if (status) status.textContent = 'Failed: ' + e.message;
+      buttons.forEach(b => { b.disabled = false; });
+    }
+  }
+
   document.getElementById('btn-restart-voice').addEventListener('click', e => {
     if (!confirm('Restart jasper-voice? Wake-word will be unavailable for ~30 s.')) return;
     postAction('restart/voice', e.target);
@@ -888,6 +979,13 @@ _SCRIPT = r"""
     if (!confirm('Power off the speaker? It will stay off until you physically re-plug power.')) return;
     if (!confirm('Are you absolutely sure? You will need physical access to turn the speaker back on.')) return;
     postAction('poweroff', e.target);
+  });
+  document.querySelectorAll('[data-converter]').forEach(btn => {
+    btn.addEventListener('click', e => {
+      const converter = e.currentTarget.getAttribute('data-converter');
+      if (!confirm('Change audio conversion quality? Music renderers will restart briefly.')) return;
+      setAudioQuality(converter);
+    });
   });
 
   // Diagnostics
@@ -986,6 +1084,7 @@ def _make_handler(
             path = url.path.rstrip("/") or "/"
             POST_ROUTES = (
                 "/restart/voice", "/restart/audio", "/reboot", "/poweroff",
+                "/audio-quality",
             )
             if path not in POST_ROUTES:
                 self.send_error(HTTPStatus.NOT_FOUND)
@@ -993,8 +1092,19 @@ def _make_handler(
             if not verify_csrf(self):
                 reject_csrf(self)
                 return
+            body = None
+            if path == "/audio-quality":
+                try:
+                    length = int(self.headers.get("Content-Length") or "0")
+                except ValueError:
+                    self.send_error(HTTPStatus.BAD_REQUEST)
+                    return
+                if length < 0 or length > 4096:
+                    self.send_error(HTTPStatus.REQUEST_ENTITY_TOO_LARGE)
+                    return
+                body = self.rfile.read(length) if length else b"{}"
             status, body = proxy_post(
-                "/system" + path, control_base=control_base,
+                "/system" + path, control_base=control_base, body=body,
             )
             send_proxy_json(self, body, status=status)
 

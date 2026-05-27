@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Render the system-wide ALSA config from the persisted JTS audio-quality
+# preference. Web toggles only mutate /var/lib/jasper/audio_quality.env;
+# this script turns that small state file into the real asound.conf.
+
+set -euo pipefail
+
+STATE_FILE="${JASPER_AUDIO_QUALITY_FILE:-/var/lib/jasper/audio_quality.env}"
+TEMPLATE="${JASPER_ASOUND_TEMPLATE:-/etc/jasper/asoundrc.jasper.template}"
+OUTPUT="${JASPER_ASOUND_CONF:-/var/lib/jasper-asound/asound.conf}"
+
+converter="samplerate_medium"
+if [[ -f "$STATE_FILE" ]]; then
+    key_seen=0
+    value="$(
+        sed -n -E 's/^[[:space:]]*JASPER_ALSA_RATE_CONVERTER[[:space:]]*=[[:space:]]*//p' "$STATE_FILE" \
+            | tail -n 1
+    )"
+    if grep -Eq '^[[:space:]]*JASPER_ALSA_RATE_CONVERTER[[:space:]]*=' "$STATE_FILE"; then
+        key_seen=1
+    fi
+    if [[ "$key_seen" == "1" ]]; then
+        value="${value#"${value%%[![:space:]]*}"}"
+        value="${value%"${value##*[![:space:]]}"}"
+        value="${value%\"}"
+        value="${value#\"}"
+        value="${value%\'}"
+        value="${value#\'}"
+        converter="$value"
+    fi
+fi
+
+case "$converter" in
+    medium|balanced) converter="samplerate_medium" ;;
+    best|maximum|max) converter="samplerate_best" ;;
+    samplerate_medium|samplerate_best) ;;
+    *)
+        echo "jasper-render-asound-conf: invalid converter: $converter" >&2
+        exit 64
+        ;;
+esac
+
+if [[ ! -f "$TEMPLATE" ]]; then
+    echo "jasper-render-asound-conf: template missing: $TEMPLATE" >&2
+    exit 66
+fi
+
+install -d -m 0755 "$(dirname "$OUTPUT")"
+tmp="${OUTPUT}.tmp.$$"
+trap 'rm -f "$tmp"' EXIT
+sed "s/__RATE_CONVERTER__/${converter}/g" "$TEMPLATE" > "$tmp"
+chmod 0644 "$tmp"
+mv "$tmp" "$OUTPUT"
+trap - EXIT
+
+echo "jasper-render-asound-conf: wrote $OUTPUT with $converter"

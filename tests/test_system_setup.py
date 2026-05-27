@@ -53,6 +53,37 @@ def _http_post(url: str) -> tuple[int, bytes]:
         return e.code, e.read()
 
 
+def _http_post_json(url: str, payload: dict[str, Any]) -> tuple[int, bytes]:
+    """JSON POST with the same CSRF round-trip as _http_post."""
+    import http.cookiejar
+    import re
+    parsed = urllib.parse.urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}"
+    jar = http.cookiejar.CookieJar()
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(jar),
+    )
+    page = opener.open(base + "/", timeout=5).read().decode()
+    m = re.search(
+        r'<meta\s+name="jts-csrf"\s+content="([^"]+)"', page,
+    )
+    token = m.group(1) if m else ""
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode(),
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "X-CSRF-Token": token,
+        },
+    )
+    try:
+        with opener.open(req, timeout=5) as r:
+            return r.status, r.read()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read()
+
+
 @pytest.fixture
 def upstream_control():
     """Stand up a fake jasper-control on a random port. Stores
@@ -63,6 +94,13 @@ def upstream_control():
             "build": {"JASPER_GIT_SHA": "abc1234"},
             "metrics": {"current": {"mem_total_mb": 2048}},
             "airplay_health": {"status": "ok", "reason": "clean"},
+            "audio_quality": {
+                "converter": "samplerate_medium",
+                "active_converter": "samplerate_medium",
+                "label": "Medium",
+                "summary": "Lower CPU, still clean.",
+                "options": [],
+            },
             "cloud": {"available": False, "reason": "no usage.db yet"},
             "voice_provider": "gemini",
         },
@@ -73,6 +111,7 @@ def upstream_control():
         },
         "/system/restart/voice": {"ok": True, "action": "restart-voice"},
         "/system/restart/audio": {"ok": True, "action": "restart-audio"},
+        "/system/audio-quality": {"ok": True, "action": "audio-quality"},
         "/system/reboot": {"ok": True, "action": "reboot"},
         "/system/poweroff": {"ok": True, "action": "poweroff"},
     }
@@ -99,7 +138,12 @@ def upstream_control():
         def do_POST(self) -> None:  # noqa: N802
             received.append(("POST", self.path))
             if self.path in responses:
-                self._reply(responses[self.path])
+                payload = dict(responses[self.path])
+                length = int(self.headers.get("Content-Length") or "0")
+                raw = self.rfile.read(length) if length else b""
+                if raw:
+                    payload["received_body"] = json.loads(raw.decode())
+                self._reply(payload)
             else:
                 self.send_error(404)
 
@@ -142,6 +186,10 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "data.json" in text  # polling URL referenced from JS
     assert "id=\"airplay-card\"" in text
     assert "id=\"ap-events\"" in text
+    assert "id=\"audio-quality-card\"" in text
+    assert "Medium saves CPU" in text
+    assert "State warning:" in text
+    assert "data-converter=\"samplerate_medium\"" in text
     assert "Restart voice" in text  # action button present
 
 
@@ -153,6 +201,7 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
     assert payload["airplay_health"]["status"] == "ok"
+    assert payload["audio_quality"]["converter"] == "samplerate_medium"
     assert ("GET", "/system/snapshot") in received
 
 
@@ -179,6 +228,24 @@ def test_post_restart_audio_proxies(dashboard_server) -> None:
     status, _ = _http_post(f"{base}/restart/audio")
     assert status == 200
     assert ("POST", "/system/restart/audio") in received
+
+
+def test_post_audio_quality_proxies_json_body(dashboard_server) -> None:
+    base, received, responses = dashboard_server
+    responses["/system/audio-quality"] = {
+        "ok": True,
+        "action": "audio-quality",
+        "audio_quality": {"converter": "samplerate_best"},
+    }
+    status, body = _http_post_json(
+        f"{base}/audio-quality",
+        {"converter": "samplerate_best"},
+    )
+    assert status == 200
+    payload = json.loads(body)
+    assert payload["audio_quality"]["converter"] == "samplerate_best"
+    assert payload["received_body"] == {"converter": "samplerate_best"}
+    assert ("POST", "/system/audio-quality") in received
 
 
 def test_post_reboot_proxies(dashboard_server) -> None:

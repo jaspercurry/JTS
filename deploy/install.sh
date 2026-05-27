@@ -395,18 +395,32 @@ install_alsa() {
     # shouldn't be silently overwritten. The grep guard makes this
     # idempotent — once our content is in place, subsequent deploys
     # see `shairport_substream` and skip the backup (no .pre-jasper
-    # spam). Symlinks are skipped (some setups symlink /etc/asound.conf
-    # to /etc/alsa/asound.conf; back-up-then-overwrite would still
-    # mutate the target).
+    # spam). Symlinks are not backed up here because JTS intentionally
+    # replaces /etc/asound.conf with a symlink to its rendered, public
+    # ALSA config below.
     if [[ -f /etc/asound.conf && ! -L /etc/asound.conf ]] \
             && ! grep -q "shairport_substream" /etc/asound.conf 2>/dev/null; then
         cp /etc/asound.conf "/etc/asound.conf.pre-jasper.$(date +%s)"
         echo "  Backed up pre-existing /etc/asound.conf (.pre-jasper.*); see PR #223."
     fi
+    install -d -m 0755 "${ENV_DIR}" "${STATE_DIR}"
     sed -e "s/__DONGLE_CARD__/${DONGLE_CARD}/g" \
         "${REPO_DIR}/deploy/alsa/asoundrc.jasper" \
-        > /etc/asound.conf
-    chmod 0644 /etc/asound.conf
+        > "${ENV_DIR}/asoundrc.jasper.template"
+    chmod 0644 "${ENV_DIR}/asoundrc.jasper.template"
+    install -m 0755 \
+        "${REPO_DIR}/deploy/bin/jasper-render-asound-conf" \
+        /usr/local/sbin/jasper-render-asound-conf
+    if [[ ! -e "${STATE_DIR}/audio_quality.env" ]]; then
+        printf 'JASPER_ALSA_RATE_CONVERTER=samplerate_medium\n' \
+            > "${STATE_DIR}/audio_quality.env"
+        chmod 0644 "${STATE_DIR}/audio_quality.env"
+        echo "  /var/lib/jasper/audio_quality.env defaulted to samplerate_medium."
+    fi
+    install -d -m 0755 /var/lib/jasper-asound
+    /usr/local/sbin/jasper-render-asound-conf
+    ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
+    chmod 0644 /var/lib/jasper-asound/asound.conf
     echo "  Wrote /etc/asound.conf with fan-in lanes + jasper_out"
 }
 

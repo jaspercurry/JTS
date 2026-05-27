@@ -42,6 +42,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Optional
 
 from ..http_security import management_read_allowed, mutating_request_allowed
+from ..audio_quality import (
+    DEFAULT_CONVERTER as _default_audio_converter,
+    apply_requested_converter as _apply_audio_quality,
+    converter_options as _audio_converter_options,
+    normalize_converter as _normalize_audio_converter,
+    read_active_converter as _read_active_audio_converter,
+    read_state as _read_audio_quality_state,
+)
 from . import shairport_supervisor, system_supervisor, wifi_guardian_state
 from ..music_sources import MUSIC_SOURCE_SPECS
 
@@ -51,6 +59,38 @@ SOURCE_SELECT_IDS = {spec.id.value for spec in MUSIC_SOURCE_SPECS}
 SOURCE_AVAILABILITY_TTL_SEC = 10.0
 _source_availability_cache: tuple[float, dict[str, Any]] | None = None
 _source_availability_lock = threading.Lock()
+AUDIO_QUALITY_RESTART_UNITS = [
+    "shairport-sync.service",
+    "librespot.service",
+    "bluealsa-aplay.service",
+]
+AUDIO_QUALITY_TRY_RESTART_UNITS = [
+    "jasper-usbsink.service",
+]
+
+
+def _safe_audio_quality_state() -> dict[str, Any]:
+    try:
+        return _read_audio_quality_state()
+    except Exception as e:  # noqa: BLE001
+        logger.exception("audio quality state read failed")
+        converter = _default_audio_converter
+        options = _audio_converter_options()
+        meta = next(
+            option for option in options if option["converter"] == converter
+        )
+        try:
+            active = _read_active_audio_converter()
+        except Exception:  # noqa: BLE001
+            active = None
+        return {
+            "converter": converter,
+            "active_converter": active,
+            "label": meta["label"],
+            "summary": meta["summary"],
+            "options": options,
+            "error": str(e),
+        }
 
 
 def _env_int(name: str, default: int) -> int:
@@ -1453,6 +1493,7 @@ def _make_handler(
                         sampler.snapshot() if sampler is not None else None
                     ),
                     "airplay_health": airplay_health,
+                    "audio_quality": _safe_audio_quality_state(),
                     "cloud": _read_cloud_activity(),
                     "voice_provider": os.environ.get(
                         "JASPER_VOICE_PROVIDER", "gemini",
@@ -1981,6 +2022,71 @@ def _make_handler(
                     threshold, self.address_string(),
                 )
                 self._send_json({"threshold": threshold})
+                return
+
+            if self.path == "/system/audio-quality":
+                try:
+                    body = self._read_json()
+                except (ValueError, OSError) as e:
+                    self._send_json(
+                        {"error": f"invalid request body: {e}"}, status=400,
+                    )
+                    return
+                if not isinstance(body, dict):
+                    self._send_json(
+                        {"error": "invalid request body: expected JSON object"},
+                        status=400,
+                    )
+                    return
+                raw_converter = body.get("converter")
+                if not isinstance(raw_converter, str) or not raw_converter.strip():
+                    self._send_json(
+                        {"error": "converter is required"},
+                        status=400,
+                    )
+                    return
+                try:
+                    converter = _normalize_audio_converter(raw_converter)
+                except ValueError as e:
+                    self._send_json({"error": str(e)}, status=400)
+                    return
+                try:
+                    state = _apply_audio_quality(converter)
+                except (OSError, subprocess.SubprocessError) as e:
+                    logger.exception("audio quality apply failed")
+                    self._send_json(
+                        {"error": f"audio quality apply failed: {e}"},
+                        status=502,
+                    )
+                    return
+                try:
+                    subprocess.Popen(
+                        ["systemctl", "restart", *AUDIO_QUALITY_RESTART_UNITS],
+                    )
+                    subprocess.Popen(
+                        [
+                            "systemctl",
+                            "try-restart",
+                            *AUDIO_QUALITY_TRY_RESTART_UNITS,
+                        ],
+                    )
+                except (OSError, subprocess.SubprocessError) as e:
+                    self._send_json(
+                        {"error": f"renderer restart failed: {e}"},
+                        status=502,
+                    )
+                    return
+                logger.info(
+                    "event=audio_quality.set converter=%s client=%s",
+                    converter, self.address_string(),
+                )
+                self._send_json({
+                    "ok": True,
+                    "action": "audio-quality",
+                    "units": AUDIO_QUALITY_RESTART_UNITS,
+                    "try_restart_units": AUDIO_QUALITY_TRY_RESTART_UNITS,
+                    "audio_quality": state,
+                })
                 return
 
             if self.path in ("/system/restart/voice",

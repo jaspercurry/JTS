@@ -87,8 +87,8 @@ sessioncontrol = {
 alsa = {
     // shairport_substream is AirPlay's private fan-in lane. The plug
     // wrapper handles shairport's native 44100 → 48000 S16_LE conversion
-    // through libsamplerate (samplerate_best, set as the rate_converter
-    // default at the top of asoundrc.jasper). shairport-sync still only
+    // through libsamplerate (samplerate_medium by default, toggleable
+    // at /system/). shairport-sync still only
     // accepts output_rate values that are integer multiples of 44100, so
     // 44100 stays here as shairport's native AirPlay rate.
     output_device = "__RENDERER_DEVICE__";
