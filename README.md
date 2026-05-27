@@ -413,7 +413,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Pi Imager → boot → `scripts/onboard.sh` → working speaker in ~30 min. Imager 2.0.6+ required. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
-| [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, ordered by risk reduction and contributor leverage |
+| [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
@@ -989,10 +989,13 @@ relevant HANDOFF doc almost certainly addresses your symptom.
 
 ## What's deferred
 
-See [PLAN.md](PLAN.md) "What comes after v1" for the full
-sequenced roadmap. Highlights of what's NOT in v1: room
-correction web tool, captive portal (Balena WiFi Connect),
-Snapcast stereo pair, wireless subwoofer, mesh AP+STA, USB
-gadget mode, Home Assistant bridge, custom "Hey Jasper" wake-word
-training. Don't build these until v1 actually plays music with
-voice control end-to-end (it does).
+README does not carry a detailed deferred-work list; those age quickly
+as features ship. Use the living sources instead:
+
+- [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md)
+  for current OSS-readiness priorities, the refactor hotspot register,
+  the software-only development path, and deliberate deferrals.
+- [PLAN.md](PLAN.md) for product roadmap items and small test/dev
+  follow-ups that are not tied to a release.
+- The relevant `docs/HANDOFF-*.md` file for subsystem-specific
+  rejected paths, revisit triggers, and implementation history.
