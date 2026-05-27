@@ -17,6 +17,7 @@ unit per wizard. nginx routes:
   /transit/  →  127.0.0.1:8777  (jasper.web.transit_setup)
   /ha/       →  127.0.0.1:8778  (jasper.web.home_assistant_setup)
   /weather/  →  127.0.0.1:8779  (jasper.web.weather_setup)
+  /wake-corpus/ → 127.0.0.1:8782  (lazy jasper.web.wake_corpus_setup)
   /speaker/  →  127.0.0.1:8783  (jasper.web.speaker_setup)
   /sound/    →  127.0.0.1:8784  (jasper.web.sound_setup)
 
@@ -41,6 +42,8 @@ import logging
 import os
 import secrets
 import threading
+from collections.abc import Callable
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 from socketserver import BaseRequestHandler, StreamRequestHandler
@@ -65,6 +68,20 @@ from . import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class WizardSpec:
+    """One socket-activated settings surface hosted by jasper-web."""
+
+    label: str
+    env_var: str
+    default_port: int
+    make_server: Callable[[object], object]
+    main_thread: bool = False
+
+    def port(self) -> int:
+        return int(os.environ.get(self.env_var, str(self.default_port)))
 
 
 def _serve_forever(server, label: str) -> None:
@@ -188,47 +205,9 @@ def _make_lazy_wake_corpus_server(
     return _systemd.make_http_server(target, _LazyWakeCorpusHandler)
 
 
-def main() -> int:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-
-    # Port assignments mirror nginx-jasper.conf and each wizard's CLI
-    # default. With socket activation, we still bind these *logically*
-    # via the .socket unit's ListenStream= directives; the per-port
-    # match below maps fds to wizards regardless of the order systemd
-    # passed them.
-    spotify_port = int(os.environ.get("JASPER_SPOTIFY_WEB_PORT", "8765"))
-    voice_port = int(os.environ.get("JASPER_VOICE_WEB_PORT", "8767"))
-    google_port = int(os.environ.get("JASPER_GOOGLE_WEB_PORT", "8768"))
-    airplay_port = int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771"))
-    sources_port = int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773"))
-    wake_port = int(os.environ.get("JASPER_WAKE_WEB_PORT", "8774"))
-    wifi_port = int(os.environ.get("JASPER_WIFI_WEB_PORT", "8775"))
-    peers_port = int(os.environ.get("JASPER_PEERS_WEB_PORT", "8776"))
-    transit_port = int(os.environ.get("JASPER_TRANSIT_WEB_PORT", "8777"))
-    ha_port = int(os.environ.get("JASPER_HA_WEB_PORT", "8778"))
-    weather_port = int(os.environ.get("JASPER_WEATHER_WEB_PORT", "8779"))
-    wake_corpus_port = int(os.environ.get("JASPER_WAKE_CORPUS_WEB_PORT", "8782"))
-    speaker_port = int(os.environ.get("JASPER_SPEAKER_WEB_PORT", "8783"))
-    sound_port = int(os.environ.get("JASPER_SOUND_WEB_PORT", "8784"))
-
-    # Distribute systemd-passed sockets by port. Empty dict on legacy
-    # direct invocation — each wizard then falls through to its own
-    # (host, port) bind.
-    by_port = {
-        sock.getsockname()[1]: sock for sock in _systemd.adopt_systemd_sockets()
-    }
-
-    def target_for(port: int) -> object:
-        return by_port.get(port, ("127.0.0.1", port))
-
-    host_default = "127.0.0.1"  # only used for logging if no systemd fd
-
-    # Spotify wizard
-    spotify_server = spotify_setup.make_server(
-        target_for(spotify_port),
+def _make_spotify_server(target: object) -> object:
+    return spotify_setup.make_server(
+        target,
         registry_path=os.environ.get(
             "JASPER_SPOTIFY_ACCOUNTS_PATH",
             spotify_setup.DEFAULT_REGISTRY_PATH,
@@ -241,231 +220,252 @@ def main() -> int:
         hostname=os.environ.get("JASPER_HOSTNAME", "jts.local"),
     )
 
-    # Voice provider wizard
-    voice_state = os.environ.get(
-        "JASPER_VOICE_PROVIDER_FILE", voice_setup.PROVIDER_FILE,
-    )
-    voice_server = voice_setup.make_server(
-        target_for(voice_port), state_path=voice_state,
-    )
 
-    # Google OAuth wizard
-    google_registry = os.environ.get(
-        "JASPER_GOOGLE_ACCOUNTS_PATH",
-        "/var/lib/jasper/google/accounts.json",
-    )
-    google_redirect = os.environ.get(
-        "GOOGLE_REDIRECT_URI", google_setup.default_redirect_uri(),
-    )
-    google_server = google_setup.make_server(
-        target_for(google_port),
-        registry_path=google_registry,
-        redirect_uri=google_redirect,
-    )
-
-    # AirPlay sync-mode wizard
-    airplay_state = os.environ.get(
-        "JASPER_AIRPLAY_MODE_FILE", airplay_setup.MODE_FILE,
-    )
-    airplay_server = airplay_setup.make_server(
-        target_for(airplay_port), state_path=airplay_state,
-    )
-
-    # Sources wizard — playback-source toggles, no persistent state
-    # file. Shells out to systemctl for AirPlay, Spotify Connect, and
-    # USB sink; DBus for BT.
-    sources_server = sources_setup.make_server(target_for(sources_port))
-
-    # Speaker display name — one user-facing name for Spotify Connect,
-    # AirPlay, Bluetooth, and USB Audio.
-    speaker_state = os.environ.get(
-        "JASPER_SPEAKER_NAME_FILE", speaker_setup.SPEAKER_NAME_FILE,
-    )
-    speaker_server = speaker_setup.make_server(
-        target_for(speaker_port), state_path=speaker_state,
-    )
-
-    # Wake-word page — model picker + detection layers + sensitivity.
-    # Writes /var/lib/jasper/wake_model.env on model save; proxies
-    # layer/sensitivity changes to jasper-control on
-    # JASPER_CONTROL_BASE (default 127.0.0.1:8780).
-    wake_state = os.environ.get(
-        "JASPER_WAKE_MODEL_FILE", wake_setup.WAKE_MODEL_FILE,
-    )
-    wake_control_base = os.environ.get(
-        "JASPER_CONTROL_BASE", wake_setup.DEFAULT_CONTROL_BASE,
-    )
-    wake_server = wake_setup.make_server(
-        target_for(wake_port),
-        state_path=wake_state,
-        control_base=wake_control_base,
-    )
-
-    # Wi-Fi network management — scan / connect / forget. Stateless on
-    # our side (NetworkManager owns the connection profile store).
-    wifi_server = wifi_setup.make_server(target_for(wifi_port))
-
-    # Multi-device peering wizard — toggle, room label, primary flag.
-    # Writes /var/lib/jasper/peering.env and restarts jasper-voice +
-    # jasper-control on save.
-    peers_state = os.environ.get(
-        "JASPER_PEERING_FILE", peering_setup.PEERING_ENV_FILE,
-    )
-    peers_server = peering_setup.make_server(
-        target_for(peers_port), state_path=peers_state,
-    )
-
-    # Transit setup wizard — address geocode → nearest subway/bus
-    # stops → save into /var/lib/jasper/transit.env. Modular over
-    # jasper.transit.REGISTRY so new cities/modes plug in without
-    # touching this file.
-    transit_state = os.environ.get(
-        "JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE,
-    )
-    transit_server = transit_setup.make_server(
-        target_for(transit_port), state_path=transit_state,
-        weather_path=os.environ.get(
-            "JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE,
+def _make_voice_server(target: object) -> object:
+    return voice_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_VOICE_PROVIDER_FILE",
+            voice_setup.PROVIDER_FILE,
         ),
     )
 
-    # Home Assistant connection wizard — mDNS discovery + LLAT paste +
-    # optional conversation-agent picker. Writes
-    # /var/lib/jasper/home_assistant.env (URL, token, optional agent_id)
-    # and restarts jasper-voice on save. The home_assistant tool gates
-    # on URL + token both being set, so a missing file leaves smart-home
-    # control disabled by default.
-    ha_state = os.environ.get(
-        "JASPER_HA_FILE", home_assistant_setup.HA_ENV_FILE,
-    )
-    ha_server = home_assistant_setup.make_server(
-        target_for(ha_port), state_path=ha_state,
+
+def _make_google_server(target: object) -> object:
+    return google_setup.make_server(
+        target,
+        registry_path=os.environ.get(
+            "JASPER_GOOGLE_ACCOUNTS_PATH",
+            "/var/lib/jasper/google/accounts.json",
+        ),
+        redirect_uri=os.environ.get(
+            "GOOGLE_REDIRECT_URI",
+            google_setup.default_redirect_uri(),
+        ),
     )
 
-    # Weather default-location wizard — stores /var/lib/jasper/weather.env
-    # with rounded coords + units for bare "what's the weather?" queries.
-    weather_state = os.environ.get(
-        "JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE,
-    )
-    weather_server = weather_setup.make_server(
-        target_for(weather_port),
-        state_path=weather_state,
-        transit_path=transit_state,
+
+def _make_airplay_server(target: object) -> object:
+    return airplay_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_AIRPLAY_MODE_FILE",
+            airplay_setup.MODE_FILE,
+        ),
     )
 
-    # Sound curve + preference EQ wizard. Writes the profile under
-    # /var/lib/jasper and generated CamillaDSP configs under
-    # /var/lib/camilladsp/configs, preserving any active room PEQs.
-    sound_profile = os.environ.get(
-        "JASPER_SOUND_PROFILE_PATH", sound_setup.PROFILE_PATH,
-    )
-    sound_config_dir = os.environ.get(
-        "JASPER_SOUND_CONFIG_DIR", sound_setup.DEFAULT_CONFIG_DIR,
-    )
-    sound_server = sound_setup.make_server(
-        target_for(sound_port),
-        profile_path=sound_profile,
-        config_dir=sound_config_dir,
+
+def _make_sources_server(target: object) -> object:
+    return sources_setup.make_server(target)
+
+
+def _make_speaker_server(target: object) -> object:
+    return speaker_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_SPEAKER_NAME_FILE",
+            speaker_setup.SPEAKER_NAME_FILE,
+        ),
     )
 
-    # Wake-word corpus recorder — browser-driven recording UI for the
-    # Phase 0b gold-corpus protocol. This is intentionally lazy:
-    # wake_corpus_setup imports NumPy, and the combined settings host
-    # should stay cheap for the common /sound, /wifi, /voice, etc.
-    # paths. The first /wake-corpus request loads the recorder and
-    # starts its asyncio loop for UDP capture from jasper-aec-bridge's
-    # production/corpus streams.
-    # Per-session CSRF token regenerated each daemon start. See
-    # docs/HANDOFF-wake-training-experiment.md Phase 0b.
-    wake_corpus_output = Path(
-        os.environ.get(
-            "JASPER_WAKE_CORPUS_OUTPUT",
-            "/var/lib/jasper/enrollment_positives",
-        )
+
+def _make_wake_server(target: object) -> object:
+    return wake_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_WAKE_MODEL_FILE",
+            wake_setup.WAKE_MODEL_FILE,
+        ),
+        control_base=os.environ.get(
+            "JASPER_CONTROL_BASE",
+            wake_setup.DEFAULT_CONTROL_BASE,
+        ),
     )
-    wake_corpus_ports = _wake_corpus_ports_from_env()
-    wake_corpus_csrf = secrets.token_hex(16)
-    wake_corpus_server = _make_lazy_wake_corpus_server(
-        target_for(wake_corpus_port),
-        output_dir=wake_corpus_output,
-        ports=wake_corpus_ports,
-        csrf_token=wake_corpus_csrf,
+
+
+def _make_wifi_server(target: object) -> object:
+    return wifi_setup.make_server(target)
+
+
+def _make_peers_server(target: object) -> object:
+    return peering_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_PEERING_FILE",
+            peering_setup.PEERING_ENV_FILE,
+        ),
     )
+
+
+def _transit_state_path() -> str:
+    return os.environ.get("JASPER_TRANSIT_FILE", transit_setup.TRANSIT_FILE)
+
+
+def _weather_state_path() -> str:
+    return os.environ.get("JASPER_WEATHER_FILE", weather_setup.WEATHER_FILE)
+
+
+def _make_transit_server(target: object) -> object:
+    return transit_setup.make_server(
+        target,
+        state_path=_transit_state_path(),
+        weather_path=_weather_state_path(),
+    )
+
+
+def _make_ha_server(target: object) -> object:
+    return home_assistant_setup.make_server(
+        target,
+        state_path=os.environ.get(
+            "JASPER_HA_FILE",
+            home_assistant_setup.HA_ENV_FILE,
+        ),
+    )
+
+
+def _make_weather_server(target: object) -> object:
+    return weather_setup.make_server(
+        target,
+        state_path=_weather_state_path(),
+        transit_path=_transit_state_path(),
+    )
+
+
+def _make_sound_server(target: object) -> object:
+    return sound_setup.make_server(
+        target,
+        profile_path=os.environ.get(
+            "JASPER_SOUND_PROFILE_PATH",
+            sound_setup.PROFILE_PATH,
+        ),
+        config_dir=os.environ.get(
+            "JASPER_SOUND_CONFIG_DIR",
+            sound_setup.DEFAULT_CONFIG_DIR,
+        ),
+    )
+
+
+def _make_wake_corpus_server(target: object) -> object:
+    return _make_lazy_wake_corpus_server(
+        target,
+        output_dir=Path(
+            os.environ.get(
+                "JASPER_WAKE_CORPUS_OUTPUT",
+                "/var/lib/jasper/enrollment_positives",
+            )
+        ),
+        ports=_wake_corpus_ports_from_env(),
+        csrf_token=secrets.token_hex(16),
+    )
+
+
+WIZARD_SPECS: tuple[WizardSpec, ...] = (
+    WizardSpec(
+        "/spotify", "JASPER_SPOTIFY_WEB_PORT", 8765,
+        _make_spotify_server, main_thread=True,
+    ),
+    WizardSpec("/voice", "JASPER_VOICE_WEB_PORT", 8767, _make_voice_server),
+    WizardSpec("/google", "JASPER_GOOGLE_WEB_PORT", 8768, _make_google_server),
+    WizardSpec(
+        "/airplay", "JASPER_AIRPLAY_WEB_PORT", 8771, _make_airplay_server,
+    ),
+    WizardSpec(
+        "/sources", "JASPER_SOURCES_WEB_PORT", 8773, _make_sources_server,
+    ),
+    WizardSpec("/wake", "JASPER_WAKE_WEB_PORT", 8774, _make_wake_server),
+    WizardSpec("/wifi", "JASPER_WIFI_WEB_PORT", 8775, _make_wifi_server),
+    WizardSpec("/peers", "JASPER_PEERS_WEB_PORT", 8776, _make_peers_server),
+    WizardSpec(
+        "/transit", "JASPER_TRANSIT_WEB_PORT", 8777, _make_transit_server,
+    ),
+    WizardSpec("/ha", "JASPER_HA_WEB_PORT", 8778, _make_ha_server),
+    WizardSpec(
+        "/weather", "JASPER_WEATHER_WEB_PORT", 8779, _make_weather_server,
+    ),
+    WizardSpec(
+        "/wake-corpus", "JASPER_WAKE_CORPUS_WEB_PORT", 8782,
+        _make_wake_corpus_server,
+    ),
+    WizardSpec("/speaker", "JASPER_SPEAKER_WEB_PORT", 8783, _make_speaker_server),
+    WizardSpec("/sound", "JASPER_SOUND_WEB_PORT", 8784, _make_sound_server),
+)
+
+
+def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    # Port assignments mirror nginx-jasper.conf, jasper-web.socket, and
+    # each wizard's CLI default. The registry above is the local source
+    # of truth for this host: adding a wizard should add one WizardSpec,
+    # one factory, and one ListenStream in deploy/jasper-web.socket.
+    #
+    # With socket activation, we still bind these *logically* via the
+    # .socket unit's ListenStream= directives; the per-port match below
+    # maps fds to wizards regardless of the order systemd passed them.
+    by_port = {
+        sock.getsockname()[1]: sock for sock in _systemd.adopt_systemd_sockets()
+    }
+
+    def target_for(port: int) -> object:
+        return by_port.get(port, ("127.0.0.1", port))
+
+    host_default = "127.0.0.1"  # only used for logging if no systemd fd
+
+    servers: list[tuple[WizardSpec, int, object]] = []
+    for spec in WIZARD_SPECS:
+        port = spec.port()
+        servers.append((spec, port, spec.make_server(target_for(port))))
 
     # Idle-exit triggers when NO wizard sees a request for the window.
     # Each wizard's handler class is a `local` subclass produced inside
     # `_make_handler()` for that wizard, so they're distinct types —
     # patch each one's log_request to bump the shared tracker.
     tracker = _systemd.IdleShutdownTracker()
-    for handler_cls in (
-        spotify_server.RequestHandlerClass,
-        voice_server.RequestHandlerClass,
-        google_server.RequestHandlerClass,
-        airplay_server.RequestHandlerClass,
-        sources_server.RequestHandlerClass,
-        speaker_server.RequestHandlerClass,
-        wake_server.RequestHandlerClass,
-        wifi_server.RequestHandlerClass,
-        peers_server.RequestHandlerClass,
-        transit_server.RequestHandlerClass,
-        ha_server.RequestHandlerClass,
-        weather_server.RequestHandlerClass,
-        sound_server.RequestHandlerClass,
-        wake_corpus_server.RequestHandlerClass,
-    ):
-        _systemd.install_request_idle_bump(handler_cls, tracker)
+    for _, _, server in servers:
+        _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
     tracker.start()
 
-    for label, port in (
-        ("/spotify", spotify_port),
-        ("/voice", voice_port),
-        ("/google", google_port),
-        ("/airplay", airplay_port),
-        ("/sources", sources_port),
-        ("/speaker", speaker_port),
-        ("/wake", wake_port),
-        ("/wifi", wifi_port),
-        ("/peers", peers_port),
-        ("/transit", transit_port),
-        ("/ha", ha_port),
-        ("/weather", weather_port),
-        ("/sound", sound_port),
-        ("/wake-corpus", wake_corpus_port),
-    ):
+    for spec, port, _ in servers:
         if port in by_port:
-            logger.info("jasper-web %s adopting systemd fd for port %d", label, port)
+            logger.info(
+                "jasper-web %s adopting systemd fd for port %d",
+                spec.label,
+                port,
+            )
         else:
-            logger.info("jasper-web %s listening on http://%s:%d", label, host_default, port)
+            logger.info(
+                "jasper-web %s listening on http://%s:%d",
+                spec.label,
+                host_default,
+                port,
+            )
 
     # Worker-thread wizards + Spotify on the main thread.
     # Spotify is the older / busier surface so we leave its
     # serve_forever on the main thread — keeps SIGTERM delivery
     # behavior the same as before (KeyboardInterrupt path returns 0).
-    for label, server in (
-        ("/voice", voice_server),
-        ("/google", google_server),
-        ("/airplay", airplay_server),
-        ("/sources", sources_server),
-        ("/speaker", speaker_server),
-        ("/wake", wake_server),
-        ("/wifi", wifi_server),
-        ("/peers", peers_server),
-        ("/transit", transit_server),
-        ("/ha", ha_server),
-        ("/weather", weather_server),
-        ("/sound", sound_server),
-        ("/wake-corpus", wake_corpus_server),
-    ):
+    main_servers = [
+        (spec, server) for spec, _, server in servers if spec.main_thread
+    ]
+    if len(main_servers) != 1:
+        logger.error("jasper-web expected exactly one main-thread wizard")
+        return 1
+    for spec, _, server in servers:
+        if spec.main_thread:
+            continue
         threading.Thread(
             target=_serve_forever,
-            args=(server, label),
-            name=f"jasper-web-{label.strip('/')}",
+            args=(server, spec.label),
+            name=f"jasper-web-{spec.label.strip('/')}",
             daemon=True,
         ).start()
 
     _systemd.notify_ready()
     try:
-        spotify_server.serve_forever()
+        main_servers[0][1].serve_forever()
     except KeyboardInterrupt:
         pass
     _systemd.notify_stopping()

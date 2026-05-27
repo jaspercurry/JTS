@@ -10,6 +10,14 @@ Type=simple
 # correct for a headless speaker (we have no display or keyboard
 # for the user to confirm a code on).
 ExecStart=/usr/bin/bt-agent --capability=NoInputNoOutput
+# bluez-tools' bt-agent behaves like an interactive CLI helper: during
+# deploy restarts we have observed the default SIGTERM path sit in
+# systemd's 90 s stop window before the renderer restart group can
+# continue. Use the same signal a terminal Ctrl-C would send, then
+# escalate quickly. The agent has no durable state; BlueZ pairing
+# policy is re-registered by the next ExecStart.
+KillSignal=SIGINT
+TimeoutStopSec=5s
 Restart=on-failure
 RestartSec=2
 

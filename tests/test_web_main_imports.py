@@ -12,7 +12,8 @@ Three layers of defense here:
 
 1. **Pattern-specific checks against `__main__.py`** — catches the
    exact `__main__.py` bug that bit us (every `<name>_setup.X` has
-   a matching import; every `<name>_port` has an assignment).
+   a matching import; every registered wizard has a unique socket-
+   backed port).
 
 2. **ruff F821 across every peering-touched file** — catches the
    same lost-edit pattern (undefined name) anywhere else in the
@@ -64,19 +65,40 @@ def test_every_referenced_setup_module_is_imported():
         )
 
 
-def test_every_referenced_port_var_is_defined():
-    """Every `xxx_port` reference inside `main()` must have a local
-    `xxx_port = ...` assignment. Catches the missing-port-var half
-    of the PR #146 bug."""
-    text = _MAIN_PATH.read_text()
-    referenced = set(re.findall(r"\b([a-z][a-z0-9_]*_port)\b", text))
-    for var in sorted(referenced):
-        assigned = re.search(rf"\b{re.escape(var)}\s*=", text)
-        assert assigned, (
-            f"{var} is referenced in __main__.py but never assigned. "
-            f"Adding a new wizard port requires the line "
-            f"`{var} = int(os.environ.get(\"JASPER_*_WEB_PORT\", \"NNNN\"))` "
-            f"alongside the other port-var declarations."
+def test_wizard_registry_has_unique_routes_envs_and_ports():
+    """The combined settings host should be driven by WIZARD_SPECS.
+
+    This replaces the old hand-maintained `<name>_port` locals: adding
+    a wizard should add one spec row, not several loose tuples that can
+    drift during merge-heavy work.
+    """
+    from jasper.web import __main__ as web_main
+
+    specs = web_main.WIZARD_SPECS
+    labels = [spec.label for spec in specs]
+    env_vars = [spec.env_var for spec in specs]
+    ports = [spec.default_port for spec in specs]
+
+    assert len(labels) == len(set(labels))
+    assert len(env_vars) == len(set(env_vars))
+    assert len(ports) == len(set(ports))
+    assert sum(1 for spec in specs if spec.main_thread) == 1
+
+
+def test_registered_wizard_default_ports_are_socket_backed():
+    """Every default port in WIZARD_SPECS must have a ListenStream.
+
+    jasper-web.socket is the socket-activation contract. If a new
+    WizardSpec lands without a matching ListenStream, nginx will 502
+    until the next manual unit-file fix.
+    """
+    from jasper.web import __main__ as web_main
+
+    socket_text = (_REPO / "deploy" / "jasper-web.socket").read_text()
+    for spec in web_main.WIZARD_SPECS:
+        assert f"ListenStream=127.0.0.1:{spec.default_port}" in socket_text, (
+            f"{spec.label} defaults to port {spec.default_port}, but "
+            f"deploy/jasper-web.socket has no matching ListenStream."
         )
 
 
