@@ -40,10 +40,29 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Optional
 
+from ..http_security import management_read_allowed, mutating_request_allowed
 from . import shairport_supervisor, system_supervisor, wifi_guardian_state
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name, "")
+    if not raw:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s=%r is not an integer; using %d", name, raw, default)
+        return default
+    if value <= 0:
+        logger.warning("%s=%r is not positive; using %d", name, raw, default)
+        return default
+    return value
+
+
+CONTROL_MAX_POST_BYTES = _env_int("JASPER_CONTROL_MAX_POST_BYTES", 4096)
 
 
 # Most-recent dial heartbeat. Updated by the UDP log listener every
@@ -1150,11 +1169,14 @@ def _make_handler(
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(body)
 
         def _read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or "0")
+            if length < 0 or length > CONTROL_MAX_POST_BYTES:
+                raise ValueError("invalid body length")
             if not length:
                 return {}
             raw = self.rfile.read(length)
@@ -1162,6 +1184,58 @@ def _make_handler(
                 return json.loads(raw.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError):
                 return {}
+
+        def _guard_management_read(self) -> bool:
+            if self.path == "/healthz":
+                ok, reason = management_read_allowed({
+                    "Host": self.headers.get("Host") or "",
+                })
+            else:
+                ok, reason = management_read_allowed(self.headers)
+            if ok:
+                return True
+            logger.warning(
+                "event=http.reject reason=%s host=%r sec_fetch_site=%r path=%s client=%s",
+                reason, self.headers.get("Host"),
+                self.headers.get("Sec-Fetch-Site"), self.path,
+                self.address_string(),
+            )
+            self._send_json({"error": reason}, status=403)
+            return False
+
+        def _guard_mutating_request(self) -> bool:
+            ok, reason = mutating_request_allowed(self.headers)
+            if not ok:
+                logger.warning(
+                    "event=http.reject reason=%s host=%r origin=%r path=%s client=%s",
+                    reason, self.headers.get("Host"), self.headers.get("Origin"),
+                    self.path, self.address_string(),
+                )
+                self._send_json({"error": reason}, status=403)
+                return False
+            raw_length = self.headers.get("Content-Length") or "0"
+            try:
+                length = int(raw_length)
+            except ValueError:
+                self._send_json({"error": "invalid_content_length"}, status=400)
+                return False
+            if length < 0:
+                self._send_json({"error": "invalid_content_length"}, status=400)
+                return False
+            if length > CONTROL_MAX_POST_BYTES:
+                logger.warning(
+                    "event=http.reject reason=body_too_large bytes=%d limit=%d path=%s client=%s",
+                    length, CONTROL_MAX_POST_BYTES, self.path, self.address_string(),
+                )
+                self._send_json(
+                    {
+                        "error": "request_body_too_large",
+                        "max_bytes": CONTROL_MAX_POST_BYTES,
+                    },
+                    status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                )
+                return False
+            return True
 
         def _volume_payload(self, percent: int) -> dict[str, Any]:
             # `db` is computed for back-compat with the dial firmware
@@ -1173,6 +1247,8 @@ def _make_handler(
         # --- routes ---
 
         def do_GET(self) -> None:  # noqa: N802
+            if not self._guard_management_read():
+                return
             if self.path == "/healthz":
                 self._send_json({"ok": True})
                 return
@@ -1357,6 +1433,8 @@ def _make_handler(
             self.send_error(HTTPStatus.NOT_FOUND)
 
         def do_POST(self) -> None:  # noqa: N802
+            if not self._guard_mutating_request():
+                return
             if self.path == "/volume/adjust":
                 body = self._read_json()
                 # Support both legacy delta_db (dial firmware compat,
@@ -1685,7 +1763,11 @@ def _make_handler(
                 # semantics). Non-blocking — the wizard polls /aec to
                 # see when the transition lands (~10-15 s).
                 #
-                # Risk model: LAN-trust, same as /system/restart/*.
+                # Risk model: LAN-local + browser-origin guard, same
+                # as /system/restart/*. This is still not auth; it is
+                # the small boundary that blocks cross-site browser
+                # POSTs and DNS-rebinding Host headers while keeping
+                # curl, local proxies, and accessories working.
                 current = _read_aec_mode()
                 new_mode = "disabled" if current == "auto" else "auto"
                 try:
@@ -1729,7 +1811,8 @@ def _make_handler(
                 # AEC is disabled so a stale leg config doesn't
                 # leave voice listening on a port nobody talks to.
                 #
-                # Risk model: LAN-trust, same as /aec/toggle.
+                # Risk model: LAN-local + browser-origin guard, same
+                # as /aec/toggle.
                 try:
                     body = self._read_json()
                 except (ValueError, OSError) as e:
@@ -1846,8 +1929,9 @@ def _make_handler(
                 # dashboard polls /system/snapshot to know when
                 # things are back up.
                 #
-                # Risk model: LAN-trust (consistent with the wizards).
-                # Anyone on the WiFi can trigger these; the dashboard's
+                # Risk model: LAN-local + browser-origin guard
+                # (consistent with the wizards). Anyone already on the
+                # trusted WiFi can trigger these; the dashboard's
                 # confirm dialogs are UX, not security.
                 if self.path == "/system/restart/voice":
                     units = ["jasper-voice.service"]

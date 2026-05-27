@@ -19,7 +19,6 @@ import threading
 import urllib.error
 import urllib.parse
 import urllib.request
-from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
@@ -385,6 +384,17 @@ def test_index_html_includes_sensitivity_slider():
     assert 'id="sensitivity-save"' in html
 
 
+def test_index_html_discloses_wake_event_recordings():
+    html = wake_setup._index_html({}).decode()
+    assert "Wake recordings and privacy" in html
+    assert "/var/lib/jasper/wake-events/" in html
+    assert "WAV audio" in html
+    assert "metadata rows are kept" in html
+    assert "does not leave the speaker automatically" in html
+    assert "Reset archives the" in html
+    assert "delete old archives manually" in html
+
+
 def test_index_html_no_system_crosslink_for_wake_detection():
     """The "Wake detection card moved to /system/" panel is gone now
     that the controls live on /wake/. A stale link would mis-direct
@@ -515,7 +525,8 @@ def fake_control():
             received.append(("GET", self.path, None))
             payload = responses.get(self.path)
             if payload is None:
-                self.send_error(404); return
+                self.send_error(404)
+                return
             self._reply(payload)
 
         def do_POST(self):  # noqa: N802
@@ -528,7 +539,8 @@ def fake_control():
             received.append(("POST", self.path, parsed))
             payload = responses.get(self.path)
             if payload is None:
-                self.send_error(404); return
+                self.send_error(404)
+                return
             self._reply(payload)
 
     srv = ThreadingHTTPServer(("127.0.0.1", 0), _UpHandler)

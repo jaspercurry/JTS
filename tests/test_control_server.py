@@ -168,19 +168,47 @@ def _maybe_json(raw: bytes) -> dict:
         return {}
 
 
-def _get(url: str) -> tuple[int, dict]:
+def _get(url: str, *, headers: dict[str, str] | None = None) -> tuple[int, dict]:
+    req = urllib.request.Request(url, headers=headers or {}, method="GET")
     try:
-        with urllib.request.urlopen(url, timeout=2) as r:
+        with urllib.request.urlopen(req, timeout=2) as r:
             return r.status, _maybe_json(r.read())
     except urllib.error.HTTPError as e:
         return e.code, _maybe_json(e.read() if e.fp else b"")
 
 
-def _post(url: str, body: dict | None) -> tuple[int, dict]:
+def _post(
+    url: str,
+    body: dict | None,
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict]:
     data = json.dumps(body).encode() if body is not None else None
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
     req = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"},
+        url, data=data, headers=req_headers,
         method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=2) as r:
+            return r.status, _maybe_json(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, _maybe_json(e.read() if e.fp else b"")
+
+
+def _post_raw(
+    url: str,
+    data: bytes,
+    *,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, dict]:
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(
+        url, data=data, headers=req_headers, method="POST",
     )
     try:
         with urllib.request.urlopen(req, timeout=2) as r:
@@ -208,6 +236,108 @@ def test_delta_db_to_delta_percent_5db_is_10pp():
     assert _delta_db_to_delta_percent(5.0) == 10
     assert _delta_db_to_delta_percent(-5.0) == -10
     assert _delta_db_to_delta_percent(2.5) == 5
+
+
+# --- management request guardrails ---
+
+
+def test_rejects_bad_host_on_get(server_with_coordinator):
+    base, _ = server_with_coordinator
+    status, body = _get(f"{base}/healthz", headers={"Host": "evil.example"})
+    assert status == 403
+    assert body["error"] == "host_not_allowed"
+
+
+def test_cross_site_get_healthz_is_allowed(server_with_coordinator):
+    base, _ = server_with_coordinator
+    status, body = _get(
+        f"{base}/healthz",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    assert status == 200
+    assert body == {"ok": True}
+
+
+def test_cross_site_get_rejects_diagnostics_before_subprocess(
+    server_with_coordinator, monkeypatch,
+):
+    import jasper.control.server as srv_mod
+
+    calls = []
+
+    def fake_run(*args, **kwargs):  # noqa: ANN002, ANN003
+        calls.append((args, kwargs))
+        raise AssertionError("diagnostics should not run")
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", fake_run)
+
+    base, _ = server_with_coordinator
+    status, body = _get(
+        f"{base}/system/diagnostics",
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    assert status == 403
+    assert body["error"] == "cross_site_request"
+    assert calls == []
+
+
+def test_post_allows_same_origin_browser_request(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/adjust",
+        {"delta_percent": 1},
+        headers={"Origin": base},
+    )
+    assert status == 200
+    assert body["percent"] == 61
+    assert ("adjust", 1) in fake.calls
+
+
+def test_post_rejects_cross_origin_browser_request(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/adjust",
+        {"delta_percent": 1},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert status == 403
+    assert body["error"] == "origin_not_allowed"
+    assert fake.calls == []
+
+
+def test_post_rejects_cross_site_fetch_metadata_without_origin(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/adjust",
+        {"delta_percent": 1},
+        headers={"Sec-Fetch-Site": "cross-site"},
+    )
+    assert status == 403
+    assert body["error"] == "cross_site_request"
+    assert fake.calls == []
+
+
+def test_post_rejects_dns_rebinding_host(server_with_coordinator):
+    base, fake = server_with_coordinator
+    status, body = _post(
+        f"{base}/volume/adjust",
+        {"delta_percent": 1},
+        headers={"Host": "evil.example", "Origin": "http://evil.example"},
+    )
+    assert status == 403
+    assert body["error"] == "host_not_allowed"
+    assert fake.calls == []
+
+
+def test_post_rejects_oversized_body_before_dispatch(server_with_coordinator):
+    import jasper.control.server as srv_mod
+
+    base, fake = server_with_coordinator
+    payload = b"{" + b'"x":' + b'"' + (b"a" * srv_mod.CONTROL_MAX_POST_BYTES) + b'"}'
+    status, body = _post_raw(f"{base}/volume/adjust", payload)
+    assert status == 413
+    assert body["error"] == "request_body_too_large"
+    assert fake.calls == []
 
 
 # --- routes ---

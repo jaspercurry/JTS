@@ -397,12 +397,14 @@ steps. Apache 2.0 like the rest of the repo.
 | [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@README.md` + `@AGENTS.md` + per-checkout `@CLAUDE.local.md`). Don't edit; AGENTS.md is canonical. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
+| [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
 | [LICENSE](LICENSE) | Anyone redistributing | Apache 2.0 |
 | [NOTICE](NOTICE) | Anyone redistributing | Project notice plus pointer to third-party attribution inventory |
 | [LICENSE-third-party.md](LICENSE-third-party.md) | Redistributors / maintainers | First-pass third-party software, asset, model, and data attribution inventory |
 | [QUICKSTART.md](QUICKSTART.md) | First-time speaker builder | Pi Imager → boot → `scripts/onboard.sh` → working speaker in ~30 min. Imager 2.0.6+ required. |
 | [BRINGUP.md](BRINGUP.md) | Operator flashing a fresh Pi | Step-by-step from blank SD card to working speaker — XVF firmware, dial, satellites, calibration |
 | [PLAN.md](PLAN.md) | Project planning | v1 phased build, future roadmap |
+| [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, ordered by risk reduction and contributor leverage |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
@@ -936,7 +938,8 @@ bash scripts/jasper-trace.sh                      # filter to event= lines
 
 `jasper-doctor` codifies the smoke tests in BRINGUP.md and runs
 them as code. `fetch-pi-logs.sh` pulls journals + configs +
-ALSA state into `./logs/`, redacting secrets server-side.
+ALSA state into `./logs/`, redacting environment-style secret
+assignments before writing snapshots to disk.
 `jasper-trace.sh` is the live-tail equivalent narrowed to the
 cross-daemon `event=` lines emitted by `jasper.camilla.Ducker`,
 the dial volume routes, etc. — useful when you want to see
