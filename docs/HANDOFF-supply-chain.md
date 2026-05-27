@@ -61,10 +61,24 @@ building:
 The Python direct git dependency for `pycamilladsp` is pinned to the
 `v4.0.0` tag commit in `pyproject.toml` rather than the tag name.
 
+Python dependency determinism is partially started but not complete.
+Several direct runtime dependencies are exact-pinned in
+`pyproject.toml`, other direct dependencies are bounded where upstream
+compatibility matters, and [CONTRIBUTING.md](../CONTRIBUTING.md)
+recommends `uv sync` for local contributor setup. The repository does
+not currently commit a shared Python lock artifact, and deploy/CI still
+install from `pyproject.toml` through pip resolution.
+
 The two PlatformIO firmware projects now pin their shared git library
 dependency by commit and use exact top-level registry versions rather
 than semver ranges. The pioarduino platform archive has a recorded hash
 in the manifest, but PlatformIO itself does not consume that hash yet.
+
+The Rust fan-in daemon commits `rust/jasper-fanin/Cargo.lock`.
+`install.sh` builds that binary crate from `rust/jasper-fanin` with
+`cargo --locked`, so lock drift fails deploy instead of resolving live.
+The provenance checker fails if the lockfile disappears or no longer
+covers the crate's direct dependencies.
 
 ## Accepted Gaps
 
@@ -76,13 +90,11 @@ These are real and intentionally left for later slices:
   pinned.
 - **Python runtime/build dependencies.** Deploy still uses pip
   resolution from `pyproject.toml`, and `jasper_aec3` build isolation
-  resolves `jasper_aec3/pyproject.toml` requirements. The next Python
-  supply-chain slice should commit a lock or generated hash
-  requirements and make install consume it.
-- **Rust fan-in crates.** `jasper-fanin` is built during install, but
-  `rust/jasper-fanin/Cargo.lock` is not committed yet. Generate and
-  commit that lock from a Rust-capable host before calling the Rust path
-  fully pinned.
+  resolves `jasper_aec3/pyproject.toml` requirements. Do not duplicate
+  the local-development `uv sync` story with an unrelated deploy-only
+  lock. The next Python supply-chain slice should choose one shared
+  artifact (`uv.lock` or generated hash requirements), commit it, and
+  make install/CI consume it deliberately.
 - **openWakeWord bundled model helper.** `openwakeword.utils.download_models()`
   still downloads the package's stock models outside JTS's explicit
   registry. Replacing that helper with an explicit hash-checked model
@@ -120,10 +132,11 @@ current project shape and would slow the Pi bring-up path. The value
 here is smaller and concrete: the artifacts JTS downloads directly are
 now visible, mostly immutable, and checked before use.
 
-The highest-leverage follow-up is Python install determinism: decide
-whether deploy should consume a committed `uv.lock`, generated
-`requirements.txt` with hashes, or another lock artifact without making
-Pi 5 installs fragile or much slower.
+Python install determinism remains the highest-leverage supply-chain
+follow-up, but it needs a deliberate design choice: either promote
+`uv.lock` to the shared source of truth or generate hash requirements
+from it, then update install/CI together so there is only one
+dependency-management story.
 
 For the current private fleet, this slice is intentionally fresh/rebuild
 focused. Existing installed renderer binaries are not fingerprinted and

@@ -369,8 +369,9 @@ def test_install_sh_builds_and_installs_binary():
         "(builds rust/jasper-fanin and installs the binary). "
         "See deploy/install.sh main()."
     )
-    assert "cargo build --release" in install_sh, (
-        "install.sh's build step must run `cargo build --release`"
+    assert "cargo build --release --locked" in install_sh, (
+        "install.sh's build step must run `cargo build --release --locked` "
+        "so Cargo.lock drift fails deploy instead of resolving live"
     )
     assert "/opt/jasper/bin/jasper-fanin" in install_sh, (
         "install.sh must install the binary to "
