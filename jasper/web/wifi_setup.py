@@ -3,6 +3,8 @@
 Phone-Settings-style page:
   - Current network card at top (always visible).
   - Available networks list in the middle (Scan button + tap-to-connect).
+  - Manual "join by network name" fallback for scan-suppressed radios
+    and hidden SSIDs.
   - Saved networks in a collapse section at the bottom (with Forget).
 
 Backed entirely by `nmcli` subprocess calls — NetworkManager is RPi OS
@@ -19,8 +21,8 @@ bluetooth/ engine uses.
 Routes (nginx strips /wifi/):
   GET  /          landing HTML
   GET  /state     current connection + radio + adapter + saved + lockout-risk
-  POST /scan      {} → {networks: [...]} (triggers rescan first)
-  POST /connect   {ssid, password?} | {name} → connect, rolls back on failure
+  POST /scan      {} → {networks: [...], scan: {...}} (triggers rescan first)
+  POST /connect   {ssid, password?, hidden?} | {name} → connect, rolls back on failure
   POST /forget    {name} → delete saved profile
   POST /radio     {on: bool} → toggle wifi radio
 
@@ -84,6 +86,22 @@ _CONNECT_TIMEOUT = 45
 # it up in 5-8 s. 20 s is the ceiling before we admit defeat.
 _ROLLBACK_WAIT = 20
 _ROLLBACK_TIMEOUT = 30
+_SCAN_HEALTH_JOURNAL_LINES = 120
+
+
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+# The backend can compute that a scan is known-bad, but product behavior
+# stays conservative while we validate the Pi 5 brcmfmac failure mode live.
+# Set this to 1 in a lab/operator build to actually hide the Scan button
+# after a driver-suppressed scan is detected.
+_HIDE_SCAN_WHEN_SUPPRESSED = _env_truthy(
+    "JASPER_WIFI_HIDE_SCAN_WHEN_SUPPRESSED",
+)
 
 
 # ============================================================
@@ -373,39 +391,18 @@ def _list_saved() -> list[dict[str, Any]]:
 _SIGNAL_MAX = 100
 
 
-def scan_networks() -> list[dict[str, Any]]:
-    """Trigger a fresh scan and return the deduplicated list of nearby
-    networks (one entry per SSID, strongest BSSID wins).
+def _parse_scan_list(stdout: str) -> list[dict[str, Any]]:
+    """Parse `nmcli -t ... device wifi list` output into UI rows.
 
     Hidden networks (those broadcasting with empty SSID) are filtered
-    out — connecting to a hidden network is a separate manual-entry
-    flow (deferred per PLAN.md)."""
-    # rescan request — fire and proceed; the subsequent list call below
-    # is what blocks for results. Without the rescan, the kernel-side
-    # cache can be stale by minutes on a quiet network.
-    _run_nmcli(
-        ["nmcli", "device", "wifi", "rescan"],
-        timeout=_SCAN_TIMEOUT, log_argv=False,
-    )
-    # Brief settle delay so the rescan has results to surface. Without
-    # this, the list call sometimes returns the pre-rescan cache.
-    time.sleep(1.5)
-
-    proc = _run_nmcli(
-        ["nmcli", "-t", "-f", "IN-USE,BSSID,SSID,MODE,CHAN,RATE,SIGNAL,SECURITY",
-         "device", "wifi", "list"],
-        timeout=_SCAN_TIMEOUT, log_argv=False,
-    )
-    if proc.returncode != 0:
-        return []
-
+    out — users can still join them through the manual-entry flow."""
     by_ssid: dict[str, dict[str, Any]] = {}
-    for line in proc.stdout.splitlines():
+    for line in stdout.splitlines():
         fields = _parse_terse(line)
         if len(fields) < 8:
             continue
         in_use, bssid, ssid, _mode, chan, _rate, signal_s, security = fields[:8]
-        if not ssid:  # hidden — skip
+        if not ssid:  # hidden — skip from the scan list
             continue
         try:
             signal = min(int(signal_s), _SIGNAL_MAX)
@@ -428,6 +425,131 @@ def scan_networks() -> list[dict[str, Any]]:
     networks = list(by_ssid.values())
     networks.sort(key=lambda n: (-n["signal"], n["ssid"].lower()))
     return networks
+
+
+def _text_mentions_scan_suppression(*chunks: str | None) -> bool:
+    text = "\n".join(chunk or "" for chunk in chunks).lower()
+    return any(
+        marker in text
+        for marker in (
+            "brcmf_cfg80211_scan: scanning suppressed",
+            "scanning suppressed",
+            "resource temporarily unavailable",
+            "status (4)",
+            "(-11)",
+            "eagain",
+        )
+    )
+
+
+def _recent_kernel_scan_suppressed() -> bool | None:
+    """Best-effort read of recent kernel logs for the Pi 5 brcmfmac
+    scan-suppression signature.
+
+    Returns True/False when journalctl is available and readable, None
+    when the probe itself is unavailable. This function must never make
+    `/scan` fail: scan health is diagnostic, not a dependency."""
+    try:
+        proc = subprocess.run(
+            [
+                "journalctl", "-k", "-b", "-n",
+                str(_SCAN_HEALTH_JOURNAL_LINES), "--no-pager",
+            ],
+            check=False,
+            timeout=2,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+        return None
+    if proc.returncode != 0:
+        return None
+    return _text_mentions_scan_suppression(proc.stdout, proc.stderr)
+
+
+def _scan_report(
+    *,
+    networks: list[dict[str, Any]],
+    rescan_proc: subprocess.CompletedProcess[str],
+    list_proc: subprocess.CompletedProcess[str],
+    recent_suppression_log: bool | None,
+) -> dict[str, Any]:
+    only_current = len(networks) == 1 and bool(networks[0].get("inUse"))
+    nmcli_mentions_suppression = _text_mentions_scan_suppression(
+        rescan_proc.stdout, rescan_proc.stderr,
+        list_proc.stdout, list_proc.stderr,
+    )
+    driver_suppressed = nmcli_mentions_suppression or (
+        recent_suppression_log is True
+        and (only_current or rescan_proc.returncode != 0 or list_proc.returncode != 0)
+    )
+
+    reason: str | None = None
+    if driver_suppressed:
+        reason = "driver_scan_suppressed"
+    elif list_proc.returncode != 0:
+        reason = "nmcli_scan_failed"
+    elif rescan_proc.returncode != 0:
+        reason = "nmcli_rescan_failed"
+
+    degraded = reason is not None
+    scan = {
+        "ok": not degraded,
+        "degraded": degraded,
+        "suspect": only_current and not degraded,
+        "reason": reason,
+        "hideScanButton": bool(
+            _HIDE_SCAN_WHEN_SUPPRESSED
+            and reason == "driver_scan_suppressed"
+        ),
+        "debug": {
+            "rescanReturncode": rescan_proc.returncode,
+            "listReturncode": list_proc.returncode,
+            "networkCount": len(networks),
+            "onlyCurrentNetwork": only_current,
+            "recentSuppressionLog": recent_suppression_log,
+        },
+    }
+    return {"networks": networks, "scan": scan}
+
+
+def scan_networks_report() -> dict[str, Any]:
+    """Trigger a fresh scan and return networks plus scan health.
+
+    The health block deliberately distinguishes definite driver
+    suppression from the softer "we only saw the current network" hint.
+    Some homes really do only have one SSID in range."""
+    # rescan request — fire and proceed; the subsequent list call below
+    # is what blocks for results. Without the rescan, the kernel-side
+    # cache can be stale by minutes on a quiet network.
+    rescan_proc = _run_nmcli(
+        ["nmcli", "device", "wifi", "rescan"],
+        timeout=_SCAN_TIMEOUT, log_argv=False,
+    )
+    # Brief settle delay so the rescan has results to surface. Without
+    # this, the list call sometimes returns the pre-rescan cache.
+    time.sleep(1.5)
+
+    proc = _run_nmcli(
+        ["nmcli", "-t", "-f", "IN-USE,BSSID,SSID,MODE,CHAN,RATE,SIGNAL,SECURITY",
+         "device", "wifi", "list"],
+        timeout=_SCAN_TIMEOUT, log_argv=False,
+    )
+    if proc.returncode != 0:
+        networks: list[dict[str, Any]] = []
+    else:
+        networks = _parse_scan_list(proc.stdout)
+    return _scan_report(
+        networks=networks,
+        rescan_proc=rescan_proc,
+        list_proc=proc,
+        recent_suppression_log=_recent_kernel_scan_suppressed(),
+    )
+
+
+def scan_networks() -> list[dict[str, Any]]:
+    """Compatibility wrapper for callers that only need rows."""
+    return scan_networks_report()["networks"]
 
 
 def _pretty_security(raw: str) -> str:
@@ -472,6 +594,45 @@ def _profile_exists(name: str) -> bool:
         if fields and fields[0] == name:
             return True
     return False
+
+
+def _connect_wifi_command(
+    ssid: str,
+    password: str | None,
+    *,
+    hidden: bool = False,
+) -> list[str]:
+    cmd = ["nmcli", "--wait", str(_CONNECT_WAIT),
+           "device", "wifi", "connect", ssid]
+    if password:
+        cmd.extend(["password", password])
+    if hidden:
+        cmd.extend(["hidden", "yes"])
+    return cmd
+
+
+def _readable_nmcli_error(proc: subprocess.CompletedProcess[str]) -> str:
+    err = (proc.stderr or proc.stdout or "").strip() or "Connection failed"
+    # Trim nmcli's "Error: " prefix and the verbose "Connection activation
+    # failed: (NN) " wrapper so the message that lands in the UI is
+    # actually readable.
+    err = re.sub(r"^Error:\s*", "", err)
+    err = re.sub(r"^Connection activation failed:\s*\(\d+\)\s*", "", err)
+    return err.splitlines()[0] if err else "Connection failed"
+
+
+def _looks_like_ssid_lookup_failure(message: str) -> bool:
+    msg = message.lower()
+    return any(
+        marker in msg
+        for marker in (
+            "no network with ssid",
+            "ssid not found",
+            "no wifi network",
+            "no wi-fi network",
+            "not found",
+        )
+    )
 
 
 def _resolve_key_mgmt(profile_name: str) -> str:
@@ -635,7 +796,12 @@ def _stash_clear_if_matches(ssid: str) -> None:
         )
 
 
-def connect_new(ssid: str, password: str | None) -> tuple[bool, str]:
+def connect_new(
+    ssid: str,
+    password: str | None,
+    *,
+    hidden: bool = False,
+) -> tuple[bool, str]:
     """Connect to an SSID. If `password` is given the network is
     treated as secured; otherwise as open.
 
@@ -649,11 +815,30 @@ def connect_new(ssid: str, password: str | None) -> tuple[bool, str]:
     prev_profile = prev["profileName"] if prev else None
     existed_before = _profile_exists(ssid)
 
-    cmd = ["nmcli", "--wait", str(_CONNECT_WAIT),
-           "device", "wifi", "connect", ssid]
-    if password:
-        cmd.extend(["password", password])
+    cmd = _connect_wifi_command(ssid, password, hidden=hidden)
     proc = _run_nmcli_secret(cmd, timeout=_CONNECT_TIMEOUT)
+    err = _readable_nmcli_error(proc)
+
+    # Manual entry has two useful recovery modes:
+    #   1. true hidden SSIDs (`hidden yes` is required), and
+    #   2. Pi 5 brcmfmac scan-suppressed radios whose scan cache can't
+    #      find a visible SSID even though directed association may work.
+    # Retry with `hidden yes` only for SSID-lookup failures so wrong
+    # passwords don't get a confusing second path.
+    if (
+        proc.returncode != 0
+        and not hidden
+        and _looks_like_ssid_lookup_failure(err)
+    ):
+        hidden_cmd = _connect_wifi_command(ssid, password, hidden=True)
+        hidden_proc = _run_nmcli_secret(
+            hidden_cmd, timeout=_CONNECT_TIMEOUT,
+        )
+        if hidden_proc.returncode == 0:
+            proc = hidden_proc
+        else:
+            proc = hidden_proc
+            err = _readable_nmcli_error(hidden_proc)
 
     if proc.returncode == 0:
         # Guardian stash refresh — best-effort, never blocks the
@@ -662,14 +847,6 @@ def connect_new(ssid: str, password: str | None) -> tuple[bool, str]:
         # for the failure-mode contract.
         _stash_after_connect(ssid, password)
         return True, f"Connected to {ssid}"
-
-    err = (proc.stderr or proc.stdout or "").strip() or "Connection failed"
-    # Trim nmcli's "Error: " prefix and the verbose "Connection activation
-    # failed: (NN) " wrapper so the message that lands in the UI is
-    # actually readable.
-    err = re.sub(r"^Error:\s*", "", err)
-    err = re.sub(r"^Connection activation failed:\s*\(\d+\)\s*", "", err)
-    err = err.splitlines()[0] if err else "Connection failed"
 
     # Clean up the broken NEW profile so it doesn't sit in saved networks.
     # Only delete if the SSID didn't already exist as a saved profile —
@@ -836,6 +1013,16 @@ _PAGE_STYLE = """
   button:hover:not([disabled]) { filter: brightness(1.1); }
   #scan-btn { min-width: 7.5em; }
   #scan-btn.scanning { background: #4a4a4a; }
+  #scan-health { clear: both; margin: 0.4em 0 0.6em; }
+  #scan-health .scan-note {
+    background: #eef6ff; border: 1px solid #b8d8f5; color: #173b5f;
+    border-radius: 6px; padding: 0.55em 0.75em; font-size: 0.9em;
+    line-height: 1.4;
+  }
+  #scan-health .scan-note.warn {
+    background: var(--warn); border-color: var(--warn-border);
+    color: var(--warn-text);
+  }
   .btn-spinner {
     display: inline-block; width: 0.85em; height: 0.85em;
     border: 2px solid rgba(255,255,255,0.35);
@@ -938,6 +1125,17 @@ _PAGE_STYLE = """
   .panel .btns {
     display: flex; gap: 0.5em; margin-top: 0.9em;
   }
+  .manual-panel {
+    background: var(--card); border-color: var(--border);
+    margin-top: 0.5em;
+  }
+  .manual-panel .field-row { margin-bottom: 0.65em; }
+  .manual-panel .check-row {
+    display: flex; gap: 0.45em; align-items: center;
+    color: var(--soft); font-size: 0.9em; margin-top: 0.45em;
+  }
+  .manual-panel .check-row input { margin: 0; }
+  #manual-result:empty { display: none; }
 
   /* Lockout warnings — used by Connect panels (when no ethernet) and
      by the radio-off confirm dialog. */
@@ -1024,8 +1222,32 @@ networks. Changes take effect immediately.</p>
   <button id="scan-btn" onclick="rescan()"
           style="float:right;font-size:0.8em;padding:0.3em 0.8em;">Scan</button>
 </h2>
+<div id="scan-health"></div>
 <div class="net-list" id="avail-list">
   <div class="empty">Tap Scan to look for nearby networks.</div>
+</div>
+
+<h2>Join by name</h2>
+<div class="panel manual-panel">
+  <div class="field-row">
+    <label for="manual-ssid">Network name</label>
+    <input id="manual-ssid" type="text" autocomplete="off"
+           autocapitalize="off" spellcheck="false">
+  </div>
+  <div class="field-row">
+    <label for="manual-password">Password</label>
+    <input id="manual-password" type="password" autocomplete="off"
+           autocapitalize="off" spellcheck="false">
+    <span class="show-pw" onclick="toggleManualPw()">Show password</span>
+    <label class="check-row" for="manual-hidden">
+      <input id="manual-hidden" type="checkbox">
+      Hidden network
+    </label>
+  </div>
+  <div id="manual-result"></div>
+  <div class="btns">
+    <button id="manual-connect-btn" onclick="submitManualConnect()">Connect</button>
+  </div>
 </div>
 
 <details class="disclosure">
@@ -1042,6 +1264,7 @@ networks. Changes take effect immediately.</p>
 let state = { adapterPresent: true, radioOn: false, hasEthernet: false,
               lockoutRisk: "high", current: null, saved: [] };
 let scanResults = [];
+let scanHealth = null;
 let scanning = false;
 let openSsid = null;     // available-list inline panel currently open
 let openSavedName = null;// saved-list inline panel currently open
@@ -1068,6 +1291,7 @@ async function fetchState() {
     const r = await fetch('./state', { cache: 'no-store' });
     state = await r.json();
     renderCurrent();
+    renderScanHealth();
     renderSaved();
   } catch (e) {
     document.getElementById('current').innerHTML =
@@ -1187,6 +1411,36 @@ function jsArg(s) {
 }
 
 // Available networks list --------------------------------------------
+function renderScanHealth() {
+  const box = document.getElementById('scan-health');
+  const btn = document.getElementById('scan-btn');
+  if (!box) return;
+  if (btn) {
+    btn.style.display = scanHealth && scanHealth.hideScanButton ? 'none' : '';
+  }
+  if (!scanHealth) {
+    box.innerHTML = '';
+    return;
+  }
+  const debug = scanHealth.debug || {};
+  if (scanHealth.degraded) {
+    let msg = 'Wi-Fi scanning looks degraded. ';
+    if (scanHealth.reason === 'driver_scan_suppressed') {
+      msg += 'The Pi radio is reporting scan suppression, so the list may only show the current network.';
+    } else {
+      msg += 'The scan command did not complete cleanly.';
+    }
+    msg += ' Join by name still works and keeps rollback enabled.';
+    box.innerHTML = '<div class="scan-note warn">' + escapeHtml(msg) + '</div>';
+    return;
+  }
+  if (scanHealth.suspect || debug.onlyCurrentNetwork) {
+    box.innerHTML = '<div class="scan-note">Scan only found the current network. Join by name is available below.</div>';
+    return;
+  }
+  box.innerHTML = '';
+}
+
 function renderAvail() {
   const list = document.getElementById('avail-list');
   if (!scanResults.length) {
@@ -1239,18 +1493,51 @@ async function rescan() {
     });
     const data = await r.json();
     scanResults = data.networks || [];
+    scanHealth = data.scan || null;
   } catch (e) {
     scanResults = [];
+    scanHealth = {
+      degraded: true,
+      reason: 'request_failed',
+      hideScanButton: false,
+      debug: {},
+    };
   } finally {
     scanning = false;
     btn.classList.remove('scanning');
     btn.innerHTML = 'Scan';
     btn.disabled = false;
+    renderScanHealth();
     renderAvail();
   }
 }
 
 // Connect panel ------------------------------------------------------
+function connectRiskWarningHtml() {
+  return (state.lockoutRisk === 'high' && state.current)
+    ? '<div class="warn"><span class="lead">⚠ Lockout risk:</span>' +
+      ' You\\'re reaching this page over Wi-Fi and the Pi has no ' +
+      'Ethernet fallback. If the new network fails, the Pi will try ' +
+      'to reconnect to ' + escapeHtml(state.current.ssid) +
+      ' automatically (90s timeout). If that also fails you\\'ll need ' +
+      'physical access to recover.</div>'
+    : (state.current
+        ? '<div class="warn">Switching from ' +
+          escapeHtml(state.current.ssid) + '. Connection will ' +
+          'drop briefly — page will reload.</div>'
+        : '');
+}
+
+function confirmManualLockoutRisk(ssid) {
+  if (!(state.lockoutRisk === 'high' && state.current)) return true;
+  return window.confirm(
+    'You are reaching this page over Wi-Fi and the Pi has no Ethernet fallback.\\n\\n' +
+    'It will try to connect to "' + ssid + '". If that fails, it will roll back to "' +
+    state.current.ssid + '". If rollback also fails, you may need physical access.\\n\\n' +
+    'Continue?',
+  );
+}
+
 function openConnect(ssid, keepOpen) {
   // Close any other open connect panel.
   if (openSsid && openSsid !== ssid && !keepOpen) {
@@ -1267,18 +1554,7 @@ function openConnect(ssid, keepOpen) {
   if (!net) { slot.innerHTML = ''; return; }
 
   const idsafe = cssIdSafe(ssid);
-  const warn = (state.lockoutRisk === 'high' && state.current)
-    ? '<div class="warn"><span class="lead">⚠ Lockout risk:</span>' +
-      ' You\\'re reaching this page over Wi-Fi and the Pi has no ' +
-      'Ethernet fallback. If the new network fails, the Pi will try ' +
-      'to reconnect to ' + escapeHtml(state.current.ssid) +
-      ' automatically (90s timeout). If that also fails you\\'ll need ' +
-      'physical access to recover.</div>'
-    : (state.current
-        ? '<div class="warn">Switching from ' +
-          escapeHtml(state.current.ssid) + '. Connection will ' +
-          'drop briefly — page will reload.</div>'
-        : '');
+  const warn = connectRiskWarningHtml();
 
   let pwBlock = '';
   if (net.secured) {
@@ -1380,6 +1656,64 @@ function dismissPanel(ssid) {
     slot.innerHTML = '';
   }
   if (openSsid === ssid) openSsid = null;
+}
+
+// Manual join --------------------------------------------------------
+function toggleManualPw() {
+  const input = document.getElementById('manual-password');
+  if (!input) return;
+  input.type = input.type === 'password' ? 'text' : 'password';
+}
+
+async function submitManualConnect() {
+  if (!state.radioOn) {
+    alert('Turn Wi-Fi on first.');
+    return;
+  }
+  const ssidEl = document.getElementById('manual-ssid');
+  const pwEl = document.getElementById('manual-password');
+  const hiddenEl = document.getElementById('manual-hidden');
+  const result = document.getElementById('manual-result');
+  const btn = document.getElementById('manual-connect-btn');
+  const ssid = (ssidEl ? ssidEl.value : '').trim();
+  const password = pwEl ? pwEl.value : '';
+  const hidden = hiddenEl ? hiddenEl.checked : false;
+  if (!ssid) {
+    alert('Enter the network name first.');
+    return;
+  }
+  if (!confirmManualLockoutRisk(ssid)) return;
+
+  const payload = {ssid: ssid, hidden: hidden};
+  if (password) payload.password = password;
+  if (btn) btn.disabled = true;
+  result.innerHTML =
+    '<div><span class="spinner"></span> Connecting to ' +
+    escapeHtml(ssid) + '… <span style="color:#888;font-size:0.85em">' +
+    '(up to 90s including rollback)</span></div>';
+  try {
+    const r = await fetch('./connect', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json();
+    if (r.ok && data.ok) {
+      result.innerHTML = '<div class="result ok">✓ ' +
+        escapeHtml(data.message || 'Connected') + '</div>';
+      setTimeout(fetchState, 500);
+    } else {
+      result.innerHTML = '<div class="result err">' +
+        escapeHtml(data.message || data.error || 'Connection failed') +
+        '</div>';
+      setTimeout(fetchState, 500);
+    }
+  } catch (e) {
+    result.innerHTML =
+      '<div class="result err">Network error talking to the Wi-Fi backend.</div>';
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 // Forget panel -------------------------------------------------------
@@ -1591,15 +1925,17 @@ def _make_handler() -> type[BaseHTTPRequestHandler]:
             body = self._read_json()
             try:
                 if path == "/scan":
-                    networks = scan_networks()
-                    self._send_json({"networks": networks})
+                    self._send_json(scan_networks_report())
                     return
                 if path == "/connect":
                     ssid = (body.get("ssid") or "").strip()
                     name = (body.get("name") or "").strip()
                     password = body.get("password")
+                    hidden = bool(body.get("hidden"))
                     if ssid:
-                        ok, msg = connect_new(ssid, password or None)
+                        ok, msg = connect_new(
+                            ssid, password or None, hidden=hidden,
+                        )
                     elif name:
                         ok, msg = connect_saved(name)
                     else:

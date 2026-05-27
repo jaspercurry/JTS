@@ -117,6 +117,73 @@ def test_connect_new_open_network_writes_stash(stash_path, monkeypatch):
     assert stash.key_mgmt == "none"
 
 
+def test_connect_new_retries_hidden_on_ssid_lookup_failure(
+    stash_path, monkeypatch,
+):
+    """Manual join should work for hidden SSIDs and scan-suppressed
+    radios: if nmcli can't find the SSID in the scan cache, retry with
+    `hidden yes` before rollback/cleanup."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    calls: list[list[str]] = []
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        if cmd[-2:] == ["hidden", "yes"]:
+            return _mock_proc(returncode=0)
+        if "connect" in cmd:
+            return _mock_proc(
+                returncode=10,
+                stderr="Error: No network with SSID 'HiddenHome' found\n",
+            )
+        if cmd[:4] == ["nmcli", "-t", "-f", "802-11-wireless-security.key-mgmt"]:
+            return _mock_proc(
+                returncode=0,
+                stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+            )
+        return _mock_proc()
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(
+             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
+         ):
+        ok, msg = wifi_setup.connect_new("HiddenHome", "myhomepsk")
+
+    assert ok is True
+    assert "HiddenHome" in msg
+    assert any(call[-2:] == ["hidden", "yes"] for call in calls)
+    stash = wifi_guardian_persistence.read_stash(stash_path)
+    assert stash is not None
+    assert stash.ssid == "HiddenHome"
+    assert stash.psk == "myhomepsk"
+
+
+def test_connect_new_explicit_hidden_uses_hidden_yes(stash_path, monkeypatch):
+    """The manual form's Hidden checkbox should go straight to
+    `hidden yes` without depending on the retry heuristic."""
+    import jasper.web.wifi_setup as wifi_setup
+
+    calls: list[list[str]] = []
+
+    def nmcli_side_effect(cmd, *args, **kwargs):
+        calls.append(list(cmd))
+        return _mock_proc(
+            returncode=0,
+            stdout="802-11-wireless-security.key-mgmt:wpa-psk\n",
+        )
+
+    with patch.object(wifi_setup, "_run_nmcli", side_effect=nmcli_side_effect), \
+         patch.object(
+             wifi_setup, "_run_nmcli_secret", side_effect=nmcli_side_effect,
+         ):
+        ok, _ = wifi_setup.connect_new("HiddenHome", "p", hidden=True)
+
+    assert ok is True
+    connect_calls = [call for call in calls if "connect" in call]
+    assert connect_calls
+    assert connect_calls[0][-2:] == ["hidden", "yes"]
+
+
 def test_connect_new_failure_does_not_write_stash(stash_path):
     """nmcli returns non-zero → connect failed → stash unchanged. The
     user is in some rollback state; we mustn't promise recovery for a

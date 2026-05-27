@@ -564,7 +564,8 @@ overwrite it unless the household picks a registered alternative.
 The household-facing way to change the speaker's Wi-Fi network is
 the wizard at `http://jts.local/wifi/`. Current network at the top,
 Scan button + tap-to-connect for nearby networks in the middle,
-Saved networks (Forget anything) in a collapse section at the
+manual "Join by name" fallback for hidden or scan-suppressed networks,
+and Saved networks (Forget anything) in a collapse section at the
 bottom. All backed by `nmcli` subprocess calls; no new dependency.
 
 **Lockout safety is the part to read before editing this page.**
@@ -605,10 +606,13 @@ nmcli connection delete "<NAME>"
 The wizard polls `/state` every 7 s so SSH-driven changes show up in
 the UI without a manual reload.
 
-**Hidden SSIDs not supported in v1** — deferred per PLAN.md "WiFi
-management — hidden SSID support". `nmcli dev wifi list` doesn't
-return them; would need a manual "Connect to a hidden network" form
-that posts SSID + PSK with `hidden yes`.
+**Manual SSID join is supported.** The "Join by name" form posts SSID
+and optional PSK to the same rollback-protected `/connect` path used
+by tap-to-connect. Its Hidden network checkbox passes `hidden yes` to
+`nmcli`; even without the checkbox, the backend retries with
+`hidden yes` when NetworkManager reports that the SSID is absent from
+the scan cache. That retry is intentional for true hidden SSIDs and
+for Pi 5 radios whose scan cache is broken by brcmfmac suppression.
 
 **Scanning returns only the connected SSID? Known Pi 5 brcmfmac
 firmware bug.** When the kernel logs `brcmf_cfg80211_scan:

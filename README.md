@@ -218,11 +218,12 @@ when the configured AEC mic is present with 6-channel firmware — see
   design.
 - ✅ Wi-Fi network wizard at `http://jts.local/wifi/` — current
   network at top, scan + tap-to-connect for nearby networks,
+  manual join-by-name fallback for hidden or scan-suppressed networks,
   saved networks in a collapse section with Forget. Backed by
   `nmcli`. Connect rolls back to the previous network on failure
   (`nmcli --wait 30 dev wifi connect` + explicit `connection up
-  <previous>` on non-zero exit). Hidden SSIDs + WPA-Enterprise
-  deferred — home-network case only.
+  <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
+  case only.
 - ✅ Persistent live session with sustained-speech VAD
 - ✅ Hardware AEC investigation: production approach decided (chip
   AEC off in the dongle topology, software AEC3 instead); Option D
