@@ -364,6 +364,8 @@ def test_metadata_written_per_session(backend, tmp_path: Path) -> None:
     assert data["clips"][0]["clip_id"] == clip.clip_id
     assert data["clips"][0]["condition"] == "quiet"
     assert data["clips"][0]["distance"] == "near"
+    assert data["clips"][0]["capture_health"]["status"] == "unknown"
+    assert data["clips"][0]["capture_health"]["legs"]["on"]["packets"] > 0
 
 
 def test_metadata_updated_on_delete(backend, tmp_path: Path) -> None:
@@ -1577,6 +1579,96 @@ def test_enable_bridge_outputs_rolls_back_when_restart_fails(
     assert attempts == 2  # failed new config, then restarted rollback config
 
 
+def test_disable_bridge_outputs_writes_zeroes_and_preserves_device(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    _, bridge_path = _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env=(
+            "JASPER_AEC_DTLN_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
+            "JASPER_AEC_USB_MIC_DEVICE=Studio Mic\n"
+        ),
+    )
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+
+    wake_corpus_setup.disable_bridge_corpus_outputs()
+
+    values = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in bridge_path.read_text().splitlines()
+    }
+    assert values["JASPER_AEC_DTLN_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_REF_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_USB_ENABLED"] == "0"
+    assert values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] == "0"
+    assert values["JASPER_AEC_USB_MIC_DEVICE"] == "Studio Mic"
+    assert restarts == ["restart"]
+
+
+def test_build_capture_health_marks_bridge_drop_compromised() -> None:
+    frame = np.zeros(1280, dtype=np.int16)
+    start = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 2.0,
+        "counters": {
+            "frames_processed": 10,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 0, "raw0": 0, "usb": 0, "ref": 0},
+            "udp_send_drops_by_leg": {"on": 0},
+            "packets_sent_by_leg": {"on": 0},
+        },
+    }
+    stop = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 3.0,
+        "counters": {
+            "frames_processed": 20,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 1, "raw0": 0, "usb": 0, "ref": 0},
+            "udp_send_drops_by_leg": {"on": 0},
+            "packets_sent_by_leg": {"on": 1},
+        },
+    }
+
+    health = wake_corpus_setup.build_capture_health(
+        wall_duration_sec=0.08,
+        buffers={"on": [frame]},
+        bridge_start=start,
+        bridge_stop=stop,
+    )
+
+    assert health["status"] == "compromised"
+    assert health["bridge_delta"]["queue_drops"]["mic"] == 1
+    assert health["legs"]["on"]["status"] == "compromised"
+    assert health["legs"]["on"]["bridge_drop_counts"]["mic_queue_full"] == 1
+
+
+def test_build_capture_health_unknown_without_bridge_stats() -> None:
+    frame = np.zeros(1280, dtype=np.int16)
+
+    health = wake_corpus_setup.build_capture_health(
+        wall_duration_sec=0.08,
+        buffers={"on": [frame]},
+        bridge_start=None,
+        bridge_stop=None,
+    )
+
+    assert health["status"] == "unknown"
+    assert health["legs"]["on"]["packets"] == 1
+    assert health["legs"]["on"]["audio_duration_sec"] == pytest.approx(0.08)
+
+
 def test_metadata_persists_include_raw_mic_0_flag(
     backend, tmp_path: Path,
 ) -> None:
@@ -2186,7 +2278,95 @@ def test_api_status_includes_bridge_output_status(
                 "usb": False,
                 "usb_dtln": False,
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
+                "active": True,
             }
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_api_bridge_outputs_disable(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env="JASPER_AEC_CORPUS_USB_ENABLED=1\n",
+    )
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/bridge-outputs",
+            json.dumps({"action": "disable"}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["bridge_outputs"]["active"] is False
+            assert restarts == ["restart"]
+        finally:
+            conn.close()
+    finally:
+        server.shutdown()
+        server.server_close()
+        th.join(timeout=2)
+
+
+def test_voice_start_can_disable_bridge_outputs_first(
+    backend, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    import http.client
+
+    _use_tmp_bridge_env(
+        monkeypatch,
+        tmp_path,
+        corpus_env="JASPER_AEC_DTLN_ENABLED=1\n",
+    )
+    restarts: list[str] = []
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "restart_aec_bridge",
+        lambda: restarts.append("restart"),
+    )
+    systemctl_calls: list[list[str]] = []
+
+    def fake_run(cmd, **kwargs):
+        systemctl_calls.append(list(cmd))
+        return subprocess.CompletedProcess(cmd, 0, stdout="active\n")
+
+    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+    server, th, port = _serve_in_thread(backend)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+        conn.request(
+            "POST", "/api/voice-daemon",
+            json.dumps({"action": "start", "disable_bridge_outputs": True}),
+            {"Content-Type": "application/json", "X-CSRF-Token": "test-token"},
+        )
+        resp = conn.getresponse()
+        try:
+            body = json.loads(resp.read())
+            assert resp.status == 200
+            assert body["bridge_outputs"]["active"] is False
+            assert restarts == ["restart"]
+            assert systemctl_calls == [
+                ["systemctl", "start", wake_corpus_setup.VOICE_UNIT],
+                ["systemctl", "is-active", wake_corpus_setup.VOICE_UNIT],
+            ]
         finally:
             conn.close()
     finally:

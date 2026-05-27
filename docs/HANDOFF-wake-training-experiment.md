@@ -445,6 +445,16 @@ If the bridge cannot restart with the requested optional outputs
 (for example, the USB mic is missing), the recorder rolls that env
 file back and restarts the bridge with the prior config.
 
+When testing is done, use the wake-corpus page's **Return to
+production mode** button. It writes explicit `0` values for the
+recorder-owned corpus output flags and restarts `jasper-aec-bridge`;
+the selected USB mic device is preserved so the next test session can
+turn the legs back on without re-discovery. Starting `jasper-voice`
+from the same page also offers to do this cleanup first when corpus
+outputs are still active. This is intentionally a recorder-page
+lifecycle, not a `jasper-doctor` warning: corpus outputs are on while
+the operator is testing, off when they are not.
+
 Equivalent manual env:
 
 ```sh
@@ -467,6 +477,18 @@ Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
 The bridge opens the USB mic at its PortAudio default sample rate
 (the test mic reported 44.1 kHz) and resamples to the corpus contract
 of 16 kHz mono before UDP emission.
+
+**Capture-health metadata.** `jasper-aec-bridge` writes a low-cost
+JSON counter snapshot to `/run/jasper/aec_bridge_stats.json`:
+monotonic queue-drop counts, UDP send-drop counts, packet counts per
+leg, and reference-starvation count for the current bridge process.
+The recorder snapshots that file at clip start/stop and stores the
+delta under each clip's `capture_health` metadata. Status meanings:
+`clean` = no known provenance damage, `warning` = usable but review
+the note (for example stale reference reuse or duration skew),
+`compromised` = upstream drops/restart/no packets, and `unknown` =
+bridge stats were unavailable. The audit script treats compromised
+clips as failures and warning/unknown clips as review warnings.
 
 **Reference-quality follow-up.** The current `ref` leg is intentionally
 the exact 16 kHz mono frame the live AEC consumes. A future
@@ -1091,7 +1113,10 @@ Recording-day audit tooling:
 **Phase 0b (gold corpus capture): tooling READY, recording PENDING.**
 First two recording sessions scheduled for Jasper's next studio
 morning. Cleanup of pre-raw0 corpus is one-click per old session
-via the new Sessions card.
+via the new Sessions card. Recorder-managed corpus bridge outputs can
+now be returned to production mode from the same page after testing,
+and per-clip metadata records capture-health deltas from the bridge
+where available.
 
 **Phase 0c (baseline): pending Phase 0a + 0b.**
 
@@ -1099,6 +1124,17 @@ via the new Sessions card.
 
 ## Changelog
 
+- **2026-05-27 (v10):** Capture-health + corpus bridge lifecycle:
+  - `jasper-aec-bridge` emits monotonic per-leg packet/drop counters
+    to `/run/jasper/aec_bridge_stats.json`; the recorder diffs those
+    counters at clip start/stop and stores `capture_health` in session
+    metadata.
+  - Wake-corpus audit surfaces compromised capture health as a failure
+    and warning/unknown capture health as review warnings.
+  - Wake-corpus page now has a recorder-owned **Return to production
+    mode** flow that disables corpus bridge outputs and restarts the
+    bridge. Starting `jasper-voice` from the page offers to do the same
+    cleanup first when experiment outputs are still active.
 - **2026-05-27 (v9):** Wake-corpus recording-day polish:
   - Playback labels now say WebRTC AEC3 for the WebRTC AEC paths and
     keep the speaker Reference leg last in the clip selector.
@@ -1238,4 +1274,4 @@ via the new Sessions card.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v9 — wake-corpus polish + USB AGC warning verified)
+Last verified: 2026-05-27 (v10 — capture-health + corpus bridge lifecycle verified)
