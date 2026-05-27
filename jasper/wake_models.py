@@ -22,8 +22,9 @@ Adding a model:
      empty — `openwakeword.utils.download_models()` (already invoked
      by install.sh) fetches them on first run.
   2. For external `.onnx` files, set `download_url` to a raw URL +
-     `model` to the absolute path under `/var/lib/jasper/wake/`.
-     install.sh will pull it idempotently on the next deploy.
+     `download_sha256` to the expected SHA-256, and `model` to the
+     absolute path under `/var/lib/jasper/wake/`. install.sh will
+     pull and verify it idempotently on the next deploy.
   3. Re-run `bash scripts/deploy-to-pi.sh` to install the new model
      on existing speakers. Existing households' active selections are
      preserved (the wizard only writes `wake_model.env` when the user
@@ -75,6 +76,7 @@ class WakeModelEntry:
     fa_per_hour: float | None
     source_url: str
     download_url: str | None = None
+    download_sha256: str | None = None
     bundled: bool = False
     recommended: bool = False
 
@@ -102,8 +104,11 @@ REGISTRY: tuple[WakeModelEntry, ...] = (
         source_url="https://github.com/fwartner/home-assistant-wakewords-collection",
         download_url=(
             "https://raw.githubusercontent.com/fwartner/"
-            "home-assistant-wakewords-collection/main/en/jarvis/jarvis_v2.onnx"
+            "home-assistant-wakewords-collection/"
+            "8bcd2f20bb7b76c351b2eff871fa1ce873fe9be2/"
+            "en/jarvis/jarvis_v2.onnx"
         ),
+        download_sha256="dae408c0fa69ec888bf8e3a8b41a41f97677522be3b8163821e4105fa754b988",
         recommended=True,
     ),
     WakeModelEntry(

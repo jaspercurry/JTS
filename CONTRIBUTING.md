@@ -61,6 +61,10 @@ blank SD card to working speaker.
 
 - **Hardware-free pytest** (`pytest`) — required green before merge.
   No SDK auth or network. >1000 tests across 93 files.
+- **Supply-chain provenance** (`python3 scripts/check-provenance.py`) —
+  required when touching install/build fetches, firmware dependency
+  declarations, wake/DTLN model registries, or Python direct URL
+  dependencies. See [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md).
 - **Voice-eval suite** (`pytest tests/voice_eval/regression/`) —
   opens **paid** real-time LLM sessions (~$0.075/scenario on Gemini,
   ~$0.60 on OpenAI). Don't run on every PR; nightly at most with

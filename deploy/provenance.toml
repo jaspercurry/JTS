@@ -1,0 +1,175 @@
+version = 1
+last_reviewed = "2026-05-27"
+
+# Machine-readable provenance for install/build-time network inputs.
+# See docs/HANDOFF-supply-chain.md for policy, update workflow, and
+# explicitly accepted gaps.
+
+[[artifact]]
+id = "camilladsp"
+kind = "release-archive"
+consumer = "deploy/install.sh: install_camilladsp"
+url = "https://github.com/HEnquist/camilladsp/releases/download/${CAMILLA_VERSION}/${CAMILLA_TARBALL}"
+resolved_url = "https://github.com/HEnquist/camilladsp/releases/download/v4.1.3/camilladsp-linux-aarch64.tar.gz"
+version = "v4.1.3"
+sha256 = "d9a17092923ebfe5d20a770c6b6a7eb2268f9700f999bf604b9db09f518aca5a"
+verification = "sha256sum -c in deploy/install.sh"
+
+[[artifact]]
+id = "raspotify-librespot-deb"
+kind = "release-deb"
+consumer = "deploy/install.sh: install_renderers"
+url = "https://github.com/dtcooper/raspotify/releases/download/${RASPOTIFY_VERSION}/raspotify_${RASPOTIFY_VERSION}.librespot.v0.8.0-ea81314_arm64.deb"
+resolved_url = "https://github.com/dtcooper/raspotify/releases/download/0.48.1/raspotify_0.48.1.librespot.v0.8.0-ea81314_arm64.deb"
+version = "0.48.1"
+sha256 = "dc1bc4d209378ef1f8348fd7aa6d1a7865fa83abc30c08990d171012d038a717"
+verification = "sha256sum -c in deploy/install.sh"
+
+[[artifact]]
+id = "nqptp"
+kind = "git-source"
+consumer = "deploy/install.sh: install_renderers"
+repository = "https://github.com/mikebrady/nqptp.git"
+commit = "c925f27c1fd12e4033ac477e5a405969b0b0260b"
+verification = "git rev-parse HEAD in deploy/install.sh"
+
+[[artifact]]
+id = "shairport-sync"
+kind = "git-source"
+consumer = "deploy/install.sh: install_renderers"
+repository = "https://github.com/mikebrady/shairport-sync.git"
+ref = "4.3.7"
+commit = "0b1c4391ffd398e7b145eb4b98416261380adeea"
+verification = "git rev-parse HEAD in deploy/install.sh"
+
+[[artifact]]
+id = "webrtc-audio-processing-v2"
+kind = "git-source"
+consumer = "deploy/install.sh: build_webrtc_v2_for_aec3"
+repository = "https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git"
+ref = "v2.1"
+commit = "c5a2a02a196d1c9dbe5e28b393b5cf634a35e711"
+verification = "git rev-parse HEAD in deploy/install.sh"
+
+[[artifact]]
+id = "camillagui-aarch64"
+kind = "release-archive"
+consumer = "deploy/install.sh: install_camillagui"
+url = "https://github.com/HEnquist/camillagui-backend/releases/download/v${CAMILLAGUI_VERSION}/${bundle}"
+resolved_url = "https://github.com/HEnquist/camillagui-backend/releases/download/v4.1.0/bundle_linux_aarch64.tar.gz"
+version = "4.1.0"
+arch = "aarch64"
+sha256 = "9a5415b44dda58478f18de9fd572edf092f659fd5e45cbe8086ff5648dc089d7"
+verification = "sha256sum -c in deploy/install.sh"
+
+[[artifact]]
+id = "camillagui-amd64"
+kind = "release-archive"
+consumer = "deploy/install.sh: install_camillagui"
+resolved_url = "https://github.com/HEnquist/camillagui-backend/releases/download/v4.1.0/bundle_linux_amd64.tar.gz"
+version = "4.1.0"
+arch = "x86_64"
+sha256 = "86fd3cde575038f312ede7bad0910dc5e46b974cafc048c26115ec3cb9f54792"
+verification = "sha256sum -c in deploy/install.sh"
+
+[[artifact]]
+id = "camillagui-armv7"
+kind = "release-archive"
+consumer = "deploy/install.sh: install_camillagui"
+resolved_url = "https://github.com/HEnquist/camillagui-backend/releases/download/v4.1.0/bundle_linux_armv7.tar.gz"
+version = "4.1.0"
+arch = "armv7l"
+sha256 = "22b89033ebfe1e4d49afd80c0c745bb6bffec19bc2ac2a60279e565524d467d1"
+verification = "sha256sum -c in deploy/install.sh"
+
+[[artifact]]
+id = "pycamilladsp"
+kind = "python-direct-git"
+consumer = "pyproject.toml"
+repository = "https://github.com/HEnquist/pycamilladsp"
+ref = "v4.0.0"
+commit = "fdc0d163e02dd73206a493402b43c83502ad83d7"
+direct_url = "git+https://github.com/HEnquist/pycamilladsp@fdc0d163e02dd73206a493402b43c83502ad83d7"
+verification = "pip direct URL pinned to commit"
+
+[[artifact]]
+id = "pioarduino-espressif32-platform"
+kind = "platformio-platform-archive"
+consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
+url = "https://github.com/pioarduino/platform-espressif32/releases/download/55.03.38-1/platform-espressif32.zip"
+version = "55.03.38-1"
+sha256 = "54ca527d9920815d8fef77319b9c35679cf71c0299a3a9bf4ad8ae33a6cd95c4"
+verification = "provenance record only; PlatformIO does not enforce this hash yet"
+
+[[artifact]]
+id = "improv-wifi-library"
+kind = "platformio-git-library"
+consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
+direct_url = "https://github.com/jnthas/Improv-WiFi-Library.git#e37c244e0080349e191252acf4bce146eca118e0"
+repository = "https://github.com/jnthas/Improv-WiFi-Library.git"
+commit = "e37c244e0080349e191252acf4bce146eca118e0"
+verification = "PlatformIO git dependency pinned to commit"
+
+[[artifact]]
+id = "jarvis-v2-wake-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/fwartner/home-assistant-wakewords-collection"
+source_commit = "8bcd2f20bb7b76c351b2eff871fa1ce873fe9be2"
+download_url = "https://raw.githubusercontent.com/fwartner/home-assistant-wakewords-collection/8bcd2f20bb7b76c351b2eff871fa1ce873fe9be2/en/jarvis/jarvis_v2.onnx"
+sha256 = "dae408c0fa69ec888bf8e3a8b41a41f97677522be3b8163821e4105fa754b988"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "dtln-aec-256-stage1"
+kind = "onnx-model"
+consumer = "jasper/aec_engines/dtln_models.py and deploy/install.sh"
+download_url = "https://github.com/jaspercurry/JTS/releases/download/dtln-models-v1/dtln_aec_256_1.onnx"
+version = "dtln-models-v1"
+sha256 = "06cda79efdb7764cfb1dd87b2d3bae94d951dc3d41a4e73b09f324ffdf8f9a4d"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "dtln-aec-256-stage2"
+kind = "onnx-model"
+consumer = "jasper/aec_engines/dtln_models.py and deploy/install.sh"
+download_url = "https://github.com/jaspercurry/JTS/releases/download/dtln-models-v1/dtln_aec_256_2.onnx"
+version = "dtln-models-v1"
+sha256 = "06ce997599928ef181c3dbabfb63e27a00da9e47df73c80626fa82e9c43785a4"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[surface]]
+id = "apt-packages"
+kind = "distro-packages"
+consumer = "deploy/install.sh: install_deps"
+status = "accepted-gap"
+notes = "Package names are listed in install_deps. Debian/Raspberry Pi apt repositories are signature-verified but not snapshot-pinned in this slice."
+
+[[surface]]
+id = "python-runtime"
+kind = "pypi-resolution"
+consumer = "deploy/install.sh, pyproject.toml, and jasper_aec3/pyproject.toml"
+status = "accepted-gap"
+notes = "Python runtime dependencies and jasper_aec3 build requirements are resolved live during deploy; follow-up work should commit a lock or generated hash requirements and make deploy consume it."
+
+[[surface]]
+id = "rust-fanin-crates"
+kind = "cargo-resolution"
+consumer = "rust/jasper-fanin/Cargo.toml"
+status = "accepted-gap"
+notes = "Cargo.lock is not committed yet; follow-up should generate and commit it from a Rust-capable host."
+
+[[surface]]
+id = "openwakeword-stock-models"
+kind = "package-helper-download"
+consumer = "deploy/install.sh openwakeword.utils.download_models()"
+status = "accepted-gap"
+source = "https://github.com/dscripka/openWakeWord"
+notes = "The helper downloads bundled openWakeWord feature/wake models outside JTS control. Follow-up should either pre-stage hashes or replace helper use with an explicit registry."
+
+[[surface]]
+id = "platformio-registry-libraries"
+kind = "platformio-registry-resolution"
+consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
+status = "partially-pinned"
+notes = "Top-level registry dependencies are pinned to exact versions in platformio.ini. PlatformIO still resolves toolchain and transitive metadata from its registry."

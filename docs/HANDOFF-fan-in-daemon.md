@@ -621,7 +621,7 @@ user. Same test as today, new device names.
 ```
 rust/jasper-fanin/                  ← new
   Cargo.toml
-  Cargo.lock                        ← committed (deterministic builds)
+  Cargo.lock                        ← pending supply-chain follow-up
   src/
     main.rs                         ← entry, signal handling, sd_notify wiring
     mixer.rs                        ← the work loop: read N → sum → write 1
@@ -746,7 +746,9 @@ infrastructure to be in place.
 
 ### Phase 2 — the daemon (built, installed, but inactive)
 
-- Land the Rust source tree + Cargo.toml + Cargo.lock.
+- Land the Rust source tree + Cargo.toml. Cargo.lock is still pending
+  supply-chain follow-up; see
+  [HANDOFF-supply-chain.md](HANDOFF-supply-chain.md).
 - `install.sh` builds it and installs to `/opt/jasper/bin/jasper-fanin`.
 - Land the systemd unit, but with `WantedBy=` set to a non-existent
   target so it doesn't activate yet. Or land disabled with

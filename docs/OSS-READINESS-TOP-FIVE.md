@@ -76,7 +76,12 @@ main compatibility risk is custom local hostnames; `JASPER_HOSTNAME` and
 
 ## 3. Supply-Chain Pinning and Provenance
 
-**Status.** Next.
+**Status.** First provenance slice shipped: direct deploy-time
+release archives, model files, and source-build git inputs now have a
+canonical manifest, checksum/commit verification where JTS controls the
+fetch, and a local provenance check. Remaining work: apt snapshots,
+Python hash installs, Cargo lock generation, openWakeWord helper model
+hashes, and PlatformIO transitive/toolchain lock depth.
 
 **Why it matters.** Fresh installs fetch Python packages, models,
 firmware tools, `.deb` artifacts, and source repos. OSS users need to
@@ -87,13 +92,14 @@ silent model replacement can break installs or introduce unreviewed
 code. Debugging becomes guesswork because two "same" installs may not
 actually contain the same bits.
 
-**Definition of done.**
-- Inventory every network fetch in `deploy/install.sh`, firmware build
-  paths, wake-model downloads, and tooling setup.
+**Current definition of done.**
+- Inventory every direct network fetch in `deploy/install.sh`, firmware
+  build paths, wake/DTLN model registries, and Python direct URL deps.
 - Pin immutable versions or SHAs where practical.
-- Record checksums for binary/model artifacts.
+- Record checksums for binary/model artifacts JTS downloads directly.
 - Document the provenance and update procedure in one canonical doc.
-- Add a lightweight check that fails when a new fetch lacks provenance.
+- Add a lightweight check that fails when a new direct fetch lacks
+  provenance.
 
 **Cost and trade-off.** Medium. Some upstream ecosystems are awkward
 about immutable artifacts, and checksum updates add maintainer work.

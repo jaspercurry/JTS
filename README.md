@@ -414,6 +414,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
+| [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
 | [docs/HANDOFF-*.md](docs/) | Deep-dive on a subsystem | Investigation history + design rationale |
 
@@ -606,6 +607,11 @@ reference. Currently:
   bridge dsnoop. Covers buffer sizing (`4096` frames for WiFi-burst
   absorption), systemd resilience, observability, and the retired
   dmix failure mode.
+- [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) —
+  Deploy/build provenance: the canonical manifest, checksum policy,
+  install-time git/source pins, firmware dependency pins, and accepted
+  gaps for apt, Python, Rust, openWakeWord helper downloads, and
+  PlatformIO transitive resolution.
 - [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — Optional USB
   audio-input gadget: ConfigFS setup, host-control preemption,
   source wizard behavior, and how the USB-in lane feeds fan-in.
