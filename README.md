@@ -621,9 +621,9 @@ reference. Currently:
   dmix failure mode.
 - [`HANDOFF-supply-chain.md`](docs/HANDOFF-supply-chain.md) —
   Deploy/build provenance: the canonical manifest, checksum policy,
-  install-time git/source pins, firmware dependency pins, and accepted
-  gaps for apt, Python, Rust, openWakeWord helper downloads, and
-  PlatformIO transitive resolution.
+  install-time git/source pins, firmware dependency pins, hash-checked
+  model downloads, and accepted gaps for apt, Python, and PlatformIO
+  transitive resolution.
 - [`HANDOFF-usbsink.md`](docs/HANDOFF-usbsink.md) — Optional USB
   audio-input gadget: ConfigFS setup, host-control preemption,
   source wizard behavior, and how the USB-in lane feeds fan-in.
