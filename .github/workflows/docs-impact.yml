@@ -1,0 +1,93 @@
+name: Docs impact
+
+# Routes changed files to the canonical docs listed in docs/doc-map.toml.
+# Informational only: this workflow tells PR authors which docs to scan, but
+# it does not decide whether the PR must update those docs.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Generate docs-impact report
+        id: impact
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/docs-impact.py --validate-only
+
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            python3 scripts/docs-impact.py \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --format markdown > docs-impact.md
+            IMPACT_COUNT=$(python3 scripts/docs-impact.py \
+              --base "$BASE_SHA" \
+              --head "$HEAD_SHA" \
+              --format count)
+          else
+            {
+              echo '<!-- docs-impact-bot -->'
+              echo '## Docs impact: map validation only'
+              echo
+              echo '`docs/doc-map.toml` is valid. Run this workflow on a PR for changed-file routing.'
+            } > docs-impact.md
+            IMPACT_COUNT=0
+          fi
+
+          cat docs-impact.md
+          {
+            echo '## Docs impact'
+            echo
+            cat docs-impact.md
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "impact_count=${IMPACT_COUNT}" >> "$GITHUB_OUTPUT"
+
+      - name: Update PR sticky comment
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IMPACT_COUNT: ${{ steps.impact.outputs.impact_count }}
+        run: |
+          set -euo pipefail
+          MARKER='<!-- docs-impact-bot -->'
+          EXISTING_ID=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq ".[] | select(.body | contains(\"${MARKER}\")) | .id" \
+            | head -1 || true)
+
+          if [[ "$IMPACT_COUNT" == "0" && -z "$EXISTING_ID" ]]; then
+            echo "No mapped docs and no existing comment — nothing to do."
+            exit 0
+          fi
+
+          BODY_FILE="docs-impact.md"
+
+          if [[ -n "$EXISTING_ID" ]]; then
+            echo "Updating existing sticky comment ${EXISTING_ID}"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${EXISTING_ID}" \
+              -F "body=@${BODY_FILE}" > /dev/null || {
+                echo "Could not update PR comment; leaving workflow non-blocking."
+                exit 0
+              }
+          else
+            echo "Creating new sticky comment"
+            gh pr comment "$PR_NUMBER" --body-file "$BODY_FILE" || {
+              echo "Could not create PR comment; leaving workflow non-blocking."
+              exit 0
+            }
+          fi

@@ -352,7 +352,7 @@ scripts/                        Operator helpers (run from laptop)
 tests/                          Hardware-free pytest suite
   voice_eval/                   End-to-end scenario tests against
                                 the live voice provider. Paid API
-                                calls — see CLAUDE.md "Voice-eval
+                                calls — see AGENTS.md "Voice-eval
                                 cost discipline" before running.
 ```
 
@@ -403,7 +403,7 @@ steps. Apache 2.0 like the rest of the repo.
 |---|---|---|
 | [README.md](README.md) | Anyone landing on the repo | What this is, where to look |
 | [AGENTS.md](AGENTS.md) | All AI agents (canonical) | Operational rules + per-subsystem guidance + documentation paradigm. Edit here. |
-| [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@README.md` + `@AGENTS.md` + per-checkout `@CLAUDE.local.md`). Don't edit; AGENTS.md is canonical. |
+| [CLAUDE.md](CLAUDE.md) | Claude Code only | Thin import shim (`@AGENTS.md` + per-checkout `@CLAUDE.local.md`). Don't edit; AGENTS.md is canonical. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | First-time contributors | Quick start, PR flow, testing, doc layout |
 | [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) | All contributors | Contributor Covenant 2.1 |
 | [SECURITY.md](SECURITY.md) | Security reporters / maintainers | Supported versions, vulnerability reporting path, current LAN-appliance security model |
@@ -419,6 +419,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
+| [docs/doc-map.toml](docs/doc-map.toml) | Maintainers / AI agents | Documentation impact routing: code globs → canonical docs to scan, safety class, and suggested verification. Used by `scripts/docs-impact.py` and the non-blocking PR comment workflow. |
 | [docs/audit-pending-followups.md](docs/audit-pending-followups.md) | Maintainers | Deferred/rejected follow-ups from the May 2026 architectural-pattern audit |
 | [docs/historical/](docs/historical/) | Maintainers / archaeology | Completed or superseded runbooks preserved for context; not current operational truth |
 | [docs/research/](docs/research/) | Maintainers / archaeology | Raw external or model-generated research inputs preserved for traceability; use canonical handoffs for shipped guidance |
@@ -775,7 +776,7 @@ one core — opt-in for 2 GB Pis). Toggle any of them at
 [http://jts.local/system](http://jts.local/system); the reconciler
 restarts the bridge + voice and the change takes effect in ~15 s.
 Sensitivity slider lives on the same card. Full lever set in
-AGENTS.md "AEC bridge — reconciler toggle".
+[AGENTS.md "AEC bridge — reconciler toggle"](AGENTS.md#aec-bridge--reconciler-toggle).
 
 The transport is UDP (not snd-aloop's `LoopbackAEC` card, which is
 what the original design used) because snd-aloop's kernel-side
@@ -857,7 +858,7 @@ the reconciler once. On 6-channel firmware it selects
 `JASPER_MIC_DEVICE=udp:9876` and starts the bridge; on 2-channel
 firmware or no Array it leaves voice on direct mic when possible and
 keeps the bridge off. Either way, AEC is reversible at runtime — see
-CLAUDE.md "Acoustic echo cancellation" section.
+[the Acoustic echo cancellation section](#acoustic-echo-cancellation-aec).
 
 ### The chip control library
 

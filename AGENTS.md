@@ -100,22 +100,32 @@ right place. Read this before adding or restructuring docs.
 
 6. **Touched-subsystem rule.** If your PR touches `jasper/voice/*`,
    scan `docs/HANDOFF-voice-providers.md` (and similarly for other
-   subsystems). The PR template has an "I scanned the related
-   HANDOFF" checkbox — that's the enforcement hook. If you found
+   subsystems). The PR template's documentation-impact section asks
+   for the docs scanned and the evidence/rationale. If you found
    anything stale while scanning, fix it inline in the same PR.
 
-7. **README is the doc atlas.** Every shipped doc gets listed in
+7. **Doc impact map is the routing layer.**
+   [`docs/doc-map.toml`](docs/doc-map.toml) maps high-risk code globs
+   to the canonical docs that should be scanned when those files
+   change. Treat the bot output as a starting point, not a verdict:
+   update the mapped doc if behavior, commands, paths, invariants, or
+   safety rules changed; otherwise leave a short no-doc-impact note in
+   the PR. Keep map entries coarse and canonical. Do not copy
+   architecture prose into the map.
+
+8. **README is the doc atlas.** Every shipped doc gets listed in
    README's documentation map, or is explicitly tagged elsewhere
    (session-artifact / archived / research). No orphan docs.
 
-8. **One canonical file per agent convention.** AGENTS.md (this
-   file) is canonical. CLAUDE.md is `@AGENTS.md` (Claude Code's
-   `@`-import directive) plus the canonical-file banner. No
-   operational content lives in CLAUDE.md. This follows the
+9. **One canonical file per agent convention.** AGENTS.md (this
+   file) is canonical. CLAUDE.md is a thin Claude Code shim: a
+   canonical-file banner, `@AGENTS.md`, and optional
+   `@CLAUDE.local.md` per-checkout context. No operational content
+   lives in CLAUDE.md. This follows the
    [agents.md](https://agents.md) cross-tool convention adopted
    by Codex, Cursor, GitHub Copilot, Gemini, Aider, and others.
 
-9. **Historical handoffs are tagged at the top.** Most
+10. **Historical handoffs are tagged at the top.** Most
    `docs/HANDOFF-*.md` files are living operational references
    (rules 2 and 3). A small minority are frozen-in-time
    session-pickup narratives ("you're picking up X, here's the

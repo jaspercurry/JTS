@@ -105,9 +105,10 @@ Settings the dashboard should expose — without SSHing in:
   on the account, and the spotify_play tool fuzzy-matches against it.
   Motivated by the 2026 Spotify Web API hiding algorithmic personalised
   playlists (Discover Weekly, Daily Mix, Release Radar, Daylist) from
-  both `current_user_playlists` and catalog search owner-filter — see
-  [docs/HANDOFF-spotify-personal-playlists.md](docs/HANDOFF-spotify-personal-playlists.md)
-  if it ever gets written. First piece of this web-view work to ship.
+  both `current_user_playlists` and catalog search owner-filter. If a
+  dedicated `docs/HANDOFF-spotify-personal-playlists.md` ever gets
+  written, it should capture that provider behavior and this workaround.
+  First piece of this web-view work to ship.
 - **Location + subway + bus + Citi Bike** ✅ landed via the
   [Transit wizard](http://jts.local/transit/) at
   [jasper/web/transit_setup.py](jasper/web/transit_setup.py) —
@@ -584,7 +585,7 @@ operator is in the loop.
   one or two breaking changes per upgrade. The `VoiceSession`
   interface limits the blast radius of any churn to a single
   adapter file. Fall back to `gemini-2.5-flash-native-audio-preview-12-2025`
-  if 3.1 silently breaks (see CLAUDE.md "Gemini model switching").
+  if 3.1 silently breaks (see AGENTS.md "Gemini model switching").
 - **Gemini tool calling is sequential** (no parallel/non-blocking).
   A slow tool (e.g. Spotify search) will gate the next thing the
   model says. Keep tool implementations fast (5 s timeout, return

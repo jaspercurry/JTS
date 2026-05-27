@@ -1,0 +1,536 @@
+# Documentation impact map.
+#
+# This file is a routing layer, not a second architecture spec. It maps
+# high-risk code areas to the canonical docs future humans and agents should
+# scan when those areas change. Keep entries coarse; false positives are okay
+# because the PR comment is informational and non-blocking.
+
+[[subsystem]]
+id = "docs-governance"
+title = "Documentation governance and AI-agent context"
+safety = "safe-ci"
+code = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "README.md",
+  "CONTRIBUTING.md",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/workflows/doc-*.yml",
+  ".github/workflows/docs-*.yml",
+  "scripts/doc-freshness.sh",
+  "scripts/docs-impact.py",
+  "scripts/docs-linkcheck.py",
+  "docs/doc-map.toml",
+  "docs/testing-tooling.md",
+]
+docs = [
+  "AGENTS.md",
+  "CLAUDE.md",
+  "README.md",
+  "CONTRIBUTING.md",
+  "docs/testing-tooling.md",
+]
+requires_docs_when = [
+  "The documentation paradigm, README atlas, agent context loading, PR documentation-impact workflow, freshness checks, or docs routing map changes.",
+]
+verification = [
+  "python3 scripts/docs-impact.py --validate-only",
+  "python3 scripts/docs-linkcheck.py --changed-file README.md",
+  "bash scripts/doc-freshness.sh 90 --all",
+]
+
+[[subsystem]]
+id = "deploy-and-onboarding"
+title = "Deploy, install, and first-run onboarding"
+safety = "boot-risk"
+code = [
+  "deploy/install.sh",
+  "deploy/provenance.toml",
+  "deploy/configure-bluez.sh",
+  "deploy/nginx-jasper.conf",
+  "deploy/modules-load.d/**",
+  "deploy/modprobe.d/**",
+  "scripts/deploy-to-pi.sh",
+  "scripts/onboard.sh",
+  "scripts/_lib.sh",
+  "scripts/use",
+  ".claude/commands/onboard-pi.md",
+]
+docs = [
+  "README.md",
+  "AGENTS.md",
+  "QUICKSTART.md",
+  "BRINGUP.md",
+  "docs/HANDOFF-supply-chain.md",
+  "docs/HANDOFF-resilience.md",
+]
+requires_docs_when = [
+  "The supported deploy path, first-run setup flow, install targets, service ownership, or laptop/Pi state files change.",
+  "A build/download/provenance input or runtime install location changes.",
+]
+verification = [
+  "bash scripts/doc-freshness.sh 90 --all",
+  "python3 scripts/check-provenance.py when build/install fetches or direct URL dependencies changed",
+]
+
+[[subsystem]]
+id = "audio-routing-and-renderers"
+title = "Renderer source policy, fan-in, ALSA, and audio routing"
+safety = "audio-output-risk"
+code = [
+  "jasper/music_sources.py",
+  "jasper/mux.py",
+  "jasper/renderer.py",
+  "jasper/source_state.py",
+  "jasper/camilla.py",
+  "jasper/camilla_config_contract.py",
+  "deploy/alsa/**",
+  "deploy/camilladsp/**",
+  "deploy/shairport-sync.conf.template",
+  "deploy/systemd/jasper-fanin.service",
+  "deploy/systemd/jasper-mux.service",
+  "deploy/systemd/librespot.service",
+  "deploy/systemd/shairport-sync.service",
+  "deploy/systemd/bluealsa-aplay.service.d/**",
+  "rust/jasper-fanin/**",
+]
+docs = [
+  "docs/audio-paths.md",
+  "docs/HANDOFF-barge-in.md",
+  "docs/HANDOFF-fan-in-daemon.md",
+  "docs/HANDOFF-voice-music-control.md",
+  "docs/HANDOFF-volume.md",
+  "docs/HANDOFF-airplay.md",
+]
+requires_docs_when = [
+  "A source lane, fan-in buffer, ALSA PCM, mux arbitration rule, renderer device, or source-selection behavior changes.",
+  "A source starts using a different volume carrier or bypasses/enters CamillaDSP differently.",
+]
+verification = [
+  "pytest tests/test_fanin_wiring.py tests/test_fanin_systemd.py tests/test_volume_coordinator.py tests/test_airplay_render.py",
+]
+
+[[subsystem]]
+id = "voice-runtime-and-providers"
+title = "Voice runtime, provider switching, prompts, and tools"
+safety = "voice-runtime"
+code = [
+  "jasper/voice/**",
+  "jasper/voice_daemon.py",
+  "jasper/vad.py",
+  "jasper/tools/**",
+  "jasper/cues/**",
+  "jasper/web/voice_setup.py",
+  "deploy/systemd/jasper-voice.service",
+  "scripts/switch-voice-provider.sh",
+  "scripts/switch-gemini-model.sh",
+  "tests/voice_eval/**",
+]
+docs = [
+  "docs/HANDOFF-voice-providers.md",
+  "docs/HANDOFF-prompting.md",
+  "docs/HANDOFF-audible-feedback.md",
+  "docs/HANDOFF-vad-experiments.md",
+  "docs/HANDOFF-persistent-live-session.md",
+  "tests/voice_eval/README.md",
+]
+requires_docs_when = [
+  "Provider env ownership, provider defaults, model/voice selection, cue generation, LiveConnection/LiveTurn semantics, system prompt, or tool-calling behavior changes.",
+  "Voice-eval scenarios, cost discipline, or regression expectations change.",
+]
+verification = [
+  "pytest tests/test_voice_setup.py tests/test_switch_voice_provider_script.py tests/test_system_prompt_unclear_audio.py",
+  "Voice-eval only when justified by AGENTS.md cost discipline.",
+]
+
+[[subsystem]]
+id = "wake-and-wake-corpus"
+title = "Wake word, wake telemetry, and corpus collection"
+safety = "voice-runtime"
+code = [
+  "jasper/wake.py",
+  "jasper/wake_models.py",
+  "jasper/wake_events.py",
+  "jasper/wake_ports.py",
+  "jasper/web/wake_setup.py",
+  "jasper/web/wake_corpus_setup.py",
+  "jasper/cli/wake_*.py",
+  "scripts/*wake*",
+  "scripts/*corpus*",
+]
+docs = [
+  "docs/HANDOFF-wake-training-experiment.md",
+  "docs/HANDOFF-wake-telemetry.md",
+  "docs/HANDOFF-wake-corpus-quality.md",
+]
+requires_docs_when = [
+  "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
+]
+verification = [
+  "pytest tests/test_wake_setup.py tests/test_wake_events.py tests/test_wake_score.py tests/test_wake_review.py tests/test_wake_corpus_setup.py",
+]
+
+[[subsystem]]
+id = "aec-and-mic"
+title = "AEC bridge, mic profiles, and XVF3800 control"
+safety = "audio-input-risk"
+code = [
+  "jasper/cli/aec_*.py",
+  "jasper/aec_engines/**",
+  "jasper/mics/**",
+  "jasper/xvf/**",
+  "jasper/chip_aec_experiment.py",
+  "deploy/bin/jasper-aec-reconcile",
+  "deploy/systemd/jasper-aec-*.service",
+  "deploy/systemd/jts-mic.slice",
+  "deploy/udev/99-jasper-aec-reconcile.rules",
+  "scripts/aec-*",
+  "scripts/chip-aec-*",
+  "scripts/xvf-interrogate.sh",
+]
+docs = [
+  "docs/HANDOFF-aec.md",
+  "docs/HANDOFF-barge-in.md",
+  "docs/HANDOFF-xvf3800.md",
+  "docs/HANDOFF-mic-quality-v2.md",
+  "docs/CHIP-AEC-EXPERIMENT.md",
+]
+requires_docs_when = [
+  "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
+]
+verification = [
+  "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_control_aec_state.py",
+]
+
+[[subsystem]]
+id = "wifi-and-network-recovery"
+title = "Wi-Fi wizard, scan repair, and profile guardian"
+safety = "connectivity-risk"
+code = [
+  "jasper/web/wifi_setup.py",
+  "jasper/wifi_scan_repair.py",
+  "jasper/wifi_guardian_persistence.py",
+  "jasper/control/wifi_guardian_state.py",
+  "deploy/bin/jasper-wifi-guardian",
+  "deploy/systemd/jasper-wifi-guardian.service",
+  "scripts/experiments/wifi-scan-repair.py",
+]
+docs = [
+  "AGENTS.md",
+  "docs/HANDOFF-resilience.md",
+]
+requires_docs_when = [
+  "Wi-Fi lockout protection, scan suppression repair, rollback behavior, guardian persistence, or NetworkManager recovery semantics change.",
+]
+verification = [
+  "pytest tests/test_wifi_setup_scan_health.py tests/test_wifi_setup_guardian_hooks.py tests/test_wifi_scan_repair.py tests/test_wifi_guardian_persistence.py tests/test_wifi_guardian_script.py",
+]
+
+[[subsystem]]
+id = "volume-and-sound"
+title = "Volume coordination and sound preferences"
+safety = "audio-output-risk"
+code = [
+  "jasper/volume_*.py",
+  "jasper/volume_coordinator.py",
+  "jasper/tools/audio.py",
+  "jasper/sound/**",
+  "jasper/web/sound_setup.py",
+  "jasper/dsp_apply.py",
+  "jasper/correction/camilla_yaml.py",
+]
+docs = [
+  "docs/HANDOFF-volume.md",
+  "docs/HANDOFF-volume-control-redesign.md",
+  "docs/audio-paths.md",
+  "docs/HANDOFF-sound-preferences.md",
+  "docs/HANDOFF-correction.md",
+]
+requires_docs_when = [
+  "The canonical listening level, source volume carrier, Camilla volume limits, preference EQ composition, or generated DSP config safety behavior changes.",
+]
+verification = [
+  "pytest tests/test_volume_coordinator.py tests/test_volume_persistence.py tests/test_tts_volume_tracker.py tests/test_sound_profile.py tests/test_sound_setup.py tests/test_sound_camilla_yaml.py",
+]
+
+[[subsystem]]
+id = "spotify-and-music-accounts"
+title = "Spotify playback, OAuth, and multi-user account routing"
+safety = "safe-ci"
+code = [
+  "jasper/spotify*.py",
+  "jasper/accounts.py",
+  "jasper/librespot_state.py",
+  "jasper/tools/spotify.py",
+  "jasper/web/spotify_setup.py",
+  "deploy/bin/jasper-librespot-event",
+  "deploy/jasper-web.*",
+  "deploy/systemd/librespot.service",
+  "scripts/claim-librespot.sh",
+  "tests/test_spotify*.py",
+  "tests/voice_eval/regression/test_spotify.py",
+]
+docs = [
+  "docs/multi-user-spotify.md",
+  "docs/HANDOFF-voice-music-control.md",
+  "docs/HANDOFF-volume.md",
+]
+requires_docs_when = [
+  "Spotify OAuth, account storage, account routing, cold-start playback, librespot state, or Spotify voice-tool behavior changes.",
+]
+verification = [
+  "pytest tests/test_spotify_routing.py tests/test_spotify_uri.py",
+]
+
+[[subsystem]]
+id = "usb-audio-input"
+title = "USB Audio Input"
+safety = "boot-risk"
+code = [
+  "jasper/usbsink/**",
+  "jasper/cli/usbsink_main.py",
+  "jasper/web/sources_setup.py",
+  "deploy/usbsink/**",
+  "deploy/systemd/jasper-usbsink*.service",
+]
+docs = [
+  "docs/HANDOFF-usbsink.md",
+  "docs/audio-paths.md",
+  "docs/HANDOFF-fan-in-daemon.md",
+  "docs/HANDOFF-volume.md",
+]
+requires_docs_when = [
+  "Gadget enablement, reboot requirements, USB source state, host volume observation, preemption, or source-lane wiring changes.",
+]
+verification = [
+  "pytest tests/test_usbsink_daemon.py tests/test_usbsink_audio_bridge.py tests/test_usbsink_volume_bridge.py tests/test_usbsink_state.py tests/test_sources_setup_usbsink.py",
+]
+
+[[subsystem]]
+id = "room-correction-and-calibration"
+title = "Room correction and calibration agent"
+safety = "audio-output-risk"
+code = [
+  "jasper/correction/**",
+  "jasper/calibration_agent/**",
+  "jasper/web/correction_setup.py",
+  "deploy/jasper-correction-web.*",
+  "docs/calibration-agent/**",
+]
+docs = [
+  "docs/HANDOFF-correction.md",
+  "docs/HANDOFF-calibration-agent.md",
+  "docs/HANDOFF-active-speaker-dsp.md",
+  "docs/calibration-agent/README.md",
+]
+requires_docs_when = [
+  "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
+]
+verification = [
+  "pytest tests/test_correction_*.py",
+]
+
+[[subsystem]]
+id = "testing-and-diagnostics"
+title = "Testing tools, diagnostics, and evidence capture"
+safety = "safe-ci"
+code = [
+  "docs/testing-tooling.md",
+  "jasper/cli/doctor.py",
+  "jasper/tools/diagnostic.py",
+  "scripts/fetch-pi-logs.sh",
+  "scripts/tail-pi-logs.sh",
+  "scripts/pi-bundle.sh",
+  "scripts/jasper-trace.sh",
+  "scripts/*capture*",
+  "scripts/*audit*",
+  "scripts/*probe*",
+  "scripts/*score*",
+]
+docs = [
+  "docs/testing-tooling.md",
+  "BRINGUP.md",
+]
+requires_docs_when = [
+  "A diagnostic/capture/audit script is added, removed, renamed, or changes its output contract.",
+  "The first-line diagnostic path for broken speakers changes.",
+]
+verification = [
+  "bash scripts/doc-freshness.sh 90 --all",
+]
+
+[[subsystem]]
+id = "transit-and-citibike"
+title = "Transit and Citi Bike tools"
+safety = "safe-ci"
+code = [
+  "jasper/transit/**",
+  "jasper/citibike.py",
+  "jasper/tools/bus.py",
+  "jasper/tools/subway.py",
+  "jasper/tools/citibike.py",
+  "jasper/web/transit_setup.py",
+  "scripts/refresh-mta-stations.sh",
+]
+docs = [
+  "docs/HANDOFF-transit-citibike.md",
+]
+requires_docs_when = [
+  "Provider registry shape, setup wizard behavior, cache semantics, answer shape, station drift handling, or API key requirements change.",
+]
+verification = [
+  "pytest tests/test_transit_*.py tests/test_citibike.py tests/test_tools_citibike.py",
+]
+
+[[subsystem]]
+id = "home-assistant"
+title = "Home Assistant integration"
+safety = "safe-ci"
+code = [
+  "jasper/home_assistant.py",
+  "jasper/tools/home_assistant.py",
+  "jasper/web/home_assistant_setup.py",
+]
+docs = [
+  "docs/HANDOFF-homeassistant.md",
+]
+requires_docs_when = [
+  "Conversation API usage, wizard setup flow, token handling, tool prompt/answer behavior, or observability surfaces change.",
+]
+verification = [
+  "pytest tests/test_home_assistant*.py tests/test_tools_home_assistant.py",
+]
+
+[[subsystem]]
+id = "peering-and-satellites"
+title = "Peering, satellites, and accessory devices"
+safety = "hardware-risk"
+code = [
+  "jasper/peering/**",
+  "jasper/web/peering_setup.py",
+  "jasper/accessories/**",
+  "jasper/cli/dial_onboard.py",
+  "jasper/cli/satellite_onboard.py",
+  "jasper/cli/satellite_validation.py",
+  "deploy/avahi/jasper-peer.service.template",
+  "firmware/**",
+]
+docs = [
+  "docs/HANDOFF-peering.md",
+  "docs/satellites.md",
+]
+requires_docs_when = [
+  "Wake arbitration, peer discovery, satellite provisioning, firmware phase status, accessory roles, or multi-mic assumptions change.",
+]
+verification = [
+  "pytest tests/test_peering_*.py tests/test_bluetooth_models.py",
+]
+
+[[subsystem]]
+id = "future-integrations-and-updates"
+title = "Future integrations, remote updates, and roadmap briefs"
+safety = "design-only"
+code = [
+  "PLAN.md",
+  "docs/HANDOFF-apple-music.md",
+  "docs/HANDOFF-remote-updates.md",
+  "jasper/apple_music/**",
+  "jasper/tools/apple_music.py",
+  "jasper/web/apple_music_setup.py",
+  "jasper/updates/**",
+  "jasper/web/update*.py",
+  ".github/workflows/release*.yml",
+]
+docs = [
+  "PLAN.md",
+  "docs/HANDOFF-apple-music.md",
+  "docs/HANDOFF-remote-updates.md",
+  "docs/HANDOFF-volume-control-redesign.md",
+  "docs/HANDOFF-persistent-live-session.md",
+]
+requires_docs_when = [
+  "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",
+]
+verification = [
+  "bash scripts/doc-freshness.sh 90 --all",
+]
+
+[[subsystem]]
+id = "security-oss-and-maintainer-backlog"
+title = "Security, OSS readiness, licensing, and maintainer backlog"
+safety = "safe-ci"
+code = [
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  "LICENSE",
+  "NOTICE",
+  "LICENSE-third-party.md",
+  "docs/OSS-READINESS-TOP-FIVE.md",
+  "docs/REVIEW-google-oss-readiness.md",
+  "docs/audit-pending-followups.md",
+  "jasper/http_security.py",
+  "jasper/control/server.py",
+  "scripts/_diagnostic_redaction.sh",
+  "scripts/fetch-pi-logs.sh",
+  "scripts/pi-bundle.sh",
+  "deploy/provenance.toml",
+  "scripts/check-provenance.py",
+]
+docs = [
+  "SECURITY.md",
+  "CODE_OF_CONDUCT.md",
+  "LICENSE-third-party.md",
+  "docs/OSS-READINESS-TOP-FIVE.md",
+  "docs/REVIEW-google-oss-readiness.md",
+  "docs/audit-pending-followups.md",
+  "docs/HANDOFF-supply-chain.md",
+  "docs/HANDOFF-management-ui.md",
+]
+requires_docs_when = [
+  "Security posture, diagnostic redaction, vulnerability reporting, license/provenance inventory, management-surface hardening, or OSS-readiness priorities change.",
+]
+verification = [
+  "python3 scripts/check-provenance.py when dependency or build inputs changed",
+  "bash scripts/doc-freshness.sh 90 --all",
+]
+
+[[subsystem]]
+id = "resilience-and-system-dashboard"
+title = "Resilience, watchdogs, system dashboard, and health surfaces"
+safety = "boot-risk"
+code = [
+  "jasper/watchdog.py",
+  "jasper/control/system_*.py",
+  "jasper/control/shairport_supervisor.py",
+  "jasper/control/airplay_health.py",
+  "jasper/web/system_setup.py",
+  "jasper/web/airplay_setup.py",
+  "deploy/journald/**",
+  "deploy/rpi-swap/**",
+  "deploy/sysctl/**",
+  "deploy/tmpfiles/**",
+  "deploy/systemd/camillagui*.service",
+  "deploy/systemd/camillagui.socket",
+  "deploy/systemd/jasper-camilla.service",
+  "deploy/systemd/jasper-control.service",
+  "deploy/systemd/jasper-dac-init.service",
+  "deploy/systemd/jasper-dongle-recover.service",
+  "deploy/systemd/jasper-headphone-monitor.service",
+  "deploy/systemd/jasper-input.service",
+  "deploy/systemd/jts-audio.slice",
+  "deploy/systemd/jts-mic.slice",
+  "deploy/jasper-system-web.*",
+  "deploy/bin/jasper-apply-airplay-mode",
+]
+docs = [
+  "docs/HANDOFF-resilience.md",
+  "docs/HANDOFF-tier5-watchdog-liveness.md",
+  "docs/HANDOFF-airplay.md",
+  "docs/HANDOFF-management-ui.md",
+]
+requires_docs_when = [
+  "Watchdog, OOM, restart, dashboard health, AirPlay mode/health, or systemd unit resilience behavior changes.",
+]
+verification = [
+  "pytest tests/test_watchdog.py tests/test_system_supervisor.py tests/test_system_metrics.py tests/test_airplay_health.py tests/test_shairport_supervisor.py tests/test_web_systemd.py",
+]

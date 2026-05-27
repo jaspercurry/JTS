@@ -691,7 +691,7 @@ prevention) instead of `set_listening_level(...)` (which is for
 "authoritative" writes like the dial).
 
 This is a small surgical addition to
-[jasper/control/server.py:496-624](jasper/control/server.py:496) — see
+[jasper/control/server.py:496-624](../jasper/control/server.py:496) — see
 §4.7 below.
 
 #### `state_publisher.py`
@@ -754,7 +754,7 @@ authoritative volume routing is `volume_bridge.py` POSTing to
 jasper-control's `/volume/set`. jasper-control's coordinator updates
 the persistence file. voice_daemon's coordinator refreshes from disk
 on every operation (see `_refresh_from_disk()` at
-[jasper/volume_coordinator.py:348](jasper/volume_coordinator.py:348)).
+[jasper/volume_coordinator.py:348](../jasper/volume_coordinator.py:348)).
 So volume changes propagate to voice_daemon without a dedicated
 observer. **Decision: no new UsbSinkObserver.** Saves complexity.
 
@@ -778,7 +778,7 @@ async def usbsink_playing(state_path: str = USBSINK_STATE_PATH) -> bool:
 ```
 
 Mirrors `spotify_playing()` at
-[jasper/source_state.py:25](jasper/source_state.py:25).
+[jasper/source_state.py:25](../jasper/source_state.py:25).
 
 **Modified file**: `jasper/renderer.py`. Add `usbsinkactive` to the
 dict returned by `active_renderers()`:
@@ -928,7 +928,7 @@ else:
 ```
 
 This is ~10 lines of change in
-[jasper/control/server.py](jasper/control/server.py).
+[jasper/control/server.py](../jasper/control/server.py).
 
 ### 4.8 jasper-doctor checks
 
@@ -1152,7 +1152,7 @@ If the loop wedges (e.g. sounddevice callback thread deadlocks), the
 watchdog fires and systemd restarts.
 
 Mirrors the pattern in
-[jasper/watchdog.py](jasper/watchdog.py) — same helper, no new
+[jasper/watchdog.py](../jasper/watchdog.py) — same helper, no new
 code needed.
 
 ### Log conventions

@@ -75,9 +75,9 @@ engineering with real risks.
 
 - Approximately 300–500 LoC of new update + healthcheck + rollback
   machinery to write and maintain.
-- LAN-only web UI with **no authentication** today (per
-  [`feedback_jts_http_not_https.md`](../../.claude/projects/-Users-jaspercurry-Code-JTS/memory/feedback_jts_http_not_https.md)
-  and confirmed across `jasper/web/*.py`): anyone on the home WiFi
+- LAN-only web UI with **no authentication** today (captured in the
+  private memory note `feedback_jts_http_not_https.md` and confirmed
+  across `jasper/web/*.py`): anyone on the home WiFi
   could brick the speaker by clicking the button. Not just the
   developer.
 - Failure modes are scary: mid-update power cut, bad release breaks
@@ -279,7 +279,7 @@ Add `.github/workflows/ci.yml`:
     v1.3-3 package is reachable on Ubuntu-latest runners; may need
     a Trixie container).
   - Build the two ESP32 firmwares via `pio run` on a matrix, using
-    pioarduino (per CLAUDE.md "Toolchain — Arduino-ESP32 v3.x via
+    pioarduino (per AGENTS.md "Toolchain — Arduino-ESP32 v3.x via
     pioarduino").
 - **Artifacts** (optional in Stage 1, required in Stage 2): publish
   the prebuilt wheel + firmware bins on green.
@@ -351,7 +351,7 @@ to a new `jasper-control` endpoint.
   trample each other.
 - Gate the button behind a confirmation modal ("This will restart
   the speaker for ~5 minutes. Continue?").
-- Per the CLAUDE.md "no silent failure paths" rule, a failed update
+- Per the AGENTS.md "no silent failure paths" rule, a failed update
   must play an audio cue. Add a new entry to
   [`jasper/cues/registry.py`](../jasper/cues/registry.py)
   (`update_failed_rolled_back`, "Update failed; the speaker rolled
@@ -462,9 +462,9 @@ roll back is wake-blocking and very much needs a cue. Add at least:
 
 ## Auth and security
 
-LAN trust today. Per
-[`feedback_jts_http_not_https.md`](../.claude/projects/-Users-jaspercurry-Code-JTS/memory/feedback_jts_http_not_https.md)
-and the `jasper/web/*.py` reading, all wizards run on HTTP with no
+LAN trust today. Per the private memory note
+`feedback_jts_http_not_https.md` and the `jasper/web/*.py` reading,
+all wizards run on HTTP with no
 authentication — the assumption is "if you're on my home WiFi,
 you're trusted". That assumption needs revisiting before this
 button ships, because the consequence of an unauthorised click is

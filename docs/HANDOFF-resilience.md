@@ -291,7 +291,7 @@ way to trip Tier 5 self-inflicted — each model load holds
 the laptop for that kind of work; the Pi venv is sized for
 production daemons, not analysis bursts.
 
-### Tier 5's liveness blind spot — known gap {#tier-5s-liveness-blind-spot--known-gap}
+### Tier 5's liveness blind spot — known gap
 
 The 2026-05-23 incident exposed a real limitation. A PIO compile
 on the 1 GB Pi 5 OOM-stalled userspace for >2 minutes:
@@ -358,7 +358,7 @@ shape end-to-end**:
 The Tier 5 kernel hardware watchdog stays as the floor for the
 case where T5.2 itself wedges.
 
-### Memory-pressure resilience (Stage 1) {#memory-pressure-resilience-stage-1}
+### Memory-pressure resilience (Stage 1)
 
 Added 2026-05-24 in response to the 2026-05-23 wedge. Stage 1
 ships the layer that works on the stock RPi 5 kernel without

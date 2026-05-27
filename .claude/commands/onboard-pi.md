@@ -81,7 +81,7 @@ Ask the user, one or two items at a time, whether they have:
 6. TPA3255 amp + its own 32 V power supply
 7. Speakers + speaker wire
 
-Full BOM in [README.md § Hardware](README.md#hardware). If anything
+Full BOM in [README.md § Hardware](../../README.md#hardware). If anything
 is missing, don't block — tell them to come back to `/onboard-pi`
 when hardware arrives. Nothing is persisted yet; the skill picks
 up cleanly later.
@@ -96,7 +96,7 @@ Pi with its 3.5mm into the amp's RCA input, ReSpeaker plugged into
 the Pi?"*
 
 If yes: proceed.
-If no or unsure: point them at [BRINGUP.md](BRINGUP.md) Phase 1 for
+If no or unsure: point them at [BRINGUP.md](../../BRINGUP.md) Phase 1 for
 the wiring diagram.
 
 ---
@@ -235,7 +235,7 @@ Tell them they're done after Step 1 (voice provider). The rest can
 happen anytime later.
 
 **If `jasper-doctor` warned about XVF firmware**: speaker works fine;
-AEC is just off. To enable, walk through [BRINGUP.md](BRINGUP.md)
+AEC is just off. To enable, walk through [BRINGUP.md](../../BRINGUP.md)
 Phase 2A.5 later. Not a blocker.
 
 ---

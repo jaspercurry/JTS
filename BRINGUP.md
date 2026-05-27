@@ -601,7 +601,7 @@ You should hear a synthetic voice reply. "Hey Jarvis" works too.
 To pick a different wake phrase — Hey Jarvis, Alexa, Hey Mycroft —
 visit `http://jts.local/wake/` from any LAN device, or run
 `bash scripts/switch-wake-word.sh <key>` from your laptop. See
-[CLAUDE.md "Wake-word switching"](CLAUDE.md#wake-word-switching--read-first)
+[AGENTS.md "Wake-word switching"](AGENTS.md#wake-word-switching--read-first)
 for the registry and how to add a new model.
 
 If wake isn't firing:

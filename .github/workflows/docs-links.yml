@@ -1,0 +1,33 @@
+name: Docs links
+
+# Fast, deterministic Markdown link check for PRs. This only checks changed
+# Markdown files and only validates repo-local paths and Markdown anchors.
+# External URLs are intentionally ignored on the PR path.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  local-links:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check changed Markdown local links
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            python3 scripts/docs-linkcheck.py --base "$BASE_SHA" --head "$HEAD_SHA"
+          else
+            python3 scripts/docs-linkcheck.py --all
+          fi

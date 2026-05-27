@@ -1074,9 +1074,8 @@ so every future engine/model change can be A/B'd against the same baseline.
 
 ## Decisions already made (don't relitigate)
 
-These are in user memory at
-`/Users/jaspercurry/.claude/projects/-Users-jaspercurry-Code-JTS/memory/` —
-listed here so a fresh session doesn't waste a round arguing about them:
+These are user-private memory notes, listed here so a fresh session
+doesn't waste a round arguing about them:
 
 - **PR flow required for main** (`feedback_always_use_pr_flow.md`).
   Every change goes feature-branch + PR + merge. No direct-push.

@@ -600,7 +600,7 @@ The WAVs contain household audio, so directory permissions are
 `0644` files, `0755` directory, owner `pi:pi`. Operator can rsync
 or scp out for analysis. No automatic upload anywhere.
 
-**Cue policy.** Per CLAUDE.md "no silent failure," this subsystem
+**Cue policy.** Per AGENTS.md "no silent failure," this subsystem
 is telemetry — not a wake-blocking code path. A telemetry write
 failure does NOT trigger an audio cue. It logs to journal at
 `WARNING` and surfaces in jasper-doctor.
