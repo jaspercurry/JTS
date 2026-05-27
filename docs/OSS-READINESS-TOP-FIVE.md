@@ -155,7 +155,10 @@ protect the project without creating noisy churn across active branches.
 
 ## 5. Refactor High-Complexity Hotspots
 
-**Status.** Pending.
+**Status.** Pending. The current hotspot register below is the source of
+truth for where future refactor energy should go. Keep it current when a
+large file is split, when a new high-churn subsystem appears, or when a
+hotspot becomes safe to leave alone.
 
 **Why it matters.** The architecture is strong, but a few files carry
 too much operational surface area. The goal is not aesthetic cleanup;
@@ -176,14 +179,56 @@ their head.
 - Stop each slice when the next change becomes easier; avoid framework
   rewrites.
 
+**Current hotspot register.**
+
+| Hotspot | Why it is on the list | Good next slice | Avoid |
+|---|---|---|---|
+| `jasper/voice_daemon.py` | Owns wake detection, turn lifecycle, cues, telemetry, timers, mic mute, manual sessions, and control-socket behavior. It is the highest-churn file and the hardest one for a new contributor to hold in their head. | Extract only along already-visible seams: `SYSTEM_INSTRUCTION`, wake-loop config construction, control-socket handling, or cue coordination. Add regression coverage before moving behavior. | Replacing the state model wholesale or introducing a framework-y event bus. |
+| `deploy/install.sh` | Root install path for packages, systemd units, env migrations, source builds, audio topology, provenance-bearing downloads, and Pi runtime state. Small mistakes here affect fresh installs and deploys. | Add safer planning surfaces such as env-key merge support, provenance helpers, or a dry-run/plan mode that reports intended actions without mutating the host. | Rewriting the installer before the existing idempotent steps have test coverage. |
+| `jasper/control/server.py` | LAN control plane for state, source selection, volume, restart/reboot, AEC toggles, cues, and dashboard integration. Security-sensitive and easy to grow accidentally. | Group route helpers and security checks when adding related endpoints; keep host/origin/body-size behavior centralized. | Mixing product UI restructuring with control-plane auth or privilege changes in one PR. |
+| `jasper/web/*_setup.py` wizards | The stdlib HTTP pattern is intentional, but page wrappers, CSRF/form handling, restart plumbing, and env-file persistence recur across many files. `correction_setup.py` and `wifi_setup.py` are especially large because they mix UI and domain logic. | Extract small shared helpers only when touching a second wizard for the same reason; move domain logic into subsystem modules when it already has tests. | A broad web-framework migration or generic wizard abstraction before repeated pain is clear. |
+| `jasper/voice/{gemini_session.py,openai_session.py,grok_session.py}` | Provider-specific protocol handling is real, but supervisor scaffolding, state logging, escalation cues, and reconnect mechanics overlap. | Share narrow primitives in `jasper/voice/_supervisor.py` after a provider change proves the duplication is active maintenance cost. | Sharing the provider loop bodies; `HANDOFF-voice-providers.md` explicitly rejects that. |
+| `deploy/bin/jasper-aec-reconcile` plus mic/doctor constants | Bash policy duplicates hardware facts also known to Python mic and doctor modules. This is easy to drift during AEC or XVF3800 work. | Add sync tests or move a small, stable piece of policy into Python when touching AEC install/reconcile behavior. | Porting the whole reconciler just for aesthetics. |
+| `jasper/cli/doctor.py` | Broad observability surface with many subsystem checks. It is valuable, but tends to accumulate one-off parsing and policy. | Factor shared check/result helpers only when adding related checks; keep new checks fail-soft and actionable. | Hiding operational detail behind abstractions that make incidents harder to debug. |
+
 **Cost and trade-off.** Medium to high. Refactors create merge conflicts
 in an actively developed repo, so they should be sequenced after the
 lower-risk safety and tooling work unless a feature is already touching
 the same area.
+
+## Deferred Track: Software-Only Dev Path
+
+**Status.** Partially started, not complete. Hardware-free pytest and CI
+exist, and many modules have focused mocks, but a first-time contributor
+still cannot exercise the full appliance behavior on a laptop without a Pi,
+USB mic, DAC, amp, and deployed systemd services.
+
+**Why it matters.** The codebase is much easier to contribute to when a
+developer can reproduce wake/turn/provider behavior, install-time
+dependency resolution, and common daemon contracts without borrowing the
+production speaker. This lowers contributor friction and makes risky
+refactors safer.
+
+**Current definition of done.**
+- A `WakeLoop` harness that drives synthetic mic frames through wake,
+  speech, provider response/tool-call, TTS-drain, and turn cleanup using a
+  fake `LiveConnection` / `LiveTurn`.
+- A fake-ALSA or container test path that exercises Python install and the
+  hardware-free test suite without touching host audio devices.
+- An `install.sh` dry-run or plan mode that reports packages, downloads,
+  env migrations, systemd writes, and restart actions without mutating the
+  host.
+- Contributor docs that explain which behaviors can be tested locally and
+  which still require a real Pi.
+
+**Cost and trade-off.** Medium. The useful version is a test harness and
+install validation path, not an alternate production runtime. Keep it
+honest: mock hardware boundaries, not business logic.
 
 ## Backlog
 
 These are real but not top-five yet: full local authentication, HTTPS or
 pairing for setup pages, rootless daemon privilege separation, DCO/CLA
 policy, Dependabot/update automation, release artifacts, OTA update
-design, metrics export, and broader third-party attribution depth.
+design, metrics export, broader third-party attribution depth, and the
+software-only development path above.
