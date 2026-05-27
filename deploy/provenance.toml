@@ -123,6 +123,86 @@ sha256 = "dae408c0fa69ec888bf8e3a8b41a41f97677522be3b8163821e4105fa754b988"
 verification = "SHA-256 checked by deploy/install.sh before staging"
 
 [[artifact]]
+id = "openwakeword-embedding-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx"
+sha256 = "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-melspectrogram-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx"
+sha256 = "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-alexa-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/alexa_v0.1.onnx"
+sha256 = "6ff566a01d12670e8d9e3c59da32651db1575d17272a601b7f8a39283dfbae3e"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-hey-mycroft-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_mycroft_v0.1.onnx"
+sha256 = "c2a311e8fa1338de89c31b3b46dc4dffd4af2f9a8d6ddead48893c2d301b1f18"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-hey-jarvis-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_jarvis_v0.1.onnx"
+sha256 = "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-hey-rhasspy-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_rhasspy_v0.1.onnx"
+sha256 = "5a9b3ed3be2910e35780e097905aa9f35a9c10038df47914cf2b3ec4d670f6ea"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-timer-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/timer_v0.1.onnx"
+sha256 = "371e44535470a29248b3b8f1bbbbaf2525c86417fd8f75c67fcf02ae0b9626df"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
+id = "openwakeword-weather-model"
+kind = "onnx-model"
+consumer = "jasper/wake_models.py and deploy/install.sh"
+source = "https://github.com/dscripka/openWakeWord"
+version = "v0.5.1"
+download_url = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/weather_v0.1.onnx"
+sha256 = "8441da8e746899e8d969528d5bad5651cdd563079c05962788f77753041f60e7"
+verification = "SHA-256 checked by deploy/install.sh before staging"
+
+[[artifact]]
 id = "dtln-aec-256-stage1"
 kind = "onnx-model"
 consumer = "jasper/aec_engines/dtln_models.py and deploy/install.sh"
@@ -160,14 +240,6 @@ kind = "cargo-lockfile"
 consumer = "rust/jasper-fanin/Cargo.toml and rust/jasper-fanin/Cargo.lock"
 status = "pinned"
 notes = "Cargo.lock is committed for the jasper-fanin binary crate. install.sh builds from rust/jasper-fanin with cargo --locked, so lock drift fails deploy instead of resolving live."
-
-[[surface]]
-id = "openwakeword-stock-models"
-kind = "package-helper-download"
-consumer = "deploy/install.sh openwakeword.utils.download_models()"
-status = "accepted-gap"
-source = "https://github.com/dscripka/openWakeWord"
-notes = "The helper downloads bundled openWakeWord feature/wake models outside JTS control. Follow-up should either pre-stage hashes or replace helper use with an explicit registry."
 
 [[surface]]
 id = "platformio-registry-libraries"

@@ -1,7 +1,8 @@
 """Curated catalogue of wake-word models the speaker can run.
 
 One source of truth, consumed by three callers:
-  - `install.sh` decides which non-bundled `.onnx` files to fetch.
+  - `install.sh` decides which openWakeWord package assets and
+    non-bundled `.onnx` files to fetch.
   - The `/wake/` web wizard (`jasper/web/wake_setup.py`) renders one
     row per entry so the household can flip models without SSH.
   - The voice daemon's `Config.wake_model` resolves the active
@@ -17,10 +18,10 @@ wizard surfaces such hand-rolled paths with a `Custom` row so the
 operator's choice isn't silently overwritten.
 
 Adding a model:
-  1. Drop a new `WakeModelEntry` below. For openWakeWord-bundled
-     names like `alexa`, set `bundled=True` and leave `download_url`
-     empty — `openwakeword.utils.download_models()` (already invoked
-     by install.sh) fetches them on first run.
+  1. Drop a new `WakeModelEntry` below. For openWakeWord-stock names
+     like `alexa`, set `bundled=True` and leave `download_url` empty.
+     If the stock model is not already listed in
+     `OPENWAKEWORD_ASSETS`, add its ONNX asset there too.
   2. For external `.onnx` files, set `download_url` to a raw URL +
      `download_sha256` to the expected SHA-256, and `model` to the
      absolute path under `/var/lib/jasper/wake/`. install.sh will
@@ -79,6 +80,80 @@ class WakeModelEntry:
     download_sha256: str | None = None
     bundled: bool = False
     recommended: bool = False
+
+
+@dataclass(frozen=True)
+class OpenWakeWordAsset:
+    """A stock ONNX file that openWakeWord expects under resources/models.
+
+    JTS runs openWakeWord with `inference_framework="onnx"` because
+    tflite-runtime does not ship a Python 3.13 wheel for PiOS Trixie.
+    These are therefore the exact package-resource files install.sh
+    stages and hash-checks instead of delegating to
+    `openwakeword.utils.download_models()`.
+    """
+
+    key: str
+    filename: str
+    download_url: str
+    download_sha256: str
+
+
+OPENWAKEWORD_RELEASE = "v0.5.1"
+OPENWAKEWORD_RELEASE_BASE = (
+    f"https://github.com/dscripka/openWakeWord/releases/download/{OPENWAKEWORD_RELEASE}"
+)
+
+OPENWAKEWORD_ASSETS: tuple[OpenWakeWordAsset, ...] = (
+    OpenWakeWordAsset(
+        key="embedding_model",
+        filename="embedding_model.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/embedding_model.onnx",
+        download_sha256="70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f",
+    ),
+    OpenWakeWordAsset(
+        key="melspectrogram",
+        filename="melspectrogram.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/melspectrogram.onnx",
+        download_sha256="ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f",
+    ),
+    OpenWakeWordAsset(
+        key="alexa",
+        filename="alexa_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/alexa_v0.1.onnx",
+        download_sha256="6ff566a01d12670e8d9e3c59da32651db1575d17272a601b7f8a39283dfbae3e",
+    ),
+    OpenWakeWordAsset(
+        key="hey_mycroft",
+        filename="hey_mycroft_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/hey_mycroft_v0.1.onnx",
+        download_sha256="c2a311e8fa1338de89c31b3b46dc4dffd4af2f9a8d6ddead48893c2d301b1f18",
+    ),
+    OpenWakeWordAsset(
+        key="hey_jarvis",
+        filename="hey_jarvis_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/hey_jarvis_v0.1.onnx",
+        download_sha256="94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb",
+    ),
+    OpenWakeWordAsset(
+        key="hey_rhasspy",
+        filename="hey_rhasspy_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/hey_rhasspy_v0.1.onnx",
+        download_sha256="5a9b3ed3be2910e35780e097905aa9f35a9c10038df47914cf2b3ec4d670f6ea",
+    ),
+    OpenWakeWordAsset(
+        key="timer",
+        filename="timer_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/timer_v0.1.onnx",
+        download_sha256="371e44535470a29248b3b8f1bbbbaf2525c86417fd8f75c67fcf02ae0b9626df",
+    ),
+    OpenWakeWordAsset(
+        key="weather",
+        filename="weather_v0.1.onnx",
+        download_url=f"{OPENWAKEWORD_RELEASE_BASE}/weather_v0.1.onnx",
+        download_sha256="8441da8e746899e8d969528d5bad5651cdd563079c05962788f77753041f60e7",
+    ),
+)
 
 
 # ---- Registry ---------------------------------------------------------
@@ -182,11 +257,16 @@ def by_model(model: str) -> WakeModelEntry | None:
 
 def downloadable() -> Iterable[WakeModelEntry]:
     """Iterate entries that install.sh has to fetch over the network.
-    Bundled openWakeWord names are excluded — those land via the
-    package's own `download_models()` helper."""
+    Bundled openWakeWord names are excluded; their package-resource
+    ONNX files are tracked separately in `OPENWAKEWORD_ASSETS`."""
     for entry in REGISTRY:
         if entry.download_url:
             yield entry
+
+
+def openwakeword_assets() -> Iterable[OpenWakeWordAsset]:
+    """Iterate openWakeWord package-resource ONNX files install.sh owns."""
+    return iter(OPENWAKEWORD_ASSETS)
 
 
 def default() -> WakeModelEntry:
