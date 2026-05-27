@@ -1956,6 +1956,33 @@ def test_metadata_persists_aec3_sweep_flags(
     assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
 
 
+def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
+    """A loaded pilot session should use the current sweep registry even
+    if its saved metadata names an older retired variant."""
+    ports = {
+        "on": 9876,
+        "off": 9877,
+        **{
+            leg: 9884 + index
+            for index, leg in enumerate(wake_corpus_setup.AEC3_SWEEP_LEGS)
+        },
+    }
+    data = {
+        "include_aec3_sweep": True,
+        "enabled_legs": [
+            "on",
+            "aec3_hf_relaxed",
+            "aec3_nearend_fast",
+            "aec3_slow_attack",
+            "off",
+        ],
+    }
+
+    assert wake_corpus_setup._enabled_legs_from_metadata(data, ports) == (
+        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    )
+
+
 def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
     """A recovered session must restore the include_raw_mic_0 flag
     so a follow-up clip inherits the original session's leg set

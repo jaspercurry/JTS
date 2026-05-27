@@ -787,10 +787,37 @@ def _enabled_legs_from_metadata(
     """Recover the session leg set from new or legacy metadata."""
     raw = data.get("enabled_legs")
     if isinstance(raw, list):
-        legs = tuple(
+        raw_legs = tuple(
             str(leg) for leg in raw
-            if str(leg) in LEGS and str(leg) in ports
+            if str(leg) in LEGS
         )
+        include_aec3_sweep = (
+            bool(data.get("include_aec3_sweep", False))
+            or any(
+                leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS
+                for leg in raw_legs
+            )
+        )
+        legs: list[str] = []
+        inserted_aec3 = False
+        for leg in raw_legs:
+            if leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS:
+                continue
+            if leg not in ports:
+                continue
+            legs.append(leg)
+            if leg == "on" and include_aec3_sweep:
+                legs.extend(
+                    sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
+                    if sweep_leg in ports
+                )
+                inserted_aec3 = True
+        if include_aec3_sweep and not inserted_aec3:
+            legs = [
+                sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
+                if sweep_leg in ports
+            ] + legs
+        legs = tuple(dict.fromkeys(legs))
         if legs:
             return legs
     return _session_legs(
