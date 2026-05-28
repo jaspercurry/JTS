@@ -90,7 +90,8 @@ def test_room_correction_preflight_switches_to_https() -> None:
     assert 'id="proceed"' in html
     assert "OK, proceed" in html
     assert "Your connection is not private" in html
-    assert "Other JTS pages remain" in html
+    assert "Show Details" in html
+    assert "Other JTS pages remain" not in html
     assert "https://' + window.location.hostname + '/correction/'" in html
 
 
