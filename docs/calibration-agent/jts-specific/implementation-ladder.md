@@ -84,7 +84,11 @@ After the intake, the recommended order is:
    snapshots, capture sample-count sanity, fan-in xrun deltas, and
    CamillaDSP runtime counters. Derived curves, confidence reports,
    PEQs, and future FIR or agent judgments should be traceable back to
-   the raw capture WAVs, which are canonical private evidence.
+   the raw capture WAVs, which are canonical private evidence. The
+   `jasper-correction-bundle` CLI now inspects those bundles, replays
+   raw captures into derived curves, and exports REW-friendly `.frd` /
+   `.txt` curves plus impulse-response WAVs without adding a new
+   correction path.
 3. **Browser audio smoke-test integration.** Metadata-level
    mic/device/capture reliability now feeds the confidence model:
    processing flags, calibration status, channel count, device
@@ -100,10 +104,10 @@ After the intake, the recommended order is:
 5. **Sound curve / preference polish.** Keep `/sound/` independent from
    `/correction/`, with editable preset curves, level-matched A/B, and
    future proposed-vs-current compare.
-6. **FIR Stage 0 and readiness validation.** Add import/export and
-   runtime benchmarking before generated FIR; generated FIR waits for
-   bundle provenance, timing, spatial stability, latency/headroom, and
-   pre-ringing gates.
+6. **FIR Stage 0 and readiness validation.** Export now exists; import
+   and runtime benchmarking should still precede generated FIR.
+   Generated FIR waits for bundle provenance, timing, spatial stability,
+   latency/headroom, and pre-ringing gates.
 
 The reason for the reorder is that confidence is the substrate that
 protects every later feature. It tells JTS whether a correction strategy

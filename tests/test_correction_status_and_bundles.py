@@ -485,6 +485,7 @@ def test_start_handler_resets_to_base_before_sweep(
     the already-corrected curve and produce compounding distortion.
     """
     from jasper.web import correction_setup
+    monkeypatch.setattr(correction_setup, "_session", None)
     fake_cam = _FakeCamilla(
         current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
     )
@@ -555,6 +556,7 @@ def test_start_handler_aborts_if_reset_to_base_fails(
     fail before playing a sweep. Measuring through an existing
     correction would compound filters and corrupt the result."""
     from jasper.web import correction_setup
+    monkeypatch.setattr(correction_setup, "_session", None)
 
     fake_cam = _FakeCamilla(
         current_path=str(tmp_path / "configs" / "correction_xyz_1700.yml"),
@@ -591,6 +593,44 @@ def test_start_handler_aborts_if_reset_to_base_fails(
     sess = captured["sess"]
     assert fake_cam.set_calls == [str(sess.cfg.base_config_path)]
     assert scheduled["value"] is False
+    assert correction_setup._start_in_progress is False
+
+
+def test_start_handler_rejects_active_measurement(monkeypatch):
+    """Server-side guard for handcrafted double-start requests.
+
+    The browser disables the Run button while measuring, but the
+    backend also needs to refuse a second /start while a sweep/capture
+    lifecycle is already active.
+    """
+    from jasper.web import correction_setup
+
+    class ActiveSession:
+        state = SessionState.SWEEPING
+
+    monkeypatch.setattr(correction_setup, "_session", ActiveSession())
+
+    with pytest.raises(RuntimeError, match="measurement already in progress"):
+        correction_setup._handle_start(_DummyJsonHandler())
+
+
+def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatch):
+    """Close the narrow race before a new session leaves IDLE.
+
+    A second handcrafted /start must be rejected even before the first
+    background sweep has transitioned the fresh session into PREPARING.
+    """
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(correction_setup, "_session", None)
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+
+    assert correction_setup._reserve_start_slot() is None
+    try:
+        with pytest.raises(RuntimeError, match="measurement already in progress"):
+            correction_setup._handle_start(_DummyJsonHandler())
+    finally:
+        correction_setup._clear_start_slot()
 
 
 def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):

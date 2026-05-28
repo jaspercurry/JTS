@@ -770,8 +770,11 @@ Before any LLM work:
   correction strategy is justified by the evidence. A first pass now
   exists for the fields JTS already collects and is shown in the
   `/correction/` UI. Completed designs also write
-  `position_analysis.json` for replayable seat-variance analysis. SNR,
-  repeatability, and research-tuned thresholds are still future work.
+  `position_analysis.json` for replayable seat-variance analysis.
+  Browser-reported pre-sweep noise floors now produce a bounded
+  `estimated_snr_db` warning in capture reports; calibrated acoustic
+  SNR, true repeatability capture, and research-tuned thresholds are
+  still future work.
 - Keep the current `info.json` / `result.json` shape compatible, with
   explicit versioning so future FIR and agent tooling can detect what
   artifacts are present instead of guessing from filenames.
@@ -782,6 +785,10 @@ Before any LLM work:
   `runtime_integrity.json` with system/runtime snapshots, capture
   sample-count sanity, fan-in xrun deltas, and CamillaDSP runtime
   counters that feed the confidence report alongside capture quality.
+  `jasper-correction-bundle` now provides the operator/replay surface
+  for this contract: inspect + checksum validation, optional raw-capture
+  replay into derived curves, and REW-friendly `.frd` / `.txt` / IR WAV
+  export for external analysis.
 - **Actually run the full Phase 0–2.2 pipeline on a real room** with
   the calibrated mic. This is the N10 hardware verification the user
   flagged as missing. Document what you find in

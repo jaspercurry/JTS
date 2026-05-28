@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import concurrent.futures
 import hashlib
 import html
 import json
@@ -79,6 +80,10 @@ class BadRequest(ValueError):
     """Client supplied an invalid request body."""
 
 
+class RequestConflict(RuntimeError):
+    """Client request conflicts with the current correction session state."""
+
+
 # Module-level session + bridge to the async loop. Lazy-init on
 # first use so importing this module is cheap (lets `python -m
 # jasper.web.correction_setup --help` work without spinning up a
@@ -87,6 +92,48 @@ _session_lock = threading.Lock()
 _session = None  # type: ignore[var-annotated]
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
+_start_in_progress = False
+
+_ACTIVE_SESSION_STATES = frozenset({
+    "preparing",
+    "sweeping",
+    "awaiting_capture",
+    "needs_next_position",
+    "analyzing",
+    "verifying",
+    "awaiting_verify_capture",
+})
+
+
+def _active_state_for_session(sess: Any | None) -> str | None:
+    if sess is None:
+        return None
+    state = getattr(getattr(sess, "state", None), "value", None)
+    return state if state in _ACTIVE_SESSION_STATES else None
+
+
+def _reserve_start_slot() -> str | None:
+    """Atomically reserve /start or return the state blocking it.
+
+    The session state only becomes active once the background sweep task
+    starts. This small reservation closes the gap between accepting
+    `/start` and the new session visibly leaving IDLE.
+    """
+    global _start_in_progress
+    with _session_lock:
+        if _start_in_progress:
+            return "starting"
+        active_state = _active_state_for_session(_session)
+        if active_state is not None:
+            return active_state
+        _start_in_progress = True
+        return None
+
+
+def _clear_start_slot() -> None:
+    global _start_in_progress
+    with _session_lock:
+        _start_in_progress = False
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
@@ -123,9 +170,10 @@ def _get_or_create_session():
     one regardless of prior state)."""
     from jasper.correction.session import MeasurementSession
     global _session
-    if _session is None:
-        _session = MeasurementSession()
-    return _session
+    with _session_lock:
+        if _session is None:
+            _session = MeasurementSession()
+        return _session
 
 
 def _replace_session(
@@ -142,14 +190,15 @@ def _replace_session(
     body so the new session is configured before its first sweep."""
     from jasper.correction.session import MeasurementSession
     global _session
-    _session = MeasurementSession(
-        total_positions=total_positions,
-        target_choice=target_choice,
-        strategy_choice=strategy_choice,
-        mic_calibration=mic_calibration,
-        input_device=input_device,
-    )
-    return _session
+    with _session_lock:
+        _session = MeasurementSession(
+            total_positions=total_positions,
+            target_choice=target_choice,
+            strategy_choice=strategy_choice,
+            mic_calibration=mic_calibration,
+            input_device=input_device,
+        )
+        return _session
 
 
 # ----------------------------------------------------------------------
@@ -2385,105 +2434,142 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     guarantees every measurement starts from the same flat baseline.
     """
     from jasper.correction import coordinator, playback
-    from jasper.correction.session import parse_current_correction
+    from jasper.correction.session import SessionState, parse_current_correction
 
     body = _read_json_body(handler)
-    total_positions = max(1, min(10, int(body.get("total_positions", 1))))
-    target_choice = str(body.get("target_choice", "flat"))
-    strategy_choice = str(body.get("strategy_choice", "balanced"))
-    noise_floor_db_raw = body.get("noise_floor_db")
-    calibration_id = str(body.get("calibration_id") or "").strip()
-    input_device = _sanitize_input_device(body.get("input_device"))
-    noise_floor_db: float | None
-    try:
-        noise_floor_db = (
-            float(noise_floor_db_raw)
-            if noise_floor_db_raw is not None
-            else None
+    blocking_state = _reserve_start_slot()
+    if blocking_state is not None:
+        logger.warning(
+            "event=correction_start_rejected reason=active_session state=%s",
+            blocking_state,
         )
-    except (TypeError, ValueError):
-        noise_floor_db = None
-
-    mic_calibration = None
-    if calibration_id:
-        from jasper.correction.calibration import load_calibration_record
-        mic_calibration = load_calibration_record(
-            calibration_id,
-            root=_calibration_root(),
-        )
-
-    sess = _replace_session(
-        total_positions=total_positions,
-        target_choice=target_choice,
-        strategy_choice=strategy_choice,
-        mic_calibration=mic_calibration,
-        input_device=input_device,
-    )
-    sess.noise_floor_db = noise_floor_db
-
-    cam = _camilla()
-
-    # Snapshot what was loaded BEFORE we reset, so the bundle records
-    # the prior state. Best-effort: a snapshot failure should not stop
-    # measurement, but the reset below is load-bearing and must succeed.
-    async def _snapshot() -> dict[str, Any] | None:
-        path = await cam.get_config_file_path(best_effort=True)
-        return parse_current_correction(path, config_dir=sess.cfg.config_dir)
-
-    try:
-        sess.current_correction_at_start = _run_async(_snapshot(), timeout=3.0)
-    except Exception:  # noqa: BLE001
-        logger.exception("/start: snapshot current_correction failed")
-        sess.current_correction_at_start = None
-
-    async def _reset_to_base() -> bool:
-        return await cam.set_config_file_path(
-            str(sess.cfg.base_config_path), best_effort=False,
+        raise RequestConflict(
+            "measurement already in progress; wait for the current sweep "
+            "or reset before starting again"
         )
 
     try:
-        reset_ok = _run_async(_reset_to_base(), timeout=5.0)
-    except Exception:  # noqa: BLE001
-        logger.exception("/start: reset to base config failed")
-        raise RuntimeError(
-            "could not reset speaker to flat before measuring"
-        ) from None
-    if not reset_ok:
-        raise RuntimeError("could not reset speaker to flat before measuring")
+        total_positions = max(1, min(10, int(body.get("total_positions", 1))))
+        target_choice = str(body.get("target_choice", "flat"))
+        strategy_choice = str(body.get("strategy_choice", "balanced"))
+        noise_floor_db_raw = body.get("noise_floor_db")
+        calibration_id = str(body.get("calibration_id") or "").strip()
+        input_device = _sanitize_input_device(body.get("input_device"))
+        noise_floor_db: float | None
+        try:
+            noise_floor_db = (
+                float(noise_floor_db_raw)
+                if noise_floor_db_raw is not None
+                else None
+            )
+        except (TypeError, ValueError):
+            noise_floor_db = None
 
-    async def _run_first_sweep() -> None:
-        async def _runtime_probe() -> dict[str, Any] | None:
-            return await cam.get_runtime_status(best_effort=True)
+        mic_calibration = None
+        if calibration_id:
+            from jasper.correction.calibration import load_calibration_record
+            mic_calibration = load_calibration_record(
+                calibration_id,
+                root=_calibration_root(),
+            )
+
+        sess = _replace_session(
+            total_positions=total_positions,
+            target_choice=target_choice,
+            strategy_choice=strategy_choice,
+            mic_calibration=mic_calibration,
+            input_device=input_device,
+        )
+        sess.noise_floor_db = noise_floor_db
+
+        cam = _camilla()
+
+        # Snapshot what was loaded BEFORE we reset, so the bundle records
+        # the prior state. Best-effort: a snapshot failure should not stop
+        # measurement, but the reset below is load-bearing and must succeed.
+        async def _snapshot() -> dict[str, Any] | None:
+            path = await cam.get_config_file_path(best_effort=True)
+            return parse_current_correction(path, config_dir=sess.cfg.config_dir)
 
         try:
-            async with coordinator.measurement_window():
-                await sess.prepare_and_play_sweep(
-                    playback.play_sweep,
-                    runtime_probe_async=_runtime_probe,
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("first sweep failed: %s", e)
+            sess.current_correction_at_start = _run_async(_snapshot(), timeout=3.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("/start: snapshot current_correction failed")
+            sess.current_correction_at_start = None
 
-    asyncio.run_coroutine_threadsafe(_run_first_sweep(), _ensure_loop())
+        async def _reset_to_base() -> bool:
+            return await cam.set_config_file_path(
+                str(sess.cfg.base_config_path), best_effort=False,
+            )
 
-    snapshot = sess.snapshot()
-    return {
-        "session_id": sess.session_id,
-        "state": sess.state.value,
-        "total_positions": sess.total_positions,
-        "target_choice": sess.target_choice,
-        "strategy_choice": sess.strategy_choice,
-        "target_profile": snapshot.get("target_profile"),
-        "correction_strategy": snapshot.get("correction_strategy"),
-        "input_device": sess.input_device,
-        "browser_audio_report": sess.browser_audio_report,
-        "mic_calibration": (
-            sess.mic_calibration.public_metadata()
-            if sess.mic_calibration
-            else None
-        ),
-        "current_correction_at_start": sess.current_correction_at_start,
-    }
+        try:
+            reset_ok = _run_async(_reset_to_base(), timeout=5.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("/start: reset to base config failed")
+            raise RuntimeError(
+                "could not reset speaker to flat before measuring"
+            ) from None
+        if not reset_ok:
+            raise RuntimeError("could not reset speaker to flat before measuring")
+
+        async def _run_first_sweep() -> None:
+            async def _runtime_probe() -> dict[str, Any] | None:
+                return await cam.get_runtime_status(best_effort=True)
+
+            try:
+                async with coordinator.measurement_window():
+                    await sess.prepare_and_play_sweep(
+                        playback.play_sweep,
+                        runtime_probe_async=_runtime_probe,
+                    )
+            except Exception as e:  # noqa: BLE001
+                logger.exception("first sweep failed: %s", e)
+
+        sweep_future = asyncio.run_coroutine_threadsafe(
+            _run_first_sweep(),
+            _ensure_loop(),
+        )
+        reservation_transferred = False
+        try:
+            state_started = _run_async(
+                sess.state_changed_from(SessionState.IDLE),
+                timeout=6.0,
+            )
+        except concurrent.futures.TimeoutError:
+            state_started = False
+
+        if state_started:
+            _clear_start_slot()
+        else:
+            reservation_transferred = True
+            sweep_future.add_done_callback(lambda _fut: _clear_start_slot())
+            logger.warning(
+                "event=correction_start_state_wait_timeout session=%s",
+                sess.session_id,
+            )
+
+        snapshot = sess.snapshot()
+        return {
+            "session_id": sess.session_id,
+            "state": sess.state.value,
+            "total_positions": sess.total_positions,
+            "target_choice": sess.target_choice,
+            "strategy_choice": sess.strategy_choice,
+            "target_profile": snapshot.get("target_profile"),
+            "correction_strategy": snapshot.get("correction_strategy"),
+            "input_device": sess.input_device,
+            "browser_audio_report": sess.browser_audio_report,
+            "mic_calibration": (
+                sess.mic_calibration.public_metadata()
+                if sess.mic_calibration
+                else None
+            ),
+            "current_correction_at_start": sess.current_correction_at_start,
+        }
+    except Exception:
+        if not locals().get("reservation_transferred", False):
+            _clear_start_slot()
+        raise
 
 
 def _handle_next_position(
@@ -3033,6 +3119,8 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_json(_handle_start(self))
                     except (FileNotFoundError, ValueError) as e:
                         self._send_client_error(str(e))
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
                 if path == "/next-position":
                     self._send_json(_handle_next_position(self))

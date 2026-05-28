@@ -172,25 +172,34 @@
   metadata, calibration, algorithm settings, and runtime-integrity
   evidence. Keep the design file-based and Pi-cheap: no database, no
   continuous telemetry daemon, no unbounded retention.
+- ✅ **Phase 2.12 — bundle inspection / REW export substrate.**
+  Implemented 2026-05-28. Adds `jasper-correction-bundle`, a small
+  operator CLI over `jasper.correction.bundle_tools`: `inspect`
+  validates manifest checksums, summarizes confidence/runtime evidence,
+  and can replay raw captures into derived curves; `export` writes
+  REW-friendly `.frd` / `.txt` frequency-response files plus float32
+  impulse-response WAVs recomputed from raw captures and `sweep_meta`.
+  This is intentionally not a new correction path. It is a forensic and
+  interoperability bridge around the existing bundle contract.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
   scoped Phase 3.
-- ⏳ **Phase 4 — REW interop.** Not started. UMIK/Dayton
-  calibration lookup moved earlier into Phase 2.3 because calibrated
-  input is prerequisite substrate for both PEQ and future agent/FIR
-  work.
+- ⏳ **Phase 4 — REW interop.** Partially started. Generic export
+  landed in Phase 2.12; import/upload of external filter designs and a
+  documented REW round-trip remain outstanding.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
 before more filter types. The multi-position confidence layer,
-browser-audio metadata substrate, correction visualization surface, and
-durable runtime-integrity bundle evidence have landed. The next
-software/hardware boundary is acoustic browser smoke testing and then
-SNR/repeatability evidence; FIR readiness validation should still wait
-until the measurement substrate can prove capture quality, runtime
-health, spatial stability, and headroom.
+browser-audio metadata substrate, correction visualization surface,
+durable runtime-integrity bundle evidence, and bundle inspect/export
+tooling have landed. The next software/hardware boundary is acoustic
+browser smoke testing and then threshold tuning for SNR/repeatability
+evidence; FIR readiness validation should still wait until the
+measurement substrate can prove capture quality, runtime health,
+spatial stability, and headroom.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
@@ -201,7 +210,7 @@ combined CamillaDSP config ordering when both layers are present. Current
 operational truth for that composition lives in
 [docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md).
 
-**Outstanding Phases 0-2.11 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.12 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before
@@ -737,12 +746,18 @@ Concrete changes:
 - Statefile coordination: measurement coordinator is the only
   writer; camillagui reads + suggests.
 
-### Phase 4 — REW import/export and measurement interop (2 days)
+### Phase 4 — REW import/export and measurement interop (PARTIAL)
 
-- `.frd` export (REW-compatible: `Hz dB phase`, 1/48-oct underlying).
-- `.wav` IR export (mono float32, normalized) for REW / external FIR
-  tooling.
-- REW `.txt` export.
+- ✅ `.frd` export (REW-compatible: `Hz dB phase`, 1/48-oct
+  underlying). Current bundle curves are magnitude-only, so exported
+  phase is explicitly `0.0` and the header says so.
+- ✅ REW `.txt` export with frequency + magnitude columns.
+- ✅ `.wav` IR export (mono float32, unnormalized by default) for REW
+  / external FIR tooling. IRs are recomputed from raw capture WAVs and
+  `sweep_meta`, not copied from a stale cache.
+- ✅ Bundle inspect/replay CLI:
+  `jasper-correction-bundle inspect <bundle> [--recompute]` and
+  `jasper-correction-bundle export <bundle> --output <dir>`.
 - Document the round-trip workflow: measure here → export `.frd` →
   open in REW → REW's CamillaDSP YAML export (V5.20.14+) → upload
   back at `/camilla/`.
@@ -1152,6 +1167,23 @@ To list bundles without ssh, hit the debug endpoint:
 curl -sk https://jts.local/correction/sessions | jq
 ```
 
+To inspect, replay, or export one copied bundle locally:
+
+```sh
+jasper-correction-bundle inspect ./<session_id> --recompute
+jasper-correction-bundle export ./<session_id> --output ./rew-export
+```
+
+The export command writes:
+
+- `<session_id>-measured.frd`, `target.frd`, `predicted.frd`, and
+  `verify.frd` where available, with `Hz dB phase` columns. Because
+  current bundles store smoothed magnitude curves rather than acoustic
+  phase, the phase column is `0.0` and the header says so.
+- matching `.txt` files with `Hz dB` columns;
+- `<session_id>-p<N>-ir.wav` and `<session_id>-verify-ir.wav` impulse
+  responses recomputed from raw captures and exact sweep metadata.
+
 Default ON. Opt out via `JASPER_CORRECTION_SAVE_BUNDLES=0` in
 `/etc/jasper/jasper.env` — captures then fall back to the legacy
 flat `captures/` directory and no per-session artifacts are written.
@@ -1180,12 +1212,13 @@ flat `captures/` directory and no per-session artifacts are written.
   lookup is intentionally behind provider adapters. If a vendor form
   changes, blocks server-side fetches, or a serial cannot be found,
   the UI should keep the user in flow via manual calibration upload.
-- **Concurrent /start protection.** If two clients hit /start
-  simultaneously during an in-flight sweep, both sweeps could try
-  to run aplay through the loopback. The UI prevents this in
-  practice (run-measurement button is disabled during a measurement)
-  but a hand-crafted request could trigger it. Mitigation: add a
-  lock around the start handler in Phase 3.
+- **Concurrent /start protection.** Resolved 2026-05-28. The backend
+  atomically reserves `/start` before replacing the session, so a
+  second handcrafted request is refused even in the narrow gap before
+  the first background sweep task has visibly moved the new session out
+  of `IDLE`. It also refuses `/start` while an existing session is
+  preparing, sweeping, awaiting capture, awaiting next position,
+  analyzing, or verifying.
 - **SPL-calibrated room-noise check.** Phase 2.4 catches obviously
   weak captures and logs low RMS / low peak warnings, but it is not
   a calibrated ambient SPL measurement. A loud room can still pass

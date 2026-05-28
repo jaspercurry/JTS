@@ -1107,6 +1107,25 @@ class MeasurementSession:
             except ValueError:
                 pass
         out["artifact_path"] = str(artifact_path)
+        if self.noise_floor_db is not None and np.isfinite(self.noise_floor_db):
+            estimated_snr_db = float(report.rms_dbfs - self.noise_floor_db)
+            out["noise_floor_dbfs"] = round(float(self.noise_floor_db), 2)
+            out["estimated_snr_db"] = round(estimated_snr_db, 2)
+            if estimated_snr_db < 20.0:
+                issues = list(out.get("issues") or [])
+                issues.append({
+                    "code": "capture_snr_low",
+                    "severity": "warn",
+                    "message": (
+                        "capture is less than 20 dB above the measured "
+                        "pre-sweep noise floor"
+                    ),
+                    "details": {
+                        "estimated_snr_db": round(estimated_snr_db, 2),
+                        "threshold_db": 20.0,
+                    },
+                })
+                out["issues"] = issues
         return out
 
     def _design_target(self, freqs: np.ndarray) -> np.ndarray:
