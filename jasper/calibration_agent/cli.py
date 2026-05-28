@@ -23,12 +23,73 @@ def _fmt_issue(issue: dict[str, Any]) -> str:
 
 def render_markdown(intake: dict[str, Any]) -> str:
     summary = intake["summary"]
+    evidence = intake.get("evidence") or {}
+    readiness = evidence.get("agent_readiness") or {}
+    acoustic = (evidence.get("acoustic_quality") or {}).get("summary") or {}
+    position = evidence.get("position_analysis") or {}
+    repeatability = evidence.get("repeatability") or {}
+    runtime = (evidence.get("runtime_integrity") or {}).get("summary") or {}
+    bundle_issues = summary.get("bundle_issues") or []
+    quality_issues = summary.get("quality_issues") or []
+    feature_flags = position.get("feature_flags") or []
+    missing: list[str] = []
+    if acoustic.get("snr_level") in {None, "unknown", "unavailable"}:
+        missing.append("Measured SNR / pre-sweep noise evidence")
+    if repeatability.get("level") in {None, "unknown", "unavailable"}:
+        missing.append("Same-position repeatability")
+    if runtime.get("level") in {None, "unknown"}:
+        missing.append("Runtime-integrity evidence")
+    if not summary.get("has_verify"):
+        missing.append("Post-correction verification sweep")
+    if not intake.get("schroeder", {}).get("available"):
+        missing.append("Room volume / RT60 for Schroeder estimate")
+
+    trustworthy: list[str] = []
+    if summary.get("mic_calibrated"):
+        trustworthy.append("A microphone calibration record is attached.")
+    if acoustic.get("snr_level") in {"high", "medium"}:
+        trustworthy.append(
+            f"SNR evidence is `{acoustic.get('snr_level')}`."
+        )
+    if runtime.get("level") in {"ok", "pass"}:
+        trustworthy.append("Runtime integrity did not report blocking issues.")
+    if repeatability.get("level") in {"high", "medium"}:
+        trustworthy.append(
+            f"Same-position repeatability is `{repeatability.get('level')}`."
+        )
+    if not bundle_issues:
+        trustworthy.append("Bundle contract validation found no issues.")
+
+    suspicious: list[str] = []
+    suspicious.extend(str(reason) for reason in readiness.get("reasons") or [])
+    suspicious.extend(
+        issue.get("message") or issue.get("code") or "quality issue"
+        for issue in quality_issues[:5]
+    )
+    suspicious.extend(
+        issue.get("message") or issue.get("code") or "bundle issue"
+        for issue in bundle_issues[:5]
+    )
+
+    refused: list[str] = []
+    for flag in feature_flags[:5]:
+        if not isinstance(flag, dict):
+            continue
+        decision = flag.get("decision") or "avoid_aggressive_correction"
+        reason = flag.get("reason") or flag.get("kind")
+        refused.append(f"`{decision}` — {reason}")
+    for null in (intake.get("peaks_nulls") or {}).get("nulls") or []:
+        refused.append(
+            "Deep null at "
+            f"{float(null['freq_hz']):.1f} Hz was not something to boost blindly."
+        )
+
     lines = [
         f"# Calibration Agent Intake: {summary.get('session_id')}",
         "",
         "> Read-only deterministic intake. No filters were changed and no LLM was called.",
         "",
-        "## Measurement Summary",
+        "## What Happened",
         f"- State: `{summary.get('state')}`",
         f"- Target: `{summary.get('target_choice')}`",
         f"- Positions: {summary.get('current_position')} / {summary.get('total_positions')}",
@@ -37,15 +98,81 @@ def render_markdown(intake: dict[str, Any]) -> str:
         f"- Calibrated mic: {'yes' if summary.get('mic_calibrated') else 'no'}",
         f"- Designed PEQs: {summary.get('peq_count')}",
         "",
-        "## Quality",
+        "## What Looks Trustworthy",
     ]
-    quality_issues = summary.get("quality_issues") or []
+    lines.extend(
+        f"- {item}" for item in (
+            trustworthy or ["No high-trust evidence stood out yet."]
+        )
+    )
+    lines.extend([
+        "",
+        "## What Looks Suspicious",
+    ])
+    lines.extend(
+        f"- {item}" for item in (
+            suspicious or ["No suspicious evidence was surfaced."]
+        )
+    )
+    lines.extend([
+        "",
+        "## What JTS Refused To Correct",
+    ])
+    lines.extend(
+        f"- {item}" for item in (
+            refused or ["No refused/caution correction regions were recorded."]
+        )
+    )
+    lines.extend([
+        "",
+        "## What I Would Do Next",
+        f"- {readiness.get('recommended_action') or 'Review the bundle by hand.'}",
+    ])
+    if not summary.get("mic_calibrated"):
+        lines.append("- Re-run with a calibrated measurement microphone if possible.")
+    if acoustic.get("snr_level") in {"low", "unavailable"}:
+        lines.append("- Re-run after improving signal-to-noise or room quiet.")
+    lines.extend([
+        "",
+        "## What Evidence Is Missing",
+    ])
+    lines.extend(f"- {item}" for item in (missing or ["Nothing obvious."]))
+    lines.extend([
+        "",
+        "## Quality",
+    ])
     if quality_issues:
         lines.extend(f"- {_fmt_issue(issue)}" for issue in quality_issues)
     else:
         lines.append("- No capture-quality issues recorded.")
 
-    bundle_issues = summary.get("bundle_issues") or []
+    lines.extend([
+        "",
+        "## Evidence Readiness",
+        f"- Review state: `{readiness.get('level') or 'unknown'}`",
+        f"- Recommended action: {readiness.get('recommended_action') or 'unknown'}",
+        (
+            "- Acoustic quality: "
+            f"`{acoustic.get('level') or 'unknown'}`; "
+            f"SNR `{acoustic.get('snr_level') or 'unknown'}`"
+        ),
+        (
+            "- Runtime integrity: "
+            f"`{runtime.get('level') or runtime.get('status') or 'unknown'}`"
+        ),
+        (
+            "- Same-position repeatability: "
+            f"`{repeatability.get('level') or 'unknown'}`"
+        ),
+    ])
+    if acoustic.get("min_estimated_snr_db") is not None:
+        lines.append(
+            "- Minimum estimated SNR: "
+            f"{float(acoustic['min_estimated_snr_db']):.1f} dB"
+        )
+    for reason in readiness.get("reasons") or []:
+        lines.append(f"- Caution: {reason}")
+
     if bundle_issues:
         lines.extend(["", "## Bundle Contract"])
         lines.extend(f"- {_fmt_issue(issue)}" for issue in bundle_issues)
@@ -134,6 +261,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="docs/calibration-agent directory to search for guidance snippets",
     )
     parser.add_argument(
+        "--repeat-bundle-dir",
+        type=Path,
+        help=(
+            "optional same-position repeat bundle for repeatability "
+            "evidence"
+        ),
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="emit machine-readable JSON instead of markdown",
@@ -150,7 +285,11 @@ def main(argv: list[str] | None = None) -> int:
             bundle_dir=args.bundle_dir,
             sessions_dir=args.sessions_dir,
         )
-        intake = tools.build_intake(bundle, corpus_dir=args.corpus_dir)
+        intake = tools.build_intake(
+            bundle,
+            corpus_dir=args.corpus_dir,
+            repeat_bundle_dir=args.repeat_bundle_dir,
+        )
     except tools.AgentToolError as e:
         print(f"jasper-calibration-agent: {e}", file=sys.stderr)
         return 2

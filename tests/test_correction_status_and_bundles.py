@@ -2,12 +2,13 @@
 
 Two features land in this PR. Both are exercised here:
 
-  A) `parse_current_correction` decodes a CamillaDSP config path
-     into a UI-facing descriptor (or None for the base v1.yml). The
-     /correction/ page banner renders this on load so the user
-     knows what's already applied. /start auto-resets CamillaDSP
-     to the base config first so every measurement reflects the
-     raw room rather than the existing correction.
+  A) `parse_current_correction` keeps the backwards-compatible
+     "JTS room correction or None" behavior, while
+     `describe_current_config` gives UI/doctor surfaces the fuller
+     truth about flat, preference, correction, or custom CamillaDSP
+     configs. /start auto-resets CamillaDSP to the base config first
+     so every measurement reflects the raw room rather than the
+     existing correction.
   B) Each MeasurementSession writes a self-contained bundle at
      /var/lib/jasper/correction/sessions/<session_id>/ containing
      info.json (session params + state), result.json (chart curves +
@@ -30,6 +31,7 @@ from jasper.correction.session import (
     MeasurementSession,
     SessionConfig,
     SessionState,
+    describe_current_config,
     parse_current_correction,
 )
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
@@ -118,7 +120,7 @@ def test_parse_current_correction_unknown_filename_returns_none(
 ):
     """A YAML the user hand-edited (or a future filename scheme we
     don't recognise) shouldn't surface as a JTS-managed correction.
-    Better to show "flat" than to mislabel something."""
+    The richer descriptor should carry that truth for UI surfaces."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     (cfg_dir / "hand_edited.yml").write_text("filters: {}\n")
@@ -130,6 +132,49 @@ def test_parse_current_correction_unknown_filename_returns_none(
     rogue = tmp_path / "correction_xx_1700000000.yml"
     rogue.write_text("filters: {}\n")
     assert parse_current_correction(str(rogue), config_dir=cfg_dir) is None
+
+
+def test_describe_current_config_flags_custom_config(tmp_path: Path):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    custom = cfg_dir / "hand_edited.yml"
+    custom.write_text("filters: {}\n")
+
+    descriptor = describe_current_config(str(custom), config_dir=cfg_dir)
+
+    assert descriptor["kind"] == "custom"
+    assert descriptor["managed"] is False
+    assert descriptor["current_correction"] is None
+    assert "cannot safely preserve" in descriptor["message"]
+
+
+def test_describe_current_config_distinguishes_sound_preference(
+    tmp_path: Path,
+):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    sound = cfg_dir / "sound_current.yml"
+    sound.write_text("filters:\n  sound_simple_bass:\n    type: Biquad\n")
+
+    descriptor = describe_current_config(str(sound), config_dir=cfg_dir)
+
+    assert descriptor["kind"] == "sound_preference"
+    assert descriptor["managed"] is True
+    assert descriptor["current_correction"] is None
+
+
+def test_describe_current_config_does_not_overclaim_missing_sound_config(
+    tmp_path: Path,
+):
+    cfg_dir = tmp_path / "configs"
+    cfg_dir.mkdir()
+    missing = cfg_dir / "sound_current.yml"
+
+    descriptor = describe_current_config(str(missing), config_dir=cfg_dir)
+
+    assert descriptor["kind"] == "unknown"
+    assert descriptor["managed"] is False
+    assert descriptor["current_correction"] is None
 
 
 # ---------- Per-session bundle artifacts -----------------------------------
@@ -344,6 +389,18 @@ async def test_design_writes_result_json(tmp_path: Path):
         == result["browser_audio_report"]
     )
     assert result["runtime_integrity"]["level"] == "ok"
+    assert result["acoustic_quality"]["level"] in {"ok", "warn"}
+    assert result["acoustic_quality"]["snr_level"] in {
+        "high",
+        "medium",
+        "low",
+        "unavailable",
+    }
+    acoustic_path = sess.bundle_dir / "acoustic_quality.json"
+    assert acoustic_path.exists()
+    acoustic = json.loads(acoustic_path.read_text())
+    assert acoustic["session_id"] == sess.session_id
+    assert acoustic["artifact_schema_version"] == 1
     assert result["confidence_report"]["runtime_integrity"]["level"] == "ok"
     assert result["measured"] is not None
     assert "freqs_hz" in result["measured"]
@@ -442,6 +499,7 @@ def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
         strategy_choice: str | None = None,
         mic_calibration=None,
         input_device=None,
+        repeat_main_position: bool = False,
     ):
         sess = real_replace(
             total_positions=total_positions,
@@ -449,6 +507,7 @@ def _stub_replace_to_tmp(correction_setup, tmp_path: Path, captured: dict):
             strategy_choice=strategy_choice,
             mic_calibration=mic_calibration,
             input_device=input_device,
+            repeat_main_position=repeat_main_position,
         )
         sess.cfg = SessionConfig(
             sweep_dir=tmp_path / "sweeps",
@@ -543,8 +602,10 @@ def test_start_handler_resets_to_base_before_sweep(
     assert fake_cam.set_calls == [str(sess.cfg.base_config_path)]
     # And snapshot the prior correction descriptor in the response so
     # the UI can render "was: correction_xyz" if it wants.
-    assert body["current_correction_at_start"] is not None
-    assert body["current_correction_at_start"]["session_id"] == "xyz"
+    prior = body["current_correction_at_start"]
+    assert prior is not None
+    assert prior["kind"] == "correction"
+    assert prior["current_correction"]["session_id"] == "xyz"
     assert body["strategy_choice"] == "balanced"
     assert body["correction_strategy"]["strategy_id"] == "balanced"
 

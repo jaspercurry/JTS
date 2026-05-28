@@ -52,9 +52,15 @@ spatial spread, filter effect, rejected-feature markers, confidence
 summaries, runtime-integrity status, and deterministic next actions.
 Bundles now include manifest checksums plus `runtime_integrity.json`
 with system load/memory/process snapshots, capture sample-count sanity,
-fan-in xrun deltas, and CamillaDSP runtime counters. The remaining
-Stage 3 work is acoustic browser smoke-test evidence, repeatability
-checks, and SNR estimates.
+fan-in xrun deltas, and CamillaDSP runtime counters. They also include
+`acoustic_quality.json`, which records the current SNR /
+acoustic-trust verdict from capture quality, native pre-sweep noise
+WAVs, banded dBFS SNR, direct-arrival evidence, and optional main-seat
+repeatability. `jasper.correction.evidence` now builds a deterministic
+read-only evidence packet for the calibration agent, including native
+same-position repeatability or an explicit repeat-bundle comparison.
+The remaining Stage 3 work is real acoustic browser smoke-test
+validation and research-tuned thresholds.
 
 ## 2026-05-27 Sequencing Update
 
@@ -79,22 +85,25 @@ After the intake, the recommended order is:
 2. **Durable evidence bundle contract.** Before adding more correction
    power, make bundles self-describing and replayable. This now records
    an `artifact_manifest.json` for bundle schema v3 plus
-   `runtime_integrity.json`: checksums, schemas, generator provenance,
-   dependencies, recomputability, sensitivity, lightweight runtime
-   snapshots, capture sample-count sanity, fan-in xrun deltas, and
-   CamillaDSP runtime counters. Derived curves, confidence reports,
-   PEQs, and future FIR or agent judgments should be traceable back to
-   the raw capture WAVs, which are canonical private evidence. The
-   `jasper-correction-bundle` CLI now inspects those bundles, replays
-   raw captures into derived curves, and exports REW-friendly `.frd` /
-   `.txt` curves plus impulse-response WAVs without adding a new
-   correction path.
+   `runtime_integrity.json` and `acoustic_quality.json`: checksums,
+   schemas, generator provenance, dependencies, recomputability,
+   sensitivity, lightweight runtime snapshots, capture sample-count
+   sanity, fan-in xrun deltas, CamillaDSP runtime counters, and the
+   current SNR/acoustic-trust verdict. Derived curves, confidence
+   reports, PEQs, and future FIR or agent judgments should be traceable
+   back to the raw capture WAVs, which are canonical private evidence.
+   The `jasper-correction-bundle` CLI now inspects those bundles,
+   replays raw captures into derived curves, and exports REW-friendly
+   `.frd` / `.txt` curves plus impulse-response WAVs without adding a
+   new correction path.
 3. **Browser audio smoke-test integration.** Metadata-level
    mic/device/capture reliability now feeds the confidence model:
    processing flags, calibration status, channel count, device
-   mismatch, and sample-rate mismatch. The next slice is acoustic
-   proof: clipping, SNR, tone/sweep loopback sanity, and real mobile
-   browser verification.
+   mismatch, and sample-rate mismatch. Broadband SNR now flows from
+   native pre-sweep noise captures into capture reports,
+   `acoustic_quality.json`, confidence gates, and agent evidence. The
+   next slice is acoustic proof on real devices: tone/sweep loopback
+   sanity, mobile browser verification, and threshold tuning.
 4. **Room-correction visualization.** Implemented as of 2026-05-28.
    Show per-position spread, average, target, proposed filters,
    rejected nulls, confidence, runtime-integrity status, and

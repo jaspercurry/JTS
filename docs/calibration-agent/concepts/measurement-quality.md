@@ -33,11 +33,17 @@ designing filters from ambiguous data.
 - Assess capture quality before deconvolution, including clipping,
   low level, short captures, sample-rate mismatch, uncalibrated mic
   warnings, and browser-processing warnings.
+- Persist `acoustic_quality.json`, a compact acoustic-trust report
+  derived from capture quality, native pre-sweep noise WAVs, banded SNR
+  estimates, direct-arrival evidence, and optional main-seat repeat
+  capture. This gives the CLI and future agent one place to read SNR
+  level, repeatability, limitations, and recommended next action.
 - Persist target profile, correction strategy, and a design audit into
   session bundles for later review.
 - Build a first-pass confidence report from completed position count,
   calibrated-mic presence, input-device metadata, capture-quality
-  issues, per-position variance, and strategy gates.
+  issues, SNR warnings, same-position repeatability, per-position
+  variance, and strategy gates.
 - Write `position_analysis.json` with per-position magnitude curves,
   spatial average, variance arrays, per-band spatial-confidence
   summaries, deep-null flags, and high-variance flags for replayable
@@ -55,10 +61,14 @@ designing filters from ambiguous data.
 - Richer visualization controls: display smoothing, per-position
   overlays, spatial spread, accepted/rejected features, and filter
   response overlays without changing the saved measurement data.
-- Sweep SNR estimate against pre-sweep ambient noise.
+- Calibrated SPL and research-tuned SNR/repeatability thresholds.
+  Today's SNR is a useful broadband/banded dBFS guardrail, not a
+  calibrated acoustic SPL measurement.
 - Acoustic browser smoke-test proof: known tone/sweep loopback,
   capture-level sanity, and real iOS/Android verification.
-- Repeatability score between nearby positions or repeated sweeps.
+- Repeatability score between nearby positions; same-seat repeat
+  capture exists today, but nearby-position interpretation still needs
+  hardware evidence.
 - Calibration coverage warning when the selected curve does not span
   the full analysis band.
 - Vendor lookup provenance: fetched URL, file hash, model, serial hash,
@@ -117,4 +127,4 @@ The agent should say "measure again" when:
 - [miniDSP UMIK-1](https://www.minidsp.com/products/acoustic-measurement/umik-1?format=pdf&type=raw)
 - [miniDSP UMIK-2 manual](https://www.minidsp.com/images/documents/miniDSP%20UMIK-2-User%20Manual.pdf)
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28

@@ -107,6 +107,12 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
     assert summary["quality_issues"][0]["artifact_path"] == "captures/p0.wav"
     assert intake["peaks_nulls"]["peaks"][0]["freq_hz"] == 80.0
     assert intake["peaks_nulls"]["nulls"][0]["freq_hz"] == 160.0
+    assert intake["evidence"]["side_effects"] == []
+    assert intake["evidence"]["agent_readiness"]["level"] == "caution"
+    assert (
+        intake["evidence"]["acoustic_quality"]["summary"]["snr_level"]
+        == "unavailable"
+    )
     assert [hit["title"] for hit in intake["corpus_hits"]] == [
         "Measurement Quality",
         "Room Correction Limits",
@@ -134,6 +140,31 @@ def test_cli_json_loads_latest_bundle(tmp_path: Path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["summary"]["session_id"] == "new"
     assert out["summary"]["peq_count"] == 1
+    assert out["evidence"]["agent_readiness"]["allowed_review"] is True
+
+
+def test_cli_markdown_renders_evidence_readiness(tmp_path: Path, capsys):
+    sessions = tmp_path / "sessions"
+    _write_bundle(sessions, "abc")
+
+    rc = cli.main([
+        "abc",
+        "--sessions-dir",
+        str(sessions),
+        "--corpus-dir",
+        str(_write_corpus(tmp_path)),
+    ])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "## What Happened" in out
+    assert "## What Looks Trustworthy" in out
+    assert "## What Looks Suspicious" in out
+    assert "## What JTS Refused To Correct" in out
+    assert "## What I Would Do Next" in out
+    assert "## What Evidence Is Missing" in out
+    assert "## Evidence Readiness" in out
+    assert "Same-position repeatability" in out
 
 
 def test_cli_returns_2_for_missing_bundle(tmp_path: Path, capsys):

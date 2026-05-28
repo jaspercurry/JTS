@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from jasper.correction import bundles
+from jasper.correction import bundles, evidence
 
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/correction/sessions")
@@ -86,12 +86,17 @@ def load_measurement_bundle(
 
 def _all_quality_reports(bundle: MeasurementBundle) -> list[dict[str, Any]]:
     reports = list(bundle.info.get("capture_quality") or [])
+    if bundle.info.get("repeat_quality"):
+        reports.append(bundle.info["repeat_quality"])
     if bundle.info.get("verify_quality"):
         reports.append(bundle.info["verify_quality"])
     if bundle.result:
         for report in bundle.result.get("capture_quality") or []:
             if report not in reports:
                 reports.append(report)
+        repeat = bundle.result.get("repeat_quality")
+        if repeat and repeat not in reports:
+            reports.append(repeat)
         verify = bundle.result.get("verify_quality")
         if verify and verify not in reports:
             reports.append(verify)
@@ -288,8 +293,13 @@ def build_intake(
     bundle: MeasurementBundle,
     *,
     corpus_dir: Path | None = None,
+    repeat_bundle_dir: Path | None = None,
 ) -> dict[str, Any]:
     summary = get_measurement_summary(bundle)
+    evidence_packet = evidence.build_evidence_packet(
+        bundle.bundle_dir,
+        repeat_bundle_dir=repeat_bundle_dir,
+    )
     peaks_nulls = analyze_peaks_nulls(bundle)
     lookups = []
     for topic in ["measurement quality", "room correction limits"]:
@@ -304,6 +314,7 @@ def build_intake(
     return {
         "bundle_dir": str(bundle.bundle_dir),
         "summary": summary,
+        "evidence": evidence_packet,
         "peaks_nulls": peaks_nulls,
         "schroeder": compute_schroeder(),
         "corpus_hits": unique_lookups[:4],

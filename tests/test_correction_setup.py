@@ -101,6 +101,31 @@ def test_read_json_body_rejects_invalid_content_length():
         correction_setup._read_json_body(Handler())
 
 
+def test_read_wav_body_rejects_invalid_content_length():
+    class Handler:
+        headers = {"Content-Length": "not-a-number"}
+        rfile = io.BytesIO()
+
+    with pytest.raises(correction_setup.BadRequest, match="Content-Length"):
+        correction_setup._read_wav_body(Handler())
+
+
+def test_read_wav_body_rejects_large_or_incomplete_body():
+    class TooLarge:
+        headers = {"Content-Length": "5"}
+        rfile = io.BytesIO(b"12345")
+
+    with pytest.raises(correction_setup.BadRequest, match="too large"):
+        correction_setup._read_wav_body(TooLarge(), max_bytes=4)
+
+    class Incomplete:
+        headers = {"Content-Length": "5"}
+        rfile = io.BytesIO(b"123")
+
+    with pytest.raises(correction_setup.BadRequest, match="incomplete"):
+        correction_setup._read_wav_body(Incomplete())
+
+
 def test_render_page_includes_placement_advice():
     """The WiiM-style 'lay flat, bottom toward speakers, no case' is
     the only mic-positioning guidance we can give on iOS (no mic-
@@ -292,6 +317,16 @@ def test_render_page_includes_results_visualization_controls():
     assert "renderRuntimeIntegrity" in body
     assert "recommendedNextAction" in body
     assert "spatial spread" in body
+
+
+def test_render_page_includes_noise_and_repeat_capture_flow():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="repeat-main-position"' in body
+    assert 'id="repeat-position"' in body
+    assert "capturePreSweepNoise" in body
+    assert "upload-noise" in body
+    assert "repeat-position" in body
+    assert "awaiting_repeat_capture" in body
 
 
 def test_render_page_shows_result_before_drawing_chart():

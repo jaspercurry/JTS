@@ -189,14 +189,17 @@ def _strategy_gates(
     has_mic_calibration: bool,
     completed_positions: int,
     quality_failed: bool,
+    snr_low_warning: bool,
     browser_processing_warning: bool,
     variance: dict[str, Any],
+    repeatability_level: str | None,
 ) -> dict[str, Any]:
     has_measurement = completed_positions > 0
     gates: dict[str, Any] = {
         "safe": {"allowed": not quality_failed and has_measurement, "reasons": []},
         "balanced": {"allowed": False, "reasons": []},
         "assertive": {"allowed": False, "reasons": []},
+        "future_fir": {"allowed": False, "reasons": []},
     }
 
     if not has_measurement:
@@ -221,8 +224,14 @@ def _strategy_gates(
         assertive_reasons.append("measurement mic is not calibrated")
     if completed_positions < 3:
         assertive_reasons.append("fewer than three positions were measured")
+    if snr_low_warning:
+        assertive_reasons.append("capture SNR is low")
     if browser_processing_warning:
         assertive_reasons.append("browser reported audio processing")
+    if repeatability_level in {None, "", "unavailable"}:
+        assertive_reasons.append("same-position repeatability is unavailable")
+    elif repeatability_level == "low":
+        assertive_reasons.append("same-position repeatability is low")
     if variance.get("available"):
         if variance.get("confidence_level") == "low":
             assertive_reasons.append("position variance is high")
@@ -230,6 +239,21 @@ def _strategy_gates(
         assertive_reasons.append("position variance is unavailable")
     gates["assertive"]["allowed"] = not assertive_reasons
     gates["assertive"]["reasons"] = assertive_reasons
+
+    fir_reasons = list(assertive_reasons)
+    if score < 85:
+        fir_reasons.append("overall confidence is below future-FIR target")
+    if completed_positions < 5:
+        fir_reasons.append("fewer than five positions were measured")
+    if repeatability_level != "high":
+        fir_reasons.append("same-position repeatability is not high")
+    if variance.get("available"):
+        if variance.get("confidence_level") != "high":
+            fir_reasons.append("position variance is not high-confidence")
+    else:
+        fir_reasons.append("position variance is unavailable")
+    gates["future_fir"]["allowed"] = not fir_reasons
+    gates["future_fir"]["reasons"] = sorted(set(fir_reasons))
 
     return gates
 
@@ -423,6 +447,7 @@ def build_confidence_report(
     strategy_choice: str,
     browser_audio_report: dict[str, Any] | None = None,
     runtime_integrity: dict[str, Any] | None = None,
+    repeatability_report: dict[str, Any] | None = None,
     position_magnitudes: list[np.ndarray] | None = None,
     freqs_hz: np.ndarray | None = None,
     correction_band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
@@ -456,6 +481,14 @@ def build_confidence_report(
     ]
     quality_warn_issues = [
         i for i in issues if i.get("severity") == "warn"
+    ]
+    snr_low_issues = [
+        i for i in quality_warn_issues
+        if i.get("code") == "capture_snr_low"
+    ]
+    generic_quality_warn_issues = [
+        i for i in quality_warn_issues
+        if i.get("code") != "capture_snr_low"
     ]
     issues = issues + browser_issues + runtime_issues
     failed_issues = [i for i in issues if i.get("severity") == "fail"]
@@ -560,14 +593,50 @@ def build_confidence_report(
             details={"count": len(runtime_warnings)},
         ))
 
-    if quality_warn_issues:
-        score -= min(20, 5 * len(quality_warn_issues))
+    if generic_quality_warn_issues:
+        score -= min(20, 5 * len(generic_quality_warn_issues))
         findings.append(ConfidenceFinding(
             code="capture_quality_warnings",
             severity="warn",
             message="capture quality warnings lowered confidence",
-            details={"count": len(quality_warn_issues)},
+            details={"count": len(generic_quality_warn_issues)},
         ))
+
+    if snr_low_issues:
+        score -= min(20, 10 * len(snr_low_issues))
+        findings.append(ConfidenceFinding(
+            code="capture_snr_low",
+            severity="warn",
+            message="capture SNR is below the measurement trust target",
+            details={"count": len(snr_low_issues)},
+        ))
+
+    repeatability_level = None
+    if isinstance(repeatability_report, dict):
+        repeatability_level = str(
+            repeatability_report.get("level") or "unavailable"
+        )
+        if repeatability_level == "low":
+            score -= 20
+            findings.append(ConfidenceFinding(
+                code="repeatability_low",
+                severity="warn",
+                message="same-position repeatability is low",
+            ))
+        elif repeatability_level == "medium":
+            score -= 5
+            findings.append(ConfidenceFinding(
+                code="repeatability_medium",
+                severity="info",
+                message="same-position repeatability is usable but not high",
+            ))
+        elif repeatability_level == "unavailable":
+            score -= 5
+            findings.append(ConfidenceFinding(
+                code="repeatability_unavailable",
+                severity="info",
+                message="same-position repeatability is unavailable",
+            ))
 
     if browser_processing:
         score -= 10
@@ -611,8 +680,10 @@ def build_confidence_report(
         has_mic_calibration=has_mic_calibration,
         completed_positions=completed_positions,
         quality_failed=bool(failed_issues),
+        snr_low_warning=bool(snr_low_issues),
         browser_processing_warning=bool(browser_processing),
         variance=variance,
+        repeatability_level=repeatability_level,
     )
 
     return {
@@ -632,15 +703,18 @@ def build_confidence_report(
             "input_device_present": bool(input_device),
             "quality_issue_count": len(issues),
             "quality_warning_count": len(quality_warn_issues),
+            "snr_low_count": len(snr_low_issues),
             "quality_failure_count": len(quality_failed_issues),
             "total_issue_count": len(issues),
             "browser_audio_issue_count": len(browser_issues),
             "runtime_integrity_issue_count": len(runtime_issues),
             "runtime_integrity_warning_count": len(runtime_warnings),
             "runtime_integrity_failure_count": len(runtime_failures),
+            "repeatability_level": repeatability_level,
         },
         "browser_audio_report": browser_audio_report,
         "runtime_integrity": runtime_integrity,
+        "repeatability": repeatability_report,
         "position_variance": variance,
         "position_bands": position_report["bands"],
         "feature_flags": position_report["feature_flags"],

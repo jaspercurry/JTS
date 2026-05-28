@@ -71,6 +71,7 @@ def inspect_bundle(
     manifest = _read_json(bundle_dir / bundles.ARTIFACT_MANIFEST_NAME)
     result = _read_json(bundle_dir / "result.json")
     runtime = _read_json(bundle_dir / "runtime_integrity.json")
+    acoustic = _read_json(bundle_dir / "acoustic_quality.json")
 
     confidence = None
     if result:
@@ -96,6 +97,8 @@ def inspect_bundle(
         "artifact_count": summary.get("artifact_count", 0),
         "artifact_counts_by_kind": _artifact_counts(manifest),
         "raw_capture_count": len(_raw_capture_paths(bundle_dir)),
+        "noise_capture_count": summary.get("noise_capture_count", 0),
+        "repeat_capture_count": summary.get("repeat_capture_count", 0),
         "issues": [issue.to_dict() for issue in issues],
         "confidence": {
             "level": confidence.get("level"),
@@ -106,6 +109,11 @@ def inspect_bundle(
             "level": runtime_summary.get("level"),
             "issue_count": len(runtime_summary.get("issues") or []),
         } if isinstance(runtime_summary, dict) else None,
+        "acoustic_quality": (
+            acoustic.get("summary")
+            if isinstance(acoustic, dict)
+            else summary.get("acoustic_quality")
+        ),
         "exports_available": exportable_artifacts(bundle_dir),
     }
     if recompute:

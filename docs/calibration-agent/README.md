@@ -123,8 +123,15 @@ Every concept file should have:
   sensitivity, and recomputability for raw captures and derived
   artifacts. Bundles also write `runtime_integrity.json` with
   lightweight system/runtime snapshots, capture sample-count sanity,
-  fan-in xrun deltas, and CamillaDSP runtime counters. Remaining
-  evidence work: replay-grade numeric intermediates, SNR, and
-  repeatability for future FIR and agent analysis.
+  fan-in xrun deltas, and CamillaDSP runtime counters.
+- 2026-05-28: agent-readiness evidence packet added.
+  `acoustic_quality.json` records the current SNR/acoustic-trust
+  verdict from capture quality, native pre-sweep noise WAVs, banded
+  SNR estimates, direct-arrival evidence, and optional main-seat repeat
+  capture; `jasper.correction.evidence` combines bundle, confidence,
+  runtime, acoustic, and repeatability facts into a deterministic
+  read-only packet used by `jasper-calibration-agent`. Remaining
+  evidence work: replay-grade numeric intermediates and research-tuned
+  thresholds for future FIR and agent analysis.
 
 Last verified: 2026-05-28
