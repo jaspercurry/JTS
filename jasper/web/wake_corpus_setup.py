@@ -69,8 +69,15 @@ import numpy as np
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
+    AEC3_SWEEP_SOURCE_ENV,
+    AEC3_SWEEP_SOURCE_USB,
+    AEC3_SWEEP_SOURCE_XVF,
     AEC3_SWEEP_VARIANTS,
+    Aec3SweepConfigError,
+    USB_AEC3_CORPUS_LABEL,
+    USB_AEC3_SWEEP_BASELINE_LABEL,
     config_metadata,
+    normalize_aec3_sweep_source,
     variant_metadata,
 )
 # Reuse audio I/O + systemctl helpers from the CLI. Single source of
@@ -138,6 +145,7 @@ DISTANCES = ("near", "mid", "far")
 # experiment streams emitted by jasper-aec-bridge when explicitly
 # enabled; they are never production wake-detection inputs.
 AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
+DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE = AEC3_SWEEP_SOURCE_USB
 # Keep old pilot legs playable when loading earlier same-day sessions.
 LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_hf_slow_only",
@@ -179,7 +187,7 @@ LEG_LABELS = {
     "raw0": "XVF raw0",
     "ref": "Reference",
     "usb_raw": "USB raw",
-    "usb_webrtc": "USB WebRTC AEC3",
+    "usb_webrtc": USB_AEC3_CORPUS_LABEL,
     "usb_dtln": "USB DTLN",
 }
 
@@ -223,6 +231,7 @@ BRIDGE_CORPUS_OUTPUT_VARS = (
     "JASPER_AEC_CORPUS_USB_ENABLED",
     "JASPER_AEC_CORPUS_USB_DTLN_ENABLED",
     AEC3_SWEEP_ENV_FLAG,
+    AEC3_SWEEP_SOURCE_ENV,
 )
 DEFAULT_USB_MIC_DEVICE = "USB PnP Sound Device"
 DEFAULT_USB_MIXER_CARD = "Device"
@@ -235,6 +244,19 @@ BRIDGE_OUTPUT_LABELS = {
     "usb_dtln": "USB DTLN",
     "aec3_sweep": "AEC3 sweep",
 }
+
+
+def _session_aec3_sweep_source(value: str | None = None) -> str:
+    """New corpus sessions default the AEC3 sweep to the cheap USB mic."""
+    return normalize_aec3_sweep_source(
+        value,
+        default=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE,
+    )
+
+
+def _legacy_aec3_sweep_source(value: str | None = None) -> str:
+    """Older metadata/env without an explicit source meant XVF."""
+    return normalize_aec3_sweep_source(value, default=AEC3_SWEEP_SOURCE_XVF)
 
 
 def _env_truthy(value: str | None, *, default: bool = False) -> bool:
@@ -264,12 +286,22 @@ def bridge_output_status() -> dict[str, Any]:
     env: dict[str, str] = {}
     env.update(system_env)
     env.update(corpus_env)
+    try:
+        aec3_sweep_source = _legacy_aec3_sweep_source(
+            env.get(AEC3_SWEEP_SOURCE_ENV),
+        )
+    except Aec3SweepConfigError as e:
+        logger.warning(
+            "invalid AEC3 sweep source in bridge env: %s; treating as XVF", e,
+        )
+        aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
     recorder_outputs = {
         "dtln": _env_truthy(corpus_env.get("JASPER_AEC_DTLN_ENABLED")),
         "ref": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_REF_ENABLED")),
         "usb": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(corpus_env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
         "aec3_sweep": _env_truthy(corpus_env.get(AEC3_SWEEP_ENV_FLAG)),
+        "aec3_sweep_source": aec3_sweep_source,
     }
     status = {
         "dtln": _env_truthy(env.get("JASPER_AEC_DTLN_ENABLED")),
@@ -277,6 +309,7 @@ def bridge_output_status() -> dict[str, Any]:
         "usb": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_ENABLED")),
         "usb_dtln": _env_truthy(env.get("JASPER_AEC_CORPUS_USB_DTLN_ENABLED")),
         "aec3_sweep": _env_truthy(env.get(AEC3_SWEEP_ENV_FLAG)),
+        "aec3_sweep_source": aec3_sweep_source,
         "env_path": str(BRIDGE_CORPUS_ENV_PATH),
         "recorder_outputs": recorder_outputs,
     }
@@ -290,6 +323,7 @@ def missing_bridge_outputs_for_session(
     include_usb_mic: bool,
     include_usb_dtln: bool,
     include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
 ) -> list[str]:
     """Return bridge outputs that must be enabled before a requested
     session can actually produce the WAV legs the operator checked.
@@ -298,17 +332,27 @@ def missing_bridge_outputs_for_session(
     in this check.
     """
     status = bridge_output_status()
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    sweep_needs_usb = (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
     missing: list[str] = []
     if include_dtln and not status["dtln"]:
         missing.append("dtln")
-    if include_usb_mic or include_usb_dtln:
+    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
         if not status["ref"]:
             missing.append("ref")
         if not status["usb"]:
             missing.append("usb")
     if include_usb_dtln and not status["usb_dtln"]:
         missing.append("usb_dtln")
-    if include_aec3_sweep and not status["aec3_sweep"]:
+    if include_aec3_sweep and (
+        not status["aec3_sweep"]
+        or status.get("aec3_sweep_source") != sweep_source
+    ):
         missing.append("aec3_sweep")
     return missing
 
@@ -455,7 +499,12 @@ def _bridge_identity(snapshot: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _leg_bridge_drop_counts(leg: str, bridge_delta: dict[str, Any]) -> dict[str, int]:
+def _leg_bridge_drop_counts(
+    leg: str,
+    bridge_delta: dict[str, Any],
+    *,
+    aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF,
+) -> dict[str, int]:
     queue_drops = bridge_delta.get("queue_drops")
     udp_drops = bridge_delta.get("udp_send_drops_by_leg")
     if not isinstance(queue_drops, dict):
@@ -463,13 +512,19 @@ def _leg_bridge_drop_counts(leg: str, bridge_delta: dict[str, Any]) -> dict[str,
     if not isinstance(udp_drops, dict):
         udp_drops = {}
     counts: dict[str, int] = {}
-    if leg in ("on", "off", "dtln", *AEC3_SWEEP_LEGS):
+    if leg in ("on", "off", "dtln") or (
+        leg in AEC3_SWEEP_LEGS
+        and aec3_sweep_source == AEC3_SWEEP_SOURCE_XVF
+    ):
         counts["mic_queue_full"] = int(queue_drops.get("mic", 0))
     if leg in ("on", "dtln", "ref", "usb_webrtc", "usb_dtln", *AEC3_SWEEP_LEGS):
         counts["ref_queue_full"] = int(queue_drops.get("ref", 0))
     if leg == "raw0":
         counts["raw0_queue_full"] = int(queue_drops.get("raw0", 0))
-    if leg in ("usb_raw", "usb_webrtc", "usb_dtln"):
+    if leg in ("usb_raw", "usb_webrtc", "usb_dtln") or (
+        leg in AEC3_SWEEP_LEGS
+        and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
+    ):
         counts["usb_queue_full"] = int(queue_drops.get("usb", 0))
     counts["udp_send_drops"] = int(udp_drops.get(leg, 0))
     if leg in ("on", "dtln", "usb_webrtc", "usb_dtln", *AEC3_SWEEP_LEGS):
@@ -483,6 +538,7 @@ def build_capture_health(
     buffers: dict[str, list[np.ndarray]],
     bridge_start: dict[str, Any] | None,
     bridge_stop: dict[str, Any] | None,
+    aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF,
 ) -> dict[str, Any]:
     """Build per-clip capture provenance for metadata sidecars."""
     bridge_delta = _bridge_counter_delta(bridge_start, bridge_stop)
@@ -511,7 +567,11 @@ def build_capture_health(
             leg_status = "warning"
             leg_notes.append("audio duration differs from wall duration")
 
-        drop_counts = _leg_bridge_drop_counts(leg, bridge_delta)
+        drop_counts = _leg_bridge_drop_counts(
+            leg,
+            bridge_delta,
+            aec3_sweep_source=aec3_sweep_source,
+        )
         hard_drop_total = sum(
             count for key, count in drop_counts.items()
             if key != "ref_starved_frames"
@@ -542,6 +602,7 @@ def build_capture_health(
         "schema_version": 1,
         "status": overall_status,
         "wall_duration_sec": wall_duration_sec,
+        "aec3_sweep_source": aec3_sweep_source,
         "legs": legs,
         "bridge_delta": bridge_delta,
         "notes": notes,
@@ -584,6 +645,7 @@ def enable_bridge_outputs_for_session(
     include_usb_mic: bool,
     include_usb_dtln: bool,
     include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
 ) -> None:
     """Persist requested bridge corpus outputs and restart the bridge.
 
@@ -597,10 +659,17 @@ def enable_bridge_outputs_for_session(
     existed = BRIDGE_CORPUS_ENV_PATH.exists()
     old_values = read_env_file(env_path)
     values = dict(old_values)
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    sweep_needs_usb = (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
 
     if include_dtln:
         values["JASPER_AEC_DTLN_ENABLED"] = "1"
-    if include_usb_mic or include_usb_dtln:
+    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
         values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
         if (
@@ -612,6 +681,7 @@ def enable_bridge_outputs_for_session(
         values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
     if include_aec3_sweep:
         values[AEC3_SWEEP_ENV_FLAG] = "1"
+        values[AEC3_SWEEP_SOURCE_ENV] = sweep_source
 
     write_env_file(env_path, values, mode=0o644)
     try:
@@ -646,6 +716,7 @@ def set_bridge_outputs_for_session(
     include_usb_mic: bool,
     include_usb_dtln: bool,
     include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
 ) -> bool:
     """Make recorder-owned bridge output overrides match a session.
 
@@ -662,6 +733,13 @@ def set_bridge_outputs_for_session(
     values = dict(old_values)
     for key in BRIDGE_CORPUS_OUTPUT_VARS:
         values.pop(key, None)
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    sweep_needs_usb = (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
 
     if include_dtln and not _env_truthy(system_env.get("JASPER_AEC_DTLN_ENABLED")):
         values["JASPER_AEC_DTLN_ENABLED"] = "1"
@@ -671,7 +749,7 @@ def set_bridge_outputs_for_session(
         # the operator is collecting same-utterance AEC3 variants; exit
         # removes this override and restores the production intent.
         values["JASPER_AEC_DTLN_ENABLED"] = "0"
-    if include_usb_mic or include_usb_dtln:
+    if include_usb_mic or include_usb_dtln or sweep_needs_usb:
         values["JASPER_AEC_CORPUS_REF_ENABLED"] = "1"
         values["JASPER_AEC_CORPUS_USB_ENABLED"] = "1"
         if (
@@ -683,6 +761,7 @@ def set_bridge_outputs_for_session(
         values["JASPER_AEC_CORPUS_USB_DTLN_ENABLED"] = "1"
     if include_aec3_sweep:
         values[AEC3_SWEEP_ENV_FLAG] = "1"
+        values[AEC3_SWEEP_SOURCE_ENV] = sweep_source
 
     if values == old_values:
         return False
@@ -780,11 +859,19 @@ def _session_legs(
     include_usb_mic: bool = False,
     include_usb_dtln: bool = False,
     include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
 ) -> tuple[str, ...]:
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    sweep_needs_usb = (
+        include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+    )
     legs = []
     if "on" in ports:
         legs.append("on")
-    if include_aec3_sweep:
+    if include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_XVF:
         legs.extend(leg for leg in AEC3_SWEEP_LEGS if leg in ports)
     if "off" in ports:
         legs.append("off")
@@ -792,13 +879,15 @@ def _session_legs(
         legs.append(DTLN_LEG)
     if include_raw_mic_0 and RAW0_LEG in ports:
         legs.append(RAW0_LEG)
-    if include_usb_mic:
+    if include_usb_mic or sweep_needs_usb:
         legs.extend(leg for leg in USB_CORPUS_LEGS if leg in ports)
     if include_usb_dtln and USB_DTLN_LEG in ports:
         # DTLN only makes sense when compared to the same raw USB mic
         # and reference signal, so include those companion legs even if
         # the caller didn't tick the broader USB/WebRTC checkbox.
         legs.extend(leg for leg in ("ref", "usb_raw", USB_DTLN_LEG) if leg in ports)
+    if include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB:
+        legs.extend(leg for leg in AEC3_SWEEP_LEGS if leg in ports)
     # Preserve order while de-duping.
     return tuple(dict.fromkeys(legs))
 
@@ -807,6 +896,14 @@ def _enabled_legs_from_metadata(
     data: dict[str, Any], ports: dict[str, int],
 ) -> tuple[str, ...]:
     """Recover the session leg set from new or legacy metadata."""
+    saved_config = data.get("aec3_sweep_config")
+    saved_source = (
+        saved_config.get("input_source")
+        if isinstance(saved_config, dict) else None
+    )
+    aec3_sweep_source = _legacy_aec3_sweep_source(
+        str(data.get("aec3_sweep_source") or saved_source or ""),
+    )
     raw = data.get("enabled_legs")
     if isinstance(raw, list):
         raw_legs = tuple(
@@ -820,6 +917,25 @@ def _enabled_legs_from_metadata(
                 for leg in raw_legs
             )
         )
+        if include_aec3_sweep:
+            return _session_legs(
+                ports,
+                include_dtln=bool(data.get("include_dtln", DTLN_LEG in raw_legs)),
+                include_raw_mic_0=bool(
+                    data.get("include_raw_mic_0", RAW0_LEG in raw_legs),
+                ),
+                include_usb_mic=bool(
+                    data.get(
+                        "include_usb_mic",
+                        any(leg in USB_CORPUS_LEGS for leg in raw_legs),
+                    ),
+                ),
+                include_usb_dtln=bool(
+                    data.get("include_usb_dtln", USB_DTLN_LEG in raw_legs),
+                ),
+                include_aec3_sweep=True,
+                aec3_sweep_source=aec3_sweep_source,
+            )
         legs: list[str] = []
         inserted_aec3 = False
         for leg in raw_legs:
@@ -849,6 +965,7 @@ def _enabled_legs_from_metadata(
         include_usb_mic=bool(data.get("include_usb_mic", False)),
         include_usb_dtln=bool(data.get("include_usb_dtln", False)),
         include_aec3_sweep=bool(data.get("include_aec3_sweep", False)),
+        aec3_sweep_source=aec3_sweep_source,
     )
 
 
@@ -932,8 +1049,14 @@ class RecordingTask:
     worst-case footprint is bounded.
     """
 
-    def __init__(self, ports: dict[str, int]) -> None:
+    def __init__(
+        self,
+        ports: dict[str, int],
+        *,
+        aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF,
+    ) -> None:
         self._ports = ports
+        self._aec3_sweep_source = aec3_sweep_source
         self._buffers: dict[str, list[np.ndarray]] = {leg: [] for leg in ports}
         self._captures: dict[str, Any] = {}
         self._task: asyncio.Task | None = None
@@ -1034,6 +1157,7 @@ class RecordingTask:
             buffers=self._buffers,
             bridge_start=self._bridge_stats_start,
             bridge_stop=self._bridge_stats_stop,
+            aec3_sweep_source=self._aec3_sweep_source,
         )
 
 
@@ -1093,6 +1217,7 @@ class RecordingBackend:
         self._include_usb_mic: bool = False
         self._include_usb_dtln: bool = False
         self._include_aec3_sweep: bool = False
+        self._aec3_sweep_source: str = AEC3_SWEEP_SOURCE_XVF
         self._aec3_sweep_variants: list[dict[str, object]] = []
         self._aec3_sweep_config: dict[str, object] | None = None
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
@@ -1228,6 +1353,7 @@ class RecordingBackend:
         self._include_usb_mic = False
         self._include_usb_dtln = False
         self._include_aec3_sweep = False
+        self._aec3_sweep_source = AEC3_SWEEP_SOURCE_XVF
         self._aec3_sweep_variants = []
         self._aec3_sweep_config = None
         self._enabled_legs = _default_enabled_legs(self._ports)
@@ -1251,9 +1377,26 @@ class RecordingBackend:
             ]
         except (KeyError, TypeError) as e:
             raise ValueError(f"session schema mismatch: {e}") from e
-        include_raw_mic_0 = bool(data.get("include_raw_mic_0", False))
-        include_usb_mic = bool(data.get("include_usb_mic", False))
         enabled_legs = _enabled_legs_from_metadata(data, self._ports)
+        saved_config = data.get("aec3_sweep_config")
+        saved_source = (
+            saved_config.get("input_source")
+            if isinstance(saved_config, dict) else None
+        )
+        aec3_sweep_source = _legacy_aec3_sweep_source(
+            str(data.get("aec3_sweep_source") or saved_source or ""),
+        )
+        include_raw_mic_0 = bool(data.get("include_raw_mic_0", RAW0_LEG in enabled_legs))
+        include_usb_mic = bool(
+            data.get(
+                "include_usb_mic",
+                any(leg in USB_CORPUS_LEGS for leg in enabled_legs),
+            )
+            or (
+                aec3_sweep_source == AEC3_SWEEP_SOURCE_USB
+                and any(leg in AEC3_SWEEP_LEGS for leg in enabled_legs)
+            )
+        )
         include_aec3_sweep = (
             bool(data.get("include_aec3_sweep", False))
             or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
@@ -1261,12 +1404,14 @@ class RecordingBackend:
         saved_variants = data.get("aec3_sweep_variants")
         if not isinstance(saved_variants, list):
             saved_variants = []
-        saved_config = data.get("aec3_sweep_config")
         if not isinstance(saved_config, dict):
             saved_config = None
         if include_aec3_sweep and not saved_variants:
-            saved_variants = variant_metadata()
-            saved_config = config_metadata()
+            saved_variants = variant_metadata(input_source=aec3_sweep_source)
+            saved_config = config_metadata(input_source=aec3_sweep_source)
+        elif include_aec3_sweep and saved_config is not None:
+            saved_config = dict(saved_config)
+            saved_config.setdefault("input_source", aec3_sweep_source)
         include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
         include_usb_dtln = _metadata_flag(
             data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
@@ -1280,6 +1425,7 @@ class RecordingBackend:
             self._include_usb_mic = include_usb_mic
             self._include_usb_dtln = include_usb_dtln
             self._include_aec3_sweep = include_aec3_sweep
+            self._aec3_sweep_source = aec3_sweep_source
             self._aec3_sweep_variants = saved_variants
             self._aec3_sweep_config = saved_config
             self._enabled_legs = enabled_legs
@@ -1292,6 +1438,7 @@ class RecordingBackend:
             "include_usb_mic": include_usb_mic,
             "include_usb_dtln": include_usb_dtln,
             "include_aec3_sweep": include_aec3_sweep,
+            "aec3_sweep_source": aec3_sweep_source,
             "enabled_legs": list(enabled_legs),
         }
 
@@ -1366,6 +1513,7 @@ class RecordingBackend:
         include_usb_mic: bool = False,
         include_usb_dtln: bool = False,
         include_aec3_sweep: bool = False,
+        aec3_sweep_source: str | None = None,
     ) -> str:
         """Open a fresh recording session. Resets the in-memory clip
         list (existing on-disk WAVs are untouched).
@@ -1393,11 +1541,23 @@ class RecordingBackend:
         by jasper-aec-bridge. These are pilot/tuning legs, not
         production wake inputs.
 
+        `aec3_sweep_source` selects which raw mic feeds those variants.
+        New sessions default to the cheap USB mic so one utterance yields
+        USB baseline + three USB AEC3 variants while retaining the XVF
+        baseline leg for comparison.
+
         Returns the new session_id (UTC timestamp).
         """
         safe_member = "".join(c for c in member.lower() if c.isalnum() or c == "_")
         if not safe_member:
             raise ValueError(f"member name has no usable chars: {member!r}")
+        sweep_source = (
+            _session_aec3_sweep_source(aec3_sweep_source)
+            if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+        )
+        effective_include_usb_mic = include_usb_mic or (
+            include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB
+        )
         with self._lock:
             if self._current is not None:
                 raise StateError(
@@ -1414,20 +1574,28 @@ class RecordingBackend:
                 self._ports,
                 include_dtln=include_dtln,
                 include_raw_mic_0=include_raw_mic_0,
-                include_usb_mic=include_usb_mic,
+                include_usb_mic=effective_include_usb_mic,
                 include_usb_dtln=include_usb_dtln,
                 include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=sweep_source,
             )
-            sweep_variants = variant_metadata() if include_aec3_sweep else []
-            sweep_config = config_metadata() if include_aec3_sweep else None
+            sweep_variants = (
+                variant_metadata(input_source=sweep_source)
+                if include_aec3_sweep else []
+            )
+            sweep_config = (
+                config_metadata(input_source=sweep_source)
+                if include_aec3_sweep else None
+            )
             self._session_id = f"{ts}-{secrets.token_hex(2)}"
             self._member = safe_member
             self._clips = []
             self._include_raw_mic_0 = include_raw_mic_0
             self._include_dtln = DTLN_LEG in enabled_legs
-            self._include_usb_mic = include_usb_mic
+            self._include_usb_mic = effective_include_usb_mic
             self._include_usb_dtln = USB_DTLN_LEG in enabled_legs
             self._include_aec3_sweep = include_aec3_sweep
+            self._aec3_sweep_source = sweep_source
             self._aec3_sweep_variants = sweep_variants
             self._aec3_sweep_config = sweep_config
             self._enabled_legs = enabled_legs
@@ -1461,19 +1629,24 @@ class RecordingBackend:
         with self._lock:
             return self._include_aec3_sweep
 
+    def aec3_sweep_source(self) -> str:
+        """Mic source that feeds the active session's AEC3 sweep variants."""
+        with self._lock:
+            return self._aec3_sweep_source
+
     def aec3_sweep_variants(self) -> list[dict[str, object]]:
         """Effective AEC3 sweep variants for the active session or UI status."""
         with self._lock:
             if self._include_aec3_sweep and self._aec3_sweep_variants:
                 return list(self._aec3_sweep_variants)
-        return variant_metadata()
+        return variant_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
 
     def aec3_sweep_config(self) -> dict[str, object]:
         """Effective AEC3 sweep config provenance for the active session/status."""
         with self._lock:
             if self._include_aec3_sweep and self._aec3_sweep_config:
                 return dict(self._aec3_sweep_config)
-        return config_metadata()
+        return config_metadata(input_source=DEFAULT_NEW_SESSION_AEC3_SWEEP_SOURCE)
 
     def enabled_legs(self) -> tuple[str, ...]:
         """The active session's leg set, in recording/playback order."""
@@ -1510,12 +1683,16 @@ class RecordingBackend:
             # Per-session leg selection. Built under the lock so the
             # session's clips all share one leg set.
             active_legs = list(self._enabled_legs)
+            aec3_sweep_source = self._aec3_sweep_source
 
         ports_for_task = {
             leg: self._ports[leg]
             for leg in active_legs if leg in self._ports
         }
-        task = RecordingTask(ports_for_task)
+        task = RecordingTask(
+            ports_for_task,
+            aec3_sweep_source=aec3_sweep_source,
+        )
         # Start on the backend loop. If the UDP bind fails (jasper-voice
         # is still up, port already in use), this raises and we never
         # transition into the recording state.
@@ -1706,6 +1883,7 @@ class RecordingBackend:
                 "include_usb_mic": self._include_usb_mic,
                 "include_usb_dtln": self._include_usb_dtln,
                 "include_aec3_sweep": self._include_aec3_sweep,
+                "aec3_sweep_source": self._aec3_sweep_source,
                 "aec3_sweep_variants": list(self._aec3_sweep_variants),
                 "aec3_sweep_config": self._aec3_sweep_config,
                 "enabled_legs": list(self._enabled_legs),
@@ -1747,6 +1925,14 @@ class RecordingBackend:
                 k = c.get("condition", "?")
                 conds[k] = conds.get(k, 0) + 1
             enabled_legs = _enabled_legs_from_metadata(data, self._ports)
+            saved_config = data.get("aec3_sweep_config")
+            saved_source = (
+                saved_config.get("input_source")
+                if isinstance(saved_config, dict) else None
+            )
+            aec3_sweep_source = _legacy_aec3_sweep_source(
+                str(data.get("aec3_sweep_source") or saved_source or ""),
+            )
             out.append({
                 "session_id": data.get("session_id", "?"),
                 "member": data.get("member", "?"),
@@ -1765,6 +1951,7 @@ class RecordingBackend:
                     bool(data.get("include_aec3_sweep", False))
                     or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
                 ),
+                "aec3_sweep_source": aec3_sweep_source,
                 "enabled_legs": list(enabled_legs),
                 "conditions": conds,
                 "is_active": (
@@ -1801,11 +1988,11 @@ class RecordingBackend:
         logger.info(
             "loaded session %s for %s with %d clip(s) include_raw_mic_0=%s "
             "include_dtln=%s include_usb_mic=%s include_usb_dtln=%s "
-            "include_aec3_sweep=%s legs=%s",
+            "include_aec3_sweep=%s aec3_sweep_source=%s legs=%s",
             session_id, result["member"], result["clip_count"],
             result["include_raw_mic_0"], result["include_dtln"],
             result["include_usb_mic"], result["include_usb_dtln"],
-            result["include_aec3_sweep"],
+            result["include_aec3_sweep"], result["aec3_sweep_source"],
             ",".join(result["enabled_legs"]),
         )
         return result
@@ -1911,8 +2098,15 @@ def enter_corpus_test_mode(
     include_usb_mic: bool,
     include_usb_dtln: bool,
     include_aec3_sweep: bool = False,
+    aec3_sweep_source: str | None = None,
 ) -> None:
     """Stop jasper-voice and apply the selected optional bridge legs."""
+    sweep_source = (
+        _session_aec3_sweep_source(aec3_sweep_source)
+        if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+    )
+    if include_aec3_sweep and sweep_source == AEC3_SWEEP_SOURCE_USB:
+        include_usb_mic = True
     voice_was_active = voice_daemon_active()
     set_voice_daemon_state("stop")
     try:
@@ -1921,6 +2115,7 @@ def enter_corpus_test_mode(
             include_usb_mic=include_usb_mic,
             include_usb_dtln=include_usb_dtln,
             include_aec3_sweep=include_aec3_sweep,
+            aec3_sweep_source=sweep_source,
         )
     except (
         subprocess.CalledProcessError,
@@ -2031,6 +2226,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": self.backend.include_usb_mic(),
                 "include_usb_dtln": self.backend.include_usb_dtln(),
                 "include_aec3_sweep": self.backend.include_aec3_sweep(),
+                "aec3_sweep_source": self.backend.aec3_sweep_source(),
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
@@ -2170,6 +2366,16 @@ class _Handler(BaseHTTPRequestHandler):
             include_usb_mic = bool(body.get("include_usb_mic", False))
             include_usb_dtln = bool(body.get("include_usb_dtln", False))
             include_aec3_sweep = bool(body.get("include_aec3_sweep", False))
+            try:
+                aec3_sweep_source = (
+                    _session_aec3_sweep_source(body.get("aec3_sweep_source"))
+                    if include_aec3_sweep else AEC3_SWEEP_SOURCE_XVF
+                )
+            except Aec3SweepConfigError as e:
+                self._send_error_json(400, str(e))
+                return
+            if include_aec3_sweep and aec3_sweep_source == AEC3_SWEEP_SOURCE_USB:
+                include_usb_mic = True
             enable_bridge_outputs = bool(
                 body.get("enable_bridge_outputs", False),
             )
@@ -2187,6 +2393,7 @@ class _Handler(BaseHTTPRequestHandler):
                 include_usb_mic=include_usb_mic,
                 include_usb_dtln=include_usb_dtln,
                 include_aec3_sweep=include_aec3_sweep,
+                aec3_sweep_source=aec3_sweep_source,
             )
             if missing_outputs and not enable_bridge_outputs:
                 labels = [
@@ -2210,6 +2417,7 @@ class _Handler(BaseHTTPRequestHandler):
                         include_usb_mic=include_usb_mic,
                         include_usb_dtln=include_usb_dtln,
                         include_aec3_sweep=include_aec3_sweep,
+                        aec3_sweep_source=aec3_sweep_source,
                     )
                 except subprocess.CalledProcessError as e:
                     detail = (e.stderr or e.stdout or str(e)).strip()
@@ -2242,6 +2450,7 @@ class _Handler(BaseHTTPRequestHandler):
                     include_usb_mic=include_usb_mic,
                     include_usb_dtln=include_usb_dtln,
                     include_aec3_sweep=include_aec3_sweep,
+                    aec3_sweep_source=aec3_sweep_source,
                 )
             except (ValueError, StateError) as e:
                 self._send_error_json(400, str(e))
@@ -2253,6 +2462,7 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": include_usb_mic,
                 "include_usb_dtln": include_usb_dtln,
                 "include_aec3_sweep": include_aec3_sweep,
+                "aec3_sweep_source": aec3_sweep_source,
                 "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
                 "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
@@ -2364,6 +2574,7 @@ class _Handler(BaseHTTPRequestHandler):
                         include_aec3_sweep=bool(
                             body.get("include_aec3_sweep", False),
                         ),
+                        aec3_sweep_source=body.get("aec3_sweep_source"),
                     )
                 else:
                     exit_corpus_test_mode()
@@ -2824,10 +3035,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     <div class="row checkbox">
       <input type="checkbox" id="include-aec3-sweep">
       <label for="include-aec3-sweep">
-        Capture <strong>AEC3 sweep</strong>
-        <span class="hint">— baseline plus three same-utterance WebRTC AEC3
-        variants. Use this as a pilot tuning mode; leave DTLN off while
-        comparing these legs.</span>
+        Capture <strong>USB AEC3 sweep</strong>
+        <span class="hint">— USB edge-combo WebRTC AEC3 at 40/80/120/160 ms
+        delay hints, with the XVF AEC3 leg kept for comparison. Use this
+        as a pilot tuning mode; leave DTLN off while comparing these legs.</span>
       </label>
     </div>
     <div class="row checkbox">
@@ -2932,10 +3143,20 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       raw0: 'XVF raw0',
       ref: 'Reference',
       usb_raw: 'USB raw',
-      usb_webrtc: 'USB WebRTC AEC3',
+      usb_webrtc: '{usb_aec3_corpus_label}',
       usb_dtln: 'USB DTLN',
     };
-    function legLabel(leg) { return LEG_LABELS[leg] || leg; }
+    const USB_AEC3_SWEEP_BASELINE_LABEL = '{usb_aec3_sweep_baseline_label}';
+    function legLabel(leg, session = latestStatus) {
+      if (
+        leg === 'usb_webrtc' &&
+        session?.include_aec3_sweep &&
+        session?.aec3_sweep_source === 'usb'
+      ) {
+        return USB_AEC3_SWEEP_BASELINE_LABEL;
+      }
+      return LEG_LABELS[leg] || leg;
+    }
     function applyAec3SweepVariants(variants) {
       for (const variant of variants || []) {
         if (variant?.leg && variant?.label) {
@@ -2944,8 +3165,8 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       }
     }
     const LEG_ORDER = [
-      'on', {aec3_sweep_js_order}
-      'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
+      'on', 'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
+      {aec3_sweep_js_order}
       'usb_dtln', 'ref',
     ];
     function resetSessionForm() {
@@ -3018,7 +3239,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           $('member'), $('include-raw-mic-0'), $('include-dtln'),
           $('include-aec3-sweep'), $('include-usb-mic'), $('include-usb-dtln'),
         ];
-        const sessionNeedsUsb = Boolean(s.include_usb_mic || s.include_usb_dtln);
+        const sessionNeedsUsb = Boolean(
+          s.include_usb_mic ||
+          s.include_usb_dtln ||
+          (s.include_aec3_sweep && s.aec3_sweep_source === 'usb')
+        );
         const sessionBridgeReady = !sessionLoaded || (
           (!s.include_dtln || bridgeOutputs.dtln) &&
           (!s.include_aec3_sweep || bridgeOutputs.aec3_sweep) &&
@@ -3027,7 +3252,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         );
         const activeBridgeLabels = [];
         if (recorderOutputs.dtln) activeBridgeLabels.push('XVF DTLN');
-        if (recorderOutputs.aec3_sweep) activeBridgeLabels.push('AEC3 sweep');
+        if (recorderOutputs.aec3_sweep) {
+          const source = recorderOutputs.aec3_sweep_source === 'usb'
+            ? 'USB' : 'XVF';
+          activeBridgeLabels.push(`${source} AEC3 sweep`);
+        }
         if (recorderOutputs.ref) activeBridgeLabels.push('ref');
         if (recorderOutputs.usb) activeBridgeLabels.push('USB');
         if (recorderOutputs.usb_dtln) activeBridgeLabels.push('USB DTLN');
@@ -3102,10 +3331,10 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           ? `${s.member} / ${s.session_id}`
             + (s.include_raw_mic_0 ? ' · raw mic 0 ✓' : '')
             + (!s.include_dtln ? ' · XVF DTLN off' : '')
-            + (s.include_aec3_sweep ? ' · AEC3 sweep ✓' : '')
+            + (s.include_aec3_sweep ? ` · ${s.aec3_sweep_source === 'usb' ? 'USB' : 'XVF'} AEC3 sweep ✓` : '')
             + (s.include_usb_mic ? ' · USB/ref ✓' : '')
             + (s.include_usb_dtln ? ' · USB DTLN ✓' : '')
-            + (s.enabled_legs?.length ? ` · ${s.enabled_legs.map(legLabel).join(', ')}` : '')
+            + (s.enabled_legs?.length ? ` · ${s.enabled_legs.map(leg => legLabel(leg, s)).join(', ')}` : '')
           : '(no session)';
         $('session-id').textContent = sessionLabel;
         if (sessionLoaded) {
@@ -3140,6 +3369,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         include_usb_mic: options.includeUsbMic,
         include_usb_dtln: options.includeUsbDtln,
         include_aec3_sweep: options.includeAec3Sweep,
+        aec3_sweep_source: options.aec3SweepSource || 'usb',
       });
     }
 
@@ -3172,6 +3402,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             includeUsbMic: Boolean(latestStatus.include_usb_mic),
             includeUsbDtln: Boolean(latestStatus.include_usb_dtln),
             includeAec3Sweep: Boolean(latestStatus.include_aec3_sweep),
+            aec3SweepSource: latestStatus.aec3_sweep_source || 'usb',
           });
           showErr('');
           await refreshStatus();
@@ -3185,7 +3416,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       const includeRawMic0 = $('include-raw-mic-0').checked;
       const includeDtln = $('include-dtln').checked;
       const includeAec3Sweep = $('include-aec3-sweep').checked;
-      const includeUsbMic = $('include-usb-mic').checked;
+      const includeUsbMic = $('include-usb-mic').checked || includeAec3Sweep;
       const includeUsbDtln = $('include-usb-dtln').checked;
       if (!member) { showErr('member is required'); return; }
       const payload = {
@@ -3195,10 +3426,12 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
         include_usb_mic: includeUsbMic,
         include_usb_dtln: includeUsbDtln,
         include_aec3_sweep: includeAec3Sweep,
+        aec3_sweep_source: includeAec3Sweep ? 'usb' : 'xvf',
       };
       try {
         await enterCorpusTestMode({
           includeDtln, includeUsbMic, includeUsbDtln, includeAec3Sweep,
+          aec3SweepSource: includeAec3Sweep ? 'usb' : 'xvf',
         });
         await api('POST', 'api/session', payload);
         showErr('');
@@ -3264,9 +3497,9 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
             ? '<span class="pill tiny purple">USB DTLN</span>'
             : '';
           const aec3SweepPill = s.include_aec3_sweep
-            ? '<span class="pill tiny purple">AEC3 sweep</span>'
+            ? `<span class="pill tiny purple">${s.aec3_sweep_source === 'usb' ? 'USB' : 'XVF'} AEC3 sweep</span>`
             : '';
-          const legsText = (s.enabled_legs || []).map(legLabel).join(', ');
+          const legsText = (s.enabled_legs || []).map(leg => legLabel(leg, s)).join(', ');
           const activeMark = s.is_active
             ? '<span class="pill tiny green">loaded</span> ' : '';
           const date = new Date(s.mtime * 1000).toLocaleString();
@@ -3442,6 +3675,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       if ($('include-aec3-sweep').checked) {
         $('include-dtln').checked = false;
         $('include-usb-dtln').checked = false;
+        $('include-usb-mic').checked = true;
       }
     };
     $('include-dtln').onchange = () => {
@@ -3449,6 +3683,11 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
     };
     $('include-usb-dtln').onchange = () => {
       if ($('include-usb-dtln').checked) $('include-aec3-sweep').checked = false;
+    };
+    $('include-usb-mic').onchange = () => {
+      if (!$('include-usb-mic').checked && $('include-aec3-sweep').checked) {
+        $('include-usb-mic').checked = true;
+      }
     };
 
     // Spacebar toggles recording when a session is active + we're not
@@ -3538,6 +3777,11 @@ def _render_index_html(csrf_token: str = "") -> str:
         .replace("{nav_back_html}", NAV_BACK_HTML)
         .replace("{aec3_sweep_js_labels}", aec3_sweep_js_labels)
         .replace("{aec3_sweep_js_order}", aec3_sweep_js_order)
+        .replace("{usb_aec3_corpus_label}", html.escape(USB_AEC3_CORPUS_LABEL))
+        .replace(
+            "{usb_aec3_sweep_baseline_label}",
+            html.escape(USB_AEC3_SWEEP_BASELINE_LABEL),
+        )
     )
 
 

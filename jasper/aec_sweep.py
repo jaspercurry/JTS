@@ -24,9 +24,33 @@ from typing import Any
 
 AEC3_SWEEP_ENV_FLAG = "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED"
 AEC3_SWEEP_CONFIG_ENV = "JASPER_AEC3_SWEEP_CONFIG"
+AEC3_SWEEP_SOURCE_ENV = "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE"
+AEC3_SWEEP_SOURCE_XVF = "xvf"
+AEC3_SWEEP_SOURCE_USB = "usb"
+DEFAULT_AEC3_SWEEP_SOURCE = AEC3_SWEEP_SOURCE_XVF
 DEFAULT_AEC3_SWEEP_CONFIG_PATH = Path("/var/lib/jasper/aec3_sweep_variants.json")
 MAX_AEC3_SWEEP_VARIANTS = 3
 _LEG_RE = re.compile(r"^aec3_variant_[1-3]$")
+_VALID_AEC3_SWEEP_SOURCES = (AEC3_SWEEP_SOURCE_XVF, AEC3_SWEEP_SOURCE_USB)
+AEC3_EDGE_COMBO_OVERRIDES: dict[str, str] = {
+    "JASPER_AEC_CONSERVATIVE_HF": "0",
+    "JASPER_AEC_MAX_DEC_LF": "0.02",
+    "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
+    "JASPER_AEC_DND_SNR_THRESHOLD": "15",
+    "JASPER_AEC_DND_ENR_THRESHOLD": "0.50",
+    "JASPER_AEC_DND_HOLD_DURATION": "100",
+    "JASPER_AEC_DND_TRIGGER_THRESHOLD": "6",
+}
+USB_AEC3_SWEEP_BASELINE_OVERRIDES: dict[str, str] = {
+    **AEC3_EDGE_COMBO_OVERRIDES,
+    "JASPER_AEC_STREAM_DELAY_MS": "40",
+}
+USB_AEC3_SWEEP_BASELINE_LABEL = "USB AEC3 edge combo 40 ms"
+USB_AEC3_CORPUS_OVERRIDES: dict[str, str] = {
+    **AEC3_EDGE_COMBO_OVERRIDES,
+    "JASPER_AEC_STREAM_DELAY_MS": "80",
+}
+USB_AEC3_CORPUS_LABEL = "USB AEC3 edge combo 80 ms"
 
 
 @dataclass(frozen=True)
@@ -68,6 +92,7 @@ _ALLOWED_AEC3_SWEEP_ENV_VARS: dict[str, _KnobSpec] = {
     "JASPER_AEC_AGC1_TARGET_DBFS": _KnobSpec("int", 0, 31),
     "JASPER_AEC_AGC1_MAX_GAIN_DB": _KnobSpec("int", 0, 60),
     "JASPER_AEC_AGC2": _BOOL_SPEC,
+    "JASPER_AEC_STREAM_DELAY_MS": _KnobSpec("int", 0, 500),
     # BEST_A / EchoCanceller3Config knobs.
     "JASPER_AEC_FILTER_LENGTH": _KnobSpec("int", 1, 128),
     "JASPER_AEC_BOUNDED_ERL": _BOOL_SPEC,
@@ -97,43 +122,32 @@ _ALLOWED_AEC3_SWEEP_ENV_VARS: dict[str, _KnobSpec] = {
 DEFAULT_AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
         leg="aec3_variant_1",
-        label="AEC3 HF + slow only",
+        label="AEC3 edge combo 80 ms",
         port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_1",
         default_port=9884,
         env_overrides={
-            "JASPER_AEC_CONSERVATIVE_HF": "0",
-            "JASPER_AEC_MAX_DEC_LF": "0.02",
-            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
+            **AEC3_EDGE_COMBO_OVERRIDES,
+            "JASPER_AEC_STREAM_DELAY_MS": "80",
         },
     ),
     Aec3SweepVariant(
         leg="aec3_variant_2",
-        label="AEC3 edge combo",
+        label="AEC3 edge combo 120 ms",
         port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_2",
         default_port=9885,
         env_overrides={
-            "JASPER_AEC_CONSERVATIVE_HF": "0",
-            "JASPER_AEC_MAX_DEC_LF": "0.02",
-            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
-            "JASPER_AEC_DND_SNR_THRESHOLD": "15",
-            "JASPER_AEC_DND_ENR_THRESHOLD": "0.50",
-            "JASPER_AEC_DND_HOLD_DURATION": "100",
-            "JASPER_AEC_DND_TRIGGER_THRESHOLD": "6",
+            **AEC3_EDGE_COMBO_OVERRIDES,
+            "JASPER_AEC_STREAM_DELAY_MS": "120",
         },
     ),
     Aec3SweepVariant(
         leg="aec3_variant_3",
-        label="AEC3 gentle DND",
+        label="AEC3 edge combo 160 ms",
         port_env="JASPER_AEC_UDP_PORT_AEC3_VARIANT_3",
         default_port=9886,
         env_overrides={
-            "JASPER_AEC_CONSERVATIVE_HF": "0",
-            "JASPER_AEC_MAX_DEC_LF": "0.02",
-            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
-            "JASPER_AEC_DND_SNR_THRESHOLD": "20",
-            "JASPER_AEC_DND_ENR_THRESHOLD": "0.40",
-            "JASPER_AEC_DND_HOLD_DURATION": "75",
-            "JASPER_AEC_DND_TRIGGER_THRESHOLD": "9",
+            **AEC3_EDGE_COMBO_OVERRIDES,
+            "JASPER_AEC_STREAM_DELAY_MS": "160",
         },
     ),
 )
@@ -146,6 +160,44 @@ def _config_path(path: str | Path | None = None) -> Path:
     if path is not None:
         return Path(path)
     return Path(os.environ.get(AEC3_SWEEP_CONFIG_ENV, DEFAULT_AEC3_SWEEP_CONFIG_PATH))
+
+
+def normalize_aec3_sweep_source(
+    value: str | None,
+    *,
+    default: str = DEFAULT_AEC3_SWEEP_SOURCE,
+) -> str:
+    """Normalize the mic leg that feeds the AEC3 sweep engines."""
+    normalized_default = default.strip().lower()
+    if normalized_default not in _VALID_AEC3_SWEEP_SOURCES:
+        raise Aec3SweepConfigError(
+            f"default AEC3 sweep source must be one of: "
+            f"{', '.join(_VALID_AEC3_SWEEP_SOURCES)}",
+        )
+    if value is None:
+        return normalized_default
+    if not isinstance(value, str):
+        raise Aec3SweepConfigError("AEC3 sweep source must be a string")
+    if not value.strip():
+        return normalized_default
+    source = value.strip().lower()
+    if source not in _VALID_AEC3_SWEEP_SOURCES:
+        raise Aec3SweepConfigError(
+            f"AEC3 sweep source must be one of: "
+            f"{', '.join(_VALID_AEC3_SWEEP_SOURCES)}",
+        )
+    return source
+
+
+def current_aec3_sweep_source(
+    *,
+    default: str = DEFAULT_AEC3_SWEEP_SOURCE,
+) -> str:
+    """Return the effective runtime AEC3 sweep input source."""
+    return normalize_aec3_sweep_source(
+        os.environ.get(AEC3_SWEEP_SOURCE_ENV),
+        default=default,
+    )
 
 
 def _canonical_variant_payload(
@@ -397,13 +449,29 @@ def write_aec3_sweep_config(
 
 def variant_metadata(
     variants: tuple[Aec3SweepVariant, ...] | None = None,
+    *,
+    input_source: str | None = None,
 ) -> list[dict[str, object]]:
     """JSON-friendly description stored in corpus session metadata."""
     effective = variants if variants is not None else load_aec3_sweep_config().variants
-    return _canonical_variant_payload(effective)
+    data = _canonical_variant_payload(effective)
+    if input_source is None:
+        return data
+    source = normalize_aec3_sweep_source(input_source)
+    prefix = "USB" if source == AEC3_SWEEP_SOURCE_USB else "XVF"
+    for item in data:
+        label = str(item["label"])
+        if not label.lower().startswith(("usb ", "xvf ")):
+            item["label"] = f"{prefix} {label}"
+        item["input_source"] = source
+    return data
 
 
-def config_metadata(config: Aec3SweepConfig | None = None) -> dict[str, object]:
+def config_metadata(
+    config: Aec3SweepConfig | None = None,
+    *,
+    input_source: str | None = None,
+) -> dict[str, object]:
     """JSON-friendly description of the effective sweep config source."""
     effective = config if config is not None else load_aec3_sweep_config()
     data: dict[str, object] = {
@@ -411,6 +479,8 @@ def config_metadata(config: Aec3SweepConfig | None = None) -> dict[str, object]:
         "path": effective.path,
         "hash": effective.config_hash,
     }
+    if input_source is not None:
+        data["input_source"] = normalize_aec3_sweep_source(input_source)
     if effective.error:
         data["error"] = effective.error
     return data

@@ -48,6 +48,13 @@ should sort clips by suspicion, explain why, and generate review packages
 that make it easy for Jasper to listen and inspect. It should not silently
 delete or exclude clips from training.
 
+**Waveform fusion is an offline hypothesis test.** The experimental
+`scripts/_waveform_fusion_experiment.py` harness can align/mix paired
+same-utterance legs such as `on + dtln` or `usb_webrtc + usb_dtln` and
+score the generated WAVs. Use it to test whether a mixed waveform adds
+evidence over score fusion; do not treat it as a production-quality
+enhancement chain without hard-negative and multi-session validation.
+
 ---
 
 ## 1. Scope
@@ -64,6 +71,9 @@ It is for:
 - Diagnosing artifacts such as tearing, clipping, AGC pumping, limiter
   behavior, dropouts, rough high-band distortion, and AEC/NS artifacts.
 - Producing human-review packages that combine metrics, plots, and audio.
+- Offline research experiments that compare same-utterance leg fusion
+  strategies, as long as the output is reviewed against ordinary
+  score/decision fusion and hard negatives.
 
 It is not for:
 
@@ -93,15 +103,21 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
-| `aec3_variant_1` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 1 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
-| `aec3_variant_2` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 2 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
-| `aec3_variant_3` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 3 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
+| `aec3_variant_1` | Corpus-only parallel WebRTC AEC3 slot 1 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
+| `aec3_variant_2` | Corpus-only parallel WebRTC AEC3 slot 2 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
+| `aec3_variant_3` | Corpus-only parallel WebRTC AEC3 slot 3 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
 
 Leg names in future metadata should stay stable and explicit. For AEC3
 sweeps, the machine-readable names are intentionally generic stable
 slots because the hypothesis changes often; the session sidecar's
-`aec3_sweep_variants` and `aec3_sweep_config.hash` are the source of
-truth for the actual knobs behind each slot.
+`aec3_sweep_source`, `aec3_sweep_variants`, and `aec3_sweep_config.hash`
+are the source of truth for the actual input mic and knobs behind each
+slot. As of 2026-05-28, new recorder-created sweep sessions default
+these slots to the cheap USB mic while retaining the XVF `on` leg as
+the comparison reference. The current built-in USB pilot labels
+`usb_webrtc` as the 40 ms edge-combo delay-hint baseline and the three
+variant slots as 80/120/160 ms delay hints; older sessions without the
+source field were XVF-fed.
 
 ---
 
@@ -413,10 +429,43 @@ Phase 4: USB AGC characterization.
   across Jasper saying "Jarvis" and call it meaningful.
 - A polished score is dangerous if it hides localized artifacts. A single
   click can matter more than a good average MOS.
+- A waveform mix that improves recall on positives can still be the wrong
+  answer if it destroys per-leg diversity, loses clips that score fusion
+  catches, or raises hard-negative false accepts.
 
 ---
 
-## 13. Source Notes
+## 13. Waveform Fusion Experiment
+
+`scripts/_waveform_fusion_experiment.py` is the current offline harness
+for testing whether aligned AEC3/DTLN waveform mixes are useful. It:
+
+- reads local recorder metadata under `enrollment_positives/metadata`;
+- pairs same-utterance legs, defaulting to `on + dtln` and
+  `usb_webrtc + usb_dtln`;
+- sweeps delays, weights, and normalization modes;
+- writes generated WAVs and CSV/Markdown summaries under
+  `captures/waveform-fusion/<session>/`;
+- optionally scores originals and mixes with an openWakeWord ONNX model;
+- explicitly compares mixed-waveform hits against same-pair max-score /
+  OR fusion.
+
+The decision bar is intentionally high: a mixed waveform must beat
+score-level fusion across multiple sessions and hard negatives before it
+is worth considering as a live or training leg. A single-session recall
+gain is evidence to investigate, not a production recommendation.
+
+First 2026-05-28 result on session `20260528T184424Z-d205`: best XVF
+mix (`on + dtln`, RMS-matched, `dtln` delayed +10 ms, 50/50) hit 20/27
+as a single waveform and added one new clip over the original all-leg
+union. Best USB mix (`usb_webrtc + usb_dtln`, native levels,
+`usb_dtln` delayed +20 ms, 50/50) hit 14/27 and also only added that
+same clip over the full original union. Net read: promising research
+candidate; score/decision fusion remains the default architecture.
+
+---
+
+## 14. Source Notes
 
 Primary sources and official implementation docs to prefer when extending
 this work:
@@ -449,6 +498,13 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-28 (v9):** Added waveform-fusion experiment guidance and
+  first-session result. The script is offline-only and must be judged
+  against score/decision fusion plus hard negatives.
+- **2026-05-28 (v8):** AEC3 sweep slots are now source-aware. New
+  recorder-created sweep sessions default to USB-fed stream-delay
+  variants and metadata records `aec3_sweep_source`; older sessions
+  without that field remain XVF-fed.
 - **2026-05-28 (v7):** Added runtime-configured AEC3 sweep slots
   (`aec3_variant_1`..`3`) so labels/knobs can change without full
   deploys while metadata records the exact config hash.
@@ -470,4 +526,4 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-28 (v7 - AEC3 runtime sweep config added)
+Last verified: 2026-05-28 (v9 - waveform-fusion experiment guidance added)

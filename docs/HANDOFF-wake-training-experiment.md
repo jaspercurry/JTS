@@ -375,11 +375,11 @@ written into per-leg quadrant directories at
 | `raw0` | UDP `:9879` | chip ch2 — **truly raw, no chip OR software DSP** (gated by per-session toggle) |
 | `ref` | UDP `:9880` | 16 kHz mono speaker reference frame that SW AEC consumes (corpus-only; opt-in; playback selector lists it last) |
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
-| `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
+| `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 (corpus-only; opt-in). Outside sweep mode this is the chosen USB edge-combo profile at `stream_delay_ms=80`. In USB AEC3 sweep sessions this is the 40 ms edge-combo delay-hint member. |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
-| `aec3_variant_1` | UDP `:9884` | chip ch1 → parallel SW AEC3 slot 1. Code default is "HF + slow only": relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`), no dominant-near-end overrides. |
-| `aec3_variant_2` | UDP `:9885` | chip ch1 → parallel SW AEC3 slot 2. Code default is "edge combo": relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`). |
-| `aec3_variant_3` | UDP `:9886` | chip ch1 → parallel SW AEC3 slot 3. Code default is "gentle DND": relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection (`snr=20`, `enr=0.40`, `hold=75`, `trigger=9`). |
+| `aec3_variant_1` | UDP `:9884` | parallel SW AEC3 slot 1. The input source is explicit metadata: legacy/manual source is `xvf`; new recorder AEC3-sweep sessions default to `usb`. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=80`. |
+| `aec3_variant_2` | UDP `:9885` | parallel SW AEC3 slot 2. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=120`. |
+| `aec3_variant_3` | UDP `:9886` | parallel SW AEC3 slot 3. Same source rule as slot 1. Code default is edge-combo tuning with `JASPER_AEC_STREAM_DELAY_MS=160`. |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -396,20 +396,54 @@ confused with raw or DTLN outputs. The `usb_raw` leg is JTS-unprocessed
 except for resampling to 16 kHz, which matches the wake/AEC model
 contract and keeps the corpus legs directly comparable.
 
-**AEC3 sweep policy.** The recorder has a corpus-only **AEC3 sweep**
-checkbox for pilot tuning before the gold corpus is recorded. When
-selected, `jasper-aec-bridge` runs three additional warmed WebRTC AEC3
-instances in parallel with the baseline `on` leg, all fed the same
-mic/ref frames for the same utterance. Keep this mode quarantined as
-pilot data: it is for Jasper listening + offline analysis, not Session
-A/B training/eval. The three sweep legs are stable machine-readable
-slots; their display labels and env overrides may be changed at runtime
-with `/var/lib/jasper/aec3_sweep_variants.json` and
+**AEC3 sweep policy.** The recorder has a corpus-only **USB AEC3
+sweep** checkbox for pilot tuning before the gold corpus is recorded.
+When selected, `jasper-aec-bridge` runs three additional warmed WebRTC
+AEC3 instances in parallel with the baseline XVF `on` leg. As of
+2026-05-28, new recorder-created sweep sessions set
+`JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb`: each utterance records the
+XVF AEC3 reference (`on`), USB raw/reference, USB baseline WebRTC AEC3
+(`usb_webrtc`, currently edge-combo at 40 ms inside sweep mode), and the three USB-fed
+variant slots (`aec3_variant_1`-`aec3_variant_3`, currently the same
+edge-combo tuning at 80/120/160 ms). Older/manual sessions without the
+source flag remain XVF-fed for backward compatibility. Keep this mode
+quarantined as pilot data: it is for Jasper listening + offline
+analysis, not Session A/B training/eval. The three sweep legs are
+stable machine-readable slots; their display labels and env overrides
+may be changed at runtime with
+`/var/lib/jasper/aec3_sweep_variants.json` and
 `jasper-aec-sweep-config apply <file> --restart-bridge`, avoiding a
-full deploy for knob changes. The exact effective variant metadata and
-config hash are written into the session sidecar. Use AEC3 sweep
-separately from DTLN to protect the 1 GB Pi resource budget and keep
-listening comparisons readable.
+full deploy for knob changes. The exact effective variant metadata,
+input source, and config hash are written into the session sidecar.
+Use AEC3 sweep separately from DTLN to protect the 1 GB Pi resource
+budget and keep listening comparisons readable.
+
+**2026-05-28 AEC3 fusion tuning guidance.** Judge sweep pilots by
+fusion value — union hits and unique saves — not only by the best
+single-leg hit count. Marginal far+music tests now show the Edge
+family can beat BEST_A as an added wake leg, but not as a safe
+unconditional production replacement yet. "Edge" here means relaxed
+high-frequency suppression, slower suppressor attack, and faster
+dominant-near-end detection. Edge NS-off disables WebRTC NS on top of
+that; Edge NS+AGC1-off also disables AGC1.
+
+Current XVF AEC3 candidates before the next pilot:
+- **Two AEC3 wake legs:** use BEST_A + Edge NS-off as the practical
+  level-stable pair. BEST_A + Edge NS+AGC1-off is the strict
+  threshold-0.5 wake-only union winner so far, but that variant is
+  roughly 7-8 dB quieter and should stay diagnostic until speech
+  quality and level behavior are better understood.
+- **Three AEC3 wake legs:** use BEST_A + Edge + Edge NS-off. In the
+  latest edge-family test this reached the same 38/46 AEC union as
+  the AGC-off triple while avoiding the AGC-off level drop.
+
+Plain BEST_A + plain Edge is stability-biased but too overlapping if
+only two AEC3 legs are available. The broader lesson is that NS and
+AGC can both rescue and damage the wake-word edge: NS-off variants
+preserved high-frequency / onset evidence on some clips, while
+regressing others hard. Keep raw/raw0 and DTLN in the research set
+because they still provide complementary saves that extra AEC3
+variants do not always cover.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -420,6 +454,97 @@ runs the second neural engine when `JASPER_AEC_CORPUS_USB_ENABLED=1`
 and `JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1`; the recorder's USB DTLN
 checkbox subscribes to `usb_dtln` and records its `ref` + `usb_raw`
 companion legs. Treat USB DTLN as high resource risk on a 1 GB Pi.
+
+**2026-05-28 DTLN finding.** Offline DTLN-256 on the latest
+far+music marginal session (`20260528T141727Z-28bf`, 46 clips, captured
+ref) did not beat tuned AEC3 as a single leg, but it remains
+complementary enough to keep as a serious fusion/research candidate.
+At threshold 0.5, the existing XVF AEC3 sweep union was 38/46, while
+`dtln_off` (XVF off/raw chip ch1) hit 29/46, `dtln_raw0` (XVF raw0/ch2)
+hit 28/46, and `dtln_usb_raw` (USB raw) hit 27/46. The three DTLN
+projections unioned to 36/46; XVF AEC3 + XVF DTLN reached 41/46; and
+existing everything + DTLN reached 42/46.
+
+The DTLN-only saves over all existing recorded legs were clip 17
+(`dtln_off=0.986`) and clip 28 (`dtln_raw0=0.761`). Clip 1 was missed
+by AEC and saved by `dtln_raw0=0.996`, but USB raw had already caught
+it, so it was not a save over everything. On the USB side, existing
+USB legs unioned to 25/46; USB existing + `dtln_usb_raw` reached
+32/46, with USB DTLN saves on clips 8, 10, 11, 16, 19, 22, and 23.
+
+Caution before treating DTLN as a production fusion leg: the DTLN
+outputs are much quieter than the main AEC legs. Median RMS was about
+-38.5 dBFS for `dtln_off`, -40.7 dBFS for `dtln_raw0`, and -31.9 dBFS
+for `dtln_usb_raw`, versus about -29 dBFS for the main AEC legs. That
+points to level normalization or per-leg threshold calibration before
+production fusion decisions. A quick fixed make-up gain sweep on the
+same DTLN WAVs (+3/+6/+9/+12/+15 dB) showed that level alone does not
+explain the remaining misses: `dtln_off` only improved from 29/46 to
+30/46 at +6 or +15 dB, `dtln_raw0` stayed 28/46 through +9 dB and then
+fell to 27/46, and `dtln_usb_raw` generally regressed or clipped. If
+DTLN becomes a production fusion leg, prefer per-leg threshold
+calibration and careful normalization over a blind gain boost.
+
+**2026-05-28 DTLN noise-suppression finding.** As an offline-only
+follow-up, ran upstream DTLN noise suppression (`breizhn/DTLN`
+`model_1.onnx` + `model_2.onnx`) on the same
+`20260528T141727Z-28bf` 46-clip far+music session. This is the DTLN
+speech-enhancement model, not DTLN-aec: it takes one noisy input and
+does not consume the speaker reference. Tested it as (a) a raw-path
+cleaner, (b) a post-filter on existing AEC3/USB legs, and (c) a
+post-filter on the DTLN-aec outputs from the previous pass.
+
+At threshold 0.5, DTLN-NS did not beat the existing legs as a general
+path: `ns_off` hit 20/46, `ns_raw0` 21/46, `ns_usb_raw` 18/46, and the
+three raw-input NS legs unioned to 29/46. Applying NS after the XVF
+AEC3 variants also regressed individual recall (`ns_on` 23/46,
+`ns_edge`-family variants 23/46, 21/46, and 25/46; post-filter union
+29/46 versus the original AEC3 union of 38/46). Applying NS after
+DTLN-aec produced `ns_dtln_off` 21/46, `ns_dtln_raw0` 28/46, and
+`ns_dtln_usb_raw` 24/46, union 34/46 versus the pre-NS DTLN-aec union
+of 36/46.
+
+The one meaningful new datapoint: existing recorded legs + DTLN-aec
+unioned to 42/46, and adding all DTLN-NS variants raised that to
+43/46 by saving clip 25 via `ns_dtln_raw0=0.883`. DTLN-NS also saved
+clips 17 and 28 over the originally recorded legs, but DTLN-aec had
+already saved those. Net read: DTLN-NS is worth keeping as an offline
+research/post-filter candidate for rare marginal cases, but this run
+does not justify adding it to the live Pi corpus/test-mode matrix or
+the production fusion set yet.
+
+**2026-05-28 waveform-fusion offline finding.** A speculative
+waveform-level fusion pass tested whether same-utterance AEC3 and
+DTLN outputs could be aligned and mixed into a single "super waveform"
+that scores better than either source. The harness lives at
+`scripts/_waveform_fusion_experiment.py`; it is laptop/offline only.
+It loads a local `enrollment_positives` session, pairs legs such as
+`on + dtln` and `usb_webrtc + usb_dtln`, generates delay/weight-swept
+mixes, optionally scores them with openWakeWord, and compares each mix
+against same-pair max-score/OR fusion. Outputs are written under
+`captures/waveform-fusion/<session>/` (gitignored).
+
+First pass on session `20260528T184424Z-d205` (27 far+music clips,
+medium-quiet music for clips 1-20 and lower music for clips 21-27)
+was promising but not architecture-changing:
+- Original all-leg fusion hit 22/27.
+- Best XVF waveform mix alone hit 20/27: `on + dtln`, RMS-matched,
+  `dtln` delayed +10 ms, 50/50 weight.
+- Original all legs + that best XVF mix reached 23/27 by newly saving
+  clip 15.
+- Best USB waveform mix alone hit 14/27: `usb_webrtc + usb_dtln`,
+  native levels, `usb_dtln` delayed +20 ms, 50/50 weight. It beat
+  USB pair fusion (11/27) but also only added clip 15 over the full
+  original-leg set.
+
+Interpretation: waveform fusion can create model-useful evidence, but
+it also loses some clips that score-level fusion keeps. Treat it as an
+offline research candidate or possible extra experimental leg, not as
+a replacement for per-leg model scoring. Before considering real-time
+use, it must beat score fusion across multiple sessions and hard
+negatives, and Jasper should listen to both saves and losses for
+artifact luck. The production-shaped architecture remains separate
+legs, per-leg threshold/model calibration, and score/decision fusion.
 
 **Recording protocol — Jasper (~60-90 min total, across two
 sessions on different days):**
@@ -450,6 +575,82 @@ sessions on different days):**
   session start. This adds `ref`, `usb_raw`, and `usb_webrtc` WAVs
   per clip and makes the clip-row playback selector show all recorded
   legs.
+- USB AEC3 sweep sessions: check "USB AEC3 sweep". The UI also keeps
+  USB mic + reference selected because the variant engines are fed
+  from the USB mic in this mode. Leave XVF/USB DTLN off during this
+  sweep unless explicitly doing a neural-AEC side test; the Pi budget
+  and listening matrix get messy fast.
+
+**2026-05-29 pre-corpus runbook.** The tuning pilots have answered
+enough to stop chasing broad AEC3 knobs before the first training
+corpus. Tomorrow has three jobs, in this order: close the one remaining
+chip-AEC question, put the recorder into a known-good state, then record
+a clean Session A.
+
+**1. Bounded chip-AEC Option D gate (~60-90 min max).** Before the big
+corpus, run the narrow hardware-AEC carve-out documented in
+[`CHIP-AEC-EXPERIMENT.md`](CHIP-AEC-EXPERIMENT.md): feed music into the
+XVF3800 USB-IN endpoint as the chip's far-end reference, enable chip
+AEC, and see whether `AEC_AECCONVERGED` flips and the A/B recordings
+sound materially better. This is worth doing because a strongly positive
+result would change what "the AEC leg" should be for the gold corpus.
+It is not permission to re-open PipeWire, dual-USB-sink, or custom
+firmware work.
+
+Decision:
+- If chip AEC does not converge after the documented `SYS_DELAY` probe,
+  close Option D as negative for now and proceed with software-AEC
+  corpus.
+- If it converges but `03_mic_aec_on.wav` does not materially reduce
+  music versus `02_mic_aec_off.wav`, or `04_speech_only.wav` damages
+  speech, document it and proceed with software-AEC corpus.
+- If it converges and sounds clearly better without speech damage, pause
+  corpus production and design how to capture the chip-AEC leg cleanly
+  before spending Jasper's recording time.
+
+After the gate, always run `bash scripts/chip-aec-teardown.sh` and
+verify production services recovered before opening the wake-corpus page.
+
+**2. Recorder known-good state (~10 min).** Start from production mode:
+`jasper-voice` running, recorder-owned optional bridge outputs off, no
+loaded/active session marker unless intentionally resuming. Then open
+`http://jts.local/wake-corpus/`, begin a fresh session, and select only
+the legs intended for the corpus:
+- Raw mic 0: **on**.
+- XVF DTLN: **on** if the Pi is stable.
+- USB mic + reference: **on** when the cheap USB mic is connected.
+- USB DTLN: **optional**; include it only if the Pi remains stable after
+  the chip-AEC gate and a short corpus-mode soak.
+- USB AEC3 sweep: **off** for the real corpus. Sweep sessions are pilot
+  data, not Session A/B training or held-out data.
+
+Use the page's corpus test-mode transition to apply the selected
+optional outputs. Do not hand-edit `/var/lib/jasper/wake_corpus_bridge.env`
+unless diagnosing a failure. Once test mode is entered, verify the page
+shows the expected recorded legs and that the mic-level meter moves
+green during a short spoken test.
+
+**3. Fresh Session A recording (~45-60 min).** Start from a new session;
+delete or ignore prior pilot sessions for training. Capture the XVF
+production/reference set (`on`, `off`, `dtln`, `raw0`) and the USB
+comparison set (`ref`, `usb_raw`, `usb_webrtc`, optionally `usb_dtln`).
+Record across the full 3 × 3 grid: quiet / ambient / music by near /
+mid / far. The marginal far+music/air-conditioner cases matter, but the
+model also needs easy cells so it learns the deployment distribution
+rather than one corner case. Aim 7-9 utterances per cell (~63-81 total).
+
+Immediately after Session A:
+- rsync `/var/lib/jasper/enrollment_positives/` to the laptop;
+- run `scripts/audit-wake-corpus.sh` with `--expect-raw0` and the
+  expected optional legs;
+- run wake-score/fusion analysis;
+- listen to a small review queue before declaring Session A usable for
+  training.
+
+**4. Session B is held out forever.** Record Session B later, ideally a
+different day or after a real break plus mic-position adjustment. Capture
+~20-25 Jarvis positives across the same 3 × 3 grid and 30-40 hard
+negatives. Never train on Session B.
 
 **Bridge env for USB/reference corpus sessions:**
 
@@ -494,6 +695,11 @@ AEC3 sweep adds:
 
 ```sh
 JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1
+# New recorder sweep sessions use the cheap USB mic as the variant input.
+JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb
+# Required when source=usb:
+JASPER_AEC_CORPUS_REF_ENABLED=1
+JASPER_AEC_CORPUS_USB_ENABLED=1
 ```
 
 Ports default to `:9880` (`ref`), `:9881` (`usb_raw`), and `:9882`
@@ -515,6 +721,10 @@ the note (for example stale reference reuse or duration skew),
 `compromised` = upstream drops/restart/no packets, and `unknown` =
 bridge stats were unavailable. The audit script treats compromised
 clips as failures and warning/unknown clips as review warnings.
+For AEC3 sweep clips, `capture_health.aec3_sweep_source` records
+whether variant legs inherit XVF mic queue-drop counters or USB mic
+queue-drop counters; all AEC/DTLN variants still inherit reference
+drop/starvation counters.
 
 **Reference-quality follow-up.** The current `ref` leg is intentionally
 the exact 16 kHz mono frame the live AEC consumes. A future
@@ -1120,6 +1330,53 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
 - 2026-05-27 DND isolation pass — AEC3 sweep variants retargeted to
   isolate DND effects: `aec3_hf_slow_only`, `aec3_edge_combo`, and
   `aec3_gentle_dnd`
+- 2026-05-28 BEST_A ablation pass — session
+  `20260528T140258Z-35c4`, 21 far+music marginal clips, config hash
+  `5782b4d229e8`. Compared BEST_A against NS-off, AGC1-off, and
+  NS+AGC1-off. All four AEC3 variants landed at 16/21 individually,
+  XVF raw landed at 17/21, AEC-only union was 17/21, and AEC +
+  XVF raw/raw0 union was 21/21. NS-off rescued clips such as #7 but
+  regressed clips such as #14, so it is useful as a fusion direction
+  rather than an obvious single-chain replacement.
+- 2026-05-28 edge-family fusion pass — session
+  `20260528T141727Z-28bf`, 46 far+music marginal clips, config hash
+  `97980f2b1971`. Compared BEST_A, Edge, Edge NS-off, and Edge
+  NS+AGC1-off. Individual hits were 30/46, 32/46, 32/46, and 33/46;
+  AEC-only union was 38/46. The practical three-leg set is BEST_A +
+  Edge + Edge NS-off (38/46 at threshold 0.5). For two AEC3 legs,
+  BEST_A + Edge NS-off is the current level-stable fusion pick; BEST_A
+  + Edge NS+AGC1-off maximizes strict 0.5 union but is quieter.
+- 2026-05-28 DTLN/USB side finding — offline DTLN-256 on session
+  `20260528T131605Z-9708` did not dethrone AEC3, but it produced
+  complementary saves. XVF AEC union was 25/64, XVF AEC + XVF DTLN
+  was 28/64, USB existing legs union was 15/64, and USB existing +
+  USB DTLN was 19/64. Keep DTLN as a comparison / possible fusion
+  leg, but do not mix it into AEC3 sweep sessions on the 1 GB Pi.
+- 2026-05-28 latest DTLN-256 pass — session
+  `20260528T141727Z-28bf`, 46 far+music marginal clips, using the
+  captured ref. Tested `dtln_off` from XVF off/raw chip ch1,
+  `dtln_raw0` from XVF raw0/ch2, and `dtln_usb_raw` from USB raw. At
+  threshold 0.5: existing XVF AEC3 sweep union was 38/46; `dtln_off`
+  was 29/46; `dtln_raw0` was 28/46; `dtln_usb_raw` was 27/46; all
+  DTLN projections unioned to 36/46; XVF AEC3 + XVF DTLN unioned to
+  41/46; and existing everything + DTLN unioned to 42/46. DTLN-only
+  saves over all existing recorded legs were clips 17 (`dtln_off=0.986`)
+  and 28 (`dtln_raw0=0.761`); clip 1 was AEC-missed and saved by
+  `dtln_raw0=0.996`, but USB raw had already caught it. USB existing
+  union was 25/46; USB existing + USB DTLN reached 32/46, with DTLN
+  saves on clips 8, 10, 11, 16, 19, 22, and 23. DTLN outputs were
+  much quieter than main AEC legs (median RMS about -38.5 dBFS
+  `dtln_off`, -40.7 dBFS `dtln_raw0`, -31.9 dBFS `dtln_usb_raw` vs
+  about -29 dBFS main AEC legs), so normalize levels or calibrate
+  per-leg thresholds before treating DTLN as production fusion.
+- 2026-05-28 DTLN noise-suppression offline pass — same session,
+  upstream DTLN-NS (`breizhn/DTLN`) model. DTLN-NS did not improve
+  the main candidate legs overall: raw-input NS union was 29/46,
+  XVF AEC3 post-filter NS union was 29/46 versus original AEC3 union
+  38/46, and DTLN-aec→NS union was 34/46 versus DTLN-aec union 36/46.
+  It did add one new save over existing recorded legs + DTLN-aec:
+  clip 25 via `ns_dtln_raw0=0.883`, raising the everything+DTLN+NS
+  union to 43/46. Keep as offline research, not live test-mode scope.
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1129,9 +1386,12 @@ Recorder UX status:
 - ✅ Per-session raw-mic-0 toggle (4 legs vs 3)
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
-- ✅ Per-session AEC3 sweep toggle for pilot tuning: baseline plus
-  `aec3_hf_slow_only`, `aec3_edge_combo`, and
-  `aec3_gentle_dnd`
+- ✅ Per-session USB AEC3 sweep toggle for pilot tuning: XVF AEC3
+  reference + USB raw/reference + USB WebRTC baseline + three
+  runtime-labeled USB-fed AEC3 variant slots (`aec3_variant_1`-
+  `aec3_variant_3`), with effective labels/source/config/hash stored
+  in the session sidecar. Legacy/manual XVF-fed sweep sessions still
+  load via `aec3_sweep_source=xvf`.
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
@@ -1155,6 +1415,10 @@ Recording-day audit tooling:
 - ✅ `--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`
   and `--expect-leg usb_dtln`
   validates USB/reference opt-in sessions after rsync.
+- ✅ `scripts/_waveform_fusion_experiment.py` generates offline
+  AEC3+DTLN waveform mixes across delay/weight grids and checks whether
+  any mix beats same-pair score fusion. Treat it as research evidence,
+  not a production path.
 
 **Phase −1 (pre-foundation verifications): in progress.**
 - −1a (LLM session routing): investigation results in PR cover
@@ -1165,12 +1429,15 @@ Recording-day audit tooling:
 **Phase 0a (offline harness): not started.** Gated on Phase −1.
 
 **Phase 0b (gold corpus capture): tooling READY, recording PENDING.**
-First two recording sessions scheduled for Jasper's next studio
-morning. Cleanup of pre-raw0 corpus is one-click per old session
-via the new Sessions card. Recorder-managed corpus bridge outputs can
-now be enabled/disabled through the page's corpus test-mode transition,
-and per-clip metadata records capture-health deltas from the bridge
-where available.
+Multiple 2026-05-27/28 tuning pilots are recorded and useful as
+analysis data, but they should not be treated as the clean training /
+held-out split. The next real milestone is a fresh Session A recording
+using the 2026-05-29 production plan above, followed by a separate
+Session B held-out + hard-negative recording. Cleanup of pre-raw0
+corpus is one-click per old session via the Sessions card.
+Recorder-managed corpus bridge outputs can be enabled/disabled through
+the page's corpus test-mode transition, and per-clip metadata records
+capture-health deltas from the bridge where available.
 
 **Phase 0c (baseline): pending Phase 0a + 0b.**
 
@@ -1178,6 +1445,48 @@ where available.
 
 ## Changelog
 
+- **2026-05-28 (v26):** Waveform-fusion and next-recording plan:
+  - Documented the offline `scripts/_waveform_fusion_experiment.py`
+    harness and first `20260528T184424Z-d205` result: best XVF
+    `on + dtln` waveform mix hit 20/27 and added clip 15 over the
+    full original-leg union, but score/decision fusion remains the
+    production-shaped architecture.
+  - Added the 2026-05-29 pre-corpus runbook: run a bounded chip-AEC
+    Option D gate first, restore production, put the wake-corpus page
+    into a known-good state, record a fresh Session A with XVF + raw0 +
+    USB/reference comparison legs, then keep Session B held out forever.
+- **2026-05-28 (v25):** USB-fed AEC3 stream-delay sweep mode:
+  - New recorder-created AEC3 sweep sessions set
+    `JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb`, automatically include
+    USB/reference companion legs, and keep the XVF `on` leg as the
+    same-utterance AEC3 reference.
+  - Current built-in USB sweep compares one utterance across edge-combo
+    USB AEC3 delay hints: `usb_webrtc=40 ms`, `aec3_variant_1=80 ms`,
+    `aec3_variant_2=120 ms`, and `aec3_variant_3=160 ms`.
+  - Clarified stable variant slots now carry explicit input-source
+    metadata; old/manual sessions without the source flag remain
+    XVF-fed for backward compatibility.
+  - Capture-health notes now distinguish XVF mic queue drops from USB
+    mic queue drops for AEC3 variant legs.
+- **2026-05-28 (v23):** Latest DTLN-256 analysis folded in:
+  - Added the `20260528T141727Z-28bf` offline DTLN pass against 46
+    far+music marginal clips using captured reference audio.
+  - Documented `dtln_off`, `dtln_raw0`, and `dtln_usb_raw` threshold
+    0.5 hit counts, union values, DTLN-only saves, USB-side saves,
+    and the level-normalization / per-leg-threshold caution.
+  - Added the fixed make-up gain sweep result: DTLN's lower RMS is
+    real, but blind positive gain did not materially improve wake
+    recall on this session.
+  - Added the DTLN noise-suppression offline result: one new
+    everything+DTLN save, but broad regressions versus tuned AEC3 and
+    DTLN-aec mean it stays offline research only.
+- **2026-05-28 (v22):** XVF AEC3 fusion tuning pilot documented:
+  - Added the current fusion-first interpretation of the AEC3 sweep:
+    optimize union hits and unique saves, not just top single-leg hit
+    count.
+  - Recorded the 2026-05-28 BEST_A ablation, edge-family, and
+    DTLN/USB side-test findings with session IDs, config hashes, hit
+    counts, and current two-/three-leg AEC3 recommendations.
 - **2026-05-27 (v19):** Corpus test-mode bridge restart safety:
   - The recorder clears stale `jasper-aec-bridge` systemd start-limit
     counters before an intentional corpus-output restart, so rapid
@@ -1365,4 +1674,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-28 (v21 — AEC3 sweep runtime config added)
+Last verified: 2026-05-28 (v26 — pre-corpus runbook documented)

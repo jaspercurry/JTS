@@ -467,6 +467,7 @@ def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     """Corpus USB mode emits cheap-mic raw plus a second WebRTC AEC
     output, without changing the primary XVF AEC/raw/raw0 packets."""
     import socket as real_socket
+    from jasper.aec_sweep import USB_AEC3_CORPUS_OVERRIDES
     from jasper.cli.aec_bridge import OUT_PORT_USB_RAW, OUT_PORT_USB_WEBRTC
 
     monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
@@ -494,7 +495,13 @@ def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     engine.process.side_effect = aec_frames
     usb_engine = MagicMock()
     usb_engine.process.side_effect = usb_clean_frames
-    monkeypatch.setattr(aec_bridge, "_select_engine", lambda: usb_engine)
+    observed_overrides = []
+
+    def fake_select_engine(overrides=None, label=None):
+        observed_overrides.append((overrides, label))
+        return usb_engine
+
+    monkeypatch.setattr(aec_bridge, "_select_engine", fake_select_engine)
 
     _aec_loop(
         _AlwaysEmptyQ(),
@@ -509,6 +516,9 @@ def test_aec_loop_emits_usb_raw_and_webrtc_when_usb_queue_passed(monkeypatch):
     usb_webrtc_sock.sendto.assert_called_once_with(
         b"".join(usb_clean_frames), (OUT_HOST, OUT_PORT_USB_WEBRTC),
     )
+    assert observed_overrides == [
+        (USB_AEC3_CORPUS_OVERRIDES, "usb_webrtc/aec3_edge_combo_80"),
+    ]
     usb_engine.close.assert_called_once()
 
 
@@ -568,6 +578,98 @@ def test_aec_loop_emits_aec3_sweep_variants_when_enabled(monkeypatch):
         e.close.assert_called_once()
 
 
+def test_aec_loop_can_feed_aec3_sweep_from_usb_mic(monkeypatch):
+    """USB sweep mode reuses the stable variant UDP slots but feeds
+    those engines from the cheap USB mic instead of the XVF mic."""
+    import socket as real_socket
+    from jasper.aec_sweep import (
+        AEC3_SWEEP_ENV_FLAG,
+        AEC3_SWEEP_SOURCE_USB,
+        AEC3_SWEEP_VARIANTS,
+        USB_AEC3_SWEEP_BASELINE_OVERRIDES,
+    )
+    from jasper.cli.aec_bridge import OUT_PORT_AEC3_SWEEP, OUT_PORT_USB_WEBRTC
+
+    monkeypatch.setenv("JASPER_AEC_STALL_RESTART_SEC", "0")
+    monkeypatch.setenv(AEC3_SWEEP_ENV_FLAG, "1")
+    monkeypatch.setattr(
+        aec_bridge, "AEC3_SWEEP_INPUT_SOURCE", AEC3_SWEEP_SOURCE_USB,
+    )
+    monkeypatch.delenv("JASPER_AEC_MIC_GAIN_DB", raising=False)
+
+    aec_sock = _mock_socket()
+    raw_sock = _mock_socket()
+    raw0_sock = _mock_socket()
+    usb_raw_sock = _mock_socket()
+    usb_webrtc_sock = _mock_socket()
+    sweep_socks = [_mock_socket() for _ in AEC3_SWEEP_VARIANTS]
+    socket_factory = MagicMock(
+        side_effect=[
+            aec_sock, raw_sock, raw0_sock, usb_raw_sock, usb_webrtc_sock,
+            *sweep_socks,
+        ],
+    )
+    monkeypatch.setattr(real_socket, "socket", socket_factory)
+
+    mic_frames = [bytes([i]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    usb_frames = [bytes([i + 20]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    aec_frames = [bytes([i + 100]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+    usb_clean_frames = [
+        bytes([i + 120]) * (FRAME_SAMPLES * 2) for i in range(1, 5)
+    ]
+    sweep_outputs = [
+        [bytes([i + offset]) * (FRAME_SAMPLES * 2) for i in range(1, 5)]
+        for offset in (130, 150, 170)
+    ]
+    engine = MagicMock()
+    engine.process.side_effect = aec_frames
+    usb_engine = MagicMock()
+    usb_engine.process.side_effect = usb_clean_frames
+    sweep_engines = []
+    observed_usb_webrtc_overrides = []
+    observed_variant_overrides = []
+
+    for frames in sweep_outputs:
+        e = MagicMock()
+        e.process.side_effect = frames
+        sweep_engines.append(e)
+
+    def fake_select_engine(overrides=None, label=None):
+        if overrides is None:
+            return usb_engine
+        if overrides == USB_AEC3_SWEEP_BASELINE_OVERRIDES:
+            observed_usb_webrtc_overrides.append((overrides, label))
+            return usb_engine
+        observed_variant_overrides.append((overrides, label))
+        return sweep_engines[len(observed_variant_overrides) - 1]
+
+    monkeypatch.setattr(aec_bridge, "_select_engine", fake_select_engine)
+
+    _aec_loop(
+        _AlwaysEmptyQ(),
+        _ScriptedMicQ(mic_frames),
+        engine,
+        usb_raw_q=_ScriptedMicQ(usb_frames),
+    )
+
+    assert socket_factory.call_count == 5 + len(AEC3_SWEEP_VARIANTS)
+    assert observed_usb_webrtc_overrides == [
+        (USB_AEC3_SWEEP_BASELINE_OVERRIDES, "usb_webrtc/aec3_sweep_delay_40"),
+    ]
+    assert [item[0] for item in observed_variant_overrides] == [
+        variant.env_overrides for variant in AEC3_SWEEP_VARIANTS
+    ]
+    usb_webrtc_sock.sendto.assert_called_once_with(
+        b"".join(usb_clean_frames), (OUT_HOST, OUT_PORT_USB_WEBRTC),
+    )
+    for e in sweep_engines:
+        assert [call.args[0] for call in e.process.call_args_list] == usb_frames
+    for variant, sock, frames in zip(AEC3_SWEEP_VARIANTS, sweep_socks, sweep_outputs):
+        sock.sendto.assert_called_once_with(
+            b"".join(frames), (OUT_HOST, OUT_PORT_AEC3_SWEEP[variant.leg]),
+        )
+
+
 def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     """USB DTLN is a separate opt-in neural leg, fed by cheap USB raw
     plus the same reference frame as the WebRTC corpus path."""
@@ -614,7 +716,10 @@ def test_aec_loop_emits_usb_dtln_when_enabled(monkeypatch):
     usb_dtln_engine.process.side_effect = usb_dtln_frames
     dtln_cls = MagicMock(return_value=usb_dtln_engine)
 
-    monkeypatch.setattr(aec_bridge, "_select_engine", lambda: usb_engine)
+    monkeypatch.setattr(
+        aec_bridge, "_select_engine",
+        lambda overrides=None, label=None: usb_engine,
+    )
     monkeypatch.setattr(dtln_mod, "DTLNEngine", dtln_cls)
     monkeypatch.setattr(dtln_mod, "default_model_dir", lambda: "/models")
 

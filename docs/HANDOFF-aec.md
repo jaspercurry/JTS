@@ -272,17 +272,27 @@ chain:
 | `JASPER_AEC_DND_HOLD_DURATION` | `50` | Dominant-near-end hold duration in AEC3's native block units. |
 | `JASPER_AEC_DND_ENR_THRESHOLD` | `0.25` | Dominant-near-end echo-to-near-end-ratio threshold. |
 | `JASPER_AEC_DND_TRIGGER_THRESHOLD` | `12` | Number of detector hits required before dominant-near-end mode engages. |
+| `JASPER_AEC_STREAM_DELAY_MS` | `40` | WebRTC AEC3 stream-delay hint in milliseconds. The canceller still adapts internally; this is the coarse delay prior used by the binding. Corpus-only sweeps may vary it to test USB/ref alignment. |
 
 As of 2026-05-28, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
 owns three stable pilot slots (`aec3_variant_1`, `aec3_variant_2`,
-and `aec3_variant_3`). The code defaults keep the 2026-05-27
-DND-isolation sweep, but labels and knob overrides can now be changed
-at runtime via `/var/lib/jasper/aec3_sweep_variants.json`; apply a
-validated file with `jasper-aec-sweep-config apply <file>
---restart-bridge` to restart only `jasper-aec-bridge`. Do not promote a
-sweep variant to production until it beats BEST_A on same-utterance
-listening review, corpus-quality metrics, and wake scoring under the
-far+music condition.
+and `aec3_variant_3`). The code defaults now match the current USB
+alignment pilot: USB `usb_webrtc` runs the edge-combo tuning at the
+baseline 40 ms delay hint, while the three variant slots run the same
+edge-combo tuning at 80, 120, and 160 ms. Labels and knob overrides
+can still be changed at runtime via
+`/var/lib/jasper/aec3_sweep_variants.json`; apply a validated file with
+`jasper-aec-sweep-config apply <file> --restart-bridge` to restart only
+`jasper-aec-bridge`. The sweep input source is explicit:
+`JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=xvf` feeds variants from the XVF
+mic path, while `usb` feeds them from the cheap USB mic and requires
+`JASPER_AEC_CORPUS_USB_ENABLED=1` plus reference capture. New
+wake-corpus UI sessions default to USB-fed variants so the same
+utterance captures USB baseline + three USB AEC3 variants while keeping
+the XVF `on` leg as the comparison reference. Do not promote a sweep
+variant to production until it beats BEST_A on same-utterance listening
+review, corpus-quality metrics, and wake scoring under the far+music
+condition.
 
 ### Measured outcome at this tuning
 

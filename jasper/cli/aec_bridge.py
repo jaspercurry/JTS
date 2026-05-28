@@ -98,6 +98,14 @@ from scipy.signal import butter, resample_poly, sosfilt
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
+    AEC3_SWEEP_SOURCE_USB,
+    AEC3_SWEEP_SOURCE_XVF,
+    Aec3SweepConfigError,
+    USB_AEC3_CORPUS_LABEL,
+    USB_AEC3_CORPUS_OVERRIDES,
+    USB_AEC3_SWEEP_BASELINE_LABEL,
+    USB_AEC3_SWEEP_BASELINE_OVERRIDES,
+    current_aec3_sweep_source,
     load_aec3_sweep_config,
 )
 from jasper.watchdog import Heartbeat
@@ -106,11 +114,21 @@ from ..mics import xvf3800 as _mic_profile
 logger = logging.getLogger("jasper.aec_bridge")
 AEC3_SWEEP_CONFIG = load_aec3_sweep_config(logger=logger)
 AEC3_SWEEP_VARIANTS = AEC3_SWEEP_CONFIG.variants
+try:
+    AEC3_SWEEP_INPUT_SOURCE = current_aec3_sweep_source()
+except Aec3SweepConfigError as e:
+    logger.warning(
+        "event=aec3_sweep_source_invalid error=%s fallback=%s",
+        e, AEC3_SWEEP_SOURCE_XVF,
+    )
+    AEC3_SWEEP_INPUT_SOURCE = AEC3_SWEEP_SOURCE_XVF
 logger.info(
-    "event=aec3_sweep_config_loaded source=%s path=%s hash=%s variants=%s",
+    "event=aec3_sweep_config_loaded source=%s path=%s hash=%s "
+    "input_source=%s variants=%s",
     AEC3_SWEEP_CONFIG.source,
     AEC3_SWEEP_CONFIG.path,
     AEC3_SWEEP_CONFIG.config_hash,
+    AEC3_SWEEP_INPUT_SOURCE,
     ",".join(variant.leg for variant in AEC3_SWEEP_VARIANTS),
 )
 
@@ -443,7 +461,11 @@ class _Aec3Engine:
             "JASPER_AEC_AGC1_MAX_GAIN_DB", "18", overrides,
         ))
         enable_agc2 = _cfg_bool("JASPER_AEC_AGC2", "0", overrides)
+        stream_delay_ms = int(_cfg_value(
+            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
+        ))
         self._aec = Aec3(
+            stream_delay_ms=stream_delay_ms,
             enable_agc2=enable_agc2,
             ns_enabled=ns_enabled,
             ns_level=ns_level,
@@ -453,12 +475,12 @@ class _Aec3Engine:
         )
         logger.info(
             "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
-            "agc2=%s frame=%d rate=%d",
+            "agc2=%s stream_delay_ms=%d frame=%d rate=%d",
             label,
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
             agc1_target_dbfs, agc1_max_gain_db,
-            "on" if enable_agc2 else "off",
+            "on" if enable_agc2 else "off", stream_delay_ms,
             FRAME_SAMPLES, SAMPLE_RATE,
         )
 
@@ -597,9 +619,12 @@ class _Aec3V2Engine:
         dnd_trigger_threshold = int(_cfg_value(
             "JASPER_AEC_DND_TRIGGER_THRESHOLD", "12", overrides,
         ))
+        stream_delay_ms = int(_cfg_value(
+            "JASPER_AEC_STREAM_DELAY_MS", "40", overrides,
+        ))
 
         self._aec = Aec3V2(
-            stream_delay_ms=40,
+            stream_delay_ms=stream_delay_ms,
             enable_agc2=enable_agc2,
             ns_enabled=ns_enabled,
             ns_level=ns_level,
@@ -631,7 +656,8 @@ class _Aec3V2Engine:
         )
         logger.info(
             "engine=%s ns=%s/%s agc1=%s(target=%d,max=%ddB) "
-            "agc2=%s filter_len=%d bounded_erl=%s default_gain=%.2f "
+            "agc2=%s stream_delay_ms=%d filter_len=%d bounded_erl=%s "
+            "default_gain=%.2f "
             "erle=%.2f/%.2f onset=%s stationarity=%s conservative_hf=%s "
             "mask_hf=%.2f/%.2f/%.2f max_dec_lf=%.3f "
             "nearend_avg=%d nearend_mask_hf=%.2f/%.2f/%.2f "
@@ -641,7 +667,7 @@ class _Aec3V2Engine:
             "on" if ns_enabled else "off", ns_level,
             "on" if agc1_enabled else "off",
             agc1_target_dbfs, agc1_max_gain_db,
-            "on" if enable_agc2 else "off",
+            "on" if enable_agc2 else "off", stream_delay_ms,
             filter_length, bounded_erl, default_gain,
             erle_max_l, erle_max_h,
             "on" if erle_onset else "off",
@@ -1153,10 +1179,29 @@ def _aec_loop(  # noqa: PLR0915
         out_sock_usb_webrtc = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         out_sock_usb_webrtc.setblocking(False)
         out_dest_usb_webrtc = (OUT_HOST, OUT_PORT_USB_WEBRTC)
-        usb_engine = _select_engine()
+        usb_webrtc_overrides = USB_AEC3_CORPUS_OVERRIDES
+        usb_webrtc_label = "usb_webrtc/aec3_edge_combo_80"
+        usb_webrtc_display_label = USB_AEC3_CORPUS_LABEL
+        if (
+            _env_bool(AEC3_SWEEP_ENV_FLAG, "0")
+            and AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB
+        ):
+            # In USB AEC3 sweep mode, the normal usb_webrtc leg becomes
+            # the 40 ms member of the delay sweep. The three stable
+            # variant slots carry the same edge-combo tuning at longer
+            # stream-delay hints, giving four same-utterance USB AEC3
+            # candidates without adding more sockets.
+            usb_webrtc_overrides = USB_AEC3_SWEEP_BASELINE_OVERRIDES
+            usb_webrtc_label = "usb_webrtc/aec3_sweep_delay_40"
+            usb_webrtc_display_label = USB_AEC3_SWEEP_BASELINE_LABEL
+        usb_engine = _select_engine(
+            overrides=usb_webrtc_overrides,
+            label=usb_webrtc_label,
+        )
         logger.info(
-            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d",
+            "USB corpus outputs enabled: raw=%s:%d webrtc=%s:%d label=%s",
             OUT_HOST, OUT_PORT_USB_RAW, OUT_HOST, OUT_PORT_USB_WEBRTC,
+            usb_webrtc_display_label,
         )
         if _env_bool("JASPER_AEC_CORPUS_USB_DTLN_ENABLED", "0"):
             try:
@@ -1184,35 +1229,91 @@ def _aec_loop(  # noqa: PLR0915
 
     aec3_sweep_paths: list[dict[str, object]] = []
     if _env_bool(AEC3_SWEEP_ENV_FLAG, "0"):
-        for variant in AEC3_SWEEP_VARIANTS:
-            try:
-                variant_engine = _select_engine(
-                    overrides=variant.env_overrides,
-                    label=f"aec3_sweep/{variant.leg}",
+        if (
+            AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB
+            and usb_raw_q is None
+        ):
+            logger.warning(
+                "AEC3 sweep requested with input_source=usb but USB corpus "
+                "capture is disabled; continuing without sweep variants",
+            )
+        else:
+            for variant in AEC3_SWEEP_VARIANTS:
+                try:
+                    variant_engine = _select_engine(
+                        overrides=variant.env_overrides,
+                        label=(
+                            f"aec3_sweep/{AEC3_SWEEP_INPUT_SOURCE}/"
+                            f"{variant.leg}"
+                        ),
+                    )
+                except Exception as e:  # noqa: BLE001
+                    logger.exception(
+                        "AEC3 sweep variant %s couldn't load: %s. "
+                        "Continuing without this variant.",
+                        variant.leg, e,
+                    )
+                    continue
+                variant_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                variant_sock.setblocking(False)
+                variant_port = OUT_PORT_AEC3_SWEEP[variant.leg]
+                aec3_sweep_paths.append({
+                    "variant": variant,
+                    "engine": variant_engine,
+                    "sock": variant_sock,
+                    "dest": (OUT_HOST, variant_port),
+                    "batch": bytearray(),
+                    "input_source": AEC3_SWEEP_INPUT_SOURCE,
+                })
+                logger.info(
+                    "AEC3 corpus sweep variant enabled: leg=%s label=%s "
+                    "input_source=%s udp out=%s:%d overrides=%s",
+                    variant.leg, variant.label, AEC3_SWEEP_INPUT_SOURCE,
+                    OUT_HOST, variant_port, variant.env_overrides,
                 )
+
+    def emit_aec3_sweep(input_bytes: bytes, ref_bytes: bytes) -> None:
+        for path in list(aec3_sweep_paths):
+            variant = path["variant"]
+            engine_variant = path["engine"]
+            try:
+                variant_clean = engine_variant.process(input_bytes, ref_bytes)
             except Exception as e:  # noqa: BLE001
                 logger.exception(
-                    "AEC3 sweep variant %s couldn't load: %s. "
-                    "Continuing without this variant.",
+                    "AEC3 sweep variant %s process() crashed; "
+                    "disabling this path: %s",
                     variant.leg, e,
                 )
+                try:
+                    engine_variant.close()
+                except Exception:  # noqa: BLE001
+                    pass
+                try:
+                    path["sock"].close()
+                except OSError:
+                    pass
+                aec3_sweep_paths.remove(path)
                 continue
-            variant_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            variant_sock.setblocking(False)
-            variant_port = OUT_PORT_AEC3_SWEEP[variant.leg]
-            aec3_sweep_paths.append({
-                "variant": variant,
-                "engine": variant_engine,
-                "sock": variant_sock,
-                "dest": (OUT_HOST, variant_port),
-                "batch": bytearray(),
-            })
-            logger.info(
-                "AEC3 corpus sweep variant enabled: leg=%s label=%s "
-                "udp out=%s:%d overrides=%s",
-                variant.leg, variant.label, OUT_HOST, variant_port,
-                variant.env_overrides,
-            )
+            batch = path["batch"]
+            batch.extend(variant_clean)
+            if len(batch) >= OUT_FRAME_BYTES:
+                try:
+                    path["sock"].sendto(
+                        bytes(batch[:OUT_FRAME_BYTES]),
+                        path["dest"],
+                    )
+                    _bridge_stats.inc_nested(
+                        "packets_sent_by_leg", variant.leg,
+                    )
+                except BlockingIOError:
+                    _bridge_stats.inc_nested(
+                        "udp_send_drops_by_leg", variant.leg,
+                    )
+                    logger.warning(
+                        "udp %s sendto would block, dropping frame",
+                        variant.leg,
+                    )
+                del batch[:OUT_FRAME_BYTES]
 
     # Optional DTLN-aec parallel engine. Constructed once, mutated
     # per-call via maintained LSTM state. See jasper/aec_engines/dtln.py
@@ -1500,47 +1601,8 @@ def _aec_loop(  # noqa: PLR0915
                             )
                         del out_batch_dtln[:OUT_FRAME_BYTES]
 
-            for path in list(aec3_sweep_paths):
-                variant = path["variant"]
-                engine_variant = path["engine"]
-                try:
-                    variant_clean = engine_variant.process(mic_bytes, ref_bytes)
-                except Exception as e:  # noqa: BLE001
-                    logger.exception(
-                        "AEC3 sweep variant %s process() crashed; "
-                        "disabling this path: %s",
-                        variant.leg, e,
-                    )
-                    try:
-                        engine_variant.close()
-                    except Exception:  # noqa: BLE001
-                        pass
-                    try:
-                        path["sock"].close()
-                    except OSError:
-                        pass
-                    aec3_sweep_paths.remove(path)
-                    continue
-                batch = path["batch"]
-                batch.extend(variant_clean)
-                if len(batch) >= OUT_FRAME_BYTES:
-                    try:
-                        path["sock"].sendto(
-                            bytes(batch[:OUT_FRAME_BYTES]),
-                            path["dest"],
-                        )
-                        _bridge_stats.inc_nested(
-                            "packets_sent_by_leg", variant.leg,
-                        )
-                    except BlockingIOError:
-                        _bridge_stats.inc_nested(
-                            "udp_send_drops_by_leg", variant.leg,
-                        )
-                        logger.warning(
-                            "udp %s sendto would block, dropping frame",
-                            variant.leg,
-                        )
-                    del batch[:OUT_FRAME_BYTES]
+            if AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_XVF:
+                emit_aec3_sweep(mic_bytes, ref_bytes)
 
             if usb_raw_q is not None:
                 try:
@@ -1632,6 +1694,8 @@ def _aec_loop(  # noqa: PLR0915
                                         "dropping frame"
                                     )
                                 del out_batch_usb_dtln[:OUT_FRAME_BYTES]
+                    if AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB:
+                        emit_aec3_sweep(usb_bytes, ref_bytes)
 
             # Debug WAV record: writes happen here so the captured
             # frames are exactly what the bridge measured for its
@@ -1767,7 +1831,7 @@ def main() -> int:
         "starting: ref=%s@%d mic=%s@%d ch=%d->ch%d "
         "aec_out=udp://%s:%d raw_out=udp://%s:%d @%d "
         "corpus_ref=%s corpus_usb=%s corpus_usb_dtln=%s "
-        "corpus_aec3_sweep=%s",
+        "corpus_aec3_sweep=%s corpus_aec3_sweep_source=%s",
         REF_DEVICE, REF_RATE, MIC_DEVICE, SAMPLE_RATE,
         MIC_CHANNELS, MIC_CHANNEL_INDEX,
         OUT_HOST, OUT_PORT, OUT_HOST, OUT_PORT_RAW, OUT_RATE,
@@ -1775,10 +1839,20 @@ def main() -> int:
         "on" if corpus_usb_enabled else "off",
         "on" if corpus_usb_dtln_enabled else "off",
         "on" if corpus_aec3_sweep_enabled else "off",
+        AEC3_SWEEP_INPUT_SOURCE,
     )
     if corpus_usb_dtln_enabled and not corpus_usb_enabled:
         logger.warning(
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1 is ignored unless "
+            "JASPER_AEC_CORPUS_USB_ENABLED=1 also starts the USB mic capture",
+        )
+    if (
+        corpus_aec3_sweep_enabled
+        and AEC3_SWEEP_INPUT_SOURCE == AEC3_SWEEP_SOURCE_USB
+        and not corpus_usb_enabled
+    ):
+        logger.warning(
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb is ignored unless "
             "JASPER_AEC_CORPUS_USB_ENABLED=1 also starts the USB mic capture",
         )
 
