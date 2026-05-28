@@ -45,9 +45,11 @@ AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
 LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_ns_off",
     "aec3_default_gain_08",
+    "aec3_hf_relaxed",
     "aec3_hf_mask_upstream",
     "aec3_hf_wide_open",
     "aec3_nearend_fast",
+    "aec3_slow_attack",
 )
 KNOWN_LEGS = (
     BASE_LEGS

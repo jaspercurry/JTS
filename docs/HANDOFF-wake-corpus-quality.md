@@ -93,9 +93,9 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
-| `aec3_hf_relaxed` | XVF mic path through a parallel WebRTC AEC3 instance with conservative HF suppression off | No | Corpus-only same-utterance AEC3 tuning sweep. Pilot data, not train/eval. |
-| `aec3_edge_combo` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF, slower suppressor attack, and faster dominant-near-end detection | No | Tests whether the combined promising direction preserves wake-word edges better than either single-axis variant. |
-| `aec3_slow_attack` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF plus slower suppressor attack | No | Tests whether less abrupt suppression preserves wake-word edges while tolerating more residual music. |
+| `aec3_hf_slow_only` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF plus slower suppressor attack, no dominant-near-end overrides | No | Isolates whether HF/attack changes help without the DND changes. |
+| `aec3_edge_combo` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF, slower suppressor attack, and faster dominant-near-end detection | No | Current aggressive combo that rescued some far+music clips and regressed others. |
+| `aec3_gentle_dnd` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection | No | Tests whether a less aggressive DND midpoint preserves edge clarity with fewer regressions. |
 
 Leg names in future metadata should stay stable and explicit. Display
 labels can be friendlier, but the machine-readable names should not
@@ -447,6 +447,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-27 (v6):** Retargeted corpus-only AEC3 sweep legs to
+  isolate dominant-near-end detection effects (`hf_slow_only`,
+  `edge_combo`, `gentle_dnd`).
 - **2026-05-27 (v5):** Retargeted corpus-only AEC3 sweep legs to
   keep `hf_relaxed` and `slow_attack` while adding the combined
   `edge_combo` variant.
@@ -462,4 +465,4 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v5 - AEC3 edge-combo sweep legs updated)
+Last verified: 2026-05-27 (v6 - AEC3 DND-isolation sweep legs updated)

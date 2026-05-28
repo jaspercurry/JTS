@@ -267,10 +267,11 @@ chain:
 | `JASPER_AEC_DND_TRIGGER_THRESHOLD` | `12` | Number of detector hits required before dominant-near-end mode engages. |
 
 As of 2026-05-27, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
-uses these knobs only for pilot legs (`aec3_edge_combo` and
-`aec3_slow_attack`). Do not promote a sweep variant to production until
-it beats BEST_A on same-utterance listening review, corpus-quality
-metrics, and wake scoring under the far+music condition.
+uses these knobs only for pilot legs (`aec3_hf_slow_only`,
+`aec3_edge_combo`, and `aec3_gentle_dnd`). Do not promote a sweep
+variant to production until it beats BEST_A on same-utterance listening
+review, corpus-quality metrics, and wake scoring under the far+music
+condition.
 
 ### Measured outcome at this tuning
 
