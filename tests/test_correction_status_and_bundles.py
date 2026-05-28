@@ -21,6 +21,7 @@ import asyncio
 import io
 import json
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -904,6 +905,54 @@ def test_session_report_endpoint_returns_evidence_packet(
     )
     assert versions["runtime_integrity_schema_version"] == 1
     assert versions["acoustic_quality_schema_version"] == 1
+
+
+def test_session_report_endpoint_rejects_path_traversal(
+    tmp_path: Path,
+    monkeypatch,
+):
+    """The browser report route accepts a session id, not a path.
+
+    Keep this as an HTTP-level regression so future route refactors
+    preserve the client-visible 400 instead of accidentally probing
+    outside the sessions directory.
+    """
+    from jasper.web import correction_setup
+    from jasper.correction.session import SessionConfig
+
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    fake_sess = MeasurementSession(
+        SessionConfig(
+            sweep_dir=tmp_path / "sweeps",
+            capture_dir=tmp_path / "captures",
+            sessions_dir=sessions_dir,
+            config_dir=tmp_path / "configs",
+            base_config_path=tmp_path / "v1.yml",
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: fake_sess,
+    )
+
+    server = correction_setup.make_server(
+        ("127.0.0.1", 0), hostname="jts.local",
+    )
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        with pytest.raises(urllib.error.HTTPError) as exc:
+            urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/session-report?id=..%2Fsecret",
+                timeout=5,
+            )
+        assert exc.value.code == 400
+        body = json.loads(exc.value.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert body["error"] == "invalid session id"
 
 
 def test_render_page_includes_current_correction_banner():
