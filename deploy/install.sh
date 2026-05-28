@@ -2502,6 +2502,10 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/index.html" \
         /usr/share/jasper-web/index.html
+    install -d -m 0755 /usr/share/jasper-web/assets/fonts
+    install -m 0644 \
+        "${REPO_DIR}/deploy/assets/fonts/"* \
+        /usr/share/jasper-web/assets/fonts/
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
     # interstitial while keeping the entry point on the normal HTTP
