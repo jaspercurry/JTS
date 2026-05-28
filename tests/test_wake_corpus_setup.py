@@ -1607,6 +1607,29 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
     assert restarts == ["restart"]
 
 
+def test_restart_aec_bridge_resets_start_limit_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+
+    wake_corpus_setup.restart_aec_bridge()
+
+    assert calls[0][0] == [
+        "systemctl", "reset-failed", wake_corpus_setup.BRIDGE_UNIT,
+    ]
+    assert calls[0][1]["check"] is False
+    assert calls[1][0] == [
+        "systemctl", "restart", wake_corpus_setup.BRIDGE_UNIT,
+    ]
+    assert calls[1][1]["check"] is True
+
+
 def test_enable_bridge_outputs_preserves_system_usb_device(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -2360,6 +2383,8 @@ def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     """
     html_text = wake_corpus_setup._render_index_html("t")
     assert "Enter corpus test mode" in html_text
+    assert "Stop voice & resume recording" in html_text
+    assert "Stop voice & apply outputs" in html_text
     assert "Apply bridge outputs" in html_text
     assert "Ready to record" in html_text
     assert "Enter corpus test mode for loaded session" not in html_text

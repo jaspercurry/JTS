@@ -1138,6 +1138,8 @@ Recorder UX status:
 - ✅ Corpus test-mode transition wired: selected optional legs are
   applied before session creation; exiting disables recorder-owned
   bridge outputs, restarts `jasper-voice`, and unloads the session
+  after clearing stale systemd start-limit state for the intentional
+  bridge restart
 - ✅ Loaded sessions show as loaded (not newly active) and can enter
   corpus test mode using their saved leg set
 - ✅ Recent metadata is not auto-loaded after a graceful exit; crash
@@ -1173,6 +1175,14 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v19):** Corpus test-mode bridge restart safety:
+  - The recorder clears stale `jasper-aec-bridge` systemd start-limit
+    counters before an intentional corpus-output restart, so rapid
+    deploy/test-mode toggles do not accidentally trip the critical
+    daemon `StartLimitAction=reboot` ladder.
+  - Mixed state (`jasper-voice` running while recorder-owned bridge
+    outputs remain on) labels the loaded-session action as resuming
+    recording instead of starting a new corpus session.
 - **2026-05-27 (v15):** AEC3 same-utterance sweep:
   - Added corpus-only AEC3 sweep mode. When selected, the bridge runs
     three additional warmed WebRTC AEC3 instances in parallel with the
@@ -1352,4 +1362,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v18 — AEC3 edge-combo sweep verified against code)
+Last verified: 2026-05-27 (v19 — corpus test-mode restart safety verified against code)

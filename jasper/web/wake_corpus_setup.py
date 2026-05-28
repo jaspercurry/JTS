@@ -546,6 +546,17 @@ def restart_aec_bridge() -> None:
     a missing USB mic or failed DTLN load should stop the session
     before it records silently-missing legs.
     """
+    try:
+        subprocess.run(
+            ["systemctl", "reset-failed", BRIDGE_UNIT],
+            check=False,
+            timeout=5.0,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("could not reset %s start-limit state: %s", BRIDGE_UNIT, e)
     subprocess.run(
         ["systemctl", "restart", BRIDGE_UNIT],
         check=True,
@@ -3014,7 +3025,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           ? 'inline-block' : 'none';
         unloadEl.disabled = s.is_recording;
         if (sessionLoaded) {
-          if (voiceActive) {
+          if (voiceActive && bridgeActive && sessionBridgeReady) {
+            beginEl.textContent = 'Stop voice & resume recording';
+            beginEl.disabled = s.is_recording;
+          } else if (voiceActive && bridgeActive) {
+            beginEl.textContent = 'Stop voice & apply outputs';
+            beginEl.disabled = s.is_recording;
+          } else if (voiceActive) {
             beginEl.textContent = 'Enter corpus test mode';
             beginEl.disabled = s.is_recording;
           } else if (!sessionBridgeReady) {
