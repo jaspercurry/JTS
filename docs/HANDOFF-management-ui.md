@@ -1,18 +1,28 @@
 # Management UI — redesign proposal + reference
 
-**Status:** Proposal · created 2026-05-22 · not yet implemented.
+**Status:** Reference · created 2026-05-22 · refreshed 2026-05-28.
+Phase 1 IA/visual reshape implemented on 2026-05-28 in
+`deploy/index.html`; setup wizard, conditional prompts, and fuller row-state
+hydration remain future phases.
 
 A research-grounded plan for restructuring the `jts.local` management surface
-(today: 13 cards on `/`, ~10 on `/system/`, 12 dedicated wizards) into a
-tighter, more navigable layout with a dismissible setup wizard for first-time
-configuration.
+(today: volume/mic/source controls, 17 navigation rows on `/`, ~10 on
+`/system/`, 18 dedicated setup/debug surfaces, plus CamillaGUI) into a tighter,
+more navigable layout with a dismissible setup wizard for first-time
+configuration and a quieter settings-list visual system.
 
-Read this when you're ready to do the redesign. The proposal and the
-research that backs it both live here so you can re-justify design calls
-from first principles instead of from memory. The current-state snapshot is
-dated — re-inventory `deploy/index.html` + `jasper/web/*_setup.py` before
-starting, since new cards may have landed (e.g. transit, voice-eval debug
-surfaces) and competitor patterns evolve.
+Read this before extending the management UI redesign. The proposal and the
+research that backs it both live here so you can re-justify design calls from
+first principles instead of from memory. The current-state snapshot was refreshed
+against `deploy/index.html`, `deploy/nginx-jasper.conf`,
+`jasper/web/__main__.py`, and live `http://jts.local/` on 2026-05-28, but
+re-inventory before implementation because this surface is still accruing
+cards.
+
+Implementation note (2026-05-28): §3 preserves the pre-Phase-1 inventory that
+motivated the redesign. The current branch replaces the old flat card stack
+with grouped settings rows while keeping the existing static landing-page
+deployment model and the proven volume/mic/source JavaScript.
 
 ---
 
@@ -20,7 +30,7 @@ surfaces) and competitor patterns evolve.
 
 1. [Why redesign](#1-why-redesign)
 2. [Grounding principles](#2-grounding-principles)
-3. [Current-state snapshot](#3-current-state-snapshot-as-of-2026-05-22)
+3. [Current-state snapshot](#3-current-state-snapshot-as-of-2026-05-28)
 4. [Proposal A — Information architecture](#4-proposal-a--information-architecture)
 5. [Proposal B — Setup wizard](#5-proposal-b--setup-wizard)
 6. [Proposal C — Copy revision](#6-proposal-c--copy-revision)
@@ -34,24 +44,29 @@ surfaces) and competitor patterns evolve.
 
 ## 1. Why redesign
 
-The landing page has accumulated past its happy density. Three things
+The landing page has accumulated past its happy density. Four things
 compound:
 
-- **Flat hierarchy.** 13 cards on one screen, visually equal, sorted by
+- **Flat hierarchy.** 17 navigation cards on one screen, visually equal, sorted by
   neither frequency nor topic. The user can't tell at a glance what's a
   daily knob (volume) vs. an annual setup step (room correction).
 - **Verbose card copy.** Most descriptions run 1-2 sentences trying to
   explain the destination. They belong *inside* the destination, not on the
-  index card. (The current `Wake word ›` card runs 27 words before the
-  link.)
+  index row. The current `Wake word ›`, `Transit ›`, and `Wake-word corpus
+  recorder ›` cards are examples of the page trying to teach everything at
+  once.
+- **Cards are the wrong primitive.** A settings home page wants compact rows:
+  icon, label, current state, chevron. Cards make every destination feel like
+  a feature promo.
 - **No setup gradient.** First-time and 50th-time visitors see the same
   page. There's no "you have 2 things left to set up" affordance and no
   linear path through the one-time stuff (voice provider, Spotify accounts,
   location, room correction).
 
 What's *right* about today's page: the volume slider and mic toggle live on
-the index. Those stay. The other 11 tiles is where the load is. None of
-this is about removing functionality — it's about ordering it.
+the index. Those stay. The source selector has also earned its place as a
+small "every visit" control. The rest of the load is ordering, naming, and
+showing state without long descriptions.
 
 ---
 
@@ -66,7 +81,7 @@ explicit so future-you can re-derive decisions instead of memorising them.
    this. Today's landing page is all action, no state.
 
 2. **Two-and-a-half "every visit" controls; everything else is rare.**
-   Volume, mic mute, and (maybe) now-playing are daily. The other 11 cards
+   Volume, mic mute, and source selection are daily. The other rows
    are weekly-to-yearly. Privilege the daily, demote the rare.
 
 3. **Max two levels of disclosure.** Nielsen: "designs that go beyond 2
@@ -76,7 +91,7 @@ explicit so future-you can re-derive decisions instead of memorising them.
 
 4. **The recurring mental model across audio admin is Sources / Sound /
    Network / System.** Sonos, Roon, BluOS, WiiM, Plex, eero all converge on
-   this shape. Add **Voice** as a JTS-specific 5th section and
+   this shape. Add **Assistant** as a JTS-specific 5th section and
    **Accessories** as a 6th. Don't reinvent.
 
 5. **Setup is a wizard on the critical path; a checklist everywhere else.**
@@ -85,8 +100,8 @@ explicit so future-you can re-derive decisions instead of memorising them.
    later" / "Hide", never "Skip?".
 
 6. **Status text is a noun phrase, not a sentence.** GOV.UK: "Application
-   complete" not "Thank you for your application." For our cards:
-   `Voice • Gemini · Aoede` — not "The voice provider is currently set to
+   complete" not "Thank you for your application." For our rows:
+   `Voice · Gemini · Aoede` — not "The voice provider is currently set to
    Gemini using the voice Aoede." Compresses the page by roughly half
    without information loss.
 
@@ -94,38 +109,61 @@ explicit so future-you can re-derive decisions instead of memorising them.
    that drop WiFi mid-session, restart voice, or flip AEC need to confirm.
    Already done for Reboot; extend the model to anything destructive.
 
+8. **Color is semantic first, accent second.** The current green reads like
+   Spotify/success. Use a neutral palette with one quiet accent for
+   interactivity; reserve green/amber/red for status.
+
+9. **Performance is part of the design language.** The landing page remains
+   static HTML/CSS with tiny hydration for live controls and summaries. No
+   framework bundle, external font, icon font, client router, animated chart,
+   or per-row polling loop belongs on `/`.
+
+10. **Reuse primitives without over-abstracting.** The web wizards already
+    have a shared primitive layer in `jasper/web/_common.py` for CSRF,
+    flash/redirect hygiene, shared toggles, response helpers, and common page
+    chrome. Keep that discipline during the redesign: if a row, control,
+    status badge, or save pattern appears repeatedly, give it a small shared
+    helper/class; if it appears once, keep it local. Avoid both copy-paste
+    drift and speculative frameworks.
+
 ---
 
-## 3. Current-state snapshot (as of 2026-05-22)
+## 3. Current-state snapshot (as of 2026-05-28)
 
 > ⚠ Re-verify this before building — new cards may have landed.
-> Source: `deploy/index.html`, `jasper/web/*.py`, `git worktree list` on 2026-05-22.
+> Source: `deploy/index.html`, `deploy/integrations.html`,
+> `deploy/nginx-jasper.conf`, `jasper/web/__main__.py`, live
+> `http://jts.local/` on 2026-05-28.
 
-### 3.1 Landing page `/` — 13 cards
+### 3.1 Landing page `/` — 17 navigation cards
 
-Sticky-ish top: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
-(checked = listening), and a lightweight **Source selector** (Auto,
-AirPlay, Bluetooth, Spotify, USB). The selector posts to
-`jasper-control`'s `/source/*` routes and is distinct from the
-`/sources/` on/off wizard.
+Top control card: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
+(checked = listening), and a lightweight **Source selector** (Auto, AirPlay,
+Bluetooth, Spotify, USB). The selector posts to `jasper-control`'s
+`/source/*` routes and is distinct from the `/sources/` on/off wizard.
 
-Then 12 navigation cards stacked equally:
+Then 17 navigation cards stacked equally:
 
 | # | Title (verbatim) | Destination | One-line role |
 |---|---|---|---|
-| 1 | Sources › | `/sources/` | AirPlay / BT / Spotify Connect on-off |
-| 2 | Voice provider › | `/voice/` | Provider + API key + model + voice |
-| 3 | Wake word › | `/wake/` | Wake-phrase picker + sensitivity |
-| 4 | AirPlay sync mode › | `/airplay/` | Synced vs free-running toggle |
-| 5 | Integrations › | `/integrations` | Static page → Spotify + Google OAuth |
-| 6 | Accessories › | `/dial/` | ESP32 dial onboarding (satellite later) |
-| 7 | Bluetooth › | `/bluetooth/` | Pair phones / knobs / headphones |
-| 8 | Wi-Fi › | `/wifi/` | Scan / connect / forget |
-| 9 | Speaker peering › | `/peers/` | Multi-JTS arbitration (off by default) |
-| 10 | Room correction › | `https://jts.local/correction/` | iPhone room measurement (HTTPS) |
-| 11 | CamillaDSP › | `:5005/` | External CamillaDSP GUI (new tab) |
-| 12 | System › | `/system/` | Live metrics, cloud, actions, diagnostics |
-| 13 | (info panel) | — | CA cert install note |
+| 1 | Sources › | `/sources/` | AirPlay / BT / Spotify Connect / USB on-off |
+| 2 | Sound › | `/sound/` | Sound curve, Bass/Mid/Treble, advanced PEQ |
+| 3 | Speaker name › | `/speaker/` | Renderer display name |
+| 4 | Voice provider › | `/voice/` | Provider + API key + model + voice |
+| 5 | Wake word › | `/wake/` | Wake phrase, sensitivity, detection layers |
+| 6 | AirPlay sync mode › | `/airplay/` | Synced vs free-running toggle |
+| 7 | Integrations › | `/integrations` | Static page → Spotify, Google, Home Assistant |
+| 8 | Accessories › | `/dial/` | ESP32 dial onboarding (satellite later) |
+| 9 | Bluetooth › | `/bluetooth/` | Pair phones / knobs / headphones |
+| 10 | Wi-Fi › | `/wifi/` | Scan / connect / forget |
+| 11 | Transit › | `/transit/` | Subway, bus, Citi Bike defaults |
+| 12 | Weather › | `/weather/` | Default weather location and units |
+| 13 | Speaker peering › | `/peers/` | Multi-JTS arbitration (off by default) |
+| 14 | Room correction › | `https://jts.local/correction/` | iPhone room measurement (HTTPS) |
+| 15 | CamillaDSP › | `:5005/` | External CamillaDSP GUI (new tab) |
+| 16 | System › | `/system/` | Live metrics, cloud, actions, diagnostics |
+| 17 | Wake-word corpus recorder › | `/wake-corpus/` | Operator/debug recording tool |
+| — | (info panel) | — | CA cert install note for Room correction |
 
 ### 3.2 `/system/` dashboard — ~12 sub-cards
 
@@ -142,35 +180,60 @@ Then 12 navigation cards stacked equally:
 - Diagnostics (collapsible — runs `jasper-doctor`)
 - Per-service usage (cgroup CPU + memory for JTS/audio/system support units)
 
-### 3.3 Wizards under `jasper/web/`
+### 3.3 Web surfaces under `jasper/web/`
 
-12 stdlib-`http.server` wizards, socket-activated, 10-min idle (30 for system):
+18 stdlib-`http.server` setup/debug surfaces, mostly socket-activated and
+LAN-only. Some run inside the combined `jasper-web` process; older/heavier
+surfaces such as `/bluetooth/`, `/dial/`, `/system/`, and `/correction/`
+still have their own service/socket wrappers.
 
 | Path | Module | Port | Purpose |
 |---|---|---|---|
-| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice |
-| `/wake/` | `wake_setup.py` | 8774 | Wake-word + sensitivity |
-| `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
-| `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify Connect toggles |
-| `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
 | `/spotify/` | `spotify_setup.py` | 8765 | Per-household OAuth |
+| `/dial/` | `dial_setup.py` | 8766 | ESP32 dial onboarding |
+| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice |
 | `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
-| `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
-| `/dial/` | `dial_setup.py` | 8766 | ESP32 onboarding |
-| `/peers/` | `peering_setup.py` | 8776 | Multi-JTS peering |
-| `/system/` | `system_setup.py` | 8772 | Dashboard |
+| `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
 | `/correction/` | `correction_setup.py` | 8770 | Room measurement (HTTPS) |
+| `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
+| `/system/` | `system_setup.py` | 8772 | Dashboard |
+| `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
+| `/wake/` | `wake_setup.py` | 8774 | Wake-word + sensitivity + detection layers |
+| `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
+| `/peers/` | `peering_setup.py` | 8776 | Multi-JTS peering |
+| `/transit/` | `transit_setup.py` | 8777 | Transit address + providers |
+| `/ha/` | `home_assistant_setup.py` | 8778 | Home Assistant connection |
+| `/weather/` | `weather_setup.py` | 8779 | Weather default |
+| `/wake-corpus/` | `wake_corpus_setup.py` | 8782 | Wake-word corpus recorder |
+| `/speaker/` | `speaker_setup.py` | 8783 | Speaker display name |
+| `/sound/` | `sound_setup.py` | 8784 | Sound curve + preference EQ |
 
-### 3.4 In-flight (as of snapshot)
+Static and external companion surfaces:
 
-- **Wake telemetry PRs #173/#175/#178** — instrumentation only, no UI cards.
-  May expand `/system/diagnostics` table when merged.
-- **`claude/transit-wizard`** branch — adds MTA stations CSV (data prep).
-  Future `/transit/` wizard would add a new card; doesn't exist yet.
-  Generalise into a `/location/` wizard during redesign (location feeds
-  transit, weather, time-of-day all the same).
-- **`feat/usb-gadget-source` (PR #145)** — fourth audio source; expands
-  `/sources/` toggle list when approved.
+- `/` and `/integrations` are static HTML under `deploy/`.
+- CamillaGUI remains a separate external surface at `http://jts.local:5005/`.
+- `GET /volume`, `/mic`, and `/source` are same-origin proxies into
+  `jasper-control`.
+
+### 3.4 What changed since the original proposal
+
+- **Transit landed** as `/transit/`, including address geocoding and
+  provider-specific cards. The old "future `/location/`" note is now a
+  consolidation opportunity, not a prerequisite.
+- **Weather landed** as `/weather/`, with its own default location/units.
+  It shares enough location semantics with Transit that a future Location
+  row should summarize both.
+- **Home Assistant landed** under `/ha/` and currently sits behind the
+  static `/integrations` umbrella.
+- **Sound preferences landed** under `/sound/`; this strengthens the case
+  for Sound as a top-level section.
+- **Speaker name landed** under `/speaker/`; the homepage title should use
+  this state and should not say `JTS speaker` (JTS already expands to
+  Jasper Tech Speaker).
+- **USB Audio Input landed** in `/sources/` and the landing-page source
+  selector.
+- **Wake-word corpus recorder landed** and should be treated as an
+  operator/developer tool, not a household settings row.
 
 ---
 
@@ -179,70 +242,77 @@ Then 12 navigation cards stacked equally:
 ### 4.1 The shape
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ STICKY HEADER (always on screen)                            │
-│ Volume   ─────●──────  62%       🎤 Listening    ⏻          │
-│ [Optional chip]  Now playing — "Bad Romance" · Spotify      │
-├─────────────────────────────────────────────────────────────┤
-│ SETUP BANNER (only when incomplete or user-pinned)          │
-│ Finish setup — 3 of 5 done       [Continue ›]   [Hide]      │
-└─────────────────────────────────────────────────────────────┘
+HEADER / CONTROLS
+  JTS                                  (speaker display name)
+  Volume 68%      Microphone listening      Source Auto · AirPlay active
 
-Sources                                     what feeds the speaker
-  AirPlay         On · Synced
-  Spotify         On · 2 accounts
-  Bluetooth       On · 3 paired
+SETUP BANNER (only when incomplete or user-pinned)
+  Finish setup - 4 of 7 complete        Continue        Hide
 
-Voice                                       what the assistant is
-  Provider        Gemini · Aoede
-  Wake word       Jarvis · 0.50
-  Location        Sunset Park, NY
-  Integrations    Google · 1 account
+Sources
+  Playback sources        AirPlay · Spotify · Bluetooth on
+  Spotify accounts        2 linked
+  Bluetooth devices       3 paired
+  AirPlay sync            Synced
 
-Sound                                       shape of the output
-  Room correction Off — measure your room
-  Audio tuning    CamillaDSP ↗
+Assistant
+  Voice                   OpenAI · Marin
+  Wake detection          Jarvis · 0.50
+  Location                Sunset Park
+  Integrations            Google · Transit · Weather
+  Home Assistant          Not connected
 
-Network                                     the plumbing
-  Wi-Fi           home-2g · Strong
-  Peering         Off
+Sound
+  Sound profile           Flat · EQ on
+  Room correction         Off
+  Advanced DSP            CamillaGUI
 
-Accessories                                 input devices for the speaker
-  Dial            Paired · last seen 2m ago
-  Satellite       Not paired (planned)
-  Remotes         VK-01 volume knob
+Network
+  Wi-Fi                   Verizon_4TQ9PN · strong
+  Peering                 Off
 
-System                                      health + admin
-  Live            Memory · CPU · Temp tiles
-  Cloud           3 sessions today · $0.04
-  Software        sha1234 · 3 days ago
-  Diagnostics     Run jasper-doctor →
-  Restart         Voice · Audio · Reboot
-  Advanced        Audio conversion · service usage
+Accessories
+  Dial                    Online · last seen 2m ago
+  Satellites              Not paired
+
+System
+  Status                  CPU 8% · 52 C · disk OK
+  Software                a139580 · main
+  Diagnostics             Run doctor
+  Actions                 Restart · reboot · power off
+  Developer tools         Wake corpus recorder
 ```
 
 ### 4.2 Why this shape
 
-- **Six sections.** Sources / Voice / Sound / Network / Accessories /
+- **Six sections.** Sources / Assistant / Sound / Network / Accessories /
   System. Inside Miller's 7±2 with proper chunking. Sources/Sound/Network/
-  System is the universal audio-admin shape (Sonos, Roon, BluOS, WiiM,
-  Plex, eero); Voice is the JTS-specific addition; Accessories is its own
-  top-level because the dial and satellite are **input devices for the
-  speaker**, not network plumbing. (Earlier draft tried to nest Accessories
-  under Network — felt wrong on read, was wrong on principle.)
+  System is the universal audio-admin shape (Sonos, Roon, BluOS, WiiM, Plex,
+  eero). **Assistant** is the JTS-specific addition: it covers how JTS
+  listens, speaks, and answers. Accessories is its own top-level because the
+  dial and satellite are **input devices for the speaker**, not network
+  plumbing.
+
+- **Use Assistant, not "Voice & Skills."** "Voice & Skills" is a bucket name
+  made from implementation pieces. "Skills" is also Alexa-specific language.
+  **Assistant** is the user-facing object: voice provider, wake detection,
+  location, and integrations are all aspects of what the assistant can do.
+  If integrations grow large enough later, split out **Integrations** as its
+  own section; do not split prematurely.
 
 - **State on each row.** Polaris microcopy patterns + UniFi/eero
   state-first home view. User no longer has to click in just to check
   what's set. Status is a noun phrase (`Gemini · Aoede`), not a sentence.
 
 - **Sound is its own section, not buried in System.** Room correction and
-  CamillaDSP are *configuration*, not *diagnostics*. Conflating them is
-  most of what makes the current page hard to scan.
+  preference EQ are *configuration*, not *diagnostics*. CamillaGUI is advanced
+  DSP, but it still belongs under Sound.
 
 - **Kill the `/integrations` umbrella.** It conflates Spotify Connect (a
-  source) with Google account linking (a voice tool). Split: Spotify
-  accounts under Sources/Spotify; Google under Voice/Integrations. Removes
-  one layer of navigation.
+  source) with Google account linking and Home Assistant control (assistant
+  capabilities). Split: Spotify accounts under Sources; Google, Home
+  Assistant, Transit, and Weather under Assistant. Keep `/integrations` only
+  as a temporary compatibility surface or redirect.
 
 - **No top-level "Now Playing".** Every consumer-audio product (Sonos,
   HomePod) leads with playback; every *admin* product (Plex, UniFi,
@@ -255,18 +325,38 @@ System                                      health + admin
   mic state must be unambiguous. Sticky placement matches Sonos/HomePod
   chrome.
 
+- **Identity at the top.** The H1 should be the speaker display name
+  (`JTS`, `Kitchen`, `Workshop`), not `JTS speaker`. JTS already expands to
+  Jasper Tech Speaker, so `JTS speaker` reads as "Jasper Tech Speaker
+  speaker." Drop the current "Manage your speaker." subhead unless it is
+  replaced by live state.
+
+- **Settings rows, not promo cards.** The homepage should look closer to
+  iOS Settings / router admin than a landing page: grouped rows, small icons,
+  one-line statuses, chevrons. Explanatory copy moves into destination pages.
+
 ### 4.3 Cards that move
 
 | Today | New home | Why |
 |---|---|---|
-| AirPlay sync mode | Sources › AirPlay | Sub-setting, not a section |
-| Sources | Stays; absorbs sub-toggles | Cleaner |
-| Integrations | Spotify → Sources; Google → Voice | Removes one layer |
+| Speaker name | Header identity + System/Network detail | Identity, not a section |
+| Sources | Sources › Playback sources | Canonical source toggles |
+| Spotify | Sources › Spotify accounts | Music-source account routing |
+| AirPlay sync mode | Sources › AirPlay sync | Sub-setting, not a section |
+| Bluetooth | Sources › Bluetooth devices | Multi-purpose, but one canonical BT home for now |
+| Voice provider | Assistant › Voice | The assistant's speech backend |
+| Wake word | Assistant › Wake detection | How the assistant starts listening |
+| Transit | Assistant › Location/Transit | Voice-answer capability tied to location |
+| Weather | Assistant › Location/Weather | Voice-answer capability tied to location |
+| Google | Assistant › Integrations | Assistant tool/account capability |
+| Home Assistant | Assistant › Integrations/Home Assistant | Assistant smart-home capability |
+| Integrations | Split into Sources + Assistant | Removes one layer |
 | Speaker peering | Network › Peering | Honest network concern |
 | Accessories | Promoted to top-level Accessories | Input devices, not network |
-| CamillaDSP | Sound › Audio tuning | Configuration, not health |
+| Sound | Sound › Sound profile | Preference EQ and curves |
+| CamillaDSP | Sound › Advanced DSP | Configuration, not health |
 | Room correction | Sound › Room correction | Configuration, not health |
-| Bluetooth | Two homes — see below | Multi-purpose device |
+| Wake-word corpus recorder | System › Developer tools | Operator/debug surface |
 | System | Stays; internal cards re-grouped | Dashboard is fine |
 
 **Bluetooth note.** The BT adapter is multi-purpose: source (phone → speaker
@@ -279,8 +369,9 @@ Two valid presentations:
 - **Option B** — Sources/Bluetooth covers source on-off; Accessories/Remotes
   covers paired controllers. One adapter, two surfaces.
 
-Lean A for simplicity. Revisit if the device list gets long enough that
-"remote" vs "source phone" become hard to distinguish in one card.
+Lean A for simplicity in the first redesign: one Bluetooth row under Sources,
+with device type labels inside `/bluetooth/`. Revisit if paired controllers
+and audio devices become hard to distinguish in one list.
 
 ### 4.4 The Now Playing question, resolved
 
@@ -312,25 +403,32 @@ ensuring "visibility and prompt timely action," with the checklist storing
 Critical path — speaker is much less useful without these:
 
   1. Voice provider     Pick a backend + paste API key
-  2. Location           For weather, transit, "what time is it"
+  2. Location           For weather, transit, sunrise/sunset, local context
   3. Spotify            Link your account (cold-start "play X")
 
 Recommended:
 
-  4. Wake word          Default "Jarvis" works; choose / tune
-  5. Room correction    ~5 min iPhone measurement
+  4. Speaker name       Shown in AirPlay, Spotify, Bluetooth, USB
+  5. Wake detection     Default "Jarvis" works; choose / tune
+  6. Room correction    ~5 min iPhone measurement
+  7. Sound profile      Flat default works; pick preference curve
 
 Conditional — only shown if the trigger fires:
 
-  6. Accessories        Dial detected on USB? Set it up.
-  7. Peering            Another JTS on the network? Pair them.
-  8. Google             Calendar + Gmail for voice tools.
+  8. Google             Calendar + Gmail for assistant answers
+  9. Home Assistant     Smart-home control
+ 10. Accessories        Dial/satellite detected? Set it up.
+ 11. Peering            Another JTS on the network? Pair them.
+ 12. USB input          Hardware supports gadget mode? Offer it.
 ```
 
-Three items in the critical path, ~5 minutes total. Order matches
-HomePod's / Sonos's "critical path then everything else" shape. Each step
-*is* an existing wizard (`/voice/`, a new `/location/`, `/spotify/`) — but
-presented in sequence with `Continue to next step →` at the end of each.
+Three items remain the critical path. The rest are recommended or conditional,
+which keeps setup honest: the speaker is usable before room correction,
+Home Assistant, or a dial. Order matches HomePod's / Sonos's "critical path
+then everything else" shape. Each step is an existing wizard where practical
+(`/voice/`, `/spotify/`, `/speaker/`, `/wake/`, `/sound/`) with a future
+`/location/` wrapper that coordinates the already-shipped `/weather/` and
+`/transit/` state.
 
 ### 5.3 Behavior
 
@@ -376,11 +474,13 @@ presented in sequence with `Continue to next step →` at the end of each.
 
 ### 6.1 The pattern
 
-For each card on `/`:
+For each row on `/`:
 
-- **Title**: noun phrase (the thing — "Voice", "Wake word", "Peering")
+- **Icon**: small, familiar, decorative unless the label is hidden.
+- **Title**: noun phrase (the thing — "Voice", "Wake detection", "Peering")
 - **Status line**: current value, dot-separated where multi-part
   (`Gemini · Aoede`, not "currently set to Gemini with voice Aoede")
+- **Chevron**: navigates to the dedicated wizard/page.
 - **No long description.** The destination explains itself.
 
 The long explainers don't disappear — they move to where they're useful.
@@ -391,14 +491,17 @@ inside Advanced. The index doesn't need to teach; the destination does.
 
 | Today (verbose) | Proposed (terse) |
 |---|---|
-| **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Wake word** · Jarvis · 0.50 |
+| **JTS speaker** / `Manage your speaker.` | **JTS** *(speaker display name; no redundant subhead)* |
+| **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Wake detection** · Jarvis · 0.50 |
 | **Speaker peering ›** — Off by default. When you have multiple JTS speakers on the same network, turn this on so only one responds to each wake word instead of all of them at once. | **Peering** · Off |
-| **Room correction ›** — Measure your room from your iPhone and apply correction filters to CamillaDSP. Browser will warn "Not Private" the first time — see the note below. | **Room correction** · Off — measure your room |
-| **Voice provider ›** — Choose which real-time voice backend the speaker uses (Gemini, OpenAI, or Grok) and paste API keys. | **Voice** · Gemini · Aoede |
+| **Room correction ›** — Measure your room from your iPhone and apply correction filters to CamillaDSP. Browser will warn "Not Private" the first time — see the note below. | **Room correction** · Off |
+| **Voice provider ›** — Choose which real-time voice backend the speaker uses (Gemini, OpenAI, or Grok) and paste API keys. | **Voice** · OpenAI · Marin |
 | **AirPlay sync mode ›** — Synced (default — works for music, video A/V, and multi-room) or free-running (fallback for DAC-specific issues). | *(gone — sub-setting under Sources › AirPlay)* |
-| **Sources ›** — Turn each playback source (AirPlay, Bluetooth, Spotify Connect) on or off. | **Sources** · AirPlay · Spotify · Bluetooth |
-| **Accessories ›** — Onboard a wireless accessory — currently the ESP32 rotary dial; the AMOLED touch satellite is in progress. | **Accessories** · Dial ✓ |
-| Page H1: `JTS speaker` / `Manage your speaker.` | `JTS` / `Sunset Park` *(identifies the room, Sonos/HomePod style)* |
+| **Sources ›** — Turn each playback source (AirPlay, Bluetooth, Spotify Connect) on or off. | **Playback sources** · AirPlay · Spotify · Bluetooth |
+| **Transit ›** — Configure nearby subway and bus stops so you can ask "when's the next train?"... | **Transit** · 3 providers |
+| **Weather ›** — Set the default location and units for weather questions when you do not name a city. | **Weather** · Sunset Park · F |
+| **Accessories ›** — Onboard a wireless accessory — currently the ESP32 rotary dial; the AMOLED touch satellite is in progress. | **Dial** · Online |
+| **Wake-word corpus recorder ›** — Tooling / debug page... | **Wake corpus** · Developer tool *(under System, collapsed/advanced)* |
 
 ### 6.3 Action button labels
 
@@ -406,6 +509,30 @@ Today's `Restart voice` / `Restart audio` / `Reboot speaker` are already
 good — verbs lead, concrete-consequence confirms ("Wake-word will be
 unavailable for ~30 s"). Keep them. The cull is on prose-status areas —
 those compress to nouns.
+
+### 6.4 Visual system
+
+This should feel like a modern settings surface, not a marketing page and not
+a 1990s directory. Recommended default:
+
+- **Layout**: single column on phones; 2-column section grid is acceptable on
+  desktop only if row order remains obvious. Sections are full-width bands or
+  grouped lists, not cards inside cards.
+- **Rows**: 44-52 px minimum height, icon at left, label, one-line status,
+  chevron. Two-line rows only when status genuinely needs it.
+- **Icons**: use small inline SVG icons (Lucide-style strokes are fine) with
+  visible text labels. Do not use an external icon font or CDN dependency.
+- **Color**: neutral surfaces and text first. Pick one quiet accent for
+  interactive affordances, likely deep blue or blue-teal. Green is reserved
+  for healthy/on/success, amber for setup-needed/warning, red for
+  destructive/error.
+- **Typography**: system font, no web font. Sentence case. Tabular numbers
+  for percentages, temperatures, spend, and uptime.
+- **Motion**: short hover/focus transitions only; animate transform/opacity
+  when needed; respect `prefers-reduced-motion`.
+- **Performance**: no framework bundle, no runtime CSS-in-JS, no client-side
+  router, no charts on `/`, no per-row polling. Hydrate controls/status from
+  one or two existing JSON endpoints.
 
 ---
 
@@ -447,6 +574,23 @@ default to that the research surfaced as a mistake.
    explain itself, the words live on the destination. The index is for
    recognition (`Wake word · Jarvis`), not learning.
 
+9. **Don't call the section "Voice & Skills."** It reads like a leftover
+   drawer. Use **Assistant**. If service connections later outgrow that row,
+   split to **Integrations**, not **Skills**.
+
+10. **Don't use green as the brand accent.** Green already means healthy,
+    enabled, success, and Spotify. Use a neutral UI with a separate accent;
+    keep semantic colors semantic.
+
+11. **Don't make icons carry meaning alone.** Icons are scan anchors. Text
+    labels remain visible because Wi-Fi, Bluetooth, source, assistant, and
+    integration icons are too ambiguous alone.
+
+12. **Don't spend Pi budget on polish no one needs.** No React/Vue/Svelte app,
+    no external font, no icon font, no animated gradients, no blur-heavy
+    glassmorphism, no live charts on the homepage. The elegance should come
+    from hierarchy, spacing, type, and restraint.
+
 ---
 
 ## 8. Phased rollout
@@ -454,22 +598,26 @@ default to that the research surfaced as a mistake.
 Each phase ships independently; the page improves with every merge. Order
 by "biggest visual win per hour of work."
 
-### Phase 1 — IA reshape (1 PR, ~2 hours)
-Re-order the cards on `/` into the 6 sections. Apply the copy-revision
-table. Make volume + mic sticky. Move AirPlay sync into a sub-row under
-Sources. **Backend untouched** — this is just `deploy/index.html` + CSS.
+### Phase 1 — IA + visual reshape (1 PR)
+Replace the flat navigation cards on `/` with grouped settings rows:
+Sources / Assistant / Sound / Network / Accessories / System. Apply terse
+copy, remove the `JTS speaker` redundancy, move the certificate note into the
+Room correction row/page, and put Wake corpus under System/Developer tools.
+**Backend untouched** — this is `deploy/index.html` + CSS. As the rows take
+shape, factor only the repeated visual primitives: section headings, row
+layout, row icons, status chips, chevrons, and danger/action treatments.
 
-→ Delivers ~80% of the visual win. Reversible if you hate it.
+This delivers most of the visual win. Reversible if the grouping feels wrong.
 
-### Phase 2 — State on the cards (1 PR)
-Each card row queries `jasper-control`'s `/state` aggregator and renders
-the noun-phrase status. Most endpoints already exist (the `/state`
-aggregator fails soft per section per `jasper/control/`). Net new wiring
-is small.
+### Phase 2 — State on the rows (1 PR)
+Each row renders a noun-phrase status. Prefer existing sources:
+`/source/state`, `jasper-control`'s `/state`, and `/system/data.json`.
+Most state already exists: source selection, speaker name, voice, sound, Home
+Assistant, dial presence, system/cloud metrics. Net new wiring should focus on
+weather/transit summaries and any missing wake/correction status.
 
-Add a `/location/` wizard that generalises the MTA stations CSV from
-`claude/transit-wizard` into one source of truth for location (transit,
-weather, time-of-day all consume it).
+Add a `/location/` wrapper only if it truly reduces duplication between
+`/weather/` and `/transit/`. It should not block Phase 1.
 
 ### Phase 3 — Setup wizard (1 PR)
 - `/setup/` linear flow that chains existing wizards.
@@ -480,44 +628,55 @@ weather, time-of-day all consume it).
 ### Phase 4 — Conditional prompts (later, polish)
 - Detect newly-plugged dial → small chip under Accessories.
 - Detect second JTS on LAN → chip under Network.
+- Detect USB gadget-capable hardware → small chip under Sources.
 - These are nice-to-haves; ship 1-3 first.
+
+### Phase 5 — Consolidation (later)
+- Move AirPlay sync into `/sources/` or make `/airplay/` feel like a subpage.
+- Replace `/integrations` with redirects or a compatibility index.
+- Consider `/location/` if weather/transit state keeps drifting.
+- Decide whether Wake corpus should require an explicit developer-mode link.
 
 ---
 
 ## 9. Open decisions
 
-Where my opinion is only worth so much; settle these on build day.
+Most major naming questions are now settled. The remaining decisions are
+implementation-detail scale.
 
 1. **Sticky vs. top-pinned volume + mic?** Sticky = always there as you
    scroll; top-pinned = simpler to implement. Lean sticky on desktop,
    top-pinned on mobile.
 
-2. **Kill `/integrations` entirely, or keep as redirect?** Lean kill
-   (split into Sources/Spotify and Voice/Google). But if it became a
-   mental anchor in the household, a redirect to the new homes is one
-   line.
+2. **Exact accent color.** Move away from green-as-brand. Lean deep
+   blue-teal or graphite-blue after checking contrast. Semantic green stays
+   success/on only.
 
-3. **Spotify Connect "service on/off" vs. "household accounts" — one card
-   or two?** Both under Sources/Spotify. Lean one card with two sub-states
+3. **Kill `/integrations` entirely, or keep as redirect?** Lean compatibility
+   redirect/index for one release, with Spotify under Sources and Google/Home
+   Assistant under Assistant.
+
+4. **Spotify Connect "service on/off" vs. "household accounts" — one row
+   or two?** Both under Sources/Spotify. Lean one row with two sub-states
    (matches "max 2 levels" principle).
 
-4. **Bluetooth — Sources only, or Sources + Accessories?** Lean
+5. **Bluetooth — Sources only, or Sources + Accessories?** Lean
    Sources-only with a "Paired devices" list inside (Option A in §4.3).
    Revisit if the device list grows.
 
-5. **Room correction under Sound or System?** Sound (it's about audio
+6. **Room correction under Sound or System?** Sound (it's about audio
    output, not health). Card shows `Off — measure your room`; clicking
    goes to the existing HTTPS `/correction/` surface.
 
-6. **Banner copy: "Finish setup" vs "Set up your speaker" vs "3 things
+7. **Banner copy: "Finish setup" vs "Set up your speaker" vs "3 things
    left"?** Zeigarnik favors open-loop framing. Start with `Finish setup —
    3 of 5 done`; iterate if it feels off when seen live.
 
-7. **Now-playing chip in the sticky header — yes or no?** Lean **no** for
+8. **Now-playing chip in the sticky header — yes or no?** Lean **no** for
    v1. Adds chrome on every page load; phones do it better. Easy to add
    later if missed.
 
-8. **Where does the `/setup/` entry point live after the banner is
+9. **Where does the `/setup/` entry point live after the banner is
    dismissed?** Lean small text link in the page footer
    (`Run setup again →`). Also reachable from System if needed.
 
@@ -770,8 +929,8 @@ Tone](https://styleguide.mailchimp.com/voice-and-tone/).
 
 **Status text is a noun, not a sentence.** GOV.UK: "it's fine to say
 'Application complete' rather than 'Thank you for your application.'"
-Applied to a settings card: "Voice provider is currently set to Gemini" →
-**"Voice • Gemini"** or **"Gemini"** under heading "Voice." Material
+Applied to a settings row: "Voice provider is currently set to Gemini" →
+**"Voice · Gemini"** or **"Gemini"** under heading "Voice." Material
 Design: "Clarity is the single most important metric in UX writing. If a
 user has to read a sentence twice to understand it, the design has
 failed." — [Material: Content design](https://m3.material.io/foundations/content-design/overview).
@@ -832,10 +991,10 @@ same archetype:
 ### F. Synthesis — the strongest signals
 
 1. **Three top-level slots recur across every audio admin product worth
-   citing: Sources/Services, Sound, Network/System.** Voice/Assistants
-   and About/Updates are next-tier. Now Playing is the *home*, not a
-   settings section. The user's mental model is built around these chunks
-   — fight it at your peril.
+   citing: Sources/Services, Sound, Network/System.** Voice/Assistant and
+   About/Updates are next-tier. Now Playing is the *home*, not a settings
+   section. The user's mental model is built around these chunks — fight it
+   at your peril.
 
 2. **The mandatory setup path is short and linear; everything else is a
    checklist.** Critical-path-as-wizard, everything-else-as-persistent-
@@ -844,13 +1003,13 @@ same archetype:
    "Skip?".
 
 3. **More than two levels of disclosure is a design smell.** Nielsen's
-   most actionable single constraint. With ~13 cards today, the right
-   move is to chunk into 4-6 top-level groups, max one drill-down inside
+   most actionable single constraint. With 17 navigation cards today, the
+   right move is to chunk into 6 top-level groups, max one drill-down inside
    each.
 
 4. **Status text wants to be a noun phrase, not a sentence.** GOV.UK and
-   Polaris are aligned: "Voice • Gemini," not "The voice provider is
-   currently set to Gemini." Compresses the page roughly in half without
+   Polaris are aligned: `Voice · OpenAI`, not "The voice provider is
+   currently set to OpenAI." Compresses the page roughly in half without
    information loss and makes it scannable.
 
 5. **An admin page is a different rhetorical register than a consumer
@@ -860,21 +1019,81 @@ same archetype:
    management page should too — closer to a router admin than to the
    Sonos consumer app.
 
+### G. 2026-05-28 refresh — iOS Settings + compact row design
+
+This refresh was added after the page grew from 13 to 17 navigation cards and
+the user explicitly asked whether "Voice & Skills" was the right grouping. The
+answer: no. The best current name is **Assistant**.
+
+**iOS Settings patterns that transfer well:**
+
+- iOS groups by user mental model more than implementation: identity/account
+  at top; common connectivity near the top; device/system controls; privacy
+  and security; app-specific settings pushed lower. The JTS equivalent is:
+  identity/control header, then Sources, Assistant, Sound, Network,
+  Accessories, System. — [Apple: Find settings on iPhone](https://support.apple.com/en-ie/guide/iphone/iph079e1fe9d/ios),
+  [9to5Mac: iOS 18 Settings changes](https://9to5mac.com/2024/07/18/ios-18-settings-whats-new/)
+- Apple separates quick controls from durable settings. JTS should keep
+  Volume, Microphone, and Source selection pinned; everything else becomes
+  a grouped settings row. — [Apple: Control Center on iPhone](https://support.apple.com/en-gb/guide/iphone/iph59095ec58/ios)
+- Apple's HIG says too many settings make an experience less approachable and
+  harder to search; settings should affect the overall experience, while
+  task-specific controls should live near the task. That supports moving
+  AirPlay sync under Sources and Room correction under Sound. —
+  [Apple HIG: Settings](https://developer.apple.com/design/human-interface-guidelines/settings)
+- At the list level, iOS uses short labels, familiar icons, secondary values,
+  and disclosure. Explanation belongs on the destination screen, not the
+  first row. Apple's writing guidance and GOV.UK's UI writing guidance both
+  point in the same direction: brief, clear, front-loaded labels. —
+  [Apple HIG: Writing](https://developer.apple.com/design/human-interface-guidelines/writing),
+  [GOV.UK: Writing for user interfaces](https://www.gov.uk/service-manual/design/writing-for-user-interfaces)
+
+**Settings-list guidance from broader design systems:**
+
+- Material's settings pattern says important settings go first, section titles
+  should be specific, labels should be brief, and secondary text should show
+  current state rather than repeating the label. This is almost exactly the
+  JTS homepage problem. — [Material Design: Settings](https://m1.material.io/patterns/settings.html)
+- WCAG 2.2's target-size minimum is 24 by 24 CSS pixels; for a phone-opened
+  LAN settings page, rows should be closer to 44-52 px high so they feel easy
+  to tap. — [W3C: What's new in WCAG 2.2](https://www.w3.org/WAI/standards-guidelines/wcag/new-in-22/)
+- SVG is the right icon format here. Inline SVG avoids icon-font downloads,
+  can inherit CSS color, and can be marked `aria-hidden` when paired with a
+  visible label. — [web.dev: Icons](https://web.dev/learn/design/icons/)
+- JavaScript parsing/execution is render-blocking by default, and expensive
+  animations can jank. Keep `/` static; animate only small opacity/transform
+  changes when useful. — [MDN: JavaScript performance](https://developer.mozilla.org/en-US/docs/Learn_web_development/Extensions/Performance/JavaScript),
+  [MDN: Animation performance](https://developer.mozilla.org/en-US/docs/Web/Performance/Animation_performance_and_frame_rate)
+- Accent colors should not be reused for semantic meaning. If green means
+  success/on, it should not also be the house brand color. — [Atlassian Design:
+  Accent colors](https://atlassian.design/foundations/color-new/accents/)
+
+**What not to copy from iOS:**
+
+- Do not copy iOS's giant universal settings list. JTS is one device, not an
+  operating system.
+- Do not bury integrations under an "Apps" analogue. JTS integrations are
+  assistant/source capabilities, not installed apps.
+- Do not rely on search as the escape hatch. Occasional LAN users should be
+  able to scan the page without remembering the right term.
+- Do not create more top-level groups just because iOS can. The six-section
+  JTS shape is a feature.
+
 ---
 
 ## 11. Appendix — when you're ready to build
 
 Pre-flight checklist for future-you:
 
-- [ ] **Re-inventory `deploy/index.html`** — new cards may have landed
-      since the 2026-05-22 snapshot. Diff against §3.1 and update the
+- [ ] **Re-inventory `deploy/index.html`** — new rows may have landed
+      since the 2026-05-28 snapshot. Diff against §3.1 and update the
       proposal sections if necessary.
 - [ ] **Re-inventory `jasper/web/*_setup.py`** — same. Check if new
       wizards exist that need a home in the IA.
 - [ ] **Check `git worktree list` and `gh pr list --state open`** for
       in-flight UI work that might conflict.
-- [ ] **Re-skim section 10A** (competitor patterns) for any product
-      that's shipped a major IA change since 2026-05-22. Sonos in
+- [ ] **Re-skim sections 10A and 10G** (competitor/iOS patterns) for any
+      product that's shipped a major IA change since 2026-05-28. Sonos in
       particular tends to redesign their app every couple of years.
 - [ ] **Decide the open questions in §9** — write the answer next to each
       one before opening the PR.
@@ -883,7 +1102,11 @@ Pre-flight checklist for future-you:
       ship. If not, the proposal is wrong about the mental model and
       needs revision before code.
 - [ ] **Phase 1 PR scope**: `deploy/index.html` + CSS only. No backend.
-      Should be one PR, ~2 hours, easily revertable.
+      Should be one PR and easily revertable.
+- [ ] **Keep shared web primitives in view** — use `jasper/web/_common.py`
+      and `tests/test_web_wizard_conventions.py` as the guardrails when a
+      wizard changes. Prefer tiny shared helpers/classes for repeated controls
+      and states; keep one-off page layout local.
 
 Notes specific to JTS that the research doesn't cover:
 
@@ -904,5 +1127,7 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-27 (proposal status/footer check; `/system/`
-implementation inventory refreshed against current dashboard cards)
+Last verified: 2026-05-28 (Phase 1 landing-page implementation, landing page,
+integrations page, nginx route map, `jasper/web/__main__.py`, `/system/`
+dashboard, live `http://jts.local/`, and 2026-05-28 design/iOS research
+refresh)

@@ -66,6 +66,44 @@ def test_landing_page_has_source_selector_buttons() -> None:
         assert f'data-source="{source}"' in html
 
 
+def test_landing_page_uses_grouped_settings_rows() -> None:
+    html = _index_html()
+
+    assert "<title>JTS</title>" in html
+    assert "JTS speaker" not in html
+    assert "Manage your speaker" not in html
+    assert "Voice & Skills" not in html
+    for heading in (
+        "Sources",
+        "Assistant",
+        "Sound",
+        "Network",
+        "Accessories",
+        "System",
+    ):
+        assert f">{heading}</h2>" in html
+    assert 'class="setting-row"' in html
+    headings = re.findall(r"<h2[^>]*>([^<]+)</h2>", html)
+    assert headings == [
+        "Sources",
+        "Assistant",
+        "Sound",
+        "Network",
+        "Accessories",
+        "System",
+    ]
+    assert "snap.satellites" not in html
+
+
+def test_landing_page_css_keeps_type_stable() -> None:
+    html = _index_html()
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
+
+    assert "vw" not in style
+    for value in re.findall(r"letter-spacing:\s*([^;]+);", style):
+        assert value.strip() == "0"
+
+
 def test_source_selector_uses_control_endpoints() -> None:
     html = _index_html()
 
