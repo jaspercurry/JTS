@@ -5,7 +5,9 @@
 # active config file without restarting CamillaDSP.
 #
 # Path conventions on this speaker:
-#   /etc/camilladsp/v1.yml         repo-deployed baseline DSP config
+#   /etc/camilladsp/outputd-cutover.yml
+#                                  repo-deployed outputd baseline DSP config
+#   /etc/camilladsp/v1.yml         main-branch rollback baseline DSP config
 #   /etc/camilladsp/coeffs/        FIR-filter coefficient files
 #   /etc/camilladsp/                additional configs the user creates
 #                                    via the GUI live alongside v1.yml
@@ -30,11 +32,11 @@ ssl_certificate: null
 ssl_private_key: null
 
 # `config_dir` is what the GUI scans for *.yml files in its config
-# selector. Point it at /etc/camilladsp so v1.yml shows up alongside
-# whatever new configs the user saves via the GUI.
+# selector. Point it at /etc/camilladsp so outputd-cutover.yml shows
+# up alongside whatever new configs the user saves via the GUI.
 config_dir: "/etc/camilladsp"
 coeff_dir: "/etc/camilladsp/coeffs"
-default_config: "/etc/camilladsp/v1.yml"
+default_config: "/etc/camilladsp/outputd-cutover.yml"
 
 statefile_path: "/var/lib/camillagui/statefile.yml"
 log_file: "/var/log/camillagui.log"

@@ -92,7 +92,18 @@ def upstream_control():
     responses: dict[str, dict] = {
         "/system/snapshot": {
             "build": {"JASPER_GIT_SHA": "abc1234"},
-            "metrics": {"current": {"mem_total_mb": 2048}},
+            "metrics": {
+                "current": {"mem_total_mb": 2048},
+                "services": [
+                    {
+                        "name": "jasper-outputd",
+                        "unit": "jasper-outputd.service",
+                        "group": "Audio",
+                        "cpu_pct": 0.2,
+                        "memory_mb": 11.2,
+                    },
+                ],
+            },
             "airplay_health": {"status": "ok", "reason": "clean"},
             "audio_quality": {
                 "converter": "samplerate_medium",
@@ -100,6 +111,22 @@ def upstream_control():
                 "label": "Medium",
                 "summary": "Lower CPU, still clean.",
                 "options": [],
+            },
+            "outputd": {
+                "backend": "alsa",
+                "content": {
+                    "buffer_frames": 4096,
+                    "xrun_count": 0,
+                    "empty_periods": 0,
+                    "eagain_count": 0,
+                },
+                "dac": {"buffer_frames": 3072, "xrun_count": 0},
+                "mix": {"last_period_clipped_samples": 0},
+                "tts": {
+                    "pending_frames": 0,
+                    "over_budget": False,
+                    "over_budget_ms": 0,
+                },
             },
             "cloud": {"available": False, "reason": "no usage.db yet"},
             "voice_provider": "gemini",
@@ -197,6 +224,8 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "Cgroup CPU and memory by service" in text
     assert "<th class=\"num\">Mem</th>" in text
     assert "svc-group" in text
+    assert "serviceMemoryMb(services, 'jasper-outputd')" in text
+    assert "'mem ' + Math.round(memoryMb) + ' MB'" in text
     assert "System total · shown / unshown / free" in text
     assert "RSS unavailable" not in text
     assert "Math.round(capacityPercent(totalCpu, cores.length))" in text
@@ -224,6 +253,7 @@ def test_data_json_proxies_snapshot(dashboard_server) -> None:
     assert payload["build"]["JASPER_GIT_SHA"] == "abc1234"
     assert payload["voice_provider"] == "gemini"
     assert payload["airplay_health"]["status"] == "ok"
+    assert payload["outputd"]["backend"] == "alsa"
     assert payload["audio_quality"]["converter"] == "samplerate_medium"
     assert ("GET", "/system/snapshot") in received
 

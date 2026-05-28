@@ -5,12 +5,12 @@ end-to-end requires an actual CamillaDSP install, which we don't
 have at unit-test time. Instead, we pin the structural invariants:
 
   - Output is a single YAML document.
-  - Devices block matches v1.yml shape (samplerate, capture/playback
-    types, format strings).
+  - Devices block matches the cutover topology shape (samplerate,
+    capture/playback types, format strings).
   - master_gain mixer is preserved verbatim — Ducker contract
     relies on it.
-  - For empty PEQs, the output is functionally equivalent to v1.yml
-    (only a header comment differs).
+  - For empty PEQs, the output is functionally equivalent to the
+    outputd cutover config (only a header comment differs).
   - For a PEQ list, each filter shows up as a Biquad/Peaking entry
     with the right freq/q/gain values, and the per-channel pipeline
     Filter blocks reference the new names plus `flat`.
@@ -32,7 +32,7 @@ from jasper.correction.peq import PEQ
 def test_empty_peqs_yields_pipeline_with_only_flat():
     """With no PEQ filters, the output should still have the `flat`
     Gain filter and a pipeline that references only `flat` per
-    channel — equivalent to deploy/camilladsp/v1.yml."""
+    channel — equivalent to deploy/camilladsp/outputd-cutover.yml."""
     yaml = emit_correction_config([])
     # Devices.
     assert "samplerate: 48000" in yaml
@@ -40,9 +40,9 @@ def test_empty_peqs_yields_pipeline_with_only_flat():
     assert "volume_limit: 0.0" in yaml
     assert 'device: "plug:jasper_capture"' in yaml
     assert "format: S32_LE" in yaml
-    assert 'device: "jasper_out"' in yaml
+    assert 'device: "outputd_content_playback"' in yaml
     assert "format: S16_LE" in yaml
-    # v1.yml contract: kernel-side rate adjust OR AsyncSinc, never both.
+    # Cutover contract: kernel-side rate adjust OR AsyncSinc, never both.
     assert "enable_rate_adjust: true" in yaml
     assert "resampler:" not in yaml
     assert "AsyncSinc" not in yaml
@@ -85,7 +85,7 @@ def test_pipeline_chains_peqs_before_flat():
     """The per-channel Filter blocks must reference the PEQs in
     order, then `flat` last. Without `flat` last, the pipeline drops
     a filter slot the existing code might rely on (and the diff vs
-    v1.yml grows beyond what we want)."""
+    the cutover base grows beyond what we want)."""
     peqs = [PEQ(freq=80.0, q=4.0, gain=-3.0), PEQ(freq=200.0, q=2.0, gain=-2.0)]
     yaml = emit_correction_config(peqs)
     # Both channels reference the same PEQ chain in the same order.
@@ -95,7 +95,7 @@ def test_pipeline_chains_peqs_before_flat():
 
 def test_master_gain_mixer_unchanged_with_peqs():
     """Whatever the PEQ list is, the master_gain mixer block must
-    look like v1.yml's. The Ducker writes main_volume, NOT
+    look like the cutover base's. The Ducker writes main_volume, NOT
     master_gain, but the mixer is the placeholder hook for future
     EQ work — and Phase 1 deliberately preserves it untouched."""
     peqs = [PEQ(freq=80.0, q=4.0, gain=-3.0)]

@@ -6,8 +6,7 @@
 #     /var/lib/jasper/speaker_name.env)
 #   - audio_backend_latency_offset_in_seconds derived from the active
 #     CamillaDSP config's samplerate/chunksize/target_level, the
-#     fan-in output buffer, plus the output dmix buffer in
-#     /etc/asound.conf (`pcm.jasper_out`)
+#     fan-in output buffer, plus jasper-outputd's DAC buffer
 #   - output_device fixed to `shairport_substream`, AirPlay's private
 #     fan-in lane
 #
@@ -23,15 +22,15 @@
 #   JASPER_SPEAKER_NAME         — display name shown in renderer pickers.
 #                                 Default: JTS.
 #   JASPER_CAMILLA_STATEFILE    — CamillaDSP statefile path.
-#                                 Default: /var/lib/camilladsp/statefile.yml.
+#                                 Default: /var/lib/camilladsp/outputd-statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
-#                                   Default: /etc/camilladsp/v1.yml.
-#   JASPER_ASOUNDRC             — ALSA system-wide config path used to
-#                                 source the output dmix buffer size.
-#                                 Default: /etc/asound.conf.
+#                                   Default: /etc/camilladsp/outputd-cutover.yml.
 #   JASPER_FANIN_ENV_FILE       — optional fan-in env file used to
 #                                 source JASPER_FANIN_OUTPUT_BUFFER_FRAMES.
 #                                 Default: /var/lib/jasper/fanin.env.
+#   JASPER_OUTPUTD_ENV_FILE     — optional outputd env file used to
+#                                 source JASPER_OUTPUTD_DAC_BUFFER_FRAMES.
+#                                 Default: /var/lib/jasper/outputd.env.
 # File outputs:
 #   /etc/shairport-sync.conf — atomic write via /etc/shairport-sync.conf.tmp.
 #
@@ -44,10 +43,11 @@ TARGET="${JASPER_SHAIRPORT_CONF:-/etc/shairport-sync.conf}"
 ENV_FILE="${JASPER_AIRPLAY_MODE_ENV:-/var/lib/jasper/airplay_mode.env}"
 JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
-CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/statefile.yml}"
-CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/v1.yml}"
-ASOUNDRC="${JASPER_ASOUNDRC:-/etc/asound.conf}"
+CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
+CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
 FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
+OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
+DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -103,40 +103,6 @@ camilla_devices_int() {
     ' "$config"
 }
 
-# Output-side dmix (pcm.jasper_out) buffer. Same shape, same
-# invisibility-to-snd_pcm_delay() story, but on the far side of
-# CamillaDSP, between Camilla and the DAC. shairport's handle is its
-# private fan-in lane; it cannot observe this fixed downstream delay,
-# so the offset accounts for it explicitly.
-#
-# Returns the integer frame count on stdout, or empty if the file
-# isn't readable or the block can't be found (callers must treat
-# empty as 0).
-asoundrc_output_dmix_buffer_frames() {
-    local asoundrc="$1"
-    [[ -r "$asoundrc" ]] || return 0
-    awk '
-        /^pcm\.jasper_out[[:space:]]*\{/ {
-            in_block = 1
-            next
-        }
-        in_block && /^pcm\./ {
-            exit
-        }
-        in_block {
-            for (i = 1; i <= NF; i++) {
-                if ($i == "buffer_size") {
-                    val = $(i + 1)
-                    if (val ~ /^[0-9]+$/) {
-                        print val
-                        exit
-                    }
-                }
-            }
-        }
-    ' "$asoundrc"
-}
-
 fanin_output_buffer_frames() {
     local value="${JASPER_FANIN_OUTPUT_BUFFER_FRAMES:-}"
     if [[ -z "$value" && -r "$FANIN_ENV_FILE" ]]; then
@@ -163,13 +129,50 @@ fanin_output_buffer_frames() {
     fi
 }
 
+env_file_value() {
+    local file="$1"
+    local key="$2"
+    [[ -r "$file" ]] || return 0
+    awk -F= -v key="$key" '
+        $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+            sub(/^[^=]*=[[:space:]]*/, "")
+            sub(/[[:space:]]*(#.*)?$/, "")
+            print
+            exit
+        }
+    ' "$file"
+}
+
+positive_int_or_default() {
+    local value="$1"
+    local default="$2"
+    value="${value//[[:space:]]/}"
+    value="${value%\"}"
+    value="${value#\"}"
+    value="${value%\'}"
+    value="${value#\'}"
+    if [[ "$value" =~ ^[0-9]+$ && "$value" -gt 0 ]]; then
+        printf '%s\n' "$value"
+    else
+        printf '%s\n' "$default"
+    fi
+}
+
+outputd_dac_buffer_frames() {
+    local value="${JASPER_OUTPUTD_DAC_BUFFER_FRAMES:-}"
+    if [[ -z "$value" ]]; then
+        value="$(env_file_value "$OUTPUTD_ENV_FILE" JASPER_OUTPUTD_DAC_BUFFER_FRAMES || true)"
+    fi
+    positive_int_or_default "$value" "$DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES"
+}
+
 derive_audio_backend_latency_offset() {
     local config
     local sample_rate
     local chunksize
     local target_level
     local fanin_output_buffer
-    local output_dmix_buffer
+    local outputd_dac_buffer
 
     config="$(camilla_config_path)"
     if [[ ! -r "$config" ]]; then
@@ -200,19 +203,17 @@ derive_audio_backend_latency_offset() {
     # also invisible to shairport's snd_pcm_delay().
     fanin_output_buffer="$(fanin_output_buffer_frames)"
 
-    # Output-side dmix buffer (pcm.jasper_out, the dongle dmix between
-    # CamillaDSP and the DAC). Invisible to shairport's snd_pcm_delay()
-    # because it sits downstream of AirPlay's private fan-in lane.
-    output_dmix_buffer="$(asoundrc_output_dmix_buffer_frames "$ASOUNDRC" || true)"
-    if [[ -z "$output_dmix_buffer" ]]; then
-        output_dmix_buffer=0
-    fi
+    # outputd's DAC buffer is downstream of shairport's private lane
+    # and of CamillaDSP. shairport cannot observe it via
+    # snd_pcm_delay(), so account for the branch-owned output owner
+    # explicitly.
+    outputd_dac_buffer="$(outputd_dac_buffer_frames)"
 
     awk -v sample_rate="$sample_rate" \
         -v chunksize="$chunksize" \
         -v target_level="$target_level" \
         -v fanin_output_buffer="$fanin_output_buffer" \
-        -v output_dmix_buffer="$output_dmix_buffer" '
+        -v outputd_dac_buffer="$outputd_dac_buffer" '
         BEGIN {
             if (sample_rate <= 0) {
                 printf "0.000000"
@@ -225,16 +226,15 @@ derive_audio_backend_latency_offset() {
             #   + fanin_output_buffer        ← jasper-fanin output queue
             #                                   between the private AirPlay
             #                                   lane and CamillaDSP/AEC.
-            #   + output_dmix_buffer         ← pcm.jasper_out dmix queue
-            #                                   between CamillaDSP and the
-            #                                   DAC.
+            #   + outputd_dac_buffer         ← jasper-outputd direct-DAC
+            #                                   playback queue.
             #
             # NB: any single-quote (apostrophe) in this comment block would
             # close the surrounding awk single-quoted string and break
             # the script — bash 2026-05-25 lesson, do not paraphrase.
             # shairport feeds this many frames early so audio still emerges
             # from the speaker at the AirPlay-scheduled time.
-            invisible_frames = (target_level - chunksize) + fanin_output_buffer + output_dmix_buffer
+            invisible_frames = (target_level - chunksize) + fanin_output_buffer + outputd_dac_buffer
             offset = -(invisible_frames / sample_rate)
             if ((offset > -0.0000005) && (offset < 0.0000005)) {
                 offset = 0

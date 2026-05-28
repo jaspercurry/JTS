@@ -111,7 +111,26 @@ def server_with_coordinator(monkeypatch):
     import jasper.control.server as srv_mod
     monkeypatch.setattr(srv_mod, "_with_coordinator", fake_with_coordinator)
 
-    handler = _make_handler("127.0.0.1", 1234, "/nonexistent.sock")
+    class _NoAirPlayProcess:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_subprocess_exec(*args, **kwargs):  # noqa: ARG001
+        return _NoAirPlayProcess()
+
+    async def fake_mux_status(*args, **kwargs):  # noqa: ARG001
+        return None
+
+    monkeypatch.setattr(
+        srv_mod.asyncio,
+        "create_subprocess_exec",
+        fake_subprocess_exec,
+    )
+    monkeypatch.setattr(srv_mod, "_mux_socket_command", fake_mux_status)
+
+    handler = _make_handler("127.0.0.1", 9, "/nonexistent.sock")
     server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -924,6 +943,7 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["sound"]["filter_count"] == 0
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
     assert body["renderers"]["spotify"]["playing"] is False
+    assert body["outputd"] is None
     assert body["active_source"] in {"idle", "airplay"}
     assert body["satellites"]["dial"]["online"] is False
 

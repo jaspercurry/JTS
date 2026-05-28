@@ -544,6 +544,9 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
     assert status["mode"] == "manual"
     assert status["selected_source"] == "airplay"
     assert status["active_source"] == "airplay"
+    assert status["last_handoff"]["id"] == 1
+    assert status["last_handoff"]["from"] == "idle"
+    assert status["last_handoff"]["to"] == "airplay"
 
 
 @pytest.mark.asyncio
@@ -618,12 +621,16 @@ async def test_failed_auto_handoff_retries_target_on_next_tick(
 
     assert mux._pending_auto_target is Source.AIRPLAY
     assert mux._winner is Source.SPOTIFY
+    assert mux._last_handoff["id"] == 2
+    assert mux._last_handoff["result"] == "failed"
 
     coord.next_result = "ok"
     await mux._tick()
 
     assert mux._pending_auto_target is None
     assert mux._winner is Source.AIRPLAY
+    assert mux._last_handoff["id"] == 3
+    assert mux._last_handoff["result"] == "ok"
     assert [event for event in coord.events if event == "prepare:airplay"] == [
         "prepare:airplay",
         "prepare:airplay",
@@ -673,6 +680,44 @@ async def test_winner_stopping_holds_fanin_none(
 
     mux._fanin_none.assert_awaited()
     assert mux._winner is None
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_uses_stop_not_pause(mux, monkeypatch):
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_busctl(*args):
+        calls.append(args)
+        return ""
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+
+    await mux._pause(Source.AIRPLAY)
+
+    assert calls == [(
+        "call",
+        "org.mpris.MediaPlayer2.ShairportSync",
+        "/org/mpris/MediaPlayer2",
+        "org.mpris.MediaPlayer2.Player",
+        "Stop",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_airplay_preempt_falls_back_to_pause_when_stop_fails(
+    mux, monkeypatch,
+):
+    calls: list[tuple[str, ...]] = []
+
+    async def fake_busctl(*args):
+        calls.append(args)
+        return None if args[-1] == "Stop" else ""
+
+    monkeypatch.setattr("jasper.mux._busctl", fake_busctl)
+
+    await mux._pause(Source.AIRPLAY)
+
+    assert [call[-1] for call in calls] == ["Stop", "Pause"]
 
 
 @pytest.mark.asyncio

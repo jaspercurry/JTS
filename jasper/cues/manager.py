@@ -41,10 +41,19 @@ from .registry import CUES, CueDef, find as find_cue
 logger = logging.getLogger(__name__)
 
 
-# Extra time to wait after the computed audio duration so ALSA's
-# pipeline / dmix buffer fully empties before un-ducking. 200ms is
-# generous for the dongle's typical ~85ms dmix buffer.
+# Fallback wait for legacy/fake playout objects that predate
+# TtsPlayout.wait_drained(). Real TtsPlayout implementations expose a
+# sample-counted drain deadline, which is the source of truth for both
+# the old sounddevice path and the outputd cutover path.
 _PLAY_DRAIN_BUFFER_SEC = 0.2
+
+
+async def _wait_tts_drained(tts: Any) -> None:
+    wait_drained = getattr(tts, "wait_drained", None)
+    if callable(wait_drained):
+        await wait_drained()
+    else:
+        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
 
 
 class AudioCueManager:
@@ -184,14 +193,7 @@ class AudioCueManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("cue play: TtsPlayout.write failed (slug=%s): %s", slug, e)
             return False
-        # TtsPlayout.write() goes through sounddevice's BLOCKING
-        # write under asyncio.to_thread — by the time it returns,
-        # all bytes have been pushed into the stream buffer at
-        # playback rate (so write() takes ~audio_duration_sec wall
-        # clock). All that's left is the small ALSA / dmix tail
-        # buffer; sleep just that long before returning so callers
-        # that wrap us with duck/restore don't un-duck mid-tail.
-        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+        await _wait_tts_drained(self._tts)
         logger.info(
             "cue play: %s (%d bytes pcm, audio=%.1fs)",
             slug, len(pcm), audio_duration_sec,
@@ -272,7 +274,7 @@ class AudioCueManager:
         except Exception as e:  # noqa: BLE001
             logger.warning("cue speak_text: TtsPlayout.write failed: %s", e)
             return False
-        await asyncio.sleep(_PLAY_DRAIN_BUFFER_SEC)
+        await _wait_tts_drained(self._tts)
         logger.info(
             "cue speak_text: %r (%d bytes pcm, audio=%.1fs)",
             text, len(pcm), audio_duration_sec,

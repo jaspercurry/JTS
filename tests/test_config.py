@@ -72,6 +72,8 @@ def test_defaults_with_only_gemini_key(monkeypatch):
     assert cfg.mic_capture_rate == 16000
     assert cfg.mic_capture_channels == 1
     assert cfg.tts_device == "jasper_out"
+    assert cfg.tts_transport == "outputd"
+    assert cfg.tts_outputd_socket == "/run/jasper-outputd/tts.sock"
     assert cfg.tts_output_rate == 48000
     # Defaults updated 2026-05-10: offset 0 (was -8) lets the tracker
     # drive level instead of stacking conservatism, and headroom 16
@@ -203,13 +205,14 @@ def test_spotify_enabled_when_client_id_present(monkeypatch):
         ("JASPER_TTS_SILENCE_THRESHOLD_DBFS", "5", "JASPER_TTS_SILENCE_THRESHOLD_DBFS"),
         ("JASPER_TTS_MUSIC_WINDOW_SEC", "0", "JASPER_TTS_MUSIC_WINDOW_SEC"),
         ("JASPER_TTS_MUSIC_WINDOW_SEC", "-5", "JASPER_TTS_MUSIC_WINDOW_SEC"),
+        ("JASPER_TTS_TRANSPORT", "pipewire", "JASPER_TTS_TRANSPORT"),
         ("JASPER_VOLUME_REGRESS_AFTER_SEC", "0", "JASPER_VOLUME_REGRESS_AFTER_SEC"),
         ("JASPER_VOLUME_REGRESS_SAFE_LOW_PCT", "150", "JASPER_VOLUME_REGRESS_SAFE_LOW_PCT"),
         ("JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT", "-1", "JASPER_VOLUME_REGRESS_SAFE_HIGH_PCT"),
         ("JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT", "200", "JASPER_VOLUME_FIRST_BOOT_DEFAULT_PCT"),
     ],
 )
-def test_invalid_numeric_env_values_raise(monkeypatch, name, value, expected):
+def test_invalid_env_values_raise(monkeypatch, name, value, expected):
     monkeypatch.setenv("GEMINI_API_KEY", "x")
     monkeypatch.setenv(name, value)
     with pytest.raises(RuntimeError, match=expected):
@@ -267,3 +270,12 @@ def test_tts_gain_db_positive_still_rejected(monkeypatch):
     monkeypatch.setenv("JASPER_TTS_GAIN_DB", "3.0")
     with pytest.raises(RuntimeError, match="must be <= 0"):
         Config.from_env()
+
+
+def test_tts_outputd_transport_env(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "x")
+    monkeypatch.setenv("JASPER_TTS_TRANSPORT", "outputd")
+    monkeypatch.setenv("JASPER_TTS_OUTPUTD_SOCKET", "/tmp/jasper-outputd.sock")
+    cfg = Config.from_env()
+    assert cfg.tts_transport == "outputd"
+    assert cfg.tts_outputd_socket == "/tmp/jasper-outputd.sock"

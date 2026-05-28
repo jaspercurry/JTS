@@ -109,6 +109,8 @@ Run for real:
      Python 3.13.
    - jasper-fanin Rust daemon from rust/jasper-fanin with
      cargo build --release --locked.
+   - jasper-outputd daemon from rust/jasper-outputd with
+     cargo build --release --locked; enabled on this cutover branch.
    - Optional ESP32 dial/satellite firmware only when
      JASPER_BUILD_OPTIONAL_FIRMWARE=1.
 
@@ -139,9 +141,15 @@ Run for real:
    - Reload udev and systemd.
    - Enable socket-activated setup wizards and always-on audio/control
      services.
-   - Enable/start or restart renderer services, jasper-fanin, DAC init,
-     headphone monitor, nginx, Avahi, CamillaGUI socket, and the WiFi
-     guardian.
+   - Enable/start or restart renderer services, jasper-fanin,
+     jasper-outputd, DAC init, headphone monitor, nginx, Avahi,
+     CamillaGUI socket, and the WiFi guardian.
+   - Require jasper-outputd to be active and answering STATUS before
+     voice is reconciled onto the cutover TTS socket.
+   - Seed or validate the outputd cutover Camilla statefile while
+     preserving the normal production statefile. Rollback to main must
+     also stop/disable jasper-outputd because main does not know about
+     units introduced on this cutover branch.
    - Run the AEC/mic reconciler so voice follows attached hardware.
    - Regenerate audio cues if jasper-cues is installed.
    - Run jasper-doctor as a final non-blocking health summary.
@@ -202,8 +210,8 @@ install_deps() {
         meson ninja-build \
         nginx-light openssl \
         rustc cargo
-    # rustc + cargo are required to build the jasper-fanin Rust daemon
-    # (rust/jasper-fanin/). Trixie ships rustc 1.85, comfortably above
+    # rustc + cargo are required to build the Rust audio daemons
+    # (rust/jasper-fanin/ and rust/jasper-outputd/). Trixie ships rustc 1.85, comfortably above
     # our crate's rust-version=1.75 floor. See
     # docs/HANDOFF-fan-in-daemon.md "Why Rust" for the language choice.
     # meson + ninja-build are needed by build_webrtc_v2_for_aec3() to
@@ -368,6 +376,93 @@ build_install_jasper_fanin() {
     echo "  → installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1))"
 }
 
+build_install_jasper_outputd() {
+    # Build the jasper-outputd Rust daemon and install it to
+    # /opt/jasper/bin/jasper-outputd. On this branch the systemd unit is
+    # enabled as the final output owner. Main-branch rollback must stop
+    # and disable this persistent unit before returning to the legacy
+    # jasper_out path.
+    local src_dir="${REPO_DIR}/rust/jasper-outputd"
+    local cache_dir="/var/cache/jasper-outputd-build"
+    local bin_dest="/opt/jasper/bin/jasper-outputd"
+
+    if [[ ! -d "${src_dir}" ]]; then
+        echo "  ERROR: jasper-outputd source missing at ${src_dir}" >&2
+        echo "  This cutover branch requires jasper-outputd as the final output owner." >&2
+        return 1
+    fi
+
+    echo "  building jasper-outputd (Rust daemon)..."
+    mkdir -p "${cache_dir}"
+    chown pi:pi "${cache_dir}"
+
+    rsync -a --delete \
+        --exclude='target/' \
+        "${src_dir}/" "${cache_dir}/"
+    chown -R pi:pi "${cache_dir}"
+
+    sudo -u pi -H bash -c "cd '${cache_dir}' && cargo build --release --locked --quiet" \
+        || { echo "  jasper-outputd build failed; see cargo output above"; return 1; }
+
+    local built_bin="${cache_dir}/target/release/jasper-outputd"
+    if [[ ! -x "${built_bin}" ]]; then
+        echo "  ERROR: cargo build finished but ${built_bin} is missing" >&2
+        return 1
+    fi
+
+    mkdir -p /opt/jasper/bin
+    install -m 0755 -o root -g root "${built_bin}" "${bin_dest}"
+    echo "  -> installed ${bin_dest} ($(du -h "${bin_dest}" | cut -f1))"
+}
+
+require_outputd_ready() {
+    if [[ ! -x /opt/jasper/bin/jasper-outputd ]]; then
+        echo "  ERROR: /opt/jasper/bin/jasper-outputd is missing or not executable" >&2
+        return 1
+    fi
+    systemctl restart jasper-outputd.service
+    systemctl is-active --quiet jasper-outputd.service || {
+        echo "  ERROR: jasper-outputd.service did not become active" >&2
+        journalctl -u jasper-outputd.service -n 40 --no-pager >&2 || true
+        return 1
+    }
+    python3 - <<'PY'
+import json
+import socket
+import sys
+import time
+
+path = "/run/jasper-outputd/control.sock"
+deadline = time.monotonic() + 3.0
+last_error = None
+while time.monotonic() < deadline:
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            sock.connect(path)
+            sock.sendall(b"STATUS\n")
+            body = b""
+            while True:
+                chunk = sock.recv(4096)
+                if not chunk:
+                    break
+                body += chunk
+        data = json.loads(body.decode("utf-8", errors="replace"))
+        if data.get("backend") != "alsa":
+            raise RuntimeError(f"backend={data.get('backend')!r}, expected 'alsa'")
+        if data.get("dac", {}).get("pcm") != "outputd_dac":
+            raise RuntimeError(f"dac.pcm={data.get('dac', {}).get('pcm')!r}")
+        if data.get("content", {}).get("pcm") != "outputd_content_capture":
+            raise RuntimeError(f"content.pcm={data.get('content', {}).get('pcm')!r}")
+        sys.exit(0)
+    except Exception as e:
+        last_error = e
+        time.sleep(0.1)
+print(f"jasper-outputd STATUS probe failed: {last_error}", file=sys.stderr)
+sys.exit(1)
+PY
+}
+
 install_camilladsp() {
     # Belt-and-suspenders: any pre-existing camilladsp.service from a
     # different install lineage shouldn't fight our copy over
@@ -376,10 +471,11 @@ install_camilladsp() {
     systemctl disable camilladsp.service 2>/dev/null || true
 
     install -d -m 0755 "${CAMILLA_DIR}" "${CAMILLA_CONF}"
-    # State + emitted-correction-config dirs. The systemd unit's
-    # --statefile points at /var/lib/camilladsp/statefile.yml so
-    # corrections survive Pi restarts; the room-correction wizard
-    # writes correction_<id>_<unixtime>.yml under configs/.
+    # State + emitted-correction-config dirs. Main uses
+    # /var/lib/camilladsp/statefile.yml so corrections survive Pi
+    # restarts; this cutover branch uses outputd-statefile.yml and
+    # preserves the normal statefile for rollback. The room-correction
+    # wizard writes correction_<id>_<unixtime>.yml under configs/.
     install -d -m 0755 /var/lib/camilladsp /var/lib/camilladsp/configs
     install -d -m 0750 \
         /var/lib/jasper/correction \
@@ -429,13 +525,88 @@ EOF
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
 
-    # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7)
-    # and writes to pcm.jasper_out. The yaml itself doesn't need
+    # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7).
+    # v1.yml writes to pcm.jasper_out for main-branch rollback;
+    # outputd-cutover.yml writes to outputd_content_playback so
+    # jasper-outputd owns the DAC on this branch. Neither yaml needs
     # substitution — install_alsa() handles the dongle name in
     # /etc/asound.conf.
     install -m 0644 \
         "${REPO_DIR}/deploy/camilladsp/v1.yml" \
         "${CAMILLA_CONF}/v1.yml"
+    install -m 0644 \
+        "${REPO_DIR}/deploy/camilladsp/outputd-cutover.yml" \
+        "${CAMILLA_CONF}/outputd-cutover.yml"
+
+    seed_outputd_statefile() {
+        cat > /var/lib/camilladsp/outputd-statefile.yml <<'EOF'
+config_path: /etc/camilladsp/outputd-cutover.yml
+mute:
+- false
+- false
+- false
+- false
+- false
+volume:
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+- 0.0
+EOF
+        chmod 0644 /var/lib/camilladsp/outputd-statefile.yml
+    }
+
+    camilla_config_has_safe_volume_limit() {
+        local config_path="$1"
+        awk '
+            /^[[:space:]]*volume_limit:/ {
+                value = $0
+                sub(/^[^:]*:[[:space:]]*/, "", value)
+                sub(/[[:space:]]*#.*/, "", value)
+                gsub(/["'\''"]/, "", value)
+                found = 1
+                if (value ~ /^[-+]?[0-9]+([.][0-9]+)?$/ && value + 0 <= 0) {
+                    safe = 1
+                }
+                exit
+            }
+            END {
+                if (!found || !safe) {
+                    exit 1
+                }
+            }
+        ' "${config_path}"
+    }
+
+    # The outputd cutover branch uses a separate Camilla statefile
+    # instead of overwriting /var/lib/camilladsp/statefile.yml. Preserve
+    # a valid outputd correction/sound profile across redeploys, but
+    # self-heal if the statefile is missing, points at a deleted config,
+    # points at a legacy jasper_out config that would bypass outputd, or
+    # omits the 0 dB Camilla volume ceiling.
+    if [[ ! -f /var/lib/camilladsp/outputd-statefile.yml ]]; then
+        seed_outputd_statefile
+        echo "  Seeded /var/lib/camilladsp/outputd-statefile.yml → outputd-cutover.yml"
+    else
+        local outputd_config
+        outputd_config="$(
+            awk '/^[[:space:]]*config_path:/ {print $2; exit}' \
+                /var/lib/camilladsp/outputd-statefile.yml || true
+        )"
+        if [[ -z "${outputd_config}" || ! -f "${outputd_config}" ]]; then
+            seed_outputd_statefile
+            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (missing config)"
+        elif ! grep -q 'outputd_content_playback' "${outputd_config}"; then
+            seed_outputd_statefile
+            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (legacy playback path)"
+        elif ! camilla_config_has_safe_volume_limit "${outputd_config}"; then
+            seed_outputd_statefile
+            echo "  Reset outputd Camilla statefile → outputd-cutover.yml (unsafe volume_limit)"
+        else
+            echo "  Preserved outputd Camilla statefile → ${outputd_config}"
+        fi
+    fi
 
     # NOTE: aec-bridge is no longer a CamillaDSP instance — it's
     # now a Python software AEC daemon (jasper-aec-bridge, see
@@ -486,7 +657,8 @@ install_alsa() {
     export DONGLE_CARD
 
     # /etc/asound.conf provides the system-wide ALSA PCM definitions
-    # (per-renderer fan-in lanes, jasper_capture, jasper_out, etc.).
+    # (per-renderer fan-in lanes, jasper_capture, outputd lanes,
+    # jasper_out rollback path, etc.).
     #
     # Location matters: this file MUST be world-readable so that
     # renderer processes running as non-root users (shairport-sync as
@@ -539,7 +711,7 @@ install_alsa() {
     /usr/local/sbin/jasper-render-asound-conf
     ln -sfn /var/lib/jasper-asound/asound.conf /etc/asound.conf
     chmod 0644 /var/lib/jasper-asound/asound.conf
-    echo "  Wrote /etc/asound.conf with fan-in lanes + jasper_out"
+    echo "  Wrote /etc/asound.conf with fan-in, outputd lanes, and jasper_out rollback path"
 }
 
 # Source-build / fetch librespot, nqptp, shairport-sync (AirPlay 2).
@@ -2095,6 +2267,10 @@ install_systemd_units() {
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/jasper-fanin.service" \
         "${SYSTEMD_DIR}/jasper-fanin.service"
+    # jasper-outputd: final-output owner on this cutover branch.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/systemd/jasper-outputd.service" \
+        "${SYSTEMD_DIR}/jasper-outputd.service"
 
     # WiFi profile guardian. Type=oneshot boot-time recreate of a lost
     # /etc/NetworkManager/system-connections/<SSID>.nmconnection from
@@ -2295,6 +2471,7 @@ install_systemd_units() {
     done
 
     systemctl enable jasper-camilla.service jasper-fanin.service \
+        jasper-outputd.service \
         jasper-voice.service \
         jasper-control.service \
         jasper-dac-init.service jasper-headphone-monitor.service \
@@ -2308,11 +2485,25 @@ Will retry on next boot."
     # Restart the headphone monitor so it picks up post-init state.
     systemctl restart jasper-headphone-monitor.service 2>/dev/null || true
 
+    # Stop the currently-running voice daemon before outputd claims the
+    # direct DAC. On cutover deploys, the old voice process may still
+    # hold a PortAudio stream to the legacy jasper_out path; if outputd
+    # starts first, DAC ownership can fail with "device busy". The AEC
+    # reconciler below restarts or parks voice once the output path is
+    # coherent.
+    systemctl stop jasper-voice.service 2>/dev/null || true
+    systemctl reset-failed jasper-voice.service 2>/dev/null || true
+
     systemctl restart jasper-fanin.service 2>/dev/null || true
     # CamillaDSP captures the fan-in output (`pcm.jasper_capture`).
     # Restart it after fan-in/asound wiring changes so it cannot keep
     # an old capture fd across topology updates.
     systemctl try-restart jasper-camilla.service 2>/dev/null || true
+    # outputd owns the final DAC loop on this branch. This is mandatory:
+    # if outputd is not active and answering STATUS, the voice daemon's
+    # outputd TTS socket would point at a silent path. Fail the install
+    # before the AEC reconciler restarts voice into a broken output path.
+    require_outputd_ready
 
     systemctl enable nqptp.service shairport-sync.service \
         librespot.service bt-agent.service jasper-mux.service
@@ -2346,7 +2537,7 @@ Will retry on next boot."
     # ensure_env_file above) for the SSH-driven-setup seed path.
     systemctl enable jasper-wifi-guardian.service
     echo
-    echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-voice"
+    echo "Units enabled. Start with: systemctl start jasper-fanin jasper-camilla jasper-outputd jasper-voice"
 }
 
 install_journald_persistent_storage() {
@@ -2775,7 +2966,8 @@ main() {
     set_usb_gadget_mode
     tune_wifi_for_airplay
     install_jasper
-    build_install_jasper_fanin   # Rust daemon binary; enabled by install_systemd_units
+    build_install_jasper_fanin    # Rust daemon binary; enabled by install_systemd_units
+    build_install_jasper_outputd  # Rust final-output owner for this cutover branch
     install_systemd_units
     retire_audio_topology_switch # Remove stale dmix/fanin state; fanin is canonical
     migrate_memory_resilience   # Stage 1 OOM protection: sysctl + MGLRU + zram

@@ -129,7 +129,7 @@ Renderers (each on its own snd-aloop substream pair):
   correction/test      → hw:Loopback,0,4
   (reserved)           → hw:Loopback,0,5    [debug/monitor mirror, for offline AEC capture]
   (reserved)           → hw:Loopback,0,6
-                          
+
 jasper-fanin (the new Rust daemon):
   reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
   sums sample-wise
@@ -140,15 +140,17 @@ The "summed music" substream:
   AEC bridge captures  ← pcm.jasper_ref     → dsnoop on hw:Loopback,1,7
                                                   (same substream, both consumers)
 
-CamillaDSP → jasper_out dmix (TTS sums in here) → Apple USB-C dongle
+CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
 ```
 
 ### What this preserves
 
-- **TTS bypass of CamillaDSP.** Unchanged. TTS still writes to the
-  `jasper_out` dmix on the dongle; music still goes through CamillaDSP
-  first; the ducker's `main_volume` still attenuates only music.
-  `TtsVolumeTracker` continues to observe `playback_rms` to scale TTS.
+- **TTS bypass of CamillaDSP.** TTS still bypasses CamillaDSP, but on
+  the outputd cutover branch it enters `jasper-outputd` instead of
+  writing directly to the legacy `jasper_out` dmix. Music still goes
+  through CamillaDSP first; the ducker's `main_volume` still attenuates
+  only music. `TtsVolumeTracker` continues to observe `playback_rms` to
+  scale TTS.
 - **AEC reference tap shape.** Unchanged at the consumer end —
   `pcm.jasper_ref` is still a plug-wrapped dsnoop; the AEC bridge code
   doesn't change at all. Only the underlying substream-pair shifts from
@@ -160,11 +162,13 @@ CamillaDSP → jasper_out dmix (TTS sums in here) → Apple USB-C dongle
 - **Renderer service files.** Each renderer's `--device` flag changes
   from `jasper_renderer_in` (the plug-on-dmix) to its assigned substream
   alias (`pcm.librespot_substream`, etc.). The renderer code is unchanged.
-- **jasper_out dongle dmix.** Unchanged. Still where music + TTS sum
-  before the DAC.
-- **CamillaDSP config (v1.yml).** Capture device stays `plug:jasper_capture`.
-  The dsnoop's underlying substream shifts from `(1,0)` to `(1,7)` in the
-  asoundrc — invisible to CamillaDSP itself.
+- **Final output owner.** Changed by the outputd cutover branch:
+  music + TTS now sum in `jasper-outputd`, and `pcm.jasper_out` is only
+  the main-branch rollback dmix.
+- **CamillaDSP config.** Capture device stays `plug:jasper_capture`.
+  The dsnoop's underlying substream remains `(1,7)` in the asoundrc —
+  invisible to CamillaDSP itself. Playback is `outputd_content_playback`
+  on the cutover branch.
 
 ### What this deletes
 
@@ -174,9 +178,9 @@ CamillaDSP → jasper_out dmix (TTS sums in here) → Apple USB-C dongle
 - The need for shairport's `audio_backend_latency_offset_in_seconds` to
   carry a renderer-dmix term. The current derivation compensates
   CamillaDSP's `target_level` above `chunksize`, the fan-in output
-  buffer, and the output dmix on `pcm.jasper_out`, so the production
-  offset is `-0.170667` with the current `target_level: 2048`,
-  fan-in output buffer `3072`, and output dmix `buffer_size 4096`.
+  buffer, and outputd's DAC buffer, so the cutover offset is
+  `-0.149333` with the current `target_level: 2048`, fan-in output
+  buffer `3072`, and outputd DAC buffer `3072`.
 
 ### What this adds
 
@@ -684,8 +688,11 @@ maintainability. Rust wins on all three.
 - **Not a DSP stage.** No EQ, no resampling, no room correction.
   CamillaDSP owns all that downstream.
 - **Not aware of source state.** It knows only a selected input label
-  or auto/null. Mux owns "current primary", renderer probing, pause
-  APIs, and user source selection.
+  or auto/null. Mux owns "current primary", renderer probing,
+  source-specific preemption APIs, and user source selection. Current
+  examples: AirPlay loses via shairport-sync MPRIS `Stop`, Spotify via
+  Web API pause or librespot restart fallback, and USB sink via its
+  local silence endpoint.
 - **Not PipeWire.** Per the AGENTS.md "architecture is fixed; swap the
   engine, not the topology" rule (scoped to AEC but spirit applies to
   the bus): this is the smallest viable shape, not a bus rewrite.
@@ -886,4 +893,4 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-05-27 (source selection NONE gate + status shape rechecked).
+Last verified: 2026-05-28 (outputd cutover topology rechecked).

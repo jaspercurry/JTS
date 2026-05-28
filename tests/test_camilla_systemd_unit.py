@@ -27,13 +27,13 @@ INSTALL_SH = (
 )
 
 
-def test_unit_passes_statefile_to_camilladsp():
-    """The whole point of Phase 2.2 — without --statefile, every
-    Camilla restart drops back to v1.yml and the user's correction
-    is silently lost. This pin makes that regression noisy."""
+def test_unit_passes_cutover_statefile_to_camilladsp():
+    """The outputd cutover branch uses a separate Camilla statefile so
+    rollback to main can keep the user's normal correction statefile
+    intact."""
     body = UNIT_PATH.read_text()
     assert "--statefile" in body
-    assert "/var/lib/camilladsp/statefile.yml" in body
+    assert "/var/lib/camilladsp/outputd-statefile.yml" in body
 
 
 def test_unit_has_no_positional_configfile():
@@ -109,6 +109,17 @@ def test_install_sh_seeds_statefile_when_missing():
     assert "if [[ ! -f /var/lib/camilladsp/statefile.yml ]]" in body
     # The seed contents point at v1.yml (so first-boot has a config).
     assert "config_path: /etc/camilladsp/v1.yml" in body
+
+
+def test_install_sh_seeds_outputd_cutover_statefile():
+    """The cutover statefile is branch-owned, seeded on first deploy,
+    and preserved when it already points at an outputd-safe config."""
+    body = INSTALL_SH.read_text()
+    assert "/var/lib/camilladsp/outputd-statefile.yml" in body
+    assert "config_path: /etc/camilladsp/outputd-cutover.yml" in body
+    assert "Preserved outputd Camilla statefile" in body
+    assert "missing config" in body
+    assert "legacy playback path" in body
 
 
 def test_unit_documents_no_config_recovery_path():

@@ -353,6 +353,7 @@ def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None
         root / "user.slice" / "user-1000.slice" / "dbus.service",
         audio_slice / "shairport-sync.service",
         audio_slice / "jasper-fanin.service",
+        audio_slice / "jasper-outputd.service",
         mic_slice / "jasper-aec-bridge.service",
         system_slice / "not-tracked.service",
     ):
@@ -367,6 +368,7 @@ def test_list_service_cgroups_finds_nested_jts_and_audio_units(tmp_path) -> None
         "/jts.slice/jts-mic.slice/jasper-aec-bridge.service"
     )
     assert by_unit["jasper-fanin.service"]["group"] == "Audio"
+    assert by_unit["jasper-outputd.service"]["group"] == "Audio"
     assert by_unit["shairport-sync.service"]["group"] == "Audio"
     assert by_unit["jasper-control.service"]["group"] == "Control"
     assert "not-tracked.service" not in by_unit

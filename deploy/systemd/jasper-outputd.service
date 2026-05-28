@@ -1,0 +1,49 @@
+[Unit]
+Description=Jasper final output owner (outputd cutover)
+Documentation=file:///opt/jasper/docs/HANDOFF-speaker-output-reference.md
+After=sound.target jasper-fanin.service jasper-camilla.service
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+WatchdogSec=30s
+TimeoutStopSec=5s
+Restart=on-failure
+RestartSec=5
+
+# Final-output owner for the outputd cutover branch. This is more
+# important than Camilla for speaker silence because it owns the DAC
+# write loop.
+OOMScoreAdjust=-950
+Slice=jts-audio.slice
+LimitMEMLOCK=infinity
+CPUSchedulingPolicy=fifo
+CPUSchedulingPriority=35
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+ReadWritePaths=/var/lib/jasper /run/jasper-outputd
+RuntimeDirectory=jasper-outputd
+RuntimeDirectoryMode=0750
+
+EnvironmentFile=/etc/jasper/jasper.env
+Environment="JASPER_OUTPUTD_BACKEND=alsa"
+Environment="JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture"
+Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"
+Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"
+Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"
+Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"
+Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"
+Environment="JASPER_OUTPUTD_TTS_SOCKET=/run/jasper-outputd/tts.sock"
+# Optional operator retune file. Keep this after the branch defaults so
+# outputd and jasper-apply-airplay-mode agree when DAC buffer sizing is
+# intentionally changed for lab validation.
+EnvironmentFile=-/var/lib/jasper/outputd.env
+ExecStart=/opt/jasper/bin/jasper-outputd
+
+[Install]
+WantedBy=multi-user.target

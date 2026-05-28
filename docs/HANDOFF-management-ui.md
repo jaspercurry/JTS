@@ -173,7 +173,8 @@ Then 17 navigation cards stacked equally:
 - Software (sha · branch · install date · uptime · voice provider)
 - Cloud activity (sessions today, 24h spend, MTD spend, per-provider table)
 - Home Assistant connection status
-- AirPlay health (status, recent drop/xrun summary, fan-in/Camilla state)
+- AirPlay health (status, recent drop/xrun summary, fan-in/outputd/Camilla
+  state, including outputd cgroup memory)
 - Audio conversion (Medium/Best ALSA rate-converter preference)
 - Network (RX / TX bytes since boot, throttle bits)
 - Actions (Restart voice / Restart audio / Reboot speaker / Power off)

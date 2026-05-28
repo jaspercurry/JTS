@@ -11,6 +11,7 @@ PATH and JTS env vars (STATE_DIR, etc.) pointing at tmp_path.
 from __future__ import annotations
 
 import os
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -33,7 +34,7 @@ def _write_fake_nmcli(
     `secrets`: response for `nmcli -s -t -f 802-11-... connection show NAME`
     """
     fake = bin_dir / "nmcli"
-    fake.write_text(rf"""#!/usr/bin/env bash
+    fake.write_text(rf"""#!/bin/bash
 # Detect whether `--active` is in argv.
 active_flag=0
 for a in "$@"; do
@@ -78,6 +79,10 @@ def _run_migrate(
 
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    for name in ("awk", "cat", "chmod", "mktemp", "mv"):
+        target = shutil.which(name)
+        assert target is not None, f"{name} is required for this test"
+        (bin_dir / name).symlink_to(target)
     if with_nmcli:
         _write_fake_nmcli(bin_dir, active=active, secrets=secrets)
 
@@ -95,15 +100,9 @@ def _run_migrate(
         "been renamed or restructured?"
     )
 
-    # Run the helper. Build PATH so our fake nmcli is the only one
-    # visible (or none, when with_nmcli=False) while keeping the
-    # system bin dirs so /bin/bash and standard utils (install,
-    # mktemp, awk, mv, chmod) resolve.
-    sys_paths = "/usr/bin:/bin:/usr/sbin:/sbin"
-    if with_nmcli:
-        path = f"{bin_dir}:{sys_paths}"
-    else:
-        path = sys_paths
+    # Run the helper with a hermetic PATH so a real Pi's /usr/bin/nmcli
+    # cannot leak into the "nmcli missing" test case.
+    path = str(bin_dir)
     env = {
         "PATH": path,
         "STATE_DIR": str(state_dir),

@@ -54,6 +54,12 @@ def _fanin_status(
     }
 
 
+def _sampler(**kwargs) -> AirPlayHealthSampler:
+    """Build a sampler isolated from live Pi maintenance markers."""
+    kwargs.setdefault("maintenance_suppress_path", None)
+    return AirPlayHealthSampler(**kwargs)
+
+
 def _patch_home_assistant(monkeypatch) -> None:
     async def fake_ha_probe() -> dict:
         return {
@@ -117,7 +123,7 @@ def test_fanin_xrun_delta_surfaces_issue_without_recounting_baseline() -> None:
         ),
     ]
 
-    sampler = AirPlayHealthSampler(
+    sampler = _sampler(
         fanin_probe=lambda: statuses.pop(0),
         journal_reader=lambda _unit, _since, _now: [],
         mpris_probe=lambda: {"playing": True},
@@ -212,7 +218,7 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
             ]
         return []
 
-    sampler = AirPlayHealthSampler(
+    sampler = _sampler(
         fanin_probe=lambda: _fanin_status(),
         journal_reader=journal,
         mpris_probe=lambda: {"playing": False},
@@ -230,7 +236,7 @@ def test_camilla_short_reads_are_watch_when_the_audio_path_recovers() -> None:
 
 def test_fanin_input_buffer_regression_is_issue() -> None:
     now = [3000.0]
-    sampler = AirPlayHealthSampler(
+    sampler = _sampler(
         fanin_probe=lambda: _fanin_status(input_buffer_frames=2048),
         journal_reader=lambda _unit, _since, _now: [],
         mpris_probe=lambda: {"playing": False},
@@ -247,7 +253,7 @@ def test_fanin_input_buffer_regression_is_issue() -> None:
 
 def test_snapshot_returns_independent_nested_copies() -> None:
     now = [4000.0]
-    sampler = AirPlayHealthSampler(
+    sampler = _sampler(
         fanin_probe=lambda: _fanin_status(),
         journal_reader=lambda _unit, _since, _now: [],
         mpris_probe=lambda: {"playing": False},
@@ -267,7 +273,7 @@ def test_snapshot_returns_independent_nested_copies() -> None:
 
 def test_mpris_playing_waits_for_fanin_rate_baseline() -> None:
     now = [5000.0]
-    sampler = AirPlayHealthSampler(
+    sampler = _sampler(
         fanin_probe=lambda: _fanin_status(airplay_frames=48000),
         journal_reader=lambda _unit, _since, _now: [],
         mpris_probe=lambda: {"playing": True},

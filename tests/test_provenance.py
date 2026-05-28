@@ -88,33 +88,7 @@ def test_git_artifacts_have_immutable_commits() -> None:
 
 def test_rust_fanin_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
     check_provenance = _load_check_module()
-    crate_dir = tmp_path / "rust" / "jasper-fanin"
-    crate_dir.mkdir(parents=True)
-    (crate_dir / "Cargo.toml").write_text(
-        """
-[package]
-name = "jasper-fanin"
-version = "0.1.0"
-
-[dependencies]
-foo = "1"
-bar = "1"
-""".lstrip(),
-        encoding="utf-8",
-    )
-    (crate_dir / "Cargo.lock").write_text(
-        """
-version = 3
-
-[[package]]
-name = "jasper-fanin"
-version = "0.1.0"
-dependencies = [
- "foo",
-]
-""".lstrip(),
-        encoding="utf-8",
-    )
+    _write_rust_crate_with_missing_bar(tmp_path, "jasper-fanin")
     data = {
         "surface": [
             {
@@ -128,3 +102,51 @@ dependencies = [
     check_provenance._validate_rust_fanin_lock(data, tmp_path, errors)
 
     assert any("bar" in error for error in errors)
+
+
+def test_rust_outputd_lock_check_detects_dependency_drift(tmp_path: Path) -> None:
+    check_provenance = _load_check_module()
+    _write_rust_crate_with_missing_bar(tmp_path, "jasper-outputd")
+    data = {
+        "surface": [
+            {
+                "id": "rust-outputd-crates",
+                "status": "pinned",
+            }
+        ]
+    }
+
+    errors: list[str] = []
+    check_provenance._validate_rust_outputd_lock(data, tmp_path, errors)
+
+    assert any("bar" in error for error in errors)
+
+
+def _write_rust_crate_with_missing_bar(tmp_path: Path, crate_name: str) -> None:
+    crate_dir = tmp_path / "rust" / crate_name
+    crate_dir.mkdir(parents=True)
+    (crate_dir / "Cargo.toml").write_text(
+        f"""
+[package]
+name = "{crate_name}"
+version = "0.1.0"
+
+[dependencies]
+foo = "1"
+bar = "1"
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (crate_dir / "Cargo.lock").write_text(
+        f"""
+version = 3
+
+[[package]]
+name = "{crate_name}"
+version = "0.1.0"
+dependencies = [
+ "foo",
+]
+""".lstrip(),
+        encoding="utf-8",
+    )

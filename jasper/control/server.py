@@ -678,6 +678,50 @@ async def _mux_socket_command(
     return payload
 
 
+async def _local_status_json(
+    socket_path: str,
+    *,
+    timeout: float = 2.0,
+    max_bytes: int = 8192,
+) -> dict | None:
+    """Best-effort one-shot STATUS probe for local daemon UDS sockets."""
+    try:
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_unix_connection(socket_path),
+            timeout=timeout,
+        )
+    except (FileNotFoundError, ConnectionRefusedError,
+            asyncio.TimeoutError, OSError):
+        return None
+    try:
+        writer.write(b"STATUS\n")
+        await writer.drain()
+        body = await asyncio.wait_for(reader.read(max_bytes), timeout=timeout)
+    except (asyncio.TimeoutError, ConnectionResetError, OSError):
+        writer.close()
+        return None
+    finally:
+        try:
+            writer.close()
+            await writer.wait_closed()
+        except (OSError, AssertionError):
+            pass
+    try:
+        payload = json.loads(body.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+async def _outputd_status() -> dict | None:
+    """Probe jasper-outputd's STATUS endpoint.
+
+    Missing socket is fail-soft here so /state remains available while
+    jasper-doctor owns the actionable cutover failure.
+    """
+    return await _local_status_json("/run/jasper-outputd/control.sock")
+
+
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:
     """Add on/off wizard availability to mux source status.
 
@@ -917,32 +961,7 @@ async def _get_state(
         like _voice_status. jasper-doctor owns the actionable failure.
         See docs/HANDOFF-fan-in-daemon.md for the daemon design.
         """
-        socket_path = "/run/jasper-fanin/control.sock"
-        try:
-            reader, writer = await asyncio.wait_for(
-                asyncio.open_unix_connection(socket_path),
-                timeout=2.0,
-            )
-        except (FileNotFoundError, ConnectionRefusedError,
-                asyncio.TimeoutError, OSError):
-            return None
-        try:
-            writer.write(b"STATUS\n")
-            await writer.drain()
-            body = await asyncio.wait_for(reader.read(8192), timeout=2.0)
-        except (asyncio.TimeoutError, ConnectionResetError, OSError):
-            writer.close()
-            return None
-        finally:
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except (OSError, AssertionError):
-                pass
-        try:
-            return json.loads(body.decode("utf-8", errors="replace"))
-        except json.JSONDecodeError:
-            return None
+        return await _local_status_json("/run/jasper-fanin/control.sock")
 
     async def _mux_status() -> dict | None:
         try:
@@ -965,6 +984,7 @@ async def _get_state(
         ha_status,
         dial_online,
         fanin_st,
+        outputd_st,
         mux_st,
     ) = await asyncio.gather(
         _camilla_status(),
@@ -973,6 +993,7 @@ async def _get_state(
         _ha_status(),
         _dial_online(),
         _fanin_status(),
+        _outputd_status(),
         _mux_status(),
     )
 
@@ -1101,6 +1122,10 @@ async def _get_state(
         # metrics — surfaced verbatim here. See
         # docs/HANDOFF-fan-in-daemon.md.
         "fanin": fanin_st,
+        # Final-output owner on the outputd cutover branch. null when
+        # the daemon/socket is unavailable; jasper-doctor owns the
+        # actionable failure.
+        "outputd": outputd_st,
         "source_selection": mux_st,
         "satellites": {
             "dial": dial,
@@ -1503,12 +1528,19 @@ def _make_handler(
                         "reason": "AirPlay health sampler failed",
                     }
 
+                try:
+                    outputd_status = asyncio.run(_outputd_status())
+                except Exception:  # noqa: BLE001
+                    logger.exception("outputd status snapshot failed")
+                    outputd_status = None
+
                 payload: dict[str, Any] = {
                     "build": read_build_info(),
                     "metrics": (
                         sampler.snapshot() if sampler is not None else None
                     ),
                     "airplay_health": airplay_health,
+                    "outputd": outputd_status,
                     "audio_quality": _safe_audio_quality_state(),
                     "cloud": _read_cloud_activity(),
                     "voice_provider": os.environ.get(

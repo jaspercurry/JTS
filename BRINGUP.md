@@ -1004,10 +1004,11 @@ persist them to flash via that command.
   `cat /var/lib/jasper/usage.db` via sqlite3.
 
 **Music plays but voice TTS is silent (or vice versa).**
-- Both write to `pcm.jasper_out` (dmix on the dongle). If only one
-  works, the dmix isn't summing — usually means the writers are
-  using different rates/formats than the dmix's locked
-  rate/format. Check `cat /etc/asound.conf`.
+- On the outputd cutover branch, both converge inside
+  `jasper-outputd`: music reaches it from `outputd_content_capture`,
+  and TTS reaches it over `/run/jasper-outputd/tts.sock`. Check
+  `systemctl status jasper-outputd`, `/state.outputd`, and
+  `cat /etc/asound.conf`.
 
 **AirPlay senders see the speaker but won't connect.**
 - shairport-sync.conf must use `shairport_substream`, the AirPlay

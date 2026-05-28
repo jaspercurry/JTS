@@ -1,12 +1,12 @@
 [Unit]
 Description=Jasper voice daemon (wake word + real-time LLM + tools)
-After=jasper-camilla.service network-online.target
+After=jasper-camilla.service jasper-outputd.service network-online.target
 # Wants= (not Requires=) so a camilla restart blip doesn't cascade-stop
 # the voice daemon. The daemon is hardened to keep wake-word + cue
 # playback working through a 2 s camilla outage (camilla calls go
 # through best_effort=True paths in jasper/camilla.py). After= still
 # orders us behind camilla on cold boot.
-Wants=network-online.target jasper-camilla.service
+Wants=network-online.target jasper-camilla.service jasper-outputd.service
 
 # Cap the crash-restart spiral. On 2026-05-10 we found NRestarts=9032
 # accumulated silently because the daemon kept hitting transient
@@ -91,6 +91,15 @@ EnvironmentFile=-/var/lib/jasper/transit.env
 # so a missing file just leaves smart-home control disabled.
 # See docs/HANDOFF-homeassistant.md.
 EnvironmentFile=-/var/lib/jasper/home_assistant.env
+# This branch is the outputd cutover branch: assistant audio routes to
+# jasper-outputd's local socket instead of the legacy PortAudio
+# jasper_out writer. main does not carry these service-level overrides,
+# so rollback by deploying main restores the old runtime path without
+# editing /etc/jasper/jasper.env. Stop/disable the persistent
+# jasper-outputd unit as part of rollback so it does not keep the DAC
+# open after main returns to jasper_out.
+Environment="JASPER_TTS_TRANSPORT=outputd"
+Environment="JASPER_TTS_OUTPUTD_SOCKET=/run/jasper-outputd/tts.sock"
 ExecStart=/opt/jasper/.venv/bin/jasper-voice
 WorkingDirectory=/opt/jasper
 # `on-failure` restarts on non-zero exit, signal-termination, an

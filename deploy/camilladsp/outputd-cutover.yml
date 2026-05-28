@@ -1,0 +1,49 @@
+---
+# JTS CamillaDSP config for the outputd cutover branch.
+#
+# On this branch Camilla writes post-DSP content to snd-aloop
+# substream 6, and jasper-outputd becomes the only reader of that lane
+# and the only writer to the physical DAC. The normal production branch
+# keeps using deploy/camilladsp/v1.yml and /var/lib/camilladsp/statefile.yml.
+
+devices:
+  samplerate: 48000
+  chunksize: 1024
+  queuelimit: 4
+  target_level: 2048
+  volume_limit: 0.0
+  enable_rate_adjust: true
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "outputd_content_playback"
+    format: S16_LE
+
+filters:
+  flat:
+    type: Gain
+    parameters: { gain: 0.0, inverted: false, mute: false }
+
+mixers:
+  master_gain:
+    channels: { in: 2, out: 2 }
+    mapping:
+      - dest: 0
+        sources: [{ channel: 0, gain: 0, inverted: false }]
+      - dest: 1
+        sources: [{ channel: 1, gain: 0, inverted: false }]
+
+pipeline:
+  - type: Mixer
+    name: master_gain
+  - type: Filter
+    channels: [0]
+    names: [flat]
+  - type: Filter
+    channels: [1]
+    names: [flat]

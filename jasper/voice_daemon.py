@@ -25,7 +25,13 @@ from .audio_buffer import (
     ACQUIRE_BUFFER_MAX_FRAMES,
     drain_acquire_buffer,
 )
-from .audio_io import MicCapture, TtsPlayout, UdpMicCapture, make_mic_capture
+from .audio_io import (
+    MicCapture,
+    TtsPlayout,
+    UdpMicCapture,
+    make_mic_capture,
+    make_tts_playout,
+)
 from .wake_events import (
     WakeEventStore,
     make_event_id,
@@ -809,6 +815,16 @@ def _active_model(cfg: Config) -> str:
     return f"<unknown:{cfg.voice_provider}>"
 
 
+def _tts_ready_detail(cfg: Config) -> str:
+    """Return the startup-log fields for the selected TTS transport."""
+    if cfg.tts_transport == "outputd":
+        return f"tts_transport=outputd tts_socket={cfg.tts_outputd_socket}"
+    return (
+        f"tts_transport={cfg.tts_transport} "
+        f"tts_device={cfg.tts_device}"
+    )
+
+
 def _make_connection(cfg: Config) -> LiveConnection:
     """Construct the long-lived voice connection for the active provider.
 
@@ -1069,9 +1085,19 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
                 await tts.flush()
                 turn.clear_interrupted()
                 interrupt_task = None
-            # write_task is either in `done` (completed normally) or
-            # was cancelled+awaited above; either way no cleanup left.
-            write_task = None
+            elif write_task in done:
+                try:
+                    await write_task
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "event=tts_write.failed error=%s detail=%s",
+                        type(e).__name__, e,
+                    )
+                    raise
+                finally:
+                    write_task = None
+            if write_task is not None and write_task.done():
+                write_task = None
         # Block until the last sample we wrote has cleared the OS
         # audio stack — see TtsPlayout.wait_drained. Cheap if the ring
         # is already empty; otherwise a single sleep for the residual.
@@ -3582,9 +3608,9 @@ async def run() -> None:
         loop.add_signal_handler(sig, _shutdown)
 
     logger.info(
-        "jasper-voice ready: provider=%s model=%s wake=%s mic=%s tts=%s",
+        "jasper-voice ready: provider=%s model=%s wake=%s mic=%s %s",
         cfg.voice_provider, _active_model(cfg), cfg.wake_model,
-        cfg.mic_device, cfg.tts_device,
+        cfg.mic_device, _tts_ready_detail(cfg),
     )
 
     # Open the persistent live connection ONCE at daemon startup and
@@ -3673,8 +3699,9 @@ async def run() -> None:
             cfg.mic_device,
             capture_rate=cfg.mic_capture_rate,
             capture_channels=cfg.mic_capture_channels,
-        ) as mic, mic_off_cm as mic_off, mic_dtln_cm as mic_dtln, TtsPlayout(
-            cfg.tts_device,
+        ) as mic, mic_off_cm as mic_off, mic_dtln_cm as mic_dtln, make_tts_playout(
+            transport=cfg.tts_transport,
+            device=cfg.tts_device,
             output_rate=cfg.tts_output_rate,
             # Constructor gain doesn't matter at runtime — TtsPlayout
             # initializes at its silent floor and the volume tracker's
@@ -3684,6 +3711,7 @@ async def run() -> None:
             # boot) still has a sane fallback.
             gain_db=cfg.tts_gain_db,
             drain_tail_sec=cfg.tts_drain_tail_sec,
+            outputd_socket=cfg.tts_outputd_socket,
         ) as tts:
             tts_volume_tracker = TtsVolumeTracker(
                 camilla, tts,

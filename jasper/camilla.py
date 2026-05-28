@@ -292,9 +292,9 @@ class CamillaController:
     async def get_config_file_path(
         self, *, best_effort: bool = False,
     ) -> str | None:
-        """Currently-loaded YAML path, e.g. `/etc/camilladsp/v1.yml`
-        on a fresh boot or `/var/lib/camilladsp/configs/correction_*.yml`
-        after the room-correction wizard applied a profile."""
+        """Currently-loaded YAML path, e.g. the branch base config or
+        `/var/lib/camilladsp/configs/correction_*.yml` after the
+        room-correction wizard applied a profile."""
         try:
             return str(await self._call(lambda c: c.config.file_path()))
         except CamillaUnavailable as e:
@@ -390,7 +390,7 @@ class CamillaController:
     async def reload(self, *, best_effort: bool = False) -> bool:
         """Reload the currently-set config file path. Used by the
         room-correction wizard's 'Reset to flat' action when the path
-        is already pointed at /etc/camilladsp/v1.yml — saves a
+        is already pointed at the branch's flat base config — saves a
         redundant set_file_path call."""
         try:
             await self._call(lambda c: c.general.reload())

@@ -1,11 +1,18 @@
 # Robust barge-in — design space + costing record
 
-**Status (2026-05-23):** Research only. No implementation in flight.
+> **Status: historical.** Snapshot from 2026-05-23, when robust
+> barge-in was being costed under a narrower measure-first policy.
+> Preserved for primary-source archaeology and option costing;
+> specific recommendations in this file are superseded. Current
+> operational direction lives in
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+
+**Original 2026-05-23 status:** Research only. No implementation in flight.
 This document captures the option space for upgrading JTS's
 barge-in story from "Silero VAD threshold filtering" (today) to
 "AEC cancellation of TTS in the mic" (canonical).
 
-> ### ⚠️ Read this before reading the options below
+> ### ⚠️ Original 2026-05-23 warning
 >
 > [`AGENTS.md`](../AGENTS.md) and
 > [`CONTRIBUTING.md`](../CONTRIBUTING.md) (both updated 2026-05-23)
@@ -29,10 +36,11 @@ barge-in story from "Silero VAD threshold filtering" (today) to
 > engine-internal tuning inside `jasper/cli/aec_bridge.py` or
 > the `jasper_aec3` binding. That path stays inside the policy.
 >
-> If barge-in measurement ever produces a case strong enough to
-> reconsider the policy, the costing in Options A/B is here.
-> Reopening that conversation is a deliberate move, not an
-> agent-side proposal.
+> On 2026-05-27 the product direction changed: robust barge-in during
+> assistant speech is now a known requirement, and the deliberate
+> architecture direction is the JTS-native output owner described in
+> [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
+> Keep the costing below as context, not as the current recommendation.
 
 The trigger: a future feature request — make barge-in work
 reliably under loud music. The current implementation works for
@@ -813,4 +821,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-26.
+Last verified: 2026-05-27

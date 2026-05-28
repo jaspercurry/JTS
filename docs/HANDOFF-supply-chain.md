@@ -97,11 +97,12 @@ not run PlatformIO unless the operator explicitly sets
 `scripts/check-firmware-builds.sh` when touching firmware or
 PlatformIO pins.
 
-The Rust fan-in daemon commits `rust/jasper-fanin/Cargo.lock`.
-`install.sh` builds that binary crate from `rust/jasper-fanin` with
-`cargo --locked`, so lock drift fails deploy instead of resolving live.
-The provenance checker fails if the lockfile disappears or no longer
-covers the crate's direct dependencies.
+Rust audio daemons commit lockfiles for their binary crates:
+`rust/jasper-fanin/Cargo.lock` and `rust/jasper-outputd/Cargo.lock`.
+`install.sh` builds both crates with `cargo --locked`, so lock drift
+fails deploy instead of resolving live. The provenance checker fails if
+either lockfile disappears or no longer covers the crate's direct
+dependencies.
 
 ## Accepted Gaps
 
@@ -171,4 +172,4 @@ or support third-party speakers, add a migration/check path that records
 or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
 and CamillaGUI bits.
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28

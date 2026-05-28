@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import socket
 import subprocess
+import threading
 import time
 
 import numpy as np
@@ -625,3 +627,221 @@ class TtsPlayout:
         remaining = self.expected_drain_at() - time.monotonic()
         if remaining > 0.0:
             await asyncio.sleep(remaining)
+
+
+_OUTPUTD_AUDIO_FRAME_BYTES = 4  # stereo S16_LE
+_OUTPUTD_SAMPLE_RATE = 48_000
+# Keep individual IPC messages well below the daemon's 2 MiB hard cap.
+# 250 ms chunks make barge-in/flush sharper and apply backpressure more
+# gradually than sending a whole cached WAV in one command.
+_OUTPUTD_MAX_AUDIO_CHUNK_BYTES = (
+    _OUTPUTD_SAMPLE_RATE * _OUTPUTD_AUDIO_FRAME_BYTES // 4
+)
+
+
+def _outputd_audio_chunks(data: bytes):
+    """Split outputd AUDIO payloads below the daemon's protocol cap.
+
+    Rust rejects AUDIO chunks above 2 MiB before allocation. Cached cue
+    WAVs are normally short, but dynamic spoken text can occasionally
+    be long enough after 24 kHz mono -> 48 kHz stereo conversion to cross
+    that limit. Chunking here keeps the protocol bounded without changing
+    the public TtsPlayout.write contract.
+    """
+    if not data:
+        return []
+    if len(data) % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
+        raise ValueError("outputd audio payload must contain whole stereo frames")
+    chunk_size = _OUTPUTD_MAX_AUDIO_CHUNK_BYTES
+    if chunk_size % _OUTPUTD_AUDIO_FRAME_BYTES != 0:
+        raise AssertionError("outputd chunk size must align to stereo frames")
+    for i in range(0, len(data), chunk_size):
+        yield data[i:i + chunk_size]
+
+
+class _OutputdStreamAdapter:
+    """Tiny sync writer used by OutputdTtsPlayout.
+
+    OutputdTtsPlayout does resample, mono-to-stereo, and drain accounting
+    before calling ``self._stream.write(bytes)`` in a worker thread. This
+    adapter preserves the blocking stream shape while swapping the final
+    sink from PortAudio to outputd's local Unix socket.
+    """
+
+    def __init__(self, sock: socket.socket) -> None:
+        self._sock = sock
+        self._lock = threading.Lock()
+
+    def set_gain_db(self, db: float) -> None:
+        with self._lock:
+            self._sock.sendall(f"GAIN {db:.3f}\n".encode("ascii"))
+
+    def write(self, data: bytes) -> None:
+        with self._lock:
+            self._sock.sendall(f"AUDIO {len(data)}\n".encode("ascii"))
+            self._sock.sendall(data)
+
+    def abort(self) -> None:
+        with self._lock:
+            self._sock.sendall(b"FLUSH\n")
+
+    def start(self) -> None:
+        # The stream remains open after FLUSH. This mirrors the
+        # sounddevice RawOutputStream.start() call TtsPlayout.flush uses.
+        return None
+
+    def close(self) -> None:
+        with self._lock:
+            try:
+                self._sock.sendall(b"CLOSE\n")
+            except OSError:
+                pass
+            self._sock.close()
+
+
+class OutputdTtsPlayout(TtsPlayout):
+    """TtsPlayout-compatible client for the jasper-outputd path.
+
+    The outputd transport keeps Python's input and drain contract intact:
+    provider PCM enters as 24 kHz mono, write() resamples to the
+    configured output rate, duplicates mono to stereo, updates the drain
+    deadline, and writes bytes to this class's socket adapter. Gain travels
+    as metadata so outputd remains the only final output owner and clamps
+    the level at its mix boundary.
+    """
+
+    def __init__(
+        self,
+        socket_path: str = "/run/jasper-outputd/tts.sock",
+        output_rate: int = _OUTPUTD_SAMPLE_RATE,
+        gain_db: float = 0.0,
+        *,
+        drain_tail_sec: float = 0.085,
+    ) -> None:
+        if output_rate != _OUTPUTD_SAMPLE_RATE:
+            raise RuntimeError(
+                "outputd TTS transport requires 48 kHz stereo IPC; "
+                f"got output_rate={output_rate}"
+            )
+        super().__init__(
+            device=socket_path,
+            output_rate=output_rate,
+            gain_db=gain_db,
+            drain_tail_sec=drain_tail_sec,
+        )
+        self._socket_path = socket_path
+
+    async def __aenter__(self) -> "OutputdTtsPlayout":
+        from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
+
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            await asyncio.to_thread(sock.connect, self._socket_path)
+        except Exception as e:  # noqa: BLE001
+            sock.close()
+            logger.error(
+                "outputd TTS connect failed: socket=%s exc=%s: %s",
+                self._socket_path, type(e).__name__, e,
+            )
+            raise
+        self._stream = _OutputdStreamAdapter(sock)  # type: ignore[assignment]
+        logger.info("outputd TTS connected: socket=%s", self._socket_path)
+        return self
+
+    def set_gain_db(self, db: float) -> None:
+        super().set_gain_db(db)
+        stream = self._stream
+        if stream is not None and hasattr(stream, "set_gain_db"):
+            try:
+                stream.set_gain_db(self.gain_db)
+            except OSError as e:
+                logger.warning("outputd TTS gain update failed: %s", e)
+
+    async def write(self, pcm: bytes) -> None:
+        """Send un-gained 48 kHz stereo PCM to outputd.
+
+        Gain is sent as metadata and enforced by outputd's final mix
+        clamp. Drain accounting mirrors TtsPlayout.write so the voice
+        daemon's turn-ending contract stays identical.
+        """
+        if self._stream is None:
+            if not self._closed_stream_warned:
+                logger.warning(
+                    "OutputdTtsPlayout.write called on a closed stream - "
+                    "%d bytes silently dropped. Did you forget "
+                    "`async with tts:`? (Suppressing further such "
+                    "warnings for this instance.)",
+                    len(pcm),
+                )
+                self._closed_stream_warned = True
+            return
+        if not pcm:
+            return
+
+        arr = np.frombuffer(pcm, dtype=np.int16).astype(np.float32)
+        if self._upsample > 1:
+            from scipy.signal import resample_poly
+            arr = resample_poly(arr, up=self._upsample, down=1)
+        mono_i16 = np.clip(arr, -32768, 32767).astype(np.int16)
+        stereo_i16 = np.repeat(mono_i16, 2)
+
+        chunk_duration_sec = len(mono_i16) / self._output_rate
+        write_start = time.monotonic()
+        stream = self._stream
+        if hasattr(stream, "set_gain_db"):
+            await asyncio.to_thread(stream.set_gain_db, self.gain_db)
+        for chunk in _outputd_audio_chunks(stereo_i16.tobytes()):
+            await asyncio.to_thread(stream.write, chunk)
+        queued_at = time.monotonic()
+        if self._ring_end_monotonic is None or queued_at > self._ring_end_monotonic:
+            self._ring_end_monotonic = queued_at + chunk_duration_sec
+        else:
+            self._ring_end_monotonic += chunk_duration_sec
+        write_ms = (queued_at - write_start) * 1000
+        chunk_ms = chunk_duration_sec * 1000
+        if write_ms > chunk_ms + 100:
+            logger.warning(
+                "outputd tts.write slow: %.0fms for %.0fms of audio "
+                "(%d frames @ %d Hz)",
+                write_ms, chunk_ms, len(mono_i16), self._output_rate,
+            )
+
+    async def __aexit__(self, *exc) -> None:
+        if self._stream is not None:
+            stream = self._stream
+            self._stream = None
+            close = getattr(stream, "close", None)
+            if close is not None:
+                await asyncio.to_thread(close)
+
+
+def make_tts_playout(
+    *,
+    transport: str,
+    device: str | int,
+    output_rate: int,
+    gain_db: float,
+    drain_tail_sec: float,
+    outputd_socket: str = "/run/jasper-outputd/tts.sock",
+) -> TtsPlayout:
+    """Construct the selected TTS playout transport.
+
+    ``outputd`` is the cutover-branch default. ``sounddevice`` remains
+    the rollback transport on main. This factory intentionally
+    preserves TtsPlayout's public methods.
+    """
+    if transport == "sounddevice":
+        return TtsPlayout(
+            device,
+            output_rate=output_rate,
+            gain_db=gain_db,
+            drain_tail_sec=drain_tail_sec,
+        )
+    if transport == "outputd":
+        return OutputdTtsPlayout(
+            socket_path=outputd_socket,
+            output_rate=output_rate,
+            gain_db=gain_db,
+            drain_tail_sec=drain_tail_sec,
+        )
+    raise ValueError(f"unknown TTS transport: {transport!r}")

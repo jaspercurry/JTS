@@ -31,7 +31,7 @@ from .profile import FilterSpec, SoundProfile, build_sound_filters, estimate_hea
 
 logger = logging.getLogger(__name__)
 
-BASE_CONFIG_PATH = Path("/etc/camilladsp/v1.yml")
+BASE_CONFIG_PATH = Path("/etc/camilladsp/outputd-cutover.yml")
 SOUND_CONFIG_NAME = "sound_current.yml"
 SOUND_AUDITION_CONFIG_NAME = "sound_audition.yml"
 _JTS_GENERATED_RE = re.compile(
@@ -161,9 +161,10 @@ def emit_sound_config(
 # DO NOT HAND-EDIT — update http://jts.local/correction/ or
 # http://jts.local/sound/ instead.
 #
-# Structure mirrors deploy/camilladsp/v1.yml. Room-correction PEQs,
-# when present, run before sound-curve / preference-EQ filters. The
-# `master_gain` mixer remains identity so the Ducker contract holds.
+# Structure mirrors deploy/camilladsp/outputd-cutover.yml.
+# Room-correction PEQs, when present, run before sound-curve /
+# preference-EQ filters. The `master_gain` mixer remains identity so
+# the Ducker contract holds.
 # estimated_sound_headroom_db={headroom_db:.3f}
 
 devices:

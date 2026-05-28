@@ -1047,6 +1047,50 @@ def _fanin_status_payload(
     }).encode()
 
 
+def _outputd_status_payload(
+    *,
+    backend: str = "alsa",
+    content_pcm: str = doctor._OUTPUTD_EXPECTED_CONTENT_PCM,
+    dac_pcm: str = doctor._OUTPUTD_EXPECTED_DAC_PCM,
+    content_buffer_frames: int = 4096,
+    dac_buffer_frames: int = 3072,
+    period_frames: int = 1024,
+    progress_age_ms: int = 2,
+) -> bytes:
+    return json.dumps({
+        "backend": backend,
+        "content": {
+            "pcm": content_pcm,
+            "period_frames": period_frames,
+            "buffer_frames": content_buffer_frames,
+            "frames_read": 1234,
+            "empty_periods": 2,
+            "partial_periods": 1,
+            "eagain_count": 1,
+            "xrun_count": 0,
+        },
+        "dac": {
+            "pcm": dac_pcm,
+            "sample_rate": 48000,
+            "period_frames": period_frames,
+            "buffer_frames": dac_buffer_frames,
+            "frames_written": 2048,
+            "xrun_count": 0,
+        },
+        "mix": {"reference_sequence": 1, "clipped_samples": 0},
+        "tts": {
+            "pending_frames": 0,
+            "budget_frames": 96000,
+            "max_pending_frames": 4096,
+            "over_budget": False,
+            "over_budget_periods": 0,
+            "over_budget_ms": 0,
+            "over_budget_streak_ms": 0,
+        },
+        "watchdog": {"last_progress_age_ms": progress_age_ms},
+    }).encode()
+
+
 def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     monkeypatch.setattr(
         doctor.socket,
@@ -1103,8 +1147,67 @@ def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
     assert "output_buffer_frames=2048" in r.detail
 
 
-def test_audio_path_no_swap_includes_fanin():
+def test_outputd_service_fails_when_disabled(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch, enabled="disabled")
+    r = doctor.check_outputd_service()
+    assert r.status == "fail"
+    assert "expected enabled" in r.detail
+
+
+def test_outputd_service_ok_with_expected_status(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    r = doctor.check_outputd_service()
+    assert r.status == "ok"
+    assert "backend=alsa" in r.detail
+    assert "content_buffer_frames=4096" in r.detail
+    assert "dac_buffer_frames=3072" in r.detail
+    assert "content_empty_periods=2" in r.detail
+    assert "content_eagain_count=1" in r.detail
+    assert "tts_pending_frames=0" in r.detail
+    assert "tts_max_pending_frames=4096" in r.detail
+
+
+def test_outputd_service_fails_on_fake_backend(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(backend="fake"),
+    )
+    r = doctor.check_outputd_service()
+    assert r.status == "fail"
+    assert "backend='fake'" in r.detail
+
+
+def test_outputd_service_fails_on_small_runtime_buffers(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(dac_buffer_frames=1024),
+    )
+    r = doctor.check_outputd_service()
+    assert r.status == "fail"
+    assert "dac.buffer_frames=1024" in r.detail
+
+
+def test_outputd_service_warns_on_stuck_tts_queue(monkeypatch):
+    payload = json.loads(_outputd_status_payload().decode())
+    payload["tts"]["pending_frames"] = 120000
+    payload["tts"]["over_budget"] = True
+    payload["tts"]["over_budget_streak_ms"] = 128
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, json.dumps(payload).encode())
+
+    r = doctor.check_outputd_service()
+
+    assert r.status == "warn"
+    assert "tts.pending_frames=120000" in r.detail
+    assert "over_budget_streak_ms=128" in r.detail
+
+
+def test_audio_path_no_swap_includes_fanin_and_outputd():
     assert "jasper-fanin" in doctor._AUDIO_PATH_UNITS
+    assert "jasper-outputd" in doctor._AUDIO_PATH_UNITS
 
 
 def test_fanin_asound_wiring_fails_on_bare_renderer_lane(monkeypatch, tmp_path):

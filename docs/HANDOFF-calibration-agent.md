@@ -242,7 +242,7 @@ were captured against the same flat baseline.
 
 /var/lib/camilladsp/
 ├── configs/correction_<id>_<unixtime>.yml   # never deleted; history
-└── statefile.yml                            # current config_path:
+└── outputd-statefile.yml                    # current cutover config_path:
 ```
 
 Bundles are **useful but not yet complete** for offline agent or FIR

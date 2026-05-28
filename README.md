@@ -79,7 +79,19 @@ Phone (AirPlay / Spotify Connect / BT)
                     - flat passthrough today
                               │
                               ▼
-                    pcm.jasper_out (dmix on Apple dongle)
+                    outputd_content_playback
+                              │
+                              ▼ (loop)
+                    outputd_content_capture
+                              │
+                              ▼
+                    jasper-outputd (final output owner)
+                    - mixes post-DSP content + assistant audio
+                    - clamps positive TTS gain
+                    - publishes runtime health / xrun counters
+                              │
+                              ▼
+                    outputd_dac (Apple dongle hw)
                               │
                               ▼
                     Apple USB-C dongle → amp → speakers
@@ -101,35 +113,43 @@ Phone (AirPlay / Spotify Connect / BT)
         │                            TTS (provider-generated PCM, 24 kHz mono)
         │                                     │
         │                                     ▼
-        │                            pcm.jasper_out (same dmix as music)
+        │                            /run/jasper-outputd/tts.sock
         │                                     │
         │                                     ▼
         └──── airborne echo back to mic ◄── speakers
 ```
 
-`jasper-camilla` and `jasper-voice` both write to the same dongle
-dmix (`pcm.jasper_out`); dmix sums their streams. Music ducks on
-wake via a CamillaDSP `SetMainVolume` call (the `main_volume`
-property, not the `master_gain` mixer — that mixer is identity)
-over its websocket on port 1234.
+On the outputd cutover branch, `jasper-outputd` is the only normal
+writer to the physical DAC. `jasper-camilla` writes post-DSP content
+to a private loopback lane, and `jasper-voice` sends assistant PCM over
+outputd's local TTS socket. Music still ducks on wake via a CamillaDSP
+`SetMainVolume` call (the `main_volume` property, not the
+`master_gain` mixer — that mixer is identity) over its websocket on
+port 1234.
 
-> ### Important: two paths to the dongle
+> ### Important: one final output owner
 >
-> Music goes **through** CamillaDSP. TTS goes **around** it; both sum at
-> the dongle's dmix. `main_volume` only attenuates music — TTS keeps up
-> via a separate tracker (`TtsVolumeTracker`) that measures the actual
-> music level downstream (`playback_rms`) and scales TTS to sit a
-> configurable headroom above it. Works the same whether the user is
-> turning the iPhone slider, the Spotify slider, the dial, the
-> `listening_level` wizard, or an external amp downstream of the dongle.
-> To test the chain at a controlled volume, play to
-> `correction_substream`, not `jasper_out` (which bypasses the DSP).
-> Why the split and what the tracker does:
+> Music still goes **through** CamillaDSP. TTS goes **around**
+> CamillaDSP but no longer writes around the final output owner; it
+> enters `jasper-outputd`, which mixes it with post-DSP content and
+> owns the DAC timing loop. `main_volume` only attenuates music — TTS
+> keeps up via a separate tracker (`TtsVolumeTracker`) that measures
+> the actual music level downstream (`playback_rms`) and scales TTS to
+> sit a configurable headroom above it. Works the same whether the user
+> is turning the iPhone slider, the Spotify slider, the dial, the
+> `listening_level` wizard, or an external amp downstream of the
+> dongle. To test the chain at a controlled volume, play to
+> `correction_substream`; the legacy `jasper_out` dmix remains only as
+> the main-branch rollback path. Why the split and what the tracker
+> does:
 > [`docs/audio-paths.md`](docs/audio-paths.md).
 
 `jasper-mux` arbitrates between the renderers. In auto mode, when a new
-source transitions to playing while another is already active, it pauses
-the older one so the user gets "latest source wins" UX. The landing page
+source transitions to playing while another is already active, it
+preempts the older one so the user gets "latest source wins" UX. For
+AirPlay, preempt means MPRIS `Stop` so shairport-sync drops the current
+playback session instead of leaving an invisible paused sender behind.
+The landing page
 also exposes a lightweight Source selector: manual mode gates one
 renderer lane through `jasper-fanin` without turning any source on/off.
 Before mux moves the fan-in gate, it asks `VolumeCoordinator` to make the
@@ -159,6 +179,10 @@ when the configured AEC mic is present with 6-channel firmware — see
 - ✅ `jasper-mux` daemon for latest-source-wins preemption plus manual
   landing-page source selection with guarded volume handoff
 - ✅ Always-on CamillaDSP with a passthrough `master_gain` mixer
+- ✅ Outputd cutover branch: `jasper-outputd` owns direct DAC playback,
+  mixes post-DSP content with assistant audio, exposes `/state.outputd`
+  health, and leaves the main-branch Camilla statefile intact for
+  rollback
 - ✅ Wake-word detection — default is "Jarvis" (the
   [fwartner Home Assistant community model](https://github.com/fwartner/home-assistant-wakewords-collection)
   which also accepts "Hey Jarvis"); picker UI at
@@ -275,7 +299,7 @@ setup. Live with `NO_INTERRUPTION` on the Gemini session and a
 ```
 jasper/                         Python daemon source
   voice_daemon.py               Main: wake → real-time LLM → tools → TTS
-  audio_io.py                   MicCapture, TtsPlayout (sounddevice-based)
+  audio_io.py                   MicCapture, TtsPlayout, outputd TTS transport
   camilla.py                    pycamilladsp websocket helpers
   voice/                        Provider-agnostic LiveConnection / LiveTurn
                                   protocols + adapters (gemini_session,
@@ -312,8 +336,8 @@ firmware/
 deploy/
   install.sh                    Idempotent installer (run as root on Pi)
   alsa/                         /etc/asound.conf template
-  camilladsp/                   v1.yml passthrough config + master_gain
-  systemd/                      jasper-{camilla,voice,control,mux,aec-bridge,aec-init}
+  camilladsp/                   main v1.yml + outputd-cutover.yml baselines
+  systemd/                      jasper-{camilla,voice,control,mux,outputd,aec-bridge,aec-init}
                                 + librespot, shairport-sync, nqptp, bt-agent
   modules-load.d/               snd-aloop autoload
   modprobe.d/                   snd-aloop single-card config
@@ -332,6 +356,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-mic-quality-v2.md     Empirical history: AEC sweeps, BEST_A, triple-stream architecture
   HANDOFF-vad-experiments.md    Active workstream: VAD/mic-stream A/B matrix, why Cell 0 wins, raw+AGC followup
   HANDOFF-aec.md                Acoustic echo cancellation engine
+  HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-wake-telemetry.md     Dual-stream wake + per-event SQLite + funnel
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
@@ -356,6 +381,8 @@ scripts/                        Operator helpers (run from laptop)
   switch-voice-provider.sh      Flip JASPER_VOICE_PROVIDER between
                                 gemini / openai / grok
   switch-gemini-model.sh        Within-Gemini fallback: 3.1 ↔ 2.5
+  disable-outputd-cutover.sh    Stop persistent outputd unit before/after
+                                rolling this cutover branch back to main
   claim-librespot.sh            One-time: OAuth-claim librespot for a
                                 Spotify account so cold-start "play X"
                                 works without phone interaction
@@ -427,6 +454,7 @@ steps. Apache 2.0 like the rest of the repo.
 | [docs/OSS-READINESS-TOP-FIVE.md](docs/OSS-READINESS-TOP-FIVE.md) | Maintainers / OSS reviewers | Living top-five OSS-readiness worklist, hotspot register, software-only dev-path notes, and deliberate deferrals |
 | [docs/REVIEW-google-oss-readiness.md](docs/REVIEW-google-oss-readiness.md) | Maintainers / OSS reviewers | Historical point-in-time OSS-readiness review; not current operational truth |
 | [docs/audio-paths.md](docs/audio-paths.md) | Operator + AI | Reference: the two ALSA paths to the dongle, which volume knob attenuates which path, how end-of-turn timing anchors on TTS drain, and the canonical checklist for adding a new music source |
+| [docs/HANDOFF-speaker-output-reference.md](docs/HANDOFF-speaker-output-reference.md) | Audio / voice architects | Chosen direction for a JTS-native output owner, true speaker-output reference, TTS playout ledger, and robust assistant-speech barge-in |
 | [docs/satellites.md](docs/satellites.md) | Anyone working on a satellite device | Cross-cutting design + roadmap for ESP32 satellites (dial, AMOLED mic, etc.) |
 | [docs/HANDOFF-supply-chain.md](docs/HANDOFF-supply-chain.md) | Maintainers / release engineers | Canonical provenance policy for deploy/build-time third-party inputs, checksum expectations, and accepted gaps |
 | [docs/testing-tooling.md](docs/testing-tooling.md) | Anyone writing a test/measurement script | Index of every capture / wake-word-scoring / forensic / diagnostic tool in the repo. **Read before writing a new one** — many parallel tools have been built before this index existed. |
@@ -523,15 +551,16 @@ reference. Currently:
   `voice_daemon.py`, or `set_turn_detection` in `openai_session.py`.**
   Also documents the new debug-WAV recording instrumentation
   (`JASPER_DEBUG_RECORD_OPENAI_AUDIO`).
-- [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — Open
-  architectural decision for upgrading barge-in from VAD-only
-  filtering to AEC-cancellation-of-TTS. Research-only doc;
-  surveys why the obvious "put TTS in the AEC reference" fix is
-  structurally wrong (single-reference AEC3, delay mismatch),
-  and lays out the legitimate paths (ALSA convergence sink vs
-  PipeWire migration vs measure-first VAD instrumentation) with
-  costs, trade-offs, and a sequenced recommendation. Read before
-  any code touches the music↔TTS↔AEC topology.
+- [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) —
+  Historical costing record for robust barge-in options under the
+  earlier measure-first policy. Useful archaeology, but superseded
+  as the current recommendation by
+  [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md).
+- [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
+  — Chosen architecture direction for moving from today's split
+  music/TTS output paths to a JTS-native output owner that publishes
+  a true `speaker_output_reference`, owns TTS/cue playout accounting,
+  and enables robust barge-in during assistant speech.
 - [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
   Dual-stream wake-word detection (AEC ON + AEC OFF, OR-gated)
   plus SQLite-backed per-event telemetry with audio capture and

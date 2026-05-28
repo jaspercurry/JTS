@@ -25,7 +25,7 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /upload-capture  body = WAV bytes, runs analysis pipeline
       POST /repeat-position optional same-seat repeat sweep
       POST /apply           write YAML, reload CamillaDSP
-      POST /reset           roll back to /etc/camilladsp/v1.yml
+      POST /reset           roll back to /etc/camilladsp/outputd-cutover.yml
 
 Phase 2 will add multi-position MMM averaging — the chart payload
 shape (`measured`/`target`/`predicted` curves + `peqs` list) is
@@ -1177,7 +1177,7 @@ __NAV_BACK__
 
   function renderCurrentCorrection(cc, config) {
     // `cc` is the parsed JTS room-correction descriptor. `config`
-    // distinguishes flat JTS baseline, preference EQ, and custom
+    // distinguishes flat outputd baseline, preference EQ, and custom
     // CamillaDSP configs that JTS should not overclaim as flat.
     if (cc && cc.applied_at_epoch) {
       currentCorrectionBanner.className = 'applied';
@@ -3458,7 +3458,7 @@ def _handle_apply(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
 
 def _handle_reset(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
-    """POST /reset: roll back to /etc/camilladsp/v1.yml. Restores
+    """POST /reset: roll back to /etc/camilladsp/outputd-cutover.yml. Restores
     pre-autolevel main_volume if autolevel was used."""
     sess = _get_or_create_session()
     cam = _camilla()

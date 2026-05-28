@@ -412,28 +412,36 @@ def _validate_platformio_git_artifacts(
             errors.append(f"improv-wifi-library: direct_url missing from {relpath}")
 
 
-def _validate_rust_fanin_lock(
+def _find_surface(data: dict[str, Any], surface_id: str) -> dict[str, Any] | None:
+    surfaces = data.get("surface", [])
+    if not isinstance(surfaces, list):
+        return None
+    for candidate in surfaces:
+        if candidate.get("id") == surface_id:
+            return candidate
+    return None
+
+
+def _validate_rust_crate_lock(
     data: dict[str, Any],
     root: Path,
     errors: list[str],
+    *,
+    surface_id: str,
+    crate_relpath: str,
 ) -> None:
-    surfaces = data.get("surface", [])
-    surface = None
-    if isinstance(surfaces, list):
-        for candidate in surfaces:
-            if candidate.get("id") == "rust-fanin-crates":
-                surface = candidate
-                break
+    surface = _find_surface(data, surface_id)
     if surface is None:
-        errors.append("deploy/provenance.toml: missing surface rust-fanin-crates")
+        errors.append(f"deploy/provenance.toml: missing surface {surface_id}")
         return
     if surface.get("status") != "pinned":
-        errors.append("rust-fanin-crates: status must be pinned")
+        errors.append(f"{surface_id}: status must be pinned")
 
-    manifest_path = root / "rust" / "jasper-fanin" / "Cargo.toml"
-    lock_path = root / "rust" / "jasper-fanin" / "Cargo.lock"
+    crate_path = root / crate_relpath
+    manifest_path = crate_path / "Cargo.toml"
+    lock_path = crate_path / "Cargo.lock"
     if not lock_path.exists():
-        errors.append("rust/jasper-fanin/Cargo.lock is missing")
+        errors.append(f"{crate_relpath}/Cargo.lock is missing")
         return
 
     manifest = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
@@ -453,7 +461,7 @@ def _validate_rust_fanin_lock(
             break
     if root_package is None:
         errors.append(
-            f"rust/jasper-fanin/Cargo.lock: missing root package {package_name!r}"
+            f"{crate_relpath}/Cargo.lock: missing root package {package_name!r}"
         )
         return
 
@@ -465,9 +473,37 @@ def _validate_rust_fanin_lock(
     missing = sorted(direct_deps - locked_deps)
     if missing:
         errors.append(
-            "rust/jasper-fanin/Cargo.lock: root package missing direct deps "
+            f"{crate_relpath}/Cargo.lock: root package missing direct deps "
             + ", ".join(missing)
         )
+
+
+def _validate_rust_fanin_lock(
+    data: dict[str, Any],
+    root: Path,
+    errors: list[str],
+) -> None:
+    _validate_rust_crate_lock(
+        data,
+        root,
+        errors,
+        surface_id="rust-fanin-crates",
+        crate_relpath="rust/jasper-fanin",
+    )
+
+
+def _validate_rust_outputd_lock(
+    data: dict[str, Any],
+    root: Path,
+    errors: list[str],
+) -> None:
+    _validate_rust_crate_lock(
+        data,
+        root,
+        errors,
+        surface_id="rust-outputd-crates",
+        crate_relpath="rust/jasper-outputd",
+    )
 
 
 def check_manifest(path: Path = DEFAULT_MANIFEST) -> list[str]:
@@ -476,6 +512,7 @@ def check_manifest(path: Path = DEFAULT_MANIFEST) -> list[str]:
     errors.extend(validate_artifacts(data))
     errors.extend(validate_source_consistency(data))
     _validate_rust_fanin_lock(data, ROOT, errors)
+    _validate_rust_outputd_lock(data, ROOT, errors)
     documented = provenance_strings(data)
     for source, urls in discovered_fetch_urls().items():
         for url in sorted(urls):

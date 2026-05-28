@@ -648,7 +648,7 @@ class WakeEventStore:
         bounded — we never delete more than necessary)."""
         files = sorted(
             self._base_dir.glob("*.wav"),
-            key=lambda p: p.stat().st_mtime,
+            key=lambda p: (p.stat().st_mtime_ns, p.name),
         )
         total = sum(f.stat().st_size for f in files)
         if total <= self._max_audio_bytes:
