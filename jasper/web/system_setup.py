@@ -77,9 +77,15 @@ _EXTRA_STYLE = """
 
 .card { background: #fafafa; border: 1px solid #e6e6e6; border-radius: 6px; padding: 0.7em 1em; margin: 1em 0; }
 .card h2 { font-size: 0.92em; margin: 0 0 0.5em; text-transform: uppercase; letter-spacing: 0.04em; color: #666; }
+.card > summary { cursor: pointer; font-size: 0.92em; margin: 0 0 0.5em; text-transform: uppercase; letter-spacing: 0.04em; color: #666; font-weight: 600; }
+.card > summary::marker { color: #888; }
+.card:not([open]) > summary { margin-bottom: 0; }
 .card .kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.3em 1em; font-size: 0.92em; }
 .card .kv .k { color: #666; }
 .card .kv .v { color: #222; font-variant-numeric: tabular-nums; }
+.card-help { margin: 0.6em 0 0; font-size: 0.85em; }
+.card-help.flush { margin: 0 0 0.5em; }
+.card-help.compact { margin: 0 0 0.4em; }
 
 .ap-pill { display: inline-block; min-width: 5.5em; text-align: center;
   border-radius: 999px; padding: 0.12em 0.55em; font-size: 0.82em;
@@ -174,13 +180,13 @@ _PAGE_BODY = """
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-memory"></svg>
   </div>
   <div class="tile" id="tile-load">
-    <div class="label">Load avg (1m)</div>
+    <div class="label">Load Pressure</div>
     <div class="value"><span id="load-value">—</span></div>
     <div class="sub"><span id="load-sub">—</span></div>
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" id="spark-load"></svg>
   </div>
   <div class="tile" id="tile-cpu">
-    <div class="label">CPU (per core)</div>
+    <div class="label">CPU Usage</div>
     <div class="value"><span id="cpu-value">—</span></div>
     <div class="cpu-bars" id="cpu-bars"></div>
     <div class="sub"><span id="cpu-sub">—</span></div>
@@ -237,7 +243,7 @@ _PAGE_BODY = """
     <div class="k">URL</div><div class="v" id="ha-url">—</div>
     <div class="k">Version</div><div class="v" id="ha-version">—</div>
   </div>
-  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;" id="ha-detail"></p>
+  <p class="muted card-help" id="ha-detail"></p>
   <p style="margin: 0.6em 0 0; font-size: 0.9em;">
     Configure at <a href="/ha/">jts.local/ha</a>.
   </p>
@@ -262,7 +268,7 @@ _PAGE_BODY = """
     <div class="k">Requested</div><div class="v" id="aq-requested">—</div>
     <div class="k">Active</div><div class="v" id="aq-active">—</div>
   </div>
-  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;">
+  <p class="muted card-help">
     Medium saves CPU and keeps the speech/AEC band clean. Best keeps
     the extreme top edge of hearing for critical listening.
     Changing this restarts music renderers briefly.
@@ -291,7 +297,7 @@ _PAGE_BODY = """
 
 <div class="card">
   <h2>Actions</h2>
-  <p class="muted" style="margin: 0 0 0.5em; font-size: 0.85em;">
+  <p class="muted card-help flush">
     Anyone on the same WiFi can trigger these. No confirmation
     afterwards — the page just spins until the daemon comes back.
   </p>
@@ -301,7 +307,7 @@ _PAGE_BODY = """
     <button class="danger" id="btn-reboot">Reboot speaker</button>
     <button class="danger" id="btn-poweroff">Power off</button>
   </div>
-  <p class="muted" style="margin: 0.6em 0 0; font-size: 0.85em;">
+  <p class="muted card-help">
     Power off before changing cables or swapping power. The speaker
     stays off until you physically re-plug power — yanking the cord
     mid-run can corrupt config files on the SD card.
@@ -311,27 +317,23 @@ _PAGE_BODY = """
 <details class="disclosure">
   <summary>Run diagnostics</summary>
   <div class="disclosure-body">
-    <p class="muted" style="margin-top:0">Runs <code>jasper-doctor</code> on the speaker. Takes ~3-5 s.</p>
+    <p class="muted card-help flush">Runs <code>jasper-doctor</code> on the speaker. Takes ~3-5 s.</p>
     <button id="btn-diag" class="secondary">Run diagnostics now</button>
     <div id="diag-output" style="display:none"></div>
   </div>
 </details>
 
-<div class="card" id="services-card">
-  <h2>Per-service usage</h2>
-  <p class="muted" style="margin: 0 0 0.4em; font-size: 0.85em;">
-    Cgroup-reported CPU and memory for JTS daemons, audio renderers,
-    and key system support services. CPU is per-core (100% = one fully
-    saturated core; 400% = all four). New services show "—" for CPU
-    until the next 5 s sample provides a delta. Sorted by CPU descending;
-    the totals row shows what remains outside the listed services.
+<details class="card" id="services-card" open>
+  <summary>Per-service usage</summary>
+  <p class="muted card-help compact">
+    Cgroup CPU and memory by service; totals show unlisted system work.
   </p>
   <div id="svc-warn" class="warn-banner" style="display:none"></div>
   <table class="svc-table">
     <thead><tr><th>Service</th><th class="num">CPU</th><th class="num">Mem</th></tr></thead>
     <tbody id="svc-rows"><tr><td colspan="3" class="muted">Loading…</td></tr></tbody>
   </table>
-</div>
+</details>
 """
 
 _SCRIPT = r"""
@@ -393,6 +395,52 @@ _SCRIPT = r"""
     if (className) el.className = className;
     if (text != null) el.textContent = text;
     return el;
+  }
+  function appendCell(row, className, text) {
+    const cell = makeEl('td', className, text);
+    row.appendChild(cell);
+    return cell;
+  }
+  function replaceTableRows(tbody, rows) {
+    clearChildren(tbody);
+    rows.forEach(row => { tbody.appendChild(row); });
+  }
+  function emptyTableRow(message, colspan) {
+    const row = makeEl('tr');
+    const cell = appendCell(row, 'muted', message);
+    cell.colSpan = colspan;
+    return row;
+  }
+  function serviceTableRow(service) {
+    const row = makeEl('tr');
+    const nameCell = appendCell(row);
+    nameCell.appendChild(makeEl('span', 'svc-name', service.name));
+    nameCell.appendChild(document.createTextNode(' '));
+    nameCell.appendChild(makeEl(
+      'span',
+      'svc-group',
+      service.group || 'Service',
+    ));
+    appendCell(
+      row,
+      'num',
+      service.cpu_pct == null ? '—' : service.cpu_pct.toFixed(1) + '%',
+    );
+    appendCell(
+      row,
+      'num',
+      service.memory_mb == null
+        ? '—'
+        : Math.round(service.memory_mb) + ' MB',
+    );
+    return row;
+  }
+  function totalsTableRow(label, cpuText, memoryText) {
+    const row = makeEl('tr', 'totals');
+    appendCell(row, null, label);
+    appendCell(row, 'num', cpuText);
+    appendCell(row, 'num', memoryText);
+    return row;
   }
   function setMetricLines(id, lines) {
     const el = document.getElementById(id);
@@ -633,6 +681,7 @@ _SCRIPT = r"""
     const m = snap.metrics;
     const cur = m.current;
     const hist = m.history;
+    const cores = cur.per_core_cpu_pct || [];
     const lastSampled = m.last_sample_at;
     const stale = lastSampled
       ? Math.max(0, Date.now() / 1000 - lastSampled)
@@ -670,17 +719,29 @@ _SCRIPT = r"""
 
     // Load tile
     const load = hist.load_1m[hist.load_1m.length - 1] || 0;
-    document.getElementById('load-value').textContent = load.toFixed(2);
-    document.getElementById('load-sub').textContent =
-      'running + waiting tasks';
+    // Load average is not normalized by CPU count. On the Pi 5, 4.0 is the
+    // practical "all cores occupied" line, so render it as a compact ratio.
+    const loadCapacity = Math.max(1, cores.length || 4);
+    const busyLoad = loadCapacity * 0.625;  // 2.5 on a 4-core Pi 5.
     let loadStatus = 'ok';
-    if (load > 4) loadStatus = 'fail';
-    else if (load > 3) loadStatus = 'warn';
+    let loadLabel = 'Low demand';
+    if (load > loadCapacity) {
+      loadStatus = 'fail';
+      loadLabel = 'Queueing';
+    } else if (load >= busyLoad) {
+      loadStatus = 'warn';
+      loadLabel = 'Busy';
+    }
+    document.getElementById('load-value').textContent =
+      load.toFixed(2) + ' / ' + loadCapacity.toFixed(1);
+    document.getElementById('load-sub').textContent = loadLabel;
     setTile('tile-load', loadStatus);
-    sparkline('spark-load', hist.load_1m, { min: 0, max: Math.max(4, ...hist.load_1m) });
+    sparkline('spark-load', hist.load_1m, {
+      min: 0,
+      max: Math.max(loadCapacity, ...hist.load_1m),
+    });
 
     // Per-core CPU tile
-    const cores = m.current.per_core_cpu_pct || [];
     renderCpuBars(cores);
     if (cores.length) {
       const totalCpu = cores.reduce((a, b) => a + b, 0);
@@ -738,7 +799,7 @@ _SCRIPT = r"""
       const step = fanStepInfo(pwm);
       document.getElementById('fan-value').textContent = step.label;
       document.getElementById('fan-sub').textContent =
-        rpm > 0 ? rpm + ' RPM' : 'fan off';
+        rpm > 0 ? rpm + ' RPM' : '';
       let fanStatus = 'ok';
       if (step.index >= FAN_STEPS.length - 1) fanStatus = 'warn';
       setTile('tile-fan', fanStatus);
@@ -882,14 +943,7 @@ _SCRIPT = r"""
         const bc = b.cpu_pct == null ? -1 : b.cpu_pct;
         return bc - ac;
       });
-      const rows = sorted.map(s => {
-        const cpu = s.cpu_pct == null ? '—' : s.cpu_pct.toFixed(1) + '%';
-        const memory = s.memory_mb == null ? '—' : Math.round(s.memory_mb) + ' MB';
-        return '<tr><td><span class="svc-name">' + esc(s.name) + '</span>' +
-               ' <span class="svc-group">' + esc(s.group || 'Service') + '</span></td>' +
-               '<td class="num">' + cpu + '</td>' +
-               '<td class="num">' + memory + '</td></tr>';
-      });
+      const rows = sorted.map(serviceTableRow);
       // Totals row. Shown subtotal is the sum of known cpu_pct's
       // (skips first-tick None values). System total comes from
       // per-core CPU (sum of all cores, max 4*100=400 on a 4-core
@@ -901,39 +955,36 @@ _SCRIPT = r"""
         acc + (s.memory_mb == null ? 0 : s.memory_mb), 0);
       const anyMemory = sorted.some(s => s.memory_mb != null);
       const corePcts = m.current.per_core_cpu_pct || [];
-      let totalsLine = '';
       if (corePcts.length) {
         const systemCpu = corePcts.reduce((a, b) => a + b, 0);
         const maxScale = corePcts.length * 100;
         const systemCapacity = capacityPercent(systemCpu, corePcts.length);
         const headroom = Math.max(0, maxScale - systemCpu);
         const unshown = Math.max(0, systemCpu - shownCpu);
-        totalsLine =
-          '<tr class="totals">' +
-          '<td>System total · shown / unshown / free</td>' +
-          '<td class="num">' +
+        rows.push(totalsTableRow(
+          'System total · shown / unshown / free',
             Math.round(systemCapacity) + '% (' +
             Math.round(shownCpu) + ' + ' + Math.round(unshown) +
-            ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)' +
-          '</td>' +
-          '<td class="num">' +
-            (anyMemory ? Math.round(shownMemory) + ' MB' : '—') +
-          '</td></tr>';
+            ' + ' + Math.round(headroom) + ' / ' + maxScale + '%)',
+          anyMemory ? Math.round(shownMemory) + ' MB' : '—',
+        ));
       } else {
         // Per-core sampler hasn't produced a delta yet (first tick
         // after boot or non-Linux). Show listed-service totals.
-        totalsLine =
-          '<tr class="totals">' +
-          '<td>Shown subtotal</td>' +
-          '<td class="num">' + Math.round(shownCpu) + '%</td>' +
-          '<td class="num">' +
-            (anyMemory ? Math.round(shownMemory) + ' MB' : '—') +
-          '</td></tr>';
+        rows.push(totalsTableRow(
+          'Shown subtotal',
+          Math.round(shownCpu) + '%',
+          anyMemory ? Math.round(shownMemory) + ' MB' : '—',
+        ));
       }
-      svcRows.innerHTML = rows.join('') + totalsLine;
+      replaceTableRows(svcRows, rows);
     } else {
-      svcRows.innerHTML =
-        '<tr><td colspan="3" class="muted">No tracked service cgroups visible (cgroup-v2 unavailable, or dev env).</td></tr>';
+      replaceTableRows(svcRows, [
+        emptyTableRow(
+          'No tracked service cgroups visible (cgroup-v2 unavailable, or dev env).',
+          3,
+        ),
+      ]);
     }
   }
 
@@ -985,10 +1036,7 @@ _SCRIPT = r"""
     try {
       const r = await fetch('audio-quality', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-CSRF-Token': CSRF,
-        },
+        headers: jsonHeaders(),
         body: JSON.stringify({ converter }),
       });
       const body = await r.json();

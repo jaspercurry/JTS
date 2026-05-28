@@ -190,9 +190,11 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "Medium saves CPU" in text
     assert "State warning:" in text
     assert "data-converter=\"samplerate_medium\"" in text
-    assert "running + waiting tasks" in text
+    assert "Load Pressure" in text
+    assert "Low demand" in text
     assert "metric-line" in text
-    assert "JTS daemons, audio" in text
+    assert "<details class=\"card\" id=\"services-card\" open>" in text
+    assert "Cgroup CPU and memory by service" in text
     assert "<th class=\"num\">Mem</th>" in text
     assert "svc-group" in text
     assert "System total · shown / unshown / free" in text
@@ -203,7 +205,10 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "id=\"disk-pill\"" in text
     assert "tile-pill.warn" in text
     assert "queue depth" not in text
+    assert "running + waiting tasks" not in text
+    assert "saturated core" not in text
     assert "kernel-discrete" not in text
+    assert "fan off" not in text
     assert "fan-footer" not in text
     assert ".tile.warn { background" not in text
     assert ".tile.fail { background" not in text
