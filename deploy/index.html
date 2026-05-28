@@ -3,436 +3,983 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>JTS speaker</title>
+  <title>JTS</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
-           max-width: 620px; margin: 2em auto; padding: 0 1em; color: #222; }
-    h1 { margin-bottom: 0.25em; }
-    .sub { color: #666; margin-top: 0; margin-bottom: 2em; }
-    .cards { display: flex; flex-direction: column; gap: 0.7em; }
-    a.card {
-      display: block; padding: 1em 1.2em;
-      background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
-      text-decoration: none; color: inherit;
-      transition: background 0.15s ease, border-color 0.15s ease;
+    :root {
+      color-scheme: light;
+      --bg: #f6f8f9;
+      --surface: #ffffff;
+      --surface-muted: #eef3f5;
+      --surface-hover: #f4fafb;
+      --border: #dce5e9;
+      --text: #172126;
+      --muted: #667781;
+      --muted-strong: #3d4c54;
+      --accent: #0b6f80;
+      --accent-soft: #e7f5f7;
+      --accent-border: #abd7df;
+      --success: #1f7a50;
+      --danger: #b42318;
+      --danger-soft: #fff0ee;
+      --shadow: 0 1px 2px rgba(23, 33, 38, 0.06);
+      --radius: 8px;
+      --radius-sm: 6px;
     }
-    a.card:hover {
-      background: #f0fff4; border-color: #1db954;
-    }
-    a.card .name {
-      font-weight: 600; color: #1db954; font-size: 1.05em;
-    }
-    a.card .desc {
-      color: #555; font-size: 0.92em; margin-top: 0.3em; line-height: 1.45;
-    }
-    .cert-note {
-      background: #fff3cd; border: 1px solid #f0d090;
-      border-radius: 6px; padding: 0.7em 0.9em; margin: 1.5em 0;
-      color: #5a4500; font-size: 0.92em; line-height: 1.5;
-    }
-    .cert-note strong { color: #3a2e00; }
-    .cert-note a { color: #1da34d; font-weight: 600; }
 
-    /* Volume slider card. The .vol-hit element is the actual drag
-       target — bar + 18 px above + 18 px below (50% of the 36 px bar
-       each way). Label and percent text inside the card are
-       deliberately non-interactive so a tap on the readout doesn't
-       move the slider. touch-action:none on the hit element stops
-       horizontal finger drags from being interpreted as page scrolls. */
-    .volume-card {
-      background: #f4f4f4; border: 1px solid #e6e6e6; border-radius: 8px;
-      padding: 0.9em 1.2em 1em;
+    * { box-sizing: border-box; }
+    html { background: var(--bg); }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui,
+        sans-serif;
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
-    .vol-label {
-      font-size: 0.85em; color: #666; font-weight: 500;
+    a { color: inherit; }
+    button, input { font: inherit; }
+    button { -webkit-tap-highlight-color: transparent; }
+
+    .shell {
+      width: min(920px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 28px 0 40px;
     }
+    .page-header {
+      display: flex;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 20px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 3.75rem;
+      line-height: 0.95;
+      letter-spacing: 0;
+      font-weight: 720;
+    }
+    .header-status {
+      display: inline-flex;
+      align-items: center;
+      min-height: 34px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted-strong);
+      background: rgba(255, 255, 255, 0.72);
+      text-decoration: none;
+      font-size: 0.88rem;
+      font-weight: 600;
+      white-space: nowrap;
+      box-shadow: var(--shadow);
+    }
+    .header-status:hover {
+      border-color: var(--accent-border);
+      color: var(--accent);
+      background: var(--surface);
+    }
+
+    .primary-controls {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+    .control-panel {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .volume-panel { padding: 16px; }
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .control-label {
+      color: var(--muted);
+      font-size: 0.86rem;
+      font-weight: 650;
+    }
+    .vol-percent {
+      font-size: 1.7rem;
+      font-weight: 700;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* Volume slider. The .vol-hit element is the actual drag target:
+       bar + vertical padding. Label/readout are intentionally not
+       interactive so taps on text do not move the slider. */
     .vol-hit {
       padding: 18px 0;
       cursor: ew-resize;
-      user-select: none; -webkit-user-select: none;
+      user-select: none;
+      -webkit-user-select: none;
       touch-action: none;
     }
-    .vol-hit:focus-visible { outline: 2px solid #1db954; outline-offset: 2px; }
+    .vol-hit:focus-visible {
+      outline: 3px solid var(--accent-border);
+      outline-offset: 3px;
+      border-radius: var(--radius-sm);
+    }
     .vol-bar {
       position: relative;
-      height: 36px;
-      background: #e6e6e6;
-      border-radius: 18px;
+      height: 24px;
+      overflow: hidden;
+      background: var(--surface-muted);
+      border: 1px solid var(--border);
+      border-radius: 999px;
     }
     .vol-fill {
-      position: absolute; inset: 0 auto 0 0;
+      position: absolute;
+      inset: -1px auto -1px -1px;
       width: 0%;
-      background: #1db954;
-      border-radius: 18px;
-    }
-    .vol-percent {
-      text-align: center;
-      font-size: 2em; font-weight: 600; color: #222;
-      font-variant-numeric: tabular-nums;
-      line-height: 1.1;
+      background: linear-gradient(90deg, var(--accent), #1397a6);
+      border-radius: 999px;
     }
 
-    /* Mic mute toggle row beneath the volume bar. Same card as the
-       volume control because both are fundamental I/O: volume is
-       "how loud is OUTPUT"; mic mute is "is INPUT listening". */
-    .mic-row {
-      display: flex; align-items: center; justify-content: space-between;
-      padding-top: 0.9em; margin-top: 0.8em;
-      border-top: 1px solid #e6e6e6;
+    .side-controls {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
     }
-    .mic-label { font-weight: 500; color: #444; font-size: 0.95em; }
+    .mic-panel,
+    .source-panel {
+      padding: 14px;
+    }
+    .mic-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+    .mic-state,
+    .source-status {
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
     .mic-toggle {
-      position: relative; display: inline-block; flex-shrink: 0;
-      width: 54px; height: 30px;
+      position: relative;
+      display: inline-block;
+      flex: 0 0 auto;
+      width: 52px;
+      height: 30px;
     }
-    .mic-toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+    .mic-toggle input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
+    }
     .mic-toggle .track {
-      position: absolute; inset: 0;
-      background-color: #ccc;
-      border-radius: 30px;
+      position: absolute;
+      inset: 0;
       cursor: pointer;
-      transition: background-color 0.18s ease;
+      background: #cfd8dd;
+      border-radius: 999px;
+      transition: background 150ms ease;
     }
     .mic-toggle .track::before {
-      position: absolute; content: "";
-      width: 24px; height: 24px;
-      top: 3px; left: 3px;
-      background-color: #fff;
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 24px;
+      height: 24px;
+      background: #fff;
       border-radius: 50%;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
-      transition: transform 0.18s ease;
+      box-shadow: 0 1px 3px rgba(23, 33, 38, 0.22);
+      transition: transform 150ms ease;
     }
-    .mic-toggle input:checked + .track { background-color: #1db954; }
-    .mic-toggle input:checked + .track::before { transform: translateX(24px); }
-    .mic-toggle input:disabled + .track { opacity: 0.5; cursor: not-allowed; }
+    .mic-toggle input:checked + .track { background: var(--success); }
+    .mic-toggle input:checked + .track::before { transform: translateX(22px); }
+    .mic-toggle input:disabled + .track {
+      cursor: not-allowed;
+      opacity: 0.48;
+    }
     .mic-toggle input:focus-visible + .track {
-      outline: 2px solid #1db954; outline-offset: 2px;
+      outline: 3px solid var(--accent-border);
+      outline-offset: 3px;
     }
 
-    .source-row {
-      padding-top: 0.9em; margin-top: 0.8em;
-      border-top: 1px solid #e6e6e6;
-    }
     .source-head {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 0.8em; margin-bottom: 0.7em;
-    }
-    .source-label { font-weight: 500; color: #444; font-size: 0.95em; }
-    .source-status {
-      min-width: 6.5em; text-align: right;
-      color: #666; font-size: 0.84em;
-      font-variant-numeric: tabular-nums;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
     }
     .source-buttons {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
-      gap: 0.45em;
+      gap: 6px;
     }
     .source-button {
       position: relative;
-      min-width: 0; min-height: 46px;
-      border: 1px solid #d9d9d9; border-radius: 8px;
-      background: #fff; color: #333;
-      font: inherit; font-size: 0.82em; font-weight: 600;
+      min-width: 0;
+      min-height: 42px;
+      padding: 7px 5px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface);
+      color: var(--muted-strong);
       cursor: pointer;
-      display: flex; flex-direction: column; align-items: center;
-      justify-content: center; gap: 0.15em;
-      transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 1px;
+      font-size: 0.72rem;
+      font-weight: 680;
+      transition:
+        background 150ms ease,
+        border-color 150ms ease,
+        color 150ms ease;
     }
     .source-button .source-icon {
-      font-size: 1.1em; line-height: 1;
+      font-size: 0.72rem;
+      line-height: 1;
+      letter-spacing: 0;
       font-variant-numeric: tabular-nums;
+      color: var(--muted);
     }
     .source-button .source-name-short { display: none; }
     .source-button:hover {
-      border-color: #1db954; background: #f0fff4;
+      border-color: var(--accent-border);
+      background: var(--surface-hover);
+      color: var(--accent);
     }
     .source-button.active {
-      border-color: #1db954; background: #eafff1; color: #0f7d37;
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
     }
-    .source-button.current:not(.active) {
-      border-color: #9fd9b2;
-    }
+    .source-button.current:not(.active) { border-color: var(--accent-border); }
     .source-button.playing::after {
       content: "";
-      position: absolute; top: 6px; right: 6px;
-      width: 7px; height: 7px; border-radius: 50%;
-      background: #1db954;
+      position: absolute;
+      top: 6px;
+      right: 6px;
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
     }
-    .source-button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .source-button:disabled {
+      cursor: not-allowed;
+      opacity: 0.42;
+    }
     .source-button:focus-visible {
-      outline: 2px solid #1db954; outline-offset: 2px;
+      outline: 3px solid var(--accent-border);
+      outline-offset: 2px;
     }
-    @media (max-width: 480px) {
-      .source-buttons { grid-template-columns: repeat(5, minmax(42px, 1fr)); }
-      .source-button { min-height: 46px; font-size: 0.68em; }
-      .source-button .source-icon { font-size: 1em; }
+
+    .settings-grid {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 22px;
+    }
+    .settings-section h2 {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 0.78rem;
+      font-weight: 760;
+      text-transform: uppercase;
+      letter-spacing: 0;
+    }
+    .settings-list {
+      overflow: hidden;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .setting-row {
+      min-height: 56px;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 12px;
+      color: inherit;
+      text-decoration: none;
+      border-top: 1px solid var(--border);
+      transition:
+        background 150ms ease,
+        color 150ms ease;
+    }
+    .setting-row:first-child { border-top: 0; }
+    .setting-row:hover {
+      background: var(--surface-hover);
+      color: var(--accent);
+    }
+    .setting-row:focus-visible {
+      outline: 3px solid var(--accent-border);
+      outline-offset: -3px;
+    }
+    .row-icon {
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      background: var(--surface-muted);
+      color: var(--accent);
+    }
+    .row-icon svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 1.85;
+    }
+    .setting-copy {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .setting-title {
+      color: var(--text);
+      font-size: 0.96rem;
+      font-weight: 680;
+      line-height: 1.2;
+    }
+    .setting-status {
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 560;
+      line-height: 1.25;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .chevron {
+      color: var(--muted);
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+    .setting-row:hover .setting-title,
+    .setting-row:hover .chevron { color: var(--accent); }
+    .setting-row:hover .row-icon {
+      border-color: var(--accent-border);
+      background: var(--accent-soft);
+    }
+    .setting-row.danger .row-icon {
+      color: var(--danger);
+      background: var(--danger-soft);
+      border-color: #f1c5bf;
+    }
+    .setting-row.external .chevron { transform: rotate(-45deg); }
+
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (min-width: 760px) {
+      .shell {
+        width: min(980px, calc(100% - 48px));
+        padding-top: 38px;
+      }
+      .primary-controls {
+        grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+        align-items: stretch;
+      }
+      .volume-panel {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        min-height: 176px;
+      }
+      .settings-grid {
+        display: block;
+      }
+      .settings-grid::after {
+        content: "";
+        display: block;
+        clear: both;
+      }
+      .settings-section {
+        width: calc(50% - 11px);
+        margin-bottom: 22px;
+      }
+      .settings-section[aria-labelledby="sources-heading"],
+      .settings-section[aria-labelledby="sound-heading"] {
+        float: left;
+        clear: left;
+      }
+      .settings-section[aria-labelledby="assistant-heading"],
+      .settings-section[aria-labelledby="network-heading"],
+      .settings-section[aria-labelledby="accessories-heading"],
+      .settings-section[aria-labelledby="system-heading"] {
+        float: right;
+        clear: right;
+      }
+    }
+
+    @media (max-width: 520px) {
+      .shell { width: min(100% - 24px, 920px); padding-top: 22px; }
+      .page-header {
+        align-items: flex-start;
+        margin-bottom: 14px;
+      }
+      h1 { font-size: 2.25rem; }
+      .header-status {
+        min-height: 32px;
+        padding: 0 10px;
+        font-size: 0.8rem;
+      }
+      .source-buttons { grid-template-columns: repeat(5, minmax(40px, 1fr)); }
+      .source-button {
+        min-height: 44px;
+        padding-inline: 3px;
+        font-size: 0.66rem;
+      }
       .source-button .source-name-full { display: none; }
       .source-button .source-name-short { display: inline; }
+      .setting-row {
+        grid-template-columns: 32px minmax(0, 1fr) auto;
+        gap: 10px;
+        padding-inline: 10px;
+      }
+      .row-icon {
+        width: 32px;
+        height: 32px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
     }
   </style>
 </head>
 <body>
-  <h1>JTS speaker</h1>
-  <p class="sub">Manage your speaker.</p>
+  <svg class="sr-only" aria-hidden="true" focusable="false">
+    <symbol id="icon-source" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
+      <path d="M8 6v12"></path><path d="M16 6v12"></path>
+    </symbol>
+    <symbol id="icon-music" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M9 18V5l10-2v13"></path>
+      <circle cx="6" cy="18" r="3"></circle><circle cx="16" cy="16" r="3"></circle>
+    </symbol>
+    <symbol id="icon-bluetooth" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 7l10 10-5 4V3l5 4L7 17"></path>
+    </symbol>
+    <symbol id="icon-airplay" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 17H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-1"></path>
+      <path d="m12 15 5 6H7l5-6z"></path>
+    </symbol>
+    <symbol id="icon-voice" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 3a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V6a3 3 0 0 0-3-3z"></path>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"></path>
+      <path d="M12 19v3"></path>
+    </symbol>
+    <symbol id="icon-wake" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 12h2"></path><path d="M18 12h2"></path>
+      <path d="M7 7l1.4 1.4"></path><path d="M15.6 15.6 17 17"></path>
+      <path d="M17 7l-1.4 1.4"></path><path d="M8.4 15.6 7 17"></path>
+      <circle cx="12" cy="12" r="3"></circle>
+    </symbol>
+    <symbol id="icon-location" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 21s7-5.4 7-11a7 7 0 1 0-14 0c0 5.6 7 11 7 11z"></path>
+      <circle cx="12" cy="10" r="2.5"></circle>
+    </symbol>
+    <symbol id="icon-weather" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M7 17h10a4 4 0 0 0 0-8 5.5 5.5 0 0 0-10.6 1.5A3.5 3.5 0 0 0 7 17z"></path>
+      <path d="M5 5l1.2 1.2"></path><path d="M12 3v2"></path><path d="M19 5l-1.2 1.2"></path>
+    </symbol>
+    <symbol id="icon-transit" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <rect x="5" y="4" width="14" height="13" rx="2"></rect>
+      <path d="M8 8h8"></path><path d="M8 13h.01"></path><path d="M16 13h.01"></path>
+      <path d="M8 21l2-4"></path><path d="M16 21l-2-4"></path>
+    </symbol>
+    <symbol id="icon-calendar" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="5" width="16" height="15" rx="2"></rect>
+      <path d="M8 3v4"></path><path d="M16 3v4"></path><path d="M4 10h16"></path>
+      <path d="M8 14h3"></path><path d="M13 14h3"></path><path d="M8 17h3"></path>
+    </symbol>
+    <symbol id="icon-home" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 11 12 4l9 7"></path>
+      <path d="M5 10v10h14V10"></path><path d="M10 20v-6h4v6"></path>
+    </symbol>
+    <symbol id="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 14h4l5 5V5L8 10H4z"></path>
+      <path d="M17 9a5 5 0 0 1 0 6"></path><path d="M19.5 6.5a8.5 8.5 0 0 1 0 11"></path>
+    </symbol>
+    <symbol id="icon-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
+      <path d="M3 17c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
+    </symbol>
+    <symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
+      <circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle><circle cx="11" cy="18" r="2"></circle>
+    </symbol>
+    <symbol id="icon-wifi" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M5 12.5a10 10 0 0 1 14 0"></path>
+      <path d="M8.5 16a5 5 0 0 1 7 0"></path>
+      <path d="M12 20h.01"></path>
+    </symbol>
+    <symbol id="icon-peers" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="7" cy="12" r="3"></circle><circle cx="17" cy="7" r="3"></circle><circle cx="17" cy="17" r="3"></circle>
+      <path d="M9.5 10.5 14.5 8.5"></path><path d="M9.5 13.5 14.5 15.5"></path>
+    </symbol>
+    <symbol id="icon-dial" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="8"></circle>
+      <path d="M12 8v4l3 2"></path>
+    </symbol>
+    <symbol id="icon-system" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4" y="5" width="16" height="11" rx="2"></rect>
+      <path d="M8 20h8"></path><path d="M12 16v4"></path>
+    </symbol>
+    <symbol id="icon-software" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="M8 7h8"></path><path d="M8 12h8"></path><path d="M8 17h5"></path>
+      <rect x="5" y="3" width="14" height="18" rx="2"></rect>
+    </symbol>
+    <symbol id="icon-dev" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-linecap="round" stroke-linejoin="round">
+      <path d="m8 9-4 3 4 3"></path><path d="m16 9 4 3-4 3"></path><path d="m14 5-4 14"></path>
+    </symbol>
+  </svg>
 
-  <div class="cards">
-    <div class="volume-card">
-      <div class="vol-label">Volume</div>
-      <div class="vol-hit" id="vol-hit"
-           role="slider" tabindex="0"
-           aria-label="Volume"
-           aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-        <div class="vol-bar">
-          <div class="vol-fill" id="vol-fill"></div>
+  <div class="shell">
+    <header class="page-header">
+      <h1 id="speaker-title">JTS</h1>
+      <a class="header-status" id="system-summary" href="/system/">System</a>
+    </header>
+
+    <main>
+      <section class="primary-controls" aria-label="Primary controls">
+        <div class="control-panel volume-panel">
+          <div class="control-row">
+            <span class="control-label">Volume</span>
+            <span class="vol-percent" id="vol-percent">--</span>
+          </div>
+          <div class="vol-hit" id="vol-hit"
+               role="slider" tabindex="0"
+               aria-label="Volume"
+               aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="vol-bar">
+              <div class="vol-fill" id="vol-fill"></div>
+            </div>
+          </div>
         </div>
-      </div>
-      <div class="vol-percent" id="vol-percent">—</div>
-      <div class="mic-row">
-        <span class="mic-label">Microphone</span>
-        <label class="mic-toggle">
-          <input type="checkbox" id="mic-toggle" disabled
-                 aria-label="Microphone listening">
-          <span class="track"></span>
-        </label>
-      </div>
-      <div class="source-row">
-        <div class="source-head">
-          <span class="source-label">Source</span>
-          <span class="source-status" id="source-status">Offline</span>
+
+        <div class="side-controls">
+          <div class="control-panel mic-panel">
+            <div class="control-row">
+              <span class="mic-copy">
+                <span class="control-label">Microphone</span>
+                <span class="mic-state" id="mic-state">Checking</span>
+              </span>
+              <label class="mic-toggle">
+                <input type="checkbox" id="mic-toggle" disabled
+                       aria-label="Microphone listening">
+                <span class="track"></span>
+              </label>
+            </div>
+          </div>
+
+          <div class="control-panel source-panel">
+            <div class="source-head">
+              <span class="control-label">Source</span>
+              <span class="source-status" id="source-status">Offline</span>
+            </div>
+            <div class="source-buttons" role="group" aria-label="Playback source">
+              <button class="source-button" type="button" data-source="auto"
+                      aria-label="Auto source selection"
+                      aria-pressed="false" title="Auto">
+                <span class="source-icon">A</span>
+                <span class="source-name-full">Auto</span>
+                <span class="source-name-short">Auto</span>
+              </button>
+              <button class="source-button" type="button" data-source="airplay"
+                      aria-label="AirPlay source"
+                      aria-pressed="false" title="AirPlay">
+                <span class="source-icon">AP</span>
+                <span class="source-name-full">AirPlay</span>
+                <span class="source-name-short">Air</span>
+              </button>
+              <button class="source-button" type="button" data-source="bluetooth"
+                      aria-label="Bluetooth source"
+                      aria-pressed="false" title="Bluetooth">
+                <span class="source-icon">BT</span>
+                <span class="source-name-full">Bluetooth</span>
+                <span class="source-name-short">BT</span>
+              </button>
+              <button class="source-button" type="button" data-source="spotify"
+                      aria-label="Spotify source"
+                      aria-pressed="false" title="Spotify">
+                <span class="source-icon">SP</span>
+                <span class="source-name-full">Spotify</span>
+                <span class="source-name-short">Spot</span>
+              </button>
+              <button class="source-button" type="button" data-source="usbsink"
+                      aria-label="USB source"
+                      aria-pressed="false" title="USB">
+                <span class="source-icon">USB</span>
+                <span class="source-name-full">USB</span>
+                <span class="source-name-short">USB</span>
+              </button>
+            </div>
+          </div>
         </div>
-        <div class="source-buttons" role="group" aria-label="Playback source">
-          <button class="source-button" type="button" data-source="auto"
-                  aria-label="Auto source selection"
-                  aria-pressed="false" title="Auto">
-            <span class="source-icon">A</span>
-            <span class="source-name-full">Auto</span>
-            <span class="source-name-short">Auto</span>
-          </button>
-          <button class="source-button" type="button" data-source="airplay"
-                  aria-label="AirPlay source"
-                  aria-pressed="false" title="AirPlay">
-            <span class="source-icon">AP</span>
-            <span class="source-name-full">AirPlay</span>
-            <span class="source-name-short">Air</span>
-          </button>
-          <button class="source-button" type="button" data-source="bluetooth"
-                  aria-label="Bluetooth source"
-                  aria-pressed="false" title="Bluetooth">
-            <span class="source-icon">BT</span>
-            <span class="source-name-full">Bluetooth</span>
-            <span class="source-name-short">BT</span>
-          </button>
-          <button class="source-button" type="button" data-source="spotify"
-                  aria-label="Spotify source"
-                  aria-pressed="false" title="Spotify">
-            <span class="source-icon">SP</span>
-            <span class="source-name-full">Spotify</span>
-            <span class="source-name-short">Spot</span>
-          </button>
-          <button class="source-button" type="button" data-source="usbsink"
-                  aria-label="USB source"
-                  aria-pressed="false" title="USB">
-            <span class="source-icon">USB</span>
-            <span class="source-name-full">USB</span>
-            <span class="source-name-short">USB</span>
-          </button>
-        </div>
-      </div>
-    </div>
+      </section>
 
-    <a class="card" href="/sources/">
-      <div class="name">Sources &rsaquo;</div>
-      <div class="desc">
-        Turn each playback source (AirPlay, Bluetooth, Spotify Connect)
-        on or off.
-      </div>
-    </a>
+      <nav class="settings-grid" aria-label="Speaker settings">
+        <section class="settings-section" aria-labelledby="sources-heading">
+          <h2 id="sources-heading">Sources</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/sources/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-source"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Playback sources</span>
+                <span class="setting-status" id="status-playback-source">AirPlay · Spotify · Bluetooth · USB</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/spotify/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-music"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Spotify accounts</span>
+                <span class="setting-status">Household music routing</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/bluetooth/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-bluetooth"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Bluetooth devices</span>
+                <span class="setting-status">Pairing and discoverability</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/airplay/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-airplay"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">AirPlay sync</span>
+                <span class="setting-status">Synced</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
 
-    <a class="card" href="/sound/">
-      <div class="name">Sound &rsaquo;</div>
-      <div class="desc">
-        Pick a sound curve and adjust Bass, Mid, and Treble without
-        running room correction.
-      </div>
-    </a>
+        <section class="settings-section" aria-labelledby="assistant-heading">
+          <h2 id="assistant-heading">Assistant</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/voice/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-voice"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Voice</span>
+                <span class="setting-status" id="status-voice">Provider</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/wake/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wake"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Wake detection</span>
+                <span class="setting-status">Jarvis · sensitivity</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/weather/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-weather"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Weather</span>
+                <span class="setting-status">Default location and units</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/transit/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-transit"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Transit</span>
+                <span class="setting-status">Nearby routes and stops</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/google/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-calendar"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Google</span>
+                <span class="setting-status">Calendar · Gmail</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/ha/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-home"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Home Assistant</span>
+                <span class="setting-status" id="status-ha">Not connected</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
 
-    <a class="card" href="/speaker/">
-      <div class="name">Speaker name &rsaquo;</div>
-      <div class="desc">
-        Change the name shown in AirPlay, Spotify Connect, Bluetooth,
-        and USB Audio.
-      </div>
-    </a>
+        <section class="settings-section" aria-labelledby="sound-heading">
+          <h2 id="sound-heading">Sound</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/sound/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sound"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Sound profile</span>
+                <span class="setting-status">Curve and EQ</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" id="correction-card" href="/correction/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wave"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Room correction</span>
+                <span class="setting-status">HTTPS warning walkthrough</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row external" id="camilla-card" data-port="5005" data-path="/"
+               href="#" target="_blank" rel="noopener">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-sliders"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Advanced DSP</span>
+                <span class="setting-status">CamillaGUI</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
 
-    <a class="card" href="/voice/">
-      <div class="name">Voice provider &rsaquo;</div>
-      <div class="desc">
-        Choose which real-time voice backend the speaker uses (Gemini,
-        OpenAI, or Grok) and paste API keys.
-      </div>
-    </a>
+        <section class="settings-section" aria-labelledby="network-heading">
+          <h2 id="network-heading">Network</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/wifi/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-wifi"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Wi-Fi</span>
+                <span class="setting-status">Network and saved profiles</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/peers/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-peers"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Peering</span>
+                <span class="setting-status">Off by default</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
 
-    <a class="card" href="/wake/">
-      <div class="name">Wake word &rsaquo;</div>
-      <div class="desc">
-        Pick which phrase wakes the speaker — &ldquo;Jarvis&rdquo;,
-        &ldquo;Hey Jarvis&rdquo;, &ldquo;Alexa&rdquo;, or
-        &ldquo;Hey Mycroft&rdquo;. New models can be added by
-        updating <code>jasper/wake_models.py</code>.
-      </div>
-    </a>
+        <section class="settings-section" aria-labelledby="accessories-heading">
+          <h2 id="accessories-heading">Accessories</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/dial/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-dial"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Dial</span>
+                <span class="setting-status" id="status-dial">Accessory setup</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
 
-    <a class="card" href="/airplay/">
-      <div class="name">AirPlay sync mode &rsaquo;</div>
-      <div class="desc">
-        Synced (default — works for music, video A/V, and multi-room)
-        or free-running (fallback for DAC-specific issues).
-      </div>
-    </a>
+        <section class="settings-section" aria-labelledby="system-heading">
+          <h2 id="system-heading">System</h2>
+          <div class="settings-list">
+            <a class="setting-row" href="/system/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-system"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Status</span>
+                <span class="setting-status" id="status-system">Metrics and diagnostics</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/speaker/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-software"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Speaker name</span>
+                <span class="setting-status" id="status-speaker-name">JTS</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row" href="/system/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-software"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Software</span>
+                <span class="setting-status" id="status-software">Build and updates</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+            <a class="setting-row danger" href="/wake-corpus/">
+              <span class="row-icon"><svg aria-hidden="true"><use href="#icon-dev"></use></svg></span>
+              <span class="setting-copy">
+                <span class="setting-title">Developer tools</span>
+                <span class="setting-status">Wake corpus recorder</span>
+              </span>
+              <span class="chevron" aria-hidden="true">&rsaquo;</span>
+            </a>
+          </div>
+        </section>
+      </nav>
 
-    <a class="card" href="/integrations">
-      <div class="name">Integrations &rsaquo;</div>
-      <div class="desc">
-        Connect external services to your speaker — Spotify accounts,
-        Google Calendar + Gmail, and Home Assistant for smart-home control.
-      </div>
-    </a>
-
-    <a class="card" href="/dial/">
-      <div class="name">Accessories &rsaquo;</div>
-      <div class="desc">
-        Onboard a wireless accessory — currently the ESP32 rotary
-        dial; the AMOLED touch satellite is in progress.
-      </div>
-    </a>
-
-    <a class="card" href="/bluetooth/">
-      <div class="name">Bluetooth &rsaquo;</div>
-      <div class="desc">
-        Pair phones (to play music to the speaker), volume knobs,
-        headphones, anything Bluetooth. Toggle the adapter on/off
-        and whether the speaker is discoverable.
-      </div>
-    </a>
-
-    <a class="card" href="/wifi/">
-      <div class="name">Wi-Fi &rsaquo;</div>
-      <div class="desc">
-        Switch which Wi-Fi network the speaker is on, see signal
-        strength of nearby networks, and forget saved ones.
-      </div>
-    </a>
-
-    <a class="card" href="/transit/">
-      <div class="name">Transit &rsaquo;</div>
-      <div class="desc">
-        Configure nearby subway and bus stops so you can ask
-        &ldquo;when's the next train?&rdquo; or &ldquo;next bus?&rdquo;.
-        Enter your address; the wizard finds the closest stops via
-        OpenStreetMap. NYC subway is keyless; NYC bus needs a free
-        MTA BusTime API key.
-      </div>
-    </a>
-
-    <a class="card" href="/weather/">
-      <div class="name">Weather &rsaquo;</div>
-      <div class="desc">
-        Set the default location and units for weather questions when
-        you do not name a city.
-      </div>
-    </a>
-
-    <a class="card" href="/peers/">
-      <div class="name">Speaker peering &rsaquo;</div>
-      <div class="desc">
-        Off by default. When you have multiple JTS speakers on the
-        same network, turn this on so only one responds to each
-        wake word instead of all of them at once.
-      </div>
-    </a>
-
-    <a class="card" id="correction-card" href="/correction/">
-      <div class="name">Room correction &rsaquo;</div>
-      <div class="desc">
-        Measure your room from your iPhone and apply correction
-        filters to CamillaDSP. Starts with a short HTTPS warning
-        walkthrough.
-      </div>
-    </a>
-
-    <a class="card" id="camilla-card" data-port="5005" data-path="/"
-       href="#" target="_blank" rel="noopener">
-      <div class="name">CamillaDSP &rsaquo;</div>
-      <div class="desc">
-        Tune the speaker's audio processing — filters, mixers, signal
-        levels, and live config switching. Opens in a new tab.
-      </div>
-    </a>
-
-    <a class="card" href="/system/">
-      <div class="name">System &rsaquo;</div>
-      <div class="desc">
-        Live view of what the speaker is doing — memory, CPU, temperature,
-        cloud activity (sessions, tokens, est. cost), and quick actions
-        (restart voice, run diagnostics, reboot).
-      </div>
-    </a>
-
-    <a class="card" href="/wake-corpus/">
-      <div class="name">Wake-word corpus recorder &rsaquo;</div>
-      <div class="desc">
-        Tooling / debug page. Browser-driven recording of "Jarvis"
-        utterances across distance + music conditions for the
-        wake-word retraining experiment. Stops jasper-voice for the
-        duration of the session; click-to-record, instant playback,
-        one-click delete. See
-        <code>docs/HANDOFF-wake-training-experiment.md</code> Phase 0b.
-      </div>
-    </a>
-  </div>
-
-  <div class="cert-note">
-    <p style="margin:0 0 0.4em">
-      <strong>About the "Not Private" warning on Room correction:</strong>
-      capturing microphone audio in a browser requires HTTPS. This
-      speaker uses a self-signed certificate (no public CA — it's on
-      your home network), so Safari and Chrome warn the first time.
-    </p>
-    <p style="margin:0">
-      Either tap <strong>Show Details &rarr; visit this website</strong>
-      to dismiss the warning (works fine; reappears every visit), or
-      <a href="/jts-root-ca.crt">download the JTS root certificate</a>
-      and trust it once on this device to silence the warning
-      permanently. The room-correction page itself walks you through
-      the trust steps.
-    </p>
+    </main>
   </div>
 
   <script>
+    function setText(id, value) {
+      var el = document.getElementById(id);
+      if (el && value) el.textContent = value;
+    }
+
+    function titleCaseProvider(provider) {
+      if (provider === 'openai') return 'OpenAI';
+      if (provider === 'grok') return 'Grok';
+      if (provider === 'gemini') return 'Gemini';
+      return provider || 'Provider';
+    }
+
+    function compactSha(value) {
+      if (!value || value === 'unknown') return '';
+      return String(value).slice(0, 7);
+    }
+
     // CamillaGUI runs on its own port (5005) rather than under an
-    // nginx path prefix — the bundled SPA's frontend uses absolute
-    // URLs that don't survive a path rewrite. We can't relative-link
-    // because of the port change, so derive the hostname from
-    // window.location at click time. Works for any speaker hostname
-    // (default jts.local or whatever JASPER_HOSTNAME was set to).
-    document.querySelectorAll('a.card[data-port]').forEach(function(a) {
-      a.href = 'http://' + window.location.hostname + ':' + a.dataset.port + a.dataset.path;
+    // nginx path prefix. Derive the hostname at click time so custom
+    // speaker hostnames work without hard-coded jts.local links.
+    document.querySelectorAll('a[data-port]').forEach(function(a) {
+      a.href = 'http://' + window.location.hostname + ':' +
+        a.dataset.port + a.dataset.path;
     });
+
+    // Light landing-page status hydration. /system/data.json proxies the
+    // existing system snapshot; one slow-ish endpoint is preferable to a
+    // separate poll loop per row.
+    (function() {
+      var POLL_MS = 20000;
+
+      function renderSnapshot(snap) {
+        if (!snap) return;
+
+        var speakerName = snap.speaker_name && snap.speaker_name.name;
+        if (speakerName) {
+          setText('speaker-title', speakerName);
+          setText('status-speaker-name', speakerName);
+          document.title = speakerName;
+        }
+
+        if (snap.voice_provider) {
+          setText('status-voice', titleCaseProvider(snap.voice_provider));
+        }
+
+        var ha = snap.home_assistant || null;
+        if (ha) {
+          if (!ha.configured) {
+            setText('status-ha', 'Not connected');
+          } else if (ha.connected) {
+            setText('status-ha', ha.instance_name || 'Connected');
+          } else {
+            setText('status-ha', 'Unreachable');
+          }
+        }
+
+        var build = snap.build || {};
+        var sha = compactSha(build.JASPER_GIT_SHA);
+        var branch = build.JASPER_GIT_BRANCH || '';
+        if (sha || branch) {
+          setText('status-software', [sha, branch].filter(Boolean).join(' · '));
+        }
+
+        var metrics = snap.metrics || null;
+        var cur = metrics && metrics.current;
+        if (cur) {
+          var cores = cur.per_core_cpu_pct || [];
+          var cpu = null;
+          if (cores.length) {
+            var total = cores.reduce(function(sum, pct) { return sum + pct; }, 0);
+            cpu = Math.round(total / cores.length) + '% CPU';
+          }
+          var temp = cur.temp_c != null ? Math.round(cur.temp_c) + ' C' : null;
+          var disk = cur.disk_used_pct != null ?
+            Math.round(cur.disk_used_pct) + '% disk' : null;
+          var summary = [cpu, temp, disk].filter(Boolean).join(' · ');
+          if (summary) {
+            setText('status-system', summary);
+            setText('system-summary', summary);
+          }
+        }
+      }
+
+      async function fetchSnapshot() {
+        if (document.visibilityState === 'hidden') return;
+        try {
+          var resp = await fetch('/system/data.json', {cache: 'no-store'});
+          if (!resp.ok) return;
+          renderSnapshot(await resp.json());
+        } catch (_) {}
+      }
+
+      setInterval(fetchSnapshot, POLL_MS);
+      fetchSnapshot();
+    })();
+
     // Volume slider. Talks to jasper-control's /volume endpoints
-    // (proxied through nginx so this stays same-origin). Optimistic
-    // UI: bar follows the pointer instantly; local intent owns the
-    // slider while a write is pending. Once the write queue settles,
-    // polling resumes and reconciles back to server truth.
+    // (proxied through nginx so this stays same-origin). Optimistic UI:
+    // bar follows the pointer instantly; local intent owns the slider
+    // while a write is pending.
     (function() {
       var hit = document.getElementById('vol-hit');
       var fill = document.getElementById('vol-fill');
       var percentEl = document.getElementById('vol-percent');
       var dragging = false;
-      var pending = null;     // queued percent waiting to send
+      var pending = null;
       var inFlight = false;
-      var flushing = false;   // true while the throttled send loop owns pending
-      var desiredPct = null;  // newest user-requested percent
+      var flushing = false;
+      var desiredPct = null;
       var ignorePollUntil = 0;
       var lastSentAt = 0;
       var THROTTLE_MS = 150;
@@ -457,18 +1004,14 @@
                Date.now() < ignorePollUntil;
       }
 
-      // Throttled sender. pending=most-recent target; only one POST in
-      // flight at a time. When a POST completes we re-check pending and
-      // fire the next, so a fast drag coalesces to the latest position.
       function sendThrottled(pct) {
         desiredPct = Math.max(0, Math.min(100, Math.round(pct)));
         pending = desiredPct;
-        // Suppress poll readbacks briefly so an older canonical value
-        // cannot repaint a newer local gesture while audio catches up.
         ignorePollUntil = Date.now() + SETTLE_MS;
         if (flushing) return;
         flush();
       }
+
       async function flush() {
         if (flushing) return;
         flushing = true;
@@ -488,17 +1031,14 @@
               });
               if (resp.ok) {
                 var data = await resp.json();
-                // Reconcile only from the newest completed intent.
-                // Older POST responses are stale by definition and
-                // must not snap the slider backward after pointerup.
                 if (!dragging && pending === null && toSend === desiredPct &&
                     typeof data.percent === 'number') {
                   setUI(data.percent);
                 }
               }
-            } catch (e) {
-              // Network blip — leave optimistic value in place. Next
-              // poll after the settle window will reconcile.
+            } catch (_) {
+              // Network blip: leave optimistic value in place. Polling
+              // reconciles after the settle window.
             } finally {
               inFlight = false;
             }
@@ -594,6 +1134,12 @@
         return names[source] || source || 'Idle';
       }
 
+      function sourceSummary(mode, selected, active) {
+        if (mode === 'manual') return label(selected) + ' manual';
+        if (!active || active === 'idle') return 'Auto · idle';
+        return 'Auto · ' + label(active) + ' active';
+      }
+
       function applyState(state) {
         var mode = state && state.mode === 'manual' ? 'manual' : 'auto';
         var selected = mode === 'manual' ? state.selected_source : 'auto';
@@ -619,7 +1165,9 @@
             label(source) + ' is off or unavailable' : label(source);
           btn.setAttribute('aria-pressed', String(isSelected));
         });
-        statusEl.textContent = mode === 'manual' ? label(selected) : label(active);
+        statusEl.textContent = mode === 'manual' ? label(selected) :
+          'Auto · ' + label(active);
+        setText('status-playback-source', sourceSummary(mode, selected, active));
       }
 
       function offline() {
@@ -629,6 +1177,7 @@
           btn.setAttribute('aria-pressed', 'false');
         });
         statusEl.textContent = 'Offline';
+        setText('status-playback-source', 'Unavailable');
       }
 
       async function fetchState() {
@@ -682,22 +1231,27 @@
     })();
 
     // Mic mute toggle. Talks to jasper-control's /mic endpoints
-    // (proxied via nginx). Optimistic flip on click; reconcile from
-    // POST response and a 3 s poll while the tab is visible so dial
-    // / SSH-driven changes show up live. The toggle reads as
-    // "Microphone listening: ON/OFF" (checked = listening, NOT
-    // muted) — the server-side flag is `muted` (the inverse).
+    // (proxied via nginx). The toggle reads as "Microphone listening:
+    // ON/OFF" (checked = listening, NOT muted); the server-side flag is
+    // `muted`, the inverse.
     (function() {
       var input = document.getElementById('mic-toggle');
+      var stateEl = document.getElementById('mic-state');
       var POLL_MS = 3000;
       var dirty = false;
       var inFlight = false;
       var ignorePollUntil = 0;
 
+      function setMicState(text) {
+        if (stateEl) stateEl.textContent = text;
+      }
+
       function applyMuted(muted, available) {
         if (dirty) return;
         input.disabled = available === false;
         input.checked = !muted;
+        setMicState(available === false ? 'Unavailable' :
+          (muted ? 'Muted' : 'Listening'));
       }
 
       async function fetchState() {
@@ -709,7 +1263,6 @@
             var data = await resp.json();
             applyMuted(!!data.muted, true);
           } else if (resp.status === 503) {
-            // voice_daemon not running → grey out the toggle.
             applyMuted(false, false);
           }
         } catch (_) {}
@@ -718,6 +1271,7 @@
       async function postMute(want_muted) {
         dirty = true; inFlight = true;
         ignorePollUntil = Date.now() + 1500;
+        setMicState(want_muted ? 'Muting' : 'Listening');
         try {
           var resp = await fetch('/mic/mute', {
             method: 'POST',
@@ -729,22 +1283,20 @@
             dirty = false;
             applyMuted(!!data.muted, true);
           } else {
-            // Server refused — roll back the optimistic flip.
-            // checked = listening = NOT muted; rollback inverts the
-            // attempted state.
             dirty = false;
             input.checked = !want_muted;
+            setMicState(input.checked ? 'Listening' : 'Muted');
           }
         } catch (_) {
           dirty = false;
           input.checked = !want_muted;
+          setMicState(input.checked ? 'Listening' : 'Muted');
         } finally {
           inFlight = false;
         }
       }
 
       input.addEventListener('change', function() {
-        // checked = listening = NOT muted. So muted = !checked.
         postMute(!input.checked);
       });
 
