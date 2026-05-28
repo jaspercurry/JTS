@@ -21,8 +21,9 @@ from __future__ import annotations
 
 
 # All daemons whose OOMScoreAdjust we verify in jasper-doctor.
-# Includes ssh (Debian's openssh-server default = -1000) so a future
-# packaging change that drops the default surfaces in drift detection.
+# Includes ssh so drift in the recovery-path bias surfaces in
+# jasper-doctor. Keep it killable: SSH-launched diagnostics inherit
+# this value, so -1000 would make arbitrary remote work immortal.
 EXPECTED: dict[str, int] = {
     "jasper-camilla": -900,     # silence = worst UX
     "jasper-aec-bridge": -700,  # real-time mic processing
@@ -30,14 +31,12 @@ EXPECTED: dict[str, int] = {
     "jasper-voice": -500,       # largest blast radius (LLM session)
     "jasper-mux": -300,         # transient-graceful (latest-source-wins)
     "jasper-input": -300,       # direct USB still works without bridge
-    "ssh": -1000,               # recovery path; NEVER killable
+    "ssh": -250,                # recovery path; moderately protected
 }
 
 
-# Subset of EXPECTED that install.sh's migrate_memory_resilience
-# step actively live-writes to /proc/PID/oom_score_adj during deploy.
-# Excludes ssh because JTS doesn't own the openssh-server unit file —
-# Debian sets that. We verify drift on ssh but never overwrite it.
-INSTALL_LIVE_WRITE: dict[str, int] = {
-    k: v for k, v in EXPECTED.items() if k != "ssh"
-}
+# Values install.sh actively live-writes to /proc/PID/oom_score_adj
+# during deploy. This includes ssh now that JTS owns a drop-in for the
+# recovery-path bias: live-writing the sshd listener makes future SSH
+# sessions inherit the killable -250 value without restarting sshd.
+INSTALL_LIVE_WRITE: dict[str, int] = dict(EXPECTED)

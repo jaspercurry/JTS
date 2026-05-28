@@ -382,14 +382,22 @@ JTS ladder, descending priority:
 | `jasper-control` | -600 | Recovery surface (operator can't reach /system/ without it) |
 | `jasper-voice` | -500 | Largest blast radius (~150 MB Pss; bound by Stage 2's MemoryMax once cgroup memory lands) |
 | `jasper-mux`, `jasper-input` | -300 | Restartable control-plane daemons; mux outage is now user-visible because fan-in starts safe/closed until mux selects a lane |
-| `sshd` | -1000 (Debian default) | Recovery path; never killable |
+| `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
 
-Critical: **no jasper-* daemon is at -1000** because that fully
-disables OOM-kill for that PID. If every critical daemon is
-immortal, the kernel picks `sshd` or `systemd-journald` when
-memory truly runs out and the operator loses their debugging
-path. -900 is "almost never picked"; -1000 is "literally
-never picked."
+Critical: **nothing operator-launched through SSH should inherit
+-1000** because that fully disables OOM-kill for that PID. This was
+validated by the 2026-05-28 OOM-reset investigation: a root
+`python -` launched over SSH inherited the old `sshd=-1000` bias and
+survived while product daemons were killed around it. -900 is
+"almost never picked" for the most important product daemon;
+-1000 is "literally never picked" and reserved for true system
+infrastructure, not arbitrary diagnostics.
+
+Open-ended Pi-side diagnostic work goes through
+[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh),
+which wraps `systemd-run` with memory/runtime bounds and a positive
+`OOMScoreAdjust` so the kernel kills the diagnostic before the
+speaker.
 
 Works today on the stock kernel via `/proc/PID/oom_score_adj`
 — independent of the `cgroup_disable=memory` situation. Drift

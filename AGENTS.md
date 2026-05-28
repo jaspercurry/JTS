@@ -270,6 +270,25 @@ The one exception: a **fresh Pi** doing first-time setup runs
 Pi itself (see [BRINGUP.md](BRINGUP.md)). The wrapper isn't
 applicable until there's a laptop checkout.
 
+### Running ad-hoc diagnostics on the Pi
+
+For memory-heavy, open-ended, or experimental Pi-side commands, use:
+
+```sh
+bash scripts/pi-run-diagnostic.sh -- <command...>
+```
+
+This wraps the command in a transient `systemd-run` unit with
+`MemoryHigh=256M`, `MemoryMax=384M`, `MemorySwapMax=0`,
+`RuntimeMaxSec=10min`, and `OOMScoreAdjust=500` by default. Override
+with `JTS_DIAG_*` env vars only when you understand the blast radius.
+
+Do not run raw `ssh pi@... 'sudo /opt/jasper/.venv/bin/python -'` for
+large model loading, corpus scans, compiles, or other unbounded work.
+Those commands can starve the 1 GB Pi. The bounded runner gives the
+kernel an obvious diagnostic process to kill before it kills product
+daemons.
+
 ### Runtime Python lives in `/opt/jasper`, not `/home/pi/jts`
 
 `install.sh` **copies** Python source into

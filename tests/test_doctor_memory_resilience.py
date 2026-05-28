@@ -421,7 +421,7 @@ _EXPECTED_CONFIG = {
     "jasper-voice": "-500",
     "jasper-mux": "-300",
     "jasper-input": "-300",
-    "ssh": "-1000",
+    "ssh": "-250",
 }
 
 
@@ -454,14 +454,14 @@ def _make_oom_run(pid_map, config_map):
 _LIVE_OK = {
     "1001": "-900", "1002": "-700", "1003": "-600",
     "1004": "-500", "1005": "-300", "1006": "-300",
-    "1007": "-1000",   # ssh (Debian default)
+    "1007": "-250",   # ssh recovery path, still killable
 }
 
 
 def test_oom_score_adj_all_match():
     """All critical daemons running with both unit-file and live
-    values matching expected. Includes ssh (Debian openssh-server
-    default of -1000) as the recovery-path lifeline."""
+    values matching expected. Includes ssh as the recovery path, but
+    with moderate protection so SSH-launched diagnostics are killable."""
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         return _LIVE_OK.get(pid_str, "0") + "\n"
@@ -475,10 +475,9 @@ def test_oom_score_adj_all_match():
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():
-    """sshd dropped to default 0 (e.g. Debian openssh-server packaging
-    changed). This is exactly the resilience gap we want to surface —
-    if sshd is OOM-killable, the operator loses their recovery path
-    during an OOM event."""
+    """sshd dropped to default 0. This is still worth surfacing because
+    the configured recovery-path bias was lost, even though sshd is
+    intentionally no longer immortal."""
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
