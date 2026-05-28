@@ -78,6 +78,21 @@ def test_gc_pending_prunes_only_expired_entries():
     assert "expired" not in _PENDING_FLOWS
 
 
+def test_spotify_consumer_restart_includes_volume_handoff_daemons(monkeypatch):
+    from jasper.web import spotify_setup as ss
+
+    calls = []
+    monkeypatch.setattr(
+        ss,
+        "restart_systemd_units",
+        lambda *units: calls.append(units),
+    )
+
+    ss._restart_spotify_consumers()
+
+    assert calls == [("jasper-voice", "jasper-control", "jasper-mux")]
+
+
 def test_new_nonce_unique_and_url_safe():
     """Nonces are CSRF tokens; collisions would let one flow take over
     another. URL-safe matters because they're sent as Spotify's

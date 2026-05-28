@@ -46,6 +46,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 import httpx
 
 from .music_sources import Source, VolumeMode, volume_mode
+from . import volume_diagnostics
 from .volume_persistence import (
     VolumePersistence,
     percent_to_db,
@@ -495,6 +496,11 @@ class VolumeCoordinator:
                 )
                 return
             if level == self._level:
+                await self._clear_confirmed_push_guard(
+                    source,
+                    level,
+                    context=f"observe_{source.value}_push_confirmed",
+                )
                 return  # no-op; nothing to update
             logger.info(
                 "observe %s: user-side change %d%% → %d%%",
@@ -504,6 +510,11 @@ class VolumeCoordinator:
             self._pre_mute_level = None
             self._persistence.save_pre_mute_level(None)
             self._persistence.save_listening_level(level)
+            await self._clear_confirmed_push_guard(
+                source,
+                level,
+                context=f"observe_{source.value}_push_confirmed",
+            )
 
     # ------------------------------------------------------------------
     # Internal dispatch — picks the right source and pushes
@@ -533,14 +544,29 @@ class VolumeCoordinator:
                 await self._set_airplay(level)
             elif source == Source.SPOTIFY:
                 ok = await self._set_spotify(level)
-                if not ok:
+                if ok:
+                    await self._clear_confirmed_push_guard(
+                        source,
+                        level,
+                        context="dispatch_spotify_push_confirmed",
+                    )
+                else:
                     guard_db = percent_to_db(level)
+                    previous_db = self._persisted_main_volume_db()
                     guarded = await self._set_camilla_db(
                         guard_db,
                         context="dispatch_spotify_degraded",
                         persist=True,
                     )
                     if guarded:
+                        self._record_push_guard(
+                            source,
+                            level,
+                            guard_db,
+                            reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
+                            context="dispatch_spotify_degraded",
+                            previous_db=previous_db,
+                        )
                         logger.warning(
                             "spotify volume dispatch failed; camilla "
                             "guarded at %.1f dB for %d%%",
@@ -554,14 +580,29 @@ class VolumeCoordinator:
                         )
             elif source == Source.BLUETOOTH:
                 ok = await self._set_bluetooth(level)
-                if not ok:
+                if ok:
+                    await self._clear_confirmed_push_guard(
+                        source,
+                        level,
+                        context="dispatch_bluetooth_push_confirmed",
+                    )
+                else:
                     guard_db = percent_to_db(level)
+                    previous_db = self._persisted_main_volume_db()
                     guarded = await self._set_camilla_db(
                         guard_db,
                         context="dispatch_bluetooth_degraded",
                         persist=True,
                     )
                     if guarded:
+                        self._record_push_guard(
+                            source,
+                            level,
+                            guard_db,
+                            reason=volume_diagnostics.GUARD_PUSH_WRITE_FAILED,
+                            context="dispatch_bluetooth_degraded",
+                            previous_db=previous_db,
+                        )
                         logger.warning(
                             "bluetooth volume dispatch failed; camilla "
                             "guarded at %.1f dB for %d%%",
@@ -812,6 +853,14 @@ class VolumeCoordinator:
                 started_at_mono=started,
                 prepared_at_mono=now,
             )
+        self._record_push_guard(
+            current_source,
+            level,
+            guard_db,
+            reason=volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED,
+            context="source_handoff_push_degraded",
+            previous_db=camilla_before,
+        )
         now = time.monotonic()
         return SourceHandoff(
             prev_source=prev_source,
@@ -856,11 +905,23 @@ class VolumeCoordinator:
                     )
                     if not push_ok:
                         guard_db = percent_to_db(latest_level)
-                        return await self._set_camilla_db(
+                        previous_db = self._persisted_main_volume_db()
+                        guarded = await self._set_camilla_db(
                             guard_db,
                             context="source_handoff_push_finalize_degraded",
                             persist=True,
                         )
+                        if guarded:
+                            reason = volume_diagnostics.GUARD_SOURCE_HANDOFF_PUSH_FAILED
+                            self._record_push_guard(
+                                handoff.current_source,
+                                latest_level,
+                                guard_db,
+                                reason=reason,
+                                context="source_handoff_push_finalize_degraded",
+                                previous_db=previous_db,
+                            )
+                        return guarded
                     if self._push_settle_sec > 0:
                         await asyncio.sleep(self._push_settle_sec)
                 return await self._set_camilla_db(
@@ -977,12 +1038,21 @@ class VolumeCoordinator:
                     )
                 else:
                     guard_db = percent_to_db(self._level)
+                    previous_db = self._persisted_main_volume_db()
                     guarded = await self._set_camilla_db(
                         guard_db,
                         context="active_source_transition_push_degraded",
                         persist=True,
                     )
                     if guarded:
+                        self._record_push_guard(
+                            current_source,
+                            self._level,
+                            guard_db,
+                            reason=volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED,
+                            context="active_source_transition_push_degraded",
+                            previous_db=previous_db,
+                        )
                         logger.warning(
                             "active source: %s → %s; source volume push "
                             "failed, keeping camilla guarded at %.1f dB",
@@ -1017,6 +1087,11 @@ class VolumeCoordinator:
                     current_source, self._level,
                 )
                 if push_ok:
+                    await self._clear_confirmed_push_guard(
+                        current_source,
+                        self._level,
+                        context="active_source_transition_push_push_confirmed",
+                    )
                     logger.info(
                         "active source: %s → %s (push→push); pushed "
                         "%d%% to new source slider",
@@ -1024,12 +1099,21 @@ class VolumeCoordinator:
                     )
                 else:
                     guard_db = percent_to_db(self._level)
+                    previous_db = self._persisted_main_volume_db()
                     guarded = await self._set_camilla_db(
                         guard_db,
                         context="active_source_transition_push_push_degraded",
                         persist=True,
                     )
                     if guarded:
+                        self._record_push_guard(
+                            current_source,
+                            self._level,
+                            guard_db,
+                            reason=volume_diagnostics.GUARD_ACTIVE_SOURCE_PUSH_FAILED,
+                            context="active_source_transition_push_push_degraded",
+                            previous_db=previous_db,
+                        )
                         logger.warning(
                             "active source: %s → %s (push→push); source "
                             "volume push failed, camilla guarded at %.1f dB",
@@ -1281,6 +1365,62 @@ class VolumeCoordinator:
             self._persistence.save_now(db)
         return bool(ok)
 
+    async def _clear_confirmed_push_guard(
+        self, source: Source, level: int, *, context: str,
+    ) -> bool:
+        """Clear a degraded Camilla guard after push-volume confirmation.
+
+        A push-mode source proves it can carry `listening_level` in two
+        ways: an outbound source write succeeds, or the observer sees the
+        active source already sitting at the canonical level. In either
+        case, keeping a stale downstream Camilla guard would create the
+        "source says 100%, speaker is quiet" failure mode.
+        """
+        if volume_mode(source) != VolumeMode.PUSH:
+            return False
+        record = self._persistence.load()
+        previous_db = record.main_volume_db if record is not None else None
+        if previous_db is None or previous_db >= -RECONCILE_DRIFT_DB:
+            return False
+        cleared = await self._set_camilla_db(
+            0.0,
+            context=context,
+            persist=True,
+        )
+        if cleared:
+            volume_diagnostics.record_push_guard_clear(
+                source,
+                level=level,
+                previous_db=previous_db,
+                context=context,
+                ok=True,
+            )
+            logger.info(
+                "event=volume.push_guard_cleared source=%s level=%d "
+                "previous_db=%s context=%s",
+                source.value,
+                level,
+                "unknown" if previous_db is None else f"{previous_db:.1f}",
+                context,
+            )
+        else:
+            volume_diagnostics.record_push_guard_clear(
+                source,
+                level=level,
+                previous_db=previous_db,
+                context=context,
+                ok=False,
+            )
+            logger.warning(
+                "event=volume.push_guard_clear_failed source=%s level=%d "
+                "previous_db=%s context=%s",
+                source.value,
+                level,
+                "unknown" if previous_db is None else f"{previous_db:.1f}",
+                context,
+            )
+        return bool(cleared)
+
     async def abort_source_handoff(self, handoff: SourceHandoff) -> bool:
         """Best-effort rollback when fan-in selection fails after prepare.
 
@@ -1312,6 +1452,29 @@ class VolumeCoordinator:
             "source handoff: %s is not a push-mode source", source.value,
         )
         return False
+
+    def _persisted_main_volume_db(self) -> float | None:
+        record = self._persistence.load()
+        return record.main_volume_db if record is not None else None
+
+    def _record_push_guard(
+        self,
+        source: Source,
+        level: int,
+        guard_db: float,
+        *,
+        reason: str,
+        context: str,
+        previous_db: float | None,
+    ) -> None:
+        volume_diagnostics.record_push_guard(
+            source,
+            level=level,
+            guard_db=guard_db,
+            reason=reason,
+            context=context,
+            previous_db=previous_db,
+        )
 
     def _stamp_outbound(self, source: Source, level: int) -> None:
         self._last_outbound[source] = _OutboundStamp(
@@ -1390,6 +1553,12 @@ class VolumeCoordinator:
         if self._spotify_router is None or not getattr(
             self._spotify_router, "clients", {},
         ):
+            volume_diagnostics.record_source_push(
+                Source.SPOTIFY,
+                level=level,
+                ok=False,
+                reason=volume_diagnostics.PUSH_MISSING_ROUTER,
+            )
             logger.warning(
                 "spotify volume set: no Web API router configured; "
                 "voice/dial volume can't propagate to Spotify (set "
@@ -1397,6 +1566,8 @@ class VolumeCoordinator:
                 "account via /spotify)",
             )
             return False
+        saw_device = False
+        write_failed = False
         for ac in self._spotify_router.clients.values():
             try:
                 devices = await asyncio.to_thread(ac.sp.devices)
@@ -1408,22 +1579,43 @@ class VolumeCoordinator:
                 continue
             for d in (devices.get("devices") or []):
                 if d.get("name") == self._spotify_device_name:
+                    saw_device = True
                     try:
                         await asyncio.to_thread(
                             ac.sp.volume, pct, device_id=d.get("id"),
                         )
                         self._stamp_outbound(Source.SPOTIFY, level)
+                        volume_diagnostics.record_source_push(
+                            Source.SPOTIFY,
+                            level=level,
+                            ok=True,
+                            reason=volume_diagnostics.PUSH_OK,
+                            detail="device_visible",
+                        )
                         logger.info(
                             "spotify volume set: %d%% (account=%s)",
                             pct, ac.account.name,
                         )
                         return True
                     except Exception as e:  # noqa: BLE001
+                        write_failed = True
                         logger.debug(
                             "spotify volume() failed for %s: %s",
                             ac.account.name, e,
                         )
                         continue
+        reason = (
+            volume_diagnostics.PUSH_WRITE_FAILED
+            if write_failed
+            else volume_diagnostics.PUSH_NO_ACTIVE_DEVICE
+        )
+        volume_diagnostics.record_source_push(
+            Source.SPOTIFY,
+            level=level,
+            ok=False,
+            reason=reason,
+            detail="device_visible" if saw_device else "device_not_visible",
+        )
         logger.warning(
             "spotify volume set FAILED: %d%% — no account could write "
             "to device '%s' (is JTS still selected in Spotify?)",
@@ -1439,6 +1631,12 @@ class VolumeCoordinator:
         # invoked us during a brief BT-active window that closed).
         path = await _bluez_alsa_active_transport_path()
         if path is None:
+            volume_diagnostics.record_source_push(
+                Source.BLUETOOTH,
+                level=level,
+                ok=False,
+                reason=volume_diagnostics.PUSH_NO_ACTIVE_TRANSPORT,
+            )
             logger.debug(
                 "bluetooth volume set: no active transport, skipping",
             )
@@ -1453,9 +1651,23 @@ class VolumeCoordinator:
         )
         if ok:
             self._stamp_outbound(Source.BLUETOOTH, level)
+            volume_diagnostics.record_source_push(
+                Source.BLUETOOTH,
+                level=level,
+                ok=True,
+                reason=volume_diagnostics.PUSH_OK,
+                detail="transport_present",
+            )
             logger.info("bluetooth volume set: %d%% (uint16=%d)", level, vol)
             return True
         else:
+            volume_diagnostics.record_source_push(
+                Source.BLUETOOTH,
+                level=level,
+                ok=False,
+                reason=volume_diagnostics.PUSH_WRITE_FAILED,
+                detail="transport_present",
+            )
             logger.warning(
                 "bluetooth volume set FAILED: %d%% (uint16=%d)", level, vol,
             )

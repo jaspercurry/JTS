@@ -52,6 +52,10 @@ from ..audio_quality import (
 )
 from . import shairport_supervisor, system_supervisor, wifi_guardian_state
 from ..music_sources import MUSIC_SOURCE_SPECS
+from ..volume_diagnostics import (
+    build_volume_policy_snapshot,
+    read_diagnostics as _read_volume_diagnostics,
+)
 
 logger = logging.getLogger(__name__)
 dial_log = logging.getLogger("jasper.dial")
@@ -769,6 +773,7 @@ async def _get_state(
         voice_model = os.environ.get("JASPER_GEMINI_MODEL")
 
     listening_level: int | None = None
+    persisted_main_volume_db: float | None = None
     try:
         path = os.environ.get(
             "JASPER_VOLUME_STATE_PATH",
@@ -779,6 +784,9 @@ async def _get_state(
         raw_level = blob.get("listening_level")
         if isinstance(raw_level, (int, float)) and 0 <= raw_level <= 100:
             listening_level = int(raw_level)
+        raw_db = blob.get("main_volume_db")
+        if isinstance(raw_db, (int, float)) and math.isfinite(float(raw_db)):
+            persisted_main_volume_db = round(float(raw_db), 2)
     except (OSError, ValueError, json.JSONDecodeError):
         pass
 
@@ -1031,6 +1039,15 @@ async def _get_state(
     else:
         active_source = "idle"
 
+    volume_policy = build_volume_policy_snapshot(
+        active_source=active_source,
+        listening_level=listening_level,
+        main_volume_db=camilla_st["main_volume_db"],
+        persisted_main_volume_db=persisted_main_volume_db,
+        mux_status=mux_st,
+        diagnostics=_read_volume_diagnostics(),
+    )
+
     # Build the dial section from the snapshot taken before the gather
     # so age_seconds is consistent with whatever IP the probe targeted.
     # `online` reflects real TCP reachability (see _probe_dial_reachable),
@@ -1057,6 +1074,7 @@ async def _get_state(
         "audio": {
             "main_volume_db": camilla_st["main_volume_db"],
             "listening_level_percent": listening_level,
+            "volume_policy": volume_policy,
             "playback_rms_dbfs": camilla_st["playback_rms_dbfs"],
             "playback_peak_dbfs": camilla_st["playback_peak_dbfs"],
             "clipped_samples": camilla_st["clipped_samples"],

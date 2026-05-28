@@ -69,6 +69,46 @@ When the voice tool / dial / "louder" wants to change volume:
    In camilla-as-master mode (idle, AirPlay, USB), `main_volume` IS the
    user-facing knob.
 
+### `/state` volume policy visibility
+
+`jasper-control` exposes `/state.audio.volume_policy` so the quiet
+Spotify-at-100% class of bug is visible without SSH. The block includes:
+
+- `active_source` from the top-level `/state` view and the resolved
+  music `source` used for volume policy.
+- `volume_mode` and `carrier` (`camilla`, `source`, or
+  `camilla_guard`).
+- `listening_level_percent`, current `main_volume_db`, and persisted
+  `main_volume_db`.
+- `push_guard_active`, `guard_db`, `guard_reason`, `guard_context`, and
+  `previous_db` when a push-mode source is protected by a Camilla
+  fallback guard.
+- `last_source_push_result`, `last_clear_event`, and mux
+  `last_handoff` when those facts are available.
+
+The snapshot is cheap by design. `/state` builds it from values it
+already collected (Camilla status, mux status, and
+`/var/lib/jasper/speaker_volume.json`) plus a tiny volatile diagnostics
+file at `/run/jasper/volume_policy.json` written by
+`jasper.volume_diagnostics`. That file is updated only when a source
+push, degraded guard, or guard clear happens. It performs no Spotify,
+DBus, network, or Camilla calls, and it is fail-soft: if `/run` state is
+missing, `/state` still derives the current guard from persisted/current
+Camilla dB.
+
+Hardware validation for the Spotify quiet-at-100% fix is still required
+after deploy. During the AirPlay → Spotify Connect reproduction, check:
+
+```sh
+curl -s http://jts.local:8780/state | jq .audio.volume_policy
+```
+
+Healthy recovery after Spotify push or confirmed source observation:
+`volume_mode="push"`, `carrier="source"`, `push_guard_active=false`,
+and `main_volume_db` near `0.0`. A safe degraded failure shows
+`carrier="camilla_guard"` and `push_guard_active=true`; that is quieter
+than intended but protects against a loud transient.
+
 ### Inbound observation
 
 A 1 Hz poller (`jasper.volume_observers.VolumeObserver`) reads each
@@ -87,6 +127,15 @@ source's current value and feeds detected changes into
 When the user moves the Spotify app slider or BT volume, the next
 poll picks it up (sub-second latency) and the coordinator updates
 `listening_level` accordingly.
+
+If a push-mode source handoff had fallen back to a Camilla guard
+(`degraded_safe`), a confirmed Spotify/Bluetooth source volume clears
+that guard and pins Camilla back to 0 dB. "Confirmed" includes both
+a real user-side source slider change and an observation that the
+active source already sits at the canonical `listening_level`. At that
+point the source slider has proven it is carrying the user's intent, so
+leaving the downstream fallback attenuation in place would make
+"Spotify 100%" still sound like the older guarded level.
 
 **Exception: AirPlay observations are unconditionally skipped.** The
 sender's slider sits *upstream* of camilla in the audio chain —
@@ -257,7 +306,9 @@ The two cases:
   state; this is quieter than ideal, never louder. The guarded
   `main_volume_db` is persisted, and `get_camilla_target_db()`
   preserves it through `Ducker.restore()` instead of unmasking a source
-  whose own volume could not be set.
+  whose own volume could not be set. A later successful push dispatch
+  or confirmed active-source observation clears the guard generically
+  for all `VolumeMode.PUSH` sources.
 - **Camilla-master target** (`airplay`, `usbsink`; `idle` is the
   coordinator's internal fallback, not a mux-selectable lane): lower
   CamillaDSP to the canonical guard level first and wait slightly past
@@ -494,4 +545,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-27 (source handoff guard + mux effective-source path rechecked)
+Last verified: 2026-05-28 (push-source degraded guard recovery, /state volume-policy visibility, hardware validation checklist, and mux effective-source path rechecked, including same-level source observations)

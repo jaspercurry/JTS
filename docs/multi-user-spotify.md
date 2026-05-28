@@ -316,7 +316,7 @@ case).
 | "Next song" / "Skip" / "Previous" / "Pause" / "Resume" | `resolve_for_transport` matches sender's track to an account → that account's Spotify Web API. AirPlay stream content updates seamlessly. | Active account's Web API → its active device |
 | "Play [song]" / etc. | Title-match resolves the active listener; falls back to is_playing → default | Active account searches + start_playback (target resolved by `spotify_routing`) |
 | "What's playing?" | Matched account's `current_playback` (proper title/artist) | Active account's `current_playback` |
-| Volume / mute | Source-agnostic — always CamillaDSP main fader. Doesn't touch Spotify. | Same |
+| Volume / mute | Source-aware via `VolumeCoordinator`: AirPlay uses CamillaDSP as the speaker volume; Spotify Connect uses Spotify Web API; Bluetooth uses AVRCP. See [HANDOFF-volume.md](HANDOFF-volume.md). | Same |
 
 ## Verifying a route landed correctly
 

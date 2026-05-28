@@ -10,6 +10,7 @@ tmp_path-backed state file for Spotify. Coverage:
 - BT reader resolves transport path then reads MediaTransport1.Volume
 - _maybe_observe fires only on real change (>0.5 unit delta)
 - a tick fires observe_source_volume only for active Spotify/BT
+- source activation forwards one fresh observation even at same value
 - AirPlay ticks read but do not dispatch canonical observations
 - observer ignores readers that return None (source not active)
 """
@@ -264,6 +265,39 @@ async def test_tick_dispatches_only_active_source(
 
     expected_sources = [] if expected is None else [expected]
     assert [s for s, _ in coord.observed] == expected_sources
+
+
+async def test_tick_forwards_same_value_on_source_activation(
+    monkeypatch, tmp_path,
+):
+    """Reactivating Spotify at the same cached percent must still reach
+    the coordinator so a degraded push guard can be cleared."""
+    import json
+
+    coord = _FakeCoordinator(active=Source.SPOTIFY)
+    state = tmp_path / "librespot.state.json"
+    state.write_text(json.dumps({"volume": 65535}))  # 100%
+    obs = VolumeObserver(coord, librespot_state_path=str(state))
+    obs._last_active_source = Source.AIRPLAY
+    obs._last_seen[Source.SPOTIFY] = 100.0
+
+    async def fake_busctl(*args, **kwargs):
+        return None
+
+    async def fake_path():
+        return None
+
+    monkeypatch.setattr(
+        "jasper.volume_observers._busctl_get_property_value", fake_busctl,
+    )
+    monkeypatch.setattr(
+        "jasper.volume_observers._bluez_alsa_active_transport_path", fake_path,
+    )
+
+    await obs._tick()
+
+    assert coord.transitions == [(Source.AIRPLAY, Source.SPOTIFY)]
+    assert coord.observed == [(Source.SPOTIFY, 100.0)]
 
 
 async def test_tick_skips_inactive_sources(monkeypatch, tmp_path):

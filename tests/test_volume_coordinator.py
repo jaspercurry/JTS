@@ -31,6 +31,7 @@ from jasper.volume_coordinator import (
     listening_level_to_spotify_percent,
     spotify_percent_to_listening_level,
 )
+from jasper.volume_diagnostics import read_diagnostics
 from jasper.volume_persistence import VolumePersistence
 
 
@@ -239,6 +240,30 @@ async def test_set_volume_spotify_failure_updates_camilla_guard(tmp_path):
     assert cam.set_calls[-1] == pytest.approx(-37.5)
 
 
+async def test_set_volume_spotify_failure_records_guard_diagnostics(
+    tmp_path, monkeypatch,
+):
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, _, _ = _coord(
+        tmp_path, active={"spotactive": True}, db=0.0,
+    )
+
+    async def fail_spotify(_level: int) -> bool:
+        return False
+
+    coord._set_spotify = fail_spotify
+
+    await coord.set_listening_level(25)
+
+    diag = read_diagnostics(str(diag_path))
+    assert diag["push_guard"]["active"] is True
+    assert diag["push_guard"]["source"] == "spotify"
+    assert diag["push_guard"]["level"] == 25
+    assert diag["push_guard"]["guard_db"] == pytest.approx(-37.5)
+    assert diag["push_guard"]["reason"] == "push_write_failed"
+
+
 async def test_set_volume_bluetooth_active_routes_to_bt(tmp_path):
     coord, cam, _ = _coord(
         tmp_path, active={"btactive": True}, db=-25.0,
@@ -391,6 +416,88 @@ async def test_observe_persists_listening_level(tmp_path, monkeypatch):
     rec = persistence.load()
     assert rec is not None
     assert rec.listening_level == 40
+
+
+async def test_observe_spotify_user_change_clears_degraded_guard(tmp_path):
+    """A real source-side Spotify slider move proves the source volume
+    surface is carrying user intent. Clear any degraded-safe Camilla
+    guard so the path returns to normal push-mode loudness."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-25.0,
+    )
+    coord._level = 50
+    persistence.save_listening_level(50)
+    await coord._set_camilla_db(
+        -25.0,
+        context="test_degraded_guard",
+        persist=True,
+    )
+
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+
+    assert coord.get_listening_level() == 100
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 100
+    assert record.main_volume_db == pytest.approx(0.0)
+
+
+async def test_observe_spotify_same_level_clears_degraded_guard(tmp_path):
+    """A source observation at the canonical level is also proof that
+    the push-mode source already carries listening_level."""
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-25.0,
+    )
+    coord._level = 100
+    persistence.save_listening_level(100)
+    await coord._set_camilla_db(
+        -25.0,
+        context="test_degraded_guard",
+        persist=True,
+    )
+
+    await coord.observe_source_volume(Source.SPOTIFY, 100)
+
+    assert coord.get_listening_level() == 100
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 100
+    assert record.main_volume_db == pytest.approx(0.0)
+
+
+async def test_successful_push_dispatch_clears_degraded_guard(
+    tmp_path, monkeypatch,
+):
+    """If a later outbound push succeeds, Camilla should stop carrying
+    the degraded fallback attenuation."""
+    diag_path = tmp_path / "volume_policy.json"
+    monkeypatch.setenv("JASPER_VOLUME_DIAGNOSTICS_PATH", str(diag_path))
+    coord, cam, persistence = _coord(
+        tmp_path, active={"spotactive": True}, db=-25.0,
+    )
+    coord._level = 50
+    persistence.save_listening_level(50)
+    await coord._set_camilla_db(
+        -25.0,
+        context="test_degraded_guard",
+        persist=True,
+    )
+
+    await coord.set_listening_level(50)
+
+    assert coord.spotify_writes == [50]
+    assert cam.set_calls[-1] == pytest.approx(0.0)
+    record = persistence.load()
+    assert record is not None
+    assert record.listening_level == 50
+    assert record.main_volume_db == pytest.approx(0.0)
+    diag = read_diagnostics(str(diag_path))
+    assert diag["push_guard"]["active"] is False
+    assert diag["last_clear_event"]["source"] == "spotify"
+    assert diag["last_clear_event"]["previous_db"] == pytest.approx(-25.0)
+    assert diag["last_clear_event"]["reason"] == "push_confirmed"
 
 
 async def test_observe_respects_recent_cross_process_write(tmp_path):

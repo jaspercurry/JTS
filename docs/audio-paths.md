@@ -96,6 +96,13 @@ system cues, wake sounds, or other assistant-owned audio; those stay on
 the TTS/test-tone path unless the design explicitly wants CamillaDSP
 processing.
 
+For the planned provider/source capability boundary, read
+[`HANDOFF-source-capabilities.md`](HANDOFF-source-capabilities.md)
+alongside this checklist. This file owns the physical audio path and
+required integration points; the source-capabilities doc owns the
+future extraction plan for volume, transport, metadata, and health
+adapters.
+
 Keep the change boring. A new source should look like the existing
 AirPlay, Spotify, Bluetooth, or USB sink lanes, not introduce a second
 mixer, a second output device, or a new volume model.
@@ -393,4 +400,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-27 (source handoff guard + future-source checklist rechecked)
+Last verified: 2026-05-28 (source handoff guard + future-source checklist and source-capabilities plan link rechecked)

@@ -614,6 +614,10 @@ reference. Currently:
 - [`HANDOFF-volume.md`](docs/HANDOFF-volume.md) — Source-aware
   volume coordinator (one canonical `listening_level`, dispatched
   to whichever source is active, observed inbound at 1 Hz)
+- [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md)
+  — Planned provider/source capability boundary for future music
+  integrations: volume, transport, metadata, health, and contributor
+  checklist
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay
   glitch troubleshooting guide. **Start here if you hear audio
   artifacts on AirPlay.** Symptom → pattern decision flow, concrete

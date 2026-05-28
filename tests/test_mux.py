@@ -7,6 +7,7 @@ just patch their bound names in jasper.mux's namespace and mutate the
 return values per tick.
 """
 from __future__ import annotations
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,6 +15,8 @@ import pytest
 
 from jasper.music_sources import VolumeMode
 from jasper.mux import Mux, Source
+
+REPO = Path(__file__).resolve().parents[1]
 
 
 class _FakeHandoff:
@@ -279,6 +282,21 @@ def test_ensure_spotify_router_consumes_build_result_correctly(tmp_path, monkeyp
     )
     assert isinstance(router.clients, dict)
     assert router.statuses[0].state == ACCOUNT_OK
+
+
+def test_mux_service_loads_spotify_credentials_env():
+    """Mux owns source handoff, so it needs the same wizard-written
+    Spotify credentials as voice/control. Without this env file, the
+    Spotify Web API router is empty and Spotify handoff stays
+    degraded_safe with Camilla attenuating the stream."""
+    unit = (REPO / "deploy" / "systemd" / "jasper-mux.service").read_text()
+    env_files = [
+        line.strip().split("=", 1)[1]
+        for line in unit.splitlines()
+        if line.strip().startswith("EnvironmentFile=")
+    ]
+
+    assert "-/var/lib/jasper/spotify_credentials.env" in env_files
 
 
 # ----------------------------------------------------------------------

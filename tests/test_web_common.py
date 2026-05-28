@@ -325,6 +325,37 @@ def test_send_html_response_works_without_begin_request_context():
 
 
 # ----------------------------------------------------------------------
+# systemd restarts
+# ----------------------------------------------------------------------
+
+
+def test_restart_systemd_units_restarts_multiple_units_no_block(monkeypatch):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+
+    monkeypatch.setattr(_common.subprocess, "run", fake_run)
+
+    _common.restart_systemd_units(
+        "jasper-voice", "jasper-control", "jasper-mux",
+    )
+
+    assert len(calls) == 1
+    cmd, kwargs = calls[0]
+    assert cmd == [
+        "systemctl",
+        "restart",
+        "--no-block",
+        "jasper-voice",
+        "jasper-control",
+        "jasper-mux",
+    ]
+    assert kwargs["check"] is False
+    assert kwargs["timeout"] == 5
+
+
+# ----------------------------------------------------------------------
 # Token shape validation
 # ----------------------------------------------------------------------
 

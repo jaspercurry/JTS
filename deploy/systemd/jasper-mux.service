@@ -7,6 +7,10 @@ Wants=jasper-fanin.service librespot.service shairport-sync.service bluealsa.ser
 Type=simple
 EnvironmentFile=-/etc/jasper/jasper.env
 EnvironmentFile=-/var/lib/jasper/speaker_name.env
+# Spotify credentials are wizard-owned and live outside jasper.env.
+# Mux needs them for guarded Spotify handoff: without the Web API router,
+# Spotify starts in degraded_safe mode and Camilla stays attenuated.
+EnvironmentFile=-/var/lib/jasper/spotify_credentials.env
 # Optional fan-in overrides. Loading the same file here keeps
 # JASPER_FANIN_CONTROL_SOCKET aligned if an operator moves fan-in's
 # UDS out of /run/jasper-fanin/control.sock.

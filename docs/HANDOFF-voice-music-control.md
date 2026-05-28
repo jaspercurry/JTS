@@ -18,6 +18,20 @@ explains the design and the non-obvious cases.
 | `jasper/spotify_router.py` | Multi-account `Router` for routing voice commands to the right household member's Spotify account |
 | `jasper/volume_coordinator.py` | Source-aware volume coordinator (see [HANDOFF-volume.md](HANDOFF-volume.md)) |
 
+## Provider vs source boundary
+
+Future music integrations should distinguish provider/catalog logic
+from source/renderer capability logic. Spotify account routing and
+search are provider concerns; Spotify Connect volume and transport are
+source concerns. Apple Music over AirPlay is still an AirPlay source,
+while a future native Apple Music player would be a different source.
+
+The planned extraction path for source capabilities is documented in
+[HANDOFF-source-capabilities.md](HANDOFF-source-capabilities.md).
+Until that lands, keep new code aligned with the existing owners:
+`jasper-mux` for audible source policy, `VolumeCoordinator` for volume
+safety, and this doc for voice transport behavior.
+
 ## Three voice-controllable areas
 
 ### 1. Volume
@@ -130,4 +144,4 @@ invite further conversation.
 
 ---
 
-Last verified: 2026-05-27 (source registry + guarded handoff path rechecked)
+Last verified: 2026-05-28 (source registry, guarded handoff path, and source-capabilities plan link rechecked)

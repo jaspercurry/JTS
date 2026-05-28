@@ -145,15 +145,17 @@ class VolumeObserver:
         except Exception as e:  # noqa: BLE001
             logger.debug("active_source query failed: %s", e)
             current_active = None
-        if (
-            current_active is not None
-            and self._last_active_source is not None
-            and current_active != self._last_active_source
-        ):
-            await self._coord.apply_active_source_transition(
-                self._last_active_source, current_active,
-            )
-        if current_active is not None:
+        if current_active is not None and current_active != self._last_active_source:
+            if self._last_active_source is not None:
+                await self._coord.apply_active_source_transition(
+                    self._last_active_source, current_active,
+                )
+            if current_active in self._last_seen:
+                # A source becoming audible is a fresh confirmation
+                # point even if its protocol volume equals the last
+                # cached value from an older session. Forward one
+                # observation so push-mode guards can self-heal.
+                self._last_seen[current_active] = None
             self._last_active_source = current_active
 
         airplay_db, spotify_pct, bt_vol = await asyncio.gather(

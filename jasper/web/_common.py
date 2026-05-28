@@ -466,9 +466,8 @@ def delete_env_file(path: str) -> None:
         logger.warning("could not delete %s: %s", path, e)
 
 
-def restart_voice_daemon() -> None:
-    """Best-effort restart of jasper-voice so it picks up new
-    credentials / new provider / wake model on its next boot.
+def restart_systemd_units(*units: str) -> None:
+    """Best-effort non-blocking restart for wizard-owned config changes.
 
     `--no-block` is important. `Type=notify` units make `systemctl
     restart` block until the daemon emits READY=1, which for
@@ -491,14 +490,22 @@ def restart_voice_daemon() -> None:
     --no-block means systemctl shouldn't sit there waiting on the
     unit. If we hit 5 s here, something is wedged (dbus dead, etc.)
     and the bigger problem will surface elsewhere."""
+    if not units:
+        return
     try:
         subprocess.run(
-            ["systemctl", "restart", "--no-block", "jasper-voice"],
+            ["systemctl", "restart", "--no-block", *units],
             check=False, timeout=5,
             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        logger.warning("jasper-voice restart failed: %s", e)
+        logger.warning("%s restart failed: %s", ", ".join(units), e)
+
+
+def restart_voice_daemon() -> None:
+    """Best-effort restart of jasper-voice so it picks up new
+    credentials / new provider / wake model on its next boot."""
+    restart_systemd_units("jasper-voice")
 
 
 def read_form(handler: BaseHTTPRequestHandler) -> dict[str, str]:

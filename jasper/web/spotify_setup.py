@@ -43,7 +43,7 @@ Three states, single index page renders the appropriate one:
 
 Routes (paths the app sees AFTER nginx strips the /spotify/ prefix):
   GET  /                    state-aware setup/management UI
-  POST /setup-credentials   save CLIENT_ID + OAUTH_MODE, restart jasper-voice
+  POST /setup-credentials   save CLIENT_ID + OAUTH_MODE, restart Spotify consumers
   POST /reset-credentials   clear creds (back to state 1)
   POST /start               begin OAuth for `name` — bounce mode
                             303s to Spotify; manual mode renders the
@@ -100,7 +100,7 @@ from ._common import (
     read_env_file,
     read_form,
     reject_csrf,
-    restart_voice_daemon,
+    restart_systemd_units,
     send_html_response,
     send_see_other,
     verify_csrf,
@@ -112,9 +112,9 @@ logger = logging.getLogger(__name__)
 
 # Persisted CLIENT_ID + OAUTH_MODE. Separate from /etc/jasper/jasper.env
 # so the web service can write to it without /etc being RW (systemd's
-# ProtectSystem=full keeps /etc read-only). Both jasper-web and
-# jasper-voice source this file via an optional EnvironmentFile so a
-# restart picks up the values written here.
+# ProtectSystem=full keeps /etc read-only). jasper-web reads it in
+# process; jasper-voice, jasper-control, and jasper-mux source it via
+# optional EnvironmentFile so a restart picks up the values written here.
 CREDS_FILE = "/var/lib/jasper/spotify_credentials.env"
 
 # Spotify Developer App ID format: 32 lowercase hex characters.
@@ -210,7 +210,11 @@ def _delete_creds_file(path: str = CREDS_FILE) -> None:
 
 
 def _restart_voice_daemon() -> None:
-    restart_voice_daemon()
+    restart_systemd_units("jasper-voice")
+
+
+def _restart_spotify_consumers() -> None:
+    restart_systemd_units("jasper-voice", "jasper-control", "jasper-mux")
 
 
 # ============================================================
@@ -1265,7 +1269,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             # client_id change invalidates every cached token-health
             # verdict (verdicts are computed against the old client_id).
             _invalidate_health_cache()
-            _restart_voice_daemon()
+            _restart_spotify_consumers()
             self._redirect(
                 "./?msg=Credentials+saved.+Now+add+the+redirect+URL+to+your+Spotify+app."
             )
@@ -1275,7 +1279,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             cfg["client_id"] = ""
             cfg["mode"] = "bounce"
             _invalidate_health_cache()
-            _restart_voice_daemon()
+            _restart_spotify_consumers()
             self._redirect("./?msg=Credentials+cleared.")
 
         def _handle_start(self, form: dict[str, str]) -> None:
@@ -1391,7 +1395,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 )
                 return
             _invalidate_health_cache()
-            _restart_voice_daemon()
+            _restart_spotify_consumers()
             self._redirect(
                 f"./?msg=Linked+{urllib.parse.quote(account_name)}+successfully"
             )
@@ -1411,7 +1415,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     except OSError:
                         pass
                 _invalidate_health_cache()
-                _restart_voice_daemon()
+                _restart_spotify_consumers()
                 self._redirect(f"./?msg=Removed+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
@@ -1422,6 +1426,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if registry.get(name) is not None:
                 registry.default_name = name
                 registry.save()
+                _restart_spotify_consumers()
                 self._redirect(f"./?msg=Default+set+to+{urllib.parse.quote(name)}")
             else:
                 self._redirect("./?msg=Account+not+found")
