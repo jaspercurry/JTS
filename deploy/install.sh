@@ -2503,7 +2503,8 @@ install_nginx_site() {
         /usr/share/jasper-web/index.html
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
-    # interstitial and keeps Back navigation on an ordinary HTTP route.
+    # interstitial while keeping the entry point on the normal HTTP
+    # surface.
     install -m 0644 \
         "${REPO_DIR}/deploy/correction-preflight.html" \
         /usr/share/jasper-web/correction-preflight.html

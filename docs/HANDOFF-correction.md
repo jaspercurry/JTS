@@ -238,7 +238,7 @@ them; design **with** them.
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
 | `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py](../jasper/camilla.py) + `Ducker` | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
 | Existing settings pages on **plain HTTP port 80** | [deploy/nginx-jasper.conf](../deploy/nginx-jasper.conf) | We add HTTPS as an additive 443 server block. Existing routes stay HTTP. |
-| `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. mkcert + iOS trust profile is the path. |
+| `getUserMedia` **requires HTTPS** (browser policy) | Web spec | Cannot avoid TLS for this one feature. Private CA + iOS trust profile is the path. |
 | Existing web wizards are **stdlib `ThreadingHTTPServer`** | [jasper/web/voice_setup.py](../jasper/web/voice_setup.py), [jasper/web/dial_setup.py](../jasper/web/dial_setup.py) | We mirror this — no FastAPI / aiohttp. Browser state uses polling today. |
 | Cross-daemon coordination is **UDS commands to voice_daemon** | [jasper/control/server.py](../jasper/control/server.py) + `_voice_socket_command` | We extend with `MEASURE_PAUSE` / `MEASURE_RESUME`, mirror the `/cue/play` shape. |
 
@@ -582,7 +582,7 @@ deploy/
 ├── nginx-jasper.conf                    443 server block for /correction/
 ├── jasper-correction-web.service        socket-activated worker, private umask
 ├── jasper-correction-web.socket         systemd socket on 127.0.0.1:8770
-└── install.sh                           mkcert, state dirs, unit install
+└── install.sh                           private CA, state dirs, unit install
 
 docs/
 └── HANDOFF-correction.md                THIS FILE
@@ -619,14 +619,16 @@ after one-time cert trust, see "Hello mic" page with a working live
 mic level. Nothing else.
 
 Concrete changes:
-- `deploy/install.sh`: install `mkcert` (apt or build); generate
-  cert into `/etc/nginx/ssl/`; create root CA at
-  `/var/lib/jasper/mkcert/rootCA.pem`; copy to
-  `/usr/share/jasper-web/jts-root-ca.pem` for download.
+- `deploy/install.sh`: generate/preserve the private CA at
+  `/var/lib/jasper/ca/ca.{crt,key}`; issue the correction server cert
+  into `/etc/nginx/ssl/jts.local.{crt,key}`; copy the root certificate
+  to `/usr/share/jasper-web/jts-root-ca.crt` for download.
 - `deploy/nginx-jasper.conf`: add `listen 443 ssl` server block;
   `location /correction/ { proxy_pass http://127.0.0.1:8770/; }`;
-  `location /jts-root-ca.pem { ... }` on **port 80** (chicken-
-  and-egg: user has to download CA before HTTPS works).
+  `location /jts-root-ca.crt { ... }` on **port 80** (chicken-
+  and-egg: user has to download CA before HTTPS works); serve
+  `http://jts.local/correction/` as the plain-HTTP preflight before
+  the HTTPS measurement UI.
 - `jasper/web/correction_setup.py`: minimal handler returning a
   static "Hello mic" page that requests `getUserMedia({audio: ...})`
   and shows a level meter via AudioWorklet.
@@ -873,35 +875,31 @@ From the sanity-check pass:
 Honest list. Each needs a decision before the relevant phase ships,
 not before this doc lands.
 
-1. **mkcert availability on Trixie.** Need to verify whether
-   `apt install mkcert` works on RPi OS Trixie or if we have to
-   build the binary. **Decision needed by Phase 0 start.** If
-   build, add to `install.sh` as Go-source compile (~2 min on Pi 5).
-2. **iPhone mic compensation curve source.** HouseCurve doesn't
+1. **iPhone mic compensation curve source.** HouseCurve doesn't
    publish theirs. Faber Acoustical published older measurements
    (`blog.faberacoustical.com`). Need to either pick one published
    reference (with citation) or measure ours during Phase 2 dev.
    **Decision needed by Phase 2.**
-3. **camillagui-backend version pinning.** v0.7.x tracks CamillaDSP
+2. **camillagui-backend version pinning.** v0.7.x tracks CamillaDSP
    3.0.x. We'll pin to a specific tag at Phase 3 start to insulate
    against upstream churn. **Decision needed by Phase 3.**
-4. **Sweep level for compromised analog volumes.** If the user's
+3. **Sweep level for compromised analog volumes.** If the user's
    amp is at very low or very high gain, -12 dBFS digital might
    be too quiet (poor SNR) or too loud (damage risk). Phase 1
    ships -12 dBFS hardcoded; Phase 2 adds the calibration step
    from the brief (play 1 kHz tone, ask user to set comfortable
    loudness, persist as the measurement reference level).
-5. **What does the openWakeWord pause actually look like?**
+4. **What does the openWakeWord pause actually look like?**
    ([jasper/voice_daemon.py](../jasper/voice_daemon.py) is large;
    need to grep `openwakeword` and identify the right gate point.)
    **Decision needed early in Phase 1.**
-6. **AEC bridge interaction.** If the bridge is enabled, does the
+5. **AEC bridge interaction.** If the bridge is enabled, does the
    sweep through the music chain become an AEC reference and drive
    the bridge into a weird state during measurement? Two paths:
    (a) test it (most likely fine, bridge re-converges in ~200 ms);
    (b) explicitly stop `jasper-aec-bridge.service` during measurement.
    **Decision needed by Phase 1 exit; default to (b) defensively.**
-7. **Where do correction profiles persist?** **Resolved (Phase 2.1):**
+6. **Where do correction profiles persist?** **Resolved (Phase 2.1):**
    each apply emits a new file at
    `/var/lib/camilladsp/configs/correction_<session_id>_<unixtime>.yml`.
    Files are never deleted by JTS — they're cheap (a few KB), and a
@@ -909,7 +907,7 @@ not before this doc lands.
    directory. The currently-loaded path is read via `CamillaController.
    get_config_file_path()` and surfaced to the UI banner via
    `parse_current_correction()`.
-8. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
+7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
    `set_config_file_path('/etc/camilladsp/v1.yml')` + `reload()`.
    Also automatically invoked at the start of every measurement
    (so sweeps capture the raw room, not the corrected pipeline).
