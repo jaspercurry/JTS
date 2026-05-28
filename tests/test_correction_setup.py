@@ -326,6 +326,8 @@ def test_render_page_includes_read_only_measurement_reports():
     assert 'id="session-report"' in body
     assert "loadSessionReports" in body
     assert "session-report?id=" in body
+    assert "session/delete" in body
+    assert "Private raw recordings" in body
     assert "What looks trustworthy" in body
 
 

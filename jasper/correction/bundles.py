@@ -17,6 +17,8 @@ from typing import Any, Iterable
 CURRENT_BUNDLE_SCHEMA_VERSION = 3
 CURRENT_ARTIFACT_MANIFEST_VERSION = 1
 ARTIFACT_MANIFEST_NAME = "artifact_manifest.json"
+RAW_AUDIO_RELATIVE_PATHS = ("verify.wav",)
+RAW_AUDIO_DIRS = ("captures", "noise", "repeat_captures")
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +105,33 @@ def _sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _bundle_byte_size(bundle_dir: Path) -> int:
+    total = 0
+    for path in bundle_dir.rglob("*"):
+        if path.is_file():
+            try:
+                total += path.stat().st_size
+            except OSError:
+                continue
+    return total
+
+
+def _private_raw_audio_paths(bundle_dir: Path) -> list[Path]:
+    paths: list[Path] = []
+    for rel_path in RAW_AUDIO_RELATIVE_PATHS:
+        path = bundle_dir / rel_path
+        if path.is_file():
+            paths.append(path)
+    for dirname in RAW_AUDIO_DIRS:
+        root = bundle_dir / dirname
+        if root.is_dir():
+            paths.extend(
+                path for path in root.glob("*.wav")
+                if path.is_file()
+            )
+    return sorted(paths)
 
 
 def _relative_artifact_path(bundle_dir: Path, artifact_path: Path | str) -> str:
@@ -311,6 +340,16 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
             info["artifact_manifest_error"] = True
     else:
         info["artifact_count"] = 0
+    raw_audio_paths = _private_raw_audio_paths(bundle_dir)
+    raw_audio_bytes = 0
+    for path in raw_audio_paths:
+        try:
+            raw_audio_bytes += path.stat().st_size
+        except OSError:
+            continue
+    info["bundle_size_bytes"] = _bundle_byte_size(bundle_dir)
+    info["private_raw_audio_count"] = len(raw_audio_paths)
+    info["private_raw_audio_bytes"] = raw_audio_bytes
     return info
 
 
@@ -320,18 +359,29 @@ def list_bundles(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
     """List parseable bundles newest-first, skipping partial writes."""
-    if not sessions_dir.is_dir():
+    if not sessions_dir.is_dir() or limit <= 0:
         return []
-    entries: list[dict[str, Any]] = []
+    candidates: list[tuple[float, str, Path]] = []
     for sub in sessions_dir.iterdir():
         if not sub.is_dir() or not (sub / "info.json").exists():
             continue
         try:
-            entries.append(summarize_bundle(sub))
+            info = _read_json(sub / "info.json")
         except BundleError:
             continue
-    entries.sort(key=lambda e: e.get("started_at", 0), reverse=True)
-    return entries[:limit]
+        try:
+            started_at = float(info.get("started_at") or 0)
+        except (TypeError, ValueError):
+            started_at = 0.0
+        candidates.append((started_at, sub.name, sub))
+    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    entries: list[dict[str, Any]] = []
+    for _, _, bundle_dir in candidates[:limit]:
+        try:
+            entries.append(summarize_bundle(bundle_dir))
+        except BundleError:
+            continue
+    return entries
 
 
 def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:

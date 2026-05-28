@@ -226,6 +226,19 @@
   packet is now schema v2 with explicit `capability_permissions` and
   `missing_evidence` so humans, the CLI, and future LLM tools consume
   the same deterministic permission surface.
+- ✅ **Phase 2.16 — minimal bundle history + privacy/delete UX.**
+  Implemented 2026-05-28. The `/correction/` read-only measurement
+  history now lists each recent bundle with size, state, position
+  count, result presence, and an explicit private-raw-recordings badge
+  when the bundle contains `captures/`, `noise/`,
+  `repeat_captures/`, or `verify.wav` audio. Users can delete an old
+  bundle from the same panel; the server resolves the session ID
+  through the browser-safe bundle resolver, refuses deletion of an
+  active in-progress or ready-to-apply measurement session, removes
+  the filesystem bundle, and logs a structured
+  `event=correction_session_bundle_deleted` entry. This is
+  intentionally not an archive product: no database, no pinning, no
+  automatic pruning, and no browser exposure of raw audio.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -1145,6 +1158,8 @@ sessions/<session_id>/
 │                    per-position curves, spatial spread, confidence
 │                    bands, high-variance/deep-null feature flags
 ├── captures/        per-position WAVs (p0.wav, p1.wav, ...)
+├── noise/           pre-sweep silence WAVs (p0_pre.wav, ...)
+├── repeat_captures/ optional same-seat repeat WAVs (p0_r1.wav, ...)
 ├── mic_calibration.json
 │                    selected calibration public metadata + parsed curve
 ├── mic_calibration.txt
@@ -1164,9 +1179,10 @@ remains valid after a user-driven cleanup.
 ### Durable evidence contract
 
 Raw measurement recordings are the canonical origin for a correction
-session. Keep `captures/p<N>.wav` and `verify.wav` by default and
-treat them as private user data: they may contain room noise, speech,
-or household sounds around the sweep. Derived artifacts should be
+session. Keep `captures/p<N>.wav`, `noise/p<N>_pre.wav`,
+`repeat_captures/p0_r<N>.wav`, and `verify.wav` by default and treat
+them as private user data: they may contain room noise, speech, or
+household sounds around the sweep. Derived artifacts should be
 recomputable from:
 
 - raw capture WAVs;
@@ -1268,8 +1284,11 @@ stronger FIR/agent claims. Future hardware validation should tune the
 thresholds against real phone/mic/Pi captures.
 
 Do not introduce a database, unbounded recording retention, or
-continuous telemetry for this phase. Use a filesystem bundle API and
-explicit retention/pin/delete semantics later.
+continuous telemetry for this phase. The browser history panel may
+delete old filesystem bundles and clearly labels raw recordings as
+private. Keep anything heavier, such as pinning, automatic pruning, or
+debug-safe export/share workflows, out of the product until hardware
+usage proves they carry their weight.
 
 To pull a bundle off the Pi for debugging:
 
