@@ -208,6 +208,48 @@ class CamillaController:
                 return None
             raise
 
+    async def get_runtime_status(
+        self, *, best_effort: bool = False,
+    ) -> dict[str, Any] | None:
+        """Small CamillaDSP health snapshot for measurement evidence.
+
+        Correction bundles use this around sweeps to preserve the DSP
+        state that is cheap and useful to know later. Missing fields are
+        omitted rather than treated as failures because CamillaDSP
+        command availability varies across versions.
+        """
+
+        def read(c):
+            out: dict[str, Any] = {}
+            try:
+                out["clipped_samples"] = int(c.status.clipped_samples())
+            except Exception:  # noqa: BLE001
+                pass
+            for key, command, coerce in (
+                ("buffer_level", "GetBufferLevel", int),
+                ("rate_adjust", "GetRateAdjust", float),
+                ("capture_rate", "GetCaptureRate", int),
+            ):
+                try:
+                    value = c.query(command)
+                except Exception:  # noqa: BLE001
+                    continue
+                try:
+                    out[key] = coerce(value)
+                except (TypeError, ValueError):
+                    continue
+            return out
+
+        try:
+            return await self._call(read)
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.debug(
+                    "camilla unavailable; get_runtime_status -> None: %s", e,
+                )
+                return None
+            raise
+
     async def set_volume_db(
         self, db: float, *, best_effort: bool = False,
     ) -> bool:

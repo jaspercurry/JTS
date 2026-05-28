@@ -111,6 +111,27 @@ def _browser_audio_issues(
     return out
 
 
+def _runtime_integrity_issues(
+    runtime_integrity: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if not isinstance(runtime_integrity, dict):
+        return []
+    raw_issues = runtime_integrity.get("issues")
+    if raw_issues is None:
+        summary = runtime_integrity.get("summary")
+        if isinstance(summary, dict):
+            raw_issues = summary.get("issues")
+    out: list[dict[str, Any]] = []
+    for issue in raw_issues or []:
+        if not isinstance(issue, dict):
+            continue
+        enriched = dict(issue)
+        enriched.setdefault("capture_kind", issue.get("capture_kind"))
+        enriched.setdefault("position_index", issue.get("position_index"))
+        out.append(enriched)
+    return out
+
+
 def _position_variance(
     *,
     position_magnitudes: list[np.ndarray],
@@ -401,6 +422,7 @@ def build_confidence_report(
     capture_quality: list[dict[str, Any]],
     strategy_choice: str,
     browser_audio_report: dict[str, Any] | None = None,
+    runtime_integrity: dict[str, Any] | None = None,
     position_magnitudes: list[np.ndarray] | None = None,
     freqs_hz: np.ndarray | None = None,
     correction_band_hz: tuple[float, float] = DEFAULT_BAND_HZ,
@@ -428,12 +450,25 @@ def build_confidence_report(
         browser_audio_report,
         existing_severity_by_code=quality_severity_by_code,
     )
-    issues = issues + browser_issues
+    runtime_issues = _runtime_integrity_issues(runtime_integrity)
+    quality_failed_issues = [
+        i for i in issues if i.get("severity") == "fail"
+    ]
+    quality_warn_issues = [
+        i for i in issues if i.get("severity") == "warn"
+    ]
+    issues = issues + browser_issues + runtime_issues
     failed_issues = [i for i in issues if i.get("severity") == "fail"]
     warn_issues = [i for i in issues if i.get("severity") == "warn"]
     browser_processing = [
         i for i in warn_issues
         if str(i.get("code", "")).startswith("browser_")
+    ]
+    runtime_failures = [
+        i for i in runtime_issues if i.get("severity") == "fail"
+    ]
+    runtime_warnings = [
+        i for i in runtime_issues if i.get("severity") == "warn"
     ]
 
     if completed_positions <= 0:
@@ -486,19 +521,20 @@ def build_confidence_report(
             message="browser input-device metadata is unavailable",
         ))
 
-    if failed_issues:
+    if quality_failed_issues:
         score -= 60
         findings.append(ConfidenceFinding(
             code="capture_quality_failed",
             severity="fail",
             message="one or more captures had blocking quality failures",
-            details={"count": len(failed_issues)},
+            details={"count": len(quality_failed_issues)},
         ))
 
     browser_audio_failures = [
         i for i in browser_issues if i.get("severity") == "fail"
     ]
     if browser_audio_failures:
+        score -= 60
         findings.append(ConfidenceFinding(
             code="browser_audio_path_failed",
             severity="fail",
@@ -506,13 +542,31 @@ def build_confidence_report(
             details={"count": len(browser_audio_failures)},
         ))
 
-    if warn_issues:
-        score -= min(20, 5 * len(warn_issues))
+    if runtime_failures:
+        score -= 60
+        findings.append(ConfidenceFinding(
+            code="runtime_integrity_failed",
+            severity="fail",
+            message="runtime-integrity evidence reported blocking failures",
+            details={"count": len(runtime_failures)},
+        ))
+
+    if runtime_warnings:
+        score -= min(15, 5 * len(runtime_warnings))
+        findings.append(ConfidenceFinding(
+            code="runtime_integrity_warnings",
+            severity="warn",
+            message="runtime-integrity warnings lowered confidence",
+            details={"count": len(runtime_warnings)},
+        ))
+
+    if quality_warn_issues:
+        score -= min(20, 5 * len(quality_warn_issues))
         findings.append(ConfidenceFinding(
             code="capture_quality_warnings",
             severity="warn",
             message="capture quality warnings lowered confidence",
-            details={"count": len(warn_issues)},
+            details={"count": len(quality_warn_issues)},
         ))
 
     if browser_processing:
@@ -577,11 +631,16 @@ def build_confidence_report(
             "mic_calibrated": has_mic_calibration,
             "input_device_present": bool(input_device),
             "quality_issue_count": len(issues),
-            "quality_warning_count": len(warn_issues),
-            "quality_failure_count": len(failed_issues),
+            "quality_warning_count": len(quality_warn_issues),
+            "quality_failure_count": len(quality_failed_issues),
+            "total_issue_count": len(issues),
             "browser_audio_issue_count": len(browser_issues),
+            "runtime_integrity_issue_count": len(runtime_issues),
+            "runtime_integrity_warning_count": len(runtime_warnings),
+            "runtime_integrity_failure_count": len(runtime_failures),
         },
         "browser_audio_report": browser_audio_report,
+        "runtime_integrity": runtime_integrity,
         "position_variance": variance,
         "position_bands": position_report["bands"],
         "feature_flags": position_report["feature_flags"],

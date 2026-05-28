@@ -145,9 +145,12 @@ async def test_session_applies_mic_calibration_during_capture(
         artifact["path"]
         for artifact in bundles.read_artifact_manifest(sess.bundle_dir)["artifacts"]
     }
-    assert {"captures/p0.wav", "mic_calibration.json", "mic_calibration.txt"}.issubset(
-        manifest_paths,
-    )
+    assert {
+        "captures/p0.wav",
+        "runtime_integrity.json",
+        "mic_calibration.json",
+        "mic_calibration.txt",
+    }.issubset(manifest_paths)
 
 
 @pytest.mark.asyncio
@@ -178,11 +181,13 @@ async def test_session_records_failed_capture_quality_in_bundle(tmp_path: Path):
     assert info["state"] == "failed"
     assert info["capture_quality"][0]["failed"] is True
     assert info["capture_quality"][0]["artifact_path"] == "captures/p0.wav"
+    assert info["runtime_integrity"]["level"] == "ok"
     manifest_paths = {
         artifact["path"]
         for artifact in bundles.read_artifact_manifest(sess.bundle_dir)["artifacts"]
     }
     assert "captures/p0.wav" in manifest_paths
+    assert "runtime_integrity.json" in manifest_paths
 
 
 @pytest.mark.asyncio

@@ -275,6 +275,9 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     info["has_result"] = (bundle_dir / "result.json").exists()
     info["has_applied_yml"] = (bundle_dir / "applied.yml").exists()
     info["has_verify_wav"] = (bundle_dir / "verify.wav").exists()
+    info["has_runtime_integrity_json"] = (
+        bundle_dir / "runtime_integrity.json"
+    ).exists()
     info["has_mic_calibration_json"] = (
         bundle_dir / "mic_calibration.json"
     ).exists()
@@ -392,6 +395,36 @@ def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:
                 "warn",
                 "mic_calibration metadata present but raw calibration file missing",
             ))
+
+    runtime_path = bundle_dir / "runtime_integrity.json"
+    runtime_summary = info.get("runtime_integrity")
+    if runtime_summary and not runtime_path.exists():
+        issues.append(BundleIssue(
+            "runtime_integrity_json_missing",
+            "warn",
+            "runtime_integrity summary present but runtime_integrity.json missing",
+        ))
+    if runtime_path.exists():
+        try:
+            runtime = _read_json(runtime_path)
+            if runtime.get("artifact_schema_version") != 1:
+                issues.append(BundleIssue(
+                    "runtime_integrity_schema_version",
+                    "warn",
+                    "runtime_integrity.json schema does not match current version",
+                ))
+            for issue in runtime.get("issues") or []:
+                if not isinstance(issue, dict):
+                    continue
+                severity = issue.get("severity")
+                if severity in {"warn", "fail"}:
+                    issues.append(BundleIssue(
+                        str(issue.get("code") or "runtime_integrity"),
+                        severity,
+                        str(issue.get("message") or "runtime integrity issue"),
+                    ))
+        except BundleError as e:
+            issues.append(BundleIssue("runtime_integrity_json", "fail", str(e)))
 
     reports = list(info.get("capture_quality") or [])
     if info.get("verify_quality"):
@@ -573,6 +606,7 @@ def _validate_manifest_covers_existing_core_artifacts(
         "info.json",
         "result.json",
         "position_analysis.json",
+        "runtime_integrity.json",
         "mic_calibration.json",
         "mic_calibration.txt",
         "applied.yml",

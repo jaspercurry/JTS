@@ -96,6 +96,33 @@ def test_confidence_includes_browser_audio_path_failures():
     assert report["strategy_gates"]["safe"]["allowed"] is False
 
 
+def test_confidence_includes_runtime_integrity_failures():
+    report = confidence.build_confidence_report(
+        total_positions=3,
+        completed_positions=3,
+        has_mic_calibration=True,
+        input_device={"label": "USB measurement mic"},
+        capture_quality=[{"issues": []}, {"issues": []}, {"issues": []}],
+        strategy_choice="balanced",
+        runtime_integrity={
+            "level": "fail",
+            "issues": [{
+                "code": "runtime_capture_too_short",
+                "severity": "fail",
+                "message": "uploaded capture is shorter than the played sweep",
+            }],
+        },
+    )
+
+    assert report["level"] == "low"
+    assert report["evidence"]["runtime_integrity_failure_count"] == 1
+    assert any(
+        finding["code"] == "runtime_integrity_failed"
+        for finding in report["findings"]
+    )
+    assert report["strategy_gates"]["safe"]["allowed"] is False
+
+
 def test_confidence_reports_low_position_variance_level():
     freqs = np.array([40.0, 80.0, 160.0, 320.0])
     positions = [

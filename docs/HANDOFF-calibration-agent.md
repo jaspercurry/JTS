@@ -1,12 +1,13 @@
 # HANDOFF: LLM-driven calibration agent
 
-> **Status: research + early substrate (2026-05-26).** This is the
+> **Status: research + early substrate (2026-05-28).** This is the
 > design-space document for the guided calibration/tuning arc. Phase
 > 0a substrate has landed: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
 > picker, bundle metadata, capture-quality checks, bounded correction
 > strategies, design-audit reports, first-pass confidence reports,
-> `position_analysis.json` artifacts, and a read-only
+> `position_analysis.json` artifacts, `runtime_integrity.json`
+> evidence, correction visualization/confidence UX, and a read-only
 > `jasper-calibration-agent` intake CLI. The LLM agent itself is still
 > not implemented.
 >
@@ -774,12 +775,13 @@ Before any LLM work:
 - Keep the current `info.json` / `result.json` shape compatible, with
   explicit versioning so future FIR and agent tooling can detect what
   artifacts are present instead of guessing from filenames.
-- First durable-evidence slice now exists: bundle schema v3 writes
+- Durable-evidence substrate now exists: bundle schema v3 writes
   `artifact_manifest.json` so raw captures are named as canonical
   private evidence and derived artifacts declare their inputs,
-  checksums, sensitivity, and recomputability. Next slice: add
-  lightweight runtime-health snapshots that feed a separate
-  runtime-integrity verdict alongside capture quality.
+  checksums, sensitivity, and recomputability. Bundles also write
+  `runtime_integrity.json` with system/runtime snapshots, capture
+  sample-count sanity, fan-in xrun deltas, and CamillaDSP runtime
+  counters that feed the confidence report alongside capture quality.
 - **Actually run the full Phase 0–2.2 pipeline on a real room** with
   the calibrated mic. This is the N10 hardware verification the user
   flagged as missing. Document what you find in
@@ -846,11 +848,11 @@ Current distilled corpus files:
 - ✅ **Read-only deterministic intake substrate.** Implemented
   2026-05-25 as `jasper-calibration-agent`. The CLI loads a
   correction session bundle, summarizes measurement/device/mic
-  provenance, surfaces bundle + capture-quality issues, finds
-  bass-band peaks/nulls vs target, notes that Schroeder estimation is
-  unavailable until room/RT60 context exists, and pulls short guidance
-  snippets from `docs/calibration-agent/`. It performs no side effects
-  and does not call an LLM.
+  provenance, surfaces bundle + capture-quality + runtime-integrity
+  issues, finds bass-band peaks/nulls vs target, notes that Schroeder
+  estimation is unavailable until room/RT60 context exists, and pulls
+  short guidance snippets from `docs/calibration-agent/`. It performs
+  no side effects and does not call an LLM.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed, then build a deterministic loader that assembles it into
   the agent prompt. The current intake CLI already includes a small
@@ -1087,4 +1089,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-26
+Last verified: 2026-05-28
