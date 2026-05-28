@@ -98,12 +98,21 @@ from scipy.signal import butter, resample_poly, sosfilt
 
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
-    AEC3_SWEEP_VARIANTS,
+    load_aec3_sweep_config,
 )
 from jasper.watchdog import Heartbeat
 from ..mics import xvf3800 as _mic_profile
 
 logger = logging.getLogger("jasper.aec_bridge")
+AEC3_SWEEP_CONFIG = load_aec3_sweep_config(logger=logger)
+AEC3_SWEEP_VARIANTS = AEC3_SWEEP_CONFIG.variants
+logger.info(
+    "event=aec3_sweep_config_loaded source=%s path=%s hash=%s variants=%s",
+    AEC3_SWEEP_CONFIG.source,
+    AEC3_SWEEP_CONFIG.path,
+    AEC3_SWEEP_CONFIG.config_hash,
+    ",".join(variant.leg for variant in AEC3_SWEEP_VARIANTS),
+)
 
 # Frame size: 320 samples @ 16 kHz = 20 ms, a multiple of WebRTC
 # AEC3's 10 ms frame requirement (160 samples). The binding splits
