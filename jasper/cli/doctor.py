@@ -684,11 +684,12 @@ def check_spotify_connect_device(cfg: Config) -> CheckResult:
         from ..accounts import Registry
         from ..spotify_router import build_clients
         accounts = Registry.load(cfg.spotify_accounts_path)
-        clients = build_clients(
+        result = build_clients(
             accounts,
             client_id=cfg.spotify_client_id,
             redirect_uri=cfg.spotify_redirect_uri,
         )
+        clients = result.clients
     except Exception as e:  # noqa: BLE001
         return CheckResult(
             label, "warn",
@@ -4421,7 +4422,23 @@ def main() -> None:
         sys.exit(render(results))
     if args.watch:
         sys.exit(asyncio.run(_watch_loop(cfg, args.interval)))
-    results = asyncio.run(run_async(cfg))
+    try:
+        results = asyncio.run(run_async(cfg))
+    except Exception as e:  # noqa: BLE001
+        if args.json:
+            import json as _json
+            print(_json.dumps({
+                "error": f"doctor crashed: {type(e).__name__}: {e}",
+                "fails": 1,
+                "warns": 0,
+                "results": [{
+                    "name": "jasper-doctor",
+                    "status": "fail",
+                    "detail": f"{type(e).__name__}: {e}",
+                }],
+            }))
+            sys.exit(1)
+        raise
     if args.json:
         sys.exit(render_json(results))
     sys.exit(render(results))

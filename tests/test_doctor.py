@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from jasper.cli import doctor
@@ -156,6 +158,74 @@ def test_provider_key_other_providers_keys_unchecked(monkeypatch):
     )
     r = doctor.check_provider_key(cfg)
     assert r.status == "ok"
+
+
+# ------------------------------------------------------ Spotify Connect check
+
+
+def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Path):
+    """build_clients returns BuildResult, not a bare clients dict.
+
+    The dashboard runs `jasper-doctor --json` through jasper-control; a
+    shape mismatch here used to crash before JSON rendering, which made
+    /system/diagnostics report "doctor output not JSON".
+    """
+    accounts_path = tmp_path / "accounts.json"
+    accounts_path.write_text(
+        '{"accounts": [{"name": "jasper", "cache_path": "/tmp/cache"}], '
+        '"default": "jasper"}'
+    )
+    cfg = _fresh_cfg(
+        monkeypatch,
+        GEMINI_API_KEY="AIzaSyTest",
+        SPOTIFY_CLIENT_ID="a" * 32,
+        JASPER_SPOTIFY_ACCOUNTS_PATH=str(accounts_path),
+        JASPER_SPEAKER_NAME="JTS",
+    )
+
+    from jasper.spotify_router import ACCOUNT_OK, AccountStatus, BuildResult
+
+    fake_client = SimpleNamespace(
+        sp=SimpleNamespace(devices=lambda: {"devices": [{"name": "Kitchen JTS"}]}),
+    )
+
+    def fake_build_clients(_registry, *, client_id, redirect_uri):  # noqa: ARG001
+        return BuildResult(
+            clients={"jasper": fake_client},
+            statuses=[AccountStatus(name="jasper", state=ACCOUNT_OK)],
+            default_name="jasper",
+        )
+
+    with patch("jasper.spotify_router.build_clients", side_effect=fake_build_clients):
+        result = doctor.check_spotify_connect_device(cfg)
+
+    assert result.status == "ok"
+    assert "jasper" in result.detail
+
+
+def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
+    """Machine-readable mode should stay machine-readable even if a
+    diagnostic check raises unexpectedly."""
+    monkeypatch.setattr(doctor, "_load_env_files", lambda: None)
+    monkeypatch.setattr(Config, "from_env", staticmethod(lambda: object()))
+
+    async def boom(_cfg):
+        raise RuntimeError("synthetic failure")
+
+    monkeypatch.setattr(doctor, "run_async", boom)
+    monkeypatch.setattr(sys, "argv", ["jasper-doctor", "--json"])
+
+    try:
+        doctor.main()
+    except SystemExit as e:
+        assert e.code == 1
+    else:  # pragma: no cover - defensive, main() should always exit.
+        raise AssertionError("main() did not exit")
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["fails"] == 1
+    assert payload["results"][0]["name"] == "jasper-doctor"
+    assert "synthetic failure" in payload["error"]
 
 
 # ------------------------------------------------ ALSA shorthand mic lookup
