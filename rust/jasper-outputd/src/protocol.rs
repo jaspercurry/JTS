@@ -8,7 +8,7 @@
 
 use std::io::{self, BufRead};
 
-use crate::types::CHANNELS;
+use crate::types::{SegmentKind, CHANNELS};
 
 pub const MAX_AUDIO_BYTES: usize = 2 * 1024 * 1024;
 const FRAME_BYTES: usize = (CHANNELS as usize) * 2;
@@ -16,8 +16,14 @@ const FRAME_BYTES: usize = (CHANNELS as usize) * 2;
 #[derive(Debug, Clone, PartialEq)]
 pub enum TtsCommand {
     GainDb(f32),
+    SegmentStart {
+        kind: SegmentKind,
+        provider_item_id: Option<String>,
+    },
     Audio(Vec<i16>),
+    SegmentEnd,
     Flush,
+    FlushSync,
     Close,
 }
 
@@ -31,8 +37,45 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
     if line == "FLUSH" {
         return Ok(Some(TtsCommand::Flush));
     }
+    if line == "FLUSH_SYNC" {
+        return Ok(Some(TtsCommand::FlushSync));
+    }
+    if line == "SEGMENT_END" {
+        return Ok(Some(TtsCommand::SegmentEnd));
+    }
     if line == "CLOSE" {
         return Ok(Some(TtsCommand::Close));
+    }
+    if let Some(rest) = line.strip_prefix("SEGMENT_START ") {
+        let mut parts = rest.split(' ');
+        let raw_kind = parts.next().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "missing SEGMENT_START kind")
+        })?;
+        let raw_provider = parts.next().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing SEGMENT_START provider item id",
+            )
+        })?;
+        if parts.next().is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "SEGMENT_START expects exactly two arguments",
+            ));
+        }
+        let kind = SegmentKind::from_protocol(raw_kind).ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "invalid SEGMENT_START kind")
+        })?;
+        let provider_item_id = if raw_provider == "-" {
+            None
+        } else {
+            validate_token(raw_provider, "SEGMENT_START provider item id")?;
+            Some(raw_provider.to_string())
+        };
+        return Ok(Some(TtsCommand::SegmentStart {
+            kind,
+            provider_item_id,
+        }));
     }
     if let Some(rest) = line.strip_prefix("GAIN ") {
         let gain = rest
@@ -77,6 +120,16 @@ pub fn read_command<R: BufRead>(reader: &mut R) -> io::Result<Option<TtsCommand>
     ))
 }
 
+fn validate_token(value: &str, field: &str) -> io::Result<()> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_graphic()) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("invalid {field}"),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,15 +137,59 @@ mod tests {
 
     #[test]
     fn reads_gain_flush_and_close_commands() {
-        let mut reader = Cursor::new(b"GAIN -12.5\nFLUSH\nCLOSE\n".to_vec());
+        let mut reader = Cursor::new(b"GAIN -12.5\nFLUSH\nFLUSH_SYNC\nCLOSE\n".to_vec());
 
         assert_eq!(
             read_command(&mut reader).unwrap(),
             Some(TtsCommand::GainDb(-12.5))
         );
         assert_eq!(read_command(&mut reader).unwrap(), Some(TtsCommand::Flush));
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::FlushSync)
+        );
         assert_eq!(read_command(&mut reader).unwrap(), Some(TtsCommand::Close));
         assert_eq!(read_command(&mut reader).unwrap(), None);
+    }
+
+    #[test]
+    fn reads_segment_metadata_commands() {
+        let mut reader =
+            Cursor::new(b"SEGMENT_START assistant item_abc123\nSEGMENT_END\n".to_vec());
+
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("item_abc123".to_string()),
+            })
+        );
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::SegmentEnd)
+        );
+    }
+
+    #[test]
+    fn reads_segment_start_without_provider_item_id() {
+        let mut reader = Cursor::new(b"SEGMENT_START cue -\n".to_vec());
+
+        assert_eq!(
+            read_command(&mut reader).unwrap(),
+            Some(TtsCommand::SegmentStart {
+                kind: SegmentKind::Cue,
+                provider_item_id: None,
+            })
+        );
+    }
+
+    #[test]
+    fn rejects_segment_start_with_unknown_kind() {
+        let mut reader = Cursor::new(b"SEGMENT_START music item_1\n".to_vec());
+
+        let err = read_command(&mut reader).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err.to_string().contains("kind"));
     }
 
     #[test]

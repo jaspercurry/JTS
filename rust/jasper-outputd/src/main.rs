@@ -5,8 +5,9 @@
 //! transport with `JASPER_OUTPUTD_BACKEND=alsa`, reading
 //! CamillaDSP's post-DSP loopback lane and writing the DAC directly.
 
+use std::fmt::Write as FmtWrite;
 use std::fs;
-use std::io::{self, BufReader};
+use std::io::{self, BufReader, Write};
 use std::mem;
 use std::os::fd::RawFd;
 use std::os::unix::net::{UnixDatagram, UnixListener, UnixStream};
@@ -22,6 +23,7 @@ use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{AlsaBackend, IoCounters};
 use jasper_outputd::config::{BackendMode, Config};
 use jasper_outputd::core::{OutputCore, PeriodReport};
+use jasper_outputd::ledger::{PlayoutEvent, SegmentId, SegmentStatus};
 use jasper_outputd::mixer::MAX_TTS_GAIN_DB;
 use jasper_outputd::protocol::{read_command, TtsCommand};
 use jasper_outputd::state::{OutputdState, StateServer, TtsQueueMetrics};
@@ -97,7 +99,7 @@ fn run_fake(
     config: &Config,
     core: &mut OutputCore,
     tts_rx: &Receiver<QueuedTtsCommand>,
-    tts_flush_rx: &Receiver<u64>,
+    tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
     shutdown: &AtomicBool,
@@ -108,6 +110,7 @@ fn run_fake(
     let mut current_gain_db = MAX_TTS_GAIN_DB;
     let mut tts_queue = TtsQueueTracker::new(MAX_PENDING_ASSISTANT_FRAMES, config.period_frames);
     let mut active_tts_epoch = 0u64;
+    let mut active_tts_segment = None;
     notify_ready(config)?;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -117,6 +120,7 @@ fn run_fake(
             core,
             &mut current_gain_db,
             &mut active_tts_epoch,
+            &mut active_tts_segment,
         );
         let report = core.step();
         let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
@@ -144,7 +148,7 @@ fn run_alsa(
     config: &Config,
     core: &mut OutputCore,
     tts_rx: &Receiver<QueuedTtsCommand>,
-    tts_flush_rx: &Receiver<u64>,
+    tts_flush_rx: &Receiver<QueuedFlush>,
     state: &OutputdState,
     once: bool,
     shutdown: &AtomicBool,
@@ -164,6 +168,8 @@ fn run_alsa(
     let mut current_gain_db = MAX_TTS_GAIN_DB;
     let mut tts_queue = TtsQueueTracker::new(MAX_PENDING_ASSISTANT_FRAMES, config.period_frames);
     let mut active_tts_epoch = 0u64;
+    let mut active_tts_segment = None;
+    let mut dac_delay_warning_logged = false;
 
     while !shutdown.load(Ordering::Relaxed) {
         drain_tts_commands(
@@ -172,11 +178,22 @@ fn run_alsa(
             core,
             &mut current_gain_db,
             &mut active_tts_epoch,
+            &mut active_tts_segment,
         );
         let _frames_read = backend.read_content_period(&mut content_buf)?;
         core.prepare_period_with_content(&content_buf);
         backend.write_dac_period(core.output_period())?;
-        let report = core.commit_prepared_period();
+        let dac_delay_frames = match backend.dac_delay_frames() {
+            Ok(frames) => frames,
+            Err(e) => {
+                if !dac_delay_warning_logged {
+                    eprintln!("event=outputd.dac_delay_unavailable detail={e:#}");
+                    dac_delay_warning_logged = true;
+                }
+                backend.dac_negotiated.buffer_frames as u64
+            }
+        };
+        let report = core.commit_prepared_period_with_dac_delay(dac_delay_frames);
         let tts_metrics = tts_queue.mark_period(core.pending_assistant_frames());
         state.mark_period(
             backend.counters(),
@@ -233,14 +250,31 @@ struct QueuedTtsCommand {
     command: TtsCommand,
 }
 
+#[derive(Debug)]
+struct QueuedFlush {
+    epoch: u64,
+    ack: Option<SyncSender<FlushSummary>>,
+}
+
+#[derive(Debug, Clone)]
+struct FlushSummary {
+    requests: usize,
+    pending_frames: u64,
+    segments: usize,
+    flushed_frames: u64,
+    max_audio_played_ms: u64,
+    events: Vec<PlayoutEvent>,
+}
+
 fn drain_tts_commands(
     rx: &Receiver<QueuedTtsCommand>,
-    flush_rx: &Receiver<u64>,
+    flush_rx: &Receiver<QueuedFlush>,
     core: &mut OutputCore,
     current_gain_db: &mut f32,
     active_epoch: &mut u64,
+    active_segment: &mut Option<SegmentId>,
 ) {
-    drain_tts_flushes(flush_rx, core, active_epoch);
+    drain_tts_flushes(flush_rx, core, active_epoch, active_segment);
     while core.pending_assistant_frames() < MAX_PENDING_ASSISTANT_FRAMES {
         let Ok(queued) = rx.try_recv() else {
             break;
@@ -256,39 +290,78 @@ fn drain_tts_commands(
             TtsCommand::GainDb(db) => {
                 *current_gain_db = db;
             }
+            TtsCommand::SegmentStart {
+                kind,
+                provider_item_id,
+            } => {
+                if let Some(id) = active_segment.take() {
+                    core.end_assistant_segment(id);
+                }
+                *active_segment =
+                    Some(core.start_assistant_segment(provider_item_id, kind, *current_gain_db));
+            }
             TtsCommand::Audio(samples) => {
                 if samples.is_empty() {
                     continue;
                 }
-                core.enqueue_assistant_segment(
-                    None,
-                    SegmentKind::Assistant,
-                    *current_gain_db,
-                    samples,
-                );
+                let id = if let Some(id) = *active_segment {
+                    id
+                } else {
+                    let id = core.start_assistant_segment(
+                        None,
+                        SegmentKind::Assistant,
+                        *current_gain_db,
+                    );
+                    *active_segment = Some(id);
+                    id
+                };
+                core.append_assistant_audio(id, *current_gain_db, samples);
             }
-            TtsCommand::Flush => {
-                flush_tts(core, 1);
+            TtsCommand::SegmentEnd => {
+                if let Some(id) = active_segment.take() {
+                    core.end_assistant_segment(id);
+                }
+            }
+            TtsCommand::Flush | TtsCommand::FlushSync => {
+                if let Some(id) = active_segment.take() {
+                    core.end_assistant_segment(id);
+                }
+                let _summary = flush_tts(core, 1);
             }
             TtsCommand::Close => {}
         }
     }
 }
 
-fn drain_tts_flushes(flush_rx: &Receiver<u64>, core: &mut OutputCore, active_epoch: &mut u64) {
+fn drain_tts_flushes(
+    flush_rx: &Receiver<QueuedFlush>,
+    core: &mut OutputCore,
+    active_epoch: &mut u64,
+    active_segment: &mut Option<SegmentId>,
+) {
     let mut requests = 0usize;
     let mut newest_epoch = *active_epoch;
-    while let Ok(epoch) = flush_rx.try_recv() {
+    let mut ack_txs = Vec::new();
+    while let Ok(flush) = flush_rx.try_recv() {
         requests += 1;
-        newest_epoch = newest_epoch.max(epoch);
+        newest_epoch = newest_epoch.max(flush.epoch);
+        if let Some(ack) = flush.ack {
+            ack_txs.push(ack);
+        }
     }
     if requests > 0 {
         *active_epoch = newest_epoch;
-        flush_tts(core, requests);
+        if let Some(id) = active_segment.take() {
+            core.end_assistant_segment(id);
+        }
+        let summary = flush_tts(core, requests);
+        for ack in ack_txs {
+            let _ = ack.send(summary.clone());
+        }
     }
 }
 
-fn flush_tts(core: &mut OutputCore, requests: usize) {
+fn flush_tts(core: &mut OutputCore, requests: usize) -> FlushSummary {
     let pending_before = core.pending_assistant_frames();
     let events = core.flush_assistant();
     let flushed_frames = events.iter().map(|event| event.flushed_frames).sum::<u64>();
@@ -305,6 +378,14 @@ fn flush_tts(core: &mut OutputCore, requests: usize) {
         flushed_frames,
         played_ms
     );
+    FlushSummary {
+        requests,
+        pending_frames: pending_before,
+        segments: events.len(),
+        flushed_frames,
+        max_audio_played_ms: played_ms,
+        events,
+    }
 }
 
 struct TtsQueueTracker {
@@ -406,7 +487,7 @@ fn spawn_state_server(
 fn spawn_tts_server(
     path: PathBuf,
     tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<u64>,
+    flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
 ) -> Result<()> {
     if let Some(parent) = path.parent() {
@@ -441,7 +522,7 @@ fn spawn_tts_server(
 fn spawn_tts_client(
     stream: UnixStream,
     tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<u64>,
+    flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
 ) -> io::Result<()> {
     thread::Builder::new()
@@ -453,7 +534,7 @@ fn spawn_tts_client(
 fn handle_tts_client(
     stream: UnixStream,
     tx: SyncSender<QueuedTtsCommand>,
-    flush_tx: SyncSender<u64>,
+    flush_tx: SyncSender<QueuedFlush>,
     epoch: Arc<AtomicU64>,
 ) {
     let mut reader = BufReader::new(stream);
@@ -461,8 +542,12 @@ fn handle_tts_client(
         match read_command(&mut reader) {
             Ok(Some(TtsCommand::Close)) | Ok(None) => return,
             Ok(Some(TtsCommand::Flush)) => {
-                let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
-                if flush_tx.send(next_epoch).is_err() {
+                if !queue_flush(&mut reader, &flush_tx, &epoch, false) {
+                    return;
+                }
+            }
+            Ok(Some(TtsCommand::FlushSync)) => {
+                if !queue_flush(&mut reader, &flush_tx, &epoch, true) {
                     return;
                 }
             }
@@ -484,6 +569,110 @@ fn handle_tts_client(
             }
         }
     }
+}
+
+fn queue_flush(
+    reader: &mut BufReader<UnixStream>,
+    flush_tx: &SyncSender<QueuedFlush>,
+    epoch: &AtomicU64,
+    sync: bool,
+) -> bool {
+    let next_epoch = epoch.fetch_add(1, Ordering::SeqCst) + 1;
+    if sync {
+        let (ack_tx, ack_rx) = mpsc::sync_channel(1);
+        if flush_tx
+            .send(QueuedFlush {
+                epoch: next_epoch,
+                ack: Some(ack_tx),
+            })
+            .is_err()
+        {
+            return false;
+        }
+        let response = match ack_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(summary) => summary.to_json_line(),
+            Err(_) => "{\"ok\":false,\"error\":\"flush_ack_timeout\"}\n".to_string(),
+        };
+        if reader.get_mut().write_all(response.as_bytes()).is_err() {
+            return false;
+        }
+        return true;
+    }
+    flush_tx
+        .send(QueuedFlush {
+            epoch: next_epoch,
+            ack: None,
+        })
+        .is_ok()
+}
+
+impl FlushSummary {
+    fn to_json_line(&self) -> String {
+        let mut out = String::new();
+        let _ = write!(
+            out,
+            "{{\"ok\":true,\"requests\":{},\"pending_frames\":{},\"segments\":{},\"flushed_frames\":{},\"max_audio_played_ms\":{},\"events\":[",
+            self.requests,
+            self.pending_frames,
+            self.segments,
+            self.flushed_frames,
+            self.max_audio_played_ms
+        );
+        for (idx, event) in self.events.iter().enumerate() {
+            if idx > 0 {
+                out.push(',');
+            }
+            let provider = event
+                .provider_item_id
+                .as_deref()
+                .map(json_string)
+                .unwrap_or_else(|| "null".to_string());
+            let _ = write!(
+                out,
+                "{{\"local_segment_id\":{},\"provider_item_id\":{},\"kind\":\"{}\",\"status\":\"{}\",\"queued_frames\":{},\"written_frames\":{},\"estimated_drained_frames\":{},\"flushed_frames\":{},\"audio_played_ms\":{}}}",
+                event.local_segment_id.0,
+                provider,
+                event.kind.as_str(),
+                segment_status_str(event.status),
+                event.queued_frames,
+                event.written_frames,
+                event.estimated_drained_frames,
+                event.flushed_frames,
+                event.audio_played_ms
+            );
+        }
+        out.push_str("]}\n");
+        out
+    }
+}
+
+fn segment_status_str(status: SegmentStatus) -> &'static str {
+    match status {
+        SegmentStatus::Queued => "queued",
+        SegmentStatus::Playing => "playing",
+        SegmentStatus::Drained => "drained",
+        SegmentStatus::Flushed => "flushed",
+    }
+}
+
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{:04x}", c as u32);
+            }
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 fn try_enqueue_tts_command(tx: &SyncSender<QueuedTtsCommand>, queued: QueuedTtsCommand) -> bool {
@@ -512,7 +701,19 @@ fn log_dropped_tts_command(queued: &QueuedTtsCommand) {
                 queued.epoch
             );
         }
-        TtsCommand::Flush | TtsCommand::Close => {}
+        TtsCommand::SegmentStart { .. } => {
+            eprintln!(
+                "event=outputd.tts_command_dropped reason=queue_full command=segment_start epoch={}",
+                queued.epoch
+            );
+        }
+        TtsCommand::SegmentEnd => {
+            eprintln!(
+                "event=outputd.tts_command_dropped reason=queue_full command=segment_end epoch={}",
+                queued.epoch
+            );
+        }
+        TtsCommand::Flush | TtsCommand::FlushSync | TtsCommand::Close => {}
     }
 }
 
@@ -742,6 +943,7 @@ mod tests {
         let mut core = OutputCore::new(1024, 99);
         let mut gain = MAX_TTS_GAIN_DB;
         let mut active_epoch = 0u64;
+        let mut active_segment = None;
         core.enqueue_assistant_segment(
             None,
             SegmentKind::Assistant,
@@ -753,8 +955,20 @@ mod tests {
             MAX_PENDING_ASSISTANT_FRAMES
         );
 
-        flush_tx.send(1).unwrap();
-        drain_tts_commands(&rx, &flush_rx, &mut core, &mut gain, &mut active_epoch);
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: None,
+            })
+            .unwrap();
+        drain_tts_commands(
+            &rx,
+            &flush_rx,
+            &mut core,
+            &mut gain,
+            &mut active_epoch,
+            &mut active_segment,
+        );
 
         assert_eq!(core.pending_assistant_frames(), 0);
         assert_eq!(active_epoch, 1);
@@ -767,20 +981,33 @@ mod tests {
         let mut core = OutputCore::new(1024, 99);
         let mut gain = MAX_TTS_GAIN_DB;
         let mut active_epoch = 0u64;
+        let mut active_segment = None;
 
         tx.send(QueuedTtsCommand {
             epoch: 0,
             command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
         })
         .unwrap();
-        flush_tx.send(1).unwrap();
+        flush_tx
+            .send(QueuedFlush {
+                epoch: 1,
+                ack: None,
+            })
+            .unwrap();
         tx.send(QueuedTtsCommand {
             epoch: 1,
             command: TtsCommand::Audio(vec![2; 3 * (CHANNELS as usize)]),
         })
         .unwrap();
 
-        drain_tts_commands(&rx, &flush_rx, &mut core, &mut gain, &mut active_epoch);
+        drain_tts_commands(
+            &rx,
+            &flush_rx,
+            &mut core,
+            &mut gain,
+            &mut active_epoch,
+            &mut active_segment,
+        );
 
         assert_eq!(core.pending_assistant_frames(), 3);
         assert_eq!(active_epoch, 1);
@@ -793,6 +1020,7 @@ mod tests {
         let mut core = OutputCore::new(1024, 99);
         let mut gain = MAX_TTS_GAIN_DB;
         let mut active_epoch = 0u64;
+        let mut active_segment = None;
 
         tx.send(QueuedTtsCommand {
             epoch: 1,
@@ -800,10 +1028,61 @@ mod tests {
         })
         .unwrap();
 
-        drain_tts_commands(&rx, &flush_rx, &mut core, &mut gain, &mut active_epoch);
+        drain_tts_commands(
+            &rx,
+            &flush_rx,
+            &mut core,
+            &mut gain,
+            &mut active_epoch,
+            &mut active_segment,
+        );
 
         assert_eq!(core.pending_assistant_frames(), 0);
         assert_eq!(active_epoch, 0);
+    }
+
+    #[test]
+    fn tts_segment_metadata_is_preserved_through_command_drain() {
+        let (tx, rx) = mpsc::sync_channel(4);
+        let (_flush_tx, flush_rx) = mpsc::sync_channel(1);
+        let mut core = OutputCore::new(1024, 99);
+        let mut gain = MAX_TTS_GAIN_DB;
+        let mut active_epoch = 0u64;
+        let mut active_segment = None;
+
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentStart {
+                kind: SegmentKind::Assistant,
+                provider_item_id: Some("msg_abc123".to_string()),
+            },
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::Audio(vec![1; 2 * (CHANNELS as usize)]),
+        })
+        .unwrap();
+        tx.send(QueuedTtsCommand {
+            epoch: 0,
+            command: TtsCommand::SegmentEnd,
+        })
+        .unwrap();
+
+        drain_tts_commands(
+            &rx,
+            &flush_rx,
+            &mut core,
+            &mut gain,
+            &mut active_epoch,
+            &mut active_segment,
+        );
+        let events = core.flush_assistant();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].provider_item_id.as_deref(), Some("msg_abc123"));
+        assert_eq!(events[0].kind, SegmentKind::Assistant);
+        assert!(events[0].ended);
     }
 
     #[test]

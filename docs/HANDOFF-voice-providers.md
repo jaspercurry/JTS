@@ -292,6 +292,15 @@ Gemini real-time) doesn't require any adapter changes. The full
 design + prior-art survey + observability hooks live in
 [audio-paths.md](audio-paths.md) under "End-of-turn drain".
 
+When a provider exposes a stable assistant audio item id, its
+`LiveTurn` should yield `AudioOutChunk` values from
+`audio_out_chunks()` with `provider_item_id` populated. OpenAI does
+this from `response.output_item.added.item.id`; Gemini currently has
+no equivalent and leaves the field empty. The voice daemon passes this
+identity through `OutputdTtsPlayout.write_segment()` so outputd's
+flush acknowledgement can later drive provider-specific truncate or
+cancel calls.
+
 ## Anti-patterns
 
 These have all been surfaced and rejected in design reviews:
@@ -329,4 +338,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-27 (voice provider catalog + manual model discovery checked against config + /voice wizard)
+Last verified: 2026-05-28 (LiveTurn audio chunk identity checked against OpenAI/Gemini adapters)

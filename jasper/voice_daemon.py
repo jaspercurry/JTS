@@ -66,7 +66,7 @@ from .tools.timer import make_timer_tools
 from .tools.transport import make_transport_tools
 from .tools.weather import make_weather_tools
 from .usage import SpendCap, UsageStore, pricing_for_provider
-from .voice.session import LiveConnection, LiveTurn
+from .voice.session import AudioOutChunk, LiveConnection, LiveTurn
 from .volume_coordinator import VolumeCoordinator
 from .volume_observers import VolumeObserver
 from .mic_mute_persistence import read_mic_muted, write_mic_muted
@@ -1049,6 +1049,18 @@ def _build_registry(
     return registry
 
 
+async def _turn_audio_chunks(turn: LiveTurn):
+    chunks = getattr(turn, "audio_out_chunks", None)
+    if callable(chunks):
+        async for chunk in chunks():
+            if isinstance(chunk, bytes):
+                chunk = AudioOutChunk(pcm=chunk)
+            yield chunk
+        return
+    async for pcm in turn.audio_out():
+        yield AudioOutChunk(pcm=pcm)
+
+
 async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
     """Drain turn.audio_out() to the speaker. Barge-in handling: race
     each write against an interrupt signal so a user-interrupted-the-model
@@ -1068,10 +1080,16 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
     interrupt_task: asyncio.Task | None = None
     write_task: asyncio.Task | None = None
     try:
-        async for chunk in turn.audio_out():
+        async for chunk in _turn_audio_chunks(turn):
             if interrupt_task is None or interrupt_task.done():
                 interrupt_task = asyncio.create_task(turn.wait_for_interrupt())
-            write_task = asyncio.create_task(tts.write(chunk))
+            write_task = asyncio.create_task(
+                tts.write_segment(
+                    chunk.pcm,
+                    provider_item_id=chunk.provider_item_id,
+                    segment_kind=chunk.kind,
+                )
+            )
             done, _ = await asyncio.wait(
                 {write_task, interrupt_task},
                 return_when=asyncio.FIRST_COMPLETED,
@@ -1082,7 +1100,18 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
                     await write_task
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
-                await tts.flush()
+                ack = await tts.flush()
+                flush_handler = getattr(turn, "on_tts_flush", None)
+                if callable(flush_handler):
+                    await flush_handler(ack)
+                if ack is not None:
+                    logger.info(
+                        "event=tts_flush.playout_ack max_audio_played_ms=%s "
+                        "segments=%s flushed_frames=%s",
+                        ack.get("max_audio_played_ms"),
+                        ack.get("segments"),
+                        ack.get("flushed_frames"),
+                    )
                 turn.clear_interrupted()
                 interrupt_task = None
             elif write_task in done:
@@ -1098,6 +1127,7 @@ async def _play_responses(turn: LiveTurn, tts: TtsPlayout) -> None:
                     write_task = None
             if write_task is not None and write_task.done():
                 write_task = None
+        await tts.end_segment()
         # Block until the last sample we wrote has cleared the OS
         # audio stack — see TtsPlayout.wait_drained. Cheap if the ring
         # is already empty; otherwise a single sleep for the residual.

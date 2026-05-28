@@ -31,6 +31,9 @@ pub struct PlayoutSegment {
     pub estimated_drained_frames: u64,
     pub flushed_frames: u64,
     pub audio_played_ms: u64,
+    pub output_start_frame: Option<u64>,
+    pub output_end_frame: u64,
+    pub ended: bool,
     pub status: SegmentStatus,
     pub start_monotonic_ns: u64,
     pub end_monotonic_ns: Option<u64>,
@@ -48,6 +51,9 @@ pub struct PlayoutEvent {
     pub estimated_drained_frames: u64,
     pub flushed_frames: u64,
     pub audio_played_ms: u64,
+    pub output_start_frame: Option<u64>,
+    pub output_end_frame: u64,
+    pub ended: bool,
     pub status: SegmentStatus,
     pub start_monotonic_ns: u64,
     pub end_monotonic_ns: Option<u64>,
@@ -89,6 +95,9 @@ impl PlayoutLedger {
             estimated_drained_frames: 0,
             flushed_frames: 0,
             audio_played_ms: 0,
+            output_start_frame: None,
+            output_end_frame: 0,
+            ended: false,
             status: SegmentStatus::Queued,
             start_monotonic_ns,
             end_monotonic_ns: None,
@@ -103,7 +112,20 @@ impl PlayoutLedger {
     }
 
     pub fn mark_written_frames(&mut self, id: SegmentId, frames: u64) {
+        self.mark_written_frames_at(id, frames, 0);
+    }
+
+    pub fn mark_written_frames_at(&mut self, id: SegmentId, frames: u64, output_start_frame: u64) {
         let segment = self.segment_mut(id);
+        if frames == 0 {
+            return;
+        }
+        if segment.output_start_frame.is_none() {
+            segment.output_start_frame = Some(output_start_frame);
+        }
+        segment.output_end_frame = segment
+            .output_end_frame
+            .max(output_start_frame.saturating_add(frames));
         segment.written_frames = segment.written_frames.saturating_add(frames);
         if segment.written_frames > 0 && segment.status == SegmentStatus::Queued {
             segment.status = SegmentStatus::Playing;
@@ -116,12 +138,35 @@ impl PlayoutLedger {
         let capped = frames.min(segment.written_frames);
         segment.estimated_drained_frames = segment.estimated_drained_frames.max(capped);
         segment.audio_played_ms = frames_to_ms(segment.estimated_drained_frames, sample_rate);
-        if segment.estimated_drained_frames >= segment.queued_frames
-            && segment.queued_frames > 0
-            && segment.status != SegmentStatus::Flushed
-        {
-            segment.status = SegmentStatus::Drained;
+        maybe_mark_drained(segment);
+    }
+
+    pub fn mark_drained_through(&mut self, output_frame: u64) {
+        let sample_rate = self.sample_rate;
+        for segment in &mut self.segments {
+            if segment.status == SegmentStatus::Flushed {
+                continue;
+            }
+            let Some(start) = segment.output_start_frame else {
+                continue;
+            };
+            let drained = output_frame
+                .saturating_sub(start)
+                .min(segment.written_frames);
+            segment.estimated_drained_frames = segment.estimated_drained_frames.max(drained);
+            segment.audio_played_ms = frames_to_ms(segment.estimated_drained_frames, sample_rate);
+            maybe_mark_drained(segment);
         }
+    }
+
+    pub fn end_segment(&mut self, id: SegmentId, end_monotonic_ns: u64) {
+        let segment = self.segment_mut(id);
+        if segment.status == SegmentStatus::Flushed {
+            return;
+        }
+        segment.ended = true;
+        segment.end_monotonic_ns = Some(end_monotonic_ns);
+        maybe_mark_drained(segment);
     }
 
     pub fn flush_open_segments(&mut self, flush_monotonic_ns: u64) -> Vec<PlayoutEvent> {
@@ -140,6 +185,7 @@ impl PlayoutLedger {
             segment.status = SegmentStatus::Flushed;
             segment.flush_monotonic_ns = Some(flush_monotonic_ns);
             segment.end_monotonic_ns = Some(flush_monotonic_ns);
+            segment.ended = true;
             segment.audio_played_ms = frames_to_ms(segment.estimated_drained_frames, sample_rate);
             events.push(segment.as_event());
         }
@@ -198,6 +244,9 @@ impl PlayoutSegment {
             estimated_drained_frames: self.estimated_drained_frames,
             flushed_frames: self.flushed_frames,
             audio_played_ms: self.audio_played_ms,
+            output_start_frame: self.output_start_frame,
+            output_end_frame: self.output_end_frame,
+            ended: self.ended,
             status: self.status,
             start_monotonic_ns: self.start_monotonic_ns,
             end_monotonic_ns: self.end_monotonic_ns,
@@ -208,6 +257,16 @@ impl PlayoutSegment {
 
 fn frames_to_ms(frames: u64, sample_rate: u32) -> u64 {
     frames.saturating_mul(1000) / (sample_rate as u64)
+}
+
+fn maybe_mark_drained(segment: &mut PlayoutSegment) {
+    if segment.ended
+        && segment.queued_frames > 0
+        && segment.estimated_drained_frames >= segment.queued_frames
+        && segment.status != SegmentStatus::Flushed
+    {
+        segment.status = SegmentStatus::Drained;
+    }
 }
 
 #[cfg(test)]
@@ -245,6 +304,30 @@ mod tests {
     }
 
     #[test]
+    fn drain_estimate_tracks_output_clock_but_waits_for_segment_end() {
+        let mut ledger = PlayoutLedger::new(48_000);
+        let id = ledger.start_segment(Some("item-1".to_string()), SegmentKind::Assistant, 0.7, 100);
+
+        ledger.queue_frames(id, 48_000);
+        ledger.mark_written_frames_at(id, 48_000, 96_000);
+        ledger.mark_drained_through(120_000);
+
+        let segment = ledger.segment(id);
+        assert_eq!(segment.output_start_frame, Some(96_000));
+        assert_eq!(segment.output_end_frame, 144_000);
+        assert_eq!(segment.estimated_drained_frames, 24_000);
+        assert_eq!(segment.audio_played_ms, 500);
+        assert_eq!(segment.status, SegmentStatus::Playing);
+
+        ledger.mark_drained_through(144_000);
+        assert_eq!(ledger.segment(id).status, SegmentStatus::Playing);
+
+        ledger.end_segment(id, 200);
+        assert_eq!(ledger.segment(id).status, SegmentStatus::Drained);
+        assert!(ledger.segment(id).ended);
+    }
+
+    #[test]
     fn flush_reports_unheard_frames_and_played_duration() {
         let mut ledger = PlayoutLedger::new(48_000);
         let id = ledger.start_segment(Some("item-1".to_string()), SegmentKind::Assistant, 0.7, 100);
@@ -270,6 +353,7 @@ mod tests {
         ledger.queue_frames(old_drained, 48);
         ledger.mark_written_frames(old_drained, 48);
         ledger.mark_drained_frames(old_drained, 48);
+        ledger.end_segment(old_drained, 2);
 
         let old_flushed = ledger.start_segment(None, SegmentKind::Assistant, -6.0, 2);
         ledger.queue_frames(old_flushed, 48);
@@ -282,11 +366,13 @@ mod tests {
         ledger.queue_frames(recent_a, 48);
         ledger.mark_written_frames(recent_a, 48);
         ledger.mark_drained_frames(recent_a, 48);
+        ledger.end_segment(recent_a, 6);
 
         let recent_b = ledger.start_segment(None, SegmentKind::Assistant, -6.0, 6);
         ledger.queue_frames(recent_b, 48);
         ledger.mark_written_frames(recent_b, 48);
         ledger.mark_drained_frames(recent_b, 48);
+        ledger.end_segment(recent_b, 7);
 
         ledger.prune_terminal_segments(2);
 

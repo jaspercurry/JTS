@@ -69,7 +69,7 @@ def test_outputd_alsa_loop_commits_only_after_dac_write():
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
     prepare = run_alsa.index("core.prepare_period_with_content(&content_buf);")
     dac_write = run_alsa.index("backend.write_dac_period(core.output_period())?;")
-    commit = run_alsa.index("let report = core.commit_prepared_period();")
+    commit = run_alsa.index("let report = core.commit_prepared_period_with_dac_delay(")
     state = run_alsa.index("state.mark_period(")
 
     assert prepare < dac_write < commit < state

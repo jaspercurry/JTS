@@ -67,7 +67,7 @@ from ._supervisor import (
     FailureFingerprint,
     reconnect_backoff_delay,
 )
-from .session import LiveConnection, LiveTurn
+from .session import AudioOutChunk, LiveConnection, LiveTurn
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class OpenAIRealtimeTurn(LiveTurn):
 
     def __init__(self, conn: "OpenAIRealtimeConnection", started_at: float) -> None:
         self._conn = conn
-        self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
         self._usage = {"input_tokens": 0, "output_tokens": 0}
         # Modality-aware breakdown accumulator. OpenAI Realtime emits
         # `response.usage.input_token_details.{audio,text,cached}_tokens`
@@ -354,10 +354,16 @@ class OpenAIRealtimeTurn(LiveTurn):
             await self._audio_q.put(None)
 
     async def audio_out(self) -> AsyncIterator[bytes]:
+        async for chunk in self.audio_out_chunks():
+            yield chunk.pcm
+
+    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         while True:
             chunk = await self._audio_q.get()
             if chunk is None:
                 return
+            if isinstance(chunk, bytes):
+                chunk = AudioOutChunk(pcm=chunk)
             # Stamp the dequeue time so the idle watchdog can see the
             # consumer making real-time progress through the queue,
             # not just network arrivals. Without this, OpenAI's "all
@@ -520,7 +526,10 @@ class OpenAIRealtimeTurn(LiveTurn):
                 "%d bytes ~%.0fms audio)",
                 first_ms, chunk_bytes, chunk_bytes / 48.0,
             )
-        await self._audio_q.put(data)
+        await self._audio_q.put(AudioOutChunk(
+            pcm=data,
+            provider_item_id=self._last_assistant_item_id,
+        ))
 
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.

@@ -56,15 +56,34 @@ class _CaptureOutputdStream:
     def __init__(self) -> None:
         self.gains: list[float] = []
         self.writes: list[bytes] = []
+        self.segments_started: list[tuple[str, str | None]] = []
+        self.segments_ended = 0
+        self.flush_acks: list[dict] = []
 
     def set_gain_db(self, db: float) -> None:
         self.gains.append(db)
+
+    def start_segment(self, *, kind: str, provider_item_id: str | None) -> None:
+        self.segments_started.append((kind, provider_item_id))
+
+    def end_segment(self) -> None:
+        self.segments_ended += 1
 
     def write(self, data: bytes) -> None:
         self.writes.append(data)
 
     def abort(self) -> None:
         pass
+
+    def flush_sync(self) -> dict:
+        ack = {
+            "ok": True,
+            "segments": 1,
+            "flushed_frames": 2400,
+            "max_audio_played_ms": 125,
+        }
+        self.flush_acks.append(ack)
+        return ack
 
     def start(self) -> None:
         pass
@@ -356,6 +375,7 @@ async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch
     await p.write(mono.tobytes())
 
     assert stream.gains == [OutputdTtsPlayout.MIN_TTS_GAIN_DB]
+    assert stream.segments_started == [("assistant", None)]
     assert stream.writes == [
         np.array([10000, 10000, -10000, -10000], dtype=np.int16).tobytes()
     ]
@@ -386,3 +406,60 @@ async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkey
     stereo = np.repeat(mono, 2).tobytes()
     assert stream.gains == [-8.0]
     assert stream.writes == [stereo[:8], stereo[8:16], stereo[16:]]
+
+
+async def test_outputd_transport_sends_provider_segment_identity(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write_segment(
+        mono.tobytes(),
+        provider_item_id="msg_abc123",
+        segment_kind="assistant",
+    )
+    await p.end_segment()
+
+    assert stream.segments_started == [("assistant", "msg_abc123")]
+    assert stream.segments_ended == 1
+
+
+async def test_outputd_flush_returns_ack_and_resets_drain_deadline(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2], dtype=np.int16)
+    await p.write(mono.tobytes())
+    assert p.expected_drain_at() != 0.0
+
+    ack = await p.flush()
+
+    assert ack == stream.flush_acks[0]
+    assert ack["max_audio_played_ms"] == 125
+    assert p.expected_drain_at() == 0.0

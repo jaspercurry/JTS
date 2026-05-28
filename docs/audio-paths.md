@@ -303,17 +303,20 @@ TTS gain choice from logs alone — no need to correlate across separate
 ## End-of-turn drain — when is the speaker actually silent?
 
 The TTS write call returns when bytes are accepted by the current
-transport, **not** when they reach the DAC. On the outputd branch, the
-transport is a local Unix socket into `jasper-outputd`; on the legacy
-main path it is PortAudio. Either way, there is still transport queue,
-outputd/DAC or OS-audio tail, and DAC flush ahead of the bytes at that
-point. A naive
+transport, **not** when they reach the DAC. On current main, the
+transport is a local Unix socket into `jasper-outputd`; the legacy
+rollback path used PortAudio. Either way, there is still transport
+queue, outputd/DAC or OS-audio tail, and DAC flush ahead of the bytes
+at that point. A naive
 end-of-turn timer that fires "shortly after the last write" can land
 mid-tail, clipping the last word — observed in production
 (PR #311, 2026-05-25) when OpenAI Realtime burst-streamed 10 chunks
 in 730 ms ahead of a 4 s playout.
 
-`TtsPlayout` owns the drain semantic. Two methods:
+`TtsPlayout` owns the end-of-turn drain semantic. Outputd extends the
+same boundary with `write_segment()`/`end_segment()` metadata for the
+playout ledger, but the voice daemon still waits through the stable
+methods below:
 
 - `expected_drain_at()` — monotonic deadline when the last-queued
   sample's tail will have cleared the OS audio stack. Backed by a
@@ -324,6 +327,12 @@ in 730 ms ahead of a 4 s playout.
   reads as "already drained" against `time.monotonic()`.
 - `wait_drained()` — single `asyncio.sleep` to the deadline. No
   polling because the deadline is known up-front.
+
+For interruption, `OutputdTtsPlayout.flush()` uses outputd's
+`FLUSH_SYNC` command and returns the daemon's compact playout
+acknowledgement (`audio_played_ms`, flushed frames, provider item id).
+That acknowledgement is for provider truncation/cancel logic; normal
+end-of-turn still uses `wait_drained()`.
 
 Both end-of-turn paths consult the same primitive:
 
@@ -414,4 +423,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-28 (source handoff guard, future-source checklist, source-capabilities plan link, and outputd cutover topology rechecked)
+Last verified: 2026-05-28 (source handoff guard, future-source checklist, source-capabilities plan link, outputd cutover topology, and TTS drain/flush boundary rechecked)
