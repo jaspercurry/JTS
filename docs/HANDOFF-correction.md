@@ -181,6 +181,23 @@
   impulse-response WAVs recomputed from raw captures and `sweep_meta`.
   This is intentionally not a new correction path. It is a forensic and
   interoperability bridge around the existing bundle contract.
+- ✅ **Phase 2.13 — agent-readiness evidence packet + acoustic trust.**
+  Implemented 2026-05-28. Adds `acoustic_quality.json`, a compact
+  derived trust report built from capture quality, pre-sweep room-noise
+  WAVs, banded dBFS SNR estimates, direct-arrival/pre-arrival evidence,
+  and optional same-seat repeatability. The browser flow now records
+  `noise/p<N>_pre.wav` before each sweep and can repeat the main seat
+  into `repeat_captures/p0_r1.wav` without counting that repeat as
+  another listening position. Low SNR and weak repeatability feed the
+  confidence model, assertive-strategy gate, and future-FIR readiness
+  gate. `jasper.correction.evidence` builds a deterministic,
+  read-only evidence packet for human and future LLM review. The
+  calibration agent CLI now renders an audio-engineer-style review:
+  what happened, what looks trustworthy/suspicious, what JTS refused
+  to correct, what to do next, and what evidence is missing. `/status`
+  also reports whether the active CamillaDSP config is JTS-managed,
+  preference-only, room-corrected, or a custom advanced config that
+  JTS cannot safely preserve.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -194,10 +211,11 @@
 intake, the next room-correction priority is still measurement trust
 before more filter types. The multi-position confidence layer,
 browser-audio metadata substrate, correction visualization surface,
-durable runtime-integrity bundle evidence, and bundle inspect/export
-tooling have landed. The next software/hardware boundary is acoustic
-browser smoke testing and then threshold tuning for SNR/repeatability
-evidence; FIR readiness validation should still wait until the
+durable runtime-integrity bundle evidence, acoustic-quality evidence,
+agent-readiness packet, and bundle inspect/export tooling have landed.
+The next software/hardware boundary is acoustic browser smoke testing
+and then threshold tuning for the native SNR/repeatability evidence;
+FIR readiness validation should still wait until the
 measurement substrate can prove capture quality, runtime health,
 spatial stability, and headroom.
 The rationale and source links live in
@@ -346,12 +364,15 @@ GET  /status                 session + currently-loaded correction snapshot
                              applied_at_epoch, peq_count} | null})
 GET  /sessions               debug: 20 most-recent session bundles
 GET  /calibration/models     supported calibrated mic providers/models
-POST /start                  reset to base config, begin measurement, returns session_id;
+POST /start                  reset to base config, begin noise capture, returns session_id;
                              body: {total_positions, target_choice,
                              strategy_choice?, noise_floor_db?,
-                             calibration_id?, input_device?}
-POST /next-position          advance to position[N+1] sweep
-POST /upload-capture         body = WAV (audio/wav); per-position OR verify capture
+                             calibration_id?, input_device?,
+                             repeat_main_position?}
+POST /next-position          advance to position[N+1] pre-sweep noise capture
+POST /repeat-position        play the optional same-seat repeat sweep
+POST /upload-noise           body = WAV (audio/wav); pre-sweep room noise
+POST /upload-capture         body = WAV (audio/wav); per-position, repeat, OR verify capture
 POST /calibration/fetch      body: {model, serial, orientation?}; server-side
                              Dayton/miniDSP lookup, normalized + stored
 POST /calibration/upload     body: {filename, content, model?, label?,
@@ -1060,6 +1081,8 @@ sessions/<session_id>/
 │                    capture_quality, verify_quality (self-identifying
 │                    reports with capture_kind / position_index /
 │                    artifact_path),
+│                    confidence_report, acoustic_quality summary,
+│                    runtime_integrity summary,
 │                    bundle_schema_version
 ├── artifact_manifest.json
 │                    bundle schema v3 integrity manifest: relative
@@ -1069,7 +1092,17 @@ sessions/<session_id>/
 ├── result.json      measured / target / predicted curves; verify_curve
 │                    + verify_metrics when /verify ran; repeats
 │                    input_device, mic_calibration public metadata,
-│                    capture_quality, verify_quality
+│                    capture_quality, verify_quality, confidence_report,
+│                    acoustic_quality summary, runtime_integrity summary
+├── acoustic_quality.json
+│                    SNR/acoustic trust summary derived from capture
+│                    quality + browser-measured noise floor
+├── runtime_integrity.json
+│                    lightweight runtime snapshots/counters around
+│                    measurement and verify sweeps
+├── position_analysis.json
+│                    per-position curves, spatial spread, confidence
+│                    bands, high-variance/deep-null feature flags
 ├── captures/        per-position WAVs (p0.wav, p1.wav, ...)
 ├── mic_calibration.json
 │                    selected calibration public metadata + parsed curve
@@ -1103,7 +1136,7 @@ recomputable from:
 - target/strategy choices;
 - runtime health snapshots taken around the sweep.
 
-Phase 2.11's first slice adds an `artifact_manifest.json` beside
+New bundles use schema v3 and write an `artifact_manifest.json` beside
 `info.json`. Each artifact entry includes:
 
 - relative path and artifact kind (`raw_capture`,
@@ -1121,12 +1154,8 @@ Phase 2.11's first slice adds an `artifact_manifest.json` beside
 
 `jasper.correction.bundles.validate_bundle` now validates manifest
 shape, missing files, size/checksum drift, missing dependency entries,
-and current-schema bundles that still rely only on filename
-conventions. The next durable-evidence slice is lightweight
-runtime-integrity capture around sweeps: CPU/load, underrun/dropout
-signals where available, free space, and any capture-path anomalies
-that should lower confidence independently from acoustic capture
-quality.
+runtime-integrity issues, acoustic-quality issues, and current-schema
+bundles that still rely only on filename conventions.
 
 The first derived artifacts to make manifest-aware are the files JTS
 already writes. The next replay-grade additions should be compact and
@@ -1139,16 +1168,26 @@ file-based, likely `.npz` for numeric arrays:
 - calibration-applied response;
 - normalized response.
 
-Runtime health should be lightweight and bounded, not a new monitoring
-daemon. Record a small per-measurement health packet: monotonic and
-wall-clock start/end, `aplay` exit status, CamillaDSP config path at
-start, CPU/load and memory snapshots, throttling/undervoltage if
-readable, browser sample-count/dropout metadata, and any relevant
-warning counters. This feeds a separate **runtime integrity** verdict,
-distinct from **capture quality**. Hard capture failures such as
-clipping, sample-rate mismatch, or too-short WAV still block analysis;
-runtime warnings lower confidence unless they directly prove the
-recording is invalid.
+Runtime health is lightweight and bounded, not a new monitoring daemon.
+`runtime_integrity.json` records a small per-measurement health packet:
+monotonic/wall-clock timing, CPU/load and memory snapshots, CamillaDSP
+config/status where available, fan-in xrun deltas, and capture
+sample-count sanity. This feeds a separate **runtime integrity**
+verdict, distinct from **capture quality** and **acoustic quality**.
+Hard capture failures such as clipping, sample-rate mismatch, or
+too-short WAV still block analysis; runtime warnings lower confidence
+unless they directly prove the recording is invalid.
+
+`acoustic_quality.json` is the current acoustic trust layer. It records
+capture waveform summaries, pre-sweep room-noise summaries from
+`noise/p<N>_pre.wav`, estimated broadband and modal-band dBFS SNR,
+direct-arrival/pre-arrival evidence, and optional same-seat repeat
+quality from `repeat_captures/p0_r1.wav`. This is a useful engineering
+guardrail, not calibrated acoustic SPL. Low SNR or weak repeatability
+lowers confidence and blocks assertive strategy recommendations;
+missing evidence keeps read-only review possible but should not unlock
+stronger FIR/agent claims. Future hardware validation should tune the
+thresholds against real phone/mic/Pi captures.
 
 Do not introduce a database, unbounded recording retention, or
 continuous telemetry for this phase. Use a filesystem bundle API and

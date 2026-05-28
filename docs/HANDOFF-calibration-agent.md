@@ -7,7 +7,9 @@
 > picker, bundle metadata, capture-quality checks, bounded correction
 > strategies, design-audit reports, first-pass confidence reports,
 > `position_analysis.json` artifacts, `runtime_integrity.json`
-> evidence, correction visualization/confidence UX, and a read-only
+> evidence, `acoustic_quality.json` evidence, correction
+> visualization/confidence UX, a deterministic
+> `jasper.correction.evidence` packet, and a read-only
 > `jasper-calibration-agent` intake CLI. The LLM agent itself is still
 > not implemented.
 >
@@ -183,8 +185,9 @@ full picture. The bits that matter for this proposal:
   context; the page documents the iOS trust dance.
 - Routes (all in [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)):
   `GET /`, `GET /healthz`, `GET /status`, `GET /sessions`,
-  `POST /start`, `POST /next-position`, `POST /verify`,
-  `POST /upload-capture`, `POST /apply`, `POST /reset`,
+  `POST /start`, `POST /next-position`, `POST /repeat-position`,
+  `POST /verify`, `POST /upload-noise`, `POST /upload-capture`,
+  `POST /apply`, `POST /reset`,
   `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
   `POST /autolevel/cancel`.
 - Frontend is an inline HTML / vanilla JS page emitted from the
@@ -772,9 +775,13 @@ Before any LLM work:
   `/correction/` UI. Completed designs also write
   `position_analysis.json` for replayable seat-variance analysis.
   Browser-reported pre-sweep noise floors now produce a bounded
-  `estimated_snr_db` warning in capture reports; calibrated acoustic
-  SNR, true repeatability capture, and research-tuned thresholds are
-  still future work.
+  `estimated_snr_db` warning in capture reports and an
+  `acoustic_quality.json` summary. The browser flow also records
+  native pre-sweep noise WAVs per position plus an optional main-seat
+  repeat capture, giving the agent packet real SNR and repeatability
+  evidence without treating repeats as extra listening positions.
+  Calibrated acoustic SPL and research-tuned thresholds are still
+  future work.
 - Keep the current `info.json` / `result.json` shape compatible, with
   explicit versioning so future FIR and agent tooling can detect what
   artifacts are present instead of guessing from filenames.
@@ -785,6 +792,11 @@ Before any LLM work:
   `runtime_integrity.json` with system/runtime snapshots, capture
   sample-count sanity, fan-in xrun deltas, and CamillaDSP runtime
   counters that feed the confidence report alongside capture quality.
+  `acoustic_quality.json` records the current SNR/acoustic-trust
+  verdict, and `jasper.correction.evidence` combines bundle,
+  confidence, runtime, acoustic, and optional same-position
+  repeatability facts into one read-only packet for the calibration
+  agent.
   `jasper-correction-bundle` now provides the operator/replay surface
   for this contract: inspect + checksum validation, optional raw-capture
   replay into derived curves, and REW-friendly `.frd` / `.txt` / IR WAV
@@ -856,10 +868,11 @@ Current distilled corpus files:
   2026-05-25 as `jasper-calibration-agent`. The CLI loads a
   correction session bundle, summarizes measurement/device/mic
   provenance, surfaces bundle + capture-quality + runtime-integrity
-  issues, finds bass-band peaks/nulls vs target, notes that Schroeder
-  estimation is unavailable until room/RT60 context exists, and pulls
-  short guidance snippets from `docs/calibration-agent/`. It performs
-  no side effects and does not call an LLM.
+  + acoustic-quality issues, renders evidence readiness, finds
+  bass-band peaks/nulls vs target, notes that Schroeder estimation is
+  unavailable until room/RT60 context exists, and pulls short guidance
+  snippets from `docs/calibration-agent/`. It performs no side effects
+  and does not call an LLM.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed, then build a deterministic loader that assembles it into
   the agent prompt. The current intake CLI already includes a small
@@ -867,9 +880,10 @@ Current distilled corpus files:
 - Build `jasper/calibration_agent/` with the Anthropic adapter as
   reference.
 - Implement the read-only tools first
-  (`get_measurement_summary`, `analyze_peaks_nulls`, `compute_schroeder`,
-  `look_up`). The first deterministic versions are in
-  `jasper.calibration_agent.tools`.
+  (`get_measurement_summary`, `analyze_peaks_nulls`,
+  `compute_schroeder`, `look_up`, and the read-only evidence packet).
+  The first deterministic versions are in `jasper.calibration_agent.tools`
+  and `jasper.correction.evidence`.
 - CLI tool: `sudo /opt/jasper/.venv/bin/jasper-calibration-agent
   <session_id>` → loads the session bundle from
   `/var/lib/jasper/correction/sessions/<id>/` and prints the

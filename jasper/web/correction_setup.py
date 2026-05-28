@@ -18,8 +18,10 @@ Architecture (per docs/HANDOFF-correction.md):
       GET  /                page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
-      POST /start           open measurement window, play sweep
+      POST /start           reset DSP, create session, request noise capture
+      POST /upload-noise    body = pre-sweep noise WAV, then play sweep
       POST /upload-capture  body = WAV bytes, runs analysis pipeline
+      POST /repeat-position optional same-seat repeat sweep
       POST /apply           write YAML, reload CamillaDSP
       POST /reset           roll back to /etc/camilladsp/v1.yml
 
@@ -73,6 +75,11 @@ logger = logging.getLogger(__name__)
 REQUIRED_SAMPLE_RATE = 48000
 MAX_JSON_BODY_BYTES = 64 * 1024
 MAX_CALIBRATION_UPLOAD_JSON_BYTES = 1024 * 1024
+# Browser captures are mono 16-bit PCM at 48 kHz. A normal 10 s sweep
+# upload is ~1 MB; 32 MB leaves generous room for measurement-window
+# setup latency while still avoiding unbounded reads in the Pi web
+# process.
+MAX_WAV_BODY_BYTES = 32 * 1024 * 1024
 MAX_DEVICE_FIELD_CHARS = 160
 
 
@@ -95,9 +102,12 @@ _loop_thread: threading.Thread | None = None
 _start_in_progress = False
 
 _ACTIVE_SESSION_STATES = frozenset({
+    "needs_noise_capture",
     "preparing",
     "sweeping",
     "awaiting_capture",
+    "needs_repeat_capture",
+    "awaiting_repeat_capture",
     "needs_next_position",
     "analyzing",
     "verifying",
@@ -183,6 +193,7 @@ def _replace_session(
     strategy_choice: str | None = None,
     mic_calibration=None,
     input_device: dict[str, Any] | None = None,
+    repeat_main_position: bool = False,
 ):
     """Replace the global session with a fresh one. Called by /start
     so the user can re-run measurements without restarting the
@@ -197,6 +208,7 @@ def _replace_session(
             strategy_choice=strategy_choice,
             mic_calibration=mic_calibration,
             input_device=input_device,
+            repeat_main_position=repeat_main_position,
         )
         return _session
 
@@ -352,9 +364,12 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
                  border-radius: 4px; font-size: 0.85em;
                  font-weight: 600; background: #e8e8e8; color: #333;
                  font-variant-numeric: tabular-nums; }
+  .state-badge.needs_noise_capture { background: #fff3cd; color: #806000; }
   .state-badge.preparing      { background: #fff3cd; color: #806000; }
   .state-badge.sweeping       { background: #cfe5ff; color: #003580; }
   .state-badge.awaiting_capture { background: #cfe5ff; color: #003580; }
+  .state-badge.needs_repeat_capture { background: #fff3cd; color: #806000; }
+  .state-badge.awaiting_repeat_capture { background: #cfe5ff; color: #003580; }
   .state-badge.analyzing      { background: #fff3cd; color: #806000; }
   .state-badge.ready          { background: #1db954; color: white; }
   .state-badge.applied        { background: #1db954; color: white; }
@@ -379,6 +394,7 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
                         flex-wrap: wrap; gap: 0.6em; }
   #current-correction.applied { background: #e6f4ea; border: 1px solid #1db954; }
   #current-correction.flat    { background: #f4f4f4; border: 1px solid #ddd; color: #555; }
+  #current-correction.custom  { background: #fff8e1; border: 1px solid #d6b656; color: #5f4500; }
   #current-correction .label { font-weight: 600; }
   #current-correction button.danger { background: #d44; }
 """
@@ -510,6 +526,11 @@ __NAV_BACK__
       __CORRECTION_STRATEGY_OPTIONS__
     </select>
     <p class="hint" style="margin-top:0.3em">Strategy controls the correction band, filter count, cut/boost policy, and safety bounds. Balanced is the default; Assertive is for calibrated, repeatable measurements.</p>
+    <label style="margin-top:0.6em">
+      <input id="repeat-main-position" type="checkbox" checked>
+      Repeat the main seat once for a trust check
+    </label>
+    <p class="hint" style="margin-top:0.3em">This adds one extra sweep at the first position and helps JTS tell measurement noise from real room behavior.</p>
   </div>
 
   <p>Status: <span id="state-badge" class="state-badge idle">idle</span>
@@ -526,6 +547,7 @@ __NAV_BACK__
     <button id="autolevel-lock" type="button" class="primary hidden">Lock now</button>
     <button id="autolevel-cancel" type="button" class="danger hidden">Cancel</button>
     <button id="run-measurement" type="button" class="primary" disabled>Run measurement</button>
+    <button id="repeat-position" type="button" class="primary hidden">Repeat main seat</button>
     <button id="continue-position" type="button" class="primary hidden">Continue to next position</button>
     <button id="apply-correction" type="button" class="primary hidden">Apply correction</button>
     <button id="verify-correction" type="button" class="primary hidden">Verify with re-measurement</button>
@@ -623,11 +645,13 @@ __NAV_BACK__
   var autolevelLine = document.getElementById('autolevel-line');
   var autolevelDetail = document.getElementById('autolevel-detail');
   var runBtn = document.getElementById('run-measurement');
+  var repeatBtn = document.getElementById('repeat-position');
   var continueBtn = document.getElementById('continue-position');
   var applyBtn = document.getElementById('apply-correction');
   var verifyBtn = document.getElementById('verify-correction');
   var resetBtn = document.getElementById('reset-correction');
   var positionsSelect = document.getElementById('positions-select');
+  var repeatMainPosition = document.getElementById('repeat-main-position');
   var targetSelect = document.getElementById('target-select');
   var strategySelect = document.getElementById('strategy-select');
   var positionPrompt = document.getElementById('position-prompt');
@@ -655,10 +679,12 @@ __NAV_BACK__
   var lastResult = null;
   var lastVerify = null;
   var inVerifyMode = false;
+  var captureMode = 'measurement';
   // Latest mic RMS in dBFS, updated by the AudioWorklet at ~20 Hz.
   // The autolevel loop reads this to decide when the speaker level
   // has reached the target range.
   var latestMicRmsDb = -120;
+  var lastNoiseFloorDb = null;
   var autolevelRmsBuffer = [];  // recent dB samples for smoothing
   var selectedCalibrationId = null;
   var selectedCalibrationMeta = null;
@@ -1044,7 +1070,7 @@ __NAV_BACK__
         // Stash for the autolevel loop (which polls this).
         latestMicRmsDb = db;
       } else if (ev.data && ev.data.type === 'capture') {
-        onCaptureReady(ev.data.buffer);
+        onCaptureReady(ev.data.buffer, captureMode);
       }
     };
     src.connect(workletNode);
@@ -1120,9 +1146,10 @@ __NAV_BACK__
       pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
-  function renderCurrentCorrection(cc) {
-    // `cc` is the parsed descriptor from GET /status (or null when
-    // CamillaDSP is running the base v1.yml).
+  function renderCurrentCorrection(cc, config) {
+    // `cc` is the parsed JTS room-correction descriptor. `config`
+    // distinguishes flat JTS baseline, preference EQ, and custom
+    // CamillaDSP configs that JTS should not overclaim as flat.
     if (cc && cc.applied_at_epoch) {
       currentCorrectionBanner.className = 'applied';
       var when = formatAppliedAt(cc.applied_at_epoch);
@@ -1132,6 +1159,21 @@ __NAV_BACK__
         'Current correction: ' + count + ' PEQ ' + noun +
         (when ? ' applied ' + when : '');
       currentCorrectionResetBtn.classList.remove('hidden');
+    } else if (config && config.kind === 'custom') {
+      currentCorrectionBanner.className = 'custom';
+      currentCorrectionLabel.textContent =
+        'Advanced DSP config active — JTS cannot safely preserve it during measurement.';
+      currentCorrectionResetBtn.classList.remove('hidden');
+    } else if (config && config.kind === 'sound_preference') {
+      currentCorrectionBanner.className = 'flat';
+      currentCorrectionLabel.textContent =
+        'Preference EQ is active; no room correction is applied.';
+      currentCorrectionResetBtn.classList.add('hidden');
+    } else if (config && config.kind === 'unknown') {
+      currentCorrectionBanner.className = 'custom';
+      currentCorrectionLabel.textContent =
+        config.message || 'Could not identify the active CamillaDSP config.';
+      currentCorrectionResetBtn.classList.add('hidden');
     } else {
       currentCorrectionBanner.className = 'flat';
       currentCorrectionLabel.textContent =
@@ -1143,7 +1185,7 @@ __NAV_BACK__
   async function refreshCurrentCorrection() {
     try {
       var s = await fetchStatus();
-      renderCurrentCorrection(s.current_correction);
+      renderCurrentCorrection(s.current_correction, s.current_config);
     } catch (e) {
       currentCorrectionBanner.className = 'flat';
       currentCorrectionLabel.textContent =
@@ -1718,6 +1760,18 @@ __NAV_BACK__
 
   // -- Workflow --
 
+  function capturePreSweepNoise() {
+    if (!workletNode) return;
+    captureMode = 'noise';
+    setStateBadge('needs_noise_capture', 'recording room noise…');
+    workletNode.port.postMessage('startCapture');
+    setTimeout(function () {
+      if (captureMode === 'noise' && workletNode) {
+        workletNode.port.postMessage('stopCapture');
+      }
+    }, 700);
+  }
+
   async function startMeasurement() {
     runBtn.disabled = true;
     continueBtn.classList.add('hidden');
@@ -1748,8 +1802,10 @@ __NAV_BACK__
         total_positions: totalPositions,
         target_choice: targetChoice,
         strategy_choice: strategyChoice,
+        noise_floor_db: lastNoiseFloorDb,
         calibration_id: selectedCalibrationId,
-        input_device: selectedInputDevice
+        input_device: selectedInputDevice,
+        repeat_main_position: !!(repeatMainPosition && repeatMainPosition.checked)
       });
       sessionId = resp.session_id;
     } catch (e) {
@@ -1757,7 +1813,7 @@ __NAV_BACK__
       runBtn.disabled = false;
       return;
     }
-    if (workletNode) workletNode.port.postMessage('startCapture');
+    capturePreSweepNoise();
     pollState();
   }
 
@@ -1779,7 +1835,25 @@ __NAV_BACK__
       // user can retry from the new state.
       return;
     }
+    capturePreSweepNoise();
+    pollState();
+  }
+
+  async function repeatMainSeat() {
+    repeatBtn.classList.add('hidden');
+    repeatBtn.disabled = true;
+    setStateBadge('preparing', 'preparing repeat sweep…');
+    captureMode = 'repeat';
     if (workletNode) workletNode.port.postMessage('startCapture');
+    try {
+      await postJson('repeat-position', {});
+    } catch (e) {
+      captureMode = 'discard';
+      if (workletNode) workletNode.port.postMessage('stopCapture');
+      setStateBadge('failed', e.message);
+      repeatBtn.disabled = false;
+      return;
+    }
     pollState();
   }
 
@@ -1852,6 +1926,7 @@ __NAV_BACK__
       // reasonable assumption.
       noiseFloorDb = -50;
     }
+    lastNoiseFloorDb = noiseFloorDb;
     var targetBand = computeTargetBand(noiseFloorDb);
     autolevelDetail.textContent =
       'Noise floor ' + noiseFloorDb.toFixed(0) + ' dBFS — target ' +
@@ -1982,6 +2057,7 @@ __NAV_BACK__
       inVerifyMode = false;
       return;
     }
+    captureMode = 'verify';
     if (workletNode) workletNode.port.postMessage('startCapture');
     verifyBtn.disabled = false;
     pollState();
@@ -1996,6 +2072,8 @@ __NAV_BACK__
   function applyButtonPolicy(state, autolevelStatus) {
     // Default: everything hidden / disabled.
     positionPrompt.classList.add('hidden');
+    repeatBtn.classList.add('hidden');
+    repeatBtn.disabled = false;
     continueBtn.classList.add('hidden');
     continueBtn.disabled = false;
     applyBtn.classList.add('hidden');
@@ -2026,6 +2104,13 @@ __NAV_BACK__
     if (state === 'needs_next_position') {
       positionPrompt.classList.remove('hidden');
       continueBtn.classList.remove('hidden');
+      runBtn.disabled = true;
+      autolevelBtn.disabled = true;
+    } else if (state === 'needs_repeat_capture') {
+      positionPrompt.classList.remove('hidden');
+      positionCurrent.textContent = '1';
+      positionTotal.textContent = '1';
+      repeatBtn.classList.remove('hidden');
       runBtn.disabled = true;
       autolevelBtn.disabled = true;
     } else if (state === 'ready') {
@@ -2060,7 +2145,14 @@ __NAV_BACK__
         positionTotal.textContent = s.total_positions;
         return;
       }
-      if (s.state === 'awaiting_capture' || s.state === 'awaiting_verify_capture') {
+      if (s.state === 'needs_repeat_capture') {
+        return;
+      }
+      if (
+        s.state === 'awaiting_capture' ||
+        s.state === 'awaiting_verify_capture' ||
+        s.state === 'awaiting_repeat_capture'
+      ) {
         if (workletNode) workletNode.port.postMessage('stopCapture');
         return;  // upload-capture handler resumes polling
       }
@@ -2092,11 +2184,40 @@ __NAV_BACK__
     }
   }
 
-  async function onCaptureReady(arrayBuffer) {
+  async function onCaptureReady(arrayBuffer, kind) {
+    kind = kind || 'measurement';
+    if (kind === 'discard') {
+      return;
+    }
     var float32 = new Float32Array(arrayBuffer);
+    var wav = float32ToWav(float32, REQUIRED_SR);
+    if (kind === 'noise') {
+      setStateBadge('needs_noise_capture', 'uploading room noise…');
+      captureMode = 'measurement';
+      if (workletNode) workletNode.port.postMessage('startCapture');
+      try {
+        var noiseResp = await fetch('upload-noise', {
+          method: 'POST',
+          headers: csrfHeaders({'Content-Type': 'audio/wav'}),
+          body: wav
+        });
+        if (!noiseResp.ok) {
+          var noiseMsg = await noiseResp.text();
+          throw new Error('upload-noise → ' + noiseResp.status + ': ' + noiseMsg);
+        }
+        await noiseResp.json();
+        pollState();
+      } catch (e) {
+        captureMode = 'discard';
+        if (workletNode) workletNode.port.postMessage('stopCapture');
+        setStateBadge('failed', e.message);
+        runBtn.disabled = false;
+      }
+      return;
+    }
+
     setStateBadge('analyzing', 'uploading capture (' +
       Math.round(float32.length / REQUIRED_SR * 10) / 10 + ' s of audio)…');
-    var wav = float32ToWav(float32, REQUIRED_SR);
     try {
       var resp = await fetch('upload-capture', {
         method: 'POST',
@@ -2132,8 +2253,12 @@ __NAV_BACK__
       renderResultsSummary(data);
       renderQuality(data);
       renderBrowserAudioReport(data.browser_audio_report);
-      resultSection.classList.remove('hidden');
-      if (data.measured) {
+      var hasResultPayload = !!(
+        data.measured || data.verify || data.design_report ||
+        (data.peqs && data.peqs.length)
+      );
+      if (hasResultPayload) resultSection.classList.remove('hidden');
+      if (hasResultPayload && data.measured) {
         // Force a layout flush so getBoundingClientRect returns
         // real dimensions on the first draw.
         void canvas.offsetWidth;
@@ -2198,6 +2323,7 @@ __NAV_BACK__
   fetchCalibrationBtn.addEventListener('click', function () { fetchCalibration(); });
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
   runBtn.addEventListener('click', function () { startMeasurement(); });
+  repeatBtn.addEventListener('click', function () { repeatMainSeat(); });
   continueBtn.addEventListener('click', function () { continueToNextPosition(); });
   applyBtn.addEventListener('click', function () { applyCorrection(); });
   verifyBtn.addEventListener('click', function () { startVerify(); });
@@ -2389,6 +2515,48 @@ def _runtime_integrity_summary(sess: Any) -> dict[str, Any] | None:
         return None
 
 
+def _schedule_measurement_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
+    """Start the next normal measurement sweep and wait for visible progress."""
+    from jasper.correction import coordinator, playback
+
+    async def _run_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
+        try:
+            async with coordinator.measurement_window():
+                await sess.prepare_and_play_sweep(
+                    playback.play_sweep,
+                    runtime_probe_async=_runtime_probe,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("measurement sweep failed: %s", e)
+
+    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    _run_async(sess.state_changed_from(from_state), timeout=6.0)
+
+
+def _schedule_repeat_sweep(sess: Any, cam: Any, *, from_state: Any) -> None:
+    """Start the optional main-seat repeat sweep."""
+    from jasper.correction import coordinator, playback
+
+    async def _run_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
+        try:
+            async with coordinator.measurement_window():
+                await sess.prepare_and_play_repeat_sweep(
+                    playback.play_sweep,
+                    runtime_probe_async=_runtime_probe,
+                )
+        except Exception as e:  # noqa: BLE001
+            logger.exception("repeat sweep failed: %s", e)
+
+    asyncio.run_coroutine_threadsafe(_run_sweep(), _ensure_loop())
+    _run_async(sess.state_changed_from(from_state), timeout=6.0)
+
+
 def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
     """Normalize browser-reported input-device metadata before bundles.
 
@@ -2417,8 +2585,9 @@ def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
 
 def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """POST /start: snapshot any current correction, hard-reset
-    CamillaDSP to the base config, replace the session, kick off the
-    first sweep.
+    CamillaDSP to the base config, replace the session, and ask the
+    browser for pre-sweep room-noise capture. The sweep starts only
+    after `POST /upload-noise` lands.
 
     Body fields:
       - total_positions: int = 1 (Phase 1 default; UI sends 5 for MMM)
@@ -2426,6 +2595,8 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
       - strategy_choice: str = 'safe' | 'balanced' | 'assertive'
       - noise_floor_db:  float | None — optional, client autolevel
         preflight measurement; only saved into the debug bundle.
+      - repeat_main_position: bool = true — optional same-seat repeat
+        for repeatability evidence.
 
     Why reset before sweeping: if a correction is already loaded, the
     sweep traverses the corrected pipeline and the resulting curve
@@ -2433,8 +2604,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     filters from that would compound the corrections. Resetting first
     guarantees every measurement starts from the same flat baseline.
     """
-    from jasper.correction import coordinator, playback
-    from jasper.correction.session import SessionState, parse_current_correction
+    from jasper.correction.session import SessionState, describe_current_config
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -2455,6 +2625,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         noise_floor_db_raw = body.get("noise_floor_db")
         calibration_id = str(body.get("calibration_id") or "").strip()
         input_device = _sanitize_input_device(body.get("input_device"))
+        repeat_main_position = bool(body.get("repeat_main_position", True))
         noise_floor_db: float | None
         try:
             noise_floor_db = (
@@ -2479,6 +2650,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             strategy_choice=strategy_choice,
             mic_calibration=mic_calibration,
             input_device=input_device,
+            repeat_main_position=repeat_main_position,
         )
         sess.noise_floor_db = noise_floor_db
 
@@ -2489,7 +2661,11 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # measurement, but the reset below is load-bearing and must succeed.
         async def _snapshot() -> dict[str, Any] | None:
             path = await cam.get_config_file_path(best_effort=True)
-            return parse_current_correction(path, config_dir=sess.cfg.config_dir)
+            return describe_current_config(
+                path,
+                config_dir=sess.cfg.config_dir,
+                base_config_path=sess.cfg.base_config_path,
+            )
 
         try:
             sess.current_correction_at_start = _run_async(_snapshot(), timeout=3.0)
@@ -2512,37 +2688,17 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         if not reset_ok:
             raise RuntimeError("could not reset speaker to flat before measuring")
 
-        async def _run_first_sweep() -> None:
-            async def _runtime_probe() -> dict[str, Any] | None:
-                return await cam.get_runtime_status(best_effort=True)
-
-            try:
-                async with coordinator.measurement_window():
-                    await sess.prepare_and_play_sweep(
-                        playback.play_sweep,
-                        runtime_probe_async=_runtime_probe,
-                    )
-            except Exception as e:  # noqa: BLE001
-                logger.exception("first sweep failed: %s", e)
-
-        sweep_future = asyncio.run_coroutine_threadsafe(
-            _run_first_sweep(),
-            _ensure_loop(),
-        )
         reservation_transferred = False
         try:
-            state_started = _run_async(
-                sess.state_changed_from(SessionState.IDLE),
-                timeout=6.0,
-            )
+            _run_async(sess.begin_noise_capture(), timeout=3.0)
+            state_started = sess.state == SessionState.NEEDS_NOISE_CAPTURE
         except concurrent.futures.TimeoutError:
             state_started = False
 
         if state_started:
             _clear_start_slot()
         else:
-            reservation_transferred = True
-            sweep_future.add_done_callback(lambda _fut: _clear_start_slot())
+            _clear_start_slot()
             logger.warning(
                 "event=correction_start_state_wait_timeout session=%s",
                 sess.session_id,
@@ -2575,50 +2731,22 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 def _handle_next_position(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
-    """POST /next-position: play the next sweep for a multi-position
-    measurement. Only valid in NEEDS_NEXT_POSITION state.
+    """POST /next-position: request pre-sweep noise for the next
+    multi-position measurement. Only valid in NEEDS_NEXT_POSITION
+    state.
 
-    The handler intentionally BLOCKS until the background sweep task
-    has transitioned state past NEEDS_NEXT_POSITION (typically
-    100-500 ms). Without this wait, the HTTP response carries stale
-    state, the JS pollState loop sees `needs_next_position` again,
-    shows the Continue button, and stops polling — at which point
-    the next sweep completes silently and the user is stuck. See
-    `MeasurementSession.state_changed_from` for the full rationale.
+    The sweep itself starts after the browser uploads
+    `noise/p<N>_pre.wav` to `/upload-noise`.
     """
-    from jasper.correction import coordinator, playback
     from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
-    cam = _camilla()
     if sess.state != SessionState.NEEDS_NEXT_POSITION:
         raise RuntimeError(
             f"cannot advance to next position from state {sess.state.value}"
         )
 
-    async def _run_next_sweep() -> None:
-        async def _runtime_probe() -> dict[str, Any] | None:
-            return await cam.get_runtime_status(best_effort=True)
-
-        try:
-            async with coordinator.measurement_window():
-                await sess.prepare_and_play_sweep(
-                    playback.play_sweep,
-                    runtime_probe_async=_runtime_probe,
-                )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("next-position sweep failed: %s", e)
-
-    asyncio.run_coroutine_threadsafe(_run_next_sweep(), _ensure_loop())
-
-    # Wait until the background task has actually advanced state.
-    # measurement_window setup takes ~100-500 ms (systemctl stops
-    # + MEASURE_PAUSE UDS) before prepare_and_play_sweep sets
-    # PREPARING; allow up to 5 seconds of slack.
-    _run_async(
-        sess.state_changed_from(SessionState.NEEDS_NEXT_POSITION),
-        timeout=6.0,
-    )
+    _run_async(sess.begin_noise_capture(), timeout=3.0)
 
     return {
         "session_id": sess.session_id,
@@ -2857,7 +2985,7 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     CamillaDSP config descriptor. `current_correction` is best-effort
     (returns None if CamillaDSP is unreachable) so the page still
     renders something useful when the daemon is restarting."""
-    from jasper.correction.session import parse_current_correction
+    from jasper.correction.session import describe_current_config
     from jasper.dsp_apply import last_dsp_apply_state
 
     sess = _get_or_create_session()
@@ -2870,9 +2998,13 @@ def _handle_status(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     except Exception:  # noqa: BLE001
         logger.exception("status: get_config_file_path failed")
         path = None
-    snap["current_correction"] = parse_current_correction(
-        path, config_dir=sess.cfg.config_dir,
+    current_config = describe_current_config(
+        path,
+        config_dir=sess.cfg.config_dir,
+        base_config_path=sess.cfg.base_config_path,
     )
+    snap["current_config"] = current_config
+    snap["current_correction"] = current_config.get("current_correction")
     snap["last_dsp_apply"] = last_dsp_apply_state()
     return snap
 
@@ -2889,6 +3021,87 @@ def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"sessions": list_bundles(sess.cfg.sessions_dir, limit=20)}
 
 
+def _read_wav_body(
+    handler: BaseHTTPRequestHandler,
+    *,
+    max_bytes: int = MAX_WAV_BODY_BYTES,
+) -> bytes:
+    try:
+        length = int(handler.headers.get("Content-Length") or "0")
+    except ValueError as e:
+        raise BadRequest("invalid Content-Length") from e
+    if length <= 0:
+        raise BadRequest("empty body")
+    if length > max_bytes:
+        raise BadRequest(f"WAV body too large ({length} bytes)")
+    raw = handler.rfile.read(length)
+    if len(raw) != length:
+        raise BadRequest("incomplete WAV body")
+    return raw
+
+
+def _handle_upload_noise(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /upload-noise: persist pre-sweep silence, then play sweep."""
+    from jasper.correction.session import SessionState
+
+    sess = _get_or_create_session()
+    if sess is None:
+        raise RuntimeError("no session — POST /start first")
+    if sess.state != SessionState.NEEDS_NOISE_CAPTURE:
+        raise RuntimeError(
+            f"cannot accept noise capture from state {sess.state.value}"
+        )
+
+    body = _read_wav_body(handler)
+    captured_path = sess.noise_capture_path_for_position(sess.current_position)
+    captured_path.parent.mkdir(parents=True, exist_ok=True)
+    captured_path.write_bytes(body)
+    _run_async(sess.on_noise_capture_uploaded(captured_path), timeout=10.0)
+    _schedule_measurement_sweep(
+        sess,
+        _camilla(),
+        from_state=SessionState.NEEDS_NOISE_CAPTURE,
+    )
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "current_position": sess.current_position,
+        "total_positions": sess.total_positions,
+        "noise_reports": sess.noise_reports,
+        "acoustic_quality": (
+            (sess.acoustic_quality or {}).get("summary")
+            if sess.acoustic_quality
+            else None
+        ),
+    }
+
+
+def _handle_repeat_position(
+    handler: BaseHTTPRequestHandler,
+) -> dict[str, Any]:
+    """POST /repeat-position: play the optional same-seat repeat."""
+    from jasper.correction.session import SessionState
+
+    sess = _get_or_create_session()
+    if sess.state != SessionState.NEEDS_REPEAT_CAPTURE:
+        raise RuntimeError(
+            f"cannot repeat main seat from state {sess.state.value}"
+        )
+    _schedule_repeat_sweep(
+        sess,
+        _camilla(),
+        from_state=SessionState.NEEDS_REPEAT_CAPTURE,
+    )
+    return {
+        "session_id": sess.session_id,
+        "state": sess.state.value,
+        "current_position": sess.current_position,
+        "total_positions": sess.total_positions,
+    }
+
+
 def _handle_upload_capture(
     handler: BaseHTTPRequestHandler,
 ) -> dict[str, Any]:
@@ -2902,13 +3115,12 @@ def _handle_upload_capture(
     if sess is None:
         raise RuntimeError("no session — POST /start first")
 
-    length = int(handler.headers.get("Content-Length") or "0")
-    if length <= 0:
-        raise ValueError("empty body")
-    body = handler.rfile.read(length)
+    body = _read_wav_body(handler)
 
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
         captured_path = sess.verify_capture_path()
+    elif sess.state == SessionState.AWAITING_REPEAT_CAPTURE:
+        captured_path = sess.repeat_capture_path_for_position(0)
     else:
         captured_path = sess.capture_path_for_position(sess.current_position)
     captured_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2917,6 +3129,10 @@ def _handle_upload_capture(
     if sess.state == SessionState.AWAITING_VERIFY_CAPTURE:
         _run_async(
             sess.on_verify_capture_uploaded(captured_path), timeout=30.0,
+        )
+    elif sess.state == SessionState.AWAITING_REPEAT_CAPTURE:
+        _run_async(
+            sess.on_repeat_capture_uploaded(captured_path), timeout=30.0,
         )
     else:
         _run_async(sess.on_capture_uploaded(captured_path), timeout=30.0)
@@ -2940,6 +3156,12 @@ def _handle_upload_capture(
         ),
         "verify_metrics": sess.verify_metrics,
         "capture_quality": sess.capture_quality,
+        "noise_reports": sess.noise_reports,
+        "repeat": (
+            sess.repeat_curve.__dict__ if sess.repeat_curve else None
+        ),
+        "repeat_quality": sess.repeat_quality,
+        "repeatability_report": sess.repeatability_report,
         "verify_quality": sess.verify_quality,
         "browser_audio_report": sess.browser_audio_report,
         "confidence_report": sess.confidence_report,
@@ -3097,11 +3319,13 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
             if path not in {
                 "/start",
                 "/next-position",
+                "/repeat-position",
                 "/verify",
                 "/test-tone",
                 "/autolevel/start",
                 "/autolevel/lock",
                 "/autolevel/cancel",
+                "/upload-noise",
                 "/upload-capture",
                 "/calibration/fetch",
                 "/calibration/upload",
@@ -3124,6 +3348,9 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/next-position":
                     self._send_json(_handle_next_position(self))
+                    return
+                if path == "/repeat-position":
+                    self._send_json(_handle_repeat_position(self))
                     return
                 if path == "/verify":
                     self._send_json(_handle_verify(self))
@@ -3160,6 +3387,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             ),
                             "runtime_integrity": _runtime_integrity_summary(sess),
                         }, status=422)
+                    except ValueError as e:
+                        self._send_client_error(str(e))
+                    return
+                if path == "/upload-noise":
+                    try:
+                        self._send_json(_handle_upload_noise(self))
                     except ValueError as e:
                         self._send_client_error(str(e))
                     return

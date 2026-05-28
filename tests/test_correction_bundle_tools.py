@@ -77,6 +77,7 @@ async def test_bundle_inspect_recompute_and_export(tmp_path: Path):
     assert inspected["exports_available"]["frequency_response_text"] is True
     assert inspected["exports_available"]["impulse_response_wav"] is True
     assert inspected["confidence"]["level"] in {"medium", "low"}
+    assert inspected["acoustic_quality"]["snr_level"] == "high"
     assert inspected["recompute"]["position_count"] == 1
     assert inspected["recompute"]["stored_average_delta"]["rms_db"] < 0.01
 
@@ -106,10 +107,17 @@ async def test_snr_estimate_is_recorded_in_capture_quality(tmp_path: Path):
     assert report["noise_floor_dbfs"] == -80.0
     assert report["estimated_snr_db"] > 20.0
 
+    acoustic = json.loads((sess.bundle_dir / "acoustic_quality.json").read_text())
+    assert acoustic["summary"]["snr_level"] == "high"
+    assert acoustic["summary"]["min_estimated_snr_db"] == (
+        report["estimated_snr_db"]
+    )
+
     result = json.loads((sess.bundle_dir / "result.json").read_text())
     assert result["capture_quality"][0]["estimated_snr_db"] == (
         report["estimated_snr_db"]
     )
+    assert result["acoustic_quality"]["snr_level"] == "high"
     assert not any(
         issue.severity == "fail"
         for issue in bundles.validate_bundle(sess.bundle_dir)

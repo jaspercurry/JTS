@@ -20,6 +20,7 @@ def test_confidence_high_for_calibrated_multi_position_clean_capture():
         input_device={"label": "UMIK-2", "device_id_hash": "abc123"},
         capture_quality=[{"issues": []}, {"issues": []}, {"issues": []}],
         strategy_choice="balanced",
+        repeatability_report={"available": True, "level": "high"},
         position_magnitudes=positions,
         freqs_hz=freqs,
     )
@@ -94,6 +95,36 @@ def test_confidence_includes_browser_audio_path_failures():
         for finding in report["findings"]
     )
     assert report["strategy_gates"]["safe"]["allowed"] is False
+
+
+def test_confidence_promotes_low_snr_into_assertive_gate():
+    report = confidence.build_confidence_report(
+        total_positions=3,
+        completed_positions=3,
+        has_mic_calibration=True,
+        input_device={"label": "USB measurement mic"},
+        capture_quality=[
+            {"issues": [{
+                "code": "capture_snr_low",
+                "severity": "warn",
+                "message": "capture is less than 20 dB above noise",
+            }]},
+            {"issues": []},
+            {"issues": []},
+        ],
+        strategy_choice="balanced",
+    )
+
+    assert report["evidence"]["snr_low_count"] == 1
+    assert any(
+        finding["code"] == "capture_snr_low"
+        for finding in report["findings"]
+    )
+    assert report["strategy_gates"]["safe"]["allowed"] is True
+    assert report["strategy_gates"]["assertive"]["allowed"] is False
+    assert "capture SNR is low" in (
+        report["strategy_gates"]["assertive"]["reasons"]
+    )
 
 
 def test_confidence_includes_runtime_integrity_failures():

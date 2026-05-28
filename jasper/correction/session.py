@@ -12,12 +12,13 @@ and applies the correction; `POST /verify` opens a fresh window for
 a post-correction re-measurement; `POST /reset` rolls back to the
 base config.
 
-State transitions (with N = total_positions):
+State transitions in the browser flow (with N = total_positions):
 
-    IDLE → PREPARING → SWEEPING → AWAITING_CAPTURE
+    IDLE → NEEDS_NOISE_CAPTURE → PREPARING → SWEEPING → AWAITING_CAPTURE
          → (on_capture_uploaded for position 0 ... N-2)
+         → optional NEEDS_REPEAT_CAPTURE → AWAITING_REPEAT_CAPTURE
          → NEEDS_NEXT_POSITION
-         → SWEEPING (position 1)
+         → NEEDS_NOISE_CAPTURE → SWEEPING (position 1)
          → ...
          → AWAITING_CAPTURE (position N-1)
          → on_capture_uploaded for last position
@@ -36,6 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import re
 import shutil
@@ -49,6 +51,7 @@ from typing import Any, Awaitable, Callable
 import numpy as np
 
 from . import (
+    acoustic_quality,
     analysis,
     browser_audio,
     bundles,
@@ -85,37 +88,123 @@ def parse_current_correction(
 
     The filename shape is fixed by `MeasurementSession.apply`:
     ``correction_<session_id>_<unixtime>.yml`` under
-    ``/var/lib/camilladsp/configs/``. Anything else (the base
-    `/etc/camilladsp/v1.yml`, a hand-edited config, a missing path)
-    returns None — the UI treats that as "speaker is flat."
+    ``/var/lib/camilladsp/configs/``. Anything else returns None for
+    backwards compatibility. Use `describe_current_config()` when the
+    caller needs to distinguish flat baseline from custom CamillaDSP
+    configs.
+    """
+    descriptor = describe_current_config(path, config_dir=config_dir)
+    correction = descriptor.get("current_correction")
+    return correction if isinstance(correction, dict) else None
+
+
+def describe_current_config(
+    path: str | None,
+    *,
+    config_dir: Path = Path("/var/lib/camilladsp/configs"),
+    base_config_path: Path = Path("/etc/camilladsp/v1.yml"),
+) -> dict[str, Any]:
+    """Describe the active CamillaDSP config without overclaiming.
+
+    `parse_current_correction()` intentionally remains the backwards-
+    compatible "is there a JTS room correction?" helper. This richer
+    descriptor lets UI/doctor/agent surfaces distinguish the flat JTS
+    baseline, JTS-generated sound/correction configs, and arbitrary
+    CamillaGUI/custom configs that JTS should not silently preserve.
     """
     if not path:
-        return None
+        return {
+            "kind": "unknown",
+            "managed": False,
+            "path": None,
+            "label": "Unknown active config",
+            "message": "CamillaDSP did not report an active config path.",
+            "current_correction": None,
+        }
     p = Path(path)
+    if p == base_config_path:
+        return {
+            "kind": "base",
+            "managed": True,
+            "path": str(p),
+            "label": "JTS flat baseline",
+            "message": "No JTS room correction is applied.",
+            "current_correction": None,
+        }
     if p.parent != Path(config_dir):
-        return None
+        return {
+            "kind": "custom",
+            "managed": False,
+            "path": str(p),
+            "label": "Advanced DSP config",
+            "message": (
+                "CamillaDSP is running a config outside the JTS generated "
+                "config directory. JTS cannot safely preserve it."
+            ),
+            "current_correction": None,
+        }
+
     m = _CORRECTION_FILENAME_RE.match(p.name)
     if not m:
         if not _SOUND_FILENAME_RE.match(p.name):
-            return None
+            return {
+                "kind": "custom",
+                "managed": False,
+                "path": str(p),
+                "label": "Advanced DSP config",
+                "message": (
+                    "CamillaDSP is running a config that JTS did not "
+                    "generate. JTS cannot safely preserve it."
+                ),
+                "current_correction": None,
+            }
         try:
             text = p.read_text()
             peq_count = len(_PEQ_KEY_RE.findall(text))
             applied_at_epoch = int(p.stat().st_mtime)
         except OSError:
-            return None
+            return {
+                "kind": "unknown",
+                "managed": False,
+                "path": str(p),
+                "label": "Unreadable JTS sound config",
+                "message": "JTS could not read the active sound config file.",
+                "current_correction": None,
+            }
         if peq_count == 0:
-            return None
-        return {
+            return {
+                "kind": "sound_preference",
+                "managed": True,
+                "path": str(p),
+                "label": "JTS sound preference",
+                "message": "Preference EQ is active; no room correction PEQs were found.",
+                "current_correction": None,
+            }
+        correction = {
             "path": str(p),
             "session_id": "sound",
             "applied_at_epoch": applied_at_epoch,
             "peq_count": peq_count,
         }
+        return {
+            "kind": "sound_with_correction",
+            "managed": True,
+            "path": str(p),
+            "label": "JTS sound preference with room correction",
+            "message": "A JTS sound config is active and includes room correction PEQs.",
+            "current_correction": correction,
+        }
     try:
         ts = int(m.group("ts"))
     except ValueError:
-        return None
+        return {
+            "kind": "custom",
+            "managed": False,
+            "path": str(p),
+            "label": "Advanced DSP config",
+            "message": "Correction-shaped config has an invalid timestamp.",
+            "current_correction": None,
+        }
     peq_count = 0
     try:
         text = p.read_text()
@@ -123,11 +212,19 @@ def parse_current_correction(
         text = ""
     if text:
         peq_count = len(_PEQ_KEY_RE.findall(text))
-    return {
+    correction = {
         "path": str(p),
         "session_id": m.group("id"),
         "applied_at_epoch": ts,
         "peq_count": peq_count,
+    }
+    return {
+        "kind": "correction",
+        "managed": True,
+        "path": str(p),
+        "label": "JTS room correction",
+        "message": "A JTS room correction config is active.",
+        "current_correction": correction,
     }
 
 
@@ -136,11 +233,51 @@ def _bundles_enabled() -> bool:
     return os.environ.get("JASPER_CORRECTION_SAVE_BUNDLES", "1").strip() != "0"
 
 
+DBFS_FLOOR = -120.0
+SNR_BANDS_HZ: tuple[tuple[str, float, float], ...] = (
+    ("sub_bass", 20.0, 80.0),
+    ("bass", 80.0, 160.0),
+    ("upper_bass", 160.0, 350.0),
+    ("transition", 350.0, 1000.0),
+)
+
+
+def _dbfs(value: float) -> float:
+    if value <= 0 or not np.isfinite(value):
+        return DBFS_FLOOR
+    return max(DBFS_FLOOR, 20.0 * math.log10(value))
+
+
+def _band_levels_dbfs(samples: np.ndarray, sample_rate: int) -> list[dict[str, Any]]:
+    if samples.ndim != 1 or sample_rate <= 0 or samples.size < 8:
+        return []
+    x = np.asarray(samples, dtype=np.float64)
+    window = np.hanning(x.size)
+    spectrum = np.fft.rfft(x * window)
+    freqs = np.fft.rfftfreq(x.size, d=1.0 / sample_rate)
+    power = np.abs(spectrum) ** 2
+    out: list[dict[str, Any]] = []
+    for band_id, low, high in SNR_BANDS_HZ:
+        mask = (freqs >= low) & (freqs < high)
+        if not np.any(mask):
+            continue
+        rms_like = math.sqrt(float(np.mean(power[mask]))) / max(1, x.size)
+        out.append({
+            "band_id": band_id,
+            "band_hz": [low, high],
+            "level_dbfs": round(_dbfs(rms_like), 2),
+        })
+    return out
+
+
 class SessionState(Enum):
     IDLE = "idle"
+    NEEDS_NOISE_CAPTURE = "needs_noise_capture"
     PREPARING = "preparing"
     SWEEPING = "sweeping"
     AWAITING_CAPTURE = "awaiting_capture"
+    NEEDS_REPEAT_CAPTURE = "needs_repeat_capture"
+    AWAITING_REPEAT_CAPTURE = "awaiting_repeat_capture"
     NEEDS_NEXT_POSITION = "needs_next_position"
     ANALYZING = "analyzing"
     READY = "ready"
@@ -267,6 +404,7 @@ class MeasurementSession:
         strategy_choice: str | None = None,
         mic_calibration: CalibrationRecord | None = None,
         input_device: dict[str, Any] | None = None,
+        repeat_main_position: bool = False,
     ) -> None:
         self.cfg = cfg or SessionConfig()
         self.session_id = uuid.uuid4().hex[:12]
@@ -285,6 +423,7 @@ class MeasurementSession:
         ).strategy_id
         self.mic_calibration = mic_calibration
         self.input_device = input_device
+        self.repeat_main_position = bool(repeat_main_position)
         self.browser_audio_report = browser_audio.assess_browser_audio_path(
             input_device=input_device,
             expected_sample_rate=self.cfg.sample_rate,
@@ -295,8 +434,13 @@ class MeasurementSession:
         self.position_magnitudes: list[np.ndarray] = []
         self.position_freqs: np.ndarray | None = None  # log grid
         self.capture_quality: list[dict[str, Any]] = []
+        self.noise_reports: list[dict[str, Any]] = []
+        self.repeat_quality: dict[str, Any] | None = None
+        self.repeat_curve: CurveJSON | None = None
+        self.repeatability_report: dict[str, Any] | None = None
         self.verify_quality: dict[str, Any] | None = None
         self.confidence_report: dict[str, Any] | None = None
+        self.acoustic_quality: dict[str, Any] | None = None
         self.runtime_integrity = runtime_integrity.RuntimeIntegrityReport(
             self.session_id,
         )
@@ -331,10 +475,11 @@ class MeasurementSession:
         # context that drove the autolevel target band.
         self.noise_floor_db: float | None = None
 
-        # Snapshot of `current_correction` (path / peq_count / epoch)
-        # at the moment `/start` was hit, BEFORE the auto-reset to
-        # base config. Lets the bundle reproduce what state the
-        # speaker was in when this session began.
+        # Snapshot of the active CamillaDSP config at the moment
+        # `/start` was hit, BEFORE the auto-reset to base config. Lets
+        # the bundle reproduce what state the speaker was in when this
+        # session began, including custom configs that JTS cannot
+        # safely preserve.
         self.current_correction_at_start: dict[str, Any] | None = None
 
         # Per-session debug bundle. All artifacts (info.json,
@@ -432,9 +577,24 @@ class MeasurementSession:
     def _capture_artifact_dependencies(self) -> list[str]:
         dependencies: list[str] = []
         reports = list(self.capture_quality)
+        reports.extend(self.noise_reports)
+        if self.repeat_quality:
+            reports.append(self.repeat_quality)
         if self.verify_quality:
             reports.append(self.verify_quality)
         for report in reports:
+            artifact_path = report.get("artifact_path")
+            if not isinstance(artifact_path, str):
+                continue
+            if Path(artifact_path).is_absolute():
+                continue
+            if (self.bundle_dir / artifact_path).exists():
+                dependencies.append(artifact_path)
+        return sorted(set(dependencies))
+
+    def _noise_artifact_dependencies(self) -> list[str]:
+        dependencies: list[str] = []
+        for report in self.noise_reports:
             artifact_path = report.get("artifact_path")
             if not isinstance(artifact_path, str):
                 continue
@@ -472,11 +632,15 @@ class MeasurementSession:
         metadata: dict[str, Any] = {"capture_kind": capture_kind}
         if position_index is not None:
             metadata["position_index"] = position_index
+        artifact_kind = {
+            "noise": "noise_capture",
+            "repeat": "repeat_capture",
+        }.get(capture_kind, "raw_capture")
         try:
             bundles.record_artifact(
                 bundle,
                 rel_path,
-                kind="raw_capture",
+                kind=artifact_kind,
                 sensitivity="private_raw_audio",
                 recomputable=False,
                 generated_by=(
@@ -492,6 +656,37 @@ class MeasurementSession:
                 self.session_id,
                 rel_path,
             )
+
+    def _refresh_acoustic_quality(self) -> None:
+        self.acoustic_quality = acoustic_quality.build_acoustic_quality_report(
+            session_id=self.session_id,
+            capture_quality=self.capture_quality,
+            noise_reports=self.noise_reports,
+            repeat_quality=self.repeat_quality,
+            repeatability=self.repeatability_report,
+            verify_quality=self.verify_quality,
+        )
+
+    def _write_acoustic_quality_json(self) -> None:
+        bundle = self._ensure_bundle_dir()
+        if bundle is None or self.acoustic_quality is None:
+            return
+        bundles.write_json_artifact(
+            bundle,
+            "acoustic_quality.json",
+            self.acoustic_quality,
+            kind="acoustic_quality",
+            sensitivity="private_metadata",
+            recomputable=True,
+            generated_by=(
+                "jasper.correction.session._write_acoustic_quality_json"
+            ),
+            dependencies=self._existing_bundle_dependencies(
+                "info.json",
+                *self._capture_artifact_dependencies(),
+            ),
+            schema_version=acoustic_quality.SCHEMA_VERSION,
+        )
 
     def _write_runtime_integrity_json(
         self,
@@ -613,6 +808,35 @@ class MeasurementSession:
             f"capture_{self.session_id}_p{idx}_{int(time.time())}.wav"
         )
 
+    def noise_capture_path_for_position(self, idx: int) -> Path:
+        """Where the pre-sweep noise WAV for a position should land."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is not None:
+            path = bundle / "noise" / f"p{idx}_pre.wav"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
+        return self.cfg.capture_dir / (
+            f"noise_{self.session_id}_p{idx}_{int(time.time())}.wav"
+        )
+
+    def repeat_capture_path_for_position(
+        self,
+        idx: int = 0,
+        *,
+        repeat_index: int = 1,
+    ) -> Path:
+        """Where optional same-position repeat WAVs should land."""
+        bundle = self._ensure_bundle_dir()
+        if bundle is not None:
+            path = bundle / "repeat_captures" / f"p{idx}_r{repeat_index}.wav"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            return path
+        self.cfg.capture_dir.mkdir(parents=True, exist_ok=True)
+        return self.cfg.capture_dir / (
+            f"repeat_{self.session_id}_p{idx}_r{repeat_index}_{int(time.time())}.wav"
+        )
+
     def verify_capture_path(self) -> Path:
         """Where the post-Apply re-measurement WAV should land."""
         bundle = self._ensure_bundle_dir()
@@ -643,6 +867,7 @@ class MeasurementSession:
             "error": self.error,
             "total_positions": self.total_positions,
             "current_position": self.current_position,
+            "repeat_main_position": self.repeat_main_position,
             "target_choice": self.target_choice,
             "target_profile": strategy.resolve_target_profile(
                 self.target_choice,
@@ -660,8 +885,16 @@ class MeasurementSession:
             ),
             "browser_audio_report": self.browser_audio_report,
             "capture_quality": self.capture_quality,
+            "noise_reports": self.noise_reports,
+            "repeat_quality": self.repeat_quality,
+            "repeatability_report": self.repeatability_report,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "acoustic_quality": (
+                (self.acoustic_quality or {}).get("summary")
+                if self.acoustic_quality
+                else None
+            ),
             "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "current_correction_at_start": self.current_correction_at_start,
@@ -735,8 +968,19 @@ class MeasurementSession:
             ),
             "verify_metrics": self.verify_metrics,
             "capture_quality": self.capture_quality,
+            "noise_reports": self.noise_reports,
+            "repeat": (
+                self.repeat_curve.__dict__ if self.repeat_curve else None
+            ),
+            "repeat_quality": self.repeat_quality,
+            "repeatability_report": self.repeatability_report,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "acoustic_quality": (
+                (self.acoustic_quality or {}).get("summary")
+                if self.acoustic_quality
+                else None
+            ),
             "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "peqs": [p.__dict__ for p in self.peqs],
@@ -754,6 +998,7 @@ class MeasurementSession:
                 "info.json",
                 "position_analysis.json",
                 "runtime_integrity.json",
+                "acoustic_quality.json",
                 "mic_calibration.json",
                 *self._capture_artifact_dependencies(),
             ),
@@ -1038,9 +1283,175 @@ class MeasurementSession:
         self.sweep_meta = meta
         return sweep_path, meta
 
+    def _noise_report_dict(
+        self,
+        noise_wav_path: Path,
+        *,
+        position_index: int,
+    ) -> dict[str, Any]:
+        samples, sample_rate = sweep.read_wav_mono(noise_wav_path)
+        samples64 = samples.astype(np.float64)
+        abs_samples = np.abs(samples64)
+        rms = (
+            float(np.sqrt(np.mean(samples64 ** 2)))
+            if samples64.size
+            else 0.0
+        )
+        peak = float(np.max(abs_samples)) if abs_samples.size else 0.0
+        artifact_path: Path | str = noise_wav_path
+        if self.bundle_dir is not None:
+            try:
+                artifact_path = noise_wav_path.relative_to(self.bundle_dir)
+            except ValueError:
+                pass
+        return {
+            "capture_kind": "noise",
+            "position_index": position_index,
+            "artifact_path": str(artifact_path),
+            "sample_rate": int(sample_rate),
+            "duration_s": round(
+                float(samples64.size / sample_rate) if sample_rate > 0 else 0.0,
+                3,
+            ),
+            "rms_dbfs": round(_dbfs(rms), 2),
+            "peak_dbfs": round(_dbfs(peak), 2),
+            "band_noise_dbfs": _band_levels_dbfs(samples64, sample_rate),
+            "method": "pre_sweep_silence_wav",
+        }
+
+    def _noise_report_for_position(
+        self,
+        position_index: int | None,
+    ) -> dict[str, Any] | None:
+        if position_index is None:
+            return None
+        for report in reversed(self.noise_reports):
+            if report.get("position_index") == position_index:
+                return report
+        return None
+
+    def _capture_band_snr(
+        self,
+        captured_wav_path: Path,
+        noise_report: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not noise_report:
+            return []
+        try:
+            captured, sample_rate = sweep.read_wav_mono(captured_wav_path)
+        except Exception:  # noqa: BLE001
+            return []
+        capture_levels = _band_levels_dbfs(captured.astype(np.float64), sample_rate)
+        noise_by_band = {
+            band.get("band_id"): band
+            for band in noise_report.get("band_noise_dbfs") or []
+            if isinstance(band, dict)
+        }
+        out: list[dict[str, Any]] = []
+        for capture_band in capture_levels:
+            band_id = capture_band.get("band_id")
+            noise_band = noise_by_band.get(band_id)
+            if not noise_band:
+                continue
+            capture_db = float(capture_band["level_dbfs"])
+            noise_db = float(noise_band["level_dbfs"])
+            out.append({
+                "band_id": band_id,
+                "band_hz": capture_band.get("band_hz"),
+                "capture_level_dbfs": round(capture_db, 2),
+                "noise_level_dbfs": round(noise_db, 2),
+                "estimated_snr_db": round(capture_db - noise_db, 2),
+                "method": "fft_band_power_difference",
+            })
+        return out
+
+    def _direct_arrival_report(self, impulse_response: np.ndarray) -> dict[str, Any]:
+        ir = np.asarray(impulse_response, dtype=np.float64)
+        if ir.ndim != 1 or ir.size < 8:
+            return {"available": False, "reason": "impulse response unavailable"}
+        peak_index = int(np.argmax(np.abs(ir)))
+        pre_end = max(0, peak_index - int(0.002 * self.cfg.sample_rate))
+        pre_start = max(0, pre_end - int(0.02 * self.cfg.sample_rate))
+        pre = ir[pre_start:pre_end]
+        if pre.size < 8:
+            return {
+                "available": False,
+                "reason": "not enough pre-arrival samples before direct peak",
+                "direct_peak_index": peak_index,
+            }
+        floor_rms = float(np.sqrt(np.mean(pre ** 2)))
+        direct_peak = float(np.max(np.abs(ir)))
+        return {
+            "available": True,
+            "direct_peak_index": peak_index,
+            "direct_peak_dbfs": round(_dbfs(direct_peak), 2),
+            "pre_arrival_floor_dbfs": round(_dbfs(floor_rms), 2),
+            "direct_to_pre_arrival_db": round(
+                _dbfs(direct_peak) - _dbfs(floor_rms),
+                2,
+            ),
+            "pre_arrival_window_ms": [
+                round(pre_start / self.cfg.sample_rate * 1000.0, 2),
+                round(pre_end / self.cfg.sample_rate * 1000.0, 2),
+            ],
+        }
+
+    def _repeatability_from_arrays(
+        self,
+        first: np.ndarray,
+        repeat: np.ndarray,
+        freqs_hz: np.ndarray,
+    ) -> dict[str, Any]:
+        """Compare two captures at the same physical mic position."""
+        if first.shape != repeat.shape or first.shape != freqs_hz.shape:
+            return {
+                "available": False,
+                "level": "unavailable",
+                "reason": "repeat and original curves use different shapes",
+            }
+        mask = (freqs_hz >= 50.0) & (freqs_hz <= min(350.0, self.cfg.peq_f_high))
+        if int(mask.sum()) < 3:
+            return {
+                "available": False,
+                "level": "unavailable",
+                "reason": "not enough points in the repeatability band",
+            }
+        delta = first[mask] - repeat[mask]
+        abs_delta = np.abs(delta)
+        rms_db = float(np.sqrt(np.mean(delta ** 2)))
+        p95_abs_db = float(np.percentile(abs_delta, 95))
+        max_abs_db = float(np.max(abs_delta))
+        if rms_db <= 1.5 and p95_abs_db <= 3.0:
+            level = "high"
+        elif rms_db <= 2.5 and p95_abs_db <= 5.0:
+            level = "medium"
+        else:
+            level = "low"
+        issues: list[dict[str, Any]] = []
+        if level == "low":
+            issues.append({
+                "code": "repeatability_low",
+                "severity": "warn",
+                "message": (
+                    "same-position repeat capture differs enough to limit "
+                    "assertive correction"
+                ),
+            })
+        return {
+            "available": True,
+            "level": level,
+            "band_hz": [50.0, min(350.0, self.cfg.peq_f_high)],
+            "metrics": {
+                "rms_db": round(rms_db, 2),
+                "p95_abs_db": round(p95_abs_db, 2),
+                "max_abs_db": round(max_abs_db, 2),
+            },
+            "issues": issues,
+        }
+
     def _smooth_capture(
         self, captured_wav_path: Path,
-    ) -> tuple[np.ndarray, np.ndarray, quality.CaptureQuality]:
+    ) -> tuple[np.ndarray, np.ndarray, quality.CaptureQuality, dict[str, Any]]:
         """Read capture, assess quality, deconvolve, smooth, log-resample.
 
         Returns (log_freqs, smoothed_db, capture_quality) for both the
@@ -1079,6 +1490,7 @@ class MeasurementSession:
             sweep_signal.astype(np.float64),
             sample_rate=self.cfg.sample_rate,
         )
+        direct_arrival = self._direct_arrival_report(ir)
         freqs, mag_db = deconv.magnitude_response(ir, self.cfg.sample_rate)
         smoothed = analysis.smooth_fractional_octave(freqs, mag_db, fraction=48)
         log_freqs, log_mag = analysis.resample_log(freqs, smoothed)
@@ -1087,7 +1499,7 @@ class MeasurementSession:
                 log_freqs, log_mag, self.mic_calibration.curve,
             )
         log_mag = analysis.normalize_to_band(log_freqs, log_mag)
-        return log_freqs, log_mag, capture_quality
+        return log_freqs, log_mag, capture_quality, direct_arrival
 
     def _quality_report_dict(
         self,
@@ -1096,6 +1508,8 @@ class MeasurementSession:
         capture_kind: str,
         captured_wav_path: Path,
         position_index: int | None = None,
+        noise_report: dict[str, Any] | None = None,
+        direct_arrival: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         out = report.to_dict()
         out["capture_kind"] = capture_kind
@@ -1107,10 +1521,23 @@ class MeasurementSession:
             except ValueError:
                 pass
         out["artifact_path"] = str(artifact_path)
-        if self.noise_floor_db is not None and np.isfinite(self.noise_floor_db):
-            estimated_snr_db = float(report.rms_dbfs - self.noise_floor_db)
-            out["noise_floor_dbfs"] = round(float(self.noise_floor_db), 2)
+        source_noise_floor = None
+        source_method = None
+        if noise_report and noise_report.get("rms_dbfs") is not None:
+            source_noise_floor = float(noise_report["rms_dbfs"])
+            source_method = str(noise_report.get("method") or "noise_capture")
+            out["noise_artifact_path"] = noise_report.get("artifact_path")
+        elif self.noise_floor_db is not None and np.isfinite(self.noise_floor_db):
+            source_noise_floor = float(self.noise_floor_db)
+            source_method = "browser_autolevel_scalar"
+        if source_noise_floor is not None:
+            estimated_snr_db = float(report.rms_dbfs - source_noise_floor)
+            out["noise_floor_dbfs"] = round(source_noise_floor, 2)
+            out["noise_floor_method"] = source_method
             out["estimated_snr_db"] = round(estimated_snr_db, 2)
+            band_snr = self._capture_band_snr(captured_wav_path, noise_report)
+            if band_snr:
+                out["band_snr"] = band_snr
             if estimated_snr_db < 20.0:
                 issues = list(out.get("issues") or [])
                 issues.append({
@@ -1126,6 +1553,8 @@ class MeasurementSession:
                     },
                 })
                 out["issues"] = issues
+        if direct_arrival is not None:
+            out["direct_arrival"] = direct_arrival
         return out
 
     def _design_target(self, freqs: np.ndarray) -> np.ndarray:
@@ -1142,6 +1571,7 @@ class MeasurementSession:
             strategy_choice=self.strategy_choice,
             browser_audio_report=self.browser_audio_report,
             runtime_integrity=self.runtime_integrity.summary(),
+            repeatability_report=self.repeatability_report,
             position_magnitudes=self.position_magnitudes,
             freqs_hz=self.position_freqs,
             correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
@@ -1150,6 +1580,57 @@ class MeasurementSession:
     # ------------------------------------------------------------------
     # Phase 1 / Phase 2 measurement flow.
     # ------------------------------------------------------------------
+
+    async def begin_noise_capture(self) -> None:
+        """Ask the browser to record pre-sweep room noise.
+
+        The browser flow uses this before each measurement position so
+        the bundle carries a real noise artifact instead of only the
+        older autolevel scalar. Direct test/legacy callers may still
+        call `prepare_and_play_sweep()` from IDLE.
+        """
+        async with self._lock:
+            valid_states = {SessionState.IDLE, SessionState.NEEDS_NEXT_POSITION}
+            if self.state not in valid_states:
+                raise RuntimeError(
+                    f"cannot start noise capture from state {self.state.value}"
+                )
+            await self._set_state(
+                SessionState.NEEDS_NOISE_CAPTURE,
+                position=self.current_position,
+                total_positions=self.total_positions,
+            )
+
+    async def on_noise_capture_uploaded(self, noise_wav_path: Path) -> None:
+        """Persist the pre-sweep silence WAV and derive noise floors."""
+        async with self._lock:
+            if self.state != SessionState.NEEDS_NOISE_CAPTURE:
+                raise RuntimeError(
+                    f"cannot accept noise capture from state {self.state.value}"
+                )
+            position_index = self.current_position
+
+        self._record_raw_capture_artifact(
+            noise_wav_path,
+            capture_kind="noise",
+            position_index=position_index,
+        )
+        report = self._noise_report_dict(
+            noise_wav_path,
+            position_index=position_index,
+        )
+        self.noise_reports = [
+            r for r in self.noise_reports
+            if r.get("position_index") != position_index
+        ]
+        self.noise_reports.append(report)
+        self.noise_floor_db = report.get("rms_dbfs")
+        self._refresh_acoustic_quality()
+        try:
+            self._write_acoustic_quality_json()
+            self._write_info_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle noise capture artifact write failed")
 
     async def prepare_and_play_sweep(
         self,
@@ -1174,6 +1655,7 @@ class MeasurementSession:
                 SessionState.IDLE, SessionState.READY,
                 SessionState.APPLIED, SessionState.FAILED,
                 SessionState.VERIFIED,
+                SessionState.NEEDS_NOISE_CAPTURE,
                 SessionState.NEEDS_NEXT_POSITION,
             }
             if self.state not in valid_states:
@@ -1242,6 +1724,88 @@ class MeasurementSession:
                 total_positions=self.total_positions,
             )
 
+    async def prepare_and_play_repeat_sweep(
+        self,
+        play_sweep_async: Callable[..., Awaitable[Any]],
+        *,
+        alsa_device: str | None = None,
+        runtime_probe_async: (
+            Callable[[], Awaitable[dict[str, Any] | None]] | None
+        ) = None,
+    ) -> None:
+        """Play an optional repeat sweep at the main seat.
+
+        This uses the same sweep and measurement window as a normal
+        position but stores the resulting capture separately so bundle
+        recompute does not mistake it for another listening position.
+        """
+        async with self._lock:
+            if self.state != SessionState.NEEDS_REPEAT_CAPTURE:
+                raise RuntimeError(
+                    f"cannot start repeat sweep from state {self.state.value}"
+                )
+            position_index = 0
+            await self._set_state(
+                SessionState.PREPARING,
+                position=position_index,
+                total_positions=self.total_positions,
+            )
+
+        await self._record_runtime_snapshot(
+            "repeat_prepare",
+            capture_kind="repeat",
+            position_index=position_index,
+            runtime_probe_async=runtime_probe_async,
+        )
+
+        try:
+            sweep_wav, meta = self._ensure_sweep_cache()
+        except Exception as e:  # noqa: BLE001
+            async with self._lock:
+                await self._fail(f"sweep generation failed: {e}")
+            raise
+
+        async with self._lock:
+            await self._set_state(
+                SessionState.SWEEPING,
+                duration_s=meta.duration_s,
+                position=position_index,
+                total_positions=self.total_positions,
+            )
+
+        try:
+            kwargs = {"alsa_device": alsa_device} if alsa_device else {}
+            await self._record_runtime_snapshot(
+                "repeat_sweep_start",
+                capture_kind="repeat",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+            await play_sweep_async(str(sweep_wav), **kwargs)
+            await self._record_runtime_snapshot(
+                "repeat_sweep_complete",
+                capture_kind="repeat",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+        except Exception as e:  # noqa: BLE001
+            await self._record_runtime_snapshot(
+                "repeat_sweep_failed",
+                capture_kind="repeat",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
+            async with self._lock:
+                await self._fail(f"repeat sweep playback failed: {e}")
+            raise
+
+        async with self._lock:
+            await self._set_state(
+                SessionState.AWAITING_REPEAT_CAPTURE,
+                position=position_index,
+                total_positions=self.total_positions,
+            )
+
     async def on_capture_uploaded(
         self, captured_wav_path: Path,
     ) -> None:
@@ -1271,9 +1835,10 @@ class MeasurementSession:
             capture_kind="measurement",
             position_index=position_index,
         )
+        noise_report = self._noise_report_for_position(position_index)
 
         try:
-            log_freqs, log_mag, capture_quality = self._smooth_capture(
+            log_freqs, log_mag, capture_quality, direct_arrival = self._smooth_capture(
                 captured_wav_path,
             )
         except Exception as e:  # noqa: BLE001
@@ -1282,8 +1847,14 @@ class MeasurementSession:
                     e.report,
                     capture_kind="measurement",
                     captured_wav_path=captured_wav_path,
-                    position_index=self.current_position,
+                    position_index=position_index,
+                    noise_report=noise_report,
                 ))
+                self._refresh_acoustic_quality()
+                try:
+                    self._write_acoustic_quality_json()
+                except Exception:  # noqa: BLE001
+                    logger.exception("bundle acoustic_quality.json write failed")
             async with self._lock:
                 await self._fail(f"analysis failed: {e}")
             raise
@@ -1301,9 +1872,29 @@ class MeasurementSession:
             capture_quality,
             capture_kind="measurement",
             captured_wav_path=captured_wav_path,
-            position_index=self.current_position,
+            position_index=position_index,
+            noise_report=noise_report,
+            direct_arrival=direct_arrival,
         ))
+        self._refresh_acoustic_quality()
+        try:
+            self._write_acoustic_quality_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle acoustic_quality.json write failed")
         self.current_position += 1
+
+        if (
+            self.repeat_main_position
+            and position_index == 0
+            and self.repeat_quality is None
+        ):
+            async with self._lock:
+                await self._set_state(
+                    SessionState.NEEDS_REPEAT_CAPTURE,
+                    position=0,
+                    total_positions=self.total_positions,
+                )
+            return
 
         if self.current_position < self.total_positions:
             # Wait for the user to move to the next position.
@@ -1316,6 +1907,120 @@ class MeasurementSession:
             return
 
         # All positions captured. Average + design.
+        try:
+            self._run_design_from_positions()
+        except Exception as e:  # noqa: BLE001
+            async with self._lock:
+                await self._fail(f"PEQ design failed: {e}")
+            raise
+
+        try:
+            self._write_result_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle result.json write failed")
+
+        async with self._lock:
+            await self._set_state(
+                SessionState.READY,
+                peq_count=len(self.peqs),
+                positions_used=self.total_positions,
+            )
+
+    async def on_repeat_capture_uploaded(
+        self,
+        captured_wav_path: Path,
+    ) -> None:
+        """Same-position repeat capture arrived for trust scoring."""
+        async with self._lock:
+            if self.state != SessionState.AWAITING_REPEAT_CAPTURE:
+                raise RuntimeError(
+                    f"cannot accept repeat capture from state {self.state.value}"
+                )
+            await self._set_state(
+                SessionState.ANALYZING,
+                position=0,
+            )
+            self.last_capture_path = captured_wav_path
+
+        self._record_raw_capture_artifact(
+            captured_wav_path,
+            capture_kind="repeat",
+            position_index=0,
+        )
+        self._record_runtime_capture(
+            captured_wav_path,
+            capture_kind="repeat",
+            position_index=0,
+        )
+        noise_report = self._noise_report_for_position(0)
+
+        try:
+            log_freqs, log_mag, capture_quality, direct_arrival = (
+                self._smooth_capture(captured_wav_path)
+            )
+        except Exception as e:  # noqa: BLE001
+            if isinstance(e, quality.CaptureQualityError):
+                self.repeat_quality = self._quality_report_dict(
+                    e.report,
+                    capture_kind="repeat",
+                    captured_wav_path=captured_wav_path,
+                    position_index=0,
+                    noise_report=noise_report,
+                )
+                self._refresh_acoustic_quality()
+                try:
+                    self._write_acoustic_quality_json()
+                except Exception:  # noqa: BLE001
+                    logger.exception("bundle acoustic_quality.json write failed")
+            async with self._lock:
+                await self._fail(f"repeat analysis failed: {e}")
+            raise
+
+        await self._record_runtime_snapshot(
+            "repeat_analysis_complete",
+            capture_kind="repeat",
+            position_index=0,
+            runtime_probe_async=None,
+        )
+        self.repeat_curve = CurveJSON(
+            freqs_hz=log_freqs.tolist(),
+            magnitude_db=log_mag.tolist(),
+        )
+        self.repeat_quality = self._quality_report_dict(
+            capture_quality,
+            capture_kind="repeat",
+            captured_wav_path=captured_wav_path,
+            position_index=0,
+            noise_report=noise_report,
+            direct_arrival=direct_arrival,
+        )
+        if self.position_freqs is not None and self.position_magnitudes:
+            self.repeatability_report = self._repeatability_from_arrays(
+                self.position_magnitudes[0],
+                log_mag,
+                self.position_freqs,
+            )
+        else:
+            self.repeatability_report = {
+                "available": False,
+                "level": "unavailable",
+                "reason": "original main-seat capture is unavailable",
+            }
+        self._refresh_acoustic_quality()
+        try:
+            self._write_acoustic_quality_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle acoustic_quality.json write failed")
+
+        if self.current_position < self.total_positions:
+            async with self._lock:
+                await self._set_state(
+                    SessionState.NEEDS_NEXT_POSITION,
+                    position=self.current_position,
+                    total_positions=self.total_positions,
+                )
+            return
+
         try:
             self._run_design_from_positions()
         except Exception as e:  # noqa: BLE001
@@ -1572,8 +2277,8 @@ class MeasurementSession:
         )
 
         try:
-            log_freqs, log_mag, capture_quality = self._smooth_capture(
-                captured_wav_path,
+            log_freqs, log_mag, capture_quality, direct_arrival = (
+                self._smooth_capture(captured_wav_path)
             )
         except Exception as e:  # noqa: BLE001
             if isinstance(e, quality.CaptureQualityError):
@@ -1582,6 +2287,11 @@ class MeasurementSession:
                     capture_kind="verify",
                     captured_wav_path=captured_wav_path,
                 )
+                self._refresh_acoustic_quality()
+                try:
+                    self._write_acoustic_quality_json()
+                except Exception:  # noqa: BLE001
+                    logger.exception("bundle acoustic_quality.json write failed")
             async with self._lock:
                 await self._fail(f"verify analysis failed: {e}")
             raise
@@ -1616,7 +2326,13 @@ class MeasurementSession:
             capture_quality,
             capture_kind="verify",
             captured_wav_path=captured_wav_path,
+            direct_arrival=direct_arrival,
         )
+        self._refresh_acoustic_quality()
+        try:
+            self._write_acoustic_quality_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle acoustic_quality.json write failed")
 
         try:
             self._write_result_json()
@@ -1891,6 +2607,7 @@ class MeasurementSession:
             "error": self.error,
             "total_positions": self.total_positions,
             "current_position": self.current_position,
+            "repeat_main_position": self.repeat_main_position,
             "target_choice": self.target_choice,
             "target_profile": strategy.resolve_target_profile(
                 self.target_choice,
@@ -1907,8 +2624,16 @@ class MeasurementSession:
             ),
             "browser_audio_report": self.browser_audio_report,
             "capture_quality": self.capture_quality,
+            "noise_reports": self.noise_reports,
+            "repeat_quality": self.repeat_quality,
+            "repeatability_report": self.repeatability_report,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "acoustic_quality": (
+                (self.acoustic_quality or {}).get("summary")
+                if self.acoustic_quality
+                else None
+            ),
             "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "sweep": (

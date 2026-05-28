@@ -191,6 +191,63 @@ async def test_session_records_failed_capture_quality_in_bundle(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_session_records_noise_and_repeat_artifacts(tmp_path: Path):
+    sess = _make_session(tmp_path)
+    sess.repeat_main_position = True
+
+    await sess.begin_noise_capture()
+    assert sess.state == SessionState.NEEDS_NOISE_CAPTURE
+    noise_path = sess.noise_capture_path_for_position(0)
+    sweep.write_sweep_wav(
+        noise_path,
+        np.zeros(int(sess.cfg.sample_rate * 0.7), dtype=np.float32),
+        sess.cfg.sample_rate,
+    )
+    await sess.on_noise_capture_uploaded(noise_path)
+    assert sess.noise_reports[0]["artifact_path"] == "noise/p0_pre.wav"
+    assert sess.acoustic_quality is not None
+    assert sess.acoustic_quality["summary"]["noise_capture_count"] == 1
+
+    async def fake_play_sweep(path, **kwargs):
+        pass
+
+    await sess.prepare_and_play_sweep(fake_play_sweep)
+    sweep_signal, sr = sweep.read_wav_mono(sess.sweep_wav_path)
+    cap_path = sess.capture_path_for_position(0)
+    sweep.write_sweep_wav(cap_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_capture_uploaded(cap_path)
+    assert sess.state == SessionState.NEEDS_REPEAT_CAPTURE
+
+    await sess.prepare_and_play_repeat_sweep(fake_play_sweep)
+    repeat_path = sess.repeat_capture_path_for_position(0)
+    sweep.write_sweep_wav(repeat_path, sweep_signal.astype(np.float32), sr)
+    await sess.on_repeat_capture_uploaded(repeat_path)
+
+    assert sess.state == SessionState.READY
+    assert sess.repeat_quality is not None
+    assert sess.repeat_quality["artifact_path"] == "repeat_captures/p0_r1.wav"
+    assert sess.repeatability_report is not None
+    assert sess.repeatability_report["level"] == "high"
+    assert sess.confidence_report is not None
+    assert sess.confidence_report["repeatability"]["level"] == "high"
+
+    manifest = bundles.read_artifact_manifest(sess.bundle_dir)
+    artifact_by_path = {
+        artifact["path"]: artifact
+        for artifact in manifest["artifacts"]
+    }
+    assert artifact_by_path["noise/p0_pre.wav"]["kind"] == "noise_capture"
+    assert (
+        artifact_by_path["repeat_captures/p0_r1.wav"]["kind"]
+        == "repeat_capture"
+    )
+    assert not any(
+        issue.severity == "fail"
+        for issue in bundles.validate_bundle(sess.bundle_dir)
+    )
+
+
+@pytest.mark.asyncio
 async def test_session_full_flow_synthetic_room(tmp_path: Path):
     """Run session.prepare_and_play_sweep → on_capture_uploaded →
     apply → reset against a synthetic 80 Hz modal room. Verify state

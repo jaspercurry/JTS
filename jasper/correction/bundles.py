@@ -275,8 +275,21 @@ def summarize_bundle(bundle_dir: Path) -> dict[str, Any]:
     info["has_result"] = (bundle_dir / "result.json").exists()
     info["has_applied_yml"] = (bundle_dir / "applied.yml").exists()
     info["has_verify_wav"] = (bundle_dir / "verify.wav").exists()
+    info["noise_capture_count"] = len(
+        [p for p in (bundle_dir / "noise").glob("*.wav")]
+        if (bundle_dir / "noise").exists()
+        else []
+    )
+    info["repeat_capture_count"] = len(
+        [p for p in (bundle_dir / "repeat_captures").glob("*.wav")]
+        if (bundle_dir / "repeat_captures").exists()
+        else []
+    )
     info["has_runtime_integrity_json"] = (
         bundle_dir / "runtime_integrity.json"
+    ).exists()
+    info["has_acoustic_quality_json"] = (
+        bundle_dir / "acoustic_quality.json"
     ).exists()
     info["has_mic_calibration_json"] = (
         bundle_dir / "mic_calibration.json"
@@ -425,6 +438,36 @@ def validate_bundle(bundle_dir: Path) -> list[BundleIssue]:
                     ))
         except BundleError as e:
             issues.append(BundleIssue("runtime_integrity_json", "fail", str(e)))
+
+    acoustic_path = bundle_dir / "acoustic_quality.json"
+    acoustic_summary = info.get("acoustic_quality")
+    if acoustic_summary and not acoustic_path.exists():
+        issues.append(BundleIssue(
+            "acoustic_quality_json_missing",
+            "warn",
+            "acoustic_quality summary present but acoustic_quality.json missing",
+        ))
+    if acoustic_path.exists():
+        try:
+            acoustic = _read_json(acoustic_path)
+            if acoustic.get("artifact_schema_version") != 1:
+                issues.append(BundleIssue(
+                    "acoustic_quality_schema_version",
+                    "warn",
+                    "acoustic_quality.json schema does not match current version",
+                ))
+            for issue in acoustic.get("issues") or []:
+                if not isinstance(issue, dict):
+                    continue
+                severity = issue.get("severity")
+                if severity in {"warn", "fail"}:
+                    issues.append(BundleIssue(
+                        str(issue.get("code") or "acoustic_quality"),
+                        severity,
+                        str(issue.get("message") or "acoustic quality issue"),
+                    ))
+        except BundleError as e:
+            issues.append(BundleIssue("acoustic_quality_json", "fail", str(e)))
 
     reports = list(info.get("capture_quality") or [])
     if info.get("verify_quality"):
@@ -607,6 +650,7 @@ def _validate_manifest_covers_existing_core_artifacts(
         "result.json",
         "position_analysis.json",
         "runtime_integrity.json",
+        "acoustic_quality.json",
         "mic_calibration.json",
         "mic_calibration.txt",
         "applied.yml",
@@ -615,6 +659,16 @@ def _validate_manifest_covers_existing_core_artifacts(
     core_paths.extend(
         path.relative_to(bundle_dir).as_posix()
         for path in sorted((bundle_dir / "captures").glob("*.wav"))
+        if path.is_file()
+    )
+    core_paths.extend(
+        path.relative_to(bundle_dir).as_posix()
+        for path in sorted((bundle_dir / "noise").glob("*.wav"))
+        if path.is_file()
+    )
+    core_paths.extend(
+        path.relative_to(bundle_dir).as_posix()
+        for path in sorted((bundle_dir / "repeat_captures").glob("*.wav"))
         if path.is_file()
     )
     for rel_path in core_paths:
