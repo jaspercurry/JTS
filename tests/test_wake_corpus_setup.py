@@ -1474,14 +1474,14 @@ def test_begin_session_with_usb_dtln_records_companion_legs(
 def test_begin_session_with_aec3_sweep_records_variant_legs(
     backend, tmp_path: Path,
 ) -> None:
-    """AEC3 sweep captures baseline plus the three same-utterance
-    WebRTC variants without enabling the DTLN comparison leg."""
+    """AEC3 sweep captures XVF reference plus USB baseline/variants."""
     backend.begin_session(
         "jasper", include_dtln=False, include_aec3_sweep=True,
     )
     assert backend.include_aec3_sweep() is True
     assert backend.enabled_legs() == (
-        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+        "on", "off", "ref", "usb_raw", "usb_webrtc",
+        *wake_corpus_setup.AEC3_SWEEP_LEGS,
     )
 
     backend.start_recording("music", "far")
@@ -1489,12 +1489,16 @@ def test_begin_session_with_aec3_sweep_records_variant_legs(
     clip = backend.stop_recording()
 
     out = tmp_path / "out"
-    for leg in ("on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off"):
+    for leg in (
+        "on", "off", "ref", "usb_raw", "usb_webrtc",
+        *wake_corpus_setup.AEC3_SWEEP_LEGS,
+    ):
         d = out / f"aec_{leg}_music"
         assert d.is_dir(), f"missing dir: {d}"
         assert len(list(d.glob("*.aec-*.wav"))) == 1
     assert set(clip.files.keys()) == {
-        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+        "on", "off", "ref", "usb_raw", "usb_webrtc",
+        *wake_corpus_setup.AEC3_SWEEP_LEGS,
     }
     assert "dtln" not in clip.files
 
@@ -1531,6 +1535,7 @@ def test_missing_bridge_outputs_honors_overlay_order(
             "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
             "JASPER_AEC_CORPUS_USB_DTLN_ENABLED=1\n"
             "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb\n"
         ),
     )
 
@@ -1897,6 +1902,51 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
     assert drop_counts["ref_queue_full"] == 2
 
 
+def test_build_capture_health_marks_usb_aec3_sweep_bridge_drops() -> None:
+    """When the sweep source is USB, variant legs inherit USB/ref drops
+    instead of XVF mic drops."""
+    leg = wake_corpus_setup.AEC3_SWEEP_LEGS[0]
+    frame = np.zeros(1280, dtype=np.int16)
+    start = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 2.0,
+        "counters": {
+            "frames_processed": 10,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 0, "raw0": 0, "usb": 0, "ref": 0},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 0},
+        },
+    }
+    stop = {
+        "pid": 123,
+        "started_epoch_sec": 1.0,
+        "updated_epoch_sec": 3.0,
+        "counters": {
+            "frames_processed": 20,
+            "ref_starved_frames": 0,
+            "queue_drops": {"mic": 4, "raw0": 0, "usb": 1, "ref": 2},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 1},
+        },
+    }
+
+    health = wake_corpus_setup.build_capture_health(
+        wall_duration_sec=0.08,
+        buffers={leg: [frame]},
+        bridge_start=start,
+        bridge_stop=stop,
+        aec3_sweep_source="usb",
+    )
+
+    drop_counts = health["legs"][leg]["bridge_drop_counts"]
+    assert health["status"] == "compromised"
+    assert "mic_queue_full" not in drop_counts
+    assert drop_counts["usb_queue_full"] == 1
+    assert drop_counts["ref_queue_full"] == 2
+
+
 def test_build_capture_health_unknown_without_bridge_stats() -> None:
     frame = np.zeros(1280, dtype=np.int16)
 
@@ -1976,10 +2026,16 @@ def test_metadata_persists_aec3_sweep_flags(
     json_files = list((tmp_path / "out" / "metadata").glob("enroll_*.json"))
     data = json.loads(json_files[0].read_text())
     assert data["include_aec3_sweep"] is True
+    assert data["include_usb_mic"] is True
+    assert data["aec3_sweep_source"] == "usb"
     assert data["enabled_legs"] == [
-        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+        "on", "off", "ref", "usb_raw", "usb_webrtc",
+        *wake_corpus_setup.AEC3_SWEEP_LEGS,
     ]
-    assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
+    assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+        input_source="usb",
+    )
+    assert data["aec3_sweep_config"]["input_source"] == "usb"
 
 
 def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
@@ -2428,7 +2484,9 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "aec3_gentle_dnd" in html_text
     assert "aec3_nearend_fast" in html_text
     assert "aec3_slow_attack" in html_text
-    assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text
+    assert "usb_webrtc: 'USB AEC3 edge combo 80 ms'" in html_text
+    assert "USB_AEC3_SWEEP_BASELINE_LABEL" in html_text
+    assert "session?.include_aec3_sweep" in html_text
     assert "usb_dtln: 'USB DTLN'" in html_text
 
 
@@ -2650,9 +2708,14 @@ def test_api_status_includes_aec3_sweep(
         try:
             body = json.loads(resp.read())
             assert body["include_aec3_sweep"] is True
-            assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
+            assert body["include_usb_mic"] is True
+            assert body["aec3_sweep_source"] == "usb"
+            assert body["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata(
+                input_source="usb",
+            )
             assert body["enabled_legs"] == [
-                "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+                "on", "off", "ref", "usb_raw", "usb_webrtc",
+                *wake_corpus_setup.AEC3_SWEEP_LEGS,
             ]
         finally:
             conn.close()
@@ -2713,7 +2776,12 @@ def test_api_session_begin_accepts_aec3_sweep(
     _use_tmp_bridge_env(
         monkeypatch,
         tmp_path,
-        corpus_env="JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n",
+        corpus_env=(
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb\n"
+            "JASPER_AEC_CORPUS_REF_ENABLED=1\n"
+            "JASPER_AEC_CORPUS_USB_ENABLED=1\n"
+        ),
     )
     server, th, port = _serve_in_thread(backend)
     try:
@@ -2732,8 +2800,11 @@ def test_api_session_begin_accepts_aec3_sweep(
             body = json.loads(resp.read())
             assert resp.status == 200
             assert body["include_aec3_sweep"] is True
+            assert body["include_usb_mic"] is True
+            assert body["aec3_sweep_source"] == "usb"
             assert body["enabled_legs"] == [
-                "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+                "on", "off", "ref", "usb_raw", "usb_webrtc",
+                *wake_corpus_setup.AEC3_SWEEP_LEGS,
             ]
         finally:
             conn.close()
@@ -2773,6 +2844,7 @@ def test_api_status_includes_bridge_output_status(
                 "usb": False,
                 "usb_dtln": False,
                 "aec3_sweep": False,
+                "aec3_sweep_source": "xvf",
                 "env_path": str(tmp_path / "wake_corpus_bridge.env"),
                 "recorder_outputs": {
                     "dtln": True,
@@ -2780,6 +2852,7 @@ def test_api_status_includes_bridge_output_status(
                     "usb": False,
                     "usb_dtln": False,
                     "aec3_sweep": False,
+                    "aec3_sweep_source": "xvf",
                 },
                 "active": True,
             }

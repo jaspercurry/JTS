@@ -14,6 +14,14 @@ explicitly opts in via [`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.s
 [`scripts/chip-aec-teardown.sh`](../scripts/chip-aec-teardown.sh)
 fully reverts.
 
+**2026-05-29 temporary pre-corpus gate.** Jasper wants one bounded
+Option D pass before recording the gold wake corpus, because a positive
+chip-AEC result would change which AEC leg deserves training data. This
+does **not** unshelve chip AEC as a roadmap item. It is a timeboxed
+feasibility gate: verify convergence, capture the four A/B WAVs, decide,
+teardown, then either proceed with the software-AEC corpus or pause to
+design a chip-AEC corpus leg.
+
 **Why shelved.** The software AEC3 bridge (BEST_A engine, ~85 MB
 RAM, ~3% of one Pi 5 core, runs on **6-channel XVF firmware only**)
 is the production-good-enough path today — BEST_A specifically
@@ -114,6 +122,15 @@ to the experiment but worth noting:
 - The bridge now emits *three* UDP streams in production
   (`:9876` AEC'd, `:9877` raw chip mic, `:9878` DTLN). The
   experiment's daemon still only feeds `:9876`. See limitation 6.
+- **2026-05-26 fan-in topology replaced renderer-side dmix.** Current
+  production sources write to private snd-aloop lanes; `jasper-fanin`
+  sums them onto substream 7; `pcm.jasper_capture` / `pcm.jasper_ref`
+  read that summed music reference. The experiment daemon still taps
+  `plug:jasper_capture`, so the core reference-feeder idea should
+  remain valid, but the topology diagram above is historical. Before
+  running, verify `/etc/asound.conf` maps `pcm.jasper_capture` to
+  `hw:Loopback,1,7`, `jasper-fanin.service` is active, and music played
+  through normal sources appears on `plug:jasper_capture`.
 
 Key differences from production:
 - WebRTC AEC bridge **and its full lifecycle chain** are stopped +
@@ -164,6 +181,13 @@ mute, etc. all untouched.
 # 1. Run from a current checkout after re-reading the historical warning
 #    at the top of this file and reviewing the scripts below.
 
+# 1a. Fan-in-era preflight before touching the Pi:
+#     - /etc/asound.conf maps pcm.jasper_capture to hw:Loopback,1,7
+#     - jasper-fanin.service is active
+#     - normal music playback is visible at plug:jasper_capture
+#     - jasper-aec-bridge.service is active before setup
+#     - SHF_BYPASS is 1 before setup
+
 # 2. Set up (rsync code, stop bridge, start experiment daemon, set chip params)
 bash scripts/chip-aec-setup.sh
 
@@ -186,6 +210,12 @@ bash scripts/chip-aec-capture-comparison.sh
 
 # 7. Revert to production (WebRTC AEC bridge)
 bash scripts/chip-aec-teardown.sh
+
+# 8. Verify production recovered before recording corpus:
+#    - jasper-aec-bridge.service active
+#    - jasper-voice.service active
+#    - SHF_BYPASS back to 1
+#    - wake-corpus page can enter its own corpus test mode cleanly
 ```
 
 ---
@@ -353,9 +383,11 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last reviewed as historical: 2026-05-26. Last operational verification:
+Last reviewed as historical: 2026-05-28. Last operational verification:
 2026-05-23 (rebased onto then-current `main`; drift fixes landed for
 masking the full AEC service chain, capture-comparison EBUSY collision,
 dual/triple-stream env handling, and the wake-event corpus marker).
-Re-verify before running: this doc intentionally preserves a dmix-era
-experiment snapshot, not current production topology.
+2026-05-28 added the 2026-05-29 pre-corpus gate and fan-in-era
+preflight notes, but did **not** re-run the experiment. Re-verify before
+running: this doc intentionally preserves a dmix-era experiment snapshot,
+not current production topology.

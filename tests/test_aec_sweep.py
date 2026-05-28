@@ -5,11 +5,19 @@ import json
 import pytest
 
 from jasper.aec_sweep import (
+    AEC3_SWEEP_SOURCE_USB,
+    AEC3_SWEEP_SOURCE_XVF,
+    AEC3_EDGE_COMBO_OVERRIDES,
     Aec3SweepConfigError,
     DEFAULT_AEC3_SWEEP_VARIANTS,
+    USB_AEC3_CORPUS_LABEL,
+    USB_AEC3_CORPUS_OVERRIDES,
+    USB_AEC3_SWEEP_BASELINE_LABEL,
+    USB_AEC3_SWEEP_BASELINE_OVERRIDES,
     aec3_sweep_config_payload,
     config_metadata,
     load_aec3_sweep_config,
+    normalize_aec3_sweep_source,
     validate_aec3_sweep_config_payload,
     variant_metadata,
     write_aec3_sweep_config,
@@ -28,6 +36,30 @@ def test_missing_runtime_config_uses_built_in_defaults(tmp_path) -> None:
     assert len(config.config_hash) == 12
 
 
+def test_built_in_defaults_are_usb_delay_sweep() -> None:
+    assert USB_AEC3_CORPUS_LABEL == "USB AEC3 edge combo 80 ms"
+    assert USB_AEC3_CORPUS_OVERRIDES == {
+        **AEC3_EDGE_COMBO_OVERRIDES,
+        "JASPER_AEC_STREAM_DELAY_MS": "80",
+    }
+    assert USB_AEC3_SWEEP_BASELINE_LABEL == "USB AEC3 edge combo 40 ms"
+    assert USB_AEC3_SWEEP_BASELINE_OVERRIDES == {
+        **AEC3_EDGE_COMBO_OVERRIDES,
+        "JASPER_AEC_STREAM_DELAY_MS": "40",
+    }
+    assert [
+        (variant.label, variant.env_overrides["JASPER_AEC_STREAM_DELAY_MS"])
+        for variant in DEFAULT_AEC3_SWEEP_VARIANTS
+    ] == [
+        ("AEC3 edge combo 80 ms", "80"),
+        ("AEC3 edge combo 120 ms", "120"),
+        ("AEC3 edge combo 160 ms", "160"),
+    ]
+    for variant in DEFAULT_AEC3_SWEEP_VARIANTS:
+        for key, value in AEC3_EDGE_COMBO_OVERRIDES.items():
+            assert variant.env_overrides[key] == value
+
+
 def test_valid_runtime_config_overrides_labels_and_knobs(tmp_path) -> None:
     payload = aec3_sweep_config_payload()
     payload["variants"][0]["label"] = "AEC3 test A"
@@ -36,6 +68,7 @@ def test_valid_runtime_config_overrides_labels_and_knobs(tmp_path) -> None:
         "JASPER_AEC_DND_HOLD_DURATION": 125,
         "JASPER_AEC_MAX_DEC_LF": 0.015,
         "JASPER_AEC_NS_LEVEL": "high",
+        "JASPER_AEC_STREAM_DELAY_MS": 120,
     }
     path = tmp_path / "aec3_sweep_variants.json"
     path.write_text(json.dumps(payload))
@@ -50,6 +83,7 @@ def test_valid_runtime_config_overrides_labels_and_knobs(tmp_path) -> None:
         "JASPER_AEC_DND_HOLD_DURATION": "125",
         "JASPER_AEC_MAX_DEC_LF": "0.015",
         "JASPER_AEC_NS_LEVEL": "high",
+        "JASPER_AEC_STREAM_DELAY_MS": "120",
     }
 
 
@@ -99,3 +133,19 @@ def test_write_runtime_config_is_atomic_and_metadata_ready(tmp_path) -> None:
     assert not path.with_suffix(path.suffix + ".tmp").exists()
     assert variant_metadata(config.variants)[1]["label"] == "AEC3 test B"
     assert config_metadata(config)["hash"] == config.config_hash
+
+
+def test_sweep_source_normalization_and_metadata() -> None:
+    assert normalize_aec3_sweep_source(None) == AEC3_SWEEP_SOURCE_XVF
+    assert normalize_aec3_sweep_source(
+        "USB", default=AEC3_SWEEP_SOURCE_XVF,
+    ) == AEC3_SWEEP_SOURCE_USB
+    with pytest.raises(Aec3SweepConfigError, match="AEC3 sweep source"):
+        normalize_aec3_sweep_source("bluetooth")
+
+    variants = variant_metadata(input_source=AEC3_SWEEP_SOURCE_USB)
+    assert variants[0]["label"].startswith("USB ")
+    assert variants[0]["input_source"] == AEC3_SWEEP_SOURCE_USB
+    assert config_metadata(input_source=AEC3_SWEEP_SOURCE_USB)["input_source"] == (
+        AEC3_SWEEP_SOURCE_USB
+    )
