@@ -377,9 +377,9 @@ written into per-leg quadrant directories at
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
-| `aec3_hf_slow_only` | UDP `:9884` | chip ch1 → parallel SW AEC3 with relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`), no dominant-near-end overrides |
-| `aec3_edge_combo` | UDP `:9885` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`) |
-| `aec3_gentle_dnd` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection (`snr=20`, `enr=0.40`, `hold=75`, `trigger=9`) |
+| `aec3_variant_1` | UDP `:9884` | chip ch1 → parallel SW AEC3 slot 1. Code default is "HF + slow only": relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`), no dominant-near-end overrides. |
+| `aec3_variant_2` | UDP `:9885` | chip ch1 → parallel SW AEC3 slot 2. Code default is "edge combo": relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`). |
+| `aec3_variant_3` | UDP `:9886` | chip ch1 → parallel SW AEC3 slot 3. Code default is "gentle DND": relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection (`snr=20`, `enr=0.40`, `hold=75`, `trigger=9`). |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -402,14 +402,12 @@ selected, `jasper-aec-bridge` runs three additional warmed WebRTC AEC3
 instances in parallel with the baseline `on` leg, all fed the same
 mic/ref frames for the same utterance. Keep this mode quarantined as
 pilot data: it is for Jasper listening + offline analysis, not Session
-A/B training/eval. The current sweep is focused on preserving wake-word
-edge clarity under far+music: baseline `on`, the current
-`aec3_edge_combo`, isolated `aec3_hf_slow_only`, and midpoint
-`aec3_gentle_dnd`. This replaced
-the first-pass NS-off / `default_gain=0.8` variants and the HF-mask 2×2
-after pilot clips showed relaxed HF/slow attack could preserve more of
-the leading "J" transient, while the aggressive dominant-near-end combo
-could both rescue and regress different far+music clips. Use AEC3 sweep
+A/B training/eval. The three sweep legs are stable machine-readable
+slots; their display labels and env overrides may be changed at runtime
+with `/var/lib/jasper/aec3_sweep_variants.json` and
+`jasper-aec-sweep-config apply <file> --restart-bridge`, avoiding a
+full deploy for knob changes. The exact effective variant metadata and
+config hash are written into the session sidecar. Use AEC3 sweep
 separately from DTLN to protect the 1 GB Pi resource budget and keep
 listening comparisons readable.
 
@@ -1367,4 +1365,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v20 — AEC3 DND-isolation sweep legs updated)
+Last verified: 2026-05-28 (v21 — AEC3 sweep runtime config added)

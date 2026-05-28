@@ -93,13 +93,15 @@ The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
 | `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
 | `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
 | `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; list last in playback UI. |
-| `aec3_hf_slow_only` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF plus slower suppressor attack, no dominant-near-end overrides | No | Isolates whether HF/attack changes help without the DND changes. |
-| `aec3_edge_combo` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF, slower suppressor attack, and faster dominant-near-end detection | No | Current aggressive combo that rescued some far+music clips and regressed others. |
-| `aec3_gentle_dnd` | XVF mic path through a parallel WebRTC AEC3 instance with relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection | No | Tests whether a less aggressive DND midpoint preserves edge clarity with fewer regressions. |
+| `aec3_variant_1` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 1 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
+| `aec3_variant_2` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 2 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
+| `aec3_variant_3` | XVF mic path through corpus-only parallel WebRTC AEC3 slot 3 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. |
 
-Leg names in future metadata should stay stable and explicit. Display
-labels can be friendlier, but the machine-readable names should not
-encode vague words like "enhanced" without saying what processing ran.
+Leg names in future metadata should stay stable and explicit. For AEC3
+sweeps, the machine-readable names are intentionally generic stable
+slots because the hypothesis changes often; the session sidecar's
+`aec3_sweep_variants` and `aec3_sweep_config.hash` are the source of
+truth for the actual knobs behind each slot.
 
 ---
 
@@ -447,6 +449,9 @@ and this doc diverge, update this doc or add a dated appendix here.
 
 ## Change Log
 
+- **2026-05-28 (v7):** Added runtime-configured AEC3 sweep slots
+  (`aec3_variant_1`..`3`) so labels/knobs can change without full
+  deploys while metadata records the exact config hash.
 - **2026-05-27 (v6):** Retargeted corpus-only AEC3 sweep legs to
   isolate dominant-near-end detection effects (`hf_slow_only`,
   `edge_combo`, `gentle_dnd`).
@@ -465,4 +470,4 @@ and this doc diverge, update this doc or add a dated appendix here.
   advisory quality analysis of short wake-corpus clips, including tear,
   clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
 
-Last verified: 2026-05-27 (v6 - AEC3 DND-isolation sweep legs updated)
+Last verified: 2026-05-28 (v7 - AEC3 runtime sweep config added)
