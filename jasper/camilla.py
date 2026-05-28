@@ -4,7 +4,7 @@ import asyncio
 import logging
 import math
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from .camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 
@@ -286,6 +286,62 @@ class CamillaController:
                     "camilla unavailable; set_config_file_path(%s) skipped: %s",
                     path, e,
                 )
+                return False
+            raise
+
+    async def set_active_config_raw(
+        self, config: str, *, best_effort: bool = False,
+    ) -> bool:
+        """Upload and apply a complete YAML config without changing the
+        persisted config file path.
+
+        This is intentionally separate from ``set_config_file_path``:
+        live audition surfaces can change the running preference-EQ
+        draft without writing files or changing the durable rollback
+        anchor. Saved/apply flows should keep using the file-path
+        loader so validation, state recording, and rollback stay
+        boring and inspectable.
+        """
+        if not isinstance(config, str) or not config.strip():
+            if best_effort:
+                logger.warning("camilla active config rejected: empty config")
+                return False
+            raise ValueError("config must be a non-empty YAML string")
+        try:
+            await self._call(lambda c: c.config.set_active_raw(config))
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning(
+                    "camilla unavailable; set_active_config_raw skipped: %s",
+                    e,
+                )
+                return False
+            raise
+
+    async def patch_config(
+        self, patch: dict[str, Any], *, best_effort: bool = False,
+    ) -> bool:
+        """Apply a CamillaDSP partial-config patch to the active config.
+
+        CamillaDSP 4.1 exposes ``PatchConfig`` for focused updates such
+        as changing a filter gain/frequency. pyCamillaDSP does not wrap
+        that command as a first-class helper in the pinned version, but
+        its client exposes the underlying ``query`` call. Keeping that
+        escape hatch here prevents raw websocket command names from
+        spreading through product code.
+        """
+        if not isinstance(patch, dict) or not patch:
+            if best_effort:
+                logger.warning("camilla config patch rejected: empty patch")
+                return False
+            raise ValueError("patch must be a non-empty mapping")
+        try:
+            await self._call(lambda c: c.query("PatchConfig", arg=patch))
+            return True
+        except CamillaUnavailable as e:
+            if best_effort:
+                logger.warning("camilla unavailable; patch_config skipped: %s", e)
                 return False
             raise
 

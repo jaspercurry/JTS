@@ -48,8 +48,9 @@ The profile picker has two layers:
 - **Custom** profiles live in `/var/lib/jasper/sound_profiles.json`.
   Users can save a new custom profile from any stock/draft state,
   update an existing custom profile, rename it, or delete it. Custom
-  profile library edits do not touch CamillaDSP until the user
-  explicitly auditions or applies the draft.
+  profile library edits do not touch CamillaDSP; ordinary draft editing
+  and profile loading may separately update the live Draft through
+  `/sound/live-draft`.
 
 `SoundProfile` includes optional `profile_id` / `profile_name` metadata
 so the UI can distinguish "applied Flat" from "draft edited from Flat"
@@ -64,10 +65,17 @@ The page now has explicit compare semantics:
 - **Draft** — the current unsaved form state.
 - **Bypass** — preference EQ disabled while preserving room correction.
 
-Bypass / Applied / Draft auditions emit `sound_audition.yml` and load it
-through the same validation/rollback substrate, but do **not** persist
-the profile. `Apply to Speaker` emits `sound_current.yml` and persists
-only after the CamillaDSP reload is confirmed.
+Dragging editing controls schedules a live Draft update. The browser
+updates the graph immediately, coalesces audio updates, and asks
+`/sound/live-draft` to upload a generated active CamillaDSP config
+without changing the config file path or persisting profile state. Each
+live request carries the current durable DSP write epoch from
+`/var/lib/jasper/dsp_apply_state.json`; if a save or room-correction
+apply wins the writer lock first, the stale live request is skipped.
+Bypass / Applied / Draft compare buttons still emit `sound_audition.yml`
+and load it through the validation/rollback substrate. `Save to Speaker`
+emits `sound_current.yml` and persists only after the CamillaDSP reload
+is confirmed.
 
 ## Files
 
@@ -80,9 +88,14 @@ only after the CamillaDSP reload is confirmed.
   NumPy/SciPy here.
 - `jasper/dsp_apply.py` — import-cheap shared DSP apply substrate:
   typed CamillaDSP validation, config reload, rollback, file locking,
-  and compact last-result persistence.
+  compact last-result persistence, and the durable DSP write epoch used
+  to fence stale live updates.
 - `jasper/web/sound_setup.py` — `/sound/` page, `/state`, `/preview`,
-  `/audition`, and `/apply`.
+  `/live-draft`, `/audition`, and `/apply`.
+- `jasper/camilla.py` — lazy pyCamillaDSP wrapper. Besides the durable
+  config-file loader, it owns the active-config upload/patch escape
+  hatches used by live audition surfaces so raw Camilla command names do
+  not leak into product code.
 - `jasper/camilla_config_contract.py` — shared import-cheap CamillaDSP
   defaults and `PeqFilter` type used by generated config emitters.
 - `jasper/correction/session.py` — correction apply now emits through
@@ -95,7 +108,13 @@ only after the CamillaDSP reload is confirmed.
 
 CamillaDSP has one active config path, so composition is load-bearing.
 Do not add another writer that emits directly to CamillaDSP without
-going through the same room-plus-preference ordering.
+going through the same room-plus-preference ordering. `/sound/live-draft`
+is the narrow exception: it emits the same combined room-plus-preference
+config shape as the durable path, but uploads it as an active config
+only. It must not persist profile state, write `sound_current.yml`,
+change the config file path, or bypass the same known-config guard. It
+still enters the shared DSP writer lock and checks the durable write
+epoch before touching audio.
 
 The generated saved sound filename is stable:
 
@@ -109,8 +128,8 @@ The generated unsaved audition filename is stable:
 /var/lib/camilladsp/configs/sound_audition.yml
 ```
 
-`/sound/apply` only preserves room PEQs from configs it knows how to
-inspect:
+`/sound/apply`, `/sound/audition`, and `/sound/live-draft` only preserve
+room PEQs from configs they know how to inspect:
 
 - `/etc/camilladsp/v1.yml` → no room PEQs.
 - `/var/lib/camilladsp/configs/correction_<session>_<ts>.yml` → extract
@@ -134,6 +153,12 @@ applied?" `sound_profiles.json` answers "which named custom profiles can
 the user load as a draft?" This separation keeps Bypass / Applied /
 Draft and future AI proposals simple.
 
+The UI keeps profile-library management secondary. The primary user flow
+is: choose a sound profile, tune Basic or Advanced controls, compare, and
+Save to Speaker. Reusable profile actions (`Save Copy`, `Update Profile`,
+`Rename`, `Delete`) live under Profile options because they are library
+operations, not the main listening loop.
+
 ## Apply Semantics
 
 `/sound/preview`:
@@ -152,6 +177,26 @@ Draft and future AI proposals simple.
 4. Stamp custom profiles with their library identity metadata.
 5. Return the refreshed profile-library payload for the UI picker.
 
+`/sound/live-draft`:
+
+1. Parses and clamps the posted Draft `SoundProfile`.
+2. Computes one common compare-headroom anchor across Bypass / Applied /
+   Draft.
+3. Requires the posted `dsp_write_epoch` from the latest `/sound/state`.
+4. Enters the shared DSP writer lock.
+5. Skips the request as stale if the durable DSP write epoch changed.
+6. Reads the active CamillaDSP config path with `best_effort=False`.
+7. Rejects unknown/custom active configs.
+8. Extracts room PEQs from known JTS-generated configs.
+9. Emits a generated combined config in memory.
+10. Uploads that YAML through `CamillaController.set_active_config_raw`.
+11. Does **not** write `sound_audition.yml`, change the Camilla config
+   file path, mutate `/var/lib/jasper/dsp_apply_state.json`, or persist
+   `/var/lib/jasper/sound_profile.json`.
+12. Returns `live_status=unavailable` without reloading a config when the
+    controller does not expose active-config upload or CamillaDSP rejects
+    the live upload; explicit compare buttons remain the safe reload path.
+
 `/sound/audition`:
 
 1. Parses and clamps the posted draft/bypass `SoundProfile`.
@@ -167,7 +212,7 @@ Draft and future AI proposals simple.
 9. Rolls back to the prior config path if reload/confirm fails.
 10. Does **not** persist `/var/lib/jasper/sound_profile.json`.
 
-`/sound/apply`:
+`/sound/apply` (`Save to Speaker` in the UI):
 
 1. Reads the active CamillaDSP config path with `best_effort=False`.
 2. Rejects unknown/custom active configs.
@@ -204,6 +249,13 @@ Draft and future AI proposals simple.
   from `/var/lib/jasper/dsp_apply_state.json`; rollback failure is a
   doctor failure.
 
+Live Draft updates intentionally do not write DSP apply state, so they
+are observed through `event=sound.live_draft` logs and the `/sound/`
+status line rather than doctor. Durable Save to Speaker remains the
+stateful operation doctor audits. Repeated live-unavailable warnings are
+rate-limited so a broken live-upload environment does not spam the
+journal while the user drags a slider.
+
 `/state` and `/sound/state` expose the saved sound profile plus the
 profile-library picker payload and latest DSP apply record:
 
@@ -224,7 +276,8 @@ profile-library picker payload and latest DSP apply record:
         "source": "sound",
         "result": "success",
         "candidate_config_path": "/var/lib/camilladsp/configs/sound_current.yml"
-      }
+      },
+      "dsp_write_epoch": "<latest dsp apply op_id or none>"
     }
   }
 }
@@ -252,12 +305,21 @@ can be diagnosed without scraping journal logs.
   hidden Basic EQ; preserve them until an explicit mode switch normalizes
   the draft.
 - Named custom profiles are draft templates. Loading, renaming, saving,
-  or deleting one must not change live audio unless the user explicitly
-  auditions or applies.
+  or deleting one must not persist profile state unless the user saves to
+  the speaker. Editing or loading a draft may change live audio through
+  `/sound/live-draft`; that live draft remains intentionally non-durable.
 - Unsaved auditions must never persist profile state. They may leave
   `sound_audition.yml` active until the user switches Bypass / Applied /
   Draft or applies; that is expected and observable via the DSP apply
   record.
+- Live Draft must only touch the preference EQ layer of a known JTS
+  config. It must never change room PEQs, source routing, limiter,
+  crossover, or the `devices.volume_limit: 0.0` safety ceiling.
+- Live Draft requests must be coalesced client-side. Do not fire one
+  CamillaDSP upload per touch pixel.
+- Live Draft requests must include and verify the durable DSP write
+  epoch. A stale live request must be a no-op, not an older active
+  config upload after `Save to Speaker` or `/correction/apply`.
 
 ## Future Work
 

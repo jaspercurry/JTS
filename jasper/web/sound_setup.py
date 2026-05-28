@@ -4,6 +4,7 @@ URL surface (after nginx strips /sound/):
   GET  /         page render
   GET  /state    persisted profile + preview + stock curve metadata
   POST /preview  preview a draft profile without touching live audio
+  POST /live-draft apply a draft to live audio without persisting
   POST /audition validate and load a draft/bypass config without persisting
   POST /profiles/save save or update a named custom profile
   POST /profiles/rename rename a named custom profile
@@ -66,6 +67,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_DIR = "/var/lib/camilladsp/configs"
 MAX_JSON_BYTES = 64 * 1024
+LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC = 30.0
+
+_live_draft_unavailable_log_at: dict[str, float] = {}
 
 
 def _camilla():
@@ -82,7 +86,9 @@ def _state_payload(
     library_path: str | Path | None = None,
     include_library: bool = False,
 ) -> dict[str, Any]:
-    from jasper.dsp_apply import last_dsp_apply_state
+    from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
+
+    last_dsp_apply = last_dsp_apply_state()
 
     payload = {
         "profile": profile.to_dict(),
@@ -99,13 +105,38 @@ def _state_payload(
             "min_q": MIN_Q,
             "max_q": MAX_Q,
         },
-        "last_dsp_apply": last_dsp_apply_state(),
+        "last_dsp_apply": last_dsp_apply,
+        "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),
     }
     if include_library:
         payload["profile_library"] = profile_library_payload(
             load_profile_library(library_path)
         )
     return payload
+
+
+def _log_live_draft_unavailable(
+    *,
+    reason: str,
+    compare_headroom_db: float,
+    room_peq_count: int,
+    sound_filter_count: int,
+    error: Exception | None = None,
+) -> None:
+    now = time.monotonic()
+    last = _live_draft_unavailable_log_at.get(reason, 0.0)
+    if now - last < LIVE_DRAFT_UNAVAILABLE_LOG_INTERVAL_SEC:
+        return
+    _live_draft_unavailable_log_at[reason] = now
+    logger.warning(
+        "event=sound.live_draft result=unavailable reason=%s "
+        "compare_headroom=%.1f room_peqs=%d sound_filters=%d err=%r",
+        reason,
+        compare_headroom_db,
+        room_peq_count,
+        sound_filter_count,
+        error,
+    )
 
 
 async def _apply_profile(
@@ -144,6 +175,7 @@ async def _apply_profile(
     payload["active_config_path"] = str(out_path)
     payload["preserved_room_peqs"] = apply_state.room_peq_count or 0
     payload["last_dsp_apply"] = apply_state.to_dict()
+    payload["dsp_write_epoch"] = apply_state.op_id
     return payload
 
 
@@ -194,9 +226,178 @@ async def _audition_profile(
             "active_config_path": str(out_path),
             "preserved_room_peqs": apply_state.room_peq_count or 0,
             "last_dsp_apply": apply_state.to_dict(),
+            "dsp_write_epoch": apply_state.op_id,
         }
     )
     return payload
+
+
+async def _live_draft_profile(
+    profile: SoundProfile,
+    *,
+    compare_profiles: list[SoundProfile],
+    expected_dsp_write_epoch: str,
+    profile_path: str | Path,
+    library_path: str | Path | None = None,
+    config_dir: str | Path,
+    camilla_factory: Callable[[], Any] = _camilla,
+) -> dict[str, Any]:
+    """Load a bounded preference-EQ draft into the active Camilla config.
+
+    This is the low-latency editing path: no profile persistence, no
+    config-file pointer change, and no shared apply-state mutation. The
+    durable Save/Apply path remains `_apply_profile`, which writes a
+    validated YAML file and records rollback state.
+    """
+    from jasper.dsp_apply import dsp_write_epoch, dsp_writer_lock
+    from jasper.sound.camilla_yaml import (
+        BASE_CONFIG_PATH,
+        emit_sound_config,
+        extract_room_peqs_from_config,
+        is_base_config,
+        is_jts_generated_config,
+    )
+
+    cam = camilla_factory()
+    config_path = Path(config_dir)
+    compare_headroom_db = estimate_compare_headroom_db(compare_profiles or [profile])
+    sound_filter_count = len(build_sound_filters(profile))
+    try:
+        loader = getattr(cam, "set_active_config_raw")
+    except AttributeError:
+        loader = None
+
+    def _live_payload(
+        *,
+        status: str,
+        method: str,
+        current_epoch: str,
+        room_peq_count: int = 0,
+        active_config_path: str | None = None,
+    ) -> dict[str, Any]:
+        payload = _state_payload(
+            profile,
+            library_path=library_path,
+            include_library=library_path is not None,
+        )
+        payload.update(
+            {
+                "live_status": status,
+                "live_method": method,
+                "live_headroom_db": compare_headroom_db,
+                "dsp_write_epoch": current_epoch,
+                "active_config_path": active_config_path,
+                "preserved_room_peqs": room_peq_count,
+                "sound_filter_count": sound_filter_count,
+            }
+        )
+        if status == "live":
+            payload.update(
+                {
+                    "audition_mode": "draft",
+                    "audition_profile": profile.to_dict(),
+                    "audition_headroom_db": compare_headroom_db,
+                }
+            )
+        return payload
+
+    def _unavailable(
+        reason: str,
+        *,
+        current_epoch: str,
+        error: Exception | None = None,
+    ) -> dict[str, Any]:
+        _log_live_draft_unavailable(
+            reason=reason,
+            compare_headroom_db=compare_headroom_db,
+            room_peq_count=0,
+            sound_filter_count=sound_filter_count,
+            error=error,
+        )
+        return _live_payload(
+            status="unavailable",
+            method=reason,
+            current_epoch=current_epoch,
+        )
+
+    if loader is None:
+        return _unavailable(
+            "active_config_raw_unavailable",
+            current_epoch=dsp_write_epoch(),
+        )
+
+    async with dsp_writer_lock(config_path):
+        current_epoch = dsp_write_epoch()
+        if expected_dsp_write_epoch != current_epoch:
+            logger.info(
+                "event=sound.live_draft result=stale expected_epoch=%s "
+                "current_epoch=%s",
+                expected_dsp_write_epoch,
+                current_epoch,
+            )
+            return _live_payload(
+                status="stale",
+                method="skipped_stale_epoch",
+                current_epoch=current_epoch,
+            )
+
+        current_path = await cam.get_config_file_path(best_effort=False)
+        if not current_path:
+            raise RuntimeError("CamillaDSP did not report a loaded config path")
+
+        if is_base_config(current_path):
+            room_peqs = []
+        elif is_jts_generated_config(current_path, config_dir=config_path):
+            room_peqs = extract_room_peqs_from_config(current_path)
+        else:
+            raise RuntimeError(
+                "CamillaDSP is running a custom config that JTS cannot safely "
+                f"preserve ({current_path}). Reset to {BASE_CONFIG_PATH} or apply "
+                "room correction before changing sound EQ."
+            )
+
+        yaml = emit_sound_config(
+            profile,
+            room_peqs=room_peqs,
+            profile_id=f"live-{time.time_ns()}",
+            headroom_override_db=compare_headroom_db,
+            emit_preamp_without_sound=True,
+        )
+
+        try:
+            await loader(yaml, best_effort=False)
+        except Exception as e:  # noqa: BLE001
+            _log_live_draft_unavailable(
+                reason="active_config_raw_failed",
+                compare_headroom_db=compare_headroom_db,
+                room_peq_count=len(room_peqs),
+                sound_filter_count=sound_filter_count,
+                error=e,
+            )
+            return _live_payload(
+                status="unavailable",
+                method="active_config_raw_failed",
+                current_epoch=current_epoch,
+                room_peq_count=len(room_peqs),
+                active_config_path=current_path,
+            )
+
+        logger.info(
+            "event=sound.live_draft result=live compare_headroom=%.1f "
+            "room_peqs=%d sound_filters=%d active_anchor=%s epoch=%s",
+            compare_headroom_db,
+            len(room_peqs),
+            sound_filter_count,
+            current_path,
+            current_epoch,
+        )
+        return _live_payload(
+            status="live",
+            method="active_config_raw",
+            current_epoch=current_epoch,
+            room_peq_count=len(room_peqs),
+            active_config_path=current_path,
+        )
 
 
 async def _load_profile_config(
@@ -300,6 +501,14 @@ _PAGE_CSS = f"""
   .profile-actions.stock {{ grid-template-columns: minmax(0, 1fr); }}
   .profile-actions button {{ min-height: 44px; padding-left: 0.7em; padding-right: 0.7em; }}
   .profile-actions button[hidden] {{ display: none; }}
+  .profile-menu {{
+    margin-top: 0.2em; border-top: 1px solid #ececec; padding-top: 0.65em;
+  }}
+  .profile-menu summary {{
+    cursor: pointer; color: #555; min-height: 44px; display: flex;
+    align-items: center; width: fit-content;
+  }}
+  .profile-menu[open] summary {{ margin-bottom: 0.4em; }}
   .profile-note {{ color: #666; font-size: 0.92em; }}
   .profile-state {{
     display: grid; gap: 0.25em; padding: 0.75em; border: 1px solid #e6e6e6;
@@ -459,25 +668,28 @@ from room correction.</p>
     <div><strong>Draft:</strong> <span id="draft-profile-state">Loading...</span></div>
   </div>
   <div class="profile-row">
-    <label for="profile-select">Start from profile</label>
+    <label for="profile-select">Sound profile</label>
     <select id="profile-select" disabled></select>
     <div class="profile-note" id="profile-description"></div>
   </div>
-  <div class="profile-row">
-    <label for="profile-name">Custom profile name</label>
-    <input type="text" id="profile-name" maxlength="48" autocomplete="off"
-           placeholder="Custom Profile" disabled>
-    <div class="profile-note">
-      Saving here updates the profile library only. Use Apply to Speaker when
-      you want this draft to become the live sound.
+  <details class="profile-menu" id="profile-menu">
+    <summary>Profile options</summary>
+    <div class="profile-row">
+      <label for="profile-name">Profile name</label>
+      <input type="text" id="profile-name" maxlength="48" autocomplete="off"
+             placeholder="Custom Profile" disabled>
+      <div class="profile-note">
+        Use these when you want to keep, rename, or remove a reusable custom
+        profile. Save to Speaker below makes the current draft durable.
+      </div>
     </div>
-  </div>
-  <div class="profile-actions" id="profile-actions">
-    <button type="button" id="save-new-profile" class="secondary" disabled>Save as Custom</button>
-    <button type="button" id="update-profile" class="secondary" disabled>Update Custom</button>
-    <button type="button" id="rename-profile" class="secondary" disabled>Rename</button>
-    <button type="button" id="delete-profile" class="secondary" disabled>Delete</button>
-  </div>
+    <div class="profile-actions" id="profile-actions">
+      <button type="button" id="save-new-profile" class="secondary" disabled>Save Copy</button>
+      <button type="button" id="update-profile" class="secondary" disabled>Update Profile</button>
+      <button type="button" id="rename-profile" class="secondary" disabled>Rename</button>
+      <button type="button" id="delete-profile" class="secondary" disabled>Delete</button>
+    </div>
+  </details>
 </div>
 
 <div class="compare-row">
@@ -543,8 +755,8 @@ from room correction.</p>
   </section>
 
   <div class="button-row">
-    <button id="apply" disabled>Apply to Speaker</button>
-    <button id="revert" class="secondary" disabled>Revert to Applied</button>
+    <button id="apply" disabled>Save to Speaker</button>
+    <button id="revert" class="secondary" disabled>Discard Edits</button>
     <button id="reset" class="secondary" disabled>Reset Flat</button>
   </div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
@@ -560,6 +772,12 @@ from room correction.</p>
   var applying = false;
   var previewTimer = null;
   var previewSeq = 0;
+  var liveTimer = null;
+  var liveDesiredSeq = 0;
+  var liveInFlight = false;
+  var livePending = false;
+  var liveDebounceMs = 180;
+  var dspWriteEpoch = 'none';
   var selectedBand = 0;
   var liveMode = 'applied';
   var eqMode = 'basic';
@@ -825,6 +1043,7 @@ from room correction.</p>
     limits = Object.assign(limits, payload.limits || {});
     localPreviewFreqs = null;
     if (payload.profile_library) populateProfiles(payload.profile_library);
+    dspWriteEpoch = payload.dsp_write_epoch || 'none';
     savedProfile = normalizeProfile(payload.profile || {});
     selectedProfileId = findProfileIdFor(savedProfile);
     setFormFromProfile(savedProfile);
@@ -1049,7 +1268,7 @@ from room correction.</p>
     setFormFromProfile(entry.profile);
     syncProfileName(entry);
     renderBands();
-    preview();
+    scheduleDraftChange({immediate: true});
     updateProfileActions();
     status('Loaded ' + entry.name + ' as draft.');
   }
@@ -1145,6 +1364,11 @@ from room correction.</p>
     window.clearTimeout(previewTimer);
     previewTimer = window.setTimeout(preview, 90);
   }
+  function scheduleDraftChange(options) {
+    options = options || {};
+    schedulePreview();
+    scheduleLiveDraft(!!options.immediate);
+  }
   async function preview() {
     var seq = ++previewSeq;
     try {
@@ -1163,6 +1387,59 @@ from room correction.</p>
       status('Could not preview EQ: ' + e.message, true);
     }
   }
+  function scheduleLiveDraft(immediate) {
+    if (!controlsEnabled || applying) return;
+    liveDesiredSeq += 1;
+    livePending = true;
+    window.clearTimeout(liveTimer);
+    liveTimer = window.setTimeout(runLiveDraft, immediate ? 0 : liveDebounceMs);
+  }
+  function cancelLiveDrafts() {
+    liveDesiredSeq += 1;
+    livePending = false;
+    window.clearTimeout(liveTimer);
+  }
+  async function runLiveDraft() {
+    if (!livePending || applying) return;
+    if (liveInFlight) return;
+    livePending = false;
+    liveInFlight = true;
+    var seq = liveDesiredSeq;
+    try {
+      var resp = await fetch('./live-draft', {
+        method: 'POST',
+        headers: jsonHeaders(),
+        body: JSON.stringify({
+          profile: profileFromInputs(),
+          compare_profiles: compareProfiles(),
+          dsp_write_epoch: dspWriteEpoch
+        })
+      });
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'live draft failed');
+      if (seq === liveDesiredSeq) {
+        if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
+        if (payload.live_status === 'live') {
+          updateCompareButtons('draft', payload.live_headroom_db || payload.audition_headroom_db || 0);
+          status('Listening to draft live.');
+        } else if (payload.live_status === 'stale') {
+          status('Speaker DSP changed. Move a control again to hear this draft.');
+        } else {
+          status('Live EQ updates are unavailable on this CamillaDSP connection.', true);
+        }
+      }
+    } catch (e) {
+      if (seq === liveDesiredSeq) {
+        status('Could not update live draft: ' + e.message, true);
+      }
+    } finally {
+      liveInFlight = false;
+      if (livePending && !applying) {
+        window.clearTimeout(liveTimer);
+        liveTimer = window.setTimeout(runLiveDraft, 0);
+      }
+    }
+  }
   function updateCompareButtons(mode, headroom) {
     liveMode = mode || liveMode;
     ['bypass', 'applied', 'draft'].forEach(function(name) {
@@ -1173,6 +1450,7 @@ from room correction.</p>
   }
   async function audition(mode) {
     applying = true;
+    cancelLiveDrafts();
     setControlsEnabled(true);
     status('Loading ' + mode + '...');
     try {
@@ -1187,6 +1465,7 @@ from room correction.</p>
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'audition failed');
+      if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
       updateCompareButtons(mode, payload.audition_headroom_db || 0);
       status('Listening to ' + mode + '.');
     } catch (e) {
@@ -1212,6 +1491,7 @@ from room correction.</p>
   }
   async function apply(profile) {
     applying = true;
+    cancelLiveDrafts();
     setControlsEnabled(true);
     status('Applying...');
     try {
@@ -1233,9 +1513,14 @@ from room correction.</p>
     }
   }
   ['bass', 'mid', 'treble'].forEach(function(id) {
-    el(id).addEventListener('input', schedulePreview);
+    el(id).addEventListener('input', scheduleDraftChange);
+    el(id).addEventListener('change', function() {
+      scheduleDraftChange({immediate: true});
+    });
   });
-  el('curve').addEventListener('change', schedulePreview);
+  el('curve').addEventListener('change', function() {
+    scheduleDraftChange({immediate: true});
+  });
   ['basic', 'advanced'].forEach(function(mode) {
     el('mode-' + mode).addEventListener('click', function() {
       if (eqMode === mode && !legacyMixedProfile) return;
@@ -1249,7 +1534,7 @@ from room correction.</p>
       syncLabels();
       renderBands();
       renderMode();
-      schedulePreview();
+      scheduleDraftChange({immediate: true});
     });
   });
   el('apply').addEventListener('click', function() { apply(profileFromInputs()); });
@@ -1318,7 +1603,7 @@ from room correction.</p>
     selectedBand = draftBands.length - 1;
     eqMode = 'advanced';
     renderBands();
-    schedulePreview();
+    scheduleDraftChange({immediate: true});
   });
   el('band-list').addEventListener('click', function(ev) {
     var action = ev.target.getAttribute('data-action');
@@ -1328,7 +1613,7 @@ from room correction.</p>
       draftBands.splice(index, 1);
       selectedBand = Math.max(0, Math.min(selectedBand, draftBands.length - 1));
       renderBands();
-      schedulePreview();
+      scheduleDraftChange({immediate: true});
     }
   });
   el('band-list').addEventListener('input', function(ev) {
@@ -1346,7 +1631,7 @@ from room correction.</p>
     if (kind === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
     if (kind === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
     updateBandReadouts(index);
-    schedulePreview();
+    scheduleDraftChange();
   });
   el('band-list').addEventListener('change', function(ev) {
     var index = Number(ev.target.getAttribute('data-index'));
@@ -1357,7 +1642,7 @@ from room correction.</p>
     if (kind === 'type') band.type = ev.target.value;
     if (kind === 'enabled') band.enabled = ev.target.checked;
     renderBands();
-    schedulePreview();
+    scheduleDraftChange({immediate: true});
   });
   el('revert').addEventListener('click', function() {
     setFormFromProfile(savedProfile);
@@ -1373,8 +1658,8 @@ from room correction.</p>
     syncProfileName(selectedProfileEntry());
     updateProfileActions();
     renderBands();
-    preview();
-    status('Draft reset to Flat. Apply to Speaker when ready.');
+    scheduleDraftChange({immediate: true});
+    status('Draft reset to Flat. Save to Speaker when ready.');
   });
   loadState();
 })();
@@ -1440,6 +1725,7 @@ def _make_handler(
             if path not in {
                 "/apply",
                 "/audition",
+                "/live-draft",
                 "/preview",
                 "/profiles/save",
                 "/profiles/rename",
@@ -1515,7 +1801,7 @@ def _make_handler(
                         return
                     self._send_json(payload)
                     return
-                if path == "/audition":
+                if path in {"/audition", "/live-draft"}:
                     raw_profile = raw.get("profile", raw)
                 else:
                     raw_profile = raw
@@ -1527,27 +1813,47 @@ def _make_handler(
                 self._send_json(_state_payload(profile))
                 return
             try:
-                if path == "/audition":
+                if path in {"/audition", "/live-draft"}:
                     raw_compare = raw.get("compare_profiles", [])
                     if not isinstance(raw_compare, list):
                         raw_compare = []
                     compare_profiles = [
                         SoundProfile.from_mapping(item) for item in raw_compare[:3]
                     ]
-                    audition_mode = str(raw.get("mode") or "draft")
-                    if audition_mode not in {"bypass", "applied", "draft"}:
-                        audition_mode = "draft"
-                    payload = asyncio.run(
-                        _audition_profile(
-                            profile,
-                            compare_profiles=compare_profiles,
-                            audition_mode=audition_mode,
-                            profile_path=profile_path,
-                            library_path=library_path,
-                            config_dir=config_dir,
-                            camilla_factory=camilla_factory,
+                    if path == "/live-draft":
+                        expected_epoch = raw.get("dsp_write_epoch")
+                        if not isinstance(expected_epoch, str) or not expected_epoch:
+                            self._send_json(
+                                {"error": "missing dsp_write_epoch"},
+                                status=400,
+                            )
+                            return
+                        payload = asyncio.run(
+                            _live_draft_profile(
+                                profile,
+                                compare_profiles=compare_profiles,
+                                expected_dsp_write_epoch=expected_epoch,
+                                profile_path=profile_path,
+                                library_path=library_path,
+                                config_dir=config_dir,
+                                camilla_factory=camilla_factory,
+                            )
                         )
-                    )
+                    else:
+                        audition_mode = str(raw.get("mode") or "draft")
+                        if audition_mode not in {"bypass", "applied", "draft"}:
+                            audition_mode = "draft"
+                        payload = asyncio.run(
+                            _audition_profile(
+                                profile,
+                                compare_profiles=compare_profiles,
+                                audition_mode=audition_mode,
+                                profile_path=profile_path,
+                                library_path=library_path,
+                                config_dir=config_dir,
+                                camilla_factory=camilla_factory,
+                            )
+                        )
                 else:
                     payload = asyncio.run(
                         _apply_profile(

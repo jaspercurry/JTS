@@ -247,6 +247,26 @@ def last_dsp_apply_state(
     return blob if isinstance(blob, dict) else None
 
 
+def dsp_write_epoch_from_state(state: dict[str, Any] | None) -> str:
+    """Return the durable DSP-write epoch encoded by the latest apply state."""
+
+    if not state:
+        return "none"
+    op_id = state.get("op_id")
+    return str(op_id) if op_id else "none"
+
+
+def dsp_write_epoch(*, state_path: str | Path | None = None) -> str:
+    """Return the current durable DSP-write epoch.
+
+    Live/non-durable DSP surfaces use this as a stale-write fence. Durable
+    applies record a new op_id, so a live request that was created before a
+    save or room-correction apply can be skipped before it touches audio.
+    """
+
+    return dsp_write_epoch_from_state(last_dsp_apply_state(state_path=state_path))
+
+
 def _sha256(path: Path) -> str | None:
     try:
         h = hashlib.sha256()
@@ -286,6 +306,20 @@ async def _dsp_apply_lock(path: Path):
         yield
     finally:
         await asyncio.to_thread(lock.release)
+
+
+def dsp_apply_lock_path(config_dir: str | Path) -> Path:
+    """Return the shared local lock path for generated CamillaDSP configs."""
+
+    return Path(config_dir) / ".dsp_apply.lock"
+
+
+@contextlib.asynccontextmanager
+async def dsp_writer_lock(config_dir: str | Path):
+    """Serialize all JTS writers for the generated CamillaDSP config dir."""
+
+    async with _dsp_apply_lock(dsp_apply_lock_path(config_dir)):
+        yield
 
 
 async def _maybe_call(fn: Callable[[], Any] | None) -> Any:
@@ -348,7 +382,7 @@ async def apply_dsp_config(
     """
 
     candidate = Path(candidate_path)
-    lock = Path(lock_path) if lock_path else candidate.parent / ".dsp_apply.lock"
+    lock = Path(lock_path) if lock_path else dsp_apply_lock_path(candidate.parent)
     state = DspApplyState(
         schema_version=1,
         op_id=uuid.uuid4().hex,

@@ -6,9 +6,14 @@ from pathlib import Path
 from jasper.dsp_apply import (
     CamillaConfigValidationResult,
     DspApplyError,
+    DspApplyState,
     ValidationStatus,
     apply_dsp_config,
+    dsp_apply_lock_path,
+    dsp_write_epoch,
+    dsp_write_epoch_from_state,
     last_dsp_apply_state,
+    record_dsp_apply_state,
     validate_camilla_config,
 )
 
@@ -39,6 +44,31 @@ def test_validate_camilla_config_uses_check_flag_with_positional_config(
 
     assert result.status == ValidationStatus.VALID
     assert argv_capture.read_text().splitlines() == ["--check", str(cfg)]
+
+
+def test_dsp_write_epoch_tracks_latest_apply_state(tmp_path: Path):
+    state_path = tmp_path / "dsp_apply_state.json"
+
+    assert dsp_write_epoch_from_state(None) == "none"
+    assert dsp_write_epoch(state_path=state_path) == "none"
+
+    record_dsp_apply_state(
+        DspApplyState(
+            schema_version=1,
+            op_id="op-123",
+            source="test",
+            phase="done",
+            result="success",
+            started_at="2026-05-28T00:00:00Z",
+            finished_at="2026-05-28T00:00:01Z",
+            prior_config_path=None,
+            candidate_config_path="/tmp/test.yml",
+        ),
+        state_path=state_path,
+    )
+
+    assert dsp_write_epoch(state_path=state_path) == "op-123"
+    assert dsp_apply_lock_path(tmp_path) == tmp_path / ".dsp_apply.lock"
 
 
 def test_validate_camilla_config_classifies_invalid_config(
