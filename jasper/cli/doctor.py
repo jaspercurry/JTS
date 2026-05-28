@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
 from ..camilla_config_contract import DEFAULT_VOLUME_LIMIT_DB
 from ..config import Config
@@ -52,6 +52,82 @@ class CheckResult:
     name: str
     status: str  # "ok" | "warn" | "fail"
     detail: str = ""
+
+
+DoctorCheck = Callable[[], CheckResult] | tuple[str, Callable[[], CheckResult]]
+_EXCEPTION_DETAIL_LIMIT = 240
+_BEARER_SECRET_RE = re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._~+/=-]{8,}")
+_KEY_VALUE_SECRET_RE = re.compile(
+    r"(?i)\b"
+    r"(api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|"
+    r"password|psk|token)"
+    r"\s*([=:])\s*(['\"]?)([^'\"\s,;]+)"
+)
+_SECRET_PREFIX_RE = re.compile(r"\b(?:AIza|sk-|xai-)[A-Za-z0-9_-]{8,}")
+
+
+def _redact_exception_message(message: str) -> str:
+    message = _BEARER_SECRET_RE.sub("Bearer <redacted>", message)
+    message = _KEY_VALUE_SECRET_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{m.group(3)}<redacted>",
+        message,
+    )
+    return _SECRET_PREFIX_RE.sub(
+        lambda m: f"{m.group(0)[:4]}...{m.group(0)[-4:]}",
+        message,
+    )
+
+
+def _exception_detail(exc: BaseException) -> str:
+    message = _redact_exception_message(str(exc))
+    if len(message) > _EXCEPTION_DETAIL_LIMIT:
+        message = message[: _EXCEPTION_DETAIL_LIMIT - 3] + "..."
+    if not message:
+        return type(exc).__name__
+    return f"{type(exc).__name__}: {message}"
+
+
+def _crashed_check_result(name: str, exc: BaseException) -> CheckResult:
+    return CheckResult(
+        name,
+        "fail",
+        f"check crashed: {_exception_detail(exc)}",
+    )
+
+
+def _check_name(check: Callable[[], CheckResult]) -> str:
+    name = getattr(check, "__name__", "doctor check")
+    if name == "<lambda>":
+        return "doctor check"
+    if name.startswith("check_"):
+        name = name[len("check_"):]
+    return name.replace("_", " ")
+
+
+def _normalize_doctor_check(
+    entry: DoctorCheck,
+) -> tuple[str, Callable[[], CheckResult]]:
+    if isinstance(entry, tuple):
+        return entry
+    return _check_name(entry), entry
+
+
+def _run_doctor_check(entry: DoctorCheck) -> CheckResult:
+    name, check = _normalize_doctor_check(entry)
+    try:
+        return check()
+    except Exception as e:  # noqa: BLE001
+        return _crashed_check_result(name, e)
+
+
+async def _run_async_doctor_check(
+    name: str,
+    check: Callable[[], Awaitable[CheckResult]],
+) -> CheckResult:
+    try:
+        return await check()
+    except Exception as e:  # noqa: BLE001
+        return _crashed_check_result(name, e)
 
 
 def _run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
@@ -3527,31 +3603,31 @@ def render_json(results: list[CheckResult]) -> int:
 
 
 async def run_async(cfg: Config) -> list[CheckResult]:
-    sync_checks: list[Callable[[], CheckResult]] = [
+    sync_checks: list[DoctorCheck] = [
         check_env_file,
         check_speaker_name,
-        lambda: check_provider_key(cfg),
-        lambda: check_mic_card_matches_config(cfg),
+        ("provider key", lambda: check_provider_key(cfg)),
+        ("mic ALSA card", lambda: check_mic_card_matches_config(cfg)),
         check_loopback,
-        lambda: check_mic_capture(cfg),
-        lambda: check_tts_open(cfg),
-        lambda: check_openwakeword_model(cfg),
+        ("mic capture", lambda: check_mic_capture(cfg)),
+        ("tts output", lambda: check_tts_open(cfg)),
+        ("openWakeWord models", lambda: check_openwakeword_model(cfg)),
         # Per-renderer health: each daemon's own surface.
-        lambda: check_librespot_running(cfg),
+        ("librespot.service", lambda: check_librespot_running(cfg)),
         check_shairport_sync_ap2,
         check_nqptp_running,
         check_bluealsa,
         check_jasper_mux,
-        lambda: check_spotify_cache(cfg),
-        lambda: check_spotify_connect_device(cfg),
-        lambda: check_google_tokens(cfg),
-        lambda: check_home_assistant(cfg),
+        ("Spotify auth", lambda: check_spotify_cache(cfg)),
+        ("Spotify Connect device", lambda: check_spotify_connect_device(cfg)),
+        ("Google OAuth", lambda: check_google_tokens(cfg)),
+        ("Home Assistant", lambda: check_home_assistant(cfg)),
         # Citi Bike: GBFS reachability + saved-station drift detection.
         # Skip-if-not-configured matches the home_assistant pattern.
-        lambda: check_citibike(cfg),
+        ("Citi Bike", lambda: check_citibike(cfg)),
         check_apple_dongle_audio,
         check_dongle_headphone_at_max,
-        lambda: check_state_dir(cfg),
+        ("state dir", lambda: check_state_dir(cfg)),
         # Room-correction observability: socket-activated service
         # health, state-dir drift, currently-loaded correction profile,
         # and the newest replay/debug bundle. These are deliberately
@@ -3586,7 +3662,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # enabled + audio-path daemons aren't swapping to zram.
         check_cgroup_memory_enabled,
         check_audio_path_no_swap,
-        lambda: check_spend_cap(cfg),
+        ("daily spend cap", lambda: check_spend_cap(cfg)),
         check_aec_bridge_running,
         # check_aec_output_card retired in PR 2 — see jasper.cli.doctor
         check_aec_bridge_output_health,
@@ -3658,8 +3734,11 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # failure.
         check_renderer_device_resolvable,
     ]
-    results = [c() for c in sync_checks]
-    results.append(await check_camilla_websocket(cfg))
+    results = [_run_doctor_check(c) for c in sync_checks]
+    results.append(await _run_async_doctor_check(
+        "CamillaDSP websocket",
+        lambda: check_camilla_websocket(cfg),
+    ))
     return results
 
 
@@ -4427,14 +4506,15 @@ def main() -> None:
     except Exception as e:  # noqa: BLE001
         if args.json:
             import json as _json
+            detail = _exception_detail(e)
             print(_json.dumps({
-                "error": f"doctor crashed: {type(e).__name__}: {e}",
+                "error": f"doctor crashed: {detail}",
                 "fails": 1,
                 "warns": 0,
                 "results": [{
                     "name": "jasper-doctor",
                     "status": "fail",
-                    "detail": f"{type(e).__name__}: {e}",
+                    "detail": detail,
                 }],
             }))
             sys.exit(1)

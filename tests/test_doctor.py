@@ -4,6 +4,7 @@ systemctl, arecord, etc) are exercised on the Pi via
 ``jasper-doctor`` itself; this file pins the pure-python helpers."""
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
 import sys
@@ -226,6 +227,48 @@ def test_json_mode_reports_unhandled_check_exception(monkeypatch, capsys):
     assert payload["fails"] == 1
     assert payload["results"][0]["name"] == "jasper-doctor"
     assert "synthetic failure" in payload["error"]
+
+
+def test_doctor_check_exception_becomes_fail_result():
+    def explode():
+        raise RuntimeError("synthetic check failure")
+
+    result = doctor._run_doctor_check(("explosive check", explode))
+
+    assert result.name == "explosive check"
+    assert result.status == "fail"
+    assert "RuntimeError: synthetic check failure" in result.detail
+
+
+def test_doctor_check_exception_redacts_secret_like_values():
+    def explode():
+        raise RuntimeError(
+            "refresh_token=super-secret-refresh "
+            "Bearer super-secret-access-token "
+            "sk-super-secret-openai-key"
+        )
+
+    result = doctor._run_doctor_check(("sensitive check", explode))
+
+    assert "super-secret-refresh" not in result.detail
+    assert "super-secret-access-token" not in result.detail
+    assert "sk-super-secret-openai-key" not in result.detail
+    assert "refresh_token=<redacted>" in result.detail
+    assert "Bearer <redacted>" in result.detail
+    assert "sk-s...-key" in result.detail
+
+
+def test_async_doctor_check_exception_becomes_fail_result():
+    async def explode():
+        raise RuntimeError("synthetic async failure")
+
+    result = asyncio.run(
+        doctor._run_async_doctor_check("async check", explode),
+    )
+
+    assert result.name == "async check"
+    assert result.status == "fail"
+    assert "RuntimeError: synthetic async failure" in result.detail
 
 
 # ------------------------------------------------ ALSA shorthand mic lookup
