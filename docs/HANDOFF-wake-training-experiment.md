@@ -377,9 +377,9 @@ written into per-leg quadrant directories at
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
-| `aec3_hf_relaxed` | UDP `:9884` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
+| `aec3_hf_slow_only` | UDP `:9884` | chip ch1 → parallel SW AEC3 with relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`), no dominant-near-end overrides |
 | `aec3_edge_combo` | UDP `:9885` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`) |
-| `aec3_slow_attack` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`) |
+| `aec3_gentle_dnd` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack, and midpoint dominant-near-end detection (`snr=20`, `enr=0.40`, `hold=75`, `trigger=9`) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -403,13 +403,15 @@ instances in parallel with the baseline `on` leg, all fed the same
 mic/ref frames for the same utterance. Keep this mode quarantined as
 pilot data: it is for Jasper listening + offline analysis, not Session
 A/B training/eval. The current sweep is focused on preserving wake-word
-edge clarity under far+music: baseline `on`, `aec3_hf_relaxed`, faster
-dominant-near-end detection, and slower suppressor attack. This replaced
+edge clarity under far+music: baseline `on`, the current
+`aec3_edge_combo`, isolated `aec3_hf_slow_only`, and midpoint
+`aec3_gentle_dnd`. This replaced
 the first-pass NS-off / `default_gain=0.8` variants and the HF-mask 2×2
-after pilot clips showed `aec3_hf_relaxed` preserved more of the leading
-"J" transient, while upstream HF mask values were darker and did not
-improve the wake score. Use AEC3 sweep separately from DTLN to protect
-the 1 GB Pi resource budget and keep listening comparisons readable.
+after pilot clips showed relaxed HF/slow attack could preserve more of
+the leading "J" transient, while the aggressive dominant-near-end combo
+could both rescue and regress different far+music clips. Use AEC3 sweep
+separately from DTLN to protect the 1 GB Pi resource budget and keep
+listening comparisons readable.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
 comparison path. Keep it optional on the Pi: `JASPER_AEC_DTLN_ENABLED=1`
@@ -1117,6 +1119,9 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
 - 2026-05-27 edge-combo pass — AEC3 sweep variants retargeted to
   test the combined promising direction: `aec3_hf_relaxed`,
   `aec3_edge_combo`, and `aec3_slow_attack`
+- 2026-05-27 DND isolation pass — AEC3 sweep variants retargeted to
+  isolate DND effects: `aec3_hf_slow_only`, `aec3_edge_combo`, and
+  `aec3_gentle_dnd`
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1127,8 +1132,8 @@ Recorder UX status:
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Per-session AEC3 sweep toggle for pilot tuning: baseline plus
-  `aec3_hf_relaxed`, `aec3_edge_combo`, and
-  `aec3_slow_attack`
+  `aec3_hf_slow_only`, `aec3_edge_combo`, and
+  `aec3_gentle_dnd`
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
@@ -1362,4 +1367,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v19 — corpus test-mode restart safety verified against code)
+Last verified: 2026-05-27 (v20 — AEC3 DND-isolation sweep legs updated)

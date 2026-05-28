@@ -141,9 +141,11 @@ AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
 LEGACY_AEC3_SWEEP_LEGS = (
     "aec3_ns_off",
     "aec3_default_gain_08",
+    "aec3_hf_relaxed",
     "aec3_hf_mask_upstream",
     "aec3_hf_wide_open",
     "aec3_nearend_fast",
+    "aec3_slow_attack",
 )
 LEGS = (
     "on", *AEC3_SWEEP_LEGS, *LEGACY_AEC3_SWEEP_LEGS,
@@ -160,9 +162,11 @@ LEG_LABELS = {
     **{variant.leg: variant.label for variant in AEC3_SWEEP_VARIANTS},
     "aec3_ns_off": "AEC3 NS off (legacy)",
     "aec3_default_gain_08": "AEC3 default gain 0.8 (legacy)",
+    "aec3_hf_relaxed": "AEC3 HF relaxed (legacy)",
     "aec3_hf_mask_upstream": "AEC3 HF mask upstream (legacy)",
     "aec3_hf_wide_open": "AEC3 HF wide open (legacy)",
     "aec3_nearend_fast": "AEC3 near-end fast (legacy)",
+    "aec3_slow_attack": "AEC3 slow attack (legacy)",
     "off": "XVF raw",
     "dtln": "XVF DTLN",
     "raw0": "XVF raw0",
