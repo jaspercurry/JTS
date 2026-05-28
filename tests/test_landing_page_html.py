@@ -13,10 +13,17 @@ from pathlib import Path
 
 _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
+_PREFLIGHT_PATH = _REPO / "deploy" / "correction-preflight.html"
+_NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
+_INSTALL_PATH = _REPO / "deploy" / "install.sh"
 
 
 def _index_html() -> str:
     return _INDEX_PATH.read_text(encoding="utf-8")
+
+
+def _preflight_html() -> str:
+    return _PREFLIGHT_PATH.read_text(encoding="utf-8")
 
 
 def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
@@ -66,3 +73,43 @@ def test_source_selector_uses_control_endpoints() -> None:
     assert "fetch('/source/select'" in html
     assert "pendingSource" in html
     assert "source-button.playing::after" in html
+
+
+def test_room_correction_card_uses_http_preflight() -> None:
+    html = _index_html()
+
+    assert 'id="correction-card" href="/correction/"' in html
+    assert "data-https" not in html
+    assert "HTTPS warning" in html
+    assert "walkthrough" in html
+
+
+def test_room_correction_preflight_switches_to_https() -> None:
+    html = _preflight_html()
+
+    assert 'id="proceed"' in html
+    assert "OK, proceed" in html
+    assert "Your connection is not private" in html
+    assert "Other JTS pages remain" in html
+    assert "https://' + window.location.hostname + '/correction/'" in html
+
+
+def test_nginx_serves_correction_preflight_on_http_only() -> None:
+    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+
+    assert "location = /correction" in nginx
+    assert "return 308 /correction/;" in nginx
+    assert "location = /correction/" in nginx
+    assert "try_files /correction-preflight.html =404;" in nginx
+    assert "location /correction/" in nginx
+    assert "proxy_pass http://127.0.0.1:8770/;" in nginx
+    assert "return 308 http://$host$request_uri;" in nginx
+    assert "Do not add HSTS here" in nginx
+    assert "Strict-Transport-Security" not in nginx
+
+
+def test_install_copies_correction_preflight_page() -> None:
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+
+    assert "deploy/correction-preflight.html" in install
+    assert "/usr/share/jasper-web/correction-preflight.html" in install

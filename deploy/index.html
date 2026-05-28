@@ -352,13 +352,12 @@
       </div>
     </a>
 
-    <a class="card" id="correction-card" data-https="1" data-path="/correction/"
-       href="#">
+    <a class="card" id="correction-card" href="/correction/">
       <div class="name">Room correction &rsaquo;</div>
       <div class="desc">
         Measure your room from your iPhone and apply correction
-        filters to CamillaDSP. Browser will warn "Not Private" the
-        first time — see the note below.
+        filters to CamillaDSP. Starts with a short HTTPS warning
+        walkthrough.
       </div>
     </a>
 
@@ -420,14 +419,6 @@
     document.querySelectorAll('a.card[data-port]').forEach(function(a) {
       a.href = 'http://' + window.location.hostname + ':' + a.dataset.port + a.dataset.path;
     });
-    // /correction/ is on HTTPS (getUserMedia requires a secure
-    // context). The current page is HTTP, so we have to construct an
-    // absolute https URL to switch schemes — a relative link would
-    // hit the http server and 404.
-    document.querySelectorAll('a.card[data-https]').forEach(function(a) {
-      a.href = 'https://' + window.location.hostname + a.dataset.path;
-    });
-
     // Volume slider. Talks to jasper-control's /volume endpoints
     // (proxied through nginx so this stays same-origin). Optimistic
     // UI: bar follows the pointer instantly; local intent owns the

@@ -82,6 +82,16 @@ def test_render_page_includes_ca_download_link():
     assert "Certificate Trust Settings" in body
 
 
+def test_render_page_home_link_returns_to_plain_http():
+    """The correction app itself runs under HTTPS, but the rest of the
+    JTS wizard surface is deliberately plain HTTP. Its Home affordance
+    must use an absolute HTTP URL so it does not inherit the HTTPS
+    origin and hit nginx's 443 catch-all."""
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'class="nav-back" href="http://jts.local/"' in body
+    assert 'class="nav-back" href="/"' not in body
+
+
 def test_read_json_body_rejects_invalid_content_length():
     class Handler:
         headers = {"Content-Length": "not-a-number"}

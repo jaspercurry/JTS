@@ -13,6 +13,16 @@
   Self-signed cert + iOS trust dance documented; mic-permission
   page with `getSettings()` constraint verify lands at
   `https://jts.local/correction/`.
+- ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
+  Implemented 2026-05-28. `http://jts.local/correction/` now serves a
+  static preflight page that explains the browser's self-signed-cert
+  warning and links to `https://jts.local/correction/` for the actual
+  measurement UI. The landing page links to the HTTP preflight, and
+  the HTTPS correction page's Home link points back to
+  `http://jts.local/` so relative navigation does not inherit the
+  HTTPS origin and hit the 443 catch-all. The 443 catch-all now
+  redirects non-correction paths back to HTTP instead of returning 404,
+  so accidental `https://jts.local/voice/` style navigation recovers.
 - ✅ **Phase 1 — single-position end-to-end PEQ.** PR #41 merged
   2026-05-09. Sweep generation (Novak 2015) → playback through
   CamillaDSP → AudioWorklet capture → deconvolution → 1/48-octave
@@ -183,8 +193,10 @@ declaring v2 shippable.
 ## Goal
 
 A measurement-and-correction loop that runs from a phone at the
-listening position. Tap a button on `https://jts.local/correction/`,
-optionally pick a calibrated USB measurement mic, the speaker plays a
+listening position. Start at `http://jts.local/correction/`, read the
+plain-HTTP warning preflight, then tap through to
+`https://jts.local/correction/` for the secure browser-mic page.
+Optionally pick a calibrated USB measurement mic, the speaker plays a
 sweep, the phone records it, the Pi designs a PEQ filter set,
 hot-reloads CamillaDSP, and the next song plays through the corrected
 pipeline. Two audiences served by one tool: a WiiM-Home-style novice
@@ -220,13 +232,16 @@ them; design **with** them.
 These are the load-bearing decisions. Each has been considered and
 the rejected alternatives are recorded so we don't relitigate.
 
-### Decision 1 — TLS via additive nginx HTTPS, mkcert-issued cert
+### Decision 1 — TLS via additive nginx HTTPS, private CA
 
 **Decision:** Add `listen 443 ssl` server block to nginx with a
-mkcert-issued cert for `jts.local`. Keep the existing port-80 server
-unchanged. Document the iOS Settings → General → About → Certificate
-Trust Settings dance as a one-time onboarding step in
-[BRINGUP.md](../BRINGUP.md) Phase Z (post-install).
+private-CA-issued cert for `jts.local`, but keep the existing port-80
+server as the default navigation surface. `http://jts.local/correction/`
+serves a preflight page; only the measurement UI at
+`https://jts.local/correction/` runs over TLS. Document the iOS
+Settings → General → About → Certificate Trust Settings dance as a
+one-time onboarding step in [BRINGUP.md](../BRINGUP.md) Phase Z
+(post-install).
 
 **Why not stay HTTP?** `getUserMedia` only works on HTTPS or
 localhost. There is no workaround for this in any browser. The
@@ -237,25 +252,25 @@ capture; the secure context has to *be* the page running the
 JavaScript.
 
 **Why not Tailscale or ngrok?** Both depend on internet + an extra
-install on every household device. mkcert is one-time on the Pi,
-and the trust profile is one-time per device.
+install on every household device. The private CA is one-time on the
+Pi, and the trust profile is one-time per device.
 
 **Why not skip iPhone Safari and use desktop Chrome only?** The
 product story is "couch + iPhone." That's the demo. Desktop-only
 loses the YouTube hook.
 
-**Concrete steps in Phase 0** to make this real:
-- `apt install libnss3-tools` (mkcert prereq for iOS trust)
-- Build mkcert binary or `apt install mkcert` if available on Trixie
-- `mkcert -install` (creates root CA in `/var/lib/jasper/mkcert/`)
-- `mkcert -cert-file /etc/nginx/ssl/jts.local.pem
-  -key-file /etc/nginx/ssl/jts.local-key.pem jts.local
-  *.jts.local 127.0.0.1`
-- Update nginx config: new `server { listen 443 ssl; ... }` block
-  with `/correction/` location only. Existing routes stay on 80.
-- Serve the root CA at `http://jts.local/jts-root-ca.pem` so the
-  user can download + trust on iOS via Safari.
-- README + BRINGUP doc on the trust dance.
+**Concrete shape as shipped in Phase 0 / 0.1:**
+- `install.sh` generates and preserves `/var/lib/jasper/ca/ca.{crt,key}`.
+- `install.sh` reissues `/etc/nginx/ssl/jts.local.{crt,key}` from
+  that CA for the configured `JASPER_HOSTNAME`, its wildcard, the
+  historical `jts.local`, and `127.0.0.1`.
+- Port 80 serves `http://jts.local/correction/` as a static preflight
+  page and `http://jts.local/jts-root-ca.crt` with
+  `application/x-x509-ca-cert`.
+- Port 443 proxies only `/correction/` to `127.0.0.1:8770`; other
+  HTTPS paths redirect back to their HTTP equivalents.
+- README, BRINGUP, and this handoff document the trust/preflight flow.
+  No HSTS header is configured.
 
 **Out of scope:** redirecting HTTP → HTTPS for existing routes.
 The Spotify and dial flows do not benefit from being moved to
@@ -289,9 +304,14 @@ coordinator code; we do the same here for the
 
 **Concrete shape (as shipped after Phase 2.3):**
 ```
+HTTP port 80:
+GET  /correction/            static preflight explaining the HTTPS warning;
+                             OK button links to https://<host>/correction/
+GET  /jts-root-ca.crt        download private root CA for iOS trust
+
+HTTPS port 443 after nginx strips /correction/:
 GET  /                       page render (stdlib HTML + inline AudioWorklet, no SPA)
 GET  /healthz                liveness — "ok"
-GET  /jts-root-ca.crt        download mkcert root for iOS trust (HTTP only — chicken-and-egg)
 GET  /status                 session + currently-loaded correction snapshot
                              ({state, peqs, autolevel, input_device,
                              mic_calibration, target_profile,
@@ -317,6 +337,7 @@ POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value
 POST /autolevel/cancel       abort ramp, restore pre-autolevel volume
+HTTPS fallback              non-/correction/ paths 308 back to HTTP
 ```
 
 Browser polls `GET /status` every 500 ms; SSE was considered but never
@@ -325,10 +346,14 @@ allows it.
 
 ### Decision 3 — URL: `/correction/`, plus entry on the landing page
 
-**Decision:** `https://jts.local/correction/` is the route. The
-nginx port-80 landing page at `/usr/share/jasper-web/index.html`
-gains a card linking to it (with a note that the first visit will
-require trusting the cert).
+**Decision:** `http://jts.local/correction/` is the user-facing entry
+route. It serves a static preflight page on port 80, then the
+measurement flow switches to `https://jts.local/correction/` because
+browser microphone capture requires a secure context. The nginx
+port-80 landing page at `/usr/share/jasper-web/index.html` links to
+the preflight instead of directly to HTTPS. The 443 catch-all redirects
+non-correction paths back to HTTP; it does not proxy any extra wizard
+upstreams over HTTPS.
 
 **Why not `/room/` or `/measure/`?** User specified `/correction/`
 in feedback (2026-05-09).
@@ -924,6 +949,7 @@ These items can only be verified on real hardware. Deploy with
       activation is the liveness contract).
 - [ ] `jasper-doctor` reports `correction web`, `correction state
       dirs`, and `current correction` as ok/warn with no fail.
+- [ ] `curl http://jts.local/correction/` returns the preflight page.
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
 - [ ] On iPhone after cert trust: page loads with no "Connection
@@ -1149,4 +1175,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28

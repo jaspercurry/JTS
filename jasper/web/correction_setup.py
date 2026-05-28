@@ -53,7 +53,6 @@ from urllib.parse import urlparse
 
 from ._common import (
     NAV_BACK_CSS,
-    NAV_BACK_HTML,
     PAGE_STYLE,
     begin_request,
     csrf_fetch_helpers_js,
@@ -2164,6 +2163,10 @@ def _render_page(hostname: str, csrf_token: str = "") -> bytes:
         )
         for spec in correction_strategy_options()
     )
+    home_html = (
+        '<a class="nav-back" href="http://{host}/">← Home</a>'
+        .format(host=html.escape(hostname, quote=True))
+    )
     return (
         _PAGE_HTML
         .replace("__STYLE__", _CORRECTION_PAGE_STYLE + NAV_BACK_CSS)
@@ -2172,7 +2175,7 @@ def _render_page(hostname: str, csrf_token: str = "") -> bytes:
             csrf_meta_html(csrf_token) if csrf_token else "",
         )
         .replace("__CSRF_FETCH_HELPERS__", csrf_fetch_helpers_js())
-        .replace("__NAV_BACK__", NAV_BACK_HTML)
+        .replace("__NAV_BACK__", home_html)
         .replace("__HOSTNAME__", hostname)
         .replace("__REQUIRED_SR__", str(REQUIRED_SAMPLE_RATE))
         .replace("__MIC_MODEL_OPTIONS__", mic_model_options)

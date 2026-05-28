@@ -2478,18 +2478,17 @@ EOF
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow), /voice/ (voice-provider config wizard), and /dial/
-    # (rotary-dial onboarding) on plain HTTP, plus /correction/ (room
-    # correction wizard) and /google/ (Calendar + Gmail OAuth wizard) on
+    # (rotary-dial onboarding) on plain HTTP. /correction/ starts with
+    # a plain-HTTP preflight page, then the measurement UI switches to
     # HTTPS. The legacy routes stay HTTP — Spotify's HTTPS requirement
     # is satisfied by the GitHub Pages bounce, and there's no point
-    # breaking working flows for one new feature.
+    # breaking working flows for one feature.
     #
     # /correction/ requires HTTPS because getUserMedia needs a secure
-    # context; /google/ requires it because Google rejects non-loopback
-    # OAuth redirect URIs over HTTP. Both ride the same self-signed
-    # cert provisioned by provision_correction_tls() (called before
-    # this from main); the user's one-time CA-install dance covers
-    # both routes.
+    # context. /google/ stays HTTP here; Google rejects mDNS redirect
+    # URIs, so it uses the same GitHub Pages bounce pattern as Spotify.
+    # The correction-only cert is provisioned by provision_correction_tls()
+    # before this function runs.
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -2502,6 +2501,12 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/index.html" \
         /usr/share/jasper-web/index.html
+    # Plain-HTTP preflight before the HTTPS-only room-correction UI.
+    # This gives the user context before the browser's self-signed-cert
+    # interstitial and keeps Back navigation on an ordinary HTTP route.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/correction-preflight.html" \
+        /usr/share/jasper-web/correction-preflight.html
     # /integrations sub-page (lists external services like Google).
     # Same static-HTML pattern as the landing page; nginx serves both
     # via exact-match `location =` blocks. Updates require an

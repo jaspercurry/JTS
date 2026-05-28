@@ -320,7 +320,10 @@ deploy/
   bin/                          jasper-librespot-event (--onevent hook)
   configure-bluez.sh            Speaker-mode pairing config
   shairport-sync.conf           AirPlay 2 receiver config
-  nginx-jasper.conf             Standalone /spotify + /dial HTTPS site
+  index.html                    Static landing page
+  correction-preflight.html     HTTP warning before HTTPS room correction
+  integrations.html             Static integrations sub-page
+  nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction UI
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
