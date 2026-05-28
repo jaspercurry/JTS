@@ -38,6 +38,12 @@ def _write_bundle(root: Path, session_id: str = "abc") -> Path:
             "score": 72,
             "strategy_gates": {"balanced": {"allowed": True}},
         },
+        "runtime_integrity": {
+            "level": "ok",
+            "capture_count": 1,
+            "snapshot_count": 4,
+            "issues": [],
+        },
         "position_analysis": {
             "artifact_path": "position_analysis.json",
             "position_count": 1,
@@ -95,6 +101,7 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
     assert summary["strategy_choice"] == "balanced"
     assert summary["design_report"]["improvement"]["rms_db"] == 2.0
     assert summary["confidence_report"]["level"] == "medium"
+    assert summary["runtime_integrity"]["snapshot_count"] == 4
     assert summary["position_analysis"]["artifact_path"] == "position_analysis.json"
     assert summary["mic_calibrated"] is True
     assert summary["quality_issues"][0]["artifact_path"] == "captures/p0.wav"

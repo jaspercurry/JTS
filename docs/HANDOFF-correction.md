@@ -145,30 +145,32 @@
   block correction before a user wastes time measuring. This is still
   metadata confidence, not an acoustic loopback proof; real phone/Pi
   capture smoke testing remains outstanding.
-- 🔄 **Phase 2.10 — correction visualization + confidence UX.**
-  Active 2026-05-27. Goal: make the existing measurement and design
-  facts legible before adding more correction power. The first slice
-  should extend `/correction/` results with smoothing/display controls,
-  spatial spread overlays, filter-effect visibility, band-confidence
-  summaries, rejected-feature warnings, and a deterministic recommended
-  next action. Prior art: REW's measured/target/predicted/filter
-  overlays and configurable smoothing, HouseCurve's average + faded
-  individual measurements and coherence/quality blanking, Dirac's
-  target/curtain/spread controls, and RoomPerfect-style confidence
-  wording. Keep it lightweight: no heavy plotting dependency in the
-  socket-activated web process.
-- 🔄 **Phase 2.11 — durable evidence bundle contract.**
-  Active 2026-05-28; first slice landed. Goal: make every measurement
-  session a self-describing, replayable evidence packet rather than a
-  set of files known by convention. New bundles use bundle schema v3
-  and include `artifact_manifest.json` with checksums, kinds, schemas,
+- ✅ **Phase 2.10 — correction visualization + confidence UX.**
+  Implemented 2026-05-28. `/correction/` results now expose the
+  measurement facts that already drive the deterministic engine:
+  display smoothing controls, correction-band shading, spatial-spread
+  overlay, filter-effect overlay, measured/target/predicted/verify
+  curves, PEQ markers, rejected-feature markers, band-confidence
+  summaries, confidence/strategy gates, runtime-integrity status, and a
+  deterministic recommended next action. The implementation stays
+  dependency-free in the socket-activated web process: one canvas and
+  small JSON summaries rather than a plotting framework.
+- ✅ **Phase 2.11 — durable evidence bundle contract + runtime integrity.**
+  Implemented 2026-05-28. Every new measurement session is a
+  self-describing, replayable evidence packet rather than a set of
+  files known by convention. New bundles use bundle schema v3 and
+  include `artifact_manifest.json` with checksums, kinds, schemas,
   provenance, dependencies, sensitivity, and recomputability flags for
-  raw captures and derived artifacts.
+  raw captures and derived artifacts. They also write
+  `runtime_integrity.json`: system load/memory/process snapshots,
+  capture sample-count sanity, fan-in xrun deltas, and CamillaDSP
+  runtime counters around each sweep/verify pass. Runtime warnings and
+  failures feed the same confidence report and bundle validator.
   Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
   evidence; every curve, confidence report, PEQ, and future FIR/agent
   judgment should be reproducible from those recordings plus sweep
-  metadata, calibration, algorithm settings, and runtime health
-  snapshots. Keep the design file-based and Pi-cheap: no database, no
+  metadata, calibration, algorithm settings, and runtime-integrity
+  evidence. Keep the design file-based and Pi-cheap: no database, no
   continuous telemetry daemon, no unbounded retention.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
@@ -182,13 +184,13 @@
 
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
-before more filter types. The multi-position confidence layer and
-browser-audio metadata substrate have landed. The active near-term
-phase is room-correction visualization and confidence UX. The first
-durable-evidence bundle slice has landed; the next software-only slice
-is runtime-integrity evidence inside those bundles, then acoustic
-browser smoke testing, SNR/repeatability evidence, and FIR readiness
-validation.
+before more filter types. The multi-position confidence layer,
+browser-audio metadata substrate, correction visualization surface, and
+durable runtime-integrity bundle evidence have landed. The next
+software/hardware boundary is acoustic browser smoke testing and then
+SNR/repeatability evidence; FIR readiness validation should still wait
+until the measurement substrate can prove capture quality, runtime
+health, spatial stability, and headroom.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
@@ -199,7 +201,7 @@ combined CamillaDSP config ordering when both layers are present. Current
 operational truth for that composition lives in
 [docs/HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md).
 
-**Outstanding Phases 0-2.10 hardware verification** (see "Hardware
+**Outstanding Phases 0-2.11 hardware verification** (see "Hardware
 test checklist" below) — the math is validated on synthetic IRs;
 the integration with real CamillaDSP / iPhone Safari / aplay /
 voice_daemon UDS is unverified and is the gating step before

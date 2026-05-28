@@ -343,6 +343,8 @@ async def test_design_writes_result_json(tmp_path: Path):
         result["confidence_report"]["browser_audio_report"]
         == result["browser_audio_report"]
     )
+    assert result["runtime_integrity"]["level"] == "ok"
+    assert result["confidence_report"]["runtime_integrity"]["level"] == "ok"
     assert result["measured"] is not None
     assert "freqs_hz" in result["measured"]
     assert "magnitude_db" in result["measured"]
@@ -386,12 +388,18 @@ async def test_design_writes_result_json(tmp_path: Path):
     )
     manifest = bundles.read_artifact_manifest(sess.bundle_dir)
     manifest_paths = {artifact["path"] for artifact in manifest["artifacts"]}
+    runtime_artifact = next(
+        artifact for artifact in manifest["artifacts"]
+        if artifact["path"] == "runtime_integrity.json"
+    )
     assert {
         "info.json",
         "captures/p0.wav",
+        "runtime_integrity.json",
         "position_analysis.json",
         "result.json",
     }.issubset(manifest_paths)
+    assert "captures/p0.wav" in runtime_artifact["dependencies"]
     assert not any(
         issue.severity == "fail"
         for issue in bundles.validate_bundle(sess.bundle_dir)

@@ -219,6 +219,16 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .confidence-card .gate.blocked { background:#f7e4e4; color:#8a1f1f; }
   .confidence-card ul { margin:0.4em 0 0; padding-left:1.2em; }
 
+  .runtime-card { border:1px solid #ddd; border-left:5px solid #999;
+                  border-radius:6px; padding:0.75em 0.9em; margin:0.8em 0;
+                  background:#fafafa; }
+  .runtime-card.ok { border-left-color:#1db954; }
+  .runtime-card.warn { border-left-color:#d6b656; }
+  .runtime-card.fail { border-left-color:#d44; }
+  .runtime-card.hidden { display:none; }
+  .runtime-card h3 { margin-top:0; }
+  .runtime-card ul { margin:0.4em 0 0; padding-left:1.2em; }
+
   .results-summary { border:1px solid #ddd; border-radius:6px;
                      background:#fafafa; padding:0.75em 0.9em;
                      margin:0.8em 0; }
@@ -480,6 +490,7 @@ __NAV_BACK__
   </div>
   <div id="result-section" class="hidden">
     <div id="confidence-panel" class="confidence-card hidden"></div>
+    <div id="runtime-integrity-panel" class="runtime-card hidden"></div>
     <div id="results-summary" class="results-summary hidden"></div>
     <h3>Frequency response</h3>
     <div class="chart-controls">
@@ -584,6 +595,7 @@ __NAV_BACK__
   var verifySummary = document.getElementById('verify-summary');
   var designReport = document.getElementById('design-report');
   var confidencePanel = document.getElementById('confidence-panel');
+  var runtimeIntegrityPanel = document.getElementById('runtime-integrity-panel');
 
   var ctx = null;
   var micStream = null;
@@ -1220,6 +1232,43 @@ __NAV_BACK__
       findingsHtml;
   }
 
+  function renderRuntimeIntegrity(payload) {
+    var report = payload && (
+      payload.runtime_integrity ||
+      (payload.confidence_report && payload.confidence_report.runtime_integrity)
+    );
+    if (!report || (!report.snapshot_count && !report.capture_count)) {
+      runtimeIntegrityPanel.className = 'runtime-card hidden';
+      runtimeIntegrityPanel.innerHTML = '';
+      return;
+    }
+    var level = report.level || 'ok';
+    var latest = report.latest_snapshot || {};
+    var memory = latest.memory || {};
+    var load = latest.load_per_core;
+    var issues = (report.issues || []).slice(0, 5);
+    var issueHtml = issues.length
+      ? '<ul>' + issues.map(function (issue) {
+          return '<li>' + escapeText(issue.message || issue.code) + '</li>';
+        }).join('') + '</ul>'
+      : '<p class="hint">No runtime warnings were recorded around the sweep.</p>';
+    var loadText = Number.isFinite(Number(load))
+      ? Number(load).toFixed(2) + ' load/core'
+      : 'load unavailable';
+    var memText = Number.isFinite(Number(memory.available_mb))
+      ? Number(memory.available_mb).toFixed(0) + ' MB free'
+      : 'memory unavailable';
+    runtimeIntegrityPanel.className = 'runtime-card ' + level;
+    runtimeIntegrityPanel.innerHTML =
+      '<h3>Runtime integrity</h3>' +
+      '<p><strong>' + escapeText(level.toUpperCase()) + '</strong> · ' +
+      Number(report.capture_count || 0) + ' capture artifact(s), ' +
+      Number(report.snapshot_count || 0) + ' system snapshot(s).</p>' +
+      '<p class="hint">' + escapeText(loadText) + ' · ' +
+      escapeText(memText) + '</p>' +
+      issueHtml;
+  }
+
   function numberOrNull(value) {
     var n = Number(value);
     return Number.isFinite(n) ? n : null;
@@ -1248,6 +1297,9 @@ __NAV_BACK__
       position: payload.position_analysis ||
         (payload.design_report && payload.design_report.position_report) ||
         null,
+      runtime: payload.runtime_integrity ||
+        (payload.confidence_report && payload.confidence_report.runtime_integrity) ||
+        null,
       peqs: payload.peqs || []
     };
   }
@@ -1259,6 +1311,12 @@ __NAV_BACK__
     var failed = (confidence.findings || []).some(function (finding) {
       return finding.severity === 'fail';
     });
+    if (p.runtime && p.runtime.level === 'fail') {
+      return 'Remeasure — runtime evidence says this sweep may be corrupted.';
+    }
+    if (p.runtime && p.runtime.level === 'warn' && level !== 'high') {
+      return 'Review runtime warnings, then remeasure if the curve looks surprising.';
+    }
     if (failed || level === 'low') {
       return 'Remeasure before trusting aggressive correction.';
     }
@@ -1322,6 +1380,9 @@ __NAV_BACK__
         '</span></div>' +
         '<div class="metric"><span class="label">Filters</span>' +
         '<span class="value">' + Number(p.peqs.length || 0) + '</span></div>' +
+        '<div class="metric"><span class="label">Runtime</span>' +
+        '<span class="value">' + escapeText((p.runtime && p.runtime.level) || '—') +
+        '</span></div>' +
         '<div class="metric"><span class="label">Predicted RMS change</span>' +
         '<span class="value">' + formatDb(improvement.rms_db) + '</span></div>' +
       '</div>' +
@@ -1623,6 +1684,8 @@ __NAV_BACK__
     designReport.innerHTML = '';
     confidencePanel.className = 'confidence-card hidden';
     confidencePanel.innerHTML = '';
+    runtimeIntegrityPanel.className = 'runtime-card hidden';
+    runtimeIntegrityPanel.innerHTML = '';
     qualityBanner.className = 'quality-banner hidden';
     qualityBanner.innerHTML = '';
     lastVerify = null;
@@ -1940,6 +2003,7 @@ __NAV_BACK__
       renderQuality(s);
       renderBrowserAudioReport(s.browser_audio_report);
       renderConfidence(s);
+      renderRuntimeIntegrity(s);
       applyButtonPolicy(s.state, s.autolevel ? s.autolevel.status : 'idle');
 
       if (s.state === 'needs_next_position') {
@@ -2015,6 +2079,7 @@ __NAV_BACK__
       }
       renderDesignReport(data.design_report);
       renderConfidence(data);
+      renderRuntimeIntegrity(data);
       renderResultsSummary(data);
       renderQuality(data);
       renderBrowserAudioReport(data.browser_audio_report);
@@ -2264,6 +2329,17 @@ def _optional_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
+def _runtime_integrity_summary(sess: Any) -> dict[str, Any] | None:
+    report = getattr(sess, "runtime_integrity", None)
+    if report is None or not hasattr(report, "summary"):
+        return None
+    try:
+        return report.summary()
+    except Exception:  # noqa: BLE001
+        logger.debug("runtime_integrity summary unavailable", exc_info=True)
+        return None
+
+
 def _sanitize_input_device(raw: Any) -> dict[str, Any] | None:
     """Normalize browser-reported input-device metadata before bundles.
 
@@ -2376,9 +2452,15 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         raise RuntimeError("could not reset speaker to flat before measuring")
 
     async def _run_first_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
         try:
             async with coordinator.measurement_window():
-                await sess.prepare_and_play_sweep(playback.play_sweep)
+                await sess.prepare_and_play_sweep(
+                    playback.play_sweep,
+                    runtime_probe_async=_runtime_probe,
+                )
         except Exception as e:  # noqa: BLE001
             logger.exception("first sweep failed: %s", e)
 
@@ -2422,15 +2504,22 @@ def _handle_next_position(
     from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
+    cam = _camilla()
     if sess.state != SessionState.NEEDS_NEXT_POSITION:
         raise RuntimeError(
             f"cannot advance to next position from state {sess.state.value}"
         )
 
     async def _run_next_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
         try:
             async with coordinator.measurement_window():
-                await sess.prepare_and_play_sweep(playback.play_sweep)
+                await sess.prepare_and_play_sweep(
+                    playback.play_sweep,
+                    runtime_probe_async=_runtime_probe,
+                )
         except Exception as e:  # noqa: BLE001
             logger.exception("next-position sweep failed: %s", e)
 
@@ -2462,11 +2551,18 @@ def _handle_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
+    cam = _camilla()
 
     async def _run_verify_sweep() -> None:
+        async def _runtime_probe() -> dict[str, Any] | None:
+            return await cam.get_runtime_status(best_effort=True)
+
         try:
             async with coordinator.measurement_window():
-                await sess.start_verify_sweep(playback.play_sweep)
+                await sess.start_verify_sweep(
+                    playback.play_sweep,
+                    runtime_probe_async=_runtime_probe,
+                )
         except Exception as e:  # noqa: BLE001
             logger.exception("verify sweep failed: %s", e)
 
@@ -2761,6 +2857,7 @@ def _handle_upload_capture(
         "verify_quality": sess.verify_quality,
         "browser_audio_report": sess.browser_audio_report,
         "confidence_report": sess.confidence_report,
+        "runtime_integrity": _runtime_integrity_summary(sess),
         "position_analysis": sess.position_analysis,
         "peqs": [p.__dict__ for p in sess.peqs],
         "design_report": sess.design_report,
@@ -2973,6 +3070,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                             "browser_audio_report": getattr(
                                 sess, "browser_audio_report", None,
                             ),
+                            "runtime_integrity": _runtime_integrity_summary(sess),
                         }, status=422)
                     except ValueError as e:
                         self._send_client_error(str(e))

@@ -56,6 +56,7 @@ from . import (
     confidence,
     deconv,
     quality,
+    runtime_integrity,
     spatial,
     strategy,
     sweep,
@@ -296,6 +297,9 @@ class MeasurementSession:
         self.capture_quality: list[dict[str, Any]] = []
         self.verify_quality: dict[str, Any] | None = None
         self.confidence_report: dict[str, Any] | None = None
+        self.runtime_integrity = runtime_integrity.RuntimeIntegrityReport(
+            self.session_id,
+        )
         self.position_analysis: dict[str, Any] | None = None
 
         # Output curves for the chart.
@@ -440,6 +444,18 @@ class MeasurementSession:
                 dependencies.append(artifact_path)
         return sorted(set(dependencies))
 
+    def _runtime_capture_artifact_dependencies(self) -> list[str]:
+        dependencies: list[str] = []
+        for capture in self.runtime_integrity.captures:
+            artifact_path = capture.get("artifact_path")
+            if not isinstance(artifact_path, str):
+                continue
+            if Path(artifact_path).is_absolute():
+                continue
+            if (self.bundle_dir / artifact_path).exists():
+                dependencies.append(artifact_path)
+        return sorted(set(dependencies))
+
     def _record_raw_capture_artifact(
         self,
         captured_wav_path: Path,
@@ -476,6 +492,113 @@ class MeasurementSession:
                 self.session_id,
                 rel_path,
             )
+
+    def _write_runtime_integrity_json(
+        self,
+        *,
+        extra_dependencies: tuple[str, ...] = (),
+    ) -> None:
+        bundle = self._ensure_bundle_dir()
+        if bundle is None:
+            return
+        dependencies = self._existing_bundle_dependencies(
+            "info.json",
+            *self._capture_artifact_dependencies(),
+            *self._runtime_capture_artifact_dependencies(),
+            *extra_dependencies,
+        )
+        bundles.write_json_artifact(
+            bundle,
+            "runtime_integrity.json",
+            {
+                "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+                **self.runtime_integrity.to_dict(),
+            },
+            kind="runtime_integrity",
+            sensitivity="private_metadata",
+            recomputable=False,
+            generated_by=(
+                "jasper.correction.session._write_runtime_integrity_json"
+            ),
+            dependencies=dependencies,
+            schema_version=runtime_integrity.SCHEMA_VERSION,
+        )
+
+    def _log_runtime_integrity_issues(
+        self,
+        issues: list[dict[str, Any]],
+    ) -> None:
+        for issue in issues:
+            logger.warning(
+                "event=correction_runtime_integrity_issue "
+                "session=%s code=%s severity=%s capture_kind=%s "
+                "position_index=%s message=%s",
+                self.session_id,
+                issue.get("code"),
+                issue.get("severity"),
+                issue.get("capture_kind"),
+                issue.get("position_index"),
+                issue.get("message"),
+            )
+
+    async def _record_runtime_snapshot(
+        self,
+        label: str,
+        *,
+        capture_kind: str | None,
+        position_index: int | None,
+        runtime_probe_async: Callable[[], Awaitable[dict[str, Any] | None]] | None,
+    ) -> None:
+        camilla_status = None
+        if runtime_probe_async is not None:
+            try:
+                camilla_status = await runtime_probe_async()
+            except Exception as e:  # noqa: BLE001
+                logger.debug(
+                    "event=correction_runtime_probe_failed "
+                    "session=%s label=%s error=%s",
+                    self.session_id,
+                    label,
+                    e,
+                )
+        issues = self.runtime_integrity.record_snapshot(
+            label,
+            capture_kind=capture_kind,
+            position_index=position_index,
+            camilla_status=camilla_status,
+        )
+        self._log_runtime_integrity_issues(issues)
+        try:
+            self._write_runtime_integrity_json()
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle runtime_integrity.json write failed")
+
+    def _record_runtime_capture(
+        self,
+        captured_wav_path: Path,
+        *,
+        capture_kind: str,
+        position_index: int | None,
+    ) -> None:
+        if self.sweep_meta is None:
+            return
+        rel_path = self._bundle_relative_path(captured_wav_path)
+        issues = self.runtime_integrity.record_capture(
+            captured_wav_path,
+            capture_kind=capture_kind,
+            position_index=position_index,
+            artifact_path=rel_path,
+            expected_sample_rate=self.cfg.sample_rate,
+            expected_sweep_samples=self.sweep_meta.n_samples,
+            expected_sweep_duration_s=self.sweep_meta.duration_s,
+        )
+        self._log_runtime_integrity_issues(issues)
+        try:
+            self._write_runtime_integrity_json(
+                extra_dependencies=(rel_path,) if rel_path else (),
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("bundle runtime_integrity.json write failed")
 
     def capture_path_for_position(self, idx: int) -> Path:
         """Where a per-position WAV should be written. Falls back to
@@ -539,6 +662,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "current_correction_at_start": self.current_correction_at_start,
             "autolevel": self.autolevel.snapshot(),
@@ -613,6 +737,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "peqs": [p.__dict__ for p in self.peqs],
             "design_report": self.design_report,
@@ -628,6 +753,7 @@ class MeasurementSession:
             dependencies=self._existing_bundle_dependencies(
                 "info.json",
                 "position_analysis.json",
+                "runtime_integrity.json",
                 "mic_calibration.json",
                 *self._capture_artifact_dependencies(),
             ),
@@ -996,6 +1122,7 @@ class MeasurementSession:
             capture_quality=self.capture_quality,
             strategy_choice=self.strategy_choice,
             browser_audio_report=self.browser_audio_report,
+            runtime_integrity=self.runtime_integrity.summary(),
             position_magnitudes=self.position_magnitudes,
             freqs_hz=self.position_freqs,
             correction_band_hz=(self.cfg.peq_f_low, self.cfg.peq_f_high),
@@ -1010,6 +1137,9 @@ class MeasurementSession:
         play_sweep_async: Callable[..., Awaitable[Any]],
         *,
         alsa_device: str | None = None,
+        runtime_probe_async: (
+            Callable[[], Awaitable[dict[str, Any] | None]] | None
+        ) = None,
     ) -> None:
         """Single sweep. Used both for position[i] within a multi-
         position flow AND for the Phase 1 single-position-only path.
@@ -1036,6 +1166,14 @@ class MeasurementSession:
                 position=self.current_position,
                 total_positions=self.total_positions,
             )
+            position_index = self.current_position
+
+        await self._record_runtime_snapshot(
+            "measurement_prepare",
+            capture_kind="measurement",
+            position_index=position_index,
+            runtime_probe_async=runtime_probe_async,
+        )
 
         try:
             sweep_wav, meta = self._ensure_sweep_cache()
@@ -1054,8 +1192,26 @@ class MeasurementSession:
 
         try:
             kwargs = {"alsa_device": alsa_device} if alsa_device else {}
+            await self._record_runtime_snapshot(
+                "measurement_sweep_start",
+                capture_kind="measurement",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
             await play_sweep_async(str(sweep_wav), **kwargs)
+            await self._record_runtime_snapshot(
+                "measurement_sweep_complete",
+                capture_kind="measurement",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
         except Exception as e:  # noqa: BLE001
+            await self._record_runtime_snapshot(
+                "measurement_sweep_failed",
+                capture_kind="measurement",
+                position_index=position_index,
+                runtime_probe_async=runtime_probe_async,
+            )
             async with self._lock:
                 await self._fail(f"sweep playback failed: {e}")
             raise
@@ -1091,6 +1247,11 @@ class MeasurementSession:
             capture_kind="measurement",
             position_index=position_index,
         )
+        self._record_runtime_capture(
+            captured_wav_path,
+            capture_kind="measurement",
+            position_index=position_index,
+        )
 
         try:
             log_freqs, log_mag, capture_quality = self._smooth_capture(
@@ -1107,6 +1268,12 @@ class MeasurementSession:
             async with self._lock:
                 await self._fail(f"analysis failed: {e}")
             raise
+        await self._record_runtime_snapshot(
+            "measurement_analysis_complete",
+            capture_kind="measurement",
+            position_index=position_index,
+            runtime_probe_async=None,
+        )
 
         if self.position_freqs is None:
             self.position_freqs = log_freqs
@@ -1301,6 +1468,9 @@ class MeasurementSession:
         play_sweep_async: Callable[..., Awaitable[Any]],
         *,
         alsa_device: str | None = None,
+        runtime_probe_async: (
+            Callable[[], Awaitable[dict[str, Any] | None]] | None
+        ) = None,
     ) -> None:
         """One-position re-measurement after Apply. The result lands
         in self.verify_curve / self.verify_metrics — overlaid on the
@@ -1311,6 +1481,13 @@ class MeasurementSession:
                     f"cannot verify from state {self.state.value}"
                 )
             await self._set_state(SessionState.VERIFYING)
+
+        await self._record_runtime_snapshot(
+            "verify_prepare",
+            capture_kind="verify",
+            position_index=None,
+            runtime_probe_async=runtime_probe_async,
+        )
 
         try:
             sweep_wav, _ = self._ensure_sweep_cache()
@@ -1324,8 +1501,26 @@ class MeasurementSession:
 
         try:
             kwargs = {"alsa_device": alsa_device} if alsa_device else {}
+            await self._record_runtime_snapshot(
+                "verify_sweep_start",
+                capture_kind="verify",
+                position_index=None,
+                runtime_probe_async=runtime_probe_async,
+            )
             await play_sweep_async(str(sweep_wav), **kwargs)
+            await self._record_runtime_snapshot(
+                "verify_sweep_complete",
+                capture_kind="verify",
+                position_index=None,
+                runtime_probe_async=runtime_probe_async,
+            )
         except Exception as e:  # noqa: BLE001
+            await self._record_runtime_snapshot(
+                "verify_sweep_failed",
+                capture_kind="verify",
+                position_index=None,
+                runtime_probe_async=runtime_probe_async,
+            )
             async with self._lock:
                 await self._fail(f"verify sweep playback failed: {e}")
             raise
@@ -1351,6 +1546,11 @@ class MeasurementSession:
             captured_wav_path,
             capture_kind="verify",
         )
+        self._record_runtime_capture(
+            captured_wav_path,
+            capture_kind="verify",
+            position_index=None,
+        )
 
         try:
             log_freqs, log_mag, capture_quality = self._smooth_capture(
@@ -1366,6 +1566,12 @@ class MeasurementSession:
             async with self._lock:
                 await self._fail(f"verify analysis failed: {e}")
             raise
+        await self._record_runtime_snapshot(
+            "verify_analysis_complete",
+            capture_kind="verify",
+            position_index=None,
+            runtime_probe_async=None,
+        )
 
         target_db = self._design_target(log_freqs)
         # Use deviation_metrics' DEFAULT band (50-350 Hz) rather than
@@ -1684,6 +1890,7 @@ class MeasurementSession:
             "capture_quality": self.capture_quality,
             "verify_quality": self.verify_quality,
             "confidence_report": self.confidence_report,
+            "runtime_integrity": self.runtime_integrity.summary(),
             "position_analysis": self.position_analysis,
             "sweep": (
                 self.sweep_meta.to_dict() if self.sweep_meta else None

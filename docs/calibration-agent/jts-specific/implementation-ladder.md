@@ -42,15 +42,19 @@ reporting, per-position variance, repeatability flags, and bundle
 artifacts that let deterministic code and future LLM tools explain
 what the measurement can and cannot support.
 
-As of 2026-05-27, the first Stage 3 slices have landed: deterministic
+As of 2026-05-28, the first Stage 3 slices have landed: deterministic
 per-band spatial summaries, high-variance and deep-null feature flags,
 per-filter spatial-confidence annotations, richer
 `position_analysis.json` artifacts, and a browser-audio metadata
-preflight report that feeds the same confidence model. The remaining
-Stage 3 work is to make those facts easier to inspect in the
-correction UI, make each measurement bundle a durable evidence packet,
-then add acoustic browser smoke-test evidence, repeatability checks,
-and SNR estimates.
+preflight report that feeds the same confidence model. The correction
+UI now makes those facts inspectable with smoothing/display controls,
+spatial spread, filter effect, rejected-feature markers, confidence
+summaries, runtime-integrity status, and deterministic next actions.
+Bundles now include manifest checksums plus `runtime_integrity.json`
+with system load/memory/process snapshots, capture sample-count sanity,
+fan-in xrun deltas, and CamillaDSP runtime counters. The remaining
+Stage 3 work is acoustic browser smoke-test evidence, repeatability
+checks, and SNR estimates.
 
 ## 2026-05-27 Sequencing Update
 
@@ -73,24 +77,25 @@ After the intake, the recommended order is:
    per-filter confidence real: spatial variance, accepted and rejected
    features, strategy gates, and deterministic rationale.
 2. **Durable evidence bundle contract.** Before adding more correction
-   power, make bundles self-describing and replayable. The first slice
-   now records an `artifact_manifest.json` for bundle schema v3:
-   checksums, schemas, generator provenance, dependencies,
-   recomputability, and sensitivity for raw captures and derived
-   artifacts. The remaining slice is lightweight runtime-health
-   snapshots. Derived curves, confidence reports, PEQs, and future FIR
-   or agent judgments should be traceable back to the raw capture WAVs,
-   which are canonical private evidence.
+   power, make bundles self-describing and replayable. This now records
+   an `artifact_manifest.json` for bundle schema v3 plus
+   `runtime_integrity.json`: checksums, schemas, generator provenance,
+   dependencies, recomputability, sensitivity, lightweight runtime
+   snapshots, capture sample-count sanity, fan-in xrun deltas, and
+   CamillaDSP runtime counters. Derived curves, confidence reports,
+   PEQs, and future FIR or agent judgments should be traceable back to
+   the raw capture WAVs, which are canonical private evidence.
 3. **Browser audio smoke-test integration.** Metadata-level
    mic/device/capture reliability now feeds the confidence model:
    processing flags, calibration status, channel count, device
    mismatch, and sample-rate mismatch. The next slice is acoustic
    proof: clipping, SNR, tone/sweep loopback sanity, and real mobile
    browser verification.
-4. **Room-correction visualization.** Active as of 2026-05-27. Show
-   per-position spread, average, target, proposed filters, rejected
-   nulls, confidence, and recommended next action. Borrow the useful
-   parts of REW / HouseCurve / Dirac style displays without turning the
+4. **Room-correction visualization.** Implemented as of 2026-05-28.
+   Show per-position spread, average, target, proposed filters,
+   rejected nulls, confidence, runtime-integrity status, and
+   recommended next action. Borrow the useful parts of REW /
+   HouseCurve / Dirac style displays without turning the
    socket-activated JTS web UI into a heavy pro workstation.
 5. **Sound curve / preference polish.** Keep `/sound/` independent from
    `/correction/`, with editable preset curves, level-matched A/B, and
@@ -222,4 +227,4 @@ The LLM must not:
 - DRC-FIR and rePhase prior art.
 - Toole / Olive / Welti room-correction and preference research.
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28

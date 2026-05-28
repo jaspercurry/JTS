@@ -134,6 +134,15 @@ def get_measurement_summary(bundle: MeasurementBundle) -> dict[str, Any]:
             or (result.get("design_report") or {}).get("confidence_report")
             or (info.get("design_report") or {}).get("confidence_report")
         ),
+        "runtime_integrity": (
+            result.get("runtime_integrity")
+            or info.get("runtime_integrity")
+            or (
+                result.get("confidence_report")
+                or info.get("confidence_report")
+                or {}
+            ).get("runtime_integrity")
+        ),
         "position_analysis": (
             result.get("position_analysis") or info.get("position_analysis")
         ),

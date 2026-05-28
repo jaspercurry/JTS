@@ -287,7 +287,9 @@ def test_render_page_includes_results_visualization_controls():
     assert 'id="chart-show-spread"' in body
     assert 'id="chart-show-filter"' in body
     assert 'id="chart-show-band"' in body
+    assert 'id="runtime-integrity-panel"' in body
     assert "renderResultsSummary" in body
+    assert "renderRuntimeIntegrity" in body
     assert "recommendedNextAction" in body
     assert "spatial spread" in body
 
