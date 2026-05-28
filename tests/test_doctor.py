@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from jasper.cli import doctor
 from jasper.config import Config
+from jasper.correction import bundles
 
 
 # ---------------------------------------------------------------- env loading
@@ -1961,16 +1962,33 @@ def test_check_correction_latest_bundle_warns_without_calibration(
     sessions = tmp_path / "sessions"
     bundle = sessions / "abc"
     bundle.mkdir(parents=True)
-    (bundle / "info.json").write_text(json.dumps({
-        "bundle_schema_version": 2,
-        "session_id": "abc",
-        "state": "ready",
-        "started_at": 1000,
-        "capture_quality": [],
-    }))
-    (bundle / "result.json").write_text(json.dumps({
-        "bundle_schema_version": 2,
-    }))
+    bundles.write_json_artifact(
+        bundle,
+        "info.json",
+        {
+            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+            "session_id": "abc",
+            "state": "ready",
+            "started_at": 1000,
+            "capture_quality": [],
+        },
+        kind="session_metadata",
+        sensitivity="private_metadata",
+        recomputable=False,
+        generated_by="tests.test_doctor",
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
+    bundles.write_json_artifact(
+        bundle,
+        "result.json",
+        {"bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION},
+        kind="analysis_result",
+        sensitivity="private_metadata",
+        recomputable=True,
+        generated_by="tests.test_doctor",
+        dependencies=["info.json"],
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
     r = doctor.check_correction_latest_bundle()
@@ -1985,14 +2003,23 @@ def test_check_correction_latest_bundle_warns_when_failed(
     sessions = tmp_path / "sessions"
     bundle = sessions / "failed"
     bundle.mkdir(parents=True)
-    (bundle / "info.json").write_text(json.dumps({
-        "bundle_schema_version": 2,
-        "session_id": "failed",
-        "state": "failed",
-        "started_at": 1000,
-        "error": "analysis failed: capture clipped",
-        "capture_quality": [],
-    }))
+    bundles.write_json_artifact(
+        bundle,
+        "info.json",
+        {
+            "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+            "session_id": "failed",
+            "state": "failed",
+            "started_at": 1000,
+            "error": "analysis failed: capture clipped",
+            "capture_quality": [],
+        },
+        kind="session_metadata",
+        sensitivity="private_metadata",
+        recomputable=False,
+        generated_by="tests.test_doctor",
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
     monkeypatch.setenv("JASPER_CORRECTION_SESSIONS_DIR", str(sessions))
 
     r = doctor.check_correction_latest_bundle()

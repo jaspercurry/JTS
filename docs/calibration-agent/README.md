@@ -117,5 +117,12 @@ Every concept file should have:
   stability, latency, headroom, and pre-ringing risk. Raw archive and
   synthesis:
   [`docs/research/2026-05-27-room-correction-research/`](../research/2026-05-27-room-correction-research/README.md).
+- 2026-05-28: first durable-evidence bundle slice landed. Correction
+  bundles now use schema v3 and write `artifact_manifest.json` with
+  checksums, schema/kind metadata, generator provenance, dependencies,
+  sensitivity, and recomputability for raw captures and derived
+  artifacts. Remaining evidence work: lightweight runtime-health
+  snapshots and replay-grade numeric intermediates for future FIR and
+  agent analysis.
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28

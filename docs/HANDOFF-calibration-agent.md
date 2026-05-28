@@ -771,9 +771,15 @@ Before any LLM work:
   `/correction/` UI. Completed designs also write
   `position_analysis.json` for replayable seat-variance analysis. SNR,
   repeatability, and research-tuned thresholds are still future work.
-- Keep the current `info.json` / `result.json` shape compatible, but
-  add explicit versioning so future FIR and agent tooling can detect
-  what artifacts are present instead of guessing from filenames.
+- Keep the current `info.json` / `result.json` shape compatible, with
+  explicit versioning so future FIR and agent tooling can detect what
+  artifacts are present instead of guessing from filenames.
+- First durable-evidence slice now exists: bundle schema v3 writes
+  `artifact_manifest.json` so raw captures are named as canonical
+  private evidence and derived artifacts declare their inputs,
+  checksums, sensitivity, and recomputability. Next slice: add
+  lightweight runtime-health snapshots that feed a separate
+  runtime-integrity verdict alongside capture quality.
 - **Actually run the full Phase 0–2.2 pipeline on a real room** with
   the calibrated mic. This is the N10 hardware verification the user
   flagged as missing. Document what you find in

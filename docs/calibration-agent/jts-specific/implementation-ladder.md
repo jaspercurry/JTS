@@ -48,8 +48,9 @@ per-filter spatial-confidence annotations, richer
 `position_analysis.json` artifacts, and a browser-audio metadata
 preflight report that feeds the same confidence model. The remaining
 Stage 3 work is to make those facts easier to inspect in the
-correction UI, then add acoustic browser smoke-test evidence,
-repeatability checks, and SNR estimates.
+correction UI, make each measurement bundle a durable evidence packet,
+then add acoustic browser smoke-test evidence, repeatability checks,
+and SNR estimates.
 
 ## 2026-05-27 Sequencing Update
 
@@ -71,21 +72,30 @@ After the intake, the recommended order is:
 1. **Multi-position confidence and reporting.** Make per-band and
    per-filter confidence real: spatial variance, accepted and rejected
    features, strategy gates, and deterministic rationale.
-2. **Browser audio smoke-test integration.** Metadata-level
+2. **Durable evidence bundle contract.** Before adding more correction
+   power, make bundles self-describing and replayable. The first slice
+   now records an `artifact_manifest.json` for bundle schema v3:
+   checksums, schemas, generator provenance, dependencies,
+   recomputability, and sensitivity for raw captures and derived
+   artifacts. The remaining slice is lightweight runtime-health
+   snapshots. Derived curves, confidence reports, PEQs, and future FIR
+   or agent judgments should be traceable back to the raw capture WAVs,
+   which are canonical private evidence.
+3. **Browser audio smoke-test integration.** Metadata-level
    mic/device/capture reliability now feeds the confidence model:
    processing flags, calibration status, channel count, device
    mismatch, and sample-rate mismatch. The next slice is acoustic
    proof: clipping, SNR, tone/sweep loopback sanity, and real mobile
    browser verification.
-3. **Room-correction visualization.** Active as of 2026-05-27. Show
+4. **Room-correction visualization.** Active as of 2026-05-27. Show
    per-position spread, average, target, proposed filters, rejected
    nulls, confidence, and recommended next action. Borrow the useful
    parts of REW / HouseCurve / Dirac style displays without turning the
    socket-activated JTS web UI into a heavy pro workstation.
-4. **Sound curve / preference polish.** Keep `/sound/` independent from
+5. **Sound curve / preference polish.** Keep `/sound/` independent from
    `/correction/`, with editable preset curves, level-matched A/B, and
    future proposed-vs-current compare.
-5. **FIR Stage 0 and readiness validation.** Add import/export and
+6. **FIR Stage 0 and readiness validation.** Add import/export and
    runtime benchmarking before generated FIR; generated FIR waits for
    bundle provenance, timing, spatial stability, latency/headroom, and
    pre-ringing gates.
@@ -94,7 +104,8 @@ The reason for the reorder is that confidence is the substrate that
 protects every later feature. It tells JTS whether a correction strategy
 is allowed, whether a dip is a null to refuse, whether FIR is eligible,
 whether a browser capture is trustworthy, and what deterministic facts a
-future LLM assistant can explain.
+future LLM assistant can explain. The durable evidence bundle contract
+is the persistence layer for that confidence story.
 
 Source syntheses:
 

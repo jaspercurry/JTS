@@ -25,6 +25,7 @@ from pathlib import Path
 
 import pytest
 
+from jasper.correction import bundles
 from jasper.correction.session import (
     MeasurementSession,
     SessionConfig,
@@ -169,7 +170,7 @@ def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
     assert info_path.exists()
     data = json.loads(info_path.read_text())
     assert data["session_id"] == sess.session_id
-    assert data["bundle_schema_version"] == 2
+    assert data["bundle_schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
     assert data["state"] == "preparing"
     assert data["target_choice"] == "flat"
     assert data["strategy_choice"] == "balanced"
@@ -178,6 +179,12 @@ def test_bundle_info_json_written_on_state_transition(tmp_path: Path):
     assert data["input_device"]["label"] == "USB measurement mic"
     assert "config" in data
     assert data["config"]["sample_rate"] == 48000
+    manifest = bundles.read_artifact_manifest(sess.bundle_dir)
+    assert any(
+        artifact["path"] == "info.json"
+        and artifact["schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+        for artifact in manifest["artifacts"]
+    )
 
 
 def test_bundle_disabled_via_env_var(tmp_path: Path, monkeypatch):
@@ -243,6 +250,12 @@ async def test_apply_copies_yaml_into_bundle(tmp_path: Path, monkeypatch):
     assert bundle_yaml.exists()
     assert not bundle_yaml.is_symlink()
     assert bundle_yaml.read_text() == sess.config_path.read_text()
+    manifest = bundles.read_artifact_manifest(sess.bundle_dir)
+    assert any(
+        artifact["path"] == "applied.yml"
+        and artifact["kind"] == "camilladsp_config"
+        for artifact in manifest["artifacts"]
+    )
 
 
 @pytest.mark.asyncio
@@ -321,7 +334,9 @@ async def test_design_writes_result_json(tmp_path: Path):
     assert result_path.exists()
     result = json.loads(result_path.read_text())
     assert result["session_id"] == sess.session_id
-    assert result["bundle_schema_version"] == 2
+    assert result["bundle_schema_version"] == (
+        bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+    )
     assert result["input_device"]["device_id_hash"] == "abc123"
     assert result["browser_audio_report"]["level"] == "warn"
     assert (
@@ -368,6 +383,18 @@ async def test_design_writes_result_json(tmp_path: Path):
     assert result["position_analysis"]["bands"] == position_analysis["bands"]
     assert result["design_report"]["position_report"]["artifact_path"] == (
         "position_analysis.json"
+    )
+    manifest = bundles.read_artifact_manifest(sess.bundle_dir)
+    manifest_paths = {artifact["path"] for artifact in manifest["artifacts"]}
+    assert {
+        "info.json",
+        "captures/p0.wav",
+        "position_analysis.json",
+        "result.json",
+    }.issubset(manifest_paths)
+    assert not any(
+        issue.severity == "fail"
+        for issue in bundles.validate_bundle(sess.bundle_dir)
     )
 
 

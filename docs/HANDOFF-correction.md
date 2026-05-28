@@ -157,6 +157,19 @@
   target/curtain/spread controls, and RoomPerfect-style confidence
   wording. Keep it lightweight: no heavy plotting dependency in the
   socket-activated web process.
+- 🔄 **Phase 2.11 — durable evidence bundle contract.**
+  Active 2026-05-28; first slice landed. Goal: make every measurement
+  session a self-describing, replayable evidence packet rather than a
+  set of files known by convention. New bundles use bundle schema v3
+  and include `artifact_manifest.json` with checksums, kinds, schemas,
+  provenance, dependencies, sensitivity, and recomputability flags for
+  raw captures and derived artifacts.
+  Treat `captures/p<N>.wav` and `verify.wav` as canonical private raw
+  evidence; every curve, confidence report, PEQ, and future FIR/agent
+  judgment should be reproducible from those recordings plus sweep
+  metadata, calibration, algorithm settings, and runtime health
+  snapshots. Keep the design file-based and Pi-cheap: no database, no
+  continuous telemetry daemon, no unbounded retention.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -167,11 +180,13 @@
   work.
 - ⏳ **Phase 5 — FIR filter ladder.** Not started.
 
-**Current sequencing note (2026-05-27):** after the latest research
+**Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
 before more filter types. The multi-position confidence layer and
 browser-audio metadata substrate have landed. The active near-term
-phase is room-correction visualization and confidence UX; then acoustic
+phase is room-correction visualization and confidence UX. The first
+durable-evidence bundle slice has landed; the next software-only slice
+is runtime-integrity evidence inside those bundles, then acoustic
 browser smoke testing, SNR/repeatability evidence, and FIR readiness
 validation.
 The rationale and source links live in
@@ -1031,6 +1046,11 @@ sessions/<session_id>/
 │                    reports with capture_kind / position_index /
 │                    artifact_path),
 │                    bundle_schema_version
+├── artifact_manifest.json
+│                    bundle schema v3 integrity manifest: relative
+│                    paths, artifact kinds, schema versions, SHA-256,
+│                    byte sizes, generator provenance, dependencies,
+│                    sensitivity class, and recomputability
 ├── result.json      measured / target / predicted curves; verify_curve
 │                    + verify_metrics when /verify ran; repeats
 │                    input_device, mic_calibration public metadata,
@@ -1051,6 +1071,73 @@ failed analysis paths (cheap; a few hundred bytes). `result.json`
 lands after design / verify.
 `applied.yml` is copied (not symlinked) in `apply()` so the bundle
 remains valid after a user-driven cleanup.
+
+### Durable evidence contract
+
+Raw measurement recordings are the canonical origin for a correction
+session. Keep `captures/p<N>.wav` and `verify.wav` by default and
+treat them as private user data: they may contain room noise, speech,
+or household sounds around the sweep. Derived artifacts should be
+recomputable from:
+
+- raw capture WAVs;
+- exact sweep metadata;
+- selected mic calibration file and parsed curve;
+- browser audio-path report;
+- correction algorithm settings and software/build provenance;
+- target/strategy choices;
+- runtime health snapshots taken around the sweep.
+
+Phase 2.11's first slice adds an `artifact_manifest.json` beside
+`info.json`. Each artifact entry includes:
+
+- relative path and artifact kind (`raw_capture`,
+  `session_metadata`, `analysis_result`, `position_analysis`,
+  `mic_calibration_raw`, `mic_calibration_metadata`,
+  `camilladsp_config`, etc.);
+- artifact schema/version where applicable;
+- SHA-256 checksum and byte size;
+- manifest record timestamp;
+- generator provenance (module/function or tool name);
+- input dependencies by artifact path;
+- sensitivity class (`private_raw_audio`, `private_metadata`,
+  `debug_safe`, etc.);
+- whether the artifact is recomputable.
+
+`jasper.correction.bundles.validate_bundle` now validates manifest
+shape, missing files, size/checksum drift, missing dependency entries,
+and current-schema bundles that still rely only on filename
+conventions. The next durable-evidence slice is lightweight
+runtime-integrity capture around sweeps: CPU/load, underrun/dropout
+signals where available, free space, and any capture-path anomalies
+that should lower confidence independently from acoustic capture
+quality.
+
+The first derived artifacts to make manifest-aware are the files JTS
+already writes. The next replay-grade additions should be compact and
+file-based, likely `.npz` for numeric arrays:
+
+- per-position deconvolved impulse response;
+- window/deconvolution settings;
+- magnitude response before smoothing;
+- smoothed response;
+- calibration-applied response;
+- normalized response.
+
+Runtime health should be lightweight and bounded, not a new monitoring
+daemon. Record a small per-measurement health packet: monotonic and
+wall-clock start/end, `aplay` exit status, CamillaDSP config path at
+start, CPU/load and memory snapshots, throttling/undervoltage if
+readable, browser sample-count/dropout metadata, and any relevant
+warning counters. This feeds a separate **runtime integrity** verdict,
+distinct from **capture quality**. Hard capture failures such as
+clipping, sample-rate mismatch, or too-short WAV still block analysis;
+runtime warnings lower confidence unless they directly prove the
+recording is invalid.
+
+Do not introduce a database, unbounded recording retention, or
+continuous telemetry for this phase. Use a filesystem bundle API and
+explicit retention/pin/delete semantics later.
 
 To pull a bundle off the Pi for debugging:
 

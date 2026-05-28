@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from scipy.signal import fftconvolve
 
-from jasper.correction import quality, sweep
+from jasper.correction import bundles, quality, sweep
 from jasper.correction.calibration import store_calibration
 from jasper.correction.session import MeasurementSession, SessionConfig, SessionState
 
@@ -141,6 +141,13 @@ async def test_session_applies_mic_calibration_during_capture(
     assert record.calibration_id in meta_path.read_text()
     assert (meta_path.stat().st_mode & 0o777) == 0o600
     assert (raw_path.stat().st_mode & 0o777) == 0o600
+    manifest_paths = {
+        artifact["path"]
+        for artifact in bundles.read_artifact_manifest(sess.bundle_dir)["artifacts"]
+    }
+    assert {"captures/p0.wav", "mic_calibration.json", "mic_calibration.txt"}.issubset(
+        manifest_paths,
+    )
 
 
 @pytest.mark.asyncio
@@ -171,6 +178,11 @@ async def test_session_records_failed_capture_quality_in_bundle(tmp_path: Path):
     assert info["state"] == "failed"
     assert info["capture_quality"][0]["failed"] is True
     assert info["capture_quality"][0]["artifact_path"] == "captures/p0.wav"
+    manifest_paths = {
+        artifact["path"]
+        for artifact in bundles.read_artifact_manifest(sess.bundle_dir)["artifacts"]
+    }
+    assert "captures/p0.wav" in manifest_paths
 
 
 @pytest.mark.asyncio

@@ -35,7 +35,6 @@ and closes it when done.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -413,6 +412,71 @@ class MeasurementSession:
             return None
         return self.bundle_dir
 
+    def _bundle_relative_path(self, path: Path) -> str | None:
+        try:
+            return path.resolve().relative_to(self.bundle_dir.resolve()).as_posix()
+        except ValueError:
+            return None
+
+    def _existing_bundle_dependencies(self, *paths: str) -> list[str]:
+        return [
+            path
+            for path in sorted(set(paths))
+            if path and (self.bundle_dir / path).exists()
+        ]
+
+    def _capture_artifact_dependencies(self) -> list[str]:
+        dependencies: list[str] = []
+        reports = list(self.capture_quality)
+        if self.verify_quality:
+            reports.append(self.verify_quality)
+        for report in reports:
+            artifact_path = report.get("artifact_path")
+            if not isinstance(artifact_path, str):
+                continue
+            if Path(artifact_path).is_absolute():
+                continue
+            if (self.bundle_dir / artifact_path).exists():
+                dependencies.append(artifact_path)
+        return sorted(set(dependencies))
+
+    def _record_raw_capture_artifact(
+        self,
+        captured_wav_path: Path,
+        *,
+        capture_kind: str,
+        position_index: int | None = None,
+    ) -> None:
+        bundle = self._ensure_bundle_dir()
+        if bundle is None:
+            return
+        rel_path = self._bundle_relative_path(captured_wav_path)
+        if rel_path is None:
+            return
+        metadata: dict[str, Any] = {"capture_kind": capture_kind}
+        if position_index is not None:
+            metadata["position_index"] = position_index
+        try:
+            bundles.record_artifact(
+                bundle,
+                rel_path,
+                kind="raw_capture",
+                sensitivity="private_raw_audio",
+                recomputable=False,
+                generated_by=(
+                    "jasper.correction.session."
+                    "_record_raw_capture_artifact"
+                ),
+                dependencies=self._existing_bundle_dependencies("info.json"),
+                metadata=metadata,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "bundle raw capture manifest record failed session=%s path=%s",
+                self.session_id,
+                rel_path,
+            )
+
     def capture_path_for_position(self, idx: int) -> Path:
         """Where a per-position WAV should be written. Falls back to
         cfg.capture_dir when bundles are disabled or the per-session
@@ -503,10 +567,16 @@ class MeasurementSession:
                 "correction_strategy": self.cfg.correction_strategy,
             },
         }
-        target_path = bundle / "info.json"
-        tmp_path = target_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(info, indent=2, default=str))
-        tmp_path.replace(target_path)
+        bundles.write_json_artifact(
+            bundle,
+            "info.json",
+            info,
+            kind="session_metadata",
+            sensitivity="private_metadata",
+            recomputable=False,
+            generated_by="jasper.correction.session._write_info_json",
+            schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        )
         self._write_mic_calibration_bundle(bundle)
 
     def _write_result_json(self) -> None:
@@ -547,10 +617,22 @@ class MeasurementSession:
             "peqs": [p.__dict__ for p in self.peqs],
             "design_report": self.design_report,
         }
-        target_path = bundle / "result.json"
-        tmp_path = target_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(result, indent=2, default=str))
-        tmp_path.replace(target_path)
+        bundles.write_json_artifact(
+            bundle,
+            "result.json",
+            result,
+            kind="analysis_result",
+            sensitivity="private_metadata",
+            recomputable=True,
+            generated_by="jasper.correction.session._write_result_json",
+            dependencies=self._existing_bundle_dependencies(
+                "info.json",
+                "position_analysis.json",
+                "mic_calibration.json",
+                *self._capture_artifact_dependencies(),
+            ),
+            schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        )
 
     def _write_mic_calibration_bundle(self, bundle: Path) -> None:
         """Persist the selected mic calibration into the session bundle.
@@ -568,23 +650,53 @@ class MeasurementSession:
             "raw_filename": "mic_calibration.txt",
             "curve": record.curve.to_dict(),
         }
-        meta_path = bundle / "mic_calibration.json"
-        tmp_meta = meta_path.with_suffix(".json.tmp")
-        tmp_meta.write_text(json.dumps(payload, indent=2, default=str))
-        tmp_meta.chmod(0o600)
-        tmp_meta.replace(meta_path)
-
+        dependencies: list[str] = []
         raw_path = Path(record.raw_path)
         if raw_path.exists():
             try:
                 bundle_raw = bundle / "mic_calibration.txt"
                 shutil.copy2(raw_path, bundle_raw)
                 bundle_raw.chmod(0o600)
+                bundles.record_artifact(
+                    bundle,
+                    "mic_calibration.txt",
+                    kind="mic_calibration_raw",
+                    sensitivity="private_metadata",
+                    recomputable=False,
+                    generated_by=(
+                        "jasper.correction.session."
+                        "_write_mic_calibration_bundle"
+                    ),
+                    dependencies=self._existing_bundle_dependencies("info.json"),
+                )
+                dependencies.append("mic_calibration.txt")
             except OSError as e:
                 logger.warning(
                     "mic_calibration.txt copy failed for session %s: %s",
                     self.session_id, e,
                 )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "mic_calibration.txt manifest record failed session=%s",
+                    self.session_id,
+                )
+        bundles.write_json_artifact(
+            bundle,
+            "mic_calibration.json",
+            payload,
+            kind="mic_calibration_metadata",
+            sensitivity="private_metadata",
+            recomputable=True,
+            generated_by=(
+                "jasper.correction.session._write_mic_calibration_bundle"
+            ),
+            dependencies=self._existing_bundle_dependencies(
+                "info.json",
+                *dependencies,
+            ),
+            schema_version=1,
+            file_mode=0o600,
+        )
 
     def _write_position_analysis_json(self) -> None:
         """Persist replayable per-position curves and variance bands.
@@ -662,10 +774,22 @@ class MeasurementSession:
             "bands": position_report["bands"],
             "feature_flags": position_report["feature_flags"],
         }
-        target_path = bundle / "position_analysis.json"
-        tmp_path = target_path.with_suffix(".json.tmp")
-        tmp_path.write_text(json.dumps(payload, indent=2, default=str))
-        tmp_path.replace(target_path)
+        bundles.write_json_artifact(
+            bundle,
+            "position_analysis.json",
+            payload,
+            kind="position_analysis",
+            sensitivity="private_metadata",
+            recomputable=True,
+            generated_by=(
+                "jasper.correction.session._write_position_analysis_json"
+            ),
+            dependencies=self._existing_bundle_dependencies(
+                "info.json",
+                *self._capture_artifact_dependencies(),
+            ),
+            schema_version=1,
+        )
 
         self.position_analysis = {
             "artifact_path": "position_analysis.json",
@@ -701,6 +825,18 @@ class MeasurementSession:
             return
         try:
             shutil.copy2(self.config_path, bundle / "applied.yml")
+            bundles.record_artifact(
+                bundle,
+                "applied.yml",
+                kind="camilladsp_config",
+                sensitivity="debug_safe",
+                recomputable=True,
+                generated_by="jasper.correction.session._copy_applied_yaml",
+                dependencies=self._existing_bundle_dependencies(
+                    "info.json",
+                    "result.json",
+                ),
+            )
         except OSError as e:
             logger.warning(
                 "applied.yml copy failed for session %s: %s",
@@ -948,6 +1084,13 @@ class MeasurementSession:
                 position=self.current_position,
             )
             self.last_capture_path = captured_wav_path
+            position_index = self.current_position
+
+        self._record_raw_capture_artifact(
+            captured_wav_path,
+            capture_kind="measurement",
+            position_index=position_index,
+        )
 
         try:
             log_freqs, log_mag, capture_quality = self._smooth_capture(
@@ -1203,6 +1346,11 @@ class MeasurementSession:
                 )
             await self._set_state(SessionState.ANALYZING)
             self.last_capture_path = captured_wav_path
+
+        self._record_raw_capture_artifact(
+            captured_wav_path,
+            capture_kind="verify",
+        )
 
         try:
             log_freqs, log_mag, capture_quality = self._smooth_capture(
