@@ -162,6 +162,7 @@ docs = [
   "docs/HANDOFF-wake-training-experiment.md",
   "docs/HANDOFF-wake-telemetry.md",
   "docs/HANDOFF-wake-corpus-quality.md",
+  "docs/HANDOFF-usb-mic-wake.md",
 ]
 requires_docs_when = [
   "Wake model registry, thresholds, wake-event schema, corpus capture legs, scoring, labeling, or review tooling changes.",
@@ -193,6 +194,7 @@ docs = [
   "docs/HANDOFF-barge-in.md",
   "docs/HANDOFF-xvf3800.md",
   "docs/HANDOFF-mic-quality-v2.md",
+  "docs/HANDOFF-usb-mic-wake.md",
   "docs/CHIP-AEC-EXPERIMENT.md",
 ]
 requires_docs_when = [

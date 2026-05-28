@@ -70,6 +70,7 @@ import numpy as np
 from jasper.aec_sweep import (
     AEC3_SWEEP_ENV_FLAG,
     AEC3_SWEEP_VARIANTS,
+    config_metadata,
     variant_metadata,
 )
 # Reuse audio I/O + systemctl helpers from the CLI. Single source of
@@ -139,6 +140,9 @@ DISTANCES = ("near", "mid", "far")
 AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
 # Keep old pilot legs playable when loading earlier same-day sessions.
 LEGACY_AEC3_SWEEP_LEGS = (
+    "aec3_hf_slow_only",
+    "aec3_edge_combo",
+    "aec3_gentle_dnd",
     "aec3_ns_off",
     "aec3_default_gain_08",
     "aec3_hf_relaxed",
@@ -160,6 +164,9 @@ USB_DTLN_LEG = "usb_dtln"
 LEG_LABELS = {
     "on": "XVF WebRTC AEC3",
     **{variant.leg: variant.label for variant in AEC3_SWEEP_VARIANTS},
+    "aec3_hf_slow_only": "AEC3 HF + slow only (legacy)",
+    "aec3_edge_combo": "AEC3 edge combo (legacy)",
+    "aec3_gentle_dnd": "AEC3 gentle DND (legacy)",
     "aec3_ns_off": "AEC3 NS off (legacy)",
     "aec3_default_gain_08": "AEC3 default gain 0.8 (legacy)",
     "aec3_hf_relaxed": "AEC3 HF relaxed (legacy)",
@@ -1086,6 +1093,8 @@ class RecordingBackend:
         self._include_usb_mic: bool = False
         self._include_usb_dtln: bool = False
         self._include_aec3_sweep: bool = False
+        self._aec3_sweep_variants: list[dict[str, object]] = []
+        self._aec3_sweep_config: dict[str, object] | None = None
         self._enabled_legs: tuple[str, ...] = _default_enabled_legs(self._ports)
         self._clips: list[ClipMetadata] = []
         self._current: RecordingTask | None = None
@@ -1219,6 +1228,8 @@ class RecordingBackend:
         self._include_usb_mic = False
         self._include_usb_dtln = False
         self._include_aec3_sweep = False
+        self._aec3_sweep_variants = []
+        self._aec3_sweep_config = None
         self._enabled_legs = _default_enabled_legs(self._ports)
 
     def _find_session_metadata(self, session_id: str) -> Path | None:
@@ -1247,6 +1258,15 @@ class RecordingBackend:
             bool(data.get("include_aec3_sweep", False))
             or any(leg in enabled_legs for leg in AEC3_SWEEP_LEGS)
         )
+        saved_variants = data.get("aec3_sweep_variants")
+        if not isinstance(saved_variants, list):
+            saved_variants = []
+        saved_config = data.get("aec3_sweep_config")
+        if not isinstance(saved_config, dict):
+            saved_config = None
+        if include_aec3_sweep and not saved_variants:
+            saved_variants = variant_metadata()
+            saved_config = config_metadata()
         include_dtln = _metadata_flag(data, "include_dtln", DTLN_LEG, enabled_legs)
         include_usb_dtln = _metadata_flag(
             data, "include_usb_dtln", USB_DTLN_LEG, enabled_legs,
@@ -1260,6 +1280,8 @@ class RecordingBackend:
             self._include_usb_mic = include_usb_mic
             self._include_usb_dtln = include_usb_dtln
             self._include_aec3_sweep = include_aec3_sweep
+            self._aec3_sweep_variants = saved_variants
+            self._aec3_sweep_config = saved_config
             self._enabled_legs = enabled_legs
         return {
             "session_id": session_id,
@@ -1396,6 +1418,8 @@ class RecordingBackend:
                 include_usb_dtln=include_usb_dtln,
                 include_aec3_sweep=include_aec3_sweep,
             )
+            sweep_variants = variant_metadata() if include_aec3_sweep else []
+            sweep_config = config_metadata() if include_aec3_sweep else None
             self._session_id = f"{ts}-{secrets.token_hex(2)}"
             self._member = safe_member
             self._clips = []
@@ -1404,6 +1428,8 @@ class RecordingBackend:
             self._include_usb_mic = include_usb_mic
             self._include_usb_dtln = USB_DTLN_LEG in enabled_legs
             self._include_aec3_sweep = include_aec3_sweep
+            self._aec3_sweep_variants = sweep_variants
+            self._aec3_sweep_config = sweep_config
             self._enabled_legs = enabled_legs
         self._metadata_dir.mkdir(parents=True, exist_ok=True)
         self._save_metadata()  # write the per-session flag before clips arrive
@@ -1434,6 +1460,20 @@ class RecordingBackend:
         """Whether the active session captures same-utterance AEC3 variants."""
         with self._lock:
             return self._include_aec3_sweep
+
+    def aec3_sweep_variants(self) -> list[dict[str, object]]:
+        """Effective AEC3 sweep variants for the active session or UI status."""
+        with self._lock:
+            if self._include_aec3_sweep and self._aec3_sweep_variants:
+                return list(self._aec3_sweep_variants)
+        return variant_metadata()
+
+    def aec3_sweep_config(self) -> dict[str, object]:
+        """Effective AEC3 sweep config provenance for the active session/status."""
+        with self._lock:
+            if self._include_aec3_sweep and self._aec3_sweep_config:
+                return dict(self._aec3_sweep_config)
+        return config_metadata()
 
     def enabled_legs(self) -> tuple[str, ...]:
         """The active session's leg set, in recording/playback order."""
@@ -1666,9 +1706,8 @@ class RecordingBackend:
                 "include_usb_mic": self._include_usb_mic,
                 "include_usb_dtln": self._include_usb_dtln,
                 "include_aec3_sweep": self._include_aec3_sweep,
-                "aec3_sweep_variants": (
-                    variant_metadata() if self._include_aec3_sweep else []
-                ),
+                "aec3_sweep_variants": list(self._aec3_sweep_variants),
+                "aec3_sweep_config": self._aec3_sweep_config,
                 "enabled_legs": list(self._enabled_legs),
                 "clips": [c.to_json() for c in self._clips],
             }
@@ -1992,7 +2031,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": self.backend.include_usb_mic(),
                 "include_usb_dtln": self.backend.include_usb_dtln(),
                 "include_aec3_sweep": self.backend.include_aec3_sweep(),
-                "aec3_sweep_variants": variant_metadata(),
+                "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
+                "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
                 "bridge_outputs": bridge_output_status(),
                 "is_recording": self.backend.is_recording(),
@@ -2213,7 +2253,8 @@ class _Handler(BaseHTTPRequestHandler):
                 "include_usb_mic": include_usb_mic,
                 "include_usb_dtln": include_usb_dtln,
                 "include_aec3_sweep": include_aec3_sweep,
-                "aec3_sweep_variants": variant_metadata(),
+                "aec3_sweep_variants": self.backend.aec3_sweep_variants(),
+                "aec3_sweep_config": self.backend.aec3_sweep_config(),
                 "enabled_legs": list(self.backend.enabled_legs()),
                 "bridge_outputs": bridge_output_status(),
             })
@@ -2895,6 +2936,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       usb_dtln: 'USB DTLN',
     };
     function legLabel(leg) { return LEG_LABELS[leg] || leg; }
+    function applyAec3SweepVariants(variants) {
+      for (const variant of variants || []) {
+        if (variant?.leg && variant?.label) {
+          LEG_LABELS[variant.leg] = variant.label;
+        }
+      }
+    }
     const LEG_ORDER = [
       'on', {aec3_sweep_js_order}
       'off', 'dtln', 'raw0', 'usb_raw', 'usb_webrtc',
@@ -2954,6 +3002,7 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
       try {
         const s = await api('GET', 'api/status');
         latestStatus = s;
+        applyAec3SweepVariants(s.aec3_sweep_variants);
         const modeEl = $('corpus-mode-status');
         const voiceEl = $('voice-status');
         const exitEl = $('corpus-mode-exit');

@@ -266,12 +266,16 @@ chain:
 | `JASPER_AEC_DND_ENR_THRESHOLD` | `0.25` | Dominant-near-end echo-to-near-end-ratio threshold. |
 | `JASPER_AEC_DND_TRIGGER_THRESHOLD` | `12` | Number of detector hits required before dominant-near-end mode engages. |
 
-As of 2026-05-27, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
-uses these knobs only for pilot legs (`aec3_hf_slow_only`,
-`aec3_edge_combo`, and `aec3_gentle_dnd`). Do not promote a sweep
-variant to production until it beats BEST_A on same-utterance listening
-review, corpus-quality metrics, and wake scoring under the far+music
-condition.
+As of 2026-05-28, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
+owns three stable pilot slots (`aec3_variant_1`, `aec3_variant_2`,
+and `aec3_variant_3`). The code defaults keep the 2026-05-27
+DND-isolation sweep, but labels and knob overrides can now be changed
+at runtime via `/var/lib/jasper/aec3_sweep_variants.json`; apply a
+validated file with `jasper-aec-sweep-config apply <file>
+--restart-bridge` to restart only `jasper-aec-bridge`. Do not promote a
+sweep variant to production until it beats BEST_A on same-utterance
+listening review, corpus-quality metrics, and wake scoring under the
+far+music condition.
 
 ### Measured outcome at this tuning
 
@@ -2459,4 +2463,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-27.
+Last verified: 2026-05-28.
