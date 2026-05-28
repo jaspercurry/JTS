@@ -760,6 +760,152 @@ def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
     assert sessions[0]["bundle_dir"] == str(sessions_dir / "bbb")
 
 
+def _write_report_bundle(sessions_dir: Path, session_id: str) -> Path:
+    bundle = sessions_dir / session_id
+    bundle.mkdir(parents=True)
+    freqs = [50, 80, 160, 320, 500]
+    info = {
+        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        "session_id": session_id,
+        "state": "ready",
+        "started_at": 2000,
+        "current_position": 1,
+        "total_positions": 1,
+        "target_choice": "flat",
+        "strategy_choice": "balanced",
+        "capture_quality": [],
+        "runtime_integrity": {"level": "ok", "issue_count": 0},
+        "acoustic_quality": {
+            "level": "ok",
+            "snr_level": "high",
+            "min_estimated_snr_db": 32.0,
+        },
+    }
+    result = {
+        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        "session_id": session_id,
+        "measured": {"freqs_hz": freqs, "magnitude_db": [0, 1, 2, 1, 0]},
+        "target": {"freqs_hz": freqs, "magnitude_db": [0, 0, 0, 0, 0]},
+        "confidence_report": {
+            "level": "high",
+            "score": 88,
+            "strategy_gates": {
+                "safe": {"allowed": True, "reasons": []},
+                "balanced": {"allowed": True, "reasons": []},
+                "assertive": {"allowed": False, "reasons": ["needs repeat"]},
+            },
+        },
+    }
+    runtime = {
+        "bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        "artifact_schema_version": 1,
+        "summary": {"level": "ok", "issue_count": 0},
+        "issues": [],
+    }
+    acoustic = {
+        "artifact_schema_version": 1,
+        "summary": {
+            "level": "ok",
+            "snr_level": "high",
+            "min_estimated_snr_db": 32.0,
+        },
+        "issues": [],
+    }
+    bundles.write_json_artifact(
+        bundle,
+        "info.json",
+        info,
+        kind="session_metadata",
+        sensitivity="private_metadata",
+        recomputable=False,
+        generated_by="test",
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
+    bundles.write_json_artifact(
+        bundle,
+        "result.json",
+        result,
+        kind="analysis_result",
+        sensitivity="debug_safe",
+        recomputable=True,
+        generated_by="test",
+        schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+    )
+    bundles.write_json_artifact(
+        bundle,
+        "runtime_integrity.json",
+        runtime,
+        kind="runtime_integrity",
+        sensitivity="debug_safe",
+        recomputable=True,
+        generated_by="test",
+        schema_version=1,
+    )
+    bundles.write_json_artifact(
+        bundle,
+        "acoustic_quality.json",
+        acoustic,
+        kind="acoustic_quality",
+        sensitivity="debug_safe",
+        recomputable=True,
+        generated_by="test",
+        schema_version=1,
+    )
+    return bundle
+
+
+def test_session_report_endpoint_returns_evidence_packet(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+    from jasper.correction.session import SessionConfig
+
+    sessions_dir = tmp_path / "sessions"
+    _write_report_bundle(sessions_dir, "bbb")
+    fake_sess = MeasurementSession(
+        SessionConfig(
+            sweep_dir=tmp_path / "sweeps",
+            capture_dir=tmp_path / "captures",
+            sessions_dir=sessions_dir,
+            config_dir=tmp_path / "configs",
+            base_config_path=tmp_path / "v1.yml",
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: fake_sess,
+    )
+
+    server = correction_setup.make_server(
+        ("127.0.0.1", 0), hostname="jts.local",
+    )
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        resp = urllib.request.urlopen(
+            f"http://127.0.0.1:{port}/session-report?id=bbb",
+            timeout=5,
+        )
+        body = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert body["session_id"] == "bbb"
+    assert body["evidence"]["session_id"] == "bbb"
+    assert body["evidence"]["agent_readiness"]["allowed_review"] is True
+    versions = body["artifact_versions"]
+    assert versions["bundle_schema_version"] == bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+    assert versions["artifact_manifest_schema_version"] == (
+        bundles.CURRENT_ARTIFACT_MANIFEST_VERSION
+    )
+    assert versions["result_json_schema_version"] == (
+        bundles.CURRENT_BUNDLE_SCHEMA_VERSION
+    )
+    assert versions["runtime_integrity_schema_version"] == 1
+    assert versions["acoustic_quality_schema_version"] == 1
+
+
 def test_render_page_includes_current_correction_banner():
     """Pin the banner element + reset-from-banner button in the
     rendered page so a future stylesheet refactor doesn't drop them.

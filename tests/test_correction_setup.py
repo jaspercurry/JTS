@@ -319,6 +319,16 @@ def test_render_page_includes_results_visualization_controls():
     assert "spatial spread" in body
 
 
+def test_render_page_includes_read_only_measurement_reports():
+    body = correction_setup._render_page("jts.local").decode()
+    assert 'id="measurement-reports"' in body
+    assert 'id="session-history"' in body
+    assert 'id="session-report"' in body
+    assert "loadSessionReports" in body
+    assert "session-report?id=" in body
+    assert "What looks trustworthy" in body
+
+
 def test_render_page_includes_noise_and_repeat_capture_flow():
     body = correction_setup._render_page("jts.local").decode()
     assert 'id="repeat-main-position"' in body

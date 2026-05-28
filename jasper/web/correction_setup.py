@@ -18,6 +18,8 @@ Architecture (per docs/HANDOFF-correction.md):
       GET  /                page render
       GET  /healthz         liveness
       GET  /status          session snapshot JSON
+      GET  /sessions        recent measurement bundle summaries
+      GET  /session-report  read-only evidence packet for one bundle
       POST /start           reset DSP, create session, request noise capture
       POST /upload-noise    body = pre-sweep noise WAV, then play sweep
       POST /upload-capture  body = WAV bytes, runs analysis pipeline
@@ -52,7 +54,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from ._common import (
     NAV_BACK_CSS,
@@ -397,6 +399,22 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   #current-correction.custom  { background: #fff8e1; border: 1px solid #d6b656; color: #5f4500; }
   #current-correction .label { font-weight: 600; }
   #current-correction button.danger { background: #d44; }
+
+  .report-panel { border-top: 1px solid #e5e5e5; margin-top: 1.2em;
+                  padding-top: 1em; }
+  .session-list { display: grid; gap: 0.6em; margin-top: 0.7em; }
+  .session-item { border: 1px solid #ddd; border-radius: 6px;
+                  padding: 0.7em 0.8em; background: #fafafa; }
+  .session-item p { margin: 0.25em 0 0.55em; }
+  .session-report { border: 1px solid #ddd; border-left: 5px solid #777;
+                    border-radius: 6px; padding: 0.8em 0.9em;
+                    margin-top: 0.9em; background: #fff; }
+  .session-report.ready { border-left-color: #1db954; }
+  .session-report.caution { border-left-color: #d6b656; }
+  .session-report.blocked { border-left-color: #d44; }
+  .session-report h3 { margin: 0 0 0.4em; }
+  .session-report h4 { margin: 0.75em 0 0.3em; }
+  .session-report ul { margin: 0.25em 0 0; padding-left: 1.2em; }
 """
 
 
@@ -592,6 +610,14 @@ __NAV_BACK__
   </div>
 </div>
 
+<section id="measurement-reports" class="report-panel">
+  <h2>Measurement reports</h2>
+  <p class="hint">Read-only evidence from previous sessions. Reports summarize what JTS measured, what looks trustworthy, and what evidence is missing without exposing raw recordings in the browser.</p>
+  <button id="load-sessions" type="button" class="secondary">Load recent reports</button>
+  <div id="session-history" class="session-list"></div>
+  <div id="session-report" class="session-report hidden"></div>
+</section>
+
 <details class="disclosure">
   <summary>Optional: silence Safari's "Not Private" warning on future visits</summary>
   <div class="disclosure-body">
@@ -669,6 +695,9 @@ __NAV_BACK__
   var designReport = document.getElementById('design-report');
   var confidencePanel = document.getElementById('confidence-panel');
   var runtimeIntegrityPanel = document.getElementById('runtime-integrity-panel');
+  var loadSessionsBtn = document.getElementById('load-sessions');
+  var sessionHistory = document.getElementById('session-history');
+  var sessionReport = document.getElementById('session-report');
 
   var ctx = null;
   var micStream = null;
@@ -1376,6 +1405,174 @@ __NAV_BACK__
     var n = numberOrNull(value);
     if (n === null) return '—';
     return (n > 0 ? '+' : '') + n.toFixed(1) + ' dB';
+  }
+
+  function formatMaybeDb(value) {
+    var n = numberOrNull(value);
+    return n === null ? '—' : n.toFixed(1) + ' dB';
+  }
+
+  function reportIssueList(items, fallback) {
+    items = (items || []).filter(function (item) { return !!item; }).slice(0, 8);
+    if (!items.length) return '<p class="hint">' + escapeText(fallback) + '</p>';
+    return '<ul>' + items.map(function (item) {
+      return '<li>' + escapeText(
+        item.message || item.reason || item.code || item.kind || String(item)
+      ) + '</li>';
+    }).join('') + '</ul>';
+  }
+
+  async function loadSessionReports() {
+    loadSessionsBtn.disabled = true;
+    sessionHistory.textContent = 'Loading recent sessions…';
+    try {
+      var resp = await fetch('sessions', {cache: 'no-store'});
+      if (!resp.ok) throw new Error('sessions ' + resp.status);
+      var payload = await resp.json();
+      renderSessionHistory(payload.sessions || []);
+    } catch (e) {
+      sessionHistory.textContent = 'Could not load measurement reports: ' + e.message;
+    } finally {
+      loadSessionsBtn.disabled = false;
+    }
+  }
+
+  function renderSessionHistory(sessions) {
+    sessionHistory.innerHTML = '';
+    if (!sessions.length) {
+      var empty = document.createElement('p');
+      empty.className = 'hint';
+      empty.textContent = 'No completed measurement bundles found yet.';
+      sessionHistory.appendChild(empty);
+      return;
+    }
+    sessions.forEach(function (session) {
+      var item = document.createElement('div');
+      item.className = 'session-item';
+      var title = document.createElement('strong');
+      title.textContent = 'Session ' + (session.session_id || 'unknown');
+      var meta = document.createElement('p');
+      meta.className = 'hint';
+      var state = session.state || 'unknown';
+      var positions = Number(session.current_position || 0) + '/' +
+        Number(session.total_positions || 0);
+      var started = formatAppliedAt(session.started_at);
+      meta.textContent = state + ' · positions ' + positions +
+        (started ? ' · ' + started : '') +
+        (session.has_result ? ' · result saved' : ' · no result yet');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'secondary';
+      button.textContent = 'View report';
+      button.dataset.sessionId = session.session_id || '';
+      item.appendChild(title);
+      item.appendChild(meta);
+      item.appendChild(button);
+      sessionHistory.appendChild(item);
+    });
+  }
+
+  async function loadSessionReport(sessionId) {
+    if (!sessionId) return;
+    sessionReport.className = 'session-report';
+    sessionReport.textContent = 'Loading report…';
+    try {
+      var resp = await fetch(
+        'session-report?id=' + encodeURIComponent(sessionId),
+        {cache: 'no-store'}
+      );
+      var text = await resp.text();
+      var payload;
+      try {
+        payload = JSON.parse(text);
+      } catch (_e) {
+        payload = {error: text};
+      }
+      if (!resp.ok) {
+        throw new Error(payload.error || ('session-report ' + resp.status));
+      }
+      renderSessionReport(payload);
+    } catch (e) {
+      sessionReport.className = 'session-report blocked';
+      sessionReport.textContent = 'Could not load report: ' + e.message;
+    }
+  }
+
+  function renderSessionReport(payload) {
+    var evidence = payload.evidence || {};
+    var readiness = evidence.agent_readiness || {};
+    var bundle = evidence.bundle || {};
+    var measurement = evidence.measurement || {};
+    var confidence = evidence.confidence || {};
+    var acoustic = (evidence.acoustic_quality || {}).summary || {};
+    var runtime = (evidence.runtime_integrity || {}).summary || {};
+    var position = evidence.position_analysis || {};
+    var repeatability = evidence.repeatability || {};
+    var versions = payload.artifact_versions || {};
+    var readinessLevel = readiness.level || 'caution';
+    var suspicious = []
+      .concat(bundle.issues || [])
+      .concat(((evidence.runtime_integrity || {}).issues || []))
+      .concat(((evidence.acoustic_quality || {}).issues || []))
+      .concat(repeatability.issues || [])
+      .concat(position.feature_flags || []);
+    var trusted = [];
+    if (bundle.has_result) trusted.push({message: 'Analysis result is present.'});
+    if (bundle.has_artifact_manifest) trusted.push({message: 'Artifact manifest is present.'});
+    if (acoustic.snr_level && acoustic.snr_level !== 'unavailable') {
+      trusted.push({message: 'SNR evidence is ' + acoustic.snr_level + '.'});
+    }
+    if (runtime.level === 'ok') trusted.push({message: 'Runtime integrity is OK.'});
+    if (repeatability.available) {
+      trusted.push({message: 'Same-seat repeatability is ' + repeatability.level + '.'});
+    }
+    var gates = confidence.strategy_gates || {};
+    var refused = ['safe', 'balanced', 'assertive'].filter(function (name) {
+      return gates[name] && gates[name].allowed === false;
+    }).map(function (name) {
+      var reason = (gates[name].reasons || [])[0] || 'strategy gate blocked';
+      return {message: name + ' correction blocked: ' + reason};
+    });
+    sessionReport.className = 'session-report ' + readinessLevel;
+    sessionReport.innerHTML =
+      '<h3>Measurement report · ' + escapeText(evidence.session_id || payload.session_id || 'unknown') + '</h3>' +
+      '<p class="hint"><strong>Recommended next action:</strong> ' +
+      escapeText(readiness.recommended_action || 'review evidence before applying stronger correction') + '</p>' +
+      '<div class="metric-grid">' +
+        '<div class="metric"><span class="label">Readiness</span><span class="value">' +
+        escapeText(readinessLevel) + '</span></div>' +
+        '<div class="metric"><span class="label">Confidence</span><span class="value">' +
+        escapeText(confidence.level || '—') + ' · ' + Number(confidence.score || 0).toFixed(0) + '/100</span></div>' +
+        '<div class="metric"><span class="label">SNR</span><span class="value">' +
+        escapeText(acoustic.snr_level || '—') + ' · ' + formatMaybeDb(acoustic.min_estimated_snr_db) + '</span></div>' +
+        '<div class="metric"><span class="label">Runtime</span><span class="value">' +
+        escapeText(runtime.level || 'unknown') + '</span></div>' +
+        '<div class="metric"><span class="label">Positions</span><span class="value">' +
+        Number(position.position_count || measurement.positions_completed || 0) + '</span></div>' +
+        '<div class="metric"><span class="label">Repeatability</span><span class="value">' +
+        escapeText(repeatability.level || 'unavailable') + '</span></div>' +
+      '</div>' +
+      '<h4>What happened</h4>' +
+      '<p class="hint">State ' + escapeText(bundle.state || 'unknown') +
+      ' · target ' + escapeText(measurement.target_choice || 'unknown') +
+      ' · strategy ' + escapeText(measurement.strategy_choice || 'unknown') +
+      ' · bundle schema v' + escapeText(bundle.schema_version || 'unknown') + '.</p>' +
+      '<h4>What looks trustworthy</h4>' +
+      reportIssueList(trusted, 'No positive evidence was available yet.') +
+      '<h4>What looks suspicious or missing</h4>' +
+      reportIssueList(suspicious.concat((readiness.reasons || []).map(function (reason) {
+        return {message: reason};
+      })), 'No warnings were recorded in the read-only evidence packet.') +
+      '<h4>What JTS refused to correct</h4>' +
+      reportIssueList(refused, 'No strategy gate refusal was recorded.') +
+      '<h4>Artifact versions</h4>' +
+      '<p class="hint">bundle v' + escapeText(versions.bundle_schema_version || bundle.schema_version || 'unknown') +
+      ' · manifest v' + escapeText(versions.artifact_manifest_schema_version || 'missing') +
+      ' · result v' + escapeText(versions.result_json_schema_version || 'missing') +
+      ' · runtime v' + escapeText(versions.runtime_integrity_schema_version || 'missing') +
+      ' · acoustic v' + escapeText(versions.acoustic_quality_schema_version || 'missing') +
+      ' · evidence packet v' + escapeText(versions.evidence_packet_schema_version || evidence.artifact_schema_version || 'unknown') +
+      '.</p>';
   }
 
   function chartPayload(payload) {
@@ -2331,6 +2528,13 @@ __NAV_BACK__
   autolevelBtn.addEventListener('click', function () { startAutolevel(); });
   autolevelCancelBtn.addEventListener('click', function () { cancelAutolevel(); });
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
+  loadSessionsBtn.addEventListener('click', function () { loadSessionReports(); });
+  sessionHistory.addEventListener('click', function (ev) {
+    var button = ev.target && ev.target.closest
+      ? ev.target.closest('button[data-session-id]')
+      : null;
+    if (button) loadSessionReport(button.dataset.sessionId || '');
+  });
 
   // Populate the banner on page load (and after apply / reset so the
   // user sees the new state without a refresh).
@@ -3021,6 +3225,93 @@ def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"sessions": list_bundles(sess.cfg.sessions_dir, limit=20)}
 
 
+def _read_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _bundle_report_versions(bundle_dir: Path) -> dict[str, Any]:
+    from jasper.correction import (
+        acoustic_quality,
+        bundles,
+        evidence,
+        runtime_integrity,
+    )
+
+    info = _read_optional_json(bundle_dir / "info.json") or {}
+    result = _read_optional_json(bundle_dir / "result.json") or {}
+    runtime = _read_optional_json(bundle_dir / "runtime_integrity.json") or {}
+    acoustic = _read_optional_json(bundle_dir / "acoustic_quality.json") or {}
+    manifest = _read_optional_json(bundle_dir / bundles.ARTIFACT_MANIFEST_NAME) or {}
+    return {
+        "expected_bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+        "expected_artifact_manifest_schema_version": (
+            bundles.CURRENT_ARTIFACT_MANIFEST_VERSION
+        ),
+        "expected_runtime_integrity_schema_version": runtime_integrity.SCHEMA_VERSION,
+        "expected_acoustic_quality_schema_version": acoustic_quality.SCHEMA_VERSION,
+        "expected_evidence_packet_schema_version": evidence.SCHEMA_VERSION,
+        "bundle_schema_version": info.get("bundle_schema_version"),
+        "artifact_manifest_schema_version": manifest.get("manifest_schema_version"),
+        "artifact_manifest_bundle_schema_version": (
+            manifest.get("bundle_schema_version")
+        ),
+        "result_json_schema_version": result.get("bundle_schema_version"),
+        "runtime_integrity_schema_version": runtime.get("artifact_schema_version"),
+        "acoustic_quality_schema_version": acoustic.get("artifact_schema_version"),
+        "evidence_packet_schema_version": evidence.SCHEMA_VERSION,
+    }
+
+
+def _resolve_session_bundle_dir(sessions_dir: Path, session_id: str) -> Path:
+    clean = session_id.strip()
+    if not clean:
+        raise BadRequest("missing session id")
+    if len(clean) > 128:
+        raise BadRequest("session id is too long")
+    root = sessions_dir.resolve()
+    candidate = sessions_dir / clean
+    try:
+        bundle_dir = candidate.resolve(strict=False)
+        bundle_dir.relative_to(root)
+    except (OSError, ValueError) as e:
+        raise BadRequest("invalid session id") from e
+    if not bundle_dir.is_dir():
+        raise FileNotFoundError(f"session bundle not found: {clean}")
+    return bundle_dir
+
+
+def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """GET /session-report?id=<session_id>: return a read-only,
+    browser-safe measurement report built from one session bundle.
+
+    This intentionally returns metadata and derived evidence only. Raw
+    recordings stay in the private bundle for operator/CLI workflows.
+    """
+    from jasper.correction import bundles, evidence
+
+    sess = _get_or_create_session()
+    query = parse_qs(urlparse(handler.path).query)
+    session_id = (query.get("id") or [""])[0]
+    bundle_dir = _resolve_session_bundle_dir(sess.cfg.sessions_dir, session_id)
+    packet = evidence.build_evidence_packet(bundle_dir)
+    logger.info(
+        "event=correction_session_report session=%s",
+        packet.get("session_id") or bundle_dir.name,
+    )
+    return {
+        "session_id": packet.get("session_id") or bundle_dir.name,
+        "summary": bundles.summarize_bundle(bundle_dir),
+        "artifact_versions": _bundle_report_versions(bundle_dir),
+        "evidence": packet,
+    }
+
+
 def _read_wav_body(
     handler: BaseHTTPRequestHandler,
     *,
@@ -3303,6 +3594,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     self._send_json(_handle_sessions(self))
                 except Exception as e:  # noqa: BLE001
                     logger.exception("/sessions failed")
+                    self._send_json({"error": str(e)}, status=500)
+                return
+            if path == "/session-report":
+                try:
+                    self._send_json(_handle_session_report(self))
+                except BadRequest as e:
+                    self._send_client_error(str(e))
+                except FileNotFoundError as e:
+                    self._send_client_error(str(e), status=404)
+                except Exception as e:  # noqa: BLE001
+                    from jasper.correction.bundles import BundleError
+                    if isinstance(e, BundleError):
+                        self._send_client_error(str(e), status=422)
+                        return
+                    logger.exception("/session-report failed")
                     self._send_json({"error": str(e)}, status=500)
                 return
             if path == "/calibration/models":

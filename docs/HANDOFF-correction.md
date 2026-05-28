@@ -198,6 +198,17 @@
   also reports whether the active CamillaDSP config is JTS-managed,
   preference-only, room-corrected, or a custom advanced config that
   JTS cannot safely preserve.
+- ✅ **Phase 2.14 — read-only measurement report surface + schema
+  version docs.** Implemented 2026-05-28. `/correction/` now includes
+  a small on-demand history panel backed by `GET /session-report?id=...`.
+  It renders the deterministic evidence packet for one bundle: what
+  happened, what looks trustworthy, what looks suspicious or missing,
+  what JTS refused to correct, and the artifact versions observed.
+  The endpoint returns metadata and derived evidence only; raw WAVs
+  remain private bundle artifacts for CLI/operator workflows. This
+  phase also pins the compatibility expectations for `info.json`,
+  `result.json`, `runtime_integrity.json`, `acoustic_quality.json`,
+  `artifact_manifest.json`, and evidence packets.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -346,7 +357,7 @@ uses `asyncio.run()` per request to bridge stdlib HTTP into async
 coordinator code; we do the same here for the
 `measurement_window()` async context manager.
 
-**Concrete shape (as shipped after Phase 2.3):**
+**Concrete shape (current):**
 ```
 HTTP port 80:
 GET  /correction/            static preflight explaining the HTTPS warning;
@@ -363,6 +374,7 @@ GET  /status                 session + currently-loaded correction snapshot
                              current_correction: {path, session_id,
                              applied_at_epoch, peq_count} | null})
 GET  /sessions               debug: 20 most-recent session bundles
+GET  /session-report?id=<id> read-only evidence report for one bundle
 GET  /calibration/models     supported calibrated mic providers/models
 POST /start                  reset to base config, begin noise capture, returns session_id;
                              body: {total_positions, target_choice,
@@ -593,6 +605,10 @@ jasper/
 │   ├── calibration.py                   calibration parser + Dayton/miniDSP providers
 │   ├── quality.py                       capture quality gates + issue schema
 │   ├── bundles.py                       debug-bundle listing / validation helpers
+│   ├── bundle_tools.py                  inspect/replay/export helpers for bundles
+│   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
+│   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
+│   ├── evidence.py                      deterministic human/agent evidence packet
 │   └── session.py                       bundle writer + measurement state machine
 │
 ├── cli/
@@ -1157,6 +1173,43 @@ shape, missing files, size/checksum drift, missing dependency entries,
 runtime-integrity issues, acoustic-quality issues, and current-schema
 bundles that still rely only on filename conventions.
 
+### Schema and version compatibility
+
+The bundle contract is intentionally versioned without introducing
+heavyweight JSON Schema yet. Consumers should branch on explicit
+version fields and feature presence, not inferred filenames.
+
+Current versions:
+
+| Artifact | Version field | Current value | Compatibility expectation |
+|---|---:|---:|---|
+| `info.json` | `bundle_schema_version` | `3` | Required for bundle identity/state. New optional summaries may appear; older bundles may omit newer fields. |
+| `result.json` | `bundle_schema_version` | `3` | Optional until a session reaches `ready` / `applied` / `verified`. Consumers must tolerate absence on failed or in-flight bundles. |
+| `artifact_manifest.json` | `manifest_schema_version` | `1` | Required for new schema-v3 bundles. Legacy bundles without it may be inspected but are lower trust. |
+| `runtime_integrity.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means runtime evidence unavailable, not that the sweep was healthy. |
+| `acoustic_quality.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means SNR/repeatability evidence unavailable, not invalid. |
+| `jasper.correction.evidence` packet | `artifact_schema_version` | `1` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. |
+
+Compatibility rules:
+
+- Treat `info.json` as the minimum bundle identity surface. It must
+  contain `session_id`, `state`, and `bundle_schema_version` for a
+  bundle to be useful.
+- Treat `result.json`, `runtime_integrity.json`, and
+  `acoustic_quality.json` as optional capability surfaces. Missing
+  derived evidence should lower confidence and guide remeasurement,
+  not crash report rendering.
+- Treat `artifact_manifest.json` as the integrity surface for new
+  bundles. If it is present, validate checksums, sizes, dependency
+  paths, sensitivity classes, and artifact schema versions before
+  trusting derived artifacts.
+- Do not expose raw WAVs in browser report surfaces. Raw recordings
+  are private evidence and stay in `captures/`, `noise/`,
+  `repeat_captures/`, and `verify.wav` for CLI/operator workflows.
+- When bumping any version, keep the old reader path long enough for
+  copied-off bundles from previous releases to produce a useful
+  "limited evidence" report.
+
 The first derived artifacts to make manifest-aware are the files JTS
 already writes. The next replay-grade additions should be compact and
 file-based, likely `.npz` for numeric arrays:
@@ -1204,6 +1257,12 @@ To list bundles without ssh, hit the debug endpoint:
 
 ```sh
 curl -sk https://jts.local/correction/sessions | jq
+```
+
+To view one read-only browser-safe evidence report:
+
+```sh
+curl -sk 'https://jts.local/correction/session-report?id=<id>' | jq
 ```
 
 To inspect, replay, or export one copied bundle locally:
