@@ -1,9 +1,10 @@
 """Room correction wizard at /correction/.
 
-Phase 1 — single-position end-to-end loop. The user opens the page on
-iPhone Safari, sees the mic-permission verify (Phase 0), taps "Run
-measurement", the speaker plays a sweep, the iPhone records it, the
-backend designs PEQ filters, and CamillaDSP hot-swaps the new config.
+The user opens the page on a phone, selects a calibrated input,
+captures pre-sweep room noise plus one or more measurement positions,
+reviews confidence/visualization evidence, and optionally applies a
+bounded room-correction profile through the shared CamillaDSP apply
+path.
 
 Architecture (per docs/HANDOFF-correction.md):
   - stdlib `ThreadingHTTPServer` — same pattern as voice_setup,
@@ -28,15 +29,11 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /reset           roll back to /etc/camilladsp/outputd-cutover.yml
       POST /session/delete  delete one historical measurement bundle
 
-Phase 2 will add multi-position MMM averaging — the chart payload
-shape (`measured`/`target`/`predicted` curves + `peqs` list) is
-designed not to change, so the frontend can extend without breaking
-the existing flow.
-
 Why a separate service from jasper-web (Spotify + voice settings):
-this module imports numpy and scipy (via jasper.correction.*). Those
-deps load >100 MB into the Python process at import time on the Pi 5.
-Keeping that out of the Spotify-OAuth path matters on a 1 GB Pi.
+the correction flow eventually imports numpy/scipy through
+`jasper.correction.*` while handling measurements. Keeping this
+socket-activated service separate from lightweight setup pages keeps
+the idle management UI cheap on a 1 GB Pi.
 """
 from __future__ import annotations
 
@@ -116,6 +113,7 @@ _ACTIVE_SESSION_STATES = frozenset({
     "verifying",
     "awaiting_verify_capture",
 })
+_BUNDLE_DELETE_BLOCKED_STATES = _ACTIVE_SESSION_STATES | {"ready"}
 
 
 def _active_state_for_session(sess: Any | None) -> str | None:
@@ -3325,7 +3323,6 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     import shutil
 
     from . import correction_report
-    from jasper.correction.session import SessionState
 
     sess = _get_or_create_session()
     body = _read_json_body(handler)
@@ -3337,20 +3334,11 @@ def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         )
     except correction_report.InvalidSessionId as e:
         raise BadRequest(str(e)) from e
-    active_states = {
-        SessionState.NEEDS_NOISE_CAPTURE,
-        SessionState.PREPARING,
-        SessionState.SWEEPING,
-        SessionState.AWAITING_CAPTURE,
-        SessionState.NEEDS_REPEAT_CAPTURE,
-        SessionState.AWAITING_REPEAT_CAPTURE,
-        SessionState.NEEDS_NEXT_POSITION,
-        SessionState.ANALYZING,
-        SessionState.VERIFYING,
-        SessionState.AWAITING_VERIFY_CAPTURE,
-        SessionState.READY,
-    }
-    if session_id == sess.session_id and sess.state in active_states:
+    current_state = getattr(getattr(sess, "state", None), "value", None)
+    if (
+        session_id == getattr(sess, "session_id", None)
+        and current_state in _BUNDLE_DELETE_BLOCKED_STATES
+    ):
         raise RequestConflict(
             "cannot delete the measurement bundle for an active session"
         )

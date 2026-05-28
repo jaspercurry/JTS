@@ -426,6 +426,7 @@ POST /calibration/upload     body: {filename, content, model?, label?,
 POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
 POST /reset                  → SetConfig(/etc/camilladsp/outputd-cutover.yml) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
+POST /session/delete         delete one historical measurement bundle
 POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
 POST /autolevel/lock         freeze main_volume at current ramp value

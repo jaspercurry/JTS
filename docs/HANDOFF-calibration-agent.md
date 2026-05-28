@@ -192,6 +192,7 @@ full picture. The bits that matter for this proposal:
   `POST /start`, `POST /next-position`, `POST /repeat-position`,
   `POST /verify`, `POST /upload-noise`, `POST /upload-capture`,
   `POST /apply`, `POST /reset`,
+  `POST /session/delete`,
   `POST /test-tone`, `POST /autolevel/start`, `POST /autolevel/lock`,
   `POST /autolevel/cancel`.
 - Frontend is an inline HTML / vanilla JS page emitted from the
@@ -220,11 +221,12 @@ full picture. The bits that matter for this proposal:
 ### Critical correctness property: `/start` always resets to flat
 
 [`_handle_start()`](../jasper/web/correction_setup.py) hard-resets
-the CamillaDSP config to `/etc/camilladsp/v1.yml` (identity) *before*
-playing the sweep. This means every measurement captures the raw room,
-never the corrected pipeline. The agent must understand this — its
-"compare verify against measured" reasoning only works because both
-were captured against the same flat baseline.
+the CamillaDSP config to `/etc/camilladsp/outputd-cutover.yml` *before*
+playing the sweep. This means every measurement captures the raw room
+through the current protected outputd-safe baseline, never through a
+prior room-correction or preference-EQ profile. The agent must
+understand this — its "compare verify against measured" reasoning only
+works because both were captured against the same baseline.
 
 ### Storage layout
 
