@@ -137,6 +137,15 @@ def test_evidence_repeatability_ignores_browser_label_drift(
 
 def test_evidence_packet_keeps_low_repeatability_as_caution(tmp_path: Path):
     first = _write_repeat_bundle(tmp_path, "first", [0, 1, 2, 1, 0])
+    result_path = first / "result.json"
+    result = json.loads(result_path.read_text())
+    result["confidence_report"]["strategy_gates"] = {
+        "safe": {"allowed": True, "reasons": []},
+        "balanced": {"allowed": True, "reasons": []},
+        "assertive": {"allowed": True, "reasons": []},
+        "future_fir": {"allowed": True, "reasons": []},
+    }
+    result_path.write_text(json.dumps(result))
     second = _write_repeat_bundle(
         tmp_path,
         "second",
@@ -150,7 +159,28 @@ def test_evidence_packet_keeps_low_repeatability_as_caution(tmp_path: Path):
     )
 
     assert packet["agent_readiness"]["level"] == "caution"
+    assert packet["artifact_schema_version"] == 2
     assert packet["repeatability"]["level"] == "low"
+    assert (
+        packet["capability_permissions"]["permissions"]["safe_peq"]["allowed"]
+        is True
+    )
+    assert (
+        packet["capability_permissions"]["permissions"]["balanced_peq"]["allowed"]
+        is True
+    )
+    assert (
+        packet["capability_permissions"]["permissions"]["assertive_peq"]["allowed"]
+        is False
+    )
+    assert (
+        packet["capability_permissions"]["permissions"]["future_fir"]["allowed"]
+        is False
+    )
+    assert any(
+        item["code"] == "position_analysis_missing"
+        for item in packet["missing_evidence"]
+    )
     codes = {issue["code"] for issue in packet["repeatability"]["issues"]}
     assert "repeatability_low" in codes
     assert "repeatability_mic_mismatch" in codes

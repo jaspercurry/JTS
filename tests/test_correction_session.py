@@ -126,6 +126,18 @@ async def test_session_applies_mic_calibration_during_capture(
     assert sess.capture_quality[-1]["capture_kind"] == "measurement"
     assert sess.capture_quality[-1]["position_index"] == 0
     assert sess.capture_quality[-1]["artifact_path"] == "captures/p0.wav"
+    replay = sess.capture_quality[-1]["replay_artifacts"]
+    assert replay["impulse_response_path"] == "analysis/p0_ir.wav"
+    assert replay["response_path"] == "analysis/p0_response.json"
+    replay_payload = json.loads((sess.bundle_dir / replay["response_path"]).read_text())
+    assert replay_payload["capture_kind"] == "measurement"
+    assert replay_payload["source_capture_path"] == "captures/p0.wav"
+    assert replay_payload["analysis_curve"]["calibration_applied"] is True
+    assert replay_payload["analysis_curve"]["normalized_band_hz"] == [
+        200.0,
+        1000.0,
+    ]
+    assert (sess.bundle_dir / replay["impulse_response_path"]).exists()
     assert not any(
         issue["code"] == "mic_uncalibrated"
         for issue in sess.capture_quality[-1]["issues"]
@@ -147,10 +159,30 @@ async def test_session_applies_mic_calibration_during_capture(
     }
     assert {
         "captures/p0.wav",
+        "analysis/p0_ir.wav",
+        "analysis/p0_response.json",
         "runtime_integrity.json",
         "mic_calibration.json",
         "mic_calibration.txt",
     }.issubset(manifest_paths)
+    manifest = bundles.read_artifact_manifest(sess.bundle_dir)
+    artifact_by_path = {
+        artifact["path"]: artifact
+        for artifact in manifest["artifacts"]
+    }
+    assert artifact_by_path["analysis/p0_ir.wav"]["dependencies"] == [
+        "captures/p0.wav",
+        "info.json",
+    ]
+    assert artifact_by_path["analysis/p0_response.json"]["dependencies"] == [
+        "analysis/p0_ir.wav",
+        "captures/p0.wav",
+        "info.json",
+        "mic_calibration.json",
+    ]
+    assert "analysis/p0_response.json" in artifact_by_path["result.json"][
+        "dependencies"
+    ]
 
 
 @pytest.mark.asyncio
@@ -226,6 +258,9 @@ async def test_session_records_noise_and_repeat_artifacts(tmp_path: Path):
     assert sess.state == SessionState.READY
     assert sess.repeat_quality is not None
     assert sess.repeat_quality["artifact_path"] == "repeat_captures/p0_r1.wav"
+    assert sess.repeat_quality["replay_artifacts"]["impulse_response_path"] == (
+        "analysis/repeat_p0_ir.wav"
+    )
     assert sess.repeatability_report is not None
     assert sess.repeatability_report["level"] == "high"
     assert sess.confidence_report is not None
@@ -240,6 +275,14 @@ async def test_session_records_noise_and_repeat_artifacts(tmp_path: Path):
     assert (
         artifact_by_path["repeat_captures/p0_r1.wav"]["kind"]
         == "repeat_capture"
+    )
+    assert (
+        artifact_by_path["analysis/p0_response.json"]["kind"]
+        == "derived_frequency_response"
+    )
+    assert (
+        artifact_by_path["analysis/repeat_p0_ir.wav"]["kind"]
+        == "derived_impulse_response"
     )
     assert not any(
         issue.severity == "fail"
@@ -297,6 +340,7 @@ async def test_session_full_flow_synthetic_room(tmp_path: Path):
         issue["code"] == "mic_uncalibrated"
         for issue in sess.capture_quality[-1]["issues"]
     )
+    assert "replay_artifacts" not in sess.capture_quality[-1]
 
     # PEQ designer should have picked at least one filter near 80 Hz.
     assert len(sess.peqs) >= 1

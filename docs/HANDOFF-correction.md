@@ -209,6 +209,21 @@
   phase also pins the compatibility expectations for `info.json`,
   `result.json`, `runtime_integrity.json`, `acoustic_quality.json`,
   `artifact_manifest.json`, and evidence packets.
+- ✅ **Phase 2.15 — replay-grade artifacts + FIR Stage 0 readiness.**
+  Implemented 2026-05-28. Successful measurements now write compact,
+  manifest-tracked derived artifacts under `analysis/`: per-capture
+  impulse-response WAVs plus response JSON containing raw FFT
+  magnitude, 1/48-octave smoothing, the final analysis curve,
+  calibration/normalization metadata, direct-arrival evidence, and
+  deconvolution settings. These artifacts are recomputable from raw
+  WAVs and make future FIR/agent review faster without making the
+  browser expose raw recordings. `jasper.correction.fir_runtime` adds
+  a no-apply FIR substrate: inspect FIR WAVs for sample-rate, taps,
+  latency, memory, max gain, and required headroom; optionally stage
+  safe imported coefficients into a bundle as evidence. The evidence
+  packet is now schema v2 with explicit `capability_permissions` and
+  `missing_evidence` so humans, the CLI, and future LLM tools consume
+  the same deterministic permission surface.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -216,7 +231,9 @@
 - ⏳ **Phase 4 — REW interop.** Partially started. Generic export
   landed in Phase 2.12; import/upload of external filter designs and a
   documented REW round-trip remain outstanding.
-- ⏳ **Phase 5 — FIR filter ladder.** Not started.
+- ⏳ **Phase 5 — FIR filter ladder.** Stage 0 substrate started:
+  inspect/stage imported FIR coefficients and report runtime readiness,
+  but do not generate or apply FIR filters yet.
 
 **Current sequencing note (2026-05-28):** after the latest research
 intake, the next room-correction priority is still measurement trust
@@ -224,11 +241,13 @@ before more filter types. The multi-position confidence layer,
 browser-audio metadata substrate, correction visualization surface,
 durable runtime-integrity bundle evidence, acoustic-quality evidence,
 agent-readiness packet, and bundle inspect/export tooling have landed.
-The next software/hardware boundary is acoustic browser smoke testing
-and then threshold tuning for the native SNR/repeatability evidence;
-FIR readiness validation should still wait until the
-measurement substrate can prove capture quality, runtime health,
-spatial stability, and headroom.
+Replay-grade analysis artifacts, explicit evidence permissions, and
+FIR runtime inspection/staging have also landed. The next
+software/hardware boundary is acoustic browser smoke testing and then
+threshold tuning for the native SNR/repeatability evidence; generated
+or applied FIR should still wait until the measurement substrate can
+prove capture quality, runtime health, spatial stability, and
+headroom.
 The rationale and source links live in
 [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
@@ -608,6 +627,8 @@ jasper/
 │   ├── bundle_tools.py                  inspect/replay/export helpers for bundles
 │   ├── runtime_integrity.py             Pi/runtime health evidence around sweeps
 │   ├── acoustic_quality.py              SNR/repeatability/direct-arrival trust evidence
+│   ├── replay_artifacts.py              compact derived IR/response artifacts
+│   ├── fir_runtime.py                   FIR coefficient inspect/stage substrate
 │   ├── evidence.py                      deterministic human/agent evidence packet
 │   └── session.py                       bundle writer + measurement state machine
 │
@@ -615,6 +636,7 @@ jasper/
 │   └── doctor.py                        correction socket / bundle / config checks
 │
 ├── web/
+│   ├── correction_report.py             read-only report payload helpers
 │   └── correction_setup.py              mirrors voice_setup.py shape
 │                                        ThreadingHTTPServer on 127.0.0.1:8770
 │                                        polling status, POST for upload+apply
@@ -1188,17 +1210,19 @@ Current versions:
 | `artifact_manifest.json` | `manifest_schema_version` | `1` | Required for new schema-v3 bundles. Legacy bundles without it may be inspected but are lower trust. |
 | `runtime_integrity.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means runtime evidence unavailable, not that the sweep was healthy. |
 | `acoustic_quality.json` | `artifact_schema_version` | `1` | Optional derived evidence. Missing means SNR/repeatability evidence unavailable, not invalid. |
-| `jasper.correction.evidence` packet | `artifact_schema_version` | `1` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. |
+| `analysis/<capture>_response.json` | `artifact_schema_version` | `1` | Optional derived replay artifact. Recomputable from raw capture WAV, sweep metadata, calibration, and deconvolution settings. |
+| `fir/<label>.json` | `artifact_schema_version` | `1` | Optional FIR-runtime metadata for imported/staged coefficients. This is evidence only, not an apply path. |
+| `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
 
 Compatibility rules:
 
 - Treat `info.json` as the minimum bundle identity surface. It must
   contain `session_id`, `state`, and `bundle_schema_version` for a
   bundle to be useful.
-- Treat `result.json`, `runtime_integrity.json`, and
-  `acoustic_quality.json` as optional capability surfaces. Missing
-  derived evidence should lower confidence and guide remeasurement,
-  not crash report rendering.
+- Treat `result.json`, `runtime_integrity.json`,
+  `acoustic_quality.json`, `analysis/*`, and `fir/*` metadata as
+  optional capability surfaces. Missing derived evidence should lower
+  confidence and guide remeasurement, not crash report rendering.
 - Treat `artifact_manifest.json` as the integrity surface for new
   bundles. If it is present, validate checksums, sizes, dependency
   paths, sensitivity classes, and artifact schema versions before
@@ -1210,16 +1234,14 @@ Compatibility rules:
   copied-off bundles from previous releases to produce a useful
   "limited evidence" report.
 
-The first derived artifacts to make manifest-aware are the files JTS
-already writes. The next replay-grade additions should be compact and
-file-based, likely `.npz` for numeric arrays:
-
-- per-position deconvolved impulse response;
-- window/deconvolution settings;
-- magnitude response before smoothing;
-- smoothed response;
-- calibration-applied response;
-- normalized response.
+Replay-grade `analysis/` artifacts are deliberately compact and
+file-based. They currently include per-capture deconvolved impulse
+responses, window/deconvolution settings, magnitude response before
+display smoothing, 1/48-octave smoothed response, calibration-applied
+analysis curve, and the normalization band. Raw capture WAVs remain the
+canonical origin. Future additions that require phase/group-delay or
+complex transfer functions should extend this artifact family rather
+than teaching browser routes to recompute DSP facts.
 
 Runtime health is lightweight and bounded, not a new monitoring daemon.
 `runtime_integrity.json` records a small per-measurement health packet:
@@ -1270,6 +1292,15 @@ To inspect, replay, or export one copied bundle locally:
 ```sh
 jasper-correction-bundle inspect ./<session_id> --recompute
 jasper-correction-bundle export ./<session_id> --output ./rew-export
+```
+
+To inspect a FIR coefficient WAV without applying it, or stage a safe
+imported FIR into a copied bundle as evidence:
+
+```sh
+jasper-correction-bundle fir-inspect ./coefficients.wav --mode minimum_phase
+jasper-correction-bundle fir-stage ./<session_id> ./coefficients.wav \
+  --label imported-minphase --mode minimum_phase
 ```
 
 The export command writes:

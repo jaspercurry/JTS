@@ -16,7 +16,7 @@ import numpy as np
 
 from . import acoustic_quality, bundles
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 REPEATABILITY_BAND_HZ = (50.0, 350.0)
 REPEATABILITY_HIGH_RMS_DB = 1.5
 REPEATABILITY_HIGH_P95_DB = 3.0
@@ -272,12 +272,20 @@ def _position_summary(
 ) -> dict[str, Any]:
     if not isinstance(position_analysis, dict):
         return {"available": False, "reason": "position_analysis.json unavailable"}
+    available = position_analysis.get("available")
+    if available is None:
+        available = bool(
+            position_analysis.get("position_count")
+            or position_analysis.get("positions")
+            or position_analysis.get("bands")
+            or position_analysis.get("chart")
+        )
     flags = [
         f for f in position_analysis.get("feature_flags") or []
         if isinstance(f, dict)
     ]
     return {
-        "available": bool(position_analysis.get("available")),
+        "available": bool(available),
         "position_count": position_analysis.get("position_count"),
         "feature_flag_count": len(flags),
         "feature_flags": flags[:6],
@@ -293,6 +301,152 @@ def _position_summary(
             if isinstance(band, dict)
         ],
     }
+
+
+def _gate_payload(
+    gate: dict[str, Any] | None,
+    *,
+    fallback_reason: str,
+) -> dict[str, Any]:
+    if isinstance(gate, dict):
+        reasons = [
+            str(reason)
+            for reason in gate.get("reasons") or []
+            if reason
+        ]
+        return {
+            "allowed": bool(gate.get("allowed")),
+            "reasons": reasons,
+        }
+    return {"allowed": False, "reasons": [fallback_reason]}
+
+
+def _capability_permissions(
+    *,
+    confidence_report: dict[str, Any] | None,
+    acoustic_report: dict[str, Any],
+    runtime_summary: dict[str, Any],
+    repeatability: dict[str, Any],
+) -> dict[str, Any]:
+    gates = (
+        confidence_report.get("strategy_gates")
+        if isinstance(confidence_report, dict)
+        else None
+    )
+    gates = gates if isinstance(gates, dict) else {}
+    permissions = {
+        "safe_peq": _gate_payload(
+            gates.get("safe"),
+            fallback_reason="confidence gate unavailable",
+        ),
+        "balanced_peq": _gate_payload(
+            gates.get("balanced"),
+            fallback_reason="confidence gate unavailable",
+        ),
+        "assertive_peq": _gate_payload(
+            gates.get("assertive"),
+            fallback_reason="confidence gate unavailable",
+        ),
+        "future_fir": _gate_payload(
+            gates.get("future_fir"),
+            fallback_reason="future-FIR confidence gate unavailable",
+        ),
+    }
+
+    global_reasons: list[str] = []
+    acoustic_summary = acoustic_report.get("summary") or {}
+    if acoustic_summary.get("level") == "fail":
+        global_reasons.append("acoustic quality has blocking failures")
+    if runtime_summary.get("level") == "fail":
+        global_reasons.append("runtime integrity has blocking failures")
+    for payload in permissions.values():
+        if global_reasons:
+            payload["allowed"] = False
+            payload["reasons"] = sorted(set(payload["reasons"] + global_reasons))
+    if repeatability.get("level") == "low":
+        repeatability_reason = "same-position repeatability is low"
+        for key in ("assertive_peq", "future_fir"):
+            payload = permissions[key]
+            payload["allowed"] = False
+            payload["reasons"] = sorted(set(payload["reasons"] + [repeatability_reason]))
+
+    return {
+        "artifact_schema_version": SCHEMA_VERSION,
+        "permissions": permissions,
+        "summary": {
+            "safe_peq_allowed": permissions["safe_peq"]["allowed"],
+            "balanced_peq_allowed": permissions["balanced_peq"]["allowed"],
+            "assertive_peq_allowed": permissions["assertive_peq"]["allowed"],
+            "future_fir_allowed": permissions["future_fir"]["allowed"],
+        },
+    }
+
+
+def _missing_evidence(
+    *,
+    info: dict[str, Any],
+    result: dict[str, Any] | None,
+    bundle_dir: Path,
+    acoustic_report: dict[str, Any],
+    runtime_summary: dict[str, Any],
+    position_summary: dict[str, Any],
+    repeatability: dict[str, Any],
+) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+
+    def add(code: str, severity: str, message: str) -> None:
+        missing.append({
+            "code": code,
+            "severity": severity,
+            "message": message,
+        })
+
+    if result is None:
+        add("result_json_missing", "warn", "result.json is unavailable")
+    if not (bundle_dir / bundles.ARTIFACT_MANIFEST_NAME).exists():
+        add(
+            "artifact_manifest_missing",
+            "warn",
+            "artifact manifest is unavailable",
+        )
+    if not info.get("mic_calibration"):
+        add(
+            "mic_calibration_missing",
+            "warn",
+            "measurement microphone calibration is unavailable",
+        )
+    acoustic_summary = acoustic_report.get("summary") or {}
+    if acoustic_summary.get("snr_level") in {None, "unknown", "unavailable"}:
+        add(
+            "snr_evidence_missing",
+            "warn",
+            "pre-sweep noise / SNR evidence is unavailable",
+        )
+    if repeatability.get("level") in {None, "unknown", "unavailable"}:
+        add(
+            "repeatability_missing",
+            "info",
+            "same-position repeatability has not been checked",
+        )
+    if runtime_summary.get("level") in {None, "unknown"}:
+        add(
+            "runtime_integrity_missing",
+            "warn",
+            "runtime-integrity evidence is unavailable",
+        )
+    if not position_summary.get("available"):
+        add(
+            "position_analysis_missing",
+            "warn",
+            "position-analysis evidence is unavailable",
+        )
+    if not ((result or {}).get("verify") or info.get("verify_metrics")):
+        add(
+            "verify_measurement_missing",
+            "info",
+            "post-correction verification sweep is unavailable",
+        )
+    return missing
 
 
 def _runtime_summary(
@@ -416,6 +570,24 @@ def build_evidence_packet(
         or (info.get("design_report") or {}).get("confidence_report")
     )
     runtime_summary = _runtime_summary(runtime, info)
+    position_summary = _position_summary(position_analysis)
+    capability_permissions = _capability_permissions(
+        confidence_report=(
+            confidence_report if isinstance(confidence_report, dict) else None
+        ),
+        acoustic_report=acoustic_report,
+        runtime_summary=runtime_summary,
+        repeatability=repeatability,
+    )
+    missing_evidence = _missing_evidence(
+        info=info,
+        result=result,
+        bundle_dir=bundle_dir,
+        acoustic_report=acoustic_report,
+        runtime_summary=runtime_summary,
+        position_summary=position_summary,
+        repeatability=repeatability,
+    )
 
     return {
         "artifact_schema_version": SCHEMA_VERSION,
@@ -447,8 +619,10 @@ def build_evidence_packet(
                 runtime.get("issues") if isinstance(runtime, dict) else None
             ),
         },
-        "position_analysis": _position_summary(position_analysis),
+        "position_analysis": position_summary,
         "repeatability": repeatability,
+        "capability_permissions": capability_permissions,
+        "missing_evidence": missing_evidence,
         "agent_readiness": _agent_readiness(
             bundle_issues=bundle_issues,
             confidence_report=(

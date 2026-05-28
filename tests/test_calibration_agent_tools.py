@@ -109,6 +109,18 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
     assert intake["peaks_nulls"]["nulls"][0]["freq_hz"] == 160.0
     assert intake["evidence"]["side_effects"] == []
     assert intake["evidence"]["agent_readiness"]["level"] == "caution"
+    assert intake["evidence"]["artifact_schema_version"] == 2
+    assert (
+        intake["evidence"]["capability_permissions"]["permissions"]["balanced_peq"][
+            "allowed"
+        ]
+        is True
+    )
+    missing_codes = {
+        item["code"]
+        for item in intake["evidence"]["missing_evidence"]
+    }
+    assert "repeatability_missing" in missing_codes
     assert (
         intake["evidence"]["acoustic_quality"]["summary"]["snr_level"]
         == "unavailable"
@@ -164,6 +176,7 @@ def test_cli_markdown_renders_evidence_readiness(tmp_path: Path, capsys):
     assert "## What I Would Do Next" in out
     assert "## What Evidence Is Missing" in out
     assert "## Evidence Readiness" in out
+    assert "## Capability Permissions" in out
     assert "Same-position repeatability" in out
 
 

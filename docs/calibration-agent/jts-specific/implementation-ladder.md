@@ -57,8 +57,13 @@ fan-in xrun deltas, and CamillaDSP runtime counters. They also include
 acoustic-trust verdict from capture quality, native pre-sweep noise
 WAVs, banded dBFS SNR, direct-arrival evidence, and optional main-seat
 repeatability. `jasper.correction.evidence` now builds a deterministic
-read-only evidence packet for the calibration agent, including native
-same-position repeatability or an explicit repeat-bundle comparison.
+read-only v2 evidence packet for the calibration agent, including
+native same-position repeatability or an explicit repeat-bundle
+comparison, capability permissions, and missing-evidence reporting.
+Successful captures also write replay-grade `analysis/` artifacts:
+derived impulse responses, raw/smoothed/final response curves,
+calibration/normalization metadata, direct-arrival evidence, and
+deconvolution settings.
 The remaining Stage 3 work is real acoustic browser smoke-test
 validation and research-tuned thresholds.
 
@@ -95,7 +100,9 @@ After the intake, the recommended order is:
    The `jasper-correction-bundle` CLI now inspects those bundles,
    replays raw captures into derived curves, and exports REW-friendly
    `.frd` / `.txt` curves plus impulse-response WAVs without adding a
-   new correction path.
+   new correction path. Successful captures also persist manifest-aware
+   `analysis/` replay artifacts so tools do not need to redo
+   deconvolution for every report.
 3. **Browser audio smoke-test integration.** Metadata-level
    mic/device/capture reliability now feeds the confidence model:
    processing flags, calibration status, channel count, device
@@ -113,10 +120,13 @@ After the intake, the recommended order is:
 5. **Sound curve / preference polish.** Keep `/sound/` independent from
    `/correction/`, with editable preset curves, level-matched A/B, and
    future proposed-vs-current compare.
-6. **FIR Stage 0 and readiness validation.** Export now exists; import
-   and runtime benchmarking should still precede generated FIR.
-   Generated FIR waits for bundle provenance, timing, spatial stability,
-   latency/headroom, and pre-ringing gates.
+6. **FIR Stage 0 and readiness validation.** Export and no-apply FIR
+   inspect/stage now exist: imported FIR WAVs can be checked for sample
+   rate, tap count, latency, coefficient memory, max gain, required
+   headroom, and bundle-local provenance without touching CamillaDSP.
+   Runtime benchmarking and generated FIR still wait for bundle
+   provenance, timing, spatial stability, latency/headroom, and
+   pre-ringing gates.
 
 The reason for the reorder is that confidence is the substrate that
 protects every later feature. It tells JTS whether a correction strategy

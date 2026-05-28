@@ -130,8 +130,16 @@ Every concept file should have:
   SNR estimates, direct-arrival evidence, and optional main-seat repeat
   capture; `jasper.correction.evidence` combines bundle, confidence,
   runtime, acoustic, and repeatability facts into a deterministic
-  read-only packet used by `jasper-calibration-agent`. Remaining
-  evidence work: replay-grade numeric intermediates and research-tuned
-  thresholds for future FIR and agent analysis.
+  read-only packet used by `jasper-calibration-agent`.
+- 2026-05-28: replay-grade and FIR Stage 0 substrate added. Successful
+  captures now write manifest-tracked `analysis/` artifacts with
+  derived impulse responses, raw/smoothed/final response curves,
+  calibration/normalization metadata, direct-arrival evidence, and
+  deconvolution settings. The evidence packet is schema v2 with
+  explicit capability permissions and missing-evidence reporting, and
+  `jasper-correction-bundle` can inspect/stage imported FIR coefficient
+  WAVs without applying them. Remaining evidence work: real
+  phone/browser/mic smoke tests and research-tuned thresholds for
+  future FIR and agent analysis.
 
 Last verified: 2026-05-28

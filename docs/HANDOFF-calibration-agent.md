@@ -9,7 +9,9 @@
 > `position_analysis.json` artifacts, `runtime_integrity.json`
 > evidence, `acoustic_quality.json` evidence, correction
 > visualization/confidence UX, a deterministic
-> `jasper.correction.evidence` packet, a read-only
+> `jasper.correction.evidence` v2 packet with explicit capability
+> permissions and missing-evidence reporting, replay-grade
+> `analysis/` artifacts, FIR coefficient inspect/stage substrate, a read-only
 > `jasper-calibration-agent` intake CLI, and an on-demand
 > `/correction/` measurement-report surface. The LLM agent itself is
 > still not implemented.
@@ -795,14 +797,17 @@ Before any LLM work:
   sample-count sanity, fan-in xrun deltas, and CamillaDSP runtime
   counters that feed the confidence report alongside capture quality.
   `acoustic_quality.json` records the current SNR/acoustic-trust
-  verdict, and `jasper.correction.evidence` combines bundle,
-  confidence, runtime, acoustic, and optional same-position
-  repeatability facts into one read-only packet for the calibration
-  agent.
+  verdict. `analysis/` now stores replay-grade derived impulse and
+  response artifacts for successful captures, and
+  `jasper.correction.evidence` v2 combines bundle, confidence,
+  runtime, acoustic, optional same-position repeatability, explicit
+  capability permissions, and missing-evidence facts into one read-only
+  packet for the calibration agent.
   `jasper-correction-bundle` now provides the operator/replay surface
   for this contract: inspect + checksum validation, optional raw-capture
-  replay into derived curves, and REW-friendly `.frd` / `.txt` / IR WAV
-  export for external analysis.
+  replay into derived curves, REW-friendly `.frd` / `.txt` / IR WAV
+  export, and no-apply FIR coefficient inspect/stage for future FIR
+  validation.
 - **Actually run the full Phase 0–2.2 pipeline on a real room** with
   the calibrated mic. This is the N10 hardware verification the user
   flagged as missing. Document what you find in

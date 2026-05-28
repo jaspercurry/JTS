@@ -29,20 +29,20 @@ def render_markdown(intake: dict[str, Any]) -> str:
     position = evidence.get("position_analysis") or {}
     repeatability = evidence.get("repeatability") or {}
     runtime = (evidence.get("runtime_integrity") or {}).get("summary") or {}
+    permissions = (
+        (evidence.get("capability_permissions") or {}).get("permissions")
+        or {}
+    )
     bundle_issues = summary.get("bundle_issues") or []
     quality_issues = summary.get("quality_issues") or []
     feature_flags = position.get("feature_flags") or []
-    missing: list[str] = []
-    if acoustic.get("snr_level") in {None, "unknown", "unavailable"}:
-        missing.append("Measured SNR / pre-sweep noise evidence")
-    if repeatability.get("level") in {None, "unknown", "unavailable"}:
-        missing.append("Same-position repeatability")
-    if runtime.get("level") in {None, "unknown"}:
-        missing.append("Runtime-integrity evidence")
-    if not summary.get("has_verify"):
-        missing.append("Post-correction verification sweep")
+    missing_evidence = list(evidence.get("missing_evidence") or [])
     if not intake.get("schroeder", {}).get("available"):
-        missing.append("Room volume / RT60 for Schroeder estimate")
+        missing_evidence.append({
+            "code": "schroeder_estimate_missing",
+            "severity": "info",
+            "message": "room volume / RT60 for Schroeder estimate is unavailable",
+        })
 
     trustworthy: list[str] = []
     if summary.get("mic_calibrated"):
@@ -136,7 +136,13 @@ def render_markdown(intake: dict[str, Any]) -> str:
         "",
         "## What Evidence Is Missing",
     ])
-    lines.extend(f"- {item}" for item in (missing or ["Nothing obvious."]))
+    lines.extend(
+        f"- {_fmt_issue(item)}"
+        for item in (missing_evidence or [{
+            "severity": "info",
+            "message": "Nothing obvious.",
+        }])
+    )
     lines.extend([
         "",
         "## Quality",
@@ -165,6 +171,20 @@ def render_markdown(intake: dict[str, Any]) -> str:
             f"`{repeatability.get('level') or 'unknown'}`"
         ),
     ])
+    if permissions:
+        lines.extend(["", "## Capability Permissions"])
+        for label, key in (
+            ("Safe PEQ", "safe_peq"),
+            ("Balanced PEQ", "balanced_peq"),
+            ("Assertive PEQ", "assertive_peq"),
+            ("Future FIR", "future_fir"),
+        ):
+            payload = permissions.get(key) or {}
+            lines.append(
+                f"- {label}: {'allowed' if payload.get('allowed') else 'blocked'}"
+            )
+            for reason in payload.get("reasons") or []:
+                lines.append(f"  - {reason}")
     if acoustic.get("min_estimated_snr_db") is not None:
         lines.append(
             "- Minimum estimated SNR: "

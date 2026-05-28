@@ -59,6 +59,7 @@ from . import (
     confidence,
     deconv,
     quality,
+    replay_artifacts,
     runtime_integrity,
     spatial,
     strategy,
@@ -75,6 +76,7 @@ _CORRECTION_FILENAME_RE = re.compile(
 )
 _SOUND_FILENAME_RE = re.compile(r"^sound_(?:current|audition)\.yml$")
 _PEQ_KEY_RE = re.compile(r"^\s+(?:peq|room_peq)_\d+:", re.MULTILINE)
+ANALYSIS_NORMALIZE_BAND_HZ = (200.0, 1000.0)
 
 
 def parse_current_correction(
@@ -616,6 +618,143 @@ class MeasurementSession:
                 dependencies.append(artifact_path)
         return sorted(set(dependencies))
 
+    def _replay_artifact_dependencies(self) -> list[str]:
+        dependencies: list[str] = []
+        reports = list(self.capture_quality)
+        if self.repeat_quality:
+            reports.append(self.repeat_quality)
+        if self.verify_quality:
+            reports.append(self.verify_quality)
+        for report in reports:
+            artifacts = report.get("replay_artifacts")
+            if not isinstance(artifacts, dict):
+                continue
+            for key in ("impulse_response_path", "response_path"):
+                artifact_path = artifacts.get(key)
+                if not isinstance(artifact_path, str):
+                    continue
+                if Path(artifact_path).is_absolute():
+                    continue
+                if (self.bundle_dir / artifact_path).exists():
+                    dependencies.append(artifact_path)
+        return sorted(set(dependencies))
+
+    def _write_capture_replay_artifacts(
+        self,
+        captured_wav_path: Path,
+        *,
+        capture_kind: str,
+        position_index: int | None,
+        ir: np.ndarray,
+        raw_freqs_hz: np.ndarray,
+        raw_magnitude_db: np.ndarray,
+        smoothed_magnitude_db: np.ndarray,
+        log_freqs_hz: np.ndarray,
+        log_magnitude_db: np.ndarray,
+        direct_arrival: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        bundle = self._ensure_bundle_dir()
+        if bundle is None:
+            return None
+        source_rel = self._bundle_relative_path(captured_wav_path)
+        if source_rel is None:
+            logger.info(
+                "event=correction_replay_artifacts_skipped "
+                "session=%s capture_kind=%s position_index=%s "
+                "reason=source_capture_outside_bundle",
+                self.session_id,
+                capture_kind,
+                position_index,
+            )
+            return None
+        try:
+            artifacts = replay_artifacts.write_capture_replay_artifacts(
+                bundle,
+                bundle_schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
+                session_id=self.session_id,
+                capture_kind=capture_kind,
+                position_index=position_index,
+                source_capture_path=source_rel,
+                ir=ir,
+                sample_rate=self.cfg.sample_rate,
+                raw_freqs_hz=raw_freqs_hz,
+                raw_magnitude_db=raw_magnitude_db,
+                smoothed_magnitude_db=smoothed_magnitude_db,
+                log_freqs_hz=log_freqs_hz,
+                log_magnitude_db=log_magnitude_db,
+                direct_arrival=direct_arrival,
+                deconvolution={
+                    "method": "fft_tikhonov_regularized_inverse",
+                    "pre_arrival_ms": deconv.DEFAULT_PRE_ARRIVAL_MS,
+                    "post_arrival_ms": deconv.DEFAULT_POST_ARRIVAL_MS,
+                    "epsilon_relative": deconv.DEFAULT_EPSILON_RELATIVE,
+                },
+                calibration_applied=self.mic_calibration is not None,
+                normalized_band_hz=ANALYSIS_NORMALIZE_BAND_HZ,
+            )
+            raw_dependencies = self._existing_bundle_dependencies(
+                "info.json",
+                source_rel,
+            )
+            calibration_dependencies = (
+                self._existing_bundle_dependencies("mic_calibration.json")
+                if self.mic_calibration is not None
+                else []
+            )
+            common_metadata = {
+                "capture_kind": capture_kind,
+                "position_index": position_index,
+            }
+            bundles.record_artifact(
+                bundle,
+                artifacts.impulse_response_path,
+                kind="derived_impulse_response",
+                sensitivity="private_metadata",
+                recomputable=True,
+                generated_by=(
+                    "jasper.correction.session._write_capture_replay_artifacts"
+                ),
+                dependencies=raw_dependencies,
+                metadata=common_metadata,
+                schema_version=replay_artifacts.SCHEMA_VERSION,
+            )
+            bundles.record_artifact(
+                bundle,
+                artifacts.response_path,
+                kind="derived_frequency_response",
+                sensitivity="private_metadata",
+                recomputable=True,
+                generated_by=(
+                    "jasper.correction.session._write_capture_replay_artifacts"
+                ),
+                dependencies=self._existing_bundle_dependencies(
+                    *raw_dependencies,
+                    *calibration_dependencies,
+                    artifacts.impulse_response_path,
+                ),
+                metadata=common_metadata,
+                schema_version=replay_artifacts.SCHEMA_VERSION,
+            )
+            logger.info(
+                "event=correction_replay_artifacts_written session=%s "
+                "capture_kind=%s position_index=%s ir=%s response=%s",
+                self.session_id,
+                capture_kind,
+                position_index,
+                artifacts.impulse_response_path,
+                artifacts.response_path,
+            )
+            return artifacts.to_dict()
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "bundle replay artifact write failed session=%s "
+                "capture_kind=%s position_index=%s",
+                self.session_id,
+                capture_kind,
+                position_index,
+            )
+            return None
+
     def _record_raw_capture_artifact(
         self,
         captured_wav_path: Path,
@@ -1000,6 +1139,7 @@ class MeasurementSession:
                 "runtime_integrity.json",
                 "acoustic_quality.json",
                 "mic_calibration.json",
+                *self._replay_artifact_dependencies(),
                 *self._capture_artifact_dependencies(),
             ),
             schema_version=bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
@@ -1450,8 +1590,18 @@ class MeasurementSession:
         }
 
     def _smooth_capture(
-        self, captured_wav_path: Path,
-    ) -> tuple[np.ndarray, np.ndarray, quality.CaptureQuality, dict[str, Any]]:
+        self,
+        captured_wav_path: Path,
+        *,
+        capture_kind: str,
+        position_index: int | None,
+    ) -> tuple[
+        np.ndarray,
+        np.ndarray,
+        quality.CaptureQuality,
+        dict[str, Any],
+        dict[str, Any] | None,
+    ]:
         """Read capture, assess quality, deconvolve, smooth, log-resample.
 
         Returns (log_freqs, smoothed_db, capture_quality) for both the
@@ -1491,15 +1641,42 @@ class MeasurementSession:
             sample_rate=self.cfg.sample_rate,
         )
         direct_arrival = self._direct_arrival_report(ir)
-        freqs, mag_db = deconv.magnitude_response(ir, self.cfg.sample_rate)
+        freqs, mag_db = deconv.magnitude_response(
+            ir,
+            self.cfg.sample_rate,
+            normalize=False,
+        )
         smoothed = analysis.smooth_fractional_octave(freqs, mag_db, fraction=48)
         log_freqs, log_mag = analysis.resample_log(freqs, smoothed)
         if self.mic_calibration is not None:
             log_mag = calibration.apply_calibration_curve(
                 log_freqs, log_mag, self.mic_calibration.curve,
             )
-        log_mag = analysis.normalize_to_band(log_freqs, log_mag)
-        return log_freqs, log_mag, capture_quality, direct_arrival
+        log_mag = analysis.normalize_to_band(
+            log_freqs,
+            log_mag,
+            f_low=ANALYSIS_NORMALIZE_BAND_HZ[0],
+            f_high=ANALYSIS_NORMALIZE_BAND_HZ[1],
+        )
+        replay_artifact_info = self._write_capture_replay_artifacts(
+            captured_wav_path,
+            capture_kind=capture_kind,
+            position_index=position_index,
+            ir=ir,
+            raw_freqs_hz=freqs,
+            raw_magnitude_db=mag_db,
+            smoothed_magnitude_db=smoothed,
+            log_freqs_hz=log_freqs,
+            log_magnitude_db=log_mag,
+            direct_arrival=direct_arrival,
+        )
+        return (
+            log_freqs,
+            log_mag,
+            capture_quality,
+            direct_arrival,
+            replay_artifact_info,
+        )
 
     def _quality_report_dict(
         self,
@@ -1510,6 +1687,7 @@ class MeasurementSession:
         position_index: int | None = None,
         noise_report: dict[str, Any] | None = None,
         direct_arrival: dict[str, Any] | None = None,
+        replay_artifacts: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         out = report.to_dict()
         out["capture_kind"] = capture_kind
@@ -1555,6 +1733,8 @@ class MeasurementSession:
                 out["issues"] = issues
         if direct_arrival is not None:
             out["direct_arrival"] = direct_arrival
+        if replay_artifacts is not None:
+            out["replay_artifacts"] = replay_artifacts
         return out
 
     def _design_target(self, freqs: np.ndarray) -> np.ndarray:
@@ -1838,8 +2018,16 @@ class MeasurementSession:
         noise_report = self._noise_report_for_position(position_index)
 
         try:
-            log_freqs, log_mag, capture_quality, direct_arrival = self._smooth_capture(
+            (
+                log_freqs,
+                log_mag,
+                capture_quality,
+                direct_arrival,
+                replay_artifact_info,
+            ) = self._smooth_capture(
                 captured_wav_path,
+                capture_kind="measurement",
+                position_index=position_index,
             )
         except Exception as e:  # noqa: BLE001
             if isinstance(e, quality.CaptureQualityError):
@@ -1875,6 +2063,7 @@ class MeasurementSession:
             position_index=position_index,
             noise_report=noise_report,
             direct_arrival=direct_arrival,
+            replay_artifacts=replay_artifact_info,
         ))
         self._refresh_acoustic_quality()
         try:
@@ -1955,8 +2144,16 @@ class MeasurementSession:
         noise_report = self._noise_report_for_position(0)
 
         try:
-            log_freqs, log_mag, capture_quality, direct_arrival = (
-                self._smooth_capture(captured_wav_path)
+            (
+                log_freqs,
+                log_mag,
+                capture_quality,
+                direct_arrival,
+                replay_artifact_info,
+            ) = self._smooth_capture(
+                captured_wav_path,
+                capture_kind="repeat",
+                position_index=0,
             )
         except Exception as e:  # noqa: BLE001
             if isinstance(e, quality.CaptureQualityError):
@@ -1993,6 +2190,7 @@ class MeasurementSession:
             position_index=0,
             noise_report=noise_report,
             direct_arrival=direct_arrival,
+            replay_artifacts=replay_artifact_info,
         )
         if self.position_freqs is not None and self.position_magnitudes:
             self.repeatability_report = self._repeatability_from_arrays(
@@ -2277,8 +2475,16 @@ class MeasurementSession:
         )
 
         try:
-            log_freqs, log_mag, capture_quality, direct_arrival = (
-                self._smooth_capture(captured_wav_path)
+            (
+                log_freqs,
+                log_mag,
+                capture_quality,
+                direct_arrival,
+                replay_artifact_info,
+            ) = self._smooth_capture(
+                captured_wav_path,
+                capture_kind="verify",
+                position_index=None,
             )
         except Exception as e:  # noqa: BLE001
             if isinstance(e, quality.CaptureQualityError):
@@ -2327,6 +2533,7 @@ class MeasurementSession:
             capture_kind="verify",
             captured_wav_path=captured_wav_path,
             direct_arrival=direct_arrival,
+            replay_artifacts=replay_artifact_info,
         )
         self._refresh_acoustic_quality()
         try:

@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from jasper.correction import bundles
+from jasper.correction import bundles, evidence
 from jasper.correction.session import (
     MeasurementSession,
     SessionConfig,
@@ -905,6 +905,29 @@ def test_session_report_endpoint_returns_evidence_packet(
     )
     assert versions["runtime_integrity_schema_version"] == 1
     assert versions["acoustic_quality_schema_version"] == 1
+
+
+def test_session_report_payload_builder_returns_evidence_versions(
+    tmp_path: Path,
+):
+    from jasper.web import correction_report
+
+    sessions_dir = tmp_path / "sessions"
+    _write_report_bundle(sessions_dir, "bbb")
+
+    payload = correction_report.build_session_report_payload(
+        sessions_dir=sessions_dir,
+        session_id="bbb",
+    )
+
+    assert payload["session_id"] == "bbb"
+    assert payload["evidence"]["artifact_schema_version"] == evidence.SCHEMA_VERSION
+    assert payload["artifact_versions"]["expected_evidence_packet_schema_version"] == (
+        evidence.SCHEMA_VERSION
+    )
+    assert payload["artifact_versions"]["evidence_packet_schema_version"] == (
+        evidence.SCHEMA_VERSION
+    )
 
 
 def test_session_report_endpoint_rejects_path_traversal(

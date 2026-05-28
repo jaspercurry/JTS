@@ -12,7 +12,7 @@ from typing import Any
 
 import numpy as np
 
-from . import analysis, bundles, calibration, deconv, interop
+from . import analysis, bundles, calibration, deconv, fir_runtime, interop
 
 
 class BundleToolError(RuntimeError):
@@ -41,6 +41,93 @@ def _artifact_counts(manifest: dict[str, Any] | None) -> dict[str, int]:
         kind = str(artifact.get("kind") or "unknown")
         counts[kind] = counts.get(kind, 0) + 1
     return counts
+
+
+def _fir_artifacts(bundle_dir: Path) -> list[dict[str, Any]]:
+    fir_dir = bundle_dir / "fir"
+    if not fir_dir.exists():
+        return []
+    out: list[dict[str, Any]] = []
+    for meta_path in sorted(fir_dir.glob("*.json")):
+        try:
+            payload = _read_json(meta_path)
+        except BundleToolError as e:
+            out.append({
+                "metadata_path": meta_path.relative_to(bundle_dir).as_posix(),
+                "level": "fail",
+                "issue_count": 1,
+                "issues": [{
+                    "code": "fir_metadata_invalid",
+                    "severity": "fail",
+                    "message": str(e),
+                }],
+            })
+            continue
+        if not payload:
+            continue
+        rel_path = meta_path.relative_to(bundle_dir).as_posix()
+        out.append({
+            "metadata_path": rel_path,
+            "coefficients_path": payload.get("path"),
+            "mode": payload.get("mode"),
+            "level": payload.get("level"),
+            "tap_count": payload.get("tap_count"),
+            "required_headroom_db": payload.get("required_headroom_db"),
+            "filter_group_delay_ms": payload.get("filter_group_delay_ms"),
+            "issue_count": len(payload.get("issues") or []),
+        })
+    return out
+
+
+def fir_readiness(bundle_dir: Path) -> dict[str, Any]:
+    """Summarize FIR-runtime readiness facts for one bundle."""
+    summary = bundles.summarize_bundle(bundle_dir)
+    info = _read_json(bundle_dir / "info.json") or {}
+    confidence = info.get("confidence_report")
+    if not isinstance(confidence, dict):
+        result = _read_json(bundle_dir / "result.json")
+        confidence = (
+            result.get("confidence_report")
+            if isinstance(result, dict)
+            else None
+        )
+    gates = (
+        confidence.get("strategy_gates")
+        if isinstance(confidence, dict)
+        else None
+    )
+    future_fir_gate = (
+        gates.get("future_fir")
+        if isinstance(gates, dict) and isinstance(gates.get("future_fir"), dict)
+        else {"allowed": False, "reasons": ["confidence gate unavailable"]}
+    )
+    manifest = _read_json(bundle_dir / bundles.ARTIFACT_MANIFEST_NAME)
+    counts = _artifact_counts(manifest)
+    fir_artifacts = _fir_artifacts(bundle_dir)
+    missing: list[str] = []
+    if not summary.get("has_artifact_manifest"):
+        missing.append("artifact_manifest.json")
+    if counts.get("derived_impulse_response", 0) == 0:
+        missing.append("derived impulse-response artifacts")
+    if not summary.get("has_acoustic_quality_json"):
+        missing.append("acoustic_quality.json")
+    if not summary.get("has_runtime_integrity_json"):
+        missing.append("runtime_integrity.json")
+
+    return {
+        "artifact_schema_version": fir_runtime.SCHEMA_VERSION,
+        "future_fir_gate": future_fir_gate,
+        "derived_impulse_response_count": counts.get("derived_impulse_response", 0),
+        "derived_frequency_response_count": counts.get(
+            "derived_frequency_response",
+            0,
+        ),
+        "staged_fir_count": len(fir_artifacts),
+        "staged_fir": fir_artifacts,
+        "missing": missing,
+        "ready_for_runtime_import": not missing,
+        "ready_for_generated_fir": bool(future_fir_gate.get("allowed")) and not missing,
+    }
 
 
 def _raw_capture_paths(bundle_dir: Path) -> list[Path]:
@@ -114,6 +201,7 @@ def inspect_bundle(
             if isinstance(acoustic, dict)
             else summary.get("acoustic_quality")
         ),
+        "fir_readiness": fir_readiness(bundle_dir),
         "exports_available": exportable_artifacts(bundle_dir),
     }
     if recompute:

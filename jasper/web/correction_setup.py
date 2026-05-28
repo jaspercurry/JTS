@@ -3225,67 +3225,6 @@ def _handle_sessions(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return {"sessions": list_bundles(sess.cfg.sessions_dir, limit=20)}
 
 
-def _read_optional_json(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _bundle_report_versions(bundle_dir: Path) -> dict[str, Any]:
-    from jasper.correction import (
-        acoustic_quality,
-        bundles,
-        evidence,
-        runtime_integrity,
-    )
-
-    info = _read_optional_json(bundle_dir / "info.json") or {}
-    result = _read_optional_json(bundle_dir / "result.json") or {}
-    runtime = _read_optional_json(bundle_dir / "runtime_integrity.json") or {}
-    acoustic = _read_optional_json(bundle_dir / "acoustic_quality.json") or {}
-    manifest = _read_optional_json(bundle_dir / bundles.ARTIFACT_MANIFEST_NAME) or {}
-    return {
-        "expected_bundle_schema_version": bundles.CURRENT_BUNDLE_SCHEMA_VERSION,
-        "expected_artifact_manifest_schema_version": (
-            bundles.CURRENT_ARTIFACT_MANIFEST_VERSION
-        ),
-        "expected_runtime_integrity_schema_version": runtime_integrity.SCHEMA_VERSION,
-        "expected_acoustic_quality_schema_version": acoustic_quality.SCHEMA_VERSION,
-        "expected_evidence_packet_schema_version": evidence.SCHEMA_VERSION,
-        "bundle_schema_version": info.get("bundle_schema_version"),
-        "artifact_manifest_schema_version": manifest.get("manifest_schema_version"),
-        "artifact_manifest_bundle_schema_version": (
-            manifest.get("bundle_schema_version")
-        ),
-        "result_json_schema_version": result.get("bundle_schema_version"),
-        "runtime_integrity_schema_version": runtime.get("artifact_schema_version"),
-        "acoustic_quality_schema_version": acoustic.get("artifact_schema_version"),
-        "evidence_packet_schema_version": evidence.SCHEMA_VERSION,
-    }
-
-
-def _resolve_session_bundle_dir(sessions_dir: Path, session_id: str) -> Path:
-    clean = session_id.strip()
-    if not clean:
-        raise BadRequest("missing session id")
-    if len(clean) > 128:
-        raise BadRequest("session id is too long")
-    root = sessions_dir.resolve()
-    candidate = sessions_dir / clean
-    try:
-        bundle_dir = candidate.resolve(strict=False)
-        bundle_dir.relative_to(root)
-    except (OSError, ValueError) as e:
-        raise BadRequest("invalid session id") from e
-    if not bundle_dir.is_dir():
-        raise FileNotFoundError(f"session bundle not found: {clean}")
-    return bundle_dir
-
-
 def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     """GET /session-report?id=<session_id>: return a read-only,
     browser-safe measurement report built from one session bundle.
@@ -3293,23 +3232,23 @@ def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     This intentionally returns metadata and derived evidence only. Raw
     recordings stay in the private bundle for operator/CLI workflows.
     """
-    from jasper.correction import bundles, evidence
+    from . import correction_report
 
     sess = _get_or_create_session()
     query = parse_qs(urlparse(handler.path).query)
     session_id = (query.get("id") or [""])[0]
-    bundle_dir = _resolve_session_bundle_dir(sess.cfg.sessions_dir, session_id)
-    packet = evidence.build_evidence_packet(bundle_dir)
+    try:
+        payload = correction_report.build_session_report_payload(
+            sessions_dir=sess.cfg.sessions_dir,
+            session_id=session_id,
+        )
+    except correction_report.InvalidSessionId as e:
+        raise BadRequest(str(e)) from e
     logger.info(
         "event=correction_session_report session=%s",
-        packet.get("session_id") or bundle_dir.name,
+        payload.get("session_id") or session_id,
     )
-    return {
-        "session_id": packet.get("session_id") or bundle_dir.name,
-        "summary": bundles.summarize_bundle(bundle_dir),
-        "artifact_versions": _bundle_report_versions(bundle_dir),
-        "evidence": packet,
-    }
+    return payload
 
 
 def _read_wav_body(

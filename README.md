@@ -655,9 +655,10 @@ reference. Currently:
 - [`HANDOFF-correction.md`](docs/HANDOFF-correction.md) — Room
   correction v2 at `/correction/`: iPhone-mic measurement flow,
   calibrated mic ingest, configurable correction strategies,
-  design-audit bundles, `jasper-correction-bundle` inspect/export
-  tooling, PEQ generation, CamillaDSP hot-swap. Active workstream —
-  read the Status section first to see which phase is in flight.
+  design-audit bundles, replay-grade analysis artifacts,
+  `jasper-correction-bundle` inspect/export/FIR-inspect tooling, PEQ
+  generation, CamillaDSP hot-swap. Active workstream — read the Status
+  section first to see which phase is in flight.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
   — `/sound/` preference-EQ layer: stock sound curves, Bass/Mid/Treble,
   exclusive Basic / Advanced PEQ editing, named custom profile library,

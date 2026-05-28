@@ -27,15 +27,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_PRE_ARRIVAL_MS = 5.0
+DEFAULT_POST_ARRIVAL_MS = 500.0
+DEFAULT_EPSILON_RELATIVE = 1e-3
+
 
 def deconvolve(
     captured: np.ndarray,
     sweep: np.ndarray,
     sample_rate: int,
     *,
-    pre_arrival_ms: float = 5.0,
-    post_arrival_ms: float = 500.0,
-    epsilon_relative: float = 1e-3,
+    pre_arrival_ms: float = DEFAULT_PRE_ARRIVAL_MS,
+    post_arrival_ms: float = DEFAULT_POST_ARRIVAL_MS,
+    epsilon_relative: float = DEFAULT_EPSILON_RELATIVE,
 ) -> np.ndarray:
     """Recover h(t) from y(t) ≈ (h * x)(t) via regularized FFT.
 
