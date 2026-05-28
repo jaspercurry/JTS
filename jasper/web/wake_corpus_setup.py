@@ -137,8 +137,17 @@ DISTANCES = ("near", "mid", "far")
 # experiment streams emitted by jasper-aec-bridge when explicitly
 # enabled; they are never production wake-detection inputs.
 AEC3_SWEEP_LEGS = tuple(variant.leg for variant in AEC3_SWEEP_VARIANTS)
+# Keep old pilot legs playable when loading earlier same-day sessions.
+LEGACY_AEC3_SWEEP_LEGS = (
+    "aec3_ns_off",
+    "aec3_default_gain_08",
+    "aec3_hf_mask_upstream",
+    "aec3_hf_wide_open",
+    "aec3_nearend_fast",
+)
 LEGS = (
-    "on", *AEC3_SWEEP_LEGS, "off", "dtln", "raw0", "ref",
+    "on", *AEC3_SWEEP_LEGS, *LEGACY_AEC3_SWEEP_LEGS,
+    "off", "dtln", "raw0", "ref",
     "usb_raw", "usb_webrtc", "usb_dtln",
 )
 BASE_LEGS = ("on", "off")
@@ -149,6 +158,11 @@ USB_DTLN_LEG = "usb_dtln"
 LEG_LABELS = {
     "on": "XVF WebRTC AEC3",
     **{variant.leg: variant.label for variant in AEC3_SWEEP_VARIANTS},
+    "aec3_ns_off": "AEC3 NS off (legacy)",
+    "aec3_default_gain_08": "AEC3 default gain 0.8 (legacy)",
+    "aec3_hf_mask_upstream": "AEC3 HF mask upstream (legacy)",
+    "aec3_hf_wide_open": "AEC3 HF wide open (legacy)",
+    "aec3_nearend_fast": "AEC3 near-end fast (legacy)",
     "off": "XVF raw",
     "dtln": "XVF DTLN",
     "raw0": "XVF raw0",
@@ -532,6 +546,17 @@ def restart_aec_bridge() -> None:
     a missing USB mic or failed DTLN load should stop the session
     before it records silently-missing legs.
     """
+    try:
+        subprocess.run(
+            ["systemctl", "reset-failed", BRIDGE_UNIT],
+            check=False,
+            timeout=5.0,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.warning("could not reset %s start-limit state: %s", BRIDGE_UNIT, e)
     subprocess.run(
         ["systemctl", "restart", BRIDGE_UNIT],
         check=True,
@@ -773,10 +798,37 @@ def _enabled_legs_from_metadata(
     """Recover the session leg set from new or legacy metadata."""
     raw = data.get("enabled_legs")
     if isinstance(raw, list):
-        legs = tuple(
+        raw_legs = tuple(
             str(leg) for leg in raw
-            if str(leg) in LEGS and str(leg) in ports
+            if str(leg) in LEGS
         )
+        include_aec3_sweep = (
+            bool(data.get("include_aec3_sweep", False))
+            or any(
+                leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS
+                for leg in raw_legs
+            )
+        )
+        legs: list[str] = []
+        inserted_aec3 = False
+        for leg in raw_legs:
+            if leg in AEC3_SWEEP_LEGS or leg in LEGACY_AEC3_SWEEP_LEGS:
+                continue
+            if leg not in ports:
+                continue
+            legs.append(leg)
+            if leg == "on" and include_aec3_sweep:
+                legs.extend(
+                    sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
+                    if sweep_leg in ports
+                )
+                inserted_aec3 = True
+        if include_aec3_sweep and not inserted_aec3:
+            legs = [
+                sweep_leg for sweep_leg in AEC3_SWEEP_LEGS
+                if sweep_leg in ports
+            ] + legs
+        legs = tuple(dict.fromkeys(legs))
         if legs:
             return legs
     return _session_legs(
@@ -2973,7 +3025,13 @@ _INDEX_HTML_TEMPLATE = """<!DOCTYPE html>
           ? 'inline-block' : 'none';
         unloadEl.disabled = s.is_recording;
         if (sessionLoaded) {
-          if (voiceActive) {
+          if (voiceActive && bridgeActive && sessionBridgeReady) {
+            beginEl.textContent = 'Stop voice & resume recording';
+            beginEl.disabled = s.is_recording;
+          } else if (voiceActive && bridgeActive) {
+            beginEl.textContent = 'Stop voice & apply outputs';
+            beginEl.disabled = s.is_recording;
+          } else if (voiceActive) {
             beginEl.textContent = 'Enter corpus test mode';
             beginEl.disabled = s.is_recording;
           } else if (!sessionBridgeReady) {
@@ -3412,12 +3470,13 @@ def _render_index_html(csrf_token: str = "") -> str:
     # `secrets.token_hex` only produces hex chars (no HTML metachars).
     # The nav-back CSS + HTML are static (no user input) so no
     # escaping needed for those.
+    aec3_playback_legs = AEC3_SWEEP_LEGS + LEGACY_AEC3_SWEEP_LEGS
     aec3_sweep_js_labels = "\n      ".join(
-        f"{json.dumps(variant.leg)}: {json.dumps(variant.label)},"
-        for variant in AEC3_SWEEP_VARIANTS
+        f"{json.dumps(leg)}: {json.dumps(LEG_LABELS[leg])},"
+        for leg in aec3_playback_legs
     )
     aec3_sweep_js_order = "".join(
-        f"{json.dumps(variant.leg)}, " for variant in AEC3_SWEEP_VARIANTS
+        f"{json.dumps(leg)}, " for leg in aec3_playback_legs
     )
     return (
         _INDEX_HTML_TEMPLATE

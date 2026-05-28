@@ -179,6 +179,10 @@ reviewed separately from the 3 × 3 Jarvis matrix.
 For optional cheap-USB sessions, add repeated leg checks such as
 `--expect-leg ref --expect-leg usb_raw --expect-leg usb_webrtc`; add
 `--expect-leg usb_dtln` only for sessions where USB DTLN was enabled.
+For AEC3 sweep pilot sessions, the audit discovers the active sweep
+legs from `jasper/aec_sweep.py` and also accepts older legacy sweep
+legs so same-day pilot recordings remain auditable after the registry
+is retargeted.
 
 The audit checks:
 - Session metadata readability and `include_raw_mic_0` flags

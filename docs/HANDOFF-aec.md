@@ -246,6 +246,32 @@ topology. Trade-off documented in "Lessons learned" below.
 | **AEC3 internal capture HPF** | 100 Hz 2nd-order Butter | `jasper_aec3/src/aec3_binding.cpp` | Enabled via `cfg.high_pass_filter.enabled = true`. Defense in depth with chip + ref HPFs. |
 | **AEC3 internal NS** | **`kLow`** (was `kModerate` until 2026-05-20) | binding default + `/etc/jasper/jasper.env` `JASPER_AEC_NS_LEVEL` | Post-AEC noise/music suppression. More aggressive NS strips more HF speech-consonant features that openWakeWord depends on. Wake-rate sweep on 2026-05-20: `kLow` 5/20, `kModerate` (prev) 4/20, `kHigh` 3/20, `kVeryHigh` 2/20. `kLow` is the sweet spot; lower not exposed by Trixie v1.3-3 (no `kVeryLow`). Disable entirely via `JASPER_AEC_NS_ENABLED=0` for max HF preservation at the cost of residual music passing through. |
 
+### Corpus-only AEC3 sweep knobs
+
+The production `on` leg still defaults to BEST_A. For wake-corpus
+pilot tuning, `jasper_aec3/src/aec3_binding_v2.cpp` and
+`_Aec3V2Engine` in `jasper/cli/aec_bridge.py` expose a small set of
+additional WebRTC AEC3 suppressor knobs as env overrides so the corpus
+bridge can run same-utterance variants without changing the production
+chain:
+
+| Env var | BEST_A/default | Purpose |
+|---|---:|---|
+| `JASPER_AEC_NEAREND_AVERAGE_BLOCKS` | `4` | Near-end smoothing window. |
+| `JASPER_AEC_NEAREND_MASK_HF_ENR_T` / `_ENR_S` / `_EMR_T` | `0.1` / `0.3` / `0.3` | HF masking thresholds when AEC3 believes near-end speech dominates. |
+| `JASPER_AEC_NEAREND_MAX_DEC_LF` | `0.25` | Near-end suppressor gain-decrease rate. |
+| `JASPER_AEC_NEAREND_MAX_INC` | `2.0` | Near-end suppressor gain-increase rate. |
+| `JASPER_AEC_DND_SNR_THRESHOLD` | `30` | Dominant-near-end SNR threshold. Lower values trigger near-end mode sooner. |
+| `JASPER_AEC_DND_HOLD_DURATION` | `50` | Dominant-near-end hold duration in AEC3's native block units. |
+| `JASPER_AEC_DND_ENR_THRESHOLD` | `0.25` | Dominant-near-end echo-to-near-end-ratio threshold. |
+| `JASPER_AEC_DND_TRIGGER_THRESHOLD` | `12` | Number of detector hits required before dominant-near-end mode engages. |
+
+As of 2026-05-27, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
+uses these knobs only for pilot legs (`aec3_edge_combo` and
+`aec3_slow_attack`). Do not promote a sweep variant to production until
+it beats BEST_A on same-utterance listening review, corpus-quality
+metrics, and wake scoring under the far+music condition.
+
 ### Measured outcome at this tuning
 
 Bridge log during AirPlay music playback:
@@ -2432,4 +2458,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-26.
+Last verified: 2026-05-27.

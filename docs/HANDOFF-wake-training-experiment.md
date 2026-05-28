@@ -377,9 +377,9 @@ written into per-leg quadrant directories at
 | `usb_raw` | UDP `:9881` | cheap USB mic mono capture, no software processing (corpus-only; opt-in) |
 | `usb_webrtc` | UDP `:9882` | cheap USB mic → SW AEC3 + same NS/AGC settings as the production AEC chain (corpus-only; opt-in) |
 | `usb_dtln` | UDP `:9883` | cheap USB mic → SW DTLN-aec (corpus-only; opt-in, high resource risk) |
-| `aec3_ns_off` | UDP `:9884` | chip ch1 → parallel SW AEC3 with WebRTC NS disabled (corpus-only AEC3 tuning sweep) |
-| `aec3_default_gain_08` | UDP `:9885` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_DEFAULT_GAIN=0.8` (corpus-only AEC3 tuning sweep) |
-| `aec3_hf_relaxed` | UDP `:9886` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
+| `aec3_hf_relaxed` | UDP `:9884` | chip ch1 → parallel SW AEC3 with `JASPER_AEC_CONSERVATIVE_HF=0` (corpus-only AEC3 tuning sweep) |
+| `aec3_edge_combo` | UDP `:9885` | chip ch1 → parallel SW AEC3 with relaxed HF, slower suppressor attack (`max_dec_lf=0.02`), and faster dominant-near-end detection (`snr=15`, `enr=0.50`, `hold=100`, `trigger=6`) |
+| `aec3_slow_attack` | UDP `:9886` | chip ch1 → parallel SW AEC3 with relaxed HF plus slower normal/near-end suppressor attack (`max_dec_lf=0.02`) |
 
 The 4th `raw0` leg (PR #323) is the future-proofing layer — it
 captures a no-chip baseline from the XVF. The USB/reference opt-in
@@ -402,9 +402,13 @@ selected, `jasper-aec-bridge` runs three additional warmed WebRTC AEC3
 instances in parallel with the baseline `on` leg, all fed the same
 mic/ref frames for the same utterance. Keep this mode quarantined as
 pilot data: it is for Jasper listening + offline analysis, not Session
-A/B training/eval. The shipped first-pass variants are intentionally
-small and one-axis-at-a-time: NS off, residual `default_gain=0.8`, and
-relaxed HF suppression. Use AEC3 sweep separately from DTLN to protect
+A/B training/eval. The current sweep is focused on preserving wake-word
+edge clarity under far+music: baseline `on`, `aec3_hf_relaxed`, faster
+dominant-near-end detection, and slower suppressor attack. This replaced
+the first-pass NS-off / `default_gain=0.8` variants and the HF-mask 2×2
+after pilot clips showed `aec3_hf_relaxed` preserved more of the leading
+"J" transient, while upstream HF mask values were darker and did not
+improve the wake score. Use AEC3 sweep separately from DTLN to protect
 the 1 GB Pi resource budget and keep listening comparisons readable.
 
 **DTLN policy.** The existing `dtln` leg is still the first neural-AEC
@@ -1104,6 +1108,15 @@ Available at http://jts.local/wake-corpus/. PRs landed in sequence:
   from raw/DTLN legs and Reference is listed last
 - 2026-05-27 tuning pilot — corpus-only AEC3 sweep mode adds three
   same-utterance WebRTC AEC3 variants on `:9884`-`:9886`
+- 2026-05-27 evening tuning pass — AEC3 sweep variants retargeted to
+  the HF-preservation 2×2: `aec3_hf_relaxed`,
+  `aec3_hf_mask_upstream`, and `aec3_hf_wide_open`
+- 2026-05-27 late tuning pass — AEC3 sweep variants retargeted to
+  edge-preservation under far+music: `aec3_hf_relaxed`,
+  `aec3_nearend_fast`, and `aec3_slow_attack`
+- 2026-05-27 edge-combo pass — AEC3 sweep variants retargeted to
+  test the combined promising direction: `aec3_hf_relaxed`,
+  `aec3_edge_combo`, and `aec3_slow_attack`
 
 Recorder UX status:
 - ✅ One-click record, click-again-stop, spacebar hotkey
@@ -1114,7 +1127,8 @@ Recorder UX status:
 - ✅ Per-session USB/ref toggle for corpus-only cheap-mic experiments
   (`ref`, `usb_raw`, `usb_webrtc`)
 - ✅ Per-session AEC3 sweep toggle for pilot tuning: baseline plus
-  `aec3_ns_off`, `aec3_default_gain_08`, and `aec3_hf_relaxed`
+  `aec3_hf_relaxed`, `aec3_edge_combo`, and
+  `aec3_slow_attack`
 - ✅ Sessions card: list all sessions, Load (resume), Delete (with
   confirm); collapsible and below new-session setup
 - ✅ Per-cell counts matrix + recorded-clips list with HTML5 audio
@@ -1124,6 +1138,8 @@ Recorder UX status:
 - ✅ Corpus test-mode transition wired: selected optional legs are
   applied before session creation; exiting disables recorder-owned
   bridge outputs, restarts `jasper-voice`, and unloads the session
+  after clearing stale systemd start-limit state for the intentional
+  bridge restart
 - ✅ Loaded sessions show as loaded (not newly active) and can enter
   corpus test mode using their saved leg set
 - ✅ Recent metadata is not auto-loaded after a graceful exit; crash
@@ -1159,6 +1175,14 @@ where available.
 
 ## Changelog
 
+- **2026-05-27 (v19):** Corpus test-mode bridge restart safety:
+  - The recorder clears stale `jasper-aec-bridge` systemd start-limit
+    counters before an intentional corpus-output restart, so rapid
+    deploy/test-mode toggles do not accidentally trip the critical
+    daemon `StartLimitAction=reboot` ladder.
+  - Mixed state (`jasper-voice` running while recorder-owned bridge
+    outputs remain on) labels the loaded-session action as resuming
+    recording instead of starting a new corpus session.
 - **2026-05-27 (v15):** AEC3 same-utterance sweep:
   - Added corpus-only AEC3 sweep mode. When selected, the bridge runs
     three additional warmed WebRTC AEC3 instances in parallel with the
@@ -1338,4 +1362,4 @@ where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-27 (v15 — AEC3 sweep mode verified against code)
+Last verified: 2026-05-27 (v19 — corpus test-mode restart safety verified against code)

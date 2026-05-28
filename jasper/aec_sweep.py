@@ -25,25 +25,37 @@ class Aec3SweepVariant:
 
 AEC3_SWEEP_VARIANTS: tuple[Aec3SweepVariant, ...] = (
     Aec3SweepVariant(
-        leg="aec3_ns_off",
-        label="AEC3 NS off",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_NS_OFF",
-        default_port=9884,
-        env_overrides={"JASPER_AEC_NS_ENABLED": "0"},
-    ),
-    Aec3SweepVariant(
-        leg="aec3_default_gain_08",
-        label="AEC3 default gain 0.8",
-        port_env="JASPER_AEC_UDP_PORT_AEC3_DEFAULT_GAIN_08",
-        default_port=9885,
-        env_overrides={"JASPER_AEC_DEFAULT_GAIN": "0.8"},
-    ),
-    Aec3SweepVariant(
         leg="aec3_hf_relaxed",
         label="AEC3 HF relaxed",
         port_env="JASPER_AEC_UDP_PORT_AEC3_HF_RELAXED",
-        default_port=9886,
+        default_port=9884,
         env_overrides={"JASPER_AEC_CONSERVATIVE_HF": "0"},
+    ),
+    Aec3SweepVariant(
+        leg="aec3_edge_combo",
+        label="AEC3 edge combo",
+        port_env="JASPER_AEC_UDP_PORT_AEC3_EDGE_COMBO",
+        default_port=9885,
+        env_overrides={
+            "JASPER_AEC_CONSERVATIVE_HF": "0",
+            "JASPER_AEC_MAX_DEC_LF": "0.02",
+            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
+            "JASPER_AEC_DND_SNR_THRESHOLD": "15",
+            "JASPER_AEC_DND_ENR_THRESHOLD": "0.50",
+            "JASPER_AEC_DND_HOLD_DURATION": "100",
+            "JASPER_AEC_DND_TRIGGER_THRESHOLD": "6",
+        },
+    ),
+    Aec3SweepVariant(
+        leg="aec3_slow_attack",
+        label="AEC3 slow attack",
+        port_env="JASPER_AEC_UDP_PORT_AEC3_SLOW_ATTACK",
+        default_port=9886,
+        env_overrides={
+            "JASPER_AEC_CONSERVATIVE_HF": "0",
+            "JASPER_AEC_MAX_DEC_LF": "0.02",
+            "JASPER_AEC_NEAREND_MAX_DEC_LF": "0.02",
+        },
     ),
 )
 

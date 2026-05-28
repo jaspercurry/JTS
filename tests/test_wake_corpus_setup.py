@@ -1241,11 +1241,11 @@ def test_combined_web_entrypoint_includes_raw0_port(
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_RAW_PORT", "6600")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_WEBRTC_PORT", "7700")
     monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC_USB_DTLN_PORT", "8800")
-    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_NS_OFF_PORT", "9901")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9901")
     monkeypatch.setenv(
-        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_DEFAULT_GAIN_08_PORT", "9902",
+        "JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_EDGE_COMBO_PORT", "9902",
     )
-    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_HF_RELAXED_PORT", "9903")
+    monkeypatch.setenv("JASPER_WAKE_CORPUS_AEC3_SWEEP_AEC3_SLOW_ATTACK_PORT", "9903")
 
     assert web_main._wake_corpus_ports_from_env() == {
         "on": 1100,
@@ -1256,9 +1256,9 @@ def test_combined_web_entrypoint_includes_raw0_port(
         "usb_raw": 6600,
         "usb_webrtc": 7700,
         "usb_dtln": 8800,
-        "aec3_ns_off": 9901,
-        "aec3_default_gain_08": 9902,
-        "aec3_hf_relaxed": 9903,
+        "aec3_hf_relaxed": 9901,
+        "aec3_edge_combo": 9902,
+        "aec3_slow_attack": 9903,
     }
 
 
@@ -1275,8 +1275,8 @@ def test_combined_web_entrypoint_keeps_raw0_when_dtln_disabled(
     assert ports["raw0"] == 4400
     assert ports["ref"] == wake_corpus_setup.DEFAULT_AEC_REF_PORT
     assert ports["usb_dtln"] == wake_corpus_setup.DEFAULT_AEC_USB_DTLN_PORT
-    assert ports["aec3_ns_off"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
-        "aec3_ns_off"
+    assert ports["aec3_hf_relaxed"] == wake_corpus_setup.DEFAULT_AEC3_SWEEP_PORTS[
+        "aec3_hf_relaxed"
     ]
 
 
@@ -1607,6 +1607,29 @@ def test_enable_bridge_outputs_writes_wizard_env_and_restarts(
     assert restarts == ["restart"]
 
 
+def test_restart_aec_bridge_resets_start_limit_before_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def fake_run(cmd: list[str], **kwargs: object) -> subprocess.CompletedProcess:
+        calls.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr(wake_corpus_setup.subprocess, "run", fake_run)
+
+    wake_corpus_setup.restart_aec_bridge()
+
+    assert calls[0][0] == [
+        "systemctl", "reset-failed", wake_corpus_setup.BRIDGE_UNIT,
+    ]
+    assert calls[0][1]["check"] is False
+    assert calls[1][0] == [
+        "systemctl", "restart", wake_corpus_setup.BRIDGE_UNIT,
+    ]
+    assert calls[1][1]["check"] is True
+
+
 def test_enable_bridge_outputs_preserves_system_usb_device(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
@@ -1830,6 +1853,7 @@ def test_build_capture_health_marks_bridge_drop_compromised() -> None:
 def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
     """AEC3 sweep legs use the same XVF mic/ref frames as the baseline
     AEC leg, so their per-leg health must inherit mic/ref bridge drops."""
+    leg = wake_corpus_setup.AEC3_SWEEP_LEGS[0]
     frame = np.zeros(1280, dtype=np.int16)
     start = {
         "pid": 123,
@@ -1839,8 +1863,8 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
             "frames_processed": 10,
             "ref_starved_frames": 0,
             "queue_drops": {"mic": 0, "raw0": 0, "usb": 0, "ref": 0},
-            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
-            "packets_sent_by_leg": {"aec3_ns_off": 0},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 0},
         },
     }
     stop = {
@@ -1851,21 +1875,21 @@ def test_build_capture_health_marks_aec3_sweep_bridge_drops() -> None:
             "frames_processed": 20,
             "ref_starved_frames": 0,
             "queue_drops": {"mic": 1, "raw0": 0, "usb": 0, "ref": 2},
-            "udp_send_drops_by_leg": {"aec3_ns_off": 0},
-            "packets_sent_by_leg": {"aec3_ns_off": 1},
+            "udp_send_drops_by_leg": {leg: 0},
+            "packets_sent_by_leg": {leg: 1},
         },
     }
 
     health = wake_corpus_setup.build_capture_health(
         wall_duration_sec=0.08,
-        buffers={"aec3_ns_off": [frame]},
+        buffers={leg: [frame]},
         bridge_start=start,
         bridge_stop=stop,
     )
 
-    drop_counts = health["legs"]["aec3_ns_off"]["bridge_drop_counts"]
+    drop_counts = health["legs"][leg]["bridge_drop_counts"]
     assert health["status"] == "compromised"
-    assert health["legs"]["aec3_ns_off"]["status"] == "compromised"
+    assert health["legs"][leg]["status"] == "compromised"
     assert drop_counts["mic_queue_full"] == 1
     assert drop_counts["ref_queue_full"] == 2
 
@@ -1953,6 +1977,33 @@ def test_metadata_persists_aec3_sweep_flags(
         "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
     ]
     assert data["aec3_sweep_variants"] == wake_corpus_setup.variant_metadata()
+
+
+def test_loaded_aec3_sweep_session_refreshes_current_variant_legs() -> None:
+    """A loaded pilot session should use the current sweep registry even
+    if its saved metadata names an older retired variant."""
+    ports = {
+        "on": 9876,
+        "off": 9877,
+        **{
+            leg: 9884 + index
+            for index, leg in enumerate(wake_corpus_setup.AEC3_SWEEP_LEGS)
+        },
+    }
+    data = {
+        "include_aec3_sweep": True,
+        "enabled_legs": [
+            "on",
+            "aec3_hf_relaxed",
+            "aec3_nearend_fast",
+            "aec3_slow_attack",
+            "off",
+        ],
+    }
+
+    assert wake_corpus_setup._enabled_legs_from_metadata(data, ports) == (
+        "on", *wake_corpus_setup.AEC3_SWEEP_LEGS, "off",
+    )
 
 
 def test_recovery_restores_include_raw_mic_0_flag(tmp_path: Path) -> None:
@@ -2332,6 +2383,8 @@ def test_html_loaded_session_enters_test_mode_without_new_session() -> None:
     """
     html_text = wake_corpus_setup._render_index_html("t")
     assert "Enter corpus test mode" in html_text
+    assert "Stop voice & resume recording" in html_text
+    assert "Stop voice & apply outputs" in html_text
     assert "Apply bridge outputs" in html_text
     assert "Ready to record" in html_text
     assert "Enter corpus test mode for loaded session" not in html_text
@@ -2363,7 +2416,10 @@ def test_html_playback_uses_leg_selector() -> None:
     assert "'usb_dtln', 'ref'" in html_text
     assert 'encodeURIComponent(ev.target.value)' in html_text
     assert "on: 'XVF WebRTC AEC3'" in html_text
-    assert "aec3_ns_off" in html_text
+    assert "aec3_hf_relaxed" in html_text
+    assert "aec3_edge_combo" in html_text
+    assert "aec3_nearend_fast" in html_text
+    assert "aec3_slow_attack" in html_text
     assert "usb_webrtc: 'USB WebRTC AEC3'" in html_text
     assert "usb_dtln: 'USB DTLN'" in html_text
 
