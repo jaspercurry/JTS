@@ -9,9 +9,10 @@
 > `position_analysis.json` artifacts, `runtime_integrity.json`
 > evidence, `acoustic_quality.json` evidence, correction
 > visualization/confidence UX, a deterministic
-> `jasper.correction.evidence` packet, and a read-only
-> `jasper-calibration-agent` intake CLI. The LLM agent itself is still
-> not implemented.
+> `jasper.correction.evidence` packet, a read-only
+> `jasper-calibration-agent` intake CLI, and an on-demand
+> `/correction/` measurement-report surface. The LLM agent itself is
+> still not implemented.
 >
 > **What this proposes:** build toward a guided speaker-tuning system
 > on top of the existing `/correction/` wizard. The first layer is
@@ -185,6 +186,7 @@ full picture. The bits that matter for this proposal:
   context; the page documents the iOS trust dance.
 - Routes (all in [`jasper/web/correction_setup.py`](../jasper/web/correction_setup.py)):
   `GET /`, `GET /healthz`, `GET /status`, `GET /sessions`,
+  `GET /session-report?id=<id>`,
   `POST /start`, `POST /next-position`, `POST /repeat-position`,
   `POST /verify`, `POST /upload-noise`, `POST /upload-capture`,
   `POST /apply`, `POST /reset`,
