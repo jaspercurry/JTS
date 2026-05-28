@@ -264,7 +264,8 @@ Live Pi state without modifying anything:
 |---|---|
 | `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken |
 | `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio / renderers / satellites). Fail-soft per section. |
-| [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks. |
+| [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks. |
+| [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |
 | [`scripts/tail-pi-logs.sh`](../scripts/tail-pi-logs.sh) | Live tail of all `jasper-*` units |
 | [`scripts/jasper-trace.sh`](../scripts/jasper-trace.sh) | Filtered live tail showing only `event=` lines (duck transitions, source preempts, dial routing, wake/turn boundaries) |
 | `ssh pi@jts.local sudo bash /home/pi/jts/scripts/pi-bundle.sh` | One-shot full diagnostic dump as a tarball |

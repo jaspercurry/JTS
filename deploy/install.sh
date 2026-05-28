@@ -1876,8 +1876,9 @@ _apply_jts_zram_dropin() {
 
 
 # Step 4 — live-write /proc/PID/oom_score_adj for each running
-# critical daemon. The OOMScoreAdjust= directive in each .service
-# file only takes effect on next process start; install.sh doesn't
+# critical daemon plus the sshd listener. The OOMScoreAdjust=
+# directive in each .service file only takes effect on next process
+# start; install.sh doesn't
 # restart jasper-camilla (Rust binary, intentionally never auto-
 # restarted per AGENTS.md) or jasper-mux (not in install.sh's
 # restart list), so their running processes would sit at adj=0
@@ -2230,13 +2231,13 @@ install_systemd_units() {
         "${SYSTEMD_DIR}/bluealsa.service.d/jts-restart.conf"
 
     # sshd OOM-protection drop-in: Debian's openssh-server package
-    # ships ssh.service WITHOUT an OOMScoreAdjust= directive, so the
-    # kernel's default (0) applies — making sshd a candidate for
-    # OOM-kill under heavy pressure. JTS's resilience story relies
-    # on sshd being the recovery path during failure events; the
-    # drop-in forces OOMScoreAdjust=-1000 (immortal). Operators on
-    # distros whose sshd unit is named differently (sshd.service on
-    # RHEL/Fedora) should rename. See the file's header comment.
+    # ships ssh.service WITHOUT an OOMScoreAdjust= directive. JTS
+    # gives sshd a moderate negative bias so it remains a good recovery
+    # path, but keeps it killable because SSH-launched diagnostics
+    # inherit this value. Heavy Pi-side diagnostics should run through
+    # scripts/pi-run-diagnostic.sh. Operators on distros whose sshd
+    # unit is named differently (sshd.service on RHEL/Fedora) should
+    # rename. See the file's header comment.
     install -d -m 0755 "${SYSTEMD_DIR}/ssh.service.d"
     install -m 0644 \
         "${REPO_DIR}/deploy/systemd/ssh.service.d/oom-protection.conf" \

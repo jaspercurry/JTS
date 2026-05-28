@@ -344,7 +344,10 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   audit-pending-followups.md    Open Tier 2/3 follow-ups
 
 scripts/                        Operator helpers (run from laptop)
-  fetch-pi-logs.sh              Pull journals + configs into ./logs/
+  fetch-pi-logs.sh              Pull journals, reboot/OOM forensics,
+                                and configs into ./logs/
+  pi-run-diagnostic.sh          Run ad-hoc Pi diagnostics in a bounded
+                                transient systemd unit
   tail-pi-logs.sh               Live tail
   pi-bundle.sh                  One-shot diagnostic dump
   xvf-interrogate.sh            Deep XVF3800 diagnostic — captures
@@ -984,14 +987,19 @@ curl -s http://jts.local:8780/state | jq          # cross-daemon snapshot
 
 # From the laptop:
 bash scripts/fetch-pi-logs.sh                     # pull journals to ./logs/
+bash scripts/pi-run-diagnostic.sh -- <command>    # bounded Pi-side probe
 bash scripts/tail-pi-logs.sh                      # live tail all units
 bash scripts/jasper-trace.sh                      # filter to event= lines
 ```
 
 `jasper-doctor` codifies the smoke tests in BRINGUP.md and runs
-them as code. `fetch-pi-logs.sh` pulls journals + configs +
-ALSA state into `./logs/`, redacting environment-style secret
-assignments before writing snapshots to disk.
+them as code. `fetch-pi-logs.sh` pulls journals, previous-boot
+OOM/watchdog/reboot clues, configs, and ALSA state into `./logs/`,
+redacting environment-style secret assignments before writing
+snapshots to disk. `pi-run-diagnostic.sh` is the safe path for
+ad-hoc Pi-side experiments: it wraps the command in a transient
+systemd unit with memory/runtime bounds so a bad diagnostic gets
+killed before it starves the speaker.
 `jasper-trace.sh` is the live-tail equivalent narrowed to the
 cross-daemon `event=` lines emitted by `jasper.camilla.Ducker`,
 the dial volume routes, etc. — useful when you want to see
