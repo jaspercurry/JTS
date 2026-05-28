@@ -158,6 +158,8 @@ def test_profile_library_includes_stock_profiles():
     ]
     assert payload[0]["editable"] is False
     assert payload[1]["profile"]["curve_id"] == "harman"
+    assert payload[1]["profile"]["profile_id"] == "stock:harman"
+    assert payload[1]["profile"]["profile_name"] == "Harman-style"
 
 
 def test_preview_uses_dense_log_frequency_grid():
@@ -176,6 +178,8 @@ def test_named_profile_library_lifecycle(tmp_path):
 
     assert created.id.startswith("custom_")
     assert created.name == "Evening Tune"
+    assert created.profile.profile_id == created.id
+    assert created.profile.profile_name == "Evening Tune"
     assert load_profile_library(path)[0].profile.curve_id == "harman"
 
     updated = save_named_profile(
@@ -186,9 +190,11 @@ def test_named_profile_library_lifecycle(tmp_path):
     )
     assert updated.name == "Evening Tune"
     assert updated.profile.curve_id == "bk"
+    assert updated.profile.profile_id == created.id
 
     renamed = rename_named_profile(created.id, name="Late Night", path=path)
     assert renamed.name == "Late Night"
+    assert renamed.profile.profile_name == "Late Night"
 
     delete_named_profile(created.id, path=path)
     assert load_profile_library(path) == ()

@@ -151,6 +151,7 @@ async def _audition_profile(
     profile: SoundProfile,
     *,
     compare_profiles: list[SoundProfile],
+    audition_mode: str = "draft",
     profile_path: str | Path,
     library_path: str | Path | None = None,
     config_dir: str | Path,
@@ -168,8 +169,9 @@ async def _audition_profile(
         compare_headroom_db=compare_headroom_db,
     )
     logger.info(
-        "event=sound.audition enabled=%s curve=%s bands=%d compare_headroom=%.1f "
-        "room_peqs=%d config=%s op_id=%s",
+        "event=sound.audition mode=%s enabled=%s curve=%s bands=%d "
+        "compare_headroom=%.1f room_peqs=%d config=%s op_id=%s",
+        audition_mode,
         loaded.enabled,
         loaded.curve_id,
         len(loaded.parametric_bands),
@@ -187,6 +189,7 @@ async def _audition_profile(
     payload.update(
         {
             "audition_profile": loaded.to_dict(),
+            "audition_mode": audition_mode,
             "audition_headroom_db": compare_headroom_db,
             "active_config_path": str(out_path),
             "preserved_room_peqs": apply_state.room_peq_count or 0,
@@ -289,12 +292,22 @@ _PAGE_CSS = f"""
   .eq-grid > * {{ min-width: 0; }}
   .field {{ margin: 1.1em 0; }}
   .profile-panel {{
-    display: grid; gap: 0.55em; padding: 1em 0; border-bottom: 1px solid #eee;
+    display: grid; gap: 0.75em; padding: 1em 0; border-bottom: 1px solid #eee;
   }}
   .profile-panel label {{ margin-top: 0; }}
-  .profile-actions {{ display: flex; flex-wrap: wrap; gap: 0.55em; }}
-  select, input[type=number] {{ max-width: 100%; }}
-  input[type=number] {{
+  .profile-row {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45em; }}
+  .profile-actions {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55em; }}
+  .profile-actions.stock {{ grid-template-columns: minmax(0, 1fr); }}
+  .profile-actions button {{ min-height: 44px; padding-left: 0.7em; padding-right: 0.7em; }}
+  .profile-actions button[hidden] {{ display: none; }}
+  .profile-note {{ color: #666; font-size: 0.92em; }}
+  .profile-state {{
+    display: grid; gap: 0.25em; padding: 0.75em; border: 1px solid #e6e6e6;
+    border-radius: 6px; background: #fafafa; color: #444;
+  }}
+  .profile-state strong {{ color: #222; }}
+  select, input[type=number], input[type=text] {{ max-width: 100%; }}
+  input[type=number], input[type=text] {{
     width: 100%; padding: 0.45em; border: 1px solid #bbb;
     border-radius: 4px; font-size: 1em; box-sizing: border-box;
   }}
@@ -441,11 +454,27 @@ from room correction.</p>
 </div>
 
 <div class="profile-panel">
-  <label for="profile-select">Profile</label>
-  <select id="profile-select" disabled></select>
-  <div class="compare-note" id="profile-description"></div>
-  <div class="profile-actions">
-    <button type="button" id="save-profile" class="secondary" disabled>Save Copy</button>
+  <div class="profile-state" id="profile-state">
+    <div><strong>Applied:</strong> <span id="applied-profile-name">Loading...</span></div>
+    <div><strong>Draft:</strong> <span id="draft-profile-state">Loading...</span></div>
+  </div>
+  <div class="profile-row">
+    <label for="profile-select">Start from profile</label>
+    <select id="profile-select" disabled></select>
+    <div class="profile-note" id="profile-description"></div>
+  </div>
+  <div class="profile-row">
+    <label for="profile-name">Custom profile name</label>
+    <input type="text" id="profile-name" maxlength="48" autocomplete="off"
+           placeholder="Custom Profile" disabled>
+    <div class="profile-note">
+      Saving here updates the profile library only. Use Apply to Speaker when
+      you want this draft to become the live sound.
+    </div>
+  </div>
+  <div class="profile-actions" id="profile-actions">
+    <button type="button" id="save-new-profile" class="secondary" disabled>Save as Custom</button>
+    <button type="button" id="update-profile" class="secondary" disabled>Update Custom</button>
     <button type="button" id="rename-profile" class="secondary" disabled>Rename</button>
     <button type="button" id="delete-profile" class="secondary" disabled>Delete</button>
   </div>
@@ -456,7 +485,7 @@ from room correction.</p>
     <label>Live compare</label>
     <div class="segmented" role="group" aria-label="Audition preference EQ">
       <button type="button" id="listen-bypass" data-mode="bypass" disabled>Bypass</button>
-      <button type="button" id="listen-saved" data-mode="saved" disabled>Saved</button>
+      <button type="button" id="listen-applied" data-mode="applied" disabled>Applied</button>
       <button type="button" id="listen-draft" data-mode="draft" disabled>Draft</button>
     </div>
   </div>
@@ -514,8 +543,8 @@ from room correction.</p>
   </section>
 
   <div class="button-row">
-    <button id="apply" disabled>Save &amp; Apply</button>
-    <button id="revert" class="secondary" disabled>Revert to Saved</button>
+    <button id="apply" disabled>Apply to Speaker</button>
+    <button id="revert" class="secondary" disabled>Revert to Applied</button>
     <button id="reset" class="secondary" disabled>Reset Flat</button>
   </div>
   <div class="status-line" id="status" role="status" aria-live="polite"></div>
@@ -532,7 +561,7 @@ from room correction.</p>
   var previewTimer = null;
   var previewSeq = 0;
   var selectedBand = 0;
-  var liveMode = 'saved';
+  var liveMode = 'applied';
   var eqMode = 'basic';
   var legacyMixedProfile = false;
   var controlsEnabled = false;
@@ -596,8 +625,9 @@ from room correction.</p>
     controlsEnabled = !!on;
     [
       'eq-enabled', 'curve', 'bass', 'mid', 'treble', 'apply', 'revert', 'reset',
-      'add-band', 'listen-bypass', 'listen-saved', 'listen-draft',
-      'profile-select', 'save-profile', 'rename-profile', 'delete-profile',
+      'add-band', 'listen-bypass', 'listen-applied', 'listen-draft',
+      'profile-select', 'profile-name', 'save-new-profile', 'update-profile',
+      'rename-profile', 'delete-profile',
       'mode-basic', 'mode-advanced'
     ].forEach(function(id) {
       el(id).disabled = !on || applying;
@@ -627,8 +657,15 @@ from room correction.</p>
           gain_db: Number(b.gain_db || b.gain || 0),
           q: Number(b.q || 1)
         };
-      })
+      }),
+      profile_id: raw.profile_id || '',
+      profile_name: raw.profile_name || ''
     };
+  }
+  function profileIdentityForDraft() {
+    var entry = selectedProfileEntry();
+    if (!entry) return {profile_id: '', profile_name: ''};
+    return {profile_id: entry.id, profile_name: entry.name};
   }
   function profileFromInputs() {
     var simple = eqMode === 'advanced' && !legacyMixedProfile ? zeroSimpleEq() : {
@@ -636,11 +673,14 @@ from room correction.</p>
       mid_db: Number(el('mid').value || 0),
       treble_db: Number(el('treble').value || 0)
     };
+    var identity = profileIdentityForDraft();
     return normalizeProfile({
       enabled: el('eq-enabled').checked,
       curve_id: el('curve').value || 'flat',
       simple_eq: simple,
-      parametric_bands: eqMode === 'advanced' ? draftBands : []
+      parametric_bands: eqMode === 'advanced' ? draftBands : [],
+      profile_id: identity.profile_id,
+      profile_name: identity.profile_name
     });
   }
   function bypassProfile() {
@@ -657,11 +697,17 @@ from room correction.</p>
   }
   function compareProfileForMode(mode) {
     if (mode === 'bypass') return bypassProfile();
-    if (mode === 'saved') return normalizeProfile(savedProfile);
+    if (mode === 'applied') return normalizeProfile(savedProfile);
     return profileFromInputs();
   }
   function profileKey(profile) {
-    return JSON.stringify(normalizeProfile(profile));
+    profile = normalizeProfile(profile);
+    return JSON.stringify({
+      enabled: profile.enabled,
+      curve_id: profile.curve_id,
+      simple_eq: profile.simple_eq,
+      parametric_bands: profile.parametric_bands
+    });
   }
   function profileEntry(id) {
     return profileLibrary.find(function(entry) { return entry.id === id; }) || null;
@@ -670,30 +716,73 @@ from room correction.</p>
     return profileEntry(selectedProfileId);
   }
   function findProfileIdFor(profile) {
+    profile = normalizeProfile(profile);
+    if (profile.profile_id && profileEntry(profile.profile_id)) {
+      return profile.profile_id;
+    }
     var key = profileKey(profile);
-    var custom = profileLibrary.find(function(entry) {
-      return entry.kind === 'custom' && profileKey(entry.profile) === key;
-    });
-    if (custom) return custom.id;
     var stock = profileLibrary.find(function(entry) {
       return entry.kind === 'stock' && profileKey(entry.profile) === key;
     });
     if (stock) return stock.id;
+    var custom = profileLibrary.find(function(entry) {
+      return entry.kind === 'custom' && profileKey(entry.profile) === key;
+    });
+    if (custom) return custom.id;
     return 'stock:' + (normalizeProfile(profile).curve_id || 'flat');
+  }
+  function profileLabel(profile) {
+    profile = normalizeProfile(profile);
+    var matched = profile.profile_id ? profileEntry(profile.profile_id) : null;
+    if (!matched) matched = profileEntry(findProfileIdFor(profile));
+    var name = profile.profile_name || (matched ? matched.name : 'Unsaved Custom');
+    if (matched && profileKey(profile) !== profileKey(matched.profile)) {
+      return name + ' (edited)';
+    }
+    return name;
   }
   function profileNameForSave(entry) {
     if (entry && entry.kind === 'stock') return entry.name + ' Custom';
     if (entry) return entry.name;
     return 'Custom Profile';
   }
+  function syncProfileName(entry) {
+    el('profile-name').value = profileNameForSave(entry);
+  }
+  function draftDirtyFromApplied() {
+    return profileKey(profileFromInputs()) !== profileKey(savedProfile);
+  }
+  function draftDirtyFromSelected() {
+    var entry = selectedProfileEntry();
+    if (!entry) return true;
+    return profileKey(profileFromInputs()) !== profileKey(entry.profile);
+  }
+  function updateProfileState() {
+    var appliedName = profileLabel(savedProfile);
+    var entry = selectedProfileEntry();
+    var draftName = entry ? entry.name : 'Unsaved Custom';
+    var selectedDirty = draftDirtyFromSelected();
+    var appliedDirty = draftDirtyFromApplied();
+    el('applied-profile-name').textContent = appliedName;
+    el('draft-profile-state').textContent =
+      draftName + (selectedDirty ? ' with edits' : '') +
+      (appliedDirty ? ' - not applied yet' : ' - matches applied sound');
+  }
   function updateProfileActions() {
     var select = el('profile-select');
     var entry = selectedProfileEntry();
     if (select && select.value !== selectedProfileId) select.value = selectedProfileId;
-    el('profile-description').textContent = entry ? entry.description || '' : '';
-    el('save-profile').textContent = entry && entry.kind === 'custom' ? 'Update Profile' : 'Save Copy';
-    el('rename-profile').disabled = applying || !entry || entry.kind !== 'custom';
-    el('delete-profile').disabled = applying || !entry || entry.kind !== 'custom';
+    var isCustom = !!entry && entry.kind === 'custom';
+    el('profile-description').textContent = entry
+      ? (entry.kind === 'stock' ? 'Stock curve: ' : 'Custom profile: ') + (entry.description || entry.name)
+      : '';
+    el('profile-actions').classList.toggle('stock', !isCustom);
+    el('save-new-profile').disabled = applying || !controlsEnabled;
+    ['update-profile', 'rename-profile', 'delete-profile'].forEach(function(id) {
+      el(id).hidden = !isCustom;
+      el(id).disabled = applying || !controlsEnabled || !isCustom;
+    });
+    updateProfileState();
   }
   function renderMode() {
     var isAdvanced = eqMode === 'advanced';
@@ -739,6 +828,7 @@ from room correction.</p>
     savedProfile = normalizeProfile(payload.profile || {});
     selectedProfileId = findProfileIdFor(savedProfile);
     setFormFromProfile(savedProfile);
+    syncProfileName(selectedProfileEntry());
     renderBands();
     el('headroom').textContent = fmtDb(payload.headroom_db || 0);
     el('updated').textContent = prettyUpdated((payload.profile || {}).updated_at);
@@ -957,6 +1047,7 @@ from room correction.</p>
     if (!entry) return;
     selectedProfileId = entry.id;
     setFormFromProfile(entry.profile);
+    syncProfileName(entry);
     renderBands();
     preview();
     updateProfileActions();
@@ -981,6 +1072,7 @@ from room correction.</p>
       if (!profileEntry(selectedProfileId) && profileLibrary.length) {
         selectedProfileId = profileLibrary[0].id;
       }
+      syncProfileName(selectedProfileEntry());
       updateProfileActions();
       return payload;
     } catch (e) {
@@ -1048,6 +1140,7 @@ from room correction.</p>
     updateCurveDescription(el('curve').value || 'flat');
     updateAdvancedNote(profile);
     renderPreview(localPreviewPayload(profile), profile.enabled !== false);
+    updateProfileState();
     status('Unsaved changes.');
     window.clearTimeout(previewTimer);
     previewTimer = window.setTimeout(preview, 90);
@@ -1072,7 +1165,7 @@ from room correction.</p>
   }
   function updateCompareButtons(mode, headroom) {
     liveMode = mode || liveMode;
-    ['bypass', 'saved', 'draft'].forEach(function(name) {
+    ['bypass', 'applied', 'draft'].forEach(function(name) {
       el('listen-' + name).classList.toggle('active', liveMode === name);
     });
     el('compare-note').textContent = 'Live: ' + liveMode.charAt(0).toUpperCase() + liveMode.slice(1) +
@@ -1087,6 +1180,7 @@ from room correction.</p>
         method: 'POST',
         headers: jsonHeaders(),
         body: JSON.stringify({
+          mode: mode,
           profile: compareProfileForMode(mode),
           compare_profiles: compareProfiles()
         })
@@ -1109,8 +1203,8 @@ from room correction.</p>
       var payload = await resp.json();
       populateCurves(payload.curves);
       syncInputs(payload);
-      liveMode = 'saved';
-      updateCompareButtons('saved', payload.headroom_db || 0);
+      liveMode = 'applied';
+      updateCompareButtons('applied', payload.headroom_db || 0);
       setControlsEnabled(true);
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
@@ -1128,9 +1222,9 @@ from room correction.</p>
       });
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'apply failed');
-      liveMode = 'saved';
+      liveMode = 'applied';
       syncInputs(payload);
-      status('Saved and applied.');
+      status('Applied to speaker.');
     } catch (e) {
       status('Could not apply EQ: ' + e.message, true);
     } finally {
@@ -1163,37 +1257,46 @@ from room correction.</p>
     schedulePreview();
     audition(el('eq-enabled').checked ? 'draft' : 'bypass');
   });
-  ['bypass', 'saved', 'draft'].forEach(function(mode) {
+  ['bypass', 'applied', 'draft'].forEach(function(mode) {
     el('listen-' + mode).addEventListener('click', function() { audition(mode); });
   });
   el('profile-select').addEventListener('change', function() {
     selectedProfileId = el('profile-select').value;
     loadProfileEntry(selectedProfileEntry());
   });
-  el('save-profile').addEventListener('click', async function() {
+  el('profile-name').addEventListener('input', updateProfileActions);
+  el('save-new-profile').addEventListener('click', async function() {
     var entry = selectedProfileEntry();
     var profile = profileFromInputs();
-    var id = entry && entry.kind === 'custom' ? entry.id : null;
-    var name = entry && entry.kind === 'custom' ? entry.name :
-      window.prompt('Name this profile', profileNameForSave(entry));
-    if (!id && name === null) return;
+    var name = el('profile-name').value || profileNameForSave(entry);
     var payload = await mutateProfileLibrary('./profiles/save', {
-      id: id,
-      name: name || profileNameForSave(entry),
+      id: null,
+      name: name,
       profile: profile
     });
     if (payload && payload.profile_entry) {
       status('Saved profile ' + payload.profile_entry.name + '.');
     }
   });
+  el('update-profile').addEventListener('click', async function() {
+    var entry = selectedProfileEntry();
+    if (!entry || entry.kind !== 'custom') return;
+    var profile = profileFromInputs();
+    var payload = await mutateProfileLibrary('./profiles/save', {
+      id: entry.id,
+      name: el('profile-name').value || entry.name,
+      profile: profile
+    });
+    if (payload && payload.profile_entry) {
+      status('Updated profile ' + payload.profile_entry.name + '.');
+    }
+  });
   el('rename-profile').addEventListener('click', async function() {
     var entry = selectedProfileEntry();
     if (!entry || entry.kind !== 'custom') return;
-    var name = window.prompt('Rename profile', entry.name);
-    if (name === null) return;
     var payload = await mutateProfileLibrary('./profiles/rename', {
       id: entry.id,
-      name: name
+      name: el('profile-name').value || entry.name
     });
     if (payload && payload.profile_entry) {
       status('Renamed profile to ' + payload.profile_entry.name + '.');
@@ -1260,17 +1363,18 @@ from room correction.</p>
     setFormFromProfile(savedProfile);
     renderBands();
     preview();
-    audition('saved');
+    audition('applied');
   });
   el('reset').addEventListener('click', function() {
     setFormFromProfile({enabled: true, curve_id: 'flat',
                         simple_eq: {bass_db: 0, mid_db: 0, treble_db: 0},
                         parametric_bands: []});
     selectedProfileId = 'stock:flat';
+    syncProfileName(selectedProfileEntry());
     updateProfileActions();
     renderBands();
     preview();
-    status('Draft reset to Flat. Save & Apply when ready.');
+    status('Draft reset to Flat. Apply to Speaker when ready.');
   });
   loadState();
 })();
@@ -1351,11 +1455,21 @@ def _make_handler(
                 if path.startswith("/profiles/"):
                     try:
                         if path == "/profiles/save":
+                            requested_id = str(raw.get("id") or "")
                             entry = save_named_profile(
                                 SoundProfile.from_mapping(raw.get("profile")),
                                 name=raw.get("name"),
                                 path=library_path,
-                                profile_id=raw.get("id"),
+                                profile_id=requested_id,
+                            )
+                            action = "update" if requested_id == entry.id else "create"
+                            logger.info(
+                                "event=sound.profile_library action=%s "
+                                "profile_id=%s curve=%s bands=%d",
+                                action,
+                                entry.id,
+                                entry.profile.curve_id,
+                                len(entry.profile.parametric_bands),
                             )
                             payload = _state_payload(
                                 load_profile(profile_path),
@@ -1369,6 +1483,13 @@ def _make_handler(
                                 name=str(raw.get("name") or ""),
                                 path=library_path,
                             )
+                            logger.info(
+                                "event=sound.profile_library action=rename "
+                                "profile_id=%s curve=%s bands=%d",
+                                entry.id,
+                                entry.profile.curve_id,
+                                len(entry.profile.parametric_bands),
+                            )
                             payload = _state_payload(
                                 load_profile(profile_path),
                                 library_path=library_path,
@@ -1378,6 +1499,10 @@ def _make_handler(
                         else:
                             deleted_id = str(raw.get("id") or "")
                             delete_named_profile(deleted_id, path=library_path)
+                            logger.info(
+                                "event=sound.profile_library action=delete profile_id=%s",
+                                deleted_id,
+                            )
                             payload = _state_payload(
                                 load_profile(profile_path),
                                 library_path=library_path,
@@ -1409,10 +1534,14 @@ def _make_handler(
                     compare_profiles = [
                         SoundProfile.from_mapping(item) for item in raw_compare[:3]
                     ]
+                    audition_mode = str(raw.get("mode") or "draft")
+                    if audition_mode not in {"bypass", "applied", "draft"}:
+                        audition_mode = "draft"
                     payload = asyncio.run(
                         _audition_profile(
                             profile,
                             compare_profiles=compare_profiles,
+                            audition_mode=audition_mode,
                             profile_path=profile_path,
                             library_path=library_path,
                             config_dir=config_dir,

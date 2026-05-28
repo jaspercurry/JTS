@@ -248,6 +248,8 @@ class SoundProfile:
     simple_eq: SimpleEq = field(default_factory=SimpleEq)
     parametric_bands: tuple[ParametricBand, ...] = ()
     updated_at: str = field(default_factory=_utc_now_iso)
+    profile_id: str = ""
+    profile_name: str = ""
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SoundProfile":
@@ -262,12 +264,20 @@ class SoundProfile:
             ParametricBand.from_mapping(item)
             for item in raw_bands[:MAX_PARAMETRIC_BANDS]
         )
+        profile_id = _normalize_profile_id(raw.get("profile_id", raw.get("id", "")))
         return cls(
             enabled=_coerce_bool(raw.get("enabled"), True),
             curve_id=curve_id,
             simple_eq=SimpleEq.from_mapping(raw.get("simple_eq", raw)),
             parametric_bands=bands,
             updated_at=str(raw.get("updated_at") or _utc_now_iso()),
+            profile_id=profile_id,
+            profile_name=_normalize_profile_name(
+                raw.get("profile_name", raw.get("name", "")),
+                default="",
+            )
+            if profile_id
+            else "",
         )
 
     def with_timestamp(self) -> "SoundProfile":
@@ -277,6 +287,29 @@ class SoundProfile:
             simple_eq=self.simple_eq,
             parametric_bands=self.parametric_bands,
             updated_at=_utc_now_iso(),
+            profile_id=self.profile_id,
+            profile_name=self.profile_name,
+        )
+
+    def with_profile_identity(
+        self,
+        *,
+        profile_id: str,
+        profile_name: str,
+    ) -> "SoundProfile":
+        """Return the same DSP profile annotated with its library identity."""
+
+        normalized_id = _normalize_profile_id(profile_id)
+        return SoundProfile(
+            enabled=self.enabled,
+            curve_id=self.curve_id,
+            simple_eq=self.simple_eq,
+            parametric_bands=self.parametric_bands,
+            updated_at=self.updated_at,
+            profile_id=normalized_id,
+            profile_name=_normalize_profile_name(profile_name, default="")
+            if normalized_id
+            else "",
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -286,6 +319,8 @@ class SoundProfile:
             "simple_eq": self.simple_eq.to_dict(),
             "parametric_bands": [band.to_dict() for band in self.parametric_bands],
             "updated_at": self.updated_at,
+            "profile_id": self.profile_id,
+            "profile_name": self.profile_name,
         }
 
 
@@ -373,12 +408,26 @@ def _normalize_profile_name(value: Any, default: str = "Custom Profile") -> str:
     return name[:MAX_PROFILE_NAME_CHARS]
 
 
+def _normalize_profile_id(value: Any) -> str:
+    profile_id = str(value or "").strip()
+    if profile_id.startswith(STOCK_PROFILE_PREFIX):
+        curve_id = profile_id.removeprefix(STOCK_PROFILE_PREFIX)
+        if curve_id in _CURVE_BY_ID:
+            return profile_id
+    if _CUSTOM_PROFILE_ID_RE.match(profile_id):
+        return profile_id
+    return ""
+
+
 def _stock_profile_entries() -> tuple[ProfileLibraryEntry, ...]:
     return tuple(
         ProfileLibraryEntry(
             id=f"{STOCK_PROFILE_PREFIX}{preset.id}",
             name=preset.label,
-            profile=SoundProfile(curve_id=preset.id, updated_at=""),
+            profile=SoundProfile(curve_id=preset.id, updated_at="").with_profile_identity(
+                profile_id=f"{STOCK_PROFILE_PREFIX}{preset.id}",
+                profile_name=preset.label,
+            ),
             created_at="",
             updated_at="",
             builtin=True,
@@ -467,13 +516,19 @@ def save_named_profile(
     entries = list(load_profile_library(path))
     now = _utc_now_iso()
     normalized = _normalize_profile_name(name)
-    stamped = profile.with_timestamp()
     if profile_id and _CUSTOM_PROFILE_ID_RE.match(profile_id):
         for index, entry in enumerate(entries):
             if entry.id == profile_id:
+                profile_name = normalized if name is not None else entry.name
+                stamped = (
+                    profile.with_profile_identity(
+                        profile_id=entry.id,
+                        profile_name=profile_name,
+                    ).with_timestamp()
+                )
                 updated = ProfileLibraryEntry(
                     id=entry.id,
-                    name=normalized if name is not None else entry.name,
+                    name=profile_name,
                     profile=stamped,
                     created_at=entry.created_at,
                     updated_at=now,
@@ -483,8 +538,15 @@ def save_named_profile(
                 return updated
     if len(entries) >= MAX_CUSTOM_PROFILES:
         raise ValueError(f"profile library is limited to {MAX_CUSTOM_PROFILES} customs")
+    new_id = _new_custom_profile_id(entries)
+    stamped = (
+        profile.with_profile_identity(
+            profile_id=new_id,
+            profile_name=normalized,
+        ).with_timestamp()
+    )
     entry = ProfileLibraryEntry(
-        id=_new_custom_profile_id(entries),
+        id=new_id,
         name=normalized,
         profile=stamped,
         created_at=now,
@@ -505,10 +567,14 @@ def rename_named_profile(
     now = _utc_now_iso()
     for index, entry in enumerate(entries):
         if entry.id == profile_id:
+            normalized = _normalize_profile_name(name)
             renamed = ProfileLibraryEntry(
                 id=entry.id,
-                name=_normalize_profile_name(name),
-                profile=entry.profile,
+                name=normalized,
+                profile=entry.profile.with_profile_identity(
+                    profile_id=entry.id,
+                    profile_name=normalized,
+                ),
                 created_at=entry.created_at,
                 updated_at=now,
             )
@@ -696,7 +762,7 @@ def estimate_headroom_db(profile: SoundProfile) -> float:
 def estimate_compare_headroom_db(profiles: Iterable[SoundProfile]) -> float:
     """Common attenuation anchor for level-matched A/B auditions.
 
-    The compare path uses one shared preamp across Bypass / Saved /
+    The compare path uses one shared preamp across Bypass / Applied /
     Draft so the louder-seeming option is not just the one with less
     safety attenuation. This is not a psychoacoustic loudness model; it
     is a deterministic, clipping-safe comparison anchor.

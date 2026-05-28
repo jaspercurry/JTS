@@ -45,9 +45,14 @@ def test_index_html_exposes_simple_eq_language_only():
     assert "curve-description" in html
     assert "Live compare" in html
     assert "Profile" in html
-    assert "Save Copy" in html
+    assert "Applied:" in html
+    assert "Draft:" in html
+    assert "Start from profile" in html
+    assert "Custom profile name" in html
+    assert "Save as Custom" in html
+    assert "Update Custom" in html
     assert "Bypass" in html
-    assert "Saved" in html
+    assert "Applied" in html
     assert "Draft" in html
     assert "EQ editing mode" in html
     assert "Basic" in html
@@ -56,12 +61,35 @@ def test_index_html_exposes_simple_eq_language_only():
     assert "eqMode === 'advanced' && !legacyMixedProfile" in html
     assert "Focus" not in html
     assert "freq-number" in html
-    assert "Save &amp; Apply" in html
+    assert "Apply to Speaker" in html
+    assert "Revert to Applied" in html
+    assert "window.prompt" not in html
     assert "./profiles/save" in html
     assert "./profiles/rename" in html
     assert "./profiles/delete" in html
     assert "@media (max-width: 520px)" in html
     assert ".button-row button { width: 100%; min-height: 44px; }" in html
+
+
+def test_index_html_keeps_profile_action_buttons_truly_hidden():
+    html = sound_setup._index_html().decode()
+
+    # Older button CSS can accidentally override the browser's [hidden] default.
+    # Keep this explicit so stock profiles expose only "Save as Custom".
+    assert ".profile-actions button[hidden] { display: none; }" in html
+
+
+def test_index_html_prefers_explicit_profile_identity_then_stock_matches():
+    html = sound_setup._index_html().decode()
+    fn_start = html.index("function findProfileIdFor(profile)")
+    fn_end = html.index("function profileLabel(profile)", fn_start)
+    body = html[fn_start:fn_end]
+
+    explicit_identity = body.index("profile.profile_id && profileEntry(profile.profile_id)")
+    stock_match = body.index("entry.kind === 'stock'")
+    custom_match = body.index("entry.kind === 'custom'")
+
+    assert explicit_identity < stock_match < custom_match
 
 
 def test_index_html_embeds_csrf_meta_for_json_posts():

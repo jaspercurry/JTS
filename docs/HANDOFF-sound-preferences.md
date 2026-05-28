@@ -46,20 +46,28 @@ The profile picker has two layers:
 - **Stock** profiles are generated from built-in curves: Flat,
   Harman-style, and B&K-style. They are not persisted or editable.
 - **Custom** profiles live in `/var/lib/jasper/sound_profiles.json`.
-  Users can save a copy from any stock/draft state, update it, rename
-  it, or delete it. Custom profile edits do not touch CamillaDSP until
-  the user auditions or saves/applies the draft.
+  Users can save a new custom profile from any stock/draft state,
+  update an existing custom profile, rename it, or delete it. Custom
+  profile library edits do not touch CamillaDSP until the user
+  explicitly auditions or applies the draft.
+
+`SoundProfile` includes optional `profile_id` / `profile_name` metadata
+so the UI can distinguish "applied Flat" from "draft edited from Flat"
+without making the metadata part of the DSP math. Stock identities are
+`stock:<curve_id>`; custom identities are `custom_<12 hex chars>`.
+Deleting a custom library entry does not delete the currently applied
+DSP profile; it only removes that profile as a future draft template.
 
 The page now has explicit compare semantics:
 
-- **Saved** — the persisted `/var/lib/jasper/sound_profile.json`.
+- **Applied** — the persisted `/var/lib/jasper/sound_profile.json`.
 - **Draft** — the current unsaved form state.
 - **Bypass** — preference EQ disabled while preserving room correction.
 
-Draft / Bypass auditions emit `sound_audition.yml` and load it through
-the same validation/rollback substrate, but do **not** persist the
-profile. `Save & Apply` emits `sound_current.yml` and persists only
-after the CamillaDSP reload is confirmed.
+Bypass / Applied / Draft auditions emit `sound_audition.yml` and load it
+through the same validation/rollback substrate, but do **not** persist
+the profile. `Apply to Speaker` emits `sound_current.yml` and persists
+only after the CamillaDSP reload is confirmed.
 
 ## Files
 
@@ -113,8 +121,8 @@ inspect:
 Anything else is treated as a custom config and rejected rather than
 silently overwritten. This is intentional fail-closed behavior.
 
-The active saved profile and named profile library are intentionally
-separate files:
+The applied profile and named profile library are intentionally separate
+files:
 
 ```text
 /var/lib/jasper/sound_profile.json
@@ -122,9 +130,9 @@ separate files:
 ```
 
 `sound_profile.json` answers "what preference profile is currently
-saved/applied?" `sound_profiles.json` answers "which named custom
-profiles can the user load as a draft?" This separation keeps Bypass /
-Saved / Draft and future AI proposals simple.
+applied?" `sound_profiles.json` answers "which named custom profiles can
+the user load as a draft?" This separation keeps Bypass / Applied /
+Draft and future AI proposals simple.
 
 ## Apply Semantics
 
@@ -141,12 +149,13 @@ Saved / Draft and future AI proposals simple.
 2. Mutate only `/var/lib/jasper/sound_profiles.json`.
 3. Never load a CamillaDSP config and never change
    `/var/lib/jasper/sound_profile.json`.
-4. Return the refreshed profile-library payload for the UI picker.
+4. Stamp custom profiles with their library identity metadata.
+5. Return the refreshed profile-library payload for the UI picker.
 
 `/sound/audition`:
 
 1. Parses and clamps the posted draft/bypass `SoundProfile`.
-2. Computes one common compare-headroom anchor across Bypass / Saved /
+2. Computes one common compare-headroom anchor across Bypass / Applied /
    Draft. This is deterministic clipping-safe level matching, not a
    psychoacoustic loudness model.
 3. Reads the active CamillaDSP config path with `best_effort=False`.
@@ -204,6 +213,8 @@ profile-library picker payload and latest DSP apply record:
     "sound": {
       "enabled": true,
       "curve_id": "flat",
+      "profile_id": "stock:flat",
+      "profile_name": "Flat",
       "simple_eq": {"bass_db": 0.0, "mid_db": 0.0, "treble_db": 0.0},
       "parametric_band_count": 0,
       "filter_count": 0,
@@ -244,8 +255,9 @@ can be diagnosed without scraping journal logs.
   or deleting one must not change live audio unless the user explicitly
   auditions or applies.
 - Unsaved auditions must never persist profile state. They may leave
-  `sound_audition.yml` active until the user switches Bypass/Saved/Draft
-  or saves; that is expected and observable via the DSP apply record.
+  `sound_audition.yml` active until the user switches Bypass / Applied /
+  Draft or applies; that is expected and observable via the DSP apply
+  record.
 
 ## Future Work
 
@@ -258,4 +270,4 @@ can be diagnosed without scraping journal logs.
   controls as the primary path.
 - Optional voice-feedback loop using the existing Pi microphone path.
 
-Last verified: 2026-05-27
+Last verified: 2026-05-28
