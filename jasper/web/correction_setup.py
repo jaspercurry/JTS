@@ -26,6 +26,7 @@ Architecture (per docs/HANDOFF-correction.md):
       POST /repeat-position optional same-seat repeat sweep
       POST /apply           write YAML, reload CamillaDSP
       POST /reset           roll back to /etc/camilladsp/v1.yml
+      POST /session/delete  delete one historical measurement bundle
 
 Phase 2 will add multi-position MMM averaging — the chart payload
 shape (`measured`/`target`/`predicted` curves + `peqs` list) is
@@ -406,6 +407,10 @@ _CORRECTION_PAGE_STYLE = PAGE_STYLE + """
   .session-item { border: 1px solid #ddd; border-radius: 6px;
                   padding: 0.7em 0.8em; background: #fafafa; }
   .session-item p { margin: 0.25em 0 0.55em; }
+  .session-actions { display: flex; flex-wrap: wrap; gap: 0.45em; }
+  .privacy-badge { display: inline-block; border: 1px solid #d6b656;
+                   background: #fff8e1; color: #5f4500; border-radius: 999px;
+                   padding: 0.08em 0.45em; font-size: 0.85em; }
   .session-report { border: 1px solid #ddd; border-left: 5px solid #777;
                     border-radius: 6px; padding: 0.8em 0.9em;
                     margin-top: 0.9em; background: #fff; }
@@ -612,7 +617,7 @@ __NAV_BACK__
 
 <section id="measurement-reports" class="report-panel">
   <h2>Measurement reports</h2>
-  <p class="hint">Read-only evidence from previous sessions. Reports summarize what JTS measured, what looks trustworthy, and what evidence is missing without exposing raw recordings in the browser.</p>
+  <p class="hint">Read-only evidence from previous sessions. Raw measurement recordings are private and stay on the speaker unless you delete the bundle.</p>
   <button id="load-sessions" type="button" class="secondary">Load recent reports</button>
   <div id="session-history" class="session-list"></div>
   <div id="session-report" class="session-report hidden"></div>
@@ -1412,6 +1417,18 @@ __NAV_BACK__
     return n === null ? '—' : n.toFixed(1) + ' dB';
   }
 
+  function formatBytes(bytes) {
+    var n = Number(bytes || 0);
+    if (!isFinite(n) || n <= 0) return '0 B';
+    var units = ['B', 'KB', 'MB', 'GB'];
+    var idx = 0;
+    while (n >= 1024 && idx < units.length - 1) {
+      n = n / 1024;
+      idx += 1;
+    }
+    return (idx === 0 ? String(Math.round(n)) : n.toFixed(1)) + ' ' + units[idx];
+  }
+
   function reportIssueList(items, fallback) {
     items = (items || []).filter(function (item) { return !!item; }).slice(0, 8);
     if (!items.length) return '<p class="hint">' + escapeText(fallback) + '</p>';
@@ -1459,17 +1476,63 @@ __NAV_BACK__
       var started = formatAppliedAt(session.started_at);
       meta.textContent = state + ' · positions ' + positions +
         (started ? ' · ' + started : '') +
-        (session.has_result ? ' · result saved' : ' · no result yet');
+        (session.has_result ? ' · result saved' : ' · no result yet') +
+        ' · ' + formatBytes(session.bundle_size_bytes);
+      var privacy = document.createElement('p');
+      privacy.className = 'hint';
+      var rawCount = Number(session.private_raw_audio_count || 0);
+      if (rawCount > 0) {
+        var badge = document.createElement('span');
+        badge.className = 'privacy-badge';
+        badge.textContent = 'Private raw recordings';
+        privacy.appendChild(badge);
+        privacy.appendChild(document.createTextNode(
+          ' ' + rawCount + ' file' + (rawCount === 1 ? '' : 's') +
+          ' · ' + formatBytes(session.private_raw_audio_bytes)
+        ));
+      } else {
+        privacy.textContent = 'No raw recording files in this bundle.';
+      }
+      var actions = document.createElement('div');
+      actions.className = 'session-actions';
       var button = document.createElement('button');
       button.type = 'button';
       button.className = 'secondary';
       button.textContent = 'View report';
       button.dataset.sessionId = session.session_id || '';
+      var deleteButton = document.createElement('button');
+      deleteButton.type = 'button';
+      deleteButton.className = 'danger';
+      deleteButton.textContent = 'Delete';
+      deleteButton.dataset.deleteSessionId = session.session_id || '';
+      actions.appendChild(button);
+      actions.appendChild(deleteButton);
       item.appendChild(title);
       item.appendChild(meta);
-      item.appendChild(button);
+      item.appendChild(privacy);
+      item.appendChild(actions);
       sessionHistory.appendChild(item);
     });
+  }
+
+  async function deleteSessionBundle(sessionId) {
+    if (!sessionId) return;
+    var ok = window.confirm(
+      'Delete this measurement bundle from the speaker? Raw recordings and derived evidence for this session will be removed.'
+    );
+    if (!ok) return;
+    try {
+      await postJson('session/delete', {id: sessionId});
+      if (sessionReport.dataset.sessionId === sessionId) {
+        sessionReport.className = 'session-report hidden';
+        sessionReport.textContent = '';
+        delete sessionReport.dataset.sessionId;
+      }
+      await loadSessionReports();
+    } catch (e) {
+      sessionReport.className = 'session-report blocked';
+      sessionReport.textContent = 'Could not delete bundle: ' + e.message;
+    }
   }
 
   async function loadSessionReport(sessionId) {
@@ -1491,6 +1554,7 @@ __NAV_BACK__
       if (!resp.ok) {
         throw new Error(payload.error || ('session-report ' + resp.status));
       }
+      sessionReport.dataset.sessionId = sessionId;
       renderSessionReport(payload);
     } catch (e) {
       sessionReport.className = 'session-report blocked';
@@ -2530,10 +2594,15 @@ __NAV_BACK__
   currentCorrectionResetBtn.addEventListener('click', function () { resetFromBanner(); });
   loadSessionsBtn.addEventListener('click', function () { loadSessionReports(); });
   sessionHistory.addEventListener('click', function (ev) {
-    var button = ev.target && ev.target.closest
-      ? ev.target.closest('button[data-session-id]')
+    var target = ev.target && ev.target.closest
+      ? ev.target.closest('button[data-session-id], button[data-delete-session-id]')
       : null;
-    if (button) loadSessionReport(button.dataset.sessionId || '');
+    if (!target) return;
+    if (target.dataset.deleteSessionId) {
+      deleteSessionBundle(target.dataset.deleteSessionId || '');
+    } else {
+      loadSessionReport(target.dataset.sessionId || '');
+    }
   });
 
   // Populate the banner on page load (and after apply / reset so the
@@ -3251,6 +3320,49 @@ def _handle_session_report(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     return payload
 
 
+def _handle_session_delete(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
+    """POST /session/delete: delete one historical measurement bundle."""
+    import shutil
+
+    from . import correction_report
+    from jasper.correction.session import SessionState
+
+    sess = _get_or_create_session()
+    body = _read_json_body(handler)
+    session_id = str(body.get("id") or "")
+    try:
+        bundle_dir = correction_report.resolve_session_bundle_dir(
+            sess.cfg.sessions_dir,
+            session_id,
+        )
+    except correction_report.InvalidSessionId as e:
+        raise BadRequest(str(e)) from e
+    active_states = {
+        SessionState.NEEDS_NOISE_CAPTURE,
+        SessionState.PREPARING,
+        SessionState.SWEEPING,
+        SessionState.AWAITING_CAPTURE,
+        SessionState.NEEDS_REPEAT_CAPTURE,
+        SessionState.AWAITING_REPEAT_CAPTURE,
+        SessionState.NEEDS_NEXT_POSITION,
+        SessionState.ANALYZING,
+        SessionState.VERIFYING,
+        SessionState.AWAITING_VERIFY_CAPTURE,
+        SessionState.READY,
+    }
+    if session_id == sess.session_id and sess.state in active_states:
+        raise RequestConflict(
+            "cannot delete the measurement bundle for an active session"
+        )
+    shutil.rmtree(bundle_dir)
+    logger.info(
+        "event=correction_session_bundle_deleted session=%s bundle=%s",
+        session_id,
+        bundle_dir,
+    )
+    return {"deleted": True, "session_id": session_id}
+
+
 def _read_wav_body(
     handler: BaseHTTPRequestHandler,
     *,
@@ -3576,6 +3688,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 "/calibration/upload",
                 "/apply",
                 "/reset",
+                "/session/delete",
             }:
                 self.send_error(HTTPStatus.NOT_FOUND)
                 return
@@ -3669,6 +3782,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     return
                 if path == "/reset":
                     self._send_json(_handle_reset(self))
+                    return
+                if path == "/session/delete":
+                    try:
+                        self._send_json(_handle_session_delete(self))
+                    except BadRequest as e:
+                        self._send_client_error(str(e))
+                    except FileNotFoundError as e:
+                        self._send_client_error(str(e), status=404)
+                    except RequestConflict as e:
+                        self._send_client_error(str(e), status=409)
                     return
             except BadRequest as e:
                 self._send_client_error(str(e))

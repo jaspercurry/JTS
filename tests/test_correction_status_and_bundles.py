@@ -758,7 +758,99 @@ def test_sessions_endpoint_lists_bundles(tmp_path: Path, monkeypatch):
     assert sessions[0]["has_result"] is True
     assert sessions[0]["has_applied_yml"] is False
     assert sessions[0]["has_verify_wav"] is False
+    assert sessions[0]["bundle_size_bytes"] > 0
+    assert sessions[0]["private_raw_audio_count"] == 0
     assert sessions[0]["bundle_dir"] == str(sessions_dir / "bbb")
+
+
+def test_session_delete_endpoint_removes_historical_bundle(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+    from jasper.correction.session import SessionConfig
+
+    sessions_dir = tmp_path / "sessions"
+    _write_report_bundle(sessions_dir, "old-session")
+    fake_sess = MeasurementSession(
+        SessionConfig(
+            sweep_dir=tmp_path / "sweeps",
+            capture_dir=tmp_path / "captures",
+            sessions_dir=sessions_dir,
+            config_dir=tmp_path / "configs",
+            base_config_path=tmp_path / "v1.yml",
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: fake_sess,
+    )
+
+    server = correction_setup.make_server(
+        ("127.0.0.1", 0), hostname="jts.local",
+    )
+    port = server.server_address[1]
+    base = f"http://127.0.0.1:{port}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/session/delete",
+            {"id": "old-session"},
+        )
+        body = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert body == {"deleted": True, "session_id": "old-session"}
+    assert not (sessions_dir / "old-session").exists()
+
+
+def test_session_delete_endpoint_refuses_current_ready_bundle(
+    tmp_path: Path,
+    monkeypatch,
+):
+    from jasper.web import correction_setup
+    from jasper.correction.session import SessionConfig, SessionState
+
+    sessions_dir = tmp_path / "sessions"
+    fake_sess = MeasurementSession(
+        SessionConfig(
+            sweep_dir=tmp_path / "sweeps",
+            capture_dir=tmp_path / "captures",
+            sessions_dir=sessions_dir,
+            config_dir=tmp_path / "configs",
+            base_config_path=tmp_path / "v1.yml",
+        ),
+    )
+    fake_sess.state = SessionState.READY
+    bundle = _write_report_bundle(sessions_dir, fake_sess.session_id)
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: fake_sess,
+    )
+
+    server = correction_setup.make_server(
+        ("127.0.0.1", 0), hostname="jts.local",
+    )
+    port = server.server_address[1]
+    base = f"http://127.0.0.1:{port}"
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        resp = json_post_with_csrf(
+            base,
+            "/session/delete",
+            {"id": fake_sess.session_id},
+            expect_status=409,
+        )
+        body = json.loads(resp.read())
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert body["error"] == (
+        "cannot delete the measurement bundle for an active session"
+    )
+    assert bundle.exists()
 
 
 def _write_report_bundle(sessions_dir: Path, session_id: str) -> Path:
