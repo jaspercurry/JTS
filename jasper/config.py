@@ -109,6 +109,10 @@ def _validate(cfg: "Config") -> "Config":
         )
     if cfg.tts_music_window_sec <= 0:
         raise RuntimeError("JASPER_TTS_MUSIC_WINDOW_SEC must be > 0")
+    if cfg.tts_transport not in {"sounddevice", "outputd"}:
+        raise RuntimeError(
+            "JASPER_TTS_TRANSPORT must be one of: sounddevice, outputd"
+        )
     if cfg.volume_regress_after_sec <= 0:
         raise RuntimeError("JASPER_VOLUME_REGRESS_AFTER_SEC must be > 0")
     for name, value in [
@@ -157,6 +161,8 @@ class Config:
     wake_events_dir: str
     wake_events_max_audio_bytes: int
     tts_device: str
+    tts_transport: str
+    tts_outputd_socket: str
     tts_output_rate: int
     tts_gain_db: float
     tts_music_headroom_db: float
@@ -507,6 +513,13 @@ class Config:
             # where TTS and CamillaDSP's processed renderer stream sum
             # before the speaker.
             tts_device=_env("JASPER_TTS_DEVICE", "jasper_out"),
+            # Output-owner transport. The outputd cutover branch sends
+            # assistant audio to jasper-outputd's local socket; main
+            # keeps the legacy sounddevice -> jasper_out default.
+            tts_transport=_env("JASPER_TTS_TRANSPORT", "outputd"),
+            tts_outputd_socket=_env(
+                "JASPER_TTS_OUTPUTD_SOCKET", "/run/jasper-outputd/tts.sock",
+            ),
             # Top-level pcm.jasper_out runs at 48 kHz (matches the
             # dongle's native rate and CamillaDSP's chunk rate).
             # TtsPlayout polyphase-upsamples Gemini's 24 kHz → 48 kHz

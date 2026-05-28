@@ -5,10 +5,10 @@ Two features land in this PR. Both are exercised here:
   A) `parse_current_correction` keeps the backwards-compatible
      "JTS room correction or None" behavior, while
      `describe_current_config` gives UI/doctor surfaces the fuller
-     truth about flat, preference, correction, or custom CamillaDSP
-     configs. /start auto-resets CamillaDSP to the base config first
-     so every measurement reflects the raw room rather than the
-     existing correction.
+     truth about flat outputd baseline, preference, correction, or
+     custom CamillaDSP configs. /start auto-resets CamillaDSP to the
+     base config first so every measurement reflects the
+     raw room rather than the existing correction.
   B) Each MeasurementSession writes a self-contained bundle at
      /var/lib/jasper/correction/sessions/<session_id>/ containing
      info.json (session params + state), result.json (chart curves +
@@ -43,14 +43,14 @@ from ._web_test_helpers import json_post_with_csrf
 
 
 def test_parse_current_correction_base_config_returns_none(tmp_path: Path):
-    """The base /etc/camilladsp/v1.yml is "no correction applied" —
+    """The base outputd cutover config is "no correction applied" —
     the UI shows the flat banner without a Reset button."""
     cfg_dir = tmp_path / "configs"
     cfg_dir.mkdir()
     # Anywhere that doesn't match the /var/lib/camilladsp/configs/
     # correction_* shape is treated as "no correction" by definition.
     assert parse_current_correction(
-        "/etc/camilladsp/v1.yml", config_dir=cfg_dir,
+        "/etc/camilladsp/outputd-cutover.yml", config_dir=cfg_dir,
     ) is None
     assert parse_current_correction(None, config_dir=cfg_dir) is None
     assert parse_current_correction("", config_dir=cfg_dir) is None

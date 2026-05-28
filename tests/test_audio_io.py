@@ -26,7 +26,8 @@ import time
 import numpy as np
 import pytest
 
-from jasper.audio_io import TtsPlayout
+import jasper.audio_io as audio_io_mod
+from jasper.audio_io import OutputdTtsPlayout, TtsPlayout, make_tts_playout
 
 
 def _make() -> TtsPlayout:
@@ -43,6 +44,24 @@ class _NoopStream:
 
     def write(self, _data: bytes) -> None:
         pass
+
+    def abort(self) -> None:
+        pass
+
+    def start(self) -> None:
+        pass
+
+
+class _CaptureOutputdStream:
+    def __init__(self) -> None:
+        self.gains: list[float] = []
+        self.writes: list[bytes] = []
+
+    def set_gain_db(self, db: float) -> None:
+        self.gains.append(db)
+
+    def write(self, data: bytes) -> None:
+        self.writes.append(data)
 
     def abort(self) -> None:
         pass
@@ -267,3 +286,103 @@ async def test_drain_unchanged_after_empty_write():
     p = _make_with_stream()
     await p.write(b"")
     assert p.expected_drain_at() == 0.0
+
+
+def test_make_tts_playout_defaults_to_sounddevice_transport():
+    p = make_tts_playout(
+        transport="sounddevice",
+        device="dummy",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    assert isinstance(p, TtsPlayout)
+    assert not isinstance(p, OutputdTtsPlayout)
+    assert p._device == "dummy"
+
+
+def test_make_tts_playout_can_select_outputd_transport():
+    p = make_tts_playout(
+        transport="outputd",
+        device="ignored",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+        outputd_socket="/tmp/outputd-test.sock",
+    )
+    assert isinstance(p, OutputdTtsPlayout)
+    assert p._socket_path == "/tmp/outputd-test.sock"
+    assert p.expected_drain_at() == 0.0
+
+
+def test_make_tts_playout_rejects_unknown_transport():
+    with pytest.raises(ValueError, match="unknown TTS transport"):
+        make_tts_playout(
+            transport="pipewire",
+            device="dummy",
+            output_rate=48000,
+            gain_db=-8.0,
+            drain_tail_sec=0.0,
+        )
+
+
+async def test_outputd_transport_requires_48khz_output_rate():
+    with pytest.raises(RuntimeError, match="requires 48 kHz"):
+        OutputdTtsPlayout(
+            socket_path="/tmp/outputd-test.sock",
+            output_rate=OutputdTtsPlayout.INPUT_RATE,
+            gain_db=-8.0,
+        )
+
+
+async def test_outputd_transport_sends_gain_metadata_without_pregain(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=OutputdTtsPlayout.MIN_TTS_GAIN_DB,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([10000, -10000], dtype=np.int16)
+    await p.write(mono.tobytes())
+
+    assert stream.gains == [OutputdTtsPlayout.MIN_TTS_GAIN_DB]
+    assert stream.writes == [
+        np.array([10000, 10000, -10000, -10000], dtype=np.int16).tobytes()
+    ]
+    assert p.expected_drain_at() != 0.0
+
+
+async def test_outputd_transport_chunks_long_payloads_on_frame_boundaries(monkeypatch):
+    import scipy.signal
+
+    monkeypatch.setattr(audio_io_mod, "_OUTPUTD_MAX_AUDIO_CHUNK_BYTES", 8)
+    monkeypatch.setattr(
+        scipy.signal,
+        "resample_poly",
+        lambda arr, *, up, down: arr,
+    )
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=0.0,
+    )
+    stream = _CaptureOutputdStream()
+    p._stream = stream  # type: ignore[assignment]
+
+    mono = np.array([1, 2, 3, 4, 5], dtype=np.int16)
+    await p.write(mono.tobytes())
+
+    stereo = np.repeat(mono, 2).tobytes()
+    assert stream.gains == [-8.0]
+    assert stream.writes == [stereo[:8], stereo[8:16], stereo[16:]]

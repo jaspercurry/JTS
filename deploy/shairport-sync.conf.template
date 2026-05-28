@@ -33,9 +33,9 @@ general = {
     // - Discrete do_flush + silence injection (gated by
     //   resync_threshold) — drops ~6,600 source frames + injects up
     //   to 250 ms of zeros = audible "tear".
-    // With our chain (shairport → snd-aloop → CamillaDSP → dmix →
+    // With our chain (shairport → snd-aloop → CamillaDSP → outputd →
     //   USB DAC), shairport's snd_pcm_delay() reads the loopback ring
-    //   fill, not the actual DAC latency. The fill ramps up ~42 ms
+    //   fill, not the actual final-output latency. The fill ramps up ~42 ms
     //   over ~60 s due to ~667 ppm crystal drift between the host's
     //   nominal 48 kHz and the dongle's actual rate. Crossing the
     //   0.05 s default threshold triggers the audible discrete path
@@ -49,20 +49,21 @@ general = {
     //   crash-and-refill cycle. See docs/HANDOFF-airplay.md.
     resync_threshold_in_seconds = 0.2;
     // Derived by jasper-apply-airplay-mode as:
-    //   -((target_level - chunksize + fanin_output_buffer + output_dmix_buffer) / samplerate)
+    //   -((target_level - chunksize + fanin_output_buffer + outputd_dac_buffer) / samplerate)
     // where target_level/chunksize/samplerate come from the active
     // CamillaDSP config, fanin_output_buffer comes from jasper-fanin's
-    // output buffer setting, and output_dmix_buffer is buffer_size from
-    // the pcm.jasper_out block in /etc/asound.conf. The retired
-    // renderer-side dmix is gone; shairport now writes its private
-    // fan-in lane while jasper-fanin handles WiFi burst absorption.
+    // output buffer setting, and outputd_dac_buffer comes from
+    // JASPER_OUTPUTD_DAC_BUFFER_FRAMES. The retired renderer-side and
+    // final-output dmix path is gone from this cutover branch; shairport
+    // now writes its private fan-in lane while jasper-fanin handles
+    // WiFi burst absorption and jasper-outputd owns the DAC.
     // This offset tells shairport about the fixed downstream delay
     // invisible to its ALSA handle so video/multi-room sync stays
-    // honest. Renders as -0.170667 with the production values
+    // honest. Renders as -0.149333 with the production values
     // (chunksize=1024, target_level=2048, fan-in output=3072,
-    // output dmix=4096).
+    // outputd DAC=3072).
     audio_backend_latency_offset_in_seconds = __AUDIO_BACKEND_LATENCY_OFFSET_SECONDS__;
-    // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> dmix
+    // Default 0.15 s is too tight for snd-aloop -> CamillaDSP -> outputd
     // when CamillaDSP queuelimit is 4 chunks (~85 ms). 0.5 s gives
     // shairport enough headroom to absorb scheduler jitter before
     // underrunning. shairport TROUBLESHOOTING.md recommends this
@@ -95,12 +96,12 @@ alsa = {
     output_rate = 44100;
     // S32 stays for the same reason it did before -- efficient when
     // the plug layer above the fan-in lane only has to downconvert
-    // format (S32 -> S16_LE), and the final output to the dongle
-    // (jasper_out) is S16_LE anyway.
+    // format (S32 -> S16_LE), and jasper-outputd writes S16_LE to the
+    // dongle anyway.
     output_format = "S32";
     use_mmap_if_available = "no";
     // Templated — see file header. With JTS's snd-aloop -> CamillaDSP
-    // -> dmix -> USB DAC chain, shairport's sample-stuffing fires
+    // -> outputd -> USB DAC chain, shairport's sample-stuffing fires
     // audible glitches every ~60s before the resync_threshold fix
     // (mikebrady/shairport-sync#1980). Free-running ("yes") is kept
     // as a fallback — it trades A/V sync for video AirPlay and inter-

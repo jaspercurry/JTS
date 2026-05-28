@@ -1,8 +1,8 @@
 # Audio paths and software volume knobs
 
-Two paths to the dongle, processed differently. Knowing which is which
-matters when you're testing volume-controlled output and when you're
-trying to understand the loudness-tracking compensation in
+Two paths to the final output owner, processed differently. Knowing
+which is which matters when you're testing volume-controlled output and
+when you're trying to understand the loudness-tracking compensation in
 `jasper-voice`.
 
 ## How we got here
@@ -19,9 +19,9 @@ The Linux-on-a-single-Pi version of this pattern has one constraint:
 Combining music and TTS into one DSP pipeline would require either
 pre-mixing them upstream (which would mean ducking music ducks TTS
 too — wrong) or the fragile ALSA `multi` plugin (xrun storms with
-bursty writers). So we route TTS around CamillaDSP into the dongle's
-dmix instead, and compensate for the bypass in software (see
-"TtsVolumeTracker" below).
+bursty writers). So we route TTS around CamillaDSP into
+`jasper-outputd`, the final output owner, and compensate for the DSP
+bypass in software (see "TtsVolumeTracker" below).
 
 ## The two paths
 
@@ -32,12 +32,14 @@ MUSIC chain (gets CamillaDSP processing)
               → jasper-fanin → hw:Loopback,0,7
               → snd-aloop → pcm.jasper_capture (dsnoop on hw:Loopback,1,7)
               → jasper-camilla (main_volume + filters)
-              → pcm.jasper_out (dmix on dongle)
-              → dongle → amp → speakers
+              → outputd_content_playback
+              → snd-aloop → outputd_content_capture
+              → jasper-outputd → outputd_dac → amp → speakers
 
 TTS / TEST-TONE chain (BYPASSES CamillaDSP)
-    jasper-voice TtsPlayout → pcm.jasper_out (dmix on dongle)
-                            → dongle → amp → speakers
+    jasper-voice OutputdTtsPlayout → /run/jasper-outputd/tts.sock
+                                   → jasper-outputd → outputd_dac
+                                   → amp → speakers
 ```
 
 Each renderer has its own snd-aloop lane, and room-correction/test
@@ -78,7 +80,11 @@ Ownership is deliberately split:
   `VolumeCoordinator.finalize_source_handoff(...)` converges the
   steady-state carrier. This is the guard against loud source-switch
   transients such as Spotify (Camilla 0 dB) → AirPlay
-  (Camilla-as-master).
+  (Camilla-as-master). Mux logs one `event=source.handoff_start`
+  and one terminal `event=source.handoff` per transition, both with a
+  stable `id` also exposed in `/source/state.last_handoff`, so a
+  source switch can be correlated across journal, dashboard, and
+  control API without phase-by-phase log spam.
 - `jasper-fanin` owns only the cheap audio gate: `AUTO` sums active
   lanes; `SELECT <label>` passes one renderer lane; `NONE` passes no
   renderer lane. The correction/test lane is always mixed so
@@ -111,9 +117,10 @@ mixer, a second output device, or a new volume model.
    `deploy/alsa/asoundrc.jasper`, pinned to 48 kHz stereo S16_LE via
    `plug`. Current allocation: `0` Spotify, `1` AirPlay, `2`
    Bluetooth, `3` USB sink, `4` correction/test, `5` debug/monitor
-   reserve, `6` free, `7` fan-in summed output. Do not put a source on
-   substream `7`. If you need more than the remaining free lane, stop
-   and redesign the topology rather than overloading snd-aloop.
+   reserve, `6` outputd post-DSP content, `7` fan-in summed output. Do
+   not put a source on substream `6` or `7`. If you need another
+   production source lane, stop and redesign the topology rather than
+   overloading snd-aloop.
 2. **Teach `jasper-fanin` about the lane.** Extend
    `JASPER_FANIN_INPUT_PCMS` and `JASPER_FANIN_INPUT_RENDERERS` in
    `deploy/systemd/jasper-fanin.service`. The lists are pipe-delimited
@@ -123,8 +130,9 @@ mixer, a second output device, or a new volume model.
    label stable: mux uses that label when it asks fan-in to pass one
    selected source lane.
 3. **Wire the source daemon to the alias.** Its systemd unit should
-   write to the alias, not to `jasper_capture`, `jasper_out`, or raw
-   `hw:Loopback,*` names. Renderer units should order after
+   write to the alias, not to `jasper_capture`, `jasper_out`,
+   `outputd_content_*`, or raw `hw:Loopback,*` names. Renderer units
+   should order after
    `jasper-fanin.service` and use the same hardening/resource patterns
    as the existing sources. If the source is optional, default it off
    and make the disabled state cost zero resident RAM.
@@ -141,11 +149,13 @@ mixer, a second output device, or a new volume model.
    API carries `listening_level` and CamillaDSP returns to 0 dB.
    `VolumeMode.CAMILLA_MASTER` means CamillaDSP carries
    `listening_level`.
-6. **Define preemption.** Add the source-specific pause/silence path to
-   `jasper/mux.py`. Prefer a real pause/silence API. If the source
-   cannot be paused from the Pi, document the intentional fallback
-   ("may briefly mix") and expose an operator escape hatch only when the
-   failure mode justifies one.
+6. **Define preemption.** Add the source-specific stop/pause/silence
+   path to `jasper/mux.py`. Prefer a real renderer-owned API: AirPlay
+   uses shairport-sync MPRIS `Stop` when it loses the lane, Spotify uses
+   Web API pause with a restart fallback, and USB sink uses its local
+   silence endpoint. If the source cannot be controlled from the Pi,
+   document the intentional fallback ("may briefly mix") and expose an
+   operator escape hatch only when the failure mode justifies one.
 7. **Wire manual source selection.** The mux/control allow-lists derive
    from `jasper/music_sources.py`; add the landing-page button in
    `deploy/index.html` and keep `/sources/` as the on/off surface.
@@ -177,27 +187,29 @@ mixer, a second output device, or a new volume model.
     current operational truth; historical design notes should be marked
     historical.
 
-Both legs converge at `pcm.jasper_out`, a dmix on the dongle. dmix
-sums the two writers' streams sample-wise and sends one stream to the
-DAC. CamillaDSP is upstream of dmix only on the music leg.
+Both legs converge inside `jasper-outputd`, which owns the direct DAC
+writer on the outputd cutover branch. CamillaDSP is upstream of outputd
+only on the music leg. The legacy `pcm.jasper_out` dmix remains in
+`/etc/asound.conf` as the main-branch rollback path, not as the active
+convergence point here.
 
 ## Volume knobs and which path each affects
 
-| Knob | Where it lives | Music | TTS / `aplay -D jasper_out` |
+| Knob | Where it lives | Music | TTS / outputd |
 |------|----------------|-------|----------------------------|
 | CamillaDSP `main_volume` (the ducker) | DSP, websocket port 1234 | yes | no |
 | Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
-| Source amplitude (PCM data) | The WAV / sounddevice buffer | yes | yes |
-| `JASPER_TTS_GAIN_DB` | TtsPlayout source-side | n/a | yes |
-| `TtsVolumeTracker` (auto) | TtsPlayout source-side | n/a | yes — auto-tracks music |
+| Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
+| `JASPER_TTS_GAIN_DB` | OutputdTtsPlayout gain metadata | n/a | yes |
+| `TtsVolumeTracker` (auto) | OutputdTtsPlayout gain metadata | n/a | yes — auto-tracks music |
 | Apple dongle Headphone | Hardware mixer | (pinned 100%) | (pinned 100%) |
 | TPA3255 amp | Physical knob | yes | yes |
 
 Two notes:
-- `master_gain` is a CamillaDSP mixer named in `v1.yml` but currently
-  configured as identity. The Ducker operates on `main_volume`, not
-  `master_gain`. Old comments/docs that called master_gain "the
-  ducking knob" are wrong.
+- `master_gain` is a CamillaDSP mixer named in the base Camilla configs
+  but currently configured as identity. The Ducker operates on
+  `main_volume`, not `master_gain`. Old comments/docs that called
+  master_gain "the ducking knob" are wrong.
 - `listening_level` is the canonical user-facing volume in the
   VolumeCoordinator (see [HANDOFF-volume.md](HANDOFF-volume.md)). It
   maps to `main_volume` for IDLE and AirPlay; for Spotify and BT,
@@ -212,14 +224,15 @@ property "however the user adjusted volume — iPhone slider, AirPlay,
 Spotify, the dial, the external amp — TTS matches the music level the
 user is actually hearing," `TtsVolumeTracker` in
 [`jasper/voice_daemon.py`](../jasper/voice_daemon.py) measures
-CamillaDSP's `playback_rms` (the actual signal hitting the DAC, after
-every upstream attenuator) and scales TTS to sit a configurable
+CamillaDSP's `playback_rms` (post-DSP content level, after every
+upstream attenuator) and scales TTS to sit a configurable
 headroom above it. A "loudness anchor" persists across boots so a
 quiet bedroom from yesterday is still quiet today until someone
 changes it.
 
-This compensation is load-bearing — it's what makes the bypass invisible
-to the user. Don't remove it without first removing the bypass.
+This compensation is load-bearing — it's what makes the CamillaDSP
+bypass invisible to the user. Don't remove it without first removing
+the bypass.
 
 ### Ceiling policy is branch-specific (read before changing the formula)
 
@@ -278,7 +291,7 @@ Fields:
 - `offset_db` — the deprecated `JASPER_TTS_GAIN_DB` offset
 - `ceiling_db` — `main_volume + offset` (applied to silence branches only)
 - `target_db` — what the formula computed before any clamping
-- `final_db` — what `TtsPlayout` actually applied after `MAX_TTS_GAIN_DB`
+- `final_db` — what the TTS path sends to outputd after `MAX_TTS_GAIN_DB`
 - `max_cap_db` — hearing-safety cap (always `-6 dB`)
 
 Fires only on actual changes to `final_db` (no log spam). The existing
@@ -289,10 +302,12 @@ TTS gain choice from logs alone — no need to correlate across separate
 
 ## End-of-turn drain — when is the speaker actually silent?
 
-`sounddevice.RawOutputStream.write()` returns when the bytes are
-accepted into PortAudio's internal ring, **not** when they reach the
-DAC. There are still ~chunk_duration of ring + ~60-85 ms of dmix
-tail + DAC flush ahead of the bytes at that point. A naive
+The TTS write call returns when bytes are accepted by the current
+transport, **not** when they reach the DAC. On the outputd branch, the
+transport is a local Unix socket into `jasper-outputd`; on the legacy
+main path it is PortAudio. Either way, there is still transport queue,
+outputd/DAC or OS-audio tail, and DAC flush ahead of the bytes at that
+point. A naive
 end-of-turn timer that fires "shortly after the last write" can land
 mid-tail, clipping the last word — observed in production
 (PR #311, 2026-05-25) when OpenAI Realtime burst-streamed 10 chunks
@@ -361,9 +376,10 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 **Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
 Goes through CamillaDSP, so `main_volume` applies.
 
-**Test the TTS chain**: `aplay -D plug:jasper_out file.wav`. Bypasses
-CamillaDSP. Source amplitude is the only software attenuator —
-`main_volume` does nothing to this path.
+**Test the TTS chain**: use `jasper-voice`/cue playback or a small
+outputd client, not `aplay -D plug:jasper_out`. Direct `jasper_out`
+playback exercises only the main-branch rollback dmix and bypasses both
+CamillaDSP and outputd. `main_volume` does nothing to the TTS path.
 
 The Apple dongle Headphone is pinned at 100% by `jasper-dac-init`,
 watched by `jasper-headphone-monitor`, checked by `jasper-doctor`.
@@ -376,14 +392,12 @@ The bridge taps `pcm.jasper_capture`, a dsnoop on the summed fan-in
 output `hw:Loopback,1,7` — the music chain reference, BEFORE
 CamillaDSP processing. So:
 
-- TTS bleed through the mic isn't in the AEC reference; the bridge
-  cancels music bleed only. This is **intentional** today — the
-  in-session Silero VAD gate at threshold 0.15 handles TTS bleed
-  without needing AEC to cancel it. If robust barge-in (cleanly
-  interrupting the assistant during loud music) becomes a goal,
-  the architecture has to change — see
-  [HANDOFF-barge-in.md](HANDOFF-barge-in.md) for the option space
-  (ALSA convergence sink vs PipeWire migration vs measure-first).
+- TTS bleed through the mic is not yet in the AEC reference; the bridge
+  cancels music bleed only. This is **intentional** for the current
+  AEC bridge, even though outputd now owns the final output loop. Robust
+  barge-in should move the reference consumer to outputd's eventual
+  speaker reference fanout — see
+  [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. Acceptable today; if it becomes a problem,
   move the dsnoop tap downstream of CamillaDSP.
@@ -400,4 +414,4 @@ CamillaDSP processing. So:
 
 ---
 
-Last verified: 2026-05-28 (source handoff guard + future-source checklist and source-capabilities plan link rechecked)
+Last verified: 2026-05-28 (source handoff guard, future-source checklist, source-capabilities plan link, and outputd cutover topology rechecked)

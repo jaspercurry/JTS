@@ -1,0 +1,34 @@
+[package]
+name = "jasper-outputd"
+version = "0.1.0"
+edition = "2021"
+description = "JTS final-output owner: mixes post-DSP content with assistant audio and publishes a speaker reference."
+license = "Apache-2.0"
+repository = "https://github.com/jaspercurry/JTS"
+authors = ["Jasper Curry <jaspercurry@gmail.com>"]
+rust-version = "1.75"
+
+[dependencies]
+# Same ALSA wrapper used by jasper-fanin. outputd's ALSA backend reads
+# Camilla's post-DSP loopback lane and writes the final DAC directly.
+alsa = "0.9"
+
+# Top-level error context for daemon startup and I/O failures.
+anyhow = "1"
+
+# errno constants for ALSA xrun recovery.
+libc = "0.2"
+
+# Plain-thread signal handling for clean systemd stop.
+signal-hook = "0.3"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
+
+[[bin]]
+name = "jasper-outputd"
+path = "src/main.rs"

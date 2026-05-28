@@ -48,6 +48,13 @@ configured AEC mic is actually present with 6-channel firmware, then
 enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The chip's
 on-board AEC is not in the audio path — this doc explains why.
 
+As of the 2026-05-28 outputd cutover branch, `jasper-outputd` owns the
+physical DAC, but the AEC bridge still consumes the old content-only
+`pcm.jasper_ref` tap. TTS/cues are still absent from the AEC reference.
+The planned clean upgrade is to consume outputd's eventual speaker
+reference fanout, not to route TTS through CamillaDSP or add another
+ad-hoc ALSA tap.
+
 To turn the bridge OFF (or back to chip-direct mic for A/B testing),
 set the state file to disabled and run the reconciler:
 
@@ -1549,9 +1556,10 @@ Captured here so future sessions don't repeat the mistakes.
     failure mode.** Same investigation date. The check flagged
     `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
     mic-loud signal can also come from sources that **bypass the
-    loopback by design**: TTS / wake cues write to `pcm.jasper_out`
-    (dmix on the dongle) directly, and loud ambient voice gets pumped
-    by the chip's ASR-beam AGC. In both cases `ref = 0` is correct —
+    loopback by design**: TTS / wake cues enter `jasper-outputd`
+    directly on the cutover branch (or `pcm.jasper_out` on main), and
+    loud ambient voice gets pumped by the chip's ASR-beam AGC. In both
+    cases `ref = 0` is correct —
     nothing was supposed to be in the loopback. **Fix**: count
     `healthy_ref_windows` (any window where `ref ≥ 50`) and only
     fail when zero healthy windows exist in the assessment period
@@ -1571,7 +1579,7 @@ Captured here so future sessions don't repeat the mistakes.
     pure-voice session). Even with `healthy_ref_windows = 0`, the
     silent-ref + mic-loud pattern proves nothing when no renderer
     is writing the loopback — every ref sample is correctly silent
-    and the mic-loud bursts come from TTS via `jasper_out`. Added a
+    and the mic-loud bursts come from the TTS path. Added a
     `music_chain_active` gate that reads
     `/proc/asound/Loopback/pcm0p/sub*/status`; when every sub is
     `closed`, the FAIL demotes to OK with a "re-run doctor while
@@ -2035,8 +2043,8 @@ ducking. So when the bridge ducks during a wake event, the
 reference signal stays at full level while the speaker output
 drops — meaning AEC3 momentarily sees a louder reference than
 the actual echo. AEC3's residual suppressor masks most of this,
-but the architecturally clean fix is to move the dsnoop tap to
-a post-CamillaDSP slave. Listed as a Tier 2 item in PLAN.md.
+but the architecturally clean fix is to consume the outputd speaker
+reference fanout once it is exposed to AEC/corpus consumers.
 
 ### Bridge is Python (RAM-heavy)
 
@@ -2367,8 +2375,8 @@ top of this section.)
 2. **Drift / reference-tap diagnosis** (per the Caveats section
    above). ERLE decay over 10 min indicates clock-domain drift; the
    `jasper_capture` tap is PRE-CamillaDSP while the speaker is POST,
-   so a divergence-fix is moving the dsnoop to a post-camilla
-   slave. ~1-2 days each.
+   so the clean divergence-fix is moving the AEC reference consumer to
+   outputd's speaker reference fanout. ~1-2 days each.
 3. **Vendor v2.1 + custom `EchoCanceller3Config`** (per "Clean
    path" above). ~1-3 days. **DONE 2026-05-22 night (offline laptop
    spike); BEST_A config identified.** The cross-reference research's

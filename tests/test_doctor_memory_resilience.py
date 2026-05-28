@@ -405,17 +405,21 @@ def test_sysctl_drift_warns_on_unsubstituted_template_placeholder():
 
 
 _PID_MAP = {
-    "jasper-camilla": "1001",
-    "jasper-aec-bridge": "1002",
-    "jasper-control": "1003",
-    "jasper-voice": "1004",
-    "jasper-mux": "1005",
-    "jasper-input": "1006",
-    "ssh": "1007",
+    "jasper-outputd": "1001",
+    "jasper-camilla": "1002",
+    "jasper-fanin": "1003",
+    "jasper-aec-bridge": "1004",
+    "jasper-control": "1005",
+    "jasper-voice": "1006",
+    "jasper-mux": "1007",
+    "jasper-input": "1008",
+    "ssh": "1009",
 }
 
 _EXPECTED_CONFIG = {
+    "jasper-outputd": "-950",
     "jasper-camilla": "-900",
+    "jasper-fanin": "-800",
     "jasper-aec-bridge": "-700",
     "jasper-control": "-600",
     "jasper-voice": "-500",
@@ -452,9 +456,10 @@ def _make_oom_run(pid_map, config_map):
 
 
 _LIVE_OK = {
-    "1001": "-900", "1002": "-700", "1003": "-600",
-    "1004": "-500", "1005": "-300", "1006": "-300",
-    "1007": "-250",   # ssh recovery path, still killable
+    "1001": "-950", "1002": "-900", "1003": "-800",
+    "1004": "-700", "1005": "-600", "1006": "-500",
+    "1007": "-300", "1008": "-300",
+    "1009": "-250",   # ssh recovery path, still killable
 }
 
 
@@ -471,7 +476,7 @@ def test_oom_score_adj_all_match():
          patch("pathlib.Path.read_text", fake_read):
         r = doctor.check_oom_score_adj()
     assert r.status == "ok"
-    assert "7 critical daemons protected" in r.detail
+    assert "9 critical daemons protected" in r.detail
 
 
 def test_oom_score_adj_warns_if_sshd_drifts():
@@ -481,7 +486,7 @@ def test_oom_score_adj_warns_if_sshd_drifts():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1007"] = "0"  # sshd drifted to default
+        live["1009"] = "0"  # sshd drifted to default
         return live.get(pid_str, "0") + "\n"
 
     # Also reflect the drift in the unit file's configured value, so
@@ -502,7 +507,7 @@ def test_oom_score_adj_live_drift_only():
     def fake_read(self):
         pid_str = str(self).split("/")[2]
         live = dict(_LIVE_OK)
-        live["1001"] = "0"  # jasper-camilla drifted live to 0
+        live["1002"] = "0"  # jasper-camilla drifted live to 0
         return live.get(pid_str, "0") + "\n"
 
     with patch.object(doctor, "_run",
@@ -545,7 +550,9 @@ def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
     (it's the more dangerous shape)."""
     def fake_read(self):
         pid_str = str(self).split("/")[2]
-        return {"1001": "0"}.get(pid_str, "-900") + "\n"  # live also wrong
+        live = dict(_LIVE_OK)
+        live["1002"] = "0"  # live also wrong for jasper-camilla
+        return live.get(pid_str, "0") + "\n"
 
     drifted_config = dict(_EXPECTED_CONFIG)
     drifted_config["jasper-camilla"] = "0"

@@ -83,15 +83,15 @@ def parse_current_correction(
     config_dir: Path = Path("/var/lib/camilladsp/configs"),
 ) -> dict[str, Any] | None:
     """Describe whatever correction (if any) the given CamillaDSP
-    config path represents. Returns None for the base v1.yml or any
-    path we don't recognise as a correction emission.
+    config path represents. Returns None for the base outputd cutover
+    config or any path we don't recognise as a correction emission.
 
     The filename shape is fixed by `MeasurementSession.apply`:
     ``correction_<session_id>_<unixtime>.yml`` under
     ``/var/lib/camilladsp/configs/``. Anything else returns None for
     backwards compatibility. Use `describe_current_config()` when the
-    caller needs to distinguish flat baseline from custom CamillaDSP
-    configs.
+    caller needs to distinguish the flat outputd cutover baseline,
+    JTS-managed sound configs, and custom CamillaDSP configs.
     """
     descriptor = describe_current_config(path, config_dir=config_dir)
     correction = descriptor.get("current_correction")
@@ -102,15 +102,16 @@ def describe_current_config(
     path: str | None,
     *,
     config_dir: Path = Path("/var/lib/camilladsp/configs"),
-    base_config_path: Path = Path("/etc/camilladsp/v1.yml"),
+    base_config_path: Path = Path("/etc/camilladsp/outputd-cutover.yml"),
 ) -> dict[str, Any]:
     """Describe the active CamillaDSP config without overclaiming.
 
     `parse_current_correction()` intentionally remains the backwards-
     compatible "is there a JTS room correction?" helper. This richer
-    descriptor lets UI/doctor/agent surfaces distinguish the flat JTS
-    baseline, JTS-generated sound/correction configs, and arbitrary
-    CamillaGUI/custom configs that JTS should not silently preserve.
+    descriptor lets UI/doctor/agent surfaces distinguish the flat
+    outputd cutover baseline, JTS-generated sound/correction configs,
+    and arbitrary CamillaGUI/custom configs that JTS should not
+    silently preserve.
     """
     if not path:
         return {
@@ -367,7 +368,7 @@ class SessionConfig:
     capture_dir: Path = Path("/var/lib/jasper/correction/captures")
     sessions_dir: Path = Path("/var/lib/jasper/correction/sessions")
     config_dir: Path = Path("/var/lib/camilladsp/configs")
-    base_config_path: Path = Path("/etc/camilladsp/v1.yml")
+    base_config_path: Path = Path("/etc/camilladsp/outputd-cutover.yml")
     calibration_dir: Path = calibration.DEFAULT_CALIBRATION_DIR
 
     f1_hz: float = 20.0

@@ -257,6 +257,7 @@ _PAGE_BODY = """
     <div class="k">Last 5m</div><div class="v" id="ap-5m">—</div>
     <div class="k">Last 30m</div><div class="v" id="ap-30m">—</div>
     <div class="k">Fan-in</div><div class="v" id="ap-fanin">—</div>
+    <div class="k">Outputd</div><div class="v" id="ap-outputd">—</div>
     <div class="k">Camilla</div><div class="v" id="ap-camilla">—</div>
   </div>
   <div class="ap-events" id="ap-events"></div>
@@ -441,6 +442,15 @@ _SCRIPT = r"""
     appendCell(row, 'num', cpuText);
     appendCell(row, 'num', memoryText);
     return row;
+  }
+  function findService(services, name) {
+    return (services || []).find(service =>
+      service && (service.name === name || service.unit === name + '.service')
+    ) || null;
+  }
+  function serviceMemoryMb(services, name) {
+    const service = findService(services, name);
+    return service && service.memory_mb != null ? service.memory_mb : null;
   }
   function setMetricLines(id, lines) {
     const el = document.getElementById(id);
@@ -639,6 +649,39 @@ _SCRIPT = r"""
     }
   }
 
+  function renderOutputd(o, services) {
+    const el = document.getElementById('ap-outputd');
+    if (!el) return;
+    if (!o) {
+      el.textContent = 'unavailable';
+      return;
+    }
+    const content = o.content || {};
+    const dac = o.dac || {};
+    const mix = o.mix || {};
+    const tts = o.tts || {};
+    const parts = [
+      o.backend || 'unknown',
+      'buffer ' + (content.buffer_frames || '—') + '/' +
+        (dac.buffer_frames || '—'),
+      'xruns ' + (content.xrun_count || 0) + '/' + (dac.xrun_count || 0),
+      'empty ' + (content.empty_periods || 0),
+      'eagain ' + (content.eagain_count || 0),
+      'tts ' + (tts.pending_frames || 0) + 'f',
+    ];
+    const memoryMb = serviceMemoryMb(services, 'jasper-outputd');
+    if (memoryMb != null) {
+      parts.push('mem ' + Math.round(memoryMb) + ' MB');
+    }
+    if (tts.over_budget || tts.over_budget_ms) {
+      parts.push('tts over ' + (tts.over_budget_ms || 0) + 'ms');
+    }
+    if (mix.last_period_clipped_samples) {
+      parts.push('clip ' + mix.last_period_clipped_samples);
+    }
+    el.textContent = parts.join(' · ');
+  }
+
   function audioQualityLabel(converter) {
     if (converter === 'samplerate_best') return 'Best';
     if (converter === 'samplerate_medium') return 'Medium';
@@ -674,6 +717,7 @@ _SCRIPT = r"""
   function render(snap) {
     if (!snap || !snap.metrics) {
       renderAirPlay(snap && snap.airplay_health);
+      renderOutputd(snap && snap.outputd, []);
       document.getElementById('staleness').textContent =
         'No metrics yet (jasper-control sampler still warming up?).';
       return;
@@ -681,6 +725,7 @@ _SCRIPT = r"""
     const m = snap.metrics;
     const cur = m.current;
     const hist = m.history;
+    const services = m.services || [];
     const cores = cur.per_core_cpu_pct || [];
     const lastSampled = m.last_sample_at;
     const stale = lastSampled
@@ -901,6 +946,7 @@ _SCRIPT = r"""
     }
 
     renderAirPlay(snap.airplay_health);
+    renderOutputd(snap.outputd, services);
     renderAudioQuality(snap.audio_quality);
 
     // Network
@@ -917,7 +963,6 @@ _SCRIPT = r"""
     // branch shakedowns where you want to know which daemon spiked.
     // The sampler walks the cgroup tree recursively, so JTS services in
     // jts-audio/jts-mic slices and non-jasper renderers are visible here.
-    const services = m.services || [];
     const svcRows = document.getElementById('svc-rows');
     const svcWarn = document.getElementById('svc-warn');
     // Memory-cgroup-controller availability warning. Surfaces the

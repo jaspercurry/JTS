@@ -68,6 +68,7 @@ JASPER_SERVICE_GROUPS = {
     "jasper-voice.service": "Voice",
     "jasper-camilla.service": "Audio",
     "jasper-fanin.service": "Audio",
+    "jasper-outputd.service": "Audio",
     "jasper-mux.service": "Audio",
     "jasper-usbsink.service": "Audio",
     "jasper-control.service": "Control",

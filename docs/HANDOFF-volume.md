@@ -385,8 +385,9 @@ Multiple guardrails sit on top:
 
 - `regress_listening_level_if_stale` clamps stale + extreme values
   into `[20%, 70%]` by default.
-- `TtsPlayout.set_gain_db` enforces a `MAX_TTS_GAIN_DB = -6 dB`
-  hardware ceiling on the TTS path independent of any volume math.
+- `OutputdTtsPlayout.set_gain_db` and jasper-outputd enforce the
+  `MAX_TTS_GAIN_DB = -6 dB` hardware ceiling on the TTS path
+  independent of any volume math.
 - `JASPER_TTS_GAIN_DB` is validated `<= 0` at config-load time.
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, and sound-preference configs all cap the main fader
@@ -545,4 +546,4 @@ on boot restore.
 
 ---
 
-Last verified: 2026-05-28 (push-source degraded guard recovery, /state volume-policy visibility, hardware validation checklist, and mux effective-source path rechecked, including same-level source observations)
+Last verified: 2026-05-28 (push-source degraded guard recovery, /state volume-policy visibility, mux effective-source path, and outputd TTS ceiling path rechecked)

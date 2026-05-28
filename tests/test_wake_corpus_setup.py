@@ -118,11 +118,16 @@ async def test_recording_task_elapsed_grows() -> None:
 
 
 @pytest.fixture
-def backend(tmp_path: Path):
+def backend(monkeypatch, tmp_path: Path):
     """Construct + start a backend rooted in a tmp dir, tear down on
     test exit. All 4 leg ports configured — matches the production
     default. Tests that exercise 3-leg mode just don't opt into
     include_raw_mic_0."""
+    monkeypatch.setattr(
+        wake_corpus_setup,
+        "BRIDGE_STATS_PATH",
+        tmp_path / "missing_aec_bridge_stats.json",
+    )
     b = wake_corpus_setup.RecordingBackend(
         output_dir=tmp_path / "out",
         ports={

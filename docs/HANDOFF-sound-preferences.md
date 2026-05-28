@@ -131,7 +131,7 @@ The generated unsaved audition filename is stable:
 `/sound/apply`, `/sound/audition`, and `/sound/live-draft` only preserve
 room PEQs from configs they know how to inspect:
 
-- `/etc/camilladsp/v1.yml` → no room PEQs.
+- `/etc/camilladsp/outputd-cutover.yml` → no room PEQs.
 - `/var/lib/camilladsp/configs/correction_<session>_<ts>.yml` → extract
   room PEQs.
 - `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.

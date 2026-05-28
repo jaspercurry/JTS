@@ -25,7 +25,9 @@ from __future__ import annotations
 # jasper-doctor. Keep it killable: SSH-launched diagnostics inherit
 # this value, so -1000 would make arbitrary remote work immortal.
 EXPECTED: dict[str, int] = {
+    "jasper-outputd": -950,     # final DAC owner; silence if killed
     "jasper-camilla": -900,     # silence = worst UX
+    "jasper-fanin": -800,       # renderer audio convergence point
     "jasper-aec-bridge": -700,  # real-time mic processing
     "jasper-control": -600,     # recovery surface (HTTP dashboard)
     "jasper-voice": -500,       # largest blast radius (LLM session)

@@ -8,7 +8,7 @@ lane:
     sweep WAV → correction_substream → snd-aloop lane 4
               → jasper-fanin → pcm.jasper_capture
               → jasper-camilla (main_volume + correction filters)
-              → pcm.jasper_out (dmix on dongle)
+              → outputd_content_playback → jasper-outputd
               → dongle → amp → speakers
 
 That's load-bearing: a measurement that bypassed CamillaDSP would

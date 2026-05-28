@@ -1,19 +1,18 @@
 """Emit a CamillaDSP correction config from a list of PEQ filters.
 
-The correction config is structurally identical to the as-shipped
-`/etc/camilladsp/v1.yml` except that the per-channel `Filter` blocks
-in the pipeline now chain through the PEQs before the existing
-`flat` filter, and the PEQs themselves are added to the `filters`
-block. The `master_gain` mixer is preserved unchanged — Ducker still
-attenuates `main_volume` for voice sessions, the existing audio path
-is unaffected.
+The correction config is structurally identical to the outputd cutover
+Camilla config except that the per-channel `Filter` blocks in the
+pipeline now chain through the PEQs before the existing `flat` filter,
+and the PEQs themselves are added to the `filters` block. The
+`master_gain` mixer is preserved unchanged — Ducker still attenuates
+`main_volume` for voice sessions.
 
 We emit YAML by string concatenation rather than via a yaml library:
   - The structure is fixed and small.
   - Avoids adding a `pyyaml` / `ruamel.yaml` runtime dep just to
     write a deterministic small file.
-  - The output is easy to review by eye; trivial to diff against
-    v1.yml when something looks wrong.
+  - The output is easy to review by eye; trivial to diff against the
+    cutover base config when something looks wrong.
 
 When CamillaDSP loads the file via SetConfigName + Reload, it does
 the actual biquad coefficient generation from (freq, q, gain).
@@ -44,12 +43,12 @@ def _emit_filter_definitions(peqs: Iterable[PEQ]) -> str:
     """Indented YAML for the `filters:` block.
 
     Always includes the `flat` Gain filter so the pipeline always
-    has a terminator that matches v1.yml. The PEQs are named
+    has a terminator that matches the cutover base config. The PEQs are named
     `peq_1` through `peq_N` in the order returned by the designer
     (largest impact first).
     """
     lines = []
-    # Preserve the existing `flat` identity filter so v1.yml ↔
+    # Preserve the existing `flat` identity filter so base ↔
     # correction.yml diff stays minimal and any other code paths
     # that referenced `flat` (none today, but stay open to future
     # composability) continue to work.
@@ -118,12 +117,11 @@ def emit_correction_config(
 
     Args:
       peqs: list of PEQ filters from jasper.correction.peq.design_peq.
-        Empty list ⇒ identity config (functionally equivalent to
-        v1.yml).
+        Empty list ⇒ identity config for the outputd cutover path.
       capture_device, playback_device, capture_format, playback_format,
         sample_rate, chunksize, target_level, volume_limit_db: device,
-        sample-rate, and safety config. Defaults match v1.yml; override
-        only if the audio path changes.
+        sample-rate, and safety config. Defaults match the cutover base
+        config; override only if the audio path changes.
       out_path: write the YAML here as well as returning it. Parent
         directory must exist.
       measurement_id: opaque tag (e.g. timestamp) embedded in the
@@ -143,9 +141,9 @@ def emit_correction_config(
 # DO NOT HAND-EDIT — re-run a measurement at https://jts.local/correction
 # instead. See docs/HANDOFF-correction.md for the architecture.
 #
-# Structure mirrors deploy/camilladsp/v1.yml. The only differences
-# are the PEQ filter additions in the `filters:` block and the
-# matching name list in the per-channel `Filter` pipeline entries.
+# Structure mirrors deploy/camilladsp/outputd-cutover.yml. The only
+# differences are the PEQ filter additions in the `filters:` block and
+# the matching name list in the per-channel `Filter` pipeline entries.
 # `master_gain` mixer is preserved unchanged so the Ducker (voice
 # session attenuation) keeps working without coordination.
 

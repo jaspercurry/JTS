@@ -27,7 +27,10 @@ Renderer support:
             JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled.
   AirPlay (shairport-sync):
     detect: MPRIS PlaybackStatus == "Playing"
-    pause:  MPRIS Pause method
+    preempt: MPRIS Stop method, falling back to Pause if Stop is not
+            available. Stop asks shairport-sync to tear down playback
+            instead of leaving a hidden paused AirPlay session behind
+            while another renderer owns the fan-in gate.
   Bluetooth (bluez-alsa):
     detect: presence of an a2dpsnk source PCM (best-effort —
             doesn't distinguish "phone connected, not playing"
@@ -94,6 +97,9 @@ FANIN_CONTROL_SOCKET = os.environ.get(
 MUX_CONTROL_SOCKET = os.environ.get(
     "JASPER_MUX_CONTROL_SOCKET", "/run/jasper-mux/control.sock",
 )
+SHAIRPORT_MPRIS_BUS = "org.mpris.MediaPlayer2.ShairportSync"
+SHAIRPORT_MPRIS_PATH = "/org/mpris/MediaPlayer2"
+MPRIS_PLAYER_IFACE = "org.mpris.MediaPlayer2.Player"
 
 
 def _spotify_preempt_restart_disabled() -> bool:
@@ -174,6 +180,7 @@ class Mux:
         self._http = httpx.AsyncClient(timeout=2.0)
         self._volume_coordinator = volume_coordinator
         self._last_handoff: dict[str, Any] | None = None
+        self._handoff_seq = 0
         self._transition_lock = asyncio.Lock()
         self._pending_auto_target: Source | None = None
 
@@ -529,16 +536,23 @@ class Mux:
         self, prev_source: Source, source: Source, *, reason: str,
     ) -> bool:
         started = time.monotonic()
+        handoff_id = self._next_handoff_id()
+        logger.info(
+            "event=source.handoff_start id=%d from=%s to=%s reason=%s",
+            handoff_id, prev_source.value, source.value, reason,
+        )
         coordinator = self._ensure_volume_coordinator()
         handoff = await coordinator.prepare_source_handoff(
             prev_source, source, reason=reason,
         )
         if not getattr(handoff, "ok", False):
-            self._record_handoff(handoff, started, result=handoff.result)
+            self._record_handoff(
+                handoff, started, handoff_id=handoff_id, result=handoff.result,
+            )
             logger.warning(
-                "event=source.handoff from=%s to=%s reason=%s "
+                "event=source.handoff id=%d from=%s to=%s reason=%s "
                 "result=%s detail=%s",
-                prev_source.value, source.value, reason,
+                handoff_id, prev_source.value, source.value, reason,
                 handoff.result, handoff.detail,
             )
             return False
@@ -548,12 +562,14 @@ class Mux:
             with contextlib.suppress(Exception):
                 await coordinator.abort_source_handoff(handoff)
             self._record_handoff(
-                handoff, started, result="fanin_select_failed",
+                handoff, started,
+                handoff_id=handoff_id,
+                result="fanin_select_failed",
             )
             logger.warning(
-                "event=source.handoff from=%s to=%s reason=%s "
+                "event=source.handoff id=%d from=%s to=%s reason=%s "
                 "result=fanin_select_failed detail=%s",
-                prev_source.value, source.value, reason, e,
+                handoff_id, prev_source.value, source.value, reason, e,
             )
             return False
         try:
@@ -561,17 +577,20 @@ class Mux:
         except Exception as e:  # noqa: BLE001
             finalized = False
             logger.warning(
-                "event=source.handoff_finalize_failed from=%s to=%s "
+                "event=source.handoff_finalize_failed id=%d from=%s to=%s "
                 "reason=%s detail=%s",
-                prev_source.value, source.value, reason, e,
+                handoff_id, prev_source.value, source.value, reason, e,
             )
         result = handoff.result if finalized else "finalize_failed"
-        self._record_handoff(handoff, started, result=result)
+        self._record_handoff(
+            handoff, started, handoff_id=handoff_id, result=result,
+        )
         logger.info(
-            "event=source.handoff from=%s to=%s reason=%s "
+            "event=source.handoff id=%d from=%s to=%s reason=%s "
             "level=%d guard_db=%s camilla_before=%s prev_mode=%s "
             "target_mode=%s push_ok=%s settled_ms=%d result=%s "
             "elapsed_ms=%d",
+            handoff_id,
             prev_source.value,
             source.value,
             reason,
@@ -587,10 +606,15 @@ class Mux:
         )
         return True
 
+    def _next_handoff_id(self) -> int:
+        self._handoff_seq += 1
+        return self._handoff_seq
+
     def _record_handoff(
-        self, handoff: Any, started: float, *, result: str,
+        self, handoff: Any, started: float, *, handoff_id: int, result: str,
     ) -> None:
         self._last_handoff = {
+            "id": handoff_id,
             "from": handoff.prev_source.value,
             "to": handoff.current_source.value,
             "reason": handoff.reason,
@@ -747,13 +771,7 @@ class Mux:
             )
             await self._spotify_force_restart_librespot()
         elif source == Source.AIRPLAY:
-            ok = await _busctl(
-                "call", "org.mpris.MediaPlayer2.ShairportSync",
-                "/org/mpris/MediaPlayer2",
-                "org.mpris.MediaPlayer2.Player", "Pause",
-            )
-            if ok is None:
-                logger.warning("airplay pause failed (busctl returned None)")
+            await self._airplay_stop_for_preempt()
         elif source == Source.BLUETOOTH:
             # No graceful pause API exposed by bluez-alsa. Phone
             # continues sending audio; we just don't have a way to
@@ -765,6 +783,43 @@ class Mux:
             )
         elif source == Source.USBSINK:
             await self._usbsink_set_preempt(True, reason="preempted_by_winner")
+
+    async def _airplay_stop_for_preempt(self) -> None:
+        """Drop AirPlay playback when another source wins the speaker.
+
+        Voice transport still exposes "pause" semantics through
+        RendererClient.pause_airplay(). Mux preemption is different:
+        once Spotify/Bluetooth/USB has the audible lane, keeping a
+        paused AP2 session alive makes status ambiguous and lets sender
+        resumes race with the next source switch. shairport-sync exposes
+        MPRIS Stop, which is the narrowest renderer-owned way to end the
+        current playback session without restarting the whole service.
+        """
+        ok = await _busctl(
+            "call",
+            SHAIRPORT_MPRIS_BUS,
+            SHAIRPORT_MPRIS_PATH,
+            MPRIS_PLAYER_IFACE,
+            "Stop",
+        )
+        if ok is not None:
+            logger.info("event=airplay.preempt_stop method=Stop result=ok")
+            return
+
+        logger.warning(
+            "event=airplay.preempt_stop_failed method=Stop action=pause_fallback",
+        )
+        pause_ok = await _busctl(
+            "call",
+            SHAIRPORT_MPRIS_BUS,
+            SHAIRPORT_MPRIS_PATH,
+            MPRIS_PLAYER_IFACE,
+            "Pause",
+        )
+        if pause_ok is None:
+            logger.warning(
+                "event=airplay.preempt_pause_failed method=Pause",
+            )
 
     # ------------------------------------------------------------------
     # USB sink preempt protocol — POSTs to the daemon's local HTTP

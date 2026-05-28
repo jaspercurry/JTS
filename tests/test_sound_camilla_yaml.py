@@ -24,6 +24,7 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
 
     assert "Source: jasper.sound.camilla_yaml.emit_sound_config" in yaml
     assert "volume_limit: 0.0" in yaml
+    assert 'device: "outputd_content_playback"' in yaml
     assert "room_peq_1:" in yaml
     assert "sound_preamp:" in yaml
     assert "sound_curve_harman_bass:" in yaml

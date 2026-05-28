@@ -9,10 +9,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-# Defaults match deploy/camilladsp/v1.yml. Anything that diverges
-# breaks the v1.yml <-> generated-config substitution at runtime.
+# Defaults match the outputd cutover topology. Generated correction and
+# sound-profile configs must keep Camilla's playback target on the
+# post-DSP outputd loopback lane; otherwise applying a profile would
+# route music around jasper-outputd while TTS still uses outputd.
 DEFAULT_CAPTURE_DEVICE = "plug:jasper_capture"
-DEFAULT_PLAYBACK_DEVICE = "jasper_out"
+DEFAULT_PLAYBACK_DEVICE = "outputd_content_playback"
 DEFAULT_CAPTURE_FORMAT = "S32_LE"
 DEFAULT_PLAYBACK_FORMAT = "S16_LE"
 DEFAULT_SAMPLE_RATE = 48000

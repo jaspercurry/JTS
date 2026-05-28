@@ -36,21 +36,22 @@
   post-Apply re-measurement with deviation metrics; target-curve
   choice (flat / warm / bright). 12 new tests, all passing.
 - ✅ **Phase 2.2 — survive `jasper-camilla` restarts.** Merged
-  2026-05-11 (#62) + hotfix 2026-05-11. The systemd unit passes
-  `--statefile /var/lib/camilladsp/statefile.yml` to CamillaDSP
-  and intentionally *omits the positional CONFIGFILE arg*. The
-  initial #62 version included the positional v1.yml as a
+  2026-05-11 (#62) + hotfix 2026-05-11; rechecked for the outputd
+  cutover branch 2026-05-28. The systemd unit passes a CamillaDSP
+  `--statefile` and intentionally *omits the positional CONFIGFILE
+  arg*. The initial #62 version included the positional v1.yml as a
   "fallback" — which made the whole feature a no-op because
   CamillaDSP overwrites the statefile with the positional path on
-  every start when both are given. The hotfix removes the
-  positional; `install.sh` instead seeds
-  `/var/lib/camilladsp/statefile.yml` with `config_path:
-  /etc/camilladsp/v1.yml` on first install so a fresh Pi has a
-  config to load. Subsequent `set_config_file_path()` calls from
-  the wizard update the statefile in place; future restarts read
-  it back. Recovery from a bad correction without hand-editing the
-  statefile: add `--no_config` to the ExecStart args, restart, fix
-  or re-measure, remove the flag.
+  every start when both are given. The hotfix removes the positional.
+  On this cutover branch, Camilla reads
+  `/var/lib/camilladsp/outputd-statefile.yml` seeded to
+  `/etc/camilladsp/outputd-cutover.yml`; the normal
+  `/var/lib/camilladsp/statefile.yml` is preserved for main rollback.
+  Subsequent `set_config_file_path()` calls from the wizard update the
+  active statefile in place; future restarts read it back. Recovery
+  from a bad correction without hand-editing the statefile: add
+  `--no_config` to the ExecStart args, restart, fix or re-measure,
+  remove the flag.
 - ✅ **Phase 2.1 — current-correction visibility + per-session debug
   bundles.** Merged 2026-05-11.
   - `GET /status` now includes a `current_correction` descriptor
@@ -59,8 +60,9 @@
     the top of `/correction/` reads this on load so the user knows
     what's loaded before measuring.
   - `POST /start` auto-resets CamillaDSP to
-    `/etc/camilladsp/v1.yml` BEFORE the first sweep, so every
-    measurement traverses the raw room (not the corrected pipeline).
+    `/etc/camilladsp/outputd-cutover.yml` BEFORE the first sweep, so
+    every measurement traverses the raw room (not the corrected
+    pipeline).
     The prior correction descriptor is preserved in the session's
     `current_correction_at_start` for the bundle.
   - Each session writes a self-contained debug bundle at
@@ -272,8 +274,8 @@ them; design **with** them.
 |---|---|---|
 | Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: pause renderers during expensive generation, measure real memory before enabling mixed-phase / FDW paths. |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
-| Pure ALSA: **snd-aloop + fan-in + dmix**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `pcm.jasper_out` (dmix on dongle). |
-| `master_gain` mixer **already exists** as identity | [deploy/camilladsp/v1.yml](../deploy/camilladsp/v1.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
+| Pure ALSA: **snd-aloop + fan-in + outputd**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `outputd_content_playback`, and jasper-outputd owns the DAC. |
+| `master_gain` mixer **already exists** as identity | [deploy/camilladsp/outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md](../PLAN.md) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
 | `Ducker` is **the only writer** to `main_volume` for voice | [jasper/camilla.py](../jasper/camilla.py) + `Ducker` | Measurement coordinator must coexist; voice session during measurement should be impossible (we pause WakeLoop). |
@@ -390,7 +392,7 @@ POST /calibration/fetch      body: {model, serial, orientation?}; server-side
 POST /calibration/upload     body: {filename, content, model?, label?,
                              orientation?, sign_convention?}; manual fallback
 POST /apply                  → SetConfig(correction_<id>_<unixtime>.yml) + Reload
-POST /reset                  → SetConfig(/etc/camilladsp/v1.yml) + Reload
+POST /reset                  → SetConfig(/etc/camilladsp/outputd-cutover.yml) + Reload
 POST /verify                 fresh single-position sweep for the verify pass
 POST /test-tone              5-second 1 kHz tone through music chain
 POST /autolevel/start        ramp main_volume while tone plays
@@ -559,13 +561,14 @@ MUSIC chain
     renderers / correction sweeps → private fan-in lanes
               → jasper-fanin → pcm.jasper_capture
               → jasper-camilla (main_volume + filters)
-              → pcm.jasper_out (dmix on dongle)
-              → dongle → amp → speakers
+              → outputd_content_playback
+              → jasper-outputd → outputd_dac → amp → speakers
 ```
 
 **Sweep injection point: `correction_substream`.** This puts the
 sweep on the same path music takes — through jasper-fanin, through
-CamillaDSP, through any active correction filter, to the dongle —
+CamillaDSP, through any active correction filter, through outputd to
+the dongle —
 without borrowing a renderer's private lane. So:
 
 1. Pre-correction measurement = sweep through current pipeline.
@@ -575,8 +578,8 @@ without borrowing a renderer's private lane. So:
 **This is critical:** the sweep MUST go through CamillaDSP.
 Otherwise we measure the speaker+room raw, apply a correction,
 and never verify it actually changed anything. The previous TTS-
-bypass-of-CamillaDSP pattern (TTS → `pcm.jasper_out` directly)
-is *wrong* for measurement.
+bypass-of-CamillaDSP pattern (TTS → outputd directly, or legacy
+TTS → `pcm.jasper_out`) is *wrong* for measurement.
 
 **Volume during sweep:** Set CamillaDSP `main_volume` to a known
 absolute level (the brief suggests -12 dBFS sweep at user-controlled
@@ -962,11 +965,11 @@ not before this doc lands.
    get_config_file_path()` and surfaced to the UI banner via
    `parse_current_correction()`.
 7. **What does "Reset to flat" do?** **Resolved (Phase 1+2.1):**
-   `set_config_file_path('/etc/camilladsp/v1.yml')` + `reload()`.
-   Also automatically invoked at the start of every measurement
-   (so sweeps capture the raw room, not the corrected pipeline).
-   Reset is also exposed from the page banner so a user can clear
-   the speaker without running a measurement.
+   `set_config_file_path('/etc/camilladsp/outputd-cutover.yml')` +
+   `reload()` on this branch. Also automatically invoked at the start
+   of every measurement (so sweeps capture the raw room, not the
+   corrected pipeline). Reset is also exposed from the page banner so a
+   user can clear the speaker without running a measurement.
 
 ## Risk register
 
@@ -1041,7 +1044,7 @@ These items can only be verified on real hardware. Deploy with
       in another shell).
 - [ ] **Audibility check**: play a familiar bass-heavy track
       before/after Apply — modal peak should audibly tighten.
-- [ ] Tap **Reset to flat** → CamillaDSP rolls back to v1.yml
+- [ ] Tap **Reset to flat** → CamillaDSP rolls back to outputd-cutover.yml
       cleanly.
 - [ ] AEC bridge interaction (if enabled): no permanent drift after
       a measurement; bridge re-converges in ~200 ms.
@@ -1333,7 +1336,8 @@ If you're a future Claude or future Jasper picking this up:
 - **Look at the actual codebase before changing the file map.**
   This doc was written after a careful read of [voice_setup.py](../jasper/web/voice_setup.py),
   [_common.py](../jasper/web/_common.py), [control/server.py](../jasper/control/server.py),
-  [audio-paths.md](audio-paths.md), [v1.yml](../deploy/camilladsp/v1.yml),
+  [audio-paths.md](audio-paths.md),
+  [outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml),
   [camilla.py](../jasper/camilla.py), and [nginx-jasper.conf](../deploy/nginx-jasper.conf).
   If your read disagrees with something here, the code is right
   and this doc is stale — fix the doc.

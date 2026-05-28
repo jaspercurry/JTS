@@ -39,12 +39,16 @@ class _FakeTtsPlayout:
 
     def __init__(self) -> None:
         self.writes: list[bytes] = []
+        self.waits = 0
         self.fail_with: Exception | None = None
 
     async def write(self, pcm: bytes) -> None:
         if self.fail_with is not None:
             raise self.fail_with
         self.writes.append(pcm)
+
+    async def wait_drained(self) -> None:
+        self.waits += 1
 
 
 def _hand_write_wav(path: str, pcm_24k: bytes) -> None:
@@ -185,6 +189,7 @@ def test_play_queues_pcm_to_tts_playout_when_cached(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is True
     assert len(tts.writes) == 1
+    assert tts.waits == 1
     # WAVs are at Gemini's native 24kHz mono — 240 samples = 480 bytes.
     # TtsPlayout upsamples to 48k internally; the manager doesn't.
     assert len(tts.writes[0]) == 480
@@ -227,6 +232,7 @@ def test_play_falls_back_to_stale_when_expected_hash_missing(tmp_path):
     ok = asyncio.run(mgr.play("spend_cap_reached"))
     assert ok is True
     assert len(tts.writes) == 1
+    assert tts.waits == 1
 
 
 def test_play_returns_false_when_no_cache_and_no_stale(tmp_path):

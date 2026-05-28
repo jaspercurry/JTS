@@ -438,6 +438,32 @@ def check_tts_open(cfg: Config) -> CheckResult:
     while TTS was provably working. `query_devices` is enough to confirm
     the device exists in PortAudio's enumeration and has output
     channels available."""
+    if cfg.tts_transport == "outputd":
+        socket_path = cfg.tts_outputd_socket
+        sock: socket.socket | None = None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.settimeout(2.0)
+            sock.connect(socket_path)
+            return CheckResult(
+                "tts output",
+                "ok",
+                f"outputd transport reachable at {socket_path}",
+            )
+        except OSError as e:
+            return CheckResult(
+                "tts output",
+                "fail",
+                f"JASPER_TTS_TRANSPORT=outputd but {socket_path} is not reachable: {e}. "
+                "Start jasper-outputd or deploy main to return to the "
+                "sounddevice path.",
+            )
+        finally:
+            if sock is not None:
+                try:
+                    sock.close()
+                except OSError:
+                    pass
     try:
         import sounddevice as sd
         info = sd.query_devices(cfg.tts_device)
@@ -1529,6 +1555,7 @@ def check_cgroup_memory_enabled() -> CheckResult:
 # meaningful swap — that's the 2026-05-24 failure-mode signature.
 _AUDIO_PATH_UNITS = (
     "jasper-fanin",
+    "jasper-outputd",
     "jasper-camilla",
     "jasper-aec-bridge",
     "shairport-sync",
@@ -2008,6 +2035,9 @@ _FANIN_EXPECTED_INPUTS = [
     ("correction", "hw:Loopback,1,4"),
 ]
 _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
+_OUTPUTD_EXPECTED_CONTENT_PCM = "outputd_content_capture"
+_OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
+_OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
 
 
 def check_fanin_asound_wiring() -> CheckResult:
@@ -2335,6 +2365,184 @@ def check_fanin_service() -> CheckResult:
         f"input_buffer_frames={input_buffer_frames}, "
         f"output_buffer_frames={output_buffer_frames}, "
         f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
+        f"progress_age_ms={progress_age}",
+    )
+
+
+def check_outputd_service() -> CheckResult:
+    """Validate the outputd final-output-owner daemon.
+
+    This cutover branch expects outputd to own the physical DAC. Treat
+    disabled/inactive outputd as a real audio-path failure and verify
+    the STATUS socket, runtime backend, negotiated buffers, xrun
+    counters, and progress sentinel.
+    """
+    enabled = _run(
+        ["systemctl", "is-enabled", "jasper-outputd.service"]
+    ).stdout.strip()
+    if enabled == "not-found":
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "systemd unit is not installed. Re-run install.sh.",
+        )
+    if enabled not in {"enabled", "static"}:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"systemd unit is {enabled or 'unknown'}; expected enabled "
+            "on the outputd cutover branch.",
+        )
+    active = _run(
+        ["systemctl", "is-active", "jasper-outputd.service"]
+    ).stdout.strip()
+    if active != "active":
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"service state={active or 'unknown'}. "
+            "Check: journalctl -u jasper-outputd",
+        )
+
+    sock: socket.socket | None = None
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2.0)
+        sock.connect(_OUTPUTD_STATUS_SOCKET)
+        sock.sendall(b"STATUS\n")
+        chunks: list[bytes] = []
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            chunks.append(chunk)
+    except OSError as e:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"active but STATUS probe at {_OUTPUTD_STATUS_SOCKET} failed: {e}. "
+            "Without STATUS doctor cannot verify DAC ownership, buffers, "
+            "xruns, or work-loop progress.",
+        )
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except OSError:
+                pass
+
+    body = b"".join(chunks).decode("utf-8", errors="replace")
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as e:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"active but STATUS returned invalid JSON: {e}",
+        )
+
+    if data.get("backend") != "alsa":
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"active but backend={data.get('backend')!r}; expected 'alsa'",
+        )
+    content = data.get("content", {})
+    dac = data.get("dac", {})
+    if content.get("pcm") != _OUTPUTD_EXPECTED_CONTENT_PCM:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"content.pcm={content.get('pcm')!r}; expected "
+            f"{_OUTPUTD_EXPECTED_CONTENT_PCM!r}",
+        )
+    if dac.get("pcm") != _OUTPUTD_EXPECTED_DAC_PCM:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"dac.pcm={dac.get('pcm')!r}; expected {_OUTPUTD_EXPECTED_DAC_PCM!r}",
+        )
+    sample_rate = dac.get("sample_rate")
+    period_frames = dac.get("period_frames")
+    content_buffer = content.get("buffer_frames")
+    dac_buffer = dac.get("buffer_frames")
+    if sample_rate != 48000:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"dac.sample_rate={sample_rate!r}; expected 48000",
+        )
+    if not isinstance(period_frames, int) or period_frames <= 0:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "STATUS missing positive dac.period_frames",
+        )
+    if not isinstance(content_buffer, int) or content_buffer < period_frames * 2:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"content.buffer_frames={content_buffer!r}; expected >= "
+            f"2 x period ({period_frames})",
+        )
+    if not isinstance(dac_buffer, int) or dac_buffer < period_frames * 2:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            f"dac.buffer_frames={dac_buffer!r}; expected >= "
+            f"2 x period ({period_frames})",
+        )
+
+    progress_age = data.get("watchdog", {}).get(
+        "last_progress_age_ms", -1
+    )
+    if not isinstance(progress_age, (int, float)) or progress_age < 0:
+        return CheckResult(
+            "jasper-outputd",
+            "fail",
+            "STATUS response missing watchdog.last_progress_age_ms",
+        )
+    content_xruns = int(content.get("xrun_count", 0) or 0)
+    dac_xruns = int(dac.get("xrun_count", 0) or 0)
+    content_empty = int(content.get("empty_periods", 0) or 0)
+    content_partial = int(content.get("partial_periods", 0) or 0)
+    content_eagain = int(content.get("eagain_count", 0) or 0)
+    frames = int(dac.get("frames_written", 0) or 0)
+    tts = data.get("tts", {})
+    tts_pending = int(tts.get("pending_frames", 0) or 0)
+    tts_over_budget = bool(tts.get("over_budget", False))
+    tts_over_budget_ms = int(tts.get("over_budget_ms", 0) or 0)
+    tts_over_budget_streak_ms = int(
+        tts.get("over_budget_streak_ms", 0) or 0
+    )
+    tts_max_pending = int(tts.get("max_pending_frames", 0) or 0)
+    if progress_age > 1000:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but last_progress_age_ms={progress_age} "
+            "(work loop may be wedged; watchdog should fire soon)",
+        )
+    if tts_over_budget or tts_pending > 48000 * 2:
+        return CheckResult(
+            "jasper-outputd",
+            "warn",
+            f"active but tts.pending_frames={tts_pending} (>2s). "
+            f"over_budget_streak_ms={tts_over_budget_streak_ms}. "
+            "TTS producer may be outrunning outputd playback.",
+        )
+    return CheckResult(
+        "jasper-outputd",
+        "ok",
+        f"active, backend=alsa, frames_written={frames}, "
+        f"content_buffer_frames={content_buffer}, dac_buffer_frames={dac_buffer}, "
+        f"xruns={content_xruns}/{dac_xruns}, "
+        f"content_empty_periods={content_empty}, "
+        f"content_partial_periods={content_partial}, "
+        f"content_eagain_count={content_eagain}, "
+        f"tts_pending_frames={tts_pending}, "
+        f"tts_max_pending_frames={tts_max_pending}, "
+        f"tts_over_budget_ms={tts_over_budget_ms}, "
         f"progress_age_ms={progress_age}",
     )
 
@@ -3309,7 +3517,7 @@ def _active_camilla_config_path() -> tuple[Path, str | None]:
     statefile = Path(
         os.environ.get(
             "JASPER_CAMILLA_STATEFILE",
-            "/var/lib/camilladsp/statefile.yml",
+            "/var/lib/camilladsp/outputd-statefile.yml",
         )
     )
     return statefile, _parse_camilla_statefile_config_path(statefile)
@@ -3398,7 +3606,7 @@ def check_correction_current_config() -> CheckResult:
         )
     parsed = parse_current_correction(str(path), config_dir=path.parent)
     if parsed is None:
-        if path == Path("/etc/camilladsp/v1.yml"):
+        if path == Path("/etc/camilladsp/outputd-cutover.yml"):
             return CheckResult("current correction", "ok", "flat base config")
         return CheckResult(
             "current correction", "warn",
@@ -3679,6 +3887,8 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # the service check catches a dead/missing summing daemon.
         check_fanin_asound_wiring,
         check_fanin_service,
+        # Final-output owner for the outputd cutover branch.
+        check_outputd_service,
         # Reports which additive wake-detection legs the user has
         # armed via the /system Wake detection card (raw + DTLN).
         # Doesn't fail on any combination — pure visibility — so

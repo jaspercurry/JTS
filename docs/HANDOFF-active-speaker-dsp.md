@@ -48,7 +48,8 @@ For JTS, that means:
 The existing deployed audio topology is not yet active 2-way ready:
 
 - Music flows through CamillaDSP to a stereo Apple USB-C dongle.
-- TTS/cues currently bypass CamillaDSP and sum at `jasper_out`.
+- TTS/cues currently bypass CamillaDSP and enter `jasper-outputd`,
+  where they sum with post-DSP content before the Apple USB-C dongle.
 - Active crossover output needs a stable multi-output map. For a
   mono active cabinet this is at least two physical outputs
   (`woofer`, `tweeter`). For a stereo active pair this is four
@@ -59,7 +60,7 @@ The existing deployed audio topology is not yet active 2-way ready:
   bypass into a raw active amp channel is a driver-damage hazard.
   This applies to renderers, TTS/cues, `/correction/` sweeps,
   autolevel/test tones, USB Audio Input, startup/reload states, and
-  any direct `jasper_out` path.
+  any direct `jasper_out` rollback path.
 
 ## Layer Boundary
 
@@ -504,4 +505,4 @@ Key external prior-art families named by the reports:
   `wirrunna/CamillaDSP-Building-a-Config`, and
   `mdsimon2/RPi-CamillaDSP`.
 
-Last verified: 2026-05-26
+Last verified: 2026-05-28

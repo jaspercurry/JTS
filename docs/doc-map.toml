@@ -88,15 +88,18 @@ code = [
   "deploy/camilladsp/**",
   "deploy/shairport-sync.conf.template",
   "deploy/systemd/jasper-fanin.service",
+  "deploy/systemd/jasper-outputd.service",
   "deploy/systemd/jasper-mux.service",
   "deploy/systemd/librespot.service",
   "deploy/systemd/shairport-sync.service",
   "deploy/systemd/bluealsa-aplay.service.d/**",
   "rust/jasper-fanin/**",
+  "rust/jasper-outputd/**",
 ]
 docs = [
   "docs/audio-paths.md",
   "docs/HANDOFF-barge-in.md",
+  "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-fan-in-daemon.md",
   "docs/HANDOFF-voice-music-control.md",
   "docs/HANDOFF-volume.md",
@@ -116,6 +119,7 @@ id = "voice-runtime-and-providers"
 title = "Voice runtime, provider switching, prompts, and tools"
 safety = "voice-runtime"
 code = [
+  "jasper/audio_io.py",
   "jasper/voice/**",
   "jasper/voice_daemon.py",
   "jasper/vad.py",
@@ -131,12 +135,14 @@ docs = [
   "docs/HANDOFF-voice-providers.md",
   "docs/HANDOFF-prompting.md",
   "docs/HANDOFF-audible-feedback.md",
+  "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-vad-experiments.md",
   "docs/HANDOFF-persistent-live-session.md",
   "tests/voice_eval/README.md",
 ]
 requires_docs_when = [
   "Provider env ownership, provider defaults, model/voice selection, cue generation, LiveConnection/LiveTurn semantics, system prompt, or tool-calling behavior changes.",
+  "TTS playout, drain, flush, output routing, or realtime truncation semantics change.",
   "Voice-eval scenarios, cost discipline, or regression expectations change.",
 ]
 verification = [
@@ -193,6 +199,7 @@ code = [
 docs = [
   "docs/HANDOFF-aec.md",
   "docs/HANDOFF-barge-in.md",
+  "docs/HANDOFF-speaker-output-reference.md",
   "docs/HANDOFF-xvf3800.md",
   "docs/HANDOFF-mic-quality-v2.md",
   "docs/HANDOFF-usb-mic-wake.md",
@@ -200,6 +207,7 @@ docs = [
 ]
 requires_docs_when = [
   "Mic device selection, AEC topology, XVF3800 parameter handling, reconciler behavior, debug captures, or chip-AEC experiment controls change.",
+  "AEC reference source, reference transport, or speaker-reference semantics change.",
 ]
 verification = [
   "pytest tests/test_aec_reconcile.py tests/test_aec_bridge_systemd.py tests/test_aec_bridge_stall.py tests/test_control_aec_state.py",

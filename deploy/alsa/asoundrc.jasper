@@ -40,9 +40,14 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #     substream 7.
 #   - CamillaDSP and the AEC bridge both read that summed stream via
 #     `pcm.jasper_capture` / `pcm.jasper_ref`.
-#   - jasper-voice's TTS still needs a path to the speakers separate
-#     from the CamillaDSP music chain. `pcm.jasper_out` is the dongle
-#     dmix where CamillaDSP's processed music and TTS sum before the DAC.
+#   - On the outputd cutover branch CamillaDSP writes post-DSP content
+#     to `outputd_content_playback`, and jasper-outputd is the only
+#     reader of `outputd_content_capture` and the only normal writer to
+#     `outputd_dac`. Assistant TTS reaches the same final-output owner
+#     over `/run/jasper-outputd/tts.sock`.
+#   - `pcm.jasper_out` remains defined as the main-branch rollback
+#     dmix path, but it is not the active convergence point on this
+#     branch.
 #
 # Topology:
 #
@@ -63,12 +68,19 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                                                       └── jasper-camilla
 #                                                               │
 #                                                               ▼
-#                                                           pcm.jasper_out ─ dmix ─┐
-#                                                                                  │
-#                         jasper-voice TTS ────────────────────────────────────────┤
-#                                                                                   ▼
-#                                                                    hw:CARD=__DONGLE_CARD__,DEV=0
-#                                                                    Apple USB-C dongle → speakers
+#                                                   outputd_content_playback
+#                                                               │
+#                                                               ▼ (loop)
+#                                                   outputd_content_capture
+#                                                               │
+#                                                               ▼
+#                                                       jasper-outputd ◄── TTS socket
+#                                                               │
+#                                                               ▼
+#                                                           outputd_dac
+#                                                               │
+#                                                               ▼
+#                                            Apple USB-C dongle → speakers
 #
 # The pre-2026-05-26 renderer-side dmix topology was retired after
 # measurements showed it caused periodic AirPlay drops via a WiFi
@@ -91,9 +103,10 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # native rate cannot lock another renderer or the AEC/Camilla reference.
 #
 # Two readers, two access paths:
-#   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in
-#     v1.yml. plug keeps the consumer tolerant of operator mistakes,
-#     but the intended fan-in output shape is fixed at 48 kHz S16_LE.
+#   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
+#     outputd cutover config. plug keeps the consumer tolerant of
+#     operator mistakes, but the intended fan-in output shape is fixed
+#     at 48 kHz S16_LE.
 #   - AEC bridge opens `jasper_ref` (defined below) — a plug-wrapped
 #     alias of jasper_capture. Mirrors the same pattern. The bridge
 #     gets samples at whatever rate it requests via alsaaudio,
@@ -118,7 +131,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   3 — jasper-usbsink     (USB audio input)
 #   4 — correction/test sweeps
 #   5 — reserved for debug "monitor" tap (offline AEC capture)
-#   6 — reserved
+#   6 — outputd post-DSP content lane (Camilla -> outputd)
 #   7 — fan-in daemon's summed output → CamillaDSP/AEC bridge
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
@@ -174,6 +187,49 @@ pcm.correction_substream {
     }
 }
 
+# Post-Camilla lane for jasper-outputd. Camilla writes to
+# outputd_content_playback; jasper-outputd is the only reader of
+# outputd_content_capture. Do NOT wrap this capture side in dsnoop:
+# outputd needs exclusive ownership so it can be the timing owner for
+# the final DAC loop on the outputd cutover branch.
+pcm.outputd_content_playback {
+    type plug
+    slave {
+        pcm "hw:Loopback,0,6"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+
+pcm.outputd_content_capture {
+    type plug
+    slave {
+        pcm "hw:Loopback,1,6"
+        rate 48000
+        channels 2
+        format S16_LE
+    }
+}
+
+ctl.outputd_content_capture {
+    type hw
+    card Loopback
+}
+
+# Direct DAC alias for jasper-outputd once it owns the final speaker
+# boundary.
+pcm.outputd_dac {
+    type hw
+    card __DONGLE_CARD__
+    device 0
+}
+
+ctl.outputd_dac {
+    type hw
+    card __DONGLE_CARD__
+}
+
 pcm.jasper_capture {
     type dsnoop
     ipc_key 7778
@@ -194,13 +250,14 @@ pcm.jasper_capture {
 
 # Plug-wrapped alias for the AEC bridge's reference capture.
 #
-# `plug` keeps the bridge tolerant of topology drift and operator
-# mistakes: the bridge opens at 48 kHz S16_LE (per REF_RATE in
-# jasper/cli/aec_bridge.py), and production fan-in pins the shared
-# dsnoop source to that same shape. In the normal path this wrapper is
-# effectively format/rate-stable; if a future source or diagnostic path
-# hands dsnoop a different shape, ALSA applies the configured
-# libsamplerate converter instead of feeding mismatched samples to AEC.
+# `plug` is defense in depth around the AEC bridge's requested shape.
+# In the production fan-in topology, jasper_capture's dsnoop slave is
+# pinned to 48 kHz S16_LE stereo and the bridge requests that same
+# shape, so this is normally an identity wrapper. If a future
+# diagnostic or stale topology hands the bridge a different shape,
+# ALSA applies the configured libsamplerate converter instead of
+# feeding mismatched samples. CPU cost is sub-1% of a Pi 5 core at
+# S16 stereo / speech rates; latency cost is a few ms of buffer.
 #
 # Without this wrapper, the bridge would receive distorted or
 # silent samples when the loopback's locked rate ≠ 48 kHz —

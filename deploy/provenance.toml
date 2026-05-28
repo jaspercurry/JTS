@@ -242,6 +242,13 @@ status = "pinned"
 notes = "Cargo.lock is committed for the jasper-fanin binary crate. install.sh builds from rust/jasper-fanin with cargo --locked, so lock drift fails deploy instead of resolving live."
 
 [[surface]]
+id = "rust-outputd-crates"
+kind = "cargo-lockfile"
+consumer = "rust/jasper-outputd/Cargo.toml and rust/jasper-outputd/Cargo.lock"
+status = "pinned"
+notes = "Cargo.lock is committed for the jasper-outputd binary crate. install.sh builds from rust/jasper-outputd with cargo --locked, so lock drift fails deploy instead of resolving live."
+
+[[surface]]
 id = "platformio-registry-libraries"
 kind = "platformio-registry-resolution"
 consumer = "firmware/dial/platformio.ini and firmware/satellite-amoled/platformio.ini"
