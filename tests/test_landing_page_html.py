@@ -16,6 +16,7 @@ _INDEX_PATH = _REPO / "deploy" / "index.html"
 _PREFLIGHT_PATH = _REPO / "deploy" / "correction-preflight.html"
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
+_FONT_DIR = _REPO / "deploy" / "assets" / "fonts"
 
 
 def _index_html() -> str:
@@ -70,29 +71,70 @@ def test_landing_page_uses_grouped_settings_rows() -> None:
     html = _index_html()
 
     assert "<title>JTS</title>" in html
+    assert 'class="device-header"' not in html
+    assert 'id="speaker-title"' not in html
     assert "JTS speaker" not in html
     assert "Manage your speaker" not in html
     assert "Voice & Skills" not in html
     for heading in (
         "Sources",
-        "Assistant",
         "Sound",
+        "Assistant",
+        "Integrations",
         "Network",
         "Accessories",
         "System",
     ):
         assert f">{heading}</h2>" in html
     assert 'class="setting-row"' in html
-    headings = re.findall(r"<h2[^>]*>([^<]+)</h2>", html)
+    headings = re.findall(
+        r'<h2 class="eyebrow group-title" id="[^"]+">([^<]+)</h2>',
+        html,
+    )
     assert headings == [
         "Sources",
-        "Assistant",
         "Sound",
+        "Assistant",
+        "Integrations",
         "Network",
         "Accessories",
         "System",
     ]
     assert "snap.satellites" not in html
+
+
+def test_landing_page_tracks_static_reference_visual_tokens() -> None:
+    html = _index_html()
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
+
+    assert "--background: oklch(0.961 0.014 80);" in style
+    assert "--primary: oklch(0.64 0.062 142);" in style
+    assert "max-width: 48rem;" in style
+    assert "padding: 2rem 1.5rem 6rem;" in style
+    assert ".hero { padding: 2rem 0; }" in style
+    assert '<section class="hero" aria-label="Primary controls">' in html
+    assert 'class="footer-pill"' in html
+
+
+def test_landing_page_uses_local_font_assets_only() -> None:
+    html = _index_html()
+
+    assert "fonts.googleapis.com" not in html
+    assert "fonts.gstatic.com" not in html
+    assert '@font-face' in html
+    assert 'font-family: "Figtree"' in html
+    assert 'font-family: "Outfit"' in html
+    for filename in (
+        "figtree-latin.woff2",
+        "figtree-latin-ext.woff2",
+        "outfit-latin.woff2",
+        "outfit-latin-ext.woff2",
+        "OFL-Figtree.txt",
+        "OFL-Outfit.txt",
+    ):
+        path = _FONT_DIR / filename
+        assert path.is_file()
+        assert path.stat().st_size > 0
 
 
 def test_landing_page_css_keeps_type_stable() -> None:
@@ -147,8 +189,24 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "Strict-Transport-Security" not in nginx
 
 
+def test_nginx_serves_static_management_assets() -> None:
+    nginx = _NGINX_PATH.read_text(encoding="utf-8")
+
+    assert "location /assets/" in nginx
+    assert "root /usr/share/jasper-web;" in nginx
+    assert "try_files $uri =404;" in nginx
+    assert 'Cache-Control "public, max-age=31536000, immutable"' in nginx
+
+
 def test_install_copies_correction_preflight_page() -> None:
     install = _INSTALL_PATH.read_text(encoding="utf-8")
 
     assert "deploy/correction-preflight.html" in install
     assert "/usr/share/jasper-web/correction-preflight.html" in install
+
+
+def test_install_copies_landing_page_font_assets() -> None:
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+
+    assert "/usr/share/jasper-web/assets/fonts" in install
+    assert 'deploy/assets/fonts/"*' in install

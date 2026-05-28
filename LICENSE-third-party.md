@@ -6,7 +6,7 @@ install-time or firmware components that are checked into this repo,
 downloaded by JTS scripts, or likely to matter when redistributing a
 Pi image or firmware build.
 
-Last reviewed: 2026-05-26.
+Last reviewed: 2026-05-28.
 
 This is not yet a full SBOM. Package-manager transitive dependencies
 still need automated inventory before a public binary/image release.
@@ -28,6 +28,26 @@ permissively licensed alternative.
 | DTLN-aec converted ONNX models | JTS release assets referenced by `jasper/aec_engines/dtln_models.py` | <https://github.com/breizhn/DTLN-aec> | Local registry states MIT by Nils Westhausen / Carl von Ossietzky Universitat Oldenburg; verify upstream notice | Models were converted from upstream TFLite to ONNX for Python 3.13 compatibility. Preserve upstream MIT notice/copyright with any redistributed converted model bundle. |
 | WebRTC AEC3 bridge dependency | `jasper_aec3/` and `webrtc-audio-processing` build/runtime linkage | <https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing> | Needs upstream notice verification | Verify notice requirements for both the checked-in bridge wrapper and the linked WebRTC audio-processing library, especially for static or image redistribution. |
 | NYC MTA subway station data | `jasper/data/mta_stations.csv`, refreshed by `scripts/refresh-mta-stations.sh` | <https://data.ny.gov/Transportation/Subway-Stations/39hk-dx4f> | Needs dataset terms verification | Record the dataset terms and attribution expected by data.ny.gov before public data redistribution. |
+| Figtree web font | `deploy/assets/fonts/figtree-*.woff2`, `deploy/assets/fonts/OFL-Figtree.txt` | <https://fonts.google.com/specimen/Figtree> / <https://github.com/erikdkennedy/figtree> | SIL Open Font License 1.1 | Vendored locally for the management landing page so `jts.local` does not call Google Fonts at runtime. |
+| Outfit web font | `deploy/assets/fonts/outfit-*.woff2`, `deploy/assets/fonts/OFL-Outfit.txt` | <https://fonts.google.com/specimen/Outfit> / <https://github.com/Outfitio/Outfit-Fonts> | SIL Open Font License 1.1 | Vendored locally for the management landing page so `jts.local` does not call Google Fonts at runtime. |
+
+### Vendored Web Font Provenance
+
+Downloaded and verified on 2026-05-28 from the Google Fonts CSS API
+URL used by the static design reference:
+<https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap>.
+
+Google Fonts serves these families as variable WOFF2 subsets; each
+checked-in subset covers all requested weights for that family and
+script range. The local files below were verified byte-for-byte against
+the listed `fonts.gstatic.com` sources.
+
+| Local file | Source URL | SHA-256 |
+|---|---|---|
+| `deploy/assets/fonts/figtree-latin-ext.woff2` | <https://fonts.gstatic.com/s/figtree/v9/_Xms-HUzqDCFdgfMm4q9DaRvziissg.woff2> | `f153aa07c1b16fbb12391c2512860c97819a0a9fd014f338b2b3f12496479d13` |
+| `deploy/assets/fonts/figtree-latin.woff2` | <https://fonts.gstatic.com/s/figtree/v9/_Xms-HUzqDCFdgfMm4S9DaRvzig.woff2> | `8330490a01c60c196eae00b823de8102275aaa5862e7b76a7af21b8745338928` |
+| `deploy/assets/fonts/outfit-latin-ext.woff2` | <https://fonts.gstatic.com/s/outfit/v15/QGYvz_MVcBeNP4NJuktqUYLkn8BJ.woff2> | `9e38b3f1575daba3435ef09d33a202585ed5bd204bd0a8c744955c750c2b9091` |
+| `deploy/assets/fonts/outfit-latin.woff2` | <https://fonts.gstatic.com/s/outfit/v15/QGYvz_MVcBeNP4NJtEtqUYLknw.woff2> | `92684e4acde79ef07758cd09380b7e01e9824d8b061eddeda046f78c166d7b12` |
 
 ## Installed and Build-time Components
 

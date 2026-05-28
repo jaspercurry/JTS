@@ -2,8 +2,10 @@
 
 **Status:** Reference · created 2026-05-22 · refreshed 2026-05-28.
 Phase 1 IA/visual reshape implemented on 2026-05-28 in
-`deploy/index.html`; setup wizard, conditional prompts, and fuller row-state
-hydration remain future phases.
+`deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
+style, local Figtree/Outfit font assets, and a quieter one-column settings
+surface. Setup wizard, conditional prompts, and fuller row-state hydration
+remain future phases.
 
 A research-grounded plan for restructuring the `jts.local` management surface
 (today: volume/mic/source controls, 17 navigation rows on `/`, ~10 on
@@ -22,7 +24,9 @@ cards.
 Implementation note (2026-05-28): §3 preserves the pre-Phase-1 inventory that
 motivated the redesign. The current branch replaces the old flat card stack
 with grouped settings rows while keeping the existing static landing-page
-deployment model and the proven volume/mic/source JavaScript.
+deployment model and the proven volume/mic/source JavaScript. Font polish is
+served from local WOFF2 assets under `deploy/assets/fonts/`; do not reintroduce
+runtime Google Fonts requests.
 
 ---
 
@@ -115,8 +119,9 @@ explicit so future-you can re-derive decisions instead of memorising them.
 
 9. **Performance is part of the design language.** The landing page remains
    static HTML/CSS with tiny hydration for live controls and summaries. No
-   framework bundle, external font, icon font, client router, animated chart,
-   or per-row polling loop belongs on `/`.
+   framework bundle, external font request, icon font, client router, animated
+   chart, or per-row polling loop belongs on `/`. Local cacheable WOFF2 fonts
+   are acceptable when their licenses are carried in-repo.
 
 10. **Reuse primitives without over-abstracting.** The web wizards already
     have a shared primitive layer in `jasper/web/_common.py` for CSRF,
@@ -259,8 +264,11 @@ Sources
 Assistant
   Voice                   OpenAI · Marin
   Wake detection          Jarvis · 0.50
-  Location                Sunset Park
-  Integrations            Google · Transit · Weather
+
+Integrations
+  Weather                 Sunset Park · F
+  Transit                 Nearby routes
+  Google                  Calendar · Gmail
   Home Assistant          Not connected
 
 Sound
@@ -286,20 +294,21 @@ System
 
 ### 4.2 Why this shape
 
-- **Six sections.** Sources / Assistant / Sound / Network / Accessories /
-  System. Inside Miller's 7±2 with proper chunking. Sources/Sound/Network/
-  System is the universal audio-admin shape (Sonos, Roon, BluOS, WiiM, Plex,
-  eero). **Assistant** is the JTS-specific addition: it covers how JTS
-  listens, speaks, and answers. Accessories is its own top-level because the
-  dial and satellite are **input devices for the speaker**, not network
-  plumbing.
+- **Seven sections.** Sources / Sound / Assistant / Integrations / Network /
+  Accessories / System. Still inside Miller's 7±2 with proper chunking.
+  Sources/Sound/Network/System is the universal audio-admin shape (Sonos,
+  Roon, BluOS, WiiM, Plex, eero). **Assistant** is the JTS-specific core:
+  how JTS listens and speaks. **Integrations** is the external-service layer:
+  weather, transit, Google, and Home Assistant. Accessories is its own
+  top-level because the dial and satellite are **input devices for the
+  speaker**, not network plumbing.
 
 - **Use Assistant, not "Voice & Skills."** "Voice & Skills" is a bucket name
   made from implementation pieces. "Skills" is also Alexa-specific language.
-  **Assistant** is the user-facing object: voice provider, wake detection,
-  location, and integrations are all aspects of what the assistant can do.
-  If integrations grow large enough later, split out **Integrations** as its
-  own section; do not split prematurely.
+  **Assistant** is the user-facing core: voice provider and wake detection.
+  External services are **Integrations**. This split keeps Voice from becoming
+  a junk drawer while avoiding an Alexa-style "skills marketplace" metaphor
+  JTS does not actually implement.
 
 - **State on each row.** Polaris microcopy patterns + UniFi/eero
   state-first home view. User no longer has to click in just to check
@@ -309,11 +318,11 @@ System
   preference EQ are *configuration*, not *diagnostics*. CamillaGUI is advanced
   DSP, but it still belongs under Sound.
 
-- **Kill the `/integrations` umbrella.** It conflates Spotify Connect (a
-  source) with Google account linking and Home Assistant control (assistant
-  capabilities). Split: Spotify accounts under Sources; Google, Home
-  Assistant, Transit, and Weather under Assistant. Keep `/integrations` only
-  as a temporary compatibility surface or redirect.
+- **Kill the `/integrations` umbrella as a homepage row.** It conflates
+  Spotify Connect (a source) with Google account linking and Home Assistant
+  control (external services). Split: Spotify accounts under Sources; Google,
+  Home Assistant, Transit, and Weather under Integrations. Keep `/integrations`
+  only as a temporary compatibility surface or redirect.
 
 - **No top-level "Now Playing".** Every consumer-audio product (Sonos,
   HomePod) leads with playback; every *admin* product (Plex, UniFi,
@@ -347,11 +356,11 @@ System
 | Bluetooth | Sources › Bluetooth devices | Multi-purpose, but one canonical BT home for now |
 | Voice provider | Assistant › Voice | The assistant's speech backend |
 | Wake word | Assistant › Wake detection | How the assistant starts listening |
-| Transit | Assistant › Location/Transit | Voice-answer capability tied to location |
-| Weather | Assistant › Location/Weather | Voice-answer capability tied to location |
-| Google | Assistant › Integrations | Assistant tool/account capability |
-| Home Assistant | Assistant › Integrations/Home Assistant | Assistant smart-home capability |
-| Integrations | Split into Sources + Assistant | Removes one layer |
+| Transit | Integrations › Transit | External data capability tied to location |
+| Weather | Integrations › Weather | External data capability tied to location |
+| Google | Integrations › Google | Calendar/Gmail account capability |
+| Home Assistant | Integrations › Home Assistant | Smart-home service capability |
+| Integrations | Split into Sources + Integrations | Removes one ambiguous layer |
 | Speaker peering | Network › Peering | Honest network concern |
 | Accessories | Promoted to top-level Accessories | Input devices, not network |
 | Sound | Sound › Sound profile | Preference EQ and curves |
@@ -527,8 +536,9 @@ a 1990s directory. Recommended default:
   interactive affordances, likely deep blue or blue-teal. Green is reserved
   for healthy/on/success, amber for setup-needed/warning, red for
   destructive/error.
-- **Typography**: system font, no web font. Sentence case. Tabular numbers
-  for percentages, temperatures, spend, and uptime.
+- **Typography**: local Figtree and Outfit WOFF2 files with system fallbacks;
+  no external font requests. Sentence case. Tabular numbers for percentages,
+  temperatures, spend, and uptime.
 - **Motion**: short hover/focus transitions only; animate transform/opacity
   when needed; respect `prefers-reduced-motion`.
 - **Performance**: no framework bundle, no runtime CSS-in-JS, no client-side
@@ -588,9 +598,10 @@ default to that the research surfaced as a mistake.
     integration icons are too ambiguous alone.
 
 12. **Don't spend Pi budget on polish no one needs.** No React/Vue/Svelte app,
-    no external font, no icon font, no animated gradients, no blur-heavy
-    glassmorphism, no live charts on the homepage. The elegance should come
-    from hierarchy, spacing, type, and restraint.
+    no external font request, no icon font, no animated gradients, no
+    blur-heavy glassmorphism, no live charts on the homepage. The elegance
+    should come from hierarchy, spacing, type, and restraint. Local WOFF2
+    fonts are fine when cacheable and licensed.
 
 ---
 
@@ -601,12 +612,13 @@ by "biggest visual win per hour of work."
 
 ### Phase 1 — IA + visual reshape (1 PR)
 Replace the flat navigation cards on `/` with grouped settings rows:
-Sources / Assistant / Sound / Network / Accessories / System. Apply terse
-copy, remove the `JTS speaker` redundancy, move the certificate note into the
-Room correction row/page, and put Wake corpus under System/Developer tools.
-**Backend untouched** — this is `deploy/index.html` + CSS. As the rows take
-shape, factor only the repeated visual primitives: section headings, row
-layout, row icons, status chips, chevrons, and danger/action treatments.
+Sources / Sound / Assistant / Integrations / Network / Accessories / System.
+Apply terse copy, remove the `JTS speaker` redundancy, move the certificate
+note into the Room correction row/page, and put Wake corpus under
+System/Developer tools. Keep backend behavior unchanged; this is the static
+landing page, CSS, and static asset-serving path. As the rows take shape,
+factor only the repeated visual primitives: section headings, row layout,
+row icons, status chips, chevrons, and danger/action treatments.
 
 This delivers most of the visual win. Reversible if the grouping feels wrong.
 
@@ -645,17 +657,19 @@ Add a `/location/` wrapper only if it truly reduces duplication between
 Most major naming questions are now settled. The remaining decisions are
 implementation-detail scale.
 
-1. **Sticky vs. top-pinned volume + mic?** Sticky = always there as you
-   scroll; top-pinned = simpler to implement. Lean sticky on desktop,
-   top-pinned on mobile.
+1. **Sticky vs. top-pinned volume + mic?** Implemented as top-pinned in the
+   first static redesign. Revisit sticky only if users repeatedly scroll away
+   from controls while making adjustments.
 
-2. **Exact accent color.** Move away from green-as-brand. Lean deep
-   blue-teal or graphite-blue after checking contrast. Semantic green stays
-   success/on only.
+2. **Exact accent color.** Current landing page uses a quiet sage/spruce
+   accent with semantic green reserved for listening/healthy states. Keep an
+   eye on the page reading too monochrome as other wizard pages adopt the
+   system.
 
-3. **Kill `/integrations` entirely, or keep as redirect?** Lean compatibility
-   redirect/index for one release, with Spotify under Sources and Google/Home
-   Assistant under Assistant.
+3. **Kill `/integrations` entirely, or keep as redirect?** Keep the static
+   `/integrations` compatibility index for now, but do not link it from `/`.
+   Spotify lives under Sources; Google/Home Assistant/Weather/Transit live
+   under Integrations.
 
 4. **Spotify Connect "service on/off" vs. "household accounts" — one row
    or two?** Both under Sources/Spotify. Lean one row with two sub-states
@@ -1102,8 +1116,10 @@ Pre-flight checklist for future-you:
       sort, no predefined groups. If they cluster identically to §4.1,
       ship. If not, the proposal is wrong about the mental model and
       needs revision before code.
-- [ ] **Phase 1 PR scope**: `deploy/index.html` + CSS only. No backend.
-      Should be one PR and easily revertable.
+- [ ] **Landing-page scope**: keep changes inside `deploy/index.html`,
+      local static assets, install copying, and nginx static serving unless
+      a row truly needs new state. Backend control behavior should remain
+      unchanged and easily reversible.
 - [ ] **Keep shared web primitives in view** — use `jasper/web/_common.py`
       and `tests/test_web_wizard_conventions.py` as the guardrails when a
       wizard changes. Prefer tiny shared helpers/classes for repeated controls
@@ -1128,7 +1144,7 @@ Notes specific to JTS that the research doesn't cover:
 - **The `/state` aggregator on `jasper-control:8780`** fails soft per
   section — wire status reads off it, not off individual daemons.
 
-Last verified: 2026-05-28 (Phase 1 landing-page implementation, landing page,
-integrations page, nginx route map, `jasper/web/__main__.py`, `/system/`
-dashboard, live `http://jts.local/`, and 2026-05-28 design/iOS research
-refresh)
+Last verified: 2026-05-28 (Phase 1 landing-page implementation, local font
+asset serving, landing page, integrations page, nginx route map,
+`jasper/web/__main__.py`, `/system/` dashboard, live `http://jts.local/`, and
+2026-05-28 design/iOS research refresh)
