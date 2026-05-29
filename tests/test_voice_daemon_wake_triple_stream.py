@@ -214,3 +214,15 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
     assert kwargs["trigger_kind"] == "fire_dtln"  # DTLN won the race
     legs = set(kwargs["fired_legs"].split(","))
     assert legs == {"on", "off", "dtln"}, kwargs["fired_legs"]
+
+
+def test_leg_db_covers_all_wake_input_legs():
+    """Every wake-input leg in the registry must have a _LEG_DB telemetry
+    mapping — otherwise _handle_wake_frame would KeyError on a leg present
+    in self._legs but missing from _LEG_DB. (voice_daemon also guards this
+    at import; this gives a targeted, discoverable failure if it drifts.)"""
+    from jasper.voice_daemon import _LEG_DB
+    from jasper.wake_legs import wake_input_legs
+
+    missing = {leg.token for leg in wake_input_legs()} - set(_LEG_DB)
+    assert not missing, f"wake legs missing _LEG_DB mapping: {sorted(missing)}"

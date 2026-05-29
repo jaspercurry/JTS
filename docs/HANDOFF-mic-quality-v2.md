@@ -1139,9 +1139,12 @@ doesn't waste a round arguing about them:
 
 **Where the wake loop code lives:**
 - `jasper/voice_daemon.py` `WakeLoop._handle_wake_frame(frame, *, leg=…)`
-- `_wake_secondary_loop` is the parallel task for AEC OFF
-- Add `_wake_tertiary_loop` for DTLN; OR-gate logic in `_handle_wake_frame`
-  already supports any leg label
+- `_wake_leg_loop(leg_name)` is the single parallel task for every
+  non-primary leg (AEC OFF, DTLN, …); the primary "on" leg is driven by
+  `run()`'s main loop
+- OR-gate logic in `_handle_wake_frame` is leg-generic (iterates
+  `self._legs`); adding a leg is a `jasper.wake_legs` entry + a
+  construction branch, not a new loop
 
 **Where the schema lives:**
 - `jasper/wake_events.py` `_SCHEMA_SQL` (CREATE TABLE for fresh installs)

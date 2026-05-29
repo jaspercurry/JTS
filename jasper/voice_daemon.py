@@ -40,7 +40,7 @@ from .wake_events import (
 )
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .wake_legs import by_token
+from .wake_legs import by_token, wake_input_legs
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
@@ -281,6 +281,13 @@ SYSTEM_INSTRUCTION = (
 # the dmix tail itself. 0.2 s is ~2.5x the 85 ms dmix buffer —
 # still a margin, but won't swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
+
+# Per-leg score-freshness window. When a leg fires, another leg's most-
+# recent score counts toward `fired_legs` (and the per-leg log line) only
+# if it landed within this window — so a stream that stopped feeding (e.g.
+# the bridge died) surfaces as "none" rather than lying with a stale
+# score. 4x MicCapture's 80 ms frame period.
+WAKE_STALE_SCORE_SEC = 0.32
 
 
 # End-of-utterance: fire activity_end once the user has been silent
@@ -1286,6 +1293,18 @@ _LEG_DB: dict[str, dict[str, str]] = {
     },
 }
 
+# Fail loud at import if a wake-input leg lacks a _LEG_DB telemetry
+# mapping. Without this, a leg added to jasper.wake_legs (and thus to
+# self._legs) but not here would raise an uncaught KeyError in the wake
+# hot path — telemetry must be fail-soft and must never block wake. Catch
+# the drift at startup, not at fire time.
+_missing_leg_db = {leg.token for leg in wake_input_legs()} - set(_LEG_DB)
+if _missing_leg_db:
+    raise RuntimeError(
+        "wake-input legs missing a _LEG_DB telemetry mapping: "
+        f"{sorted(_missing_leg_db)} (add them to _LEG_DB in voice_daemon.py)"
+    )
+
 
 class WakeLoop:
     """Mic consumer. Dispatches each primary-mic frame to either the
@@ -2046,15 +2065,15 @@ class WakeLoop:
             # Compute `fired_legs` — which leg(s) crossed threshold at
             # fire time. The firing leg is always in the set; another leg
             # is included only if its most-recent score is FRESH (within
-            # STALE_SEC, so a stream that stopped feeding doesn't lie with
-            # a stale score) AND above that leg's own threshold. One user
-            # attempt = one event; `trigger_kind` records the winner.
-            STALE_SEC = 0.32  # 4x MicCapture's 80 ms frame period
+            # WAKE_STALE_SCORE_SEC, so a stream that stopped feeding
+            # doesn't lie with a stale score) AND above that leg's own
+            # threshold. One user attempt = one event; `trigger_kind`
+            # records the winner.
             fired_set = {leg}
             for _name, _other in self._legs.items():
                 if _name == leg:
                     continue
-                if (now_loop - _other.recent_score_at) > STALE_SEC:
+                if (now_loop - _other.recent_score_at) > WAKE_STALE_SCORE_SEC:
                     continue
                 if _other.recent_score >= _other.detector.threshold:
                     fired_set.add(_name)
@@ -2076,12 +2095,12 @@ class WakeLoop:
         # score is stale (a stopped stream shouldn't show a misleading old
         # value). The firing leg's recent_score == `score` (just set).
         _parts = []
-        for _n in ("on", "off", "dtln"):
+        for _n in _LEG_DB:
             _lr = self._legs.get(_n)
             if _lr is None or (
                 _n != leg
                 and (_lr.recent_score_at == 0.0
-                     or (now_loop - _lr.recent_score_at) > STALE_SEC)
+                     or (now_loop - _lr.recent_score_at) > WAKE_STALE_SCORE_SEC)
             ):
                 _parts.append(f"score_{_n}=none")
             else:
@@ -2144,13 +2163,14 @@ class WakeLoop:
             # (the firing leg); negative N = that leg last scored N ms
             # before fire.
             wake_fire_time = now_loop
+            # Pre-seed every per-leg column to None, derived from _LEG_DB
+            # so a new leg's columns are included automatically.
+            # begin_event requires peak_score_aec_on/off; configured legs
+            # overwrite their own columns below.
             tel: dict[str, object] = {
-                "peak_score_aec_on": None, "peak_offset_ms_on": None,
-                "mic_rms_dbfs_on": None,
-                "peak_score_aec_off": None, "peak_offset_ms_off": None,
-                "mic_rms_dbfs_off": None,
-                "peak_score_dtln_aec": None, "peak_offset_ms_dtln": None,
-                "mic_rms_dbfs_dtln": None,
+                col: None
+                for _db in _LEG_DB.values()
+                for col in (_db["peak_score"], _db["peak_offset"], _db["mic_rms"])
             }
             for _name, _rt in self._legs.items():
                 _cols = _LEG_DB[_name]

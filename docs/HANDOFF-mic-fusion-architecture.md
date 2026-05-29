@@ -1,8 +1,9 @@
 # Handoff: pluggable-mic boundary + multi-channel wake fusion architecture
 
 > **Status: living draft — design + execution plan, updated as phases
-> land (first written 2026-05-29). Phase 0.1 (the leg registry) is
-> implemented in PR #366; everything else is planned. Not a record of
+> land (first written 2026-05-29). Phase 0.1 (leg registry) is merged
+> (#366); Phase 0.2 (the LegRuntime refactor) is in review (#369); the
+> rest is planned. Not a record of
 > shipped state — verify against code.** This
 > doc owns the *architecture* of the mic-swap boundary and the
 > leg-count-agnostic wake-fusion layer: the interfaces, the staging,
@@ -556,8 +557,8 @@ consumer cleanup is optional follow-up.
 
 | PR | Scope | Daemon edit? | Status |
 |---|---|---|---|
-| 0.1 | `jasper/wake_legs.py` registry + `wake_ports` derives its `DEFAULT_*_PORT` from it + `tests/test_wake_legs.py` | no | ✅ **PR #366** (open); +9 tests, full suite green (the 3 fails are unrelated/pre-existing: macOS `alsaaudio`, unmapped-doc) |
-| 0.2 | Collapse `WakeLoop` consume-side onto a `LegRuntime` dict (fold the two leg loops + the `if leg==…` ladders in `_handle_wake_frame`) | yes | next |
+| 0.1 | `jasper/wake_legs.py` registry + `wake_ports` derives its `DEFAULT_*_PORT` from it + `tests/test_wake_legs.py` | no | ✅ **merged (#366)** |
+| 0.2 | Collapse `WakeLoop` onto a `LegRuntime` dict + one generic `_wake_leg_loop` (fold the two leg loops + the `if leg==…` ladders) | yes | 🟡 **PR #369 (in review)** — needs Pi smoke-test before merge |
 | 0.3 | Build legs from registry + config at the `run()` wiring site; `WakeLoop.__init__` takes a `legs` list instead of the discrete `mic_off`/`detector_off`/… params | yes | after 0.2 |
 | 0.4 | Migrate `control/server.py` (`/aec/leg`, `/state`), `web/wake_setup.py` (`/layer/*`), and `aec_bridge.py` stat keys to the registry — **not** the bash reconciler (that's the Phase 4 decision) | no | optional / deferrable |
 

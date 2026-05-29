@@ -299,8 +299,8 @@ audio at fire time will be empty / single-leg.
 - Primary loop (`run()`): appends each frame to
   `_capture_ring_on` after the pre-roll append, gated past
   `_mic_muted` / `_measurement_active` so privacy promises hold.
-- Secondary loop (`_wake_secondary_loop`): appends each frame to
-  `_capture_ring_off` in the same gating position. **Easy to
+- Leg loop (`_wake_leg_loop`, e.g. AEC OFF): appends each frame to
+  that leg's `capture_ring` in the same gating position. **Easy to
   forget** — the secondary loop's job is wake-detection scoring;
   the capture-ring append is a separate concern that has to be
   remembered separately. Shipped without it in the integration

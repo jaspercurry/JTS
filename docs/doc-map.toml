@@ -155,6 +155,7 @@ id = "wake-and-wake-corpus"
 title = "Wake word, wake telemetry, and corpus collection"
 safety = "voice-runtime"
 code = [
+  "jasper/voice_daemon.py",
   "jasper/wake.py",
   "jasper/wake_models.py",
   "jasper/wake_events.py",
