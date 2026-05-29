@@ -2,7 +2,7 @@
 
 WakeLoop's `_handle_wake_frame(frame, leg)` is the single entry point
 that both the primary (AEC ON, called from `run()`) and the secondary
-(AEC OFF, called from `_wake_secondary_loop`) feed frames into. The
+(AEC OFF, called from `_wake_leg_loop`) feed frames into. The
 OR-gate semantics live here:
 
   - Either leg can fire wake.

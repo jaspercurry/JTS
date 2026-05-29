@@ -1333,20 +1333,11 @@ class WakeLoop:
         self._mic = mic
         self._tts = tts
         self._detector = detector
-        # Secondary wake-detection leg. Both must be present to enable
-        # dual-stream mode; if only one is set we treat as misconfigured
-        # and stay single-stream (logs a warning at run() startup so the
-        # operator notices).
-        self._mic_off = mic_off
-        self._detector_off = detector_off
-        # Tertiary wake-detection leg (DTLN-aec, Phase 1.3 of the
-        # triple-stream rollout). Same shape as the secondary leg: both
-        # must be present to be active; if only one is set we treat as
-        # misconfigured and ignore the tertiary path. See
-        # docs/HANDOFF-mic-quality-v2.md "Triple-stream architecture
-        # plan" + HANDOFF-wake-telemetry.md schema-extension section.
-        self._mic_dtln = mic_dtln
-        self._detector_dtln = detector_dtln
+        # Secondary (AEC OFF) and tertiary (DTLN-aec) wake legs are built
+        # into self._legs near the end of __init__ from the mic_off /
+        # detector_off / mic_dtln / detector_dtln ctor params (a leg is
+        # added only when both of its pair are present). No more discrete
+        # per-leg attributes — see _LegRuntime + jasper.wake_legs.
         # Per-leg recent wake scores + timestamps now live on each
         # `_LegRuntime` in `self._legs` (built near the end of __init__,
         # after the capture rings exist).
@@ -1680,38 +1671,23 @@ class WakeLoop:
                 logger.warning("cue %s restore failed: %s", slug, e)
 
     async def run(self) -> None:
-        # Optional secondary wake-detection leg. Spawned only when both
-        # `mic_off` and `detector_off` were passed at construction
-        # time; logs a warning + stays single-stream if only one is
-        # set (misconfiguration). See class docstring + the OR-gate
-        # logic in `_handle_wake_frame` for the dual-stream design.
-        secondary_task: asyncio.Task | None = None
-        if self._mic_off is not None and self._detector_off is not None:
-            secondary_task = asyncio.create_task(
-                self._wake_secondary_loop(),
-                name="wake-secondary-aec-off",
-            )
-        elif (self._mic_off is None) ^ (self._detector_off is None):
-            logger.warning(
-                "dual-stream wake misconfigured: mic_off=%s detector_off=%s "
-                "(both must be set; staying single-stream)",
-                self._mic_off, self._detector_off,
-            )
-        # Tertiary (DTLN-aec) leg — same shape as secondary.
-        tertiary_task: asyncio.Task | None = None
-        if self._mic_dtln is not None and self._detector_dtln is not None:
-            tertiary_task = asyncio.create_task(
-                self._wake_tertiary_loop(),
-                name="wake-tertiary-dtln",
-            )
+        # Spawn one wake-only consumer per non-primary leg (off / dtln /
+        # any future leg). The primary "on" leg is driven by this method's
+        # main loop below. self._legs was built in __init__ from
+        # jasper.wake_legs; a leg is present only when both its mic and
+        # detector were configured, so there's no misconfig case to warn
+        # about here anymore.
+        leg_tasks: list[asyncio.Task] = []
+        for _leg_name in self._legs:
+            if _leg_name == "on":
+                continue
+            leg_tasks.append(asyncio.create_task(
+                self._wake_leg_loop(_leg_name),
+                name=f"wake-leg-{_leg_name}",
+            ))
+        if leg_tasks:
             logger.info(
-                "triple-stream wake enabled: AEC ON + AEC OFF + DTLN-aec"
-            )
-        elif (self._mic_dtln is None) ^ (self._detector_dtln is None):
-            logger.warning(
-                "triple-stream wake misconfigured: mic_dtln=%s detector_dtln=%s "
-                "(both must be set; staying dual-stream)",
-                self._mic_dtln, self._detector_dtln,
+                "multi-leg wake enabled: %s", " + ".join(self._legs.keys()),
             )
         try:
             async for frame in self._mic.frames():
@@ -1768,102 +1744,60 @@ class WakeLoop:
                 else:
                     await self._handle_session_frame(frame)
         finally:
-            # Cancel + join the secondary loop on any exit path. Without
-            # this the task could outlive run() and keep scoring frames
-            # against a stopped detector / closed mic.
-            if secondary_task is not None:
-                secondary_task.cancel()
+            # Cancel + join every leg loop on any exit path. Without this
+            # a task could outlive run() and keep scoring frames against a
+            # stopped detector / closed mic.
+            for _t in leg_tasks:
+                _t.cancel()
+            for _t in leg_tasks:
                 try:
-                    await secondary_task
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
-            if tertiary_task is not None:
-                tertiary_task.cancel()
-                try:
-                    await tertiary_task
+                    await _t
                 except (asyncio.CancelledError, Exception):  # noqa: BLE001
                     pass
 
-    async def _wake_secondary_loop(self) -> None:
-        """Parallel wake-only consumer of the secondary (AEC OFF) mic.
+    async def _wake_leg_loop(self, leg_name: str) -> None:
+        """Parallel wake-only consumer for a non-primary leg.
 
-        Scores every frame through `_detector_off` and dispatches to
-        `_handle_wake_frame(frame, leg='off')`, which shares refractory
-        + the OR-gate lock with the primary loop so one user attempt
-        fires at most one wake event regardless of which leg(s) cross
-        threshold first.
+        Scores every frame through the leg's detector and dispatches to
+        `_handle_wake_frame(frame, leg=leg_name)`, which shares the
+        refractory + OR-gate lock with the primary loop so one user
+        attempt fires at most one wake event regardless of which leg(s)
+        cross threshold first.
 
-        This leg is **wake-detection-only**: frames are NOT appended
-        to pre-roll, NOT routed to `_acquire_buffer` during the
-        wake→turn-open window, and NOT forwarded to live sessions.
-        The primary AEC ON stream remains the canonical session
-        audio source — keeps session quality unchanged and avoids
-        feeding the LLM mixed dual-stream audio.
+        Wake-detection-only: frames are NOT appended to pre-roll, NOT
+        routed to `_acquire_buffer` during the wake→turn-open window, and
+        NOT forwarded to live sessions. The primary "on" (AEC) stream
+        stays the canonical session audio source — keeps session quality
+        unchanged and avoids feeding the LLM mixed multi-leg audio.
 
-        Mirrors the primary-loop gating (measurement window, mic
-        mute, acquiring, state=WAKE) so the AEC OFF leg respects
-        every "stop listening" signal the primary loop respects.
+        Mirrors the primary-loop gating (measurement window, mic mute,
+        acquiring, state) so every "stop listening" signal is honored. In
+        SESSION state a leg with a shadow VAD (the AEC-OFF leg today)
+        feeds `_shadow_vad_score_raw` for telemetry; other legs idle.
         """
-        assert self._mic_off is not None
-        # Wake-telemetry capture ring for the AEC OFF leg, parallel to
-        # the primary loop's `_capture_ring_on`. `getattr` so this
-        # stays safe in test setups that build WakeLoop via
-        # `__new__` + manual init (the dual-stream wake-handler tests).
-        capture_ring_off: deque | None = getattr(self, "_capture_ring_off", None)
-        async for frame in self._mic_off.frames():
+        rt = self._legs[leg_name]
+        async for frame in rt.mic.frames():
             if self._stop_event.is_set():
                 return
             if self._measurement_active.is_set():
                 continue
             # Mute is a privacy promise — do NOT record audio for the
-            # wake-events corpus when the user has explicitly muted
-            # the mic. Mirrors the primary loop where the capture
-            # ring fills only AFTER the mute / measurement gates.
+            # wake-events corpus when the user has muted the mic. Mirrors
+            # the primary loop: the capture ring fills only AFTER the
+            # mute / measurement gates.
             if self._mic_muted:
                 continue
-            # Fill the capture ring while the user is "live" (gated
-            # past mute + measurement). Done BEFORE the acquiring /
-            # WAKE-state checks so a wake fire's 6 s window still has
-            # pre-fire context even if it overlaps the wake→turn-open
-            # buffering window.
-            if capture_ring_off is not None:
-                capture_ring_off.append(frame)
+            # Fill this leg's capture ring while the user is "live", before
+            # the acquiring / WAKE-state checks so a wake fire's window has
+            # pre-fire context even if it overlaps the turn-open window.
+            if rt.capture_ring is not None:
+                rt.capture_ring.append(frame)
             if self._acquiring:
                 continue
             if self._state is State.WAKE:
-                await self._handle_wake_frame(frame, leg="off")
-            elif self._state is State.SESSION:
+                await self._handle_wake_frame(frame, leg=leg_name)
+            elif self._state is State.SESSION and rt.shadow_vad is not None:
                 await self._shadow_vad_score_raw(frame)
-
-    async def _wake_tertiary_loop(self) -> None:
-        """Parallel wake-only consumer of the DTLN-aec mic (UDP :9878).
-
-        Triple-stream extension to the dual-stream OR-gate pattern from
-        PR #191. Same shape as `_wake_secondary_loop`: scores every
-        frame, dispatches to `_handle_wake_frame(frame, leg='dtln')`,
-        shares the refractory + OR-gate lock so one user attempt fires
-        at most one wake event no matter which leg(s) cross threshold.
-
-        Wake-detection-only (like the secondary leg): DTLN frames are
-        NOT routed to live sessions; the primary AEC ON stream
-        remains the canonical session audio source.
-        """
-        assert self._mic_dtln is not None
-        capture_ring_dtln: deque | None = getattr(self, "_capture_ring_dtln", None)
-        async for frame in self._mic_dtln.frames():
-            if self._stop_event.is_set():
-                return
-            if self._measurement_active.is_set():
-                continue
-            if self._mic_muted:
-                continue
-            if capture_ring_dtln is not None:
-                capture_ring_dtln.append(frame)
-            if self._acquiring:
-                continue
-            if self._state is not State.WAKE:
-                continue
-            await self._handle_wake_frame(frame, leg="dtln")
 
     async def measurement_pause(self) -> str:
         """Open a measurement window. Set the gate event, pause the
