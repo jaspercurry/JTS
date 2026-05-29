@@ -144,6 +144,27 @@ def test_state_payload_contains_stock_curves_profiles_and_preview(tmp_path: Path
     assert payload["headroom_db"] > 0
 
 
+def test_state_filter_count_signals_effective_eq_for_initial_view():
+    # filter_count drives the page's initial Off-vs-Saved tab: 0 means no
+    # effective EQ (bypassed OR flat) -> open Off; >0 -> open Saved with the
+    # applied profile marked active.
+    assert sound_setup._state_payload(SoundProfile())["filter_count"] == 0
+    assert sound_setup._state_payload(
+        SoundProfile(enabled=False, curve_id="harman")
+    )["filter_count"] == 0
+    assert sound_setup._state_payload(
+        SoundProfile(curve_id="harman")
+    )["filter_count"] > 0
+    assert sound_setup._state_payload(
+        SoundProfile(simple_eq=SimpleEq(bass_db=3.0))
+    )["filter_count"] > 0
+    # A cuts-only EQ has zero headroom but is still an effective EQ — this is
+    # why the signal is filter_count, not headroom_db.
+    cuts_only = sound_setup._state_payload(SoundProfile(simple_eq=SimpleEq(mid_db=-3.0)))
+    assert cuts_only["headroom_db"] == 0
+    assert cuts_only["filter_count"] > 0
+
+
 async def test_apply_profile_preserves_active_room_peqs(tmp_path: Path, monkeypatch):
     monkeypatch.setenv(
         "JASPER_DSP_APPLY_STATE_PATH",

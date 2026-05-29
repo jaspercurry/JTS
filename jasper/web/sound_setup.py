@@ -103,6 +103,10 @@ def _state_payload(
         "preview": response_preview(profile),
         "components": response_component_payload(profile),
         "headroom_db": estimate_headroom_db(profile),
+        # Authoritative "is an EQ effectively applied?" signal: 0 when the
+        # profile is disabled (bypass) OR flat (no active filters). The
+        # page opens on Off vs Saved based on this.
+        "filter_count": len(build_sound_filters(profile)),
         "limits": {
             "simple_gain_db": SIMPLE_EQ_LIMIT_DB,
             "advanced_gain_db": ADVANCED_GAIN_LIMIT_DB,
@@ -578,6 +582,9 @@ _PAGE_CSS = """
   .off-card__icon svg { width: 22px; height: 22px; }
   .off-card__text { max-width: 360px; margin: 0 auto; color: var(--muted-foreground); }
   .off-card .btn-row { justify-content: center; margin-top: 20px; }
+  /* The off-card pair is a centered choice, not a primary/secondary
+     footer row — opt out of the .btn-row first-child flex:1 below. */
+  .off-card .btn-row .btn:first-child { flex: 0 1 auto; }
 
   /* Saved tab */
   .saved-stack { display: flex; flex-direction: column; gap: 24px; }
@@ -1390,14 +1397,19 @@ _SOUND_JS = r"""
       if (livePending && !applying) { window.clearTimeout(liveTimer); liveTimer = window.setTimeout(runLiveDraft, 0); }
     }
   }
+  // okMsg is shown only for explicit actions (save/overwrite). Tab-driven
+  // applies (Off, Saved-select) pass none and stay silent on success —
+  // the active tab + "Now playing" label already convey the state. Errors
+  // always surface (no silent failure).
   async function applyProfile(profile, okMsg) {
-    applying = true; cancelLiveDrafts(); status('Applying…');
+    applying = true; cancelLiveDrafts();
+    if (okMsg) status('Applying…');
     try {
       var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'apply failed');
       ingestState(payload);
-      status(okMsg || 'Applied to speaker.');
+      status(okMsg || '');
     } catch (e) {
       status('Could not apply: ' + e.message, true);
     } finally { applying = false; render(); }
@@ -1433,7 +1445,7 @@ _SOUND_JS = r"""
     // saved profile applies it (see selectSaved). Draft is a live, non-
     // persistent preview until the footer Save commits it.
     if (v === 'off') {
-      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), 'EQ off.');
+      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}));
     } else if (v === 'draft') {
       scheduleLiveDraft(true);
     }
@@ -1441,10 +1453,8 @@ _SOUND_JS = r"""
   function selectSaved(id) {
     selectedId = id;
     var entry = entryById(id);
-    status(entry ? 'Applying ' + entry.name + '…' : '');
     render();
-    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name),
-                            'Now playing: ' + entry.name + '.');
+    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name));
   }
   function newDraft() {
     draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
@@ -1468,6 +1478,19 @@ _SOUND_JS = r"""
       ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
       : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
     e.textContent = n + ' active';
+  }
+  // During a drag we patch the DOM in place (no full re-render, so the
+  // <input> keeps focus). The visible thumb/fill is a separate element
+  // positioned by inline style at render time, so move it here too —
+  // otherwise the handle stays put while only the readout changes.
+  function positionThumb(input) {
+    var min = parseFloat(input.min), max = parseFloat(input.max);
+    if (!(max > min)) return;
+    var pct = (clamp(parseFloat(input.value), min, max) - min) / (max - min) * 100;
+    var wrap = input.parentNode, hit;
+    if ((hit = wrap.querySelector('.vrange__thumb'))) hit.style.bottom = 'calc(' + pct + '% - 6px)';
+    else if ((hit = wrap.querySelector('.range__thumb'))) hit.style.left = 'calc(' + pct + '% - 6px)';
+    else if ((hit = wrap.querySelector('.range__fill'))) hit.style.width = pct + '%';
   }
 
   // ---- events ---------------------------------------------------------
@@ -1516,6 +1539,7 @@ _SOUND_JS = r"""
       draft.simple_eq[field] = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
       var btn = el('view-body').querySelector('[data-readout-field="' + field + '"]');
       if (btn) btn.textContent = fmtDb(draft.simple_eq[field]);
+      positionThumb(ev.target);
       refreshActiveCount();
       schedulePreview(); scheduleLiveDraft(false);
     } else if (range) {
@@ -1529,6 +1553,7 @@ _SOUND_JS = r"""
       if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
       var ro = row.querySelector('[data-readout="' + range + '"]');
       if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
+      positionThumb(ev.target);
       schedulePreview(); scheduleLiveDraft(false);
     }
   });
@@ -1646,9 +1671,18 @@ _SOUND_JS = r"""
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
       ingestState(payload);
-      // Initial view mirrors the applied profile so opening the page is a no-op.
-      if (applied.enabled === false) { view = 'off'; }
-      else { view = 'saved'; selectedId = findIdFor(applied); }
+      // Open on Off when no EQ is effectively applied — bypassed (enabled
+      // false) OR flat (no active filters). Open on Saved otherwise, with
+      // the currently-applied profile marked active ("Now playing").
+      // filter_count is the backend's authoritative signal
+      // (len(build_sound_filters); 0 when disabled or flat).
+      if (payload.filter_count > 0) {
+        view = 'saved';
+        selectedId = findIdFor(applied);
+      } else {
+        view = 'off';
+        selectedId = null;
+      }
       render();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
@@ -1671,10 +1705,12 @@ def _index_html(csrf_token: str = "") -> bytes:
     <span></span>
   </div>
   <div class="app-header__tabs">
-    <div class="segmented" role="tablist" aria-label="Sound source">
-      <button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>
-      <button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>
-      <button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>
+    <div>
+      <div class="segmented" role="tablist" aria-label="Sound source">
+        <button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>
+        <button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>
+        <button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>
+      </div>
     </div>
   </div>
 </header>
