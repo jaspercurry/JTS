@@ -15,6 +15,8 @@ from typing import Any
 
 from jasper.correction import bundles, evidence
 
+from . import advisor_context
+
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/correction/sessions")
 DEFAULT_CORPUS_CANDIDATES = (
@@ -294,6 +296,7 @@ def build_intake(
     *,
     corpus_dir: Path | None = None,
     repeat_bundle_dir: Path | None = None,
+    sound_profile_path: Path | None = None,
 ) -> dict[str, Any]:
     summary = get_measurement_summary(bundle)
     evidence_packet = evidence.build_evidence_packet(
@@ -311,12 +314,25 @@ def build_intake(
             unique_lookups.append(hit)
             seen_paths.add(hit["path"])
 
+    schroeder = compute_schroeder()
+    context = advisor_context.build_advisor_context(
+        bundle_dir=bundle.bundle_dir,
+        info=bundle.info,
+        result=bundle.result,
+        evidence_packet=evidence_packet,
+        peaks_nulls=peaks_nulls,
+        schroeder=schroeder,
+        corpus_hits=unique_lookups[:4],
+        sound_profile_path=sound_profile_path,
+    )
+
     return {
         "bundle_dir": str(bundle.bundle_dir),
         "summary": summary,
         "evidence": evidence_packet,
+        "advisor_context": context,
         "peaks_nulls": peaks_nulls,
-        "schroeder": compute_schroeder(),
+        "schroeder": schroeder,
         "corpus_hits": unique_lookups[:4],
         "side_effects": [],
     }

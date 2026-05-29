@@ -141,5 +141,16 @@ Every concept file should have:
   WAVs without applying them. Remaining evidence work: real
   phone/browser/mic smoke tests and research-tuned thresholds for
   future FIR and agent analysis.
+- 2026-05-29: LLM-ready advisor context packet added.
+  `jasper.calibration_agent.advisor_context` derives a narrower,
+  redacted v1 context from the deterministic evidence packet for
+  future model calls. It includes bundle validity, sanitized mic /
+  browser-device provenance, acoustic/runtime/repeatability/spatial
+  confidence, target and strategy summaries, current sound-profile DSP
+  shape, corpus snippets, missing evidence, and explicit advisor
+  permissions. It excludes raw audio, absolute paths, secrets,
+  raw mic serials, untrusted browser labels, user-entered profile
+  names, unconstrained CamillaDSP YAML, FIR taps, and all apply/reset
+  authority.
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

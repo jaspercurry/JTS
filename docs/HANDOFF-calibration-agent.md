@@ -882,6 +882,18 @@ Current distilled corpus files:
   unavailable until room/RT60 context exists, and pulls short guidance
   snippets from `docs/calibration-agent/`. It performs no side effects
   and does not call an LLM.
+- ✅ **LLM-ready advisor context packet.** Implemented 2026-05-29 as
+  `jasper.calibration_agent.advisor_context` and exposed through
+  `jasper-calibration-agent --advisor-context-json`. This is the
+  exact redacted packet a future advisor should receive: bundle
+  validity, mic/calibration status without raw serials, sanitized
+  browser/device metadata, acoustic/runtime/repeatability/spatial
+  confidence, rejected/caution correction facts, target/strategy
+  summaries, current sound-profile DSP shape without user-entered
+  names, corpus snippets, missing evidence, and explicit read-only
+  permissions/prohibitions. It excludes raw audio, absolute paths,
+  secrets, untrusted labels, unconstrained CamillaDSP YAML, FIR
+  taps, and all apply/reset authority.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed, then build a deterministic loader that assembles it into
   the agent prompt. The current intake CLI already includes a small
@@ -1119,4 +1131,4 @@ Codebase:
 
 ---
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

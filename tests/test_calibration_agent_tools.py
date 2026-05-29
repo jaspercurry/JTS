@@ -108,6 +108,8 @@ def test_build_intake_summarizes_quality_and_bass_residual(tmp_path: Path):
     assert intake["peaks_nulls"]["peaks"][0]["freq_hz"] == 80.0
     assert intake["peaks_nulls"]["nulls"][0]["freq_hz"] == 160.0
     assert intake["evidence"]["side_effects"] == []
+    assert intake["advisor_context"]["kind"] == "llm_ready_advisor_context"
+    assert intake["advisor_context"]["side_effects"] == []
     assert intake["evidence"]["agent_readiness"]["level"] == "caution"
     assert intake["evidence"]["artifact_schema_version"] == 2
     assert (
@@ -153,6 +155,25 @@ def test_cli_json_loads_latest_bundle(tmp_path: Path, capsys):
     assert out["summary"]["session_id"] == "new"
     assert out["summary"]["peq_count"] == 1
     assert out["evidence"]["agent_readiness"]["allowed_review"] is True
+    assert out["advisor_context"]["privacy"]["raw_audio_excluded"] is True
+
+
+def test_cli_advisor_context_json_emits_context_only(tmp_path: Path, capsys):
+    sessions = tmp_path / "sessions"
+    _write_bundle(sessions, "abc")
+
+    rc = cli.main([
+        "abc",
+        "--sessions-dir",
+        str(sessions),
+        "--advisor-context-json",
+    ])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["kind"] == "llm_ready_advisor_context"
+    assert "summary" not in out
+    assert out["advisor_policy"]["mode"] == "read_only_advisor"
 
 
 def test_cli_markdown_renders_evidence_readiness(tmp_path: Path, capsys):

@@ -243,6 +243,20 @@
   latest bundle, total parseable bundle storage, private raw-audio
   artifact count/bytes, latest evidence completeness, and an
   informational note when old raw recordings are still present.
+- ✅ **Phase 2.17 — LLM-ready advisor context packet.**
+  Implemented 2026-05-29. `jasper.calibration_agent.advisor_context`
+  builds a versioned, redacted `llm_ready_advisor_context` from the
+  deterministic evidence packet plus target/strategy summaries,
+  acoustic/runtime/repeatability/spatial confidence, rejected or
+  caution features, bass residuals, corpus snippets, and the current
+  sound-profile DSP shape. It deliberately excludes raw audio,
+  absolute paths, secrets, raw mic serials, browser labels, and
+  user-entered profile names. The packet carries explicit read-only
+  advisor permissions: explain, recommend remeasurement, and suggest
+  bounded PEQ only when JTS confidence gates allow it; it always
+  prohibits raw-audio access, unconstrained CamillaDSP YAML, filter
+  apply, FIR tap generation, safety-gate overrides, and silent
+  room/preference layer merging.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -1238,6 +1252,7 @@ Current versions:
 | `analysis/<capture>_response.json` | `artifact_schema_version` | `1` | Optional derived replay artifact. Recomputable from raw capture WAV, sweep metadata, calibration, and deconvolution settings. |
 | `fir/<label>.json` | `artifact_schema_version` | `1` | Optional FIR-runtime metadata for imported/staged coefficients. This is evidence only, not an apply path. |
 | `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
+| `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries explicit read-only advisor permissions/prohibitions. |
 
 Compatibility rules:
 
@@ -1453,4 +1468,4 @@ Internal:
 
 ---
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

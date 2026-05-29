@@ -60,6 +60,12 @@ repeatability. `jasper.correction.evidence` now builds a deterministic
 read-only v2 evidence packet for the calibration agent, including
 native same-position repeatability or an explicit repeat-bundle
 comparison, capability permissions, and missing-evidence reporting.
+`jasper.calibration_agent.advisor_context` now builds the narrower
+LLM-ready v1 context packet from that evidence: redacted mic/device
+facts, acoustic/runtime/spatial confidence, bounded PEQ/FIR
+permissions, target/strategy summaries, current sound-profile DSP
+shape, and corpus snippets, with raw audio and apply authority
+excluded.
 Successful captures also write replay-grade `analysis/` artifacts:
 derived impulse responses, raw/smoothed/final response curves,
 calibration/normalization metadata, direct-arrival evidence, and
@@ -250,4 +256,4 @@ The LLM must not:
 - DRC-FIR and rePhase prior art.
 - Toole / Olive / Welti room-correction and preference research.
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

@@ -289,9 +289,23 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--sound-profile-path",
+        type=Path,
+        help=(
+            "optional sound_profile.json path to summarize in the advisor "
+            "context"
+        ),
+    )
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument(
         "--json",
         action="store_true",
         help="emit machine-readable JSON instead of markdown",
+    )
+    output.add_argument(
+        "--advisor-context-json",
+        action="store_true",
+        help="emit only the redacted LLM-ready advisor context JSON",
     )
     return parser
 
@@ -309,12 +323,15 @@ def main(argv: list[str] | None = None) -> int:
             bundle,
             corpus_dir=args.corpus_dir,
             repeat_bundle_dir=args.repeat_bundle_dir,
+            sound_profile_path=args.sound_profile_path,
         )
     except tools.AgentToolError as e:
         print(f"jasper-calibration-agent: {e}", file=sys.stderr)
         return 2
 
-    if args.json:
+    if args.advisor_context_json:
+        print(json.dumps(intake["advisor_context"], indent=2, sort_keys=True))
+    elif args.json:
         print(json.dumps(intake, indent=2, sort_keys=True))
     else:
         print(render_markdown(intake), end="")
