@@ -279,6 +279,19 @@ class GeminiLiveTurn(LiveTurn):
         self._interrupted = False
         self._interrupt_event.clear()
 
+    async def on_tts_flush(self, ack: dict | None) -> None:
+        # JTS currently configures Gemini with NO_INTERRUPTION because
+        # TTS bleed is still indistinguishable from real speech before
+        # the AEC/reference cutover. If a future Gemini config allows
+        # server-side interruptions, Gemini owns cancellation there; in
+        # either mode there is no client-side truncate event to emit.
+        segments = ack.get("segments") if isinstance(ack, dict) else None
+        logger.info(
+            "event=tts_flush.provider_reconcile provider=gemini action=none "
+            "reason=client_truncate_unavailable segments=%s",
+            segments,
+        )
+
     # Internal — called by the connection's receive loop when it routes
     # an incoming server message to this active turn. Mirrors the old
     # GeminiLiveSession._dispatch logic.

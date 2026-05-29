@@ -466,6 +466,201 @@ async def test_audio_chunks_include_openai_provider_item_id():
         await conn.stop()
 
 
+async def test_openai_server_vad_interrupts_after_assistant_audio_started():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        await conn.set_turn_detection({"type": "server_vad"})
+        turn = await conn.acquire_turn()
+        turn._mark_server_vad()
+
+        sess.feed({"type": "input_audio_buffer.speech_started"})
+        await asyncio.sleep(0.05)
+        assert turn.interrupted() is False
+
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"audio_chunk_1"),
+            "response_id": "resp_1",
+        })
+        await _wait_until(lambda: turn.chunks_received() == 1)
+        assert turn.audio_chunks_pending() == 1
+        sess.feed({"type": "input_audio_buffer.speech_started"})
+        await _wait_until(turn.interrupted)
+        assert turn.audio_chunks_pending() == 0
+
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"late_old_response_chunk"),
+            "response_id": "resp_1",
+        })
+        await asyncio.sleep(0.05)
+        assert turn.audio_chunks_pending() == 0
+
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
+async def test_openai_server_vad_interrupts_playback_tail_after_response_done():
+    """OpenAI can finish the server response before local playout drains.
+
+    A user barge-in during that queued-audio tail still needs to flush
+    local playback and preserve the response.done sentinel so the audio
+    iterator exits cleanly after the stale chunks are discarded.
+    """
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        await conn.set_turn_detection({"type": "server_vad"})
+        turn = await conn.acquire_turn()
+        turn._mark_server_vad()
+
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"queued_tail_chunk"),
+            "response_id": "resp_1",
+        })
+        sess.feed({
+            "type": "response.done",
+            "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
+        })
+        await _wait_until(turn.server_turn_complete)
+        assert turn.audio_chunks_pending() == 2
+
+        sess.feed({"type": "input_audio_buffer.speech_started"})
+        await _wait_until(turn.interrupted)
+        assert turn.audio_chunks_pending() == 1
+
+        chunks = []
+        async for chunk in turn.audio_out():
+            chunks.append(chunk)
+        assert chunks == []
+
+        await turn.release()
+    finally:
+        await conn.stop()
+
+
+async def test_openai_tts_flush_cancels_and_truncates_heard_audio():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        baseline = len(sess.sent)
+
+        await turn.on_tts_flush({
+            "ok": True,
+            "events": [
+                {
+                    "provider_item_id": "msg_abc123",
+                    "kind": "assistant",
+                    "status": "flushed",
+                    "audio_played_ms": 420,
+                },
+                {
+                    "provider_item_id": "msg_abc123",
+                    "kind": "assistant",
+                    "status": "flushed",
+                    "audio_played_ms": 390,
+                },
+                {
+                    "provider_item_id": "msg_ignored",
+                    "kind": "cue",
+                    "audio_played_ms": 999,
+                },
+            ],
+        })
+
+        new = sess.sent[baseline:]
+        assert [e["type"] for e in new] == [
+            "response.cancel",
+            "conversation.item.truncate",
+        ]
+        truncate = new[1]
+        assert truncate["item_id"] == "msg_abc123"
+        assert truncate["content_index"] == 0
+        assert truncate["audio_end_ms"] == 420
+
+        baseline = len(sess.sent)
+        await turn.on_tts_flush({
+            "ok": True,
+            "events": [
+                {
+                    "provider_item_id": "msg_abc123",
+                    "kind": "assistant",
+                    "status": "flushed",
+                    "audio_played_ms": 420,
+                },
+            ],
+        })
+        assert [e["type"] for e in sess.sent[baseline:]] == ["response.cancel"]
+    finally:
+        await conn.stop()
+
+
+async def test_openai_tts_flush_after_response_done_truncates_without_cancel():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        sess.feed({
+            "type": "response.done",
+            "response": {"usage": {"input_tokens": 1, "output_tokens": 2}},
+        })
+        await _wait_until(turn.server_turn_complete)
+        baseline = len(sess.sent)
+
+        await turn.on_tts_flush({
+            "ok": True,
+            "events": [
+                {
+                    "provider_item_id": "msg_tail",
+                    "kind": "assistant",
+                    "status": "flushed",
+                    "audio_played_ms": 1800,
+                },
+            ],
+        })
+
+        new = sess.sent[baseline:]
+        assert [e["type"] for e in new] == ["conversation.item.truncate"]
+        assert new[0]["item_id"] == "msg_tail"
+        assert new[0]["audio_end_ms"] == 1800
+    finally:
+        await conn.stop()
+
+
+async def test_openai_no_active_cancel_error_is_debug_noise(caplog):
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        with caplog.at_level("WARNING"):
+            sess.feed({
+                "type": "error",
+                "error": {
+                    "message": "Cancellation failed: no active response found",
+                },
+            })
+            await asyncio.sleep(0.05)
+        assert not [
+            record for record in caplog.records
+            if "Cancellation failed" in record.getMessage()
+        ]
+    finally:
+        await conn.stop()
+
+
 async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
     """``response.done`` is the server's "no more audio coming" signal.
     The adapter pushes a sentinel onto the audio queue so the playback
@@ -1639,6 +1834,36 @@ async def test_grok_text_delta_normalised_to_openai_event_name():
             await conn.stop()
     finally:
         OpenAIRealtimeConnection._dispatch_event = original
+
+
+async def test_grok_tts_flush_cancels_without_unsupported_truncate():
+    factory = _FakeConnectFactory()
+    conn = GrokRealtimeConnection(
+        api_key="xai-fake",
+        connect_factory=factory,
+        backoff_schedule=(0.0,),
+    )
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        baseline = len(sess.sent)
+        await turn.on_tts_flush({
+            "ok": True,
+            "events": [
+                {
+                    "provider_item_id": "msg_grok",
+                    "kind": "assistant",
+                    "status": "flushed",
+                    "audio_played_ms": 250,
+                },
+            ],
+        })
+        new_types = [e["type"] for e in sess.sent[baseline:]]
+        assert new_types == ["response.cancel"]
+    finally:
+        await conn.stop()
 
 
 # ---------------------------------------------------------------------------

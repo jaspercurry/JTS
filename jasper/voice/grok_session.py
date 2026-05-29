@@ -96,6 +96,12 @@ class GrokRealtimeConnection(OpenAIRealtimeConnection):
         payload["audio"]["input"].pop("noise_reduction", None)
         return payload
 
+    def _supports_conversation_item_truncate(self) -> bool:
+        # xAI's OpenAI-compatibility notes explicitly list
+        # conversation.item.truncate as unsupported. Keep Grok on the
+        # shared cancel path, but do not emit an event the server rejects.
+        return False
+
     async def _dispatch_event(self, etype: str, event) -> None:
         # Per xAI docs, the only top-level event-name divergence from
         # OpenAI's GA is `response.text.delta` (xAI) vs

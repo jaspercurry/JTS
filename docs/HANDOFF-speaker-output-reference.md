@@ -150,7 +150,10 @@ What exists:
   bounded allocation limit. Assistant response chunks may also carry a
   provider item id over the same IPC protocol; OpenAI wires
   `response.output_item.added.item.id` into that field today, while
-  providers without item ids leave it empty.
+  providers without item ids leave it empty. The voice provider
+  adapters consume that identity only through `LiveTurn.on_tts_flush()`
+  so future provider-specific truncate/cancel behavior stays behind
+  one contract.
 - TTS interruption: outputd flushes are epoch-based. A flush advances
   the TTS epoch, clears the already-enqueued assistant buffer, and
   ignores any pre-flush audio commands that had been accepted onto the
@@ -161,6 +164,15 @@ What exists:
   flushed frames, provider item id, and local segment id. The Python
   client bounds this ack wait and closes the ordered TTS socket on
   timeout so a late stale ack cannot be mistaken for a later flush.
+  After the local flush, the provider hook reconciles server state:
+  OpenAI sends `response.cancel` while a response is active, then
+  `conversation.item.truncate` at the heard `audio_played_ms`; if
+  the server has already emitted `response.done`, OpenAI skips cancel
+  and truncates only. Grok sends cancel only because xAI documents
+  `conversation.item.truncate` as unsupported. Gemini has no client
+  truncate event; current JTS Gemini config keeps model interruption
+  disabled with `NO_INTERRUPTION` until AEC/reference validation makes
+  barge-in safe.
 - Playout ledger: outputd keeps active assistant/cue segments plus a
   bounded recent terminal history, so long uptimes do not accumulate
   one segment per TTS chunk indefinitely. Written frames are not treated
@@ -195,13 +207,10 @@ What is still intentionally not done:
 - AEC still consumes the old `pcm.jasper_ref` content reference.
 - `speaker_reference_out` is still an in-process bounded fanout, not
   a public AEC/corpus transport.
-- Provider truncation is not yet wired to outputd flush
-  acknowledgements. The transport now returns the needed
-  `audio_played_ms` and provider item identity; provider-specific
-  truncate/cancel commands still need to consume it.
-- The latest TTS ledger refinements (provider item id over IPC,
-  synchronous flush acknowledgement, and DAC-delay-based drain
-  accounting) still need Pi validation after an operator-approved
+- The latest TTS ledger and provider-reconciliation refinements
+  (provider item id over IPC, synchronous flush acknowledgement,
+  DAC-delay-based drain accounting, and OpenAI/Grok/Gemini flush
+  handling) still need Pi validation after an operator-approved
   deploy.
 
 ## Problem Boundaries
@@ -545,8 +554,10 @@ datum: how much assistant audio was actually heard.
 4. **Move AEC reference.** Switch `jasper-aec-bridge` from
    `pcm.jasper_ref` to `speaker_reference_out`. Treat reference drops
    as capture-health degradation, not playback failure.
-5. **Enable robust barge-in.** Wire outputd flush acknowledgements to
-   provider truncation/cancel logic and capture barge-in telemetry.
+5. **Enable robust barge-in.** Provider reconciliation is wired for
+   the supported adapters as of 2026-05-29. The remaining work is
+   Pi validation of the full interruption path and any follow-up
+   telemetry needed from that lab run.
 
 ### Required Tests
 
@@ -562,8 +573,11 @@ datum: how much assistant audio was actually heard.
 - Corpus capture-health test proving reference packet loss/drops mark
   affected clips compromised.
 - Barge-in test: assistant speaks, user interrupts, outputd flushes,
-  and provider truncation receives an `audio_played_ms` within one
-  output period of the ledger estimate.
+  and provider reconciliation receives an `audio_played_ms` within
+  one output period of the ledger estimate. For OpenAI, verify
+  `conversation.item.truncate`; for Grok, verify cancel-only behavior;
+  for Gemini, verify no client truncate and revisit interruption only
+  after changing the current `NO_INTERRUPTION` posture.
 
 ### Success Criteria
 

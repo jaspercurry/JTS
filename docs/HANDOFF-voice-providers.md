@@ -100,7 +100,7 @@ Each backend has a real strength and at least one real cost:
 |---|---|---|
 | **Gemini Live** (gemini-3.1-flash-live-preview / gemini-2.5-flash-native-audio) | Cheapest by ~5×; mature 24-language voice catalogue; session resumption (2 h handle); the existing Jasper deployment runs on it | Sequential tool calls only on 3.1; occasional silent-session-2 failures requiring a fall-back to `2.5-flash-native-audio-preview-12-2025`; 15-min audio cap on a single session |
 | **OpenAI Realtime** (gpt-realtime-2, GA 2026-05-07) | Reasoning levels (minimal/low/medium/high/xhigh); 128K context; multi-tool-at-once; image input; MCP; SIP; arguably tightest tool/instruction following | $32/$64/$0.40 per 1M tokens — about 5× Gemini per minute; 60-min hard session cap with NO resumption; PCM-input only at 24 kHz (we upsample 16 kHz mic) |
-| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour billing (cheapest at sustained chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Token-based spend cap under-counts (logs a warning at startup); voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and we normalise it in `grok_session.py` |
+| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour billing (cheapest at sustained chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Token-based spend cap under-counts (logs a warning at startup); voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and explicitly does not support `conversation.item.truncate` |
 
 Anthropic is **not** on the list. As of 2026-05-09 there is no public
 real-time speech-to-speech API from Anthropic — only push-to-talk Voice
@@ -298,8 +298,45 @@ When a provider exposes a stable assistant audio item id, its
 this from `response.output_item.added.item.id`; Gemini currently has
 no equivalent and leaves the field empty. The voice daemon passes this
 identity through `OutputdTtsPlayout.write_segment()` so outputd's
-flush acknowledgement can later drive provider-specific truncate or
-cancel calls.
+flush acknowledgement can drive provider-specific reconciliation.
+
+### TTS flush / barge-in reconciliation
+
+`LiveTurn.on_tts_flush(ack)` is the provider seam. The daemon calls it
+only after local output has been flushed in response to an interruption;
+provider adapters then decide what, if anything, can be corrected
+server-side.
+
+- **OpenAI Realtime (`gpt-realtime-2`)**: outputd returns
+  `provider_item_id` plus `audio_played_ms`; the adapter sends
+  `response.cancel` while a response is active, then
+  `conversation.item.truncate` with `content_index=0` and
+  `audio_end_ms=<heard ms>`. If the server has already emitted
+  `response.done` and only the local playback tail remains, the
+  adapter skips cancel and sends truncate only. This matches
+  OpenAI's documented playback-ledger contract: the server may have
+  sent audio faster than real time, and the client must truncate the
+  unheard tail so future context matches what the user heard.
+- **Grok Voice Agent (`grok-voice-think-fast-1.0`)**: inherits the
+  OpenAI-shaped turn plumbing, but xAI documents
+  `conversation.item.truncate` as unsupported. The adapter sends
+  best-effort `response.cancel` and skips truncate with a structured
+  `event=tts_flush.provider_reconcile ... reason=truncate_unsupported`
+  log.
+- **Gemini Live (`gemini-3.1-flash-live-preview`)**: current JTS
+  config sets `NO_INTERRUPTION`, so Gemini should not normally emit
+  `server_content.interrupted`; this remains the safe choice until
+  the AEC/reference path can distinguish real user speech from TTS
+  bleed. If a future config enables Gemini interruptions, Gemini owns
+  cancellation server-side. In both modes, there is no client truncate
+  event to emit; the local flush ack remains useful for outputd
+  metrics.
+
+OpenAI/Grok server-VAD `speech_started` is treated as a playback
+interrupt only after assistant audio has begun. The adapter drains
+queued pre-interrupt audio and drops late deltas from the old response
+until `response.done`, so local playout cannot resurrect stale speech
+after outputd has flushed.
 
 ## Anti-patterns
 
@@ -338,4 +375,4 @@ These have all been surfaced and rejected in design reviews:
 - [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
 - [audio-paths.md](audio-paths.md) — why TTS bypasses CamillaDSP and how the dongle dmix sums TTS + music
 
-Last verified: 2026-05-28 (LiveTurn audio chunk identity checked against OpenAI/Gemini adapters)
+Last verified: 2026-05-29 (LiveTurn audio chunk identity and TTS flush reconciliation checked against OpenAI/Gemini/Grok adapters)

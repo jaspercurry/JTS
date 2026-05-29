@@ -67,7 +67,12 @@ from ._supervisor import (
     FailureFingerprint,
     reconnect_backoff_delay,
 )
-from .session import AudioOutChunk, LiveConnection, LiveTurn
+from .session import (
+    AudioOutChunk,
+    LiveConnection,
+    LiveTurn,
+    iter_tts_flush_segments,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -125,6 +130,10 @@ DEFAULT_REASONING_EFFORT = "low"
 # default, matching the Gemini adapter's 0.3 spirit (tight responses,
 # low creative drift).
 DEFAULT_TEMPERATURE = 0.7
+
+# OpenAI's Realtime truncate API requires the audio content index; the
+# current docs specify `0` for assistant audio messages.
+OPENAI_AUDIO_CONTENT_INDEX = 0
 
 
 class ConnectionState(Enum):
@@ -239,13 +248,13 @@ class OpenAIRealtimeTurn(LiveTurn):
         # is exactly what OpenAI's STT model received.
         self._debug_wav = None
         self._debug_wav_path: str | None = None
-        # The most recent assistant audio item id seen, kept for
-        # potential `conversation.item.truncate(item_id=..., audio_end_ms=...)`
-        # calls when implementing real barge-in. Today the daemon uses
-        # NO_INTERRUPTION-equivalent semantics (model talks to completion),
-        # so this stays unused; recorded so the field is ready when
-        # someone wires up barge-in for real.
+        # The most recent assistant audio item id seen. outputd carries
+        # this id through its playout ledger so a local flush can be
+        # reconciled with provider-side conversation state.
         self._last_assistant_item_id: str | None = None
+        self._truncated_audio_ms_by_item: dict[str, int] = {}
+        self._drop_audio_until_response_done = False
+        self._dropped_interrupted_audio_chunks = 0
         self._server_vad_active: bool = False
         self._server_speech_started: bool = False
         self._server_speech_stopped: bool = False
@@ -465,6 +474,88 @@ class OpenAIRealtimeTurn(LiveTurn):
         self._interrupted = False
         self._interrupt_event.clear()
 
+    async def on_tts_flush(self, ack: dict | None) -> None:
+        """Cancel generation and truncate OpenAI history to heard audio.
+
+        Local playback is authoritative for barge-in. OpenAI may send
+        assistant audio faster than real time, so the server can believe
+        the user heard more than actually left the DAC. outputd's flush
+        acknowledgement contains the played duration per provider item;
+        send `conversation.item.truncate` for those items so future
+        context excludes unheard transcript/audio.
+
+        Grok inherits this turn type but disables the truncate capability
+        at the connection layer because xAI documents that event as
+        unsupported. It still receives the best-effort response cancel
+        when a response is active.
+        """
+
+        provider = self._conn.PROVIDER_NAME
+        cancel_sent = False
+        if not self._server_turn_complete:
+            await self._conn._cancel_response()
+            cancel_sent = True
+
+        item_played_ms: dict[str, int] = {}
+        for segment in iter_tts_flush_segments(ack):
+            prior = item_played_ms.get(segment.provider_item_id)
+            if prior is None or segment.audio_played_ms > prior:
+                item_played_ms[segment.provider_item_id] = segment.audio_played_ms
+
+        if not item_played_ms:
+            logger.info(
+                "event=tts_flush.provider_reconcile provider=%s action=%s "
+                "truncate_items=0 reason=no_provider_segments",
+                provider, "cancel" if cancel_sent else "none",
+            )
+            return
+
+        if not self._conn._supports_conversation_item_truncate():
+            logger.info(
+                "event=tts_flush.provider_reconcile provider=%s action=%s "
+                "truncate_items=0 skipped_items=%d reason=truncate_unsupported",
+                provider,
+                "cancel" if cancel_sent else "none",
+                len(item_played_ms),
+            )
+            return
+
+        sent = 0
+        skipped = 0
+        for item_id, audio_played_ms in item_played_ms.items():
+            already_sent = self._truncated_audio_ms_by_item.get(item_id)
+            if already_sent is not None and audio_played_ms <= already_sent:
+                skipped += 1
+                continue
+            try:
+                await self._conn._truncate_assistant_audio(
+                    item_id=item_id,
+                    audio_end_ms=audio_played_ms,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "event=tts_truncate.failed provider=%s item_id=%s "
+                    "audio_end_ms=%d error=%s detail=%s",
+                    provider, item_id, audio_played_ms, type(e).__name__, e,
+                )
+                continue
+            self._truncated_audio_ms_by_item[item_id] = audio_played_ms
+            sent += 1
+            logger.info(
+                "event=tts_truncate.sent provider=%s item_id=%s "
+                "content_index=%d audio_end_ms=%d",
+                provider, item_id, OPENAI_AUDIO_CONTENT_INDEX, audio_played_ms,
+            )
+
+        logger.info(
+            "event=tts_flush.provider_reconcile provider=%s action=%s "
+            "truncate_items=%d skipped_items=%d",
+            provider,
+            "cancel_truncate" if cancel_sent else "truncate",
+            sent,
+            skipped,
+        )
+
     # ---- Server VAD ----
 
     def server_vad_active(self) -> bool:
@@ -485,6 +576,18 @@ class OpenAIRealtimeTurn(LiveTurn):
     def _on_speech_started(self) -> None:
         self._server_speech_started = True
         logger.info("event=server_vad.speech_started")
+        if self._chunks_received <= 0:
+            return
+        if not self._interrupted:
+            self._drop_queued_audio()
+            self._drop_audio_until_response_done = not self._server_turn_complete
+            self._dropped_interrupted_audio_chunks = 0
+            self._interrupted = True
+            self._interrupt_event.set()
+            logger.info(
+                "event=server_vad.interruption_detected provider=%s chunks=%d",
+                self._conn.PROVIDER_NAME, self._chunks_received,
+            )
 
     def _on_speech_stopped(self) -> None:
         self._server_speech_stopped = True
@@ -502,6 +605,9 @@ class OpenAIRealtimeTurn(LiveTurn):
     # ---- Internal — called by the connection's receive loop ----
 
     async def _on_audio_delta(self, b64_audio: str) -> None:
+        if self._drop_audio_until_response_done:
+            self._dropped_interrupted_audio_chunks += 1
+            return
         try:
             data = base64.b64decode(b64_audio)
         except Exception as e:  # noqa: BLE001
@@ -530,6 +636,18 @@ class OpenAIRealtimeTurn(LiveTurn):
             pcm=data,
             provider_item_id=self._last_assistant_item_id,
         ))
+
+    def _drop_queued_audio(self) -> None:
+        saw_sentinel = False
+        while True:
+            try:
+                chunk = self._audio_q.get_nowait()
+            except asyncio.QueueEmpty:
+                if saw_sentinel:
+                    self._audio_q.put_nowait(None)
+                return
+            if chunk is None:
+                saw_sentinel = True
 
     def _note_activity(self) -> None:
         """Reset the pre-response idle anchor.
@@ -586,6 +704,15 @@ class OpenAIRealtimeTurn(LiveTurn):
 
     async def _on_response_done(self, usage: dict | None) -> None:
         self._note_activity()
+        if self._drop_audio_until_response_done:
+            dropped = self._dropped_interrupted_audio_chunks
+            self._drop_audio_until_response_done = False
+            self._dropped_interrupted_audio_chunks = 0
+            if dropped:
+                logger.info(
+                    "event=tts_interrupt.dropped_late_audio provider=%s chunks=%d",
+                    self._conn.PROVIDER_NAME, dropped,
+                )
         self._server_turn_complete = True
         self._record_usage(usage)
         # Sentinel lets consumer drain queued chunks then exit; barge-in (if added later) must use a distinct signal.
@@ -879,6 +1006,9 @@ class OpenAIRealtimeConnection(LiveConnection):
     def supports_server_vad(self) -> bool:
         return True
 
+    def _supports_conversation_item_truncate(self) -> bool:
+        return True
+
     # ------------------------------------------------------------------
     # Internal — turn-side helpers
     # ------------------------------------------------------------------
@@ -983,15 +1113,30 @@ class OpenAIRealtimeConnection(LiveConnection):
         )
 
     async def _cancel_response(self) -> None:
-        # Best-effort: tell the server to stop generating. Idempotent on
-        # the server side — extra cancels for a non-existent response
-        # are silently ignored.
+        # Best-effort: tell the server to stop generating. OpenAI
+        # documents this as safe even when no response is active; the
+        # server may return an error, but the session remains usable.
         if self._conn is None:
             return
         try:
             await self._send_event({"type": "response.cancel"})
         except Exception as e:  # noqa: BLE001
             logger.debug("openai connection: cancel ignored (%s)", e)
+
+    async def _truncate_assistant_audio(
+        self,
+        *,
+        item_id: str,
+        audio_end_ms: int,
+    ) -> None:
+        if not self._supports_conversation_item_truncate():
+            raise RuntimeError("conversation.item.truncate unsupported")
+        await self._send_event({
+            "type": "conversation.item.truncate",
+            "item_id": item_id,
+            "content_index": OPENAI_AUDIO_CONTENT_INDEX,
+            "audio_end_ms": audio_end_ms,
+        })
 
     async def _on_turn_released(self, turn: OpenAIRealtimeTurn) -> None:
         if self._server_vad_active:
@@ -1528,6 +1673,14 @@ class OpenAIRealtimeConnection(LiveConnection):
 
         if etype == "error":
             err = _event_field(event, "error") or {}
+            msg = _event_field(err, "message")
+            if (
+                isinstance(msg, str)
+                and "Cancellation failed" in msg
+                and "no active response" in msg
+            ):
+                logger.debug("openai connection: cancel ignored; no active response")
+                return
             logger.warning("openai connection: server error: %s", err)
             return
 

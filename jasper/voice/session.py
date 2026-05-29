@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import AsyncIterator, Callable, Protocol, runtime_checkable
+from typing import AsyncIterator, Callable, Iterator, Protocol, runtime_checkable
 
 from ..tools import ToolRegistry
 
@@ -21,6 +21,53 @@ class AudioOutChunk:
     pcm: bytes
     provider_item_id: str | None = None
     kind: str = "assistant"
+
+
+@dataclass(frozen=True)
+class TtsFlushSegment:
+    """One provider-visible assistant segment from outputd's flush ack."""
+
+    provider_item_id: str
+    audio_played_ms: int
+    status: str = ""
+
+
+def iter_tts_flush_segments(
+    ack: dict | None,
+    *,
+    kind: str = "assistant",
+) -> Iterator[TtsFlushSegment]:
+    """Yield provider-actionable segment rows from outputd's flush ack.
+
+    outputd includes local accounting rows for every flushed segment.
+    Providers only care about assistant segments with a provider item id:
+    those are the rows that can be reconciled against server-side
+    conversation state. Malformed / local-only rows are ignored so
+    provider adapters can stay small and focused on their wire protocol.
+    """
+
+    if not isinstance(ack, dict):
+        return
+    events = ack.get("events")
+    if not isinstance(events, list):
+        return
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("kind") != kind:
+            continue
+        provider_item_id = event.get("provider_item_id")
+        audio_played_ms = event.get("audio_played_ms")
+        if not isinstance(provider_item_id, str) or not provider_item_id:
+            continue
+        if not isinstance(audio_played_ms, int) or audio_played_ms < 0:
+            continue
+        status = event.get("status")
+        yield TtsFlushSegment(
+            provider_item_id=provider_item_id,
+            audio_played_ms=audio_played_ms,
+            status=status if isinstance(status, str) else "",
+        )
 
 
 @runtime_checkable
@@ -175,6 +222,17 @@ class LiveTurn(Protocol):
     def clear_interrupted(self) -> None:
         """Reset the interrupted flag/event after the playback path has
         flushed its output in response."""
+        ...
+
+    async def on_tts_flush(self, ack: dict | None) -> None:
+        """Reconcile a local TTS flush with provider-side state.
+
+        Called only after the playback loop has observed an interruption
+        and flushed local output. Providers with a server-side truncate
+        API can use outputd's acknowledgement to tell the model exactly
+        how much assistant audio was heard; providers without that API
+        should make this a no-op or best-effort cancel.
+        """
         ...
 
 
