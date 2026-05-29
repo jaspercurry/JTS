@@ -2443,6 +2443,8 @@ against OpenAI is ~$2.40 per run.
 
 ## Branch and remote
 
-Active branch: `main`. The user's GitHub remote is
-`jaspercurry/JTS` — accessible via `mcp__github__*` tools, not
-the `gh` CLI.
+Active branch: `main`. The user's GitHub remote is `jaspercurry/JTS`.
+The `gh` CLI is authenticated here and is fine to use for GitHub
+operations (opening PRs, issues, API reads) — this holds for both Claude
+Code and Codex agents. The `mcp__github__*` tools also work when that MCP
+server is connected; either path is acceptable.
