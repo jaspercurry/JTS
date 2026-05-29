@@ -48,10 +48,10 @@ from jasper.sound.profile import (
     build_sound_filters,
     curve_payload,
     delete_named_profile,
-    estimate_compare_headroom_db,
     estimate_headroom_db,
     load_profile_library,
     load_profile,
+    loudness_compensation_db,
     profile_library_payload,
     rename_named_profile,
     response_component_payload,
@@ -59,6 +59,11 @@ from jasper.sound.profile import (
     save_named_profile,
     save_profile,
     simple_bands_payload,
+)
+from jasper.sound.settings import (
+    SoundSettings,
+    load_sound_settings,
+    save_sound_settings,
 )
 
 from ._common import (
@@ -87,6 +92,18 @@ def _camilla():
     return CamillaController(host, port)
 
 
+def _output_trim_db(profile: SoundProfile, settings: SoundSettings) -> float:
+    """Total post-EQ attenuation for this profile under the current global
+    settings: the manual headroom trim, plus the profile's loudness
+    compensation when match-loudness is on. Both default to 0, so the
+    default is no trim at all -- boosts boost. (The emitter additionally
+    ignores any trim on a flat profile, which can't clip from EQ.)"""
+    trim = settings.headroom_trim_db
+    if settings.match_loudness:
+        trim += loudness_compensation_db(profile)
+    return round(trim, 3)
+
+
 def _state_payload(
     profile: SoundProfile,
     *,
@@ -96,6 +113,7 @@ def _state_payload(
     from jasper.dsp_apply import dsp_write_epoch_from_state, last_dsp_apply_state
 
     last_dsp_apply = last_dsp_apply_state()
+    settings = load_sound_settings()
 
     payload = {
         "profile": profile.to_dict(),
@@ -107,6 +125,10 @@ def _state_payload(
         # profile is disabled (bypass) OR flat (no active filters). The
         # page opens on Off vs Saved based on this.
         "filter_count": len(build_sound_filters(profile)),
+        # Global output settings + the trim they imply for THIS profile, so
+        # the page can render the controls and show the effective trim.
+        "sound_settings": settings.to_dict(),
+        "output_trim_db": _output_trim_db(profile, settings),
         "limits": {
             "simple_gain_db": SIMPLE_EQ_LIMIT_DB,
             "advanced_gain_db": ADVANCED_GAIN_LIMIT_DB,
@@ -130,7 +152,7 @@ def _state_payload(
 def _log_live_draft_unavailable(
     *,
     reason: str,
-    compare_headroom_db: float,
+    output_trim_db: float,
     room_peq_count: int,
     sound_filter_count: int,
     error: Exception | None = None,
@@ -142,9 +164,9 @@ def _log_live_draft_unavailable(
     _live_draft_unavailable_log_at[reason] = now
     logger.warning(
         "event=sound.live_draft result=unavailable reason=%s "
-        "compare_headroom=%.1f room_peqs=%d sound_filters=%d err=%r",
+        "output_trim=%.1f room_peqs=%d sound_filters=%d err=%r",
         reason,
-        compare_headroom_db,
+        output_trim_db,
         room_peq_count,
         sound_filter_count,
         error,
@@ -159,6 +181,7 @@ async def _apply_profile(
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
+    settings = load_sound_settings()
     apply_state, out_path, stamped = await _load_profile_config(
         profile.with_timestamp(),
         profile_path=profile_path,
@@ -166,6 +189,7 @@ async def _apply_profile(
         camilla_factory=camilla_factory,
         source="sound",
         persist_profile=True,
+        output_trim_db=_output_trim_db(profile, settings),
     )
     logger.info(
         "event=sound.apply enabled=%s curve=%s "
@@ -197,14 +221,14 @@ async def _apply_profile(
 async def _audition_profile(
     profile: SoundProfile,
     *,
-    compare_profiles: list[SoundProfile],
     audition_mode: str = "draft",
     profile_path: str | Path,
     library_path: str | Path | None = None,
     config_dir: str | Path,
     camilla_factory: Callable[[], Any] = _camilla,
 ) -> dict[str, Any]:
-    compare_headroom_db = estimate_compare_headroom_db(compare_profiles or [profile])
+    settings = load_sound_settings()
+    output_trim_db = _output_trim_db(profile, settings)
     apply_state, out_path, loaded = await _load_profile_config(
         profile,
         profile_path=profile_path,
@@ -213,16 +237,16 @@ async def _audition_profile(
         source="sound_audition",
         persist_profile=False,
         audition=True,
-        compare_headroom_db=compare_headroom_db,
+        output_trim_db=output_trim_db,
     )
     logger.info(
         "event=sound.audition mode=%s enabled=%s curve=%s bands=%d "
-        "compare_headroom=%.1f room_peqs=%d config=%s op_id=%s",
+        "output_trim=%.1f room_peqs=%d config=%s op_id=%s",
         audition_mode,
         loaded.enabled,
         loaded.curve_id,
         len(loaded.parametric_bands),
-        compare_headroom_db,
+        output_trim_db,
         apply_state.room_peq_count or 0,
         out_path,
         apply_state.op_id,
@@ -237,7 +261,7 @@ async def _audition_profile(
         {
             "audition_profile": loaded.to_dict(),
             "audition_mode": audition_mode,
-            "audition_headroom_db": compare_headroom_db,
+            "output_trim_db": output_trim_db,
             "active_config_path": str(out_path),
             "preserved_room_peqs": apply_state.room_peq_count or 0,
             "last_dsp_apply": apply_state.to_dict(),
@@ -250,7 +274,6 @@ async def _audition_profile(
 async def _live_draft_profile(
     profile: SoundProfile,
     *,
-    compare_profiles: list[SoundProfile],
     expected_dsp_write_epoch: str,
     profile_path: str | Path,
     library_path: str | Path | None = None,
@@ -275,7 +298,8 @@ async def _live_draft_profile(
 
     cam = camilla_factory()
     config_path = Path(config_dir)
-    compare_headroom_db = estimate_compare_headroom_db(compare_profiles or [profile])
+    settings = load_sound_settings()
+    output_trim_db = _output_trim_db(profile, settings)
     sound_filter_count = len(build_sound_filters(profile))
     try:
         loader = getattr(cam, "set_active_config_raw")
@@ -299,7 +323,6 @@ async def _live_draft_profile(
             {
                 "live_status": status,
                 "live_method": method,
-                "live_headroom_db": compare_headroom_db,
                 "dsp_write_epoch": current_epoch,
                 "active_config_path": active_config_path,
                 "preserved_room_peqs": room_peq_count,
@@ -311,7 +334,6 @@ async def _live_draft_profile(
                 {
                     "audition_mode": "draft",
                     "audition_profile": profile.to_dict(),
-                    "audition_headroom_db": compare_headroom_db,
                 }
             )
         return payload
@@ -324,7 +346,7 @@ async def _live_draft_profile(
     ) -> dict[str, Any]:
         _log_live_draft_unavailable(
             reason=reason,
-            compare_headroom_db=compare_headroom_db,
+            output_trim_db=output_trim_db,
             room_peq_count=0,
             sound_filter_count=sound_filter_count,
             error=error,
@@ -375,8 +397,7 @@ async def _live_draft_profile(
             profile,
             room_peqs=room_peqs,
             profile_id=f"live-{time.time_ns()}",
-            headroom_override_db=compare_headroom_db,
-            emit_preamp_without_sound=True,
+            output_trim_db=output_trim_db,
         )
 
         try:
@@ -384,7 +405,7 @@ async def _live_draft_profile(
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason="active_config_raw_failed",
-                compare_headroom_db=compare_headroom_db,
+                output_trim_db=output_trim_db,
                 room_peq_count=len(room_peqs),
                 sound_filter_count=sound_filter_count,
                 error=e,
@@ -398,9 +419,9 @@ async def _live_draft_profile(
             )
 
         logger.info(
-            "event=sound.live_draft result=live compare_headroom=%.1f "
+            "event=sound.live_draft result=live output_trim=%.1f "
             "room_peqs=%d sound_filters=%d active_anchor=%s epoch=%s",
-            compare_headroom_db,
+            output_trim_db,
             len(room_peqs),
             sound_filter_count,
             current_path,
@@ -424,7 +445,7 @@ async def _load_profile_config(
     source: str,
     persist_profile: bool,
     audition: bool = False,
-    compare_headroom_db: float | None = None,
+    output_trim_db: float = 0.0,
 ) -> tuple[Any, Path, SoundProfile]:
     from jasper.sound.camilla_yaml import (
         BASE_CONFIG_PATH,
@@ -468,8 +489,7 @@ async def _load_profile_config(
             room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
-            headroom_override_db=compare_headroom_db,
-            emit_preamp_without_sound=compare_headroom_db is not None,
+            output_trim_db=output_trim_db,
         )
         return {
             "prior_config_path": current_path,
@@ -1796,6 +1816,7 @@ def _make_handler(
                 "/audition",
                 "/live-draft",
                 "/preview",
+                "/settings",
                 "/profiles/save",
                 "/profiles/rename",
                 "/profiles/delete",
@@ -1807,6 +1828,33 @@ def _make_handler(
                 return
             try:
                 raw = self._read_json()
+                if path == "/settings":
+                    settings = SoundSettings.from_mapping(raw)
+                    save_sound_settings(settings)
+                    logger.info(
+                        "event=sound.settings headroom_trim=%.1f match_loudness=%s",
+                        settings.headroom_trim_db,
+                        settings.match_loudness,
+                    )
+                    # Re-apply the active profile so the new output trim takes
+                    # effect now and persists in sound_current.yml. Settings are
+                    # already saved above, so a failed re-apply still sticks.
+                    try:
+                        payload = asyncio.run(
+                            _apply_profile(
+                                load_profile(profile_path),
+                                profile_path=profile_path,
+                                library_path=library_path,
+                                config_dir=config_dir,
+                                camilla_factory=camilla_factory,
+                            )
+                        )
+                    except Exception as e:  # noqa: BLE001
+                        logger.exception("sound settings re-apply failed")
+                        self._send_json({"error": str(e)}, status=502)
+                        return
+                    self._send_json(payload)
+                    return
                 if path.startswith("/profiles/"):
                     try:
                         if path == "/profiles/save":
@@ -1883,12 +1931,6 @@ def _make_handler(
                 return
             try:
                 if path in {"/audition", "/live-draft"}:
-                    raw_compare = raw.get("compare_profiles", [])
-                    if not isinstance(raw_compare, list):
-                        raw_compare = []
-                    compare_profiles = [
-                        SoundProfile.from_mapping(item) for item in raw_compare[:3]
-                    ]
                     if path == "/live-draft":
                         expected_epoch = raw.get("dsp_write_epoch")
                         if not isinstance(expected_epoch, str) or not expected_epoch:
@@ -1900,7 +1942,6 @@ def _make_handler(
                         payload = asyncio.run(
                             _live_draft_profile(
                                 profile,
-                                compare_profiles=compare_profiles,
                                 expected_dsp_write_epoch=expected_epoch,
                                 profile_path=profile_path,
                                 library_path=library_path,
@@ -1915,7 +1956,6 @@ def _make_handler(
                         payload = asyncio.run(
                             _audition_profile(
                                 profile,
-                                compare_profiles=compare_profiles,
                                 audition_mode=audition_mode,
                                 profile_path=profile_path,
                                 library_path=library_path,

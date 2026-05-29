@@ -27,7 +27,7 @@ from jasper.camilla_config_contract import (
     PeqFilter,
 )
 
-from .profile import FilterSpec, SoundProfile, build_sound_filters, estimate_headroom_db
+from .profile import FilterSpec, SoundProfile, build_sound_filters
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,7 @@ def _emit_filter_definitions(
     profile: SoundProfile,
     room_peqs: Iterable[PeqFilter],
     *,
-    headroom_override_db: float | None = None,
-    emit_preamp_without_sound: bool = False,
+    output_trim_db: float = 0.0,
 ) -> tuple[str, list[str], float]:
     lines: list[str] = []
     chain_names: list[str] = []
@@ -97,21 +96,25 @@ def _emit_filter_definitions(
         lines.extend(_emit_peq_filter(name, peq))
         chain_names.append(name)
 
-    natural_headroom_db = estimate_headroom_db(profile)
-    headroom_db = natural_headroom_db
-    if headroom_override_db is not None:
-        headroom_db = max(natural_headroom_db, max(0.0, float(headroom_override_db)))
+    # Preference boosts apply at unity: a +N dB band raises only that band
+    # and leaves the rest of the spectrum untouched, like a consumer EQ. The
+    # one optional global attenuation is the caller-supplied output trim
+    # (manual headroom and/or loudness matching, both opt-in, both default 0).
+    # With trim 0 there is no preamp at all -- boosts boost. The master
+    # volume_limit ceiling stays the hard clip guard regardless. The trim
+    # only applies when the profile has filters; a flat profile can't clip
+    # from EQ, so it plays at unity even if a headroom trim is configured.
     sound_filters = build_sound_filters(profile)
-    if sound_filters or emit_preamp_without_sound:
-        if headroom_db > 0.0:
-            lines.extend(_emit_gain_filter("sound_preamp", -headroom_db))
-            chain_names.append("sound_preamp")
-        for spec in sound_filters:
-            lines.extend(_emit_filter_spec(spec))
-            chain_names.append(spec.name)
+    trim_db = max(0.0, float(output_trim_db)) if sound_filters else 0.0
+    if trim_db > 0.0:
+        lines.extend(_emit_gain_filter("sound_preamp", -trim_db))
+        chain_names.append("sound_preamp")
+    for spec in sound_filters:
+        lines.extend(_emit_filter_spec(spec))
+        chain_names.append(spec.name)
 
     chain_names.append("flat")
-    return "\n".join(lines), chain_names, headroom_db
+    return "\n".join(lines), chain_names, round(trim_db, 3)
 
 
 def _emit_pipeline(chain_names: list[str]) -> str:
@@ -142,16 +145,14 @@ def emit_sound_config(
     volume_limit_db: float = DEFAULT_VOLUME_LIMIT_DB,
     out_path: str | Path | None = None,
     profile_id: str | None = None,
-    headroom_override_db: float | None = None,
-    emit_preamp_without_sound: bool = False,
+    output_trim_db: float = 0.0,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile."""
 
-    filter_yaml, chain_names, headroom_db = _emit_filter_definitions(
+    filter_yaml, chain_names, trim_db = _emit_filter_definitions(
         profile,
         room_peqs or [],
-        headroom_override_db=headroom_override_db,
-        emit_preamp_without_sound=emit_preamp_without_sound,
+        output_trim_db=output_trim_db,
     )
     pipeline_yaml = _emit_pipeline(chain_names)
     header_id = f" (id={profile_id})" if profile_id else ""
@@ -165,7 +166,7 @@ def emit_sound_config(
 # Room-correction PEQs, when present, run before sound-curve /
 # preference-EQ filters. The `master_gain` mixer remains identity so
 # the Ducker contract holds.
-# estimated_sound_headroom_db={headroom_db:.3f}
+# output_trim_db={trim_db:.3f}
 
 devices:
   samplerate: {sample_rate}
@@ -209,11 +210,11 @@ pipeline:
             )
         _atomic_write_text(out_path, yaml)
         logger.info(
-            "wrote sound config: %s (room_peqs=%d sound_filters=%d headroom=%.3f)",
+            "wrote sound config: %s (room_peqs=%d sound_filters=%d output_trim=%.3f)",
             out_path,
             len(room_peqs or []),
             len(build_sound_filters(profile)),
-            headroom_db,
+            trim_db,
         )
     return yaml
 

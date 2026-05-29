@@ -11,15 +11,20 @@ from .profile import (
     SoundProfile,
     delete_named_profile,
     build_sound_filters,
-    estimate_compare_headroom_db,
     estimate_headroom_db,
     load_profile_library,
+    loudness_compensation_db,
     profile_library_payload,
     rename_named_profile,
     response_component_payload,
     response_preview,
     save_named_profile,
     simple_bands_payload,
+)
+from .settings import (
+    SoundSettings,
+    load_sound_settings,
+    save_sound_settings,
 )
 
 __all__ = [
@@ -33,13 +38,16 @@ __all__ = [
     "SoundProfile",
     "delete_named_profile",
     "build_sound_filters",
-    "estimate_compare_headroom_db",
     "estimate_headroom_db",
     "load_profile_library",
+    "loudness_compensation_db",
     "profile_library_payload",
     "rename_named_profile",
     "response_component_payload",
     "response_preview",
     "save_named_profile",
     "simple_bands_payload",
+    "SoundSettings",
+    "load_sound_settings",
+    "save_sound_settings",
 ]
