@@ -608,6 +608,48 @@ _PAGE_CSS = """
 
   /* Saved tab */
   .saved-stack { display: flex; flex-direction: column; gap: 24px; }
+  /* Sound settings: match-loudness switch + advanced headroom */
+  .sound-settings { display: flex; flex-direction: column; gap: 6px; }
+  .setting-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+    padding: 14px 16px; border-radius: 14px; background: var(--foreground-005);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .setting-row--stack { align-items: stretch; flex-direction: column; gap: 12px; }
+  .setting-row__title { font-weight: 600; color: var(--foreground); }
+  .setting-row__hint { font-size: 0.8rem; color: var(--foreground); opacity: 0.6; margin-top: 2px; }
+  .advanced > summary {
+    cursor: pointer; padding: 10px 16px; color: var(--primary);
+    font-weight: 600; font-size: 0.9rem; list-style: none;
+  }
+  .advanced > summary::-webkit-details-marker { display: none; }
+  .headroom-control { display: flex; align-items: center; gap: 12px; }
+  .headroom-range { flex: 1; accent-color: var(--primary); }
+  .headroom-readout {
+    min-width: 4.5rem; text-align: right;
+    font-variant-numeric: tabular-nums; color: var(--foreground);
+  }
+  /* Canonical checkbox toggle (sage). Checkbox-based per web conventions. */
+  .toggle {
+    position: relative; display: inline-block; flex-shrink: 0;
+    width: 48px; height: 28px;
+  }
+  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .toggle .track {
+    position: absolute; inset: 0; background: var(--foreground-020);
+    border-radius: 28px; cursor: pointer; transition: background-color 0.18s ease;
+  }
+  .toggle .track::before {
+    position: absolute; content: ""; width: 22px; height: 22px; top: 3px; left: 3px;
+    background: var(--background); border-radius: 50%;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25); transition: transform 0.18s ease;
+  }
+  .toggle input:checked + .track { background: var(--primary); }
+  .toggle input:checked + .track::before { transform: translateX(20px); }
+  .toggle input:focus-visible + .track { outline: 2px solid var(--primary); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .toggle .track, .toggle .track::before { transition: none; }
+  }
   .section-header {
     display: flex; align-items: flex-end; justify-content: space-between;
     padding: 0 4px; margin-bottom: 12px;
@@ -854,6 +896,7 @@ _SOUND_JS = r"""
 
   var applied = FLAT();        // persisted profile
   var library = [];            // [{id,name,kind,editable,description,profile,...}]
+  var soundSettings = {headroom_trim_db: 0, match_loudness: false};  // global output settings
   var curvesById = {};
   var dspWriteEpoch = 'none';
   var applying = false;
@@ -1137,7 +1180,7 @@ _SOUND_JS = r"""
     var summary = el('plot-summary');
     if (summary) {
       summary.textContent = enabled
-        ? 'EQ response preview. Peak boost ' + fmtDb(peak) + ' dB, headroom ' + fmtDb(payload.headroom_db || 0) + ' dB.'
+        ? 'EQ response preview. Peak boost ' + fmtDb(peak) + ' dB.'
         : 'EQ bypassed. Flat response.';
     }
   }
@@ -1217,7 +1260,39 @@ _SOUND_JS = r"""
     var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
       '<div class="list-card"><div class="list-card__rows">' +
         presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
-    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
+    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection +
+      renderSoundSettings() + '</div>';
+  }
+  function fmtTrim(v) { v = Number(v) || 0; return v > 0 ? '−' + v.toFixed(1) + ' dB' : 'Off'; }
+  function renderSoundSettings() {
+    var ml = soundSettings.match_loudness ? ' checked' : '';
+    var trim = Number(soundSettings.headroom_trim_db) || 0;
+    // max 12 mirrors HEADROOM_TRIM_MAX_DB; the backend clamps authoritatively.
+    return '<section class="sound-settings">' +
+      '<div class="setting-row">' +
+        '<div class="setting-row__text">' +
+          '<p class="setting-row__title">Match loudness</p>' +
+          '<p class="setting-row__hint">Level-match profiles so switching compares tone, not volume.</p>' +
+        '</div>' +
+        '<label class="toggle"><input type="checkbox" id="set-match-loudness"' + ml +
+          ' aria-label="Match loudness"><span class="track"></span></label>' +
+      '</div>' +
+      '<details class="advanced"' + (trim > 0 ? ' open' : '') + '>' +
+        '<summary>Advanced</summary>' +
+        '<div class="setting-row setting-row--stack">' +
+          '<div class="setting-row__text">' +
+            '<p class="setting-row__title">Extra headroom</p>' +
+            '<p class="setting-row__hint">Digital attenuation for full-volume setups into your own amp. ' +
+              'Leave at Off unless you hear clipping.</p>' +
+          '</div>' +
+          '<div class="headroom-control">' +
+            '<input type="range" class="headroom-range" id="set-headroom" min="0" max="12" step="0.5" value="' +
+              trim + '" aria-label="Extra headroom in dB">' +
+            '<span class="headroom-readout" id="set-headroom-readout">' + fmtTrim(trim) + '</span>' +
+          '</div>' +
+        '</div>' +
+      '</details>' +
+    '</section>';
   }
 
   function rangeRow(label, value, min, max, opts) {
@@ -1365,10 +1440,6 @@ _SOUND_JS = r"""
   }
 
   // ---- backend integration -------------------------------------------
-  function compareProfiles() {
-    return [normalizeProfile(applied), normalizeProfile(draft),
-            Object.assign(normalizeProfile(draft), {enabled: false})];
-  }
   function schedulePreview() {
     renderLiveGraph();          // optimistic local graph
     window.clearTimeout(previewTimer);
@@ -1401,7 +1472,7 @@ _SOUND_JS = r"""
     var seq = liveSeq;
     try {
       var resp = await fetch('./live-draft', {method: 'POST', headers: jsonHeaders(),
-        body: JSON.stringify({profile: draft, compare_profiles: compareProfiles(), dsp_write_epoch: dspWriteEpoch})});
+        body: JSON.stringify({profile: draft, dsp_write_epoch: dspWriteEpoch})});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'live draft failed');
       if (seq === liveSeq) {
@@ -1448,12 +1519,32 @@ _SOUND_JS = r"""
     } finally { applying = false; }
   }
 
+  // Global sound settings (match-loudness, headroom). Optimistic: the
+  // controls already show the user's input, so on success we just ingest
+  // (audio is re-applied server-side); on failure we revert and re-render.
+  async function saveSettings(patch) {
+    var prev = soundSettings;
+    soundSettings = Object.assign({}, soundSettings, patch);
+    try {
+      var resp = await fetch('./settings', {method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify(soundSettings)});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'settings failed');
+      ingestState(payload);
+    } catch (e) {
+      soundSettings = prev;
+      status('Could not save sound settings: ' + e.message, true);
+      render();
+    }
+  }
+
   function ingestState(payload) {
     limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
     simpleBands = limits.simple_bands || [];
     if (payload.curves) { curvesById = {}; payload.curves.forEach(function(c) { curvesById[c.id] = c; }); }
     if (payload.profile_library) library = payload.profile_library;
     if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
+    if (payload.sound_settings) soundSettings = payload.sound_settings;
     applied = normalizeProfile(payload.profile || {});
   }
 
@@ -1578,7 +1669,15 @@ _SOUND_JS = r"""
     }
   });
   el('view-body').addEventListener('input', function(ev) {
-    if (ev.target.id === 'name-input') nameDraft = ev.target.value;
+    if (ev.target.id === 'name-input') { nameDraft = ev.target.value; return; }
+    if (ev.target.id === 'set-headroom') {
+      var ro = el('set-headroom-readout');           // live readout; commit on 'change'
+      if (ro) ro.textContent = fmtTrim(ev.target.value);
+    }
+  });
+  el('view-body').addEventListener('change', function(ev) {
+    if (ev.target.id === 'set-match-loudness') saveSettings({match_loudness: ev.target.checked});
+    else if (ev.target.id === 'set-headroom') saveSettings({headroom_trim_db: Number(ev.target.value)});
   });
   el('view-body').addEventListener('keydown', function(ev) {
     if (ev.target.id !== 'name-input') return;
