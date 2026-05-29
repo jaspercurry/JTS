@@ -124,6 +124,34 @@ def test_validate_advisor_response_rejects_out_of_bounds_peq(tmp_path: Path):
     } >= {"gain_db_out_of_range"}
 
 
+def test_validate_advisor_response_accepts_new_simple_bands(tmp_path: Path):
+    # The 5-band Simple model added sub_bass_db / presence_db. The advisor
+    # may now propose them; they survive validation.
+    raw = _valid_response()
+    raw["action_plan"][1]["profile"]["simple_eq"]["sub_bass_db"] = 2.0
+    raw["action_plan"][1]["profile"]["simple_eq"]["presence_db"] = -1.5
+
+    result = response.validate_advisor_response(raw, advisor_context=_context(tmp_path))
+
+    assert result["accepted"] is True
+    simple = result["validated_action_plan"][1]["profile"]["simple_eq"]
+    assert simple["sub_bass_db"] == 2.0
+    assert simple["presence_db"] == -1.5
+
+
+def test_validate_advisor_response_range_checks_new_simple_bands(tmp_path: Path):
+    # The validator must bound the new bands too, not just bass/mid/treble.
+    raw = _valid_response()
+    raw["action_plan"][1]["profile"]["simple_eq"]["presence_db"] = 50.0
+
+    result = response.validate_advisor_response(raw, advisor_context=_context(tmp_path))
+
+    assert result["accepted"] is False
+    assert {
+        issue["code"] for issue in result["issues"]
+    } >= {"presence_db_out_of_range"}
+
+
 def test_validate_advisor_response_marks_persistent_commit_approval_boundary(
     tmp_path: Path,
 ):

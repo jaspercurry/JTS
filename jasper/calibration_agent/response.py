@@ -20,6 +20,7 @@ from jasper.sound.profile import (
     MAX_PROFILE_NAME_CHARS,
     MIN_FREQ_HZ,
     MIN_Q,
+    SIMPLE_EQ_FIELDS,
     SIMPLE_EQ_LIMIT_DB,
     ParametricBand,
     SoundProfile,
@@ -481,7 +482,7 @@ def _validate_profile(raw: Any, *, index: int) -> tuple[list[dict[str, Any]], di
 
     simple = raw.get("simple_eq", raw)
     if isinstance(simple, dict):
-        for field in ("bass_db", "mid_db", "treble_db"):
+        for field in SIMPLE_EQ_FIELDS:
             if field in simple:
                 _validate_range(
                     simple[field],

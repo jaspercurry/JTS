@@ -202,6 +202,37 @@ Static regression coverage for these conventions lives in
 If that test catches a new page, change the page to use the shared
 primitive unless there is a documented, reviewed reason not to.
 
+### Canonical design system (new look)
+
+The management UI is migrating to the redesigned look first shipped on
+the landing page ([`deploy/index.html`](deploy/index.html)): an oklch
+sage/beige palette with Figtree + Outfit. The shared design layer is a
+single static stylesheet, [`deploy/assets/app.css`](deploy/assets/app.css)
+— tokens, base reset, `@font-face`, and shared component primitives
+(`.page`, `.eyebrow`, `.segmented`, `.btn`, `.ico`, focus/reduced-motion).
+nginx serves it from `/assets/` (the same path as the fonts); `install.sh`
+installs it.
+
+A page adopts the new look by rendering with
+[`canonical_page()`](jasper/web/_common.py) instead of the legacy
+`wrap_page()`. `canonical_page(title, body, *, csrf_token, page_css)`
+emits the document shell — doctype, the cache-busted
+`/assets/app.css?v=<build-sha>` link, the CSRF meta tag, the shared inline
+icon sprite (`CANONICAL_ICON_SPRITE`), and the body. **Page-specific CSS
+goes in `page_css`; never add single-page rules to `app.css`.** Each page
+stays self-contained (no shared-CSS single point of failure beyond nginx,
+which every page already depends on for fonts); `jasper-doctor`'s
+`check_web_design_assets` warns if `app.css` is missing.
+
+[`jasper/web/sound_setup.py`](jasper/web/sound_setup.py) (`/sound/`) is
+the first wizard on this system and is the reference implementation. The
+legacy `PAGE_STYLE`/`wrap_page` path remains for un-migrated wizards;
+don't mix the two on one page. The design tokens currently live in both
+`deploy/index.html` and `app.css` until the landing page is migrated to
+link the stylesheet — a test
+([`tests/test_web_design_system.py`](tests/test_web_design_system.py))
+guards the two token blocks against drift.
+
 ---
 
 ## Deploying code changes to the Pi
@@ -2415,6 +2446,7 @@ against OpenAI is ~$2.40 per run.
 Active branch: `main`. The user's GitHub remote is
 `jaspercurry/JTS`. Use the `gh` CLI for GitHub operations (PRs,
 issues, API) — it is authenticated locally as the `jaspercurry`
-account. (A GitHub MCP may also be available in some sessions, but
-it is not reliably loaded; `gh` is the dependable path. The earlier
+account, and this applies whether you're on Claude Code or Codex.
+(A GitHub MCP may also be available in some sessions, but it is not
+reliably loaded; `gh` is the dependable path. The earlier
 "`mcp__github__*`, not `gh`" guidance here was a Codex-era artifact.)

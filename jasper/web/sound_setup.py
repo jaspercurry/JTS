@@ -10,6 +10,14 @@ URL surface (after nginx strips /sound/):
   POST /profiles/rename rename a named custom profile
   POST /profiles/delete delete a named custom profile
   POST /apply    validate, persist, emit CamillaDSP config, load it
+
+The page is built on the canonical design system (jasper.web._common.
+canonical_page + /assets/app.css). The view's Off / Saved / Draft tabs
+ARE the live source: Off auditions bypass, Saved applies a chosen
+profile, Draft hot-loads the working bands via /live-draft while editing
+and commits via the Save footer. All durable writes go through /apply;
+the safety floor (volume_limit, headroom preamp, room-PEQ preservation)
+lives in the backend and is untouched here.
 """
 
 from __future__ import annotations
@@ -50,17 +58,16 @@ from jasper.sound.profile import (
     response_preview,
     save_named_profile,
     save_profile,
+    simple_bands_payload,
 )
 
 from ._common import (
-    TOGGLE_CSS,
     begin_request,
+    canonical_page,
     csrf_fetch_helpers_js,
-    csrf_meta_html,
     reject_csrf,
     send_html_response,
     verify_csrf,
-    wrap_page,
 )
 
 logger = logging.getLogger(__name__)
@@ -104,6 +111,7 @@ def _state_payload(
             "max_freq_hz": MAX_FREQ_HZ,
             "min_q": MIN_Q,
             "max_q": MAX_Q,
+            "simple_bands": simple_bands_payload(),
         },
         "last_dsp_apply": last_dsp_apply,
         "dsp_write_epoch": dsp_write_epoch_from_state(last_dsp_apply),
@@ -156,13 +164,16 @@ async def _apply_profile(
         persist_profile=True,
     )
     logger.info(
-        "event=sound.apply enabled=%s curve=%s bass=%.1f mid=%.1f treble=%.1f "
-        "room_peqs=%d config=%s op_id=%s",
+        "event=sound.apply enabled=%s curve=%s "
+        "simple=%.1f/%.1f/%.1f/%.1f/%.1f bands=%d room_peqs=%d config=%s op_id=%s",
         stamped.enabled,
         stamped.curve_id,
+        stamped.simple_eq.sub_bass_db,
         stamped.simple_eq.bass_db,
         stamped.simple_eq.mid_db,
+        stamped.simple_eq.presence_db,
         stamped.simple_eq.treble_db,
+        len(stamped.parametric_bands),
         apply_state.room_peq_count or 0,
         out_path,
         apply_state.op_id,
@@ -481,392 +492,406 @@ async def _load_profile_config(
     return apply_state, out_path, profile
 
 
-_PAGE_CSS = f"""
-<style>
-{TOGGLE_CSS}
-  .toolbar {{
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 1em; padding: 0.8em 0; border-bottom: 1px solid #eee;
-  }}
-  .toolbar-title {{ font-weight: 700; color: #222; }}
-  .eq-grid {{ display: grid; grid-template-columns: 1fr; gap: 1em; }}
-  .eq-grid > * {{ min-width: 0; }}
-  .field {{ margin: 1.1em 0; }}
-  .profile-panel {{
-    display: grid; gap: 0.75em; padding: 1em 0; border-bottom: 1px solid #eee;
-  }}
-  .profile-panel label {{ margin-top: 0; }}
-  .profile-row {{ display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.45em; }}
-  .profile-actions {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.55em; }}
-  .profile-actions.stock {{ grid-template-columns: minmax(0, 1fr); }}
-  .profile-actions button {{ min-height: 44px; padding-left: 0.7em; padding-right: 0.7em; }}
-  .profile-actions button[hidden] {{ display: none; }}
-  .profile-menu {{
-    margin-top: 0.2em; border-top: 1px solid #ececec; padding-top: 0.65em;
-  }}
-  .profile-menu summary {{
-    cursor: pointer; color: #555; min-height: 44px; display: flex;
-    align-items: center; width: fit-content;
-  }}
-  .profile-menu[open] summary {{ margin-bottom: 0.4em; }}
-  .profile-note {{ color: #666; font-size: 0.92em; }}
-  .profile-state {{
-    display: grid; gap: 0.25em; padding: 0.75em; border: 1px solid #e6e6e6;
-    border-radius: 6px; background: #fafafa; color: #444;
-  }}
-  .profile-state strong {{ color: #222; }}
-  select, input[type=number], input[type=text] {{ max-width: 100%; }}
-  input[type=number], input[type=text] {{
-    width: 100%; padding: 0.45em; border: 1px solid #bbb;
-    border-radius: 4px; font-size: 1em; box-sizing: border-box;
-  }}
-  .compare-row {{
-    display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.5em;
-    padding: 1em 0; border-bottom: 1px solid #eee;
-  }}
-  .compare-row label {{ margin-top: 0; }}
-  .segmented {{
-    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.35em;
-    margin-top: 0.4em;
-  }}
-  .segmented button {{
-    background: #ededed; color: #222; min-height: 44px; padding: 0.65em 0.4em;
-  }}
-  .segmented button.active {{
-    background: #1db954; color: white; font-weight: 700;
-  }}
-  .compare-note {{ color: #666; font-size: 0.92em; }}
-  .mode-row {{
-    display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.35em;
-    margin: 1em 0 0.25em;
-  }}
-  .mode-row button {{
-    background: #ededed; color: #222; min-height: 44px; padding: 0.65em 0.4em;
-  }}
-  .mode-row button.active {{
-    background: #0b7285; color: white; font-weight: 700;
-  }}
-  .slider-row {{
-    display: grid;
-    grid-template-columns: minmax(3.7em, 4.5em) minmax(0, 1fr) minmax(3.8em, 4.2em);
-    align-items: center; gap: 0.8em; margin: 1.2em 0;
-  }}
-  .slider-row label {{ margin: 0; }}
-  input[type=range] {{ width: 100%; accent-color: #1db954; }}
-  .value {{ font-variant-numeric: tabular-nums; text-align: right; color: #444; }}
-  .button-row {{ display: flex; flex-wrap: wrap; gap: 0.7em; margin-top: 1.2em; }}
-  .status-line {{ min-height: 1.4em; color: #555; margin-top: 0.8em; }}
-  .status-line.err {{ color: #b42318; }}
-  .plot {{
-    display: block; box-sizing: border-box;
-    width: 100%; max-width: 100%; height: 190px; margin: 1em 0 0;
-    border: 1px solid #ddd; border-radius: 6px; background: #fbfbfb;
-  }}
-  .plot text {{ fill: #777; font-size: 11px; }}
-  .plot .grid {{ stroke: #e3e3e3; stroke-width: 1; }}
-  .plot .zero {{ stroke: #b8b8b8; stroke-width: 1.2; }}
-  .plot .component {{ fill: none; stroke: #9aa1a8; stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.7; }}
-  .plot .component.selected {{ stroke: #0b7285; stroke-width: 2; stroke-dasharray: none; opacity: 0.95; }}
-  .plot .curve {{ fill: none; stroke: #1db954; stroke-width: 2.5; }}
-  .plot .band-width {{ fill: #0b7285; opacity: 0.08; }}
-  .plot .band-width.selected {{ opacity: 0.13; }}
-  .plot .band-marker {{ stroke: #0b7285; stroke-width: 1.2; stroke-dasharray: 3 4; opacity: 0.85; }}
-  .plot .band-dot {{ fill: #fbfbfb; stroke: #0b7285; stroke-width: 2; }}
-  .plot .band-dot.selected {{ fill: #0b7285; }}
-  .plot.off .curve {{ stroke: #888; stroke-dasharray: 5 4; }}
-  .meta-row {{
-    display: flex; flex-wrap: wrap; gap: 0.8em; color: #666;
-    font-size: 0.92em; margin-top: 0.5em;
-  }}
-  .curve-description {{ color: #666; margin-top: 0.35em; }}
-  .advanced-eq {{
-    border: 1px solid #e2e2e2; border-radius: 6px; overflow: hidden;
-  }}
-  .advanced-body {{ padding: 0.9em; }}
-  .advanced-top {{
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 0.8em; margin-bottom: 0.8em; color: #666; font-size: 0.92em;
-  }}
-  .band-list {{ display: grid; gap: 0.75em; }}
-  .band-empty {{
-    color: #666; background: #fafafa; border: 1px dashed #ccc;
-    border-radius: 6px; padding: 0.9em;
-  }}
-  .band-item {{
-    border: 1px solid #ddd; border-radius: 6px; padding: 0.85em;
-    background: #fff;
-  }}
-  .band-item.selected {{ border-color: #0b7285; box-shadow: inset 0 0 0 1px #0b7285; }}
-  .band-head {{
-    display: flex; align-items: center; gap: 0.6em; margin-bottom: 0.75em;
-  }}
-  .band-head label {{ margin: 0; flex: 1; }}
-  .band-head button {{ padding: 0.45em 0.7em; min-height: 44px; }}
-  .band-controls {{ display: grid; gap: 0.8em; }}
-  .band-controls .slider-row {{ margin: 0; grid-template-columns: minmax(4.2em, 5.2em) minmax(0, 1fr) minmax(4.6em, 5.4em); }}
-  .band-type-row {{
-    display: grid; grid-template-columns: minmax(4.2em, 5.2em) minmax(0, 1fr);
-    align-items: center; gap: 0.8em;
-  }}
-  .band-type-row label {{ margin: 0; }}
-  button.tiny {{ padding: 0.45em 0.7em; font-size: 0.92em; min-height: 44px; }}
-  .freq-number {{
-    width: 100%;
-    font-variant-numeric: tabular-nums;
-  }}
-  .sr-only {{
-    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
-  }}
-  @media (max-width: 520px) {{
-    body {{ padding: 0 0.8em; }}
-    .slider-row, .band-controls .slider-row {{
-      grid-template-columns: 1fr;
-      gap: 0.35em;
-    }}
-    .value {{ text-align: left; }}
-    .band-type-row {{ grid-template-columns: 1fr; gap: 0.35em; }}
-    .segmented, .mode-row {{ grid-template-columns: 1fr; }}
-    .band-head {{ flex-wrap: wrap; }}
-    .band-head label {{ flex: 1 1 100%; }}
-    .band-head button {{ flex: 1 1 calc(50% - 0.3em); }}
-    .profile-actions {{
-      display: grid;
-      grid-template-columns: 1fr;
-    }}
-    .profile-actions button {{ width: 100%; min-height: 44px; }}
-    .button-row {{
-      display: grid;
-      grid-template-columns: 1fr;
-    }}
-    .button-row button {{ width: 100%; min-height: 44px; }}
-  }}
-</style>
+# Page-specific component CSS. Shared primitives (.page, .eyebrow,
+# .segmented, .btn, .sr-only, tokens, fonts) live in /assets/app.css;
+# only the sound-editor components live here. canonical_page() wraps
+# this in a <style> tag.
+_PAGE_CSS = """
+  .app-header {
+    position: sticky; top: 0; z-index: 30;
+    background: color-mix(in oklab, var(--background) 92%, transparent);
+    backdrop-filter: blur(8px);
+  }
+  .app-header__row {
+    display: grid; grid-template-columns: 40px 1fr 40px; align-items: center;
+    height: 56px; max-width: 48rem; margin: 0 auto; padding: 0 1.5rem;
+  }
+  .app-header__title {
+    margin: 0; text-align: center;
+    font-family: var(--font-display); font-size: 16px; font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  .app-header__tabs { border-bottom: 1px solid var(--border); }
+  .app-header__tabs > div { max-width: 48rem; margin: 0 auto; padding: 12px 1.5rem; }
+  .icon-button {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 32px; height: 32px; border-radius: 9999px;
+    color: var(--muted-foreground);
+    box-shadow: inset 0 0 0 1px var(--border);
+    background: color-mix(in oklab, var(--secondary) 60%, transparent);
+    transition: background 150ms ease, color 150ms ease;
+  }
+  .icon-button:hover { color: var(--foreground); background: var(--surface-hover); }
+  @media (min-width: 768px) {
+    .app-header__row, .app-header__tabs > div { padding-left: 2.5rem; padding-right: 2.5rem; }
+  }
+
+  .row-between {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    gap: 8px; padding: 0 4px; margin-bottom: 12px;
+  }
+  .now-playing { padding-bottom: 28px; }
+  .now-playing__label {
+    font-family: var(--font-display); font-size: 12px; font-weight: 500;
+    color: var(--foreground);
+    max-width: 62%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .graph-card {
+    border-radius: var(--radius-md); padding: 12px;
+    background: var(--foreground-005);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .eq-graph { display: block; width: 100%; height: auto; }
+  .eq-graph text { fill: var(--muted-foreground); font-family: var(--font-display); font-size: 9px; }
+  .eq-graph .grid { stroke: var(--foreground-010); stroke-width: 1; stroke-dasharray: 2 3; }
+  .eq-graph .zero { stroke: var(--foreground-020); stroke-width: 1; }
+  .eq-graph .component {
+    fill: none; stroke: color-mix(in oklab, var(--muted-foreground) 55%, transparent);
+    stroke-width: 1.5; stroke-dasharray: 4 4; opacity: 0.7;
+  }
+  .eq-graph .component.selected {
+    stroke: var(--accent-strong); stroke-width: 2; stroke-dasharray: none; opacity: 0.95;
+  }
+  .eq-graph .area { fill: color-mix(in oklab, var(--accent) 14%, transparent); stroke: none; }
+  .eq-graph .curve { fill: none; stroke: var(--primary); stroke-width: 2.5; stroke-linejoin: round; }
+  .eq-graph.off .curve { stroke: var(--foreground-020); stroke-dasharray: 5 4; }
+  .eq-graph .band-width { fill: var(--primary); opacity: 0.08; }
+  .eq-graph .band-width.selected { opacity: 0.14; }
+  .eq-graph .band-marker { stroke: var(--primary-040); stroke-width: 1.2; stroke-dasharray: 3 4; }
+  .eq-graph .band-dot { fill: var(--background); stroke: var(--primary); stroke-width: 2; }
+  .eq-graph .band-dot.selected { fill: var(--primary); }
+
+  .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+
+  /* Off empty state */
+  .off-card {
+    border-radius: var(--radius-lg); padding: 24px; text-align: center;
+    background: color-mix(in oklab, var(--secondary) 40%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .off-card__icon {
+    width: 48px; height: 48px; margin: 0 auto 16px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 9999px; color: var(--primary);
+    background: var(--accent-faint);
+  }
+  .off-card__icon svg { width: 22px; height: 22px; }
+  .off-card__text { max-width: 360px; margin: 0 auto; color: var(--muted-foreground); }
+  .off-card .btn-row { justify-content: center; margin-top: 20px; }
+
+  /* Saved tab */
+  .saved-stack { display: flex; flex-direction: column; gap: 24px; }
+  .section-header {
+    display: flex; align-items: flex-end; justify-content: space-between;
+    padding: 0 4px; margin-bottom: 12px;
+  }
+  .text-button {
+    font-family: var(--font-display); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0;
+    color: var(--primary); cursor: pointer;
+    display: inline-flex; align-items: center; gap: 4px;
+  }
+  .text-button:hover { color: color-mix(in oklab, var(--primary) 80%, black); }
+  .text-button--muted { color: var(--muted-foreground); }
+  .text-button--muted:hover { color: var(--foreground); }
+  .text-button svg { width: 12px; height: 12px; }
+  .list-card {
+    border-radius: var(--radius-lg); overflow: hidden;
+    background: color-mix(in oklab, var(--secondary) 40%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .list-card__rows > * + * { border-top: 1px solid var(--border); }
+  .empty-card {
+    border-radius: var(--radius-lg); padding: 24px 16px; text-align: center;
+    background: color-mix(in oklab, var(--secondary) 40%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .empty-card p { color: var(--muted-foreground); margin: 0; }
+  .empty-card .btn { margin-top: 12px; }
+  .profile-row { display: flex; align-items: center; gap: 12px; padding: 12px 16px; }
+  .profile-row__select {
+    flex: 1; display: flex; align-items: center; gap: 12px; text-align: left;
+    background: none; cursor: pointer; min-width: 0;
+  }
+  .profile-row__dot {
+    width: 8px; height: 8px; border-radius: 9999px; flex-shrink: 0;
+    background: var(--foreground-020);
+  }
+  .profile-row__dot--on {
+    background: var(--primary);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 30%, transparent);
+  }
+  .profile-row__name { margin: 0; font-size: 14px; font-weight: 500; }
+  .profile-row__meta { margin: 2px 0 0; font-size: 12px; color: var(--muted-foreground); }
+  .profile-row__actions { display: flex; gap: 4px; flex-shrink: 0; }
+  .profile-row__action {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 36px; height: 36px; border-radius: var(--radius-md);
+    color: var(--muted-foreground); cursor: pointer;
+    transition: background 150ms ease, color 150ms ease;
+  }
+  .profile-row__action:hover { background: var(--foreground-005); color: var(--foreground); }
+  .profile-row__action--danger:hover {
+    background: color-mix(in oklab, var(--danger) 10%, transparent); color: var(--danger);
+  }
+  .profile-row__action svg { width: 16px; height: 16px; }
+
+  /* Draft editor */
+  .mode-toggle { padding-bottom: 16px; }
+  .bands-section { padding-bottom: 28px; }
+  .bands-section .row-between span {
+    font-family: var(--font-display); font-size: 12px; font-weight: 500;
+    color: var(--muted-foreground);
+  }
+  .bands-meta { display: flex; gap: 12px; align-items: center; }
+  .bands-card {
+    border-radius: var(--radius-lg);
+    background: color-mix(in oklab, var(--secondary) 40%, transparent);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .bands-card--simple { padding: 20px 8px; }
+  .bands-card__rows > * + * { border-top: 1px solid var(--border); }
+  .add-band {
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    width: 100%; padding: 14px 16px; cursor: pointer;
+    font-family: var(--font-display); font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0; color: var(--primary);
+  }
+  .add-band:hover { background: var(--foreground-005); }
+  .add-band:disabled { color: var(--muted-foreground); cursor: not-allowed; }
+  .add-band svg { width: 14px; height: 14px; }
+
+  .band-row { padding: 14px 16px; }
+  .band-row__header {
+    display: flex; width: 100%; align-items: center; justify-content: space-between;
+    text-align: left; background: none; cursor: pointer;
+  }
+  .band-row__title { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  .band-row__name { margin: 0; font-size: 14px; font-weight: 500; }
+  .band-row__meta {
+    margin: 2px 0 0; font-size: 12px; color: var(--muted-foreground);
+  }
+  .band-row__chev {
+    width: 16px; height: 16px; flex-shrink: 0;
+    color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+    transition: transform 150ms ease;
+  }
+  .band-row[data-open="true"] .band-row__chev { transform: rotate(180deg); }
+  .band-row__body { margin-top: 16px; padding-left: 36px; display: flex; flex-direction: column; gap: 16px; }
+  .band-row__delete {
+    display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+    font-family: var(--font-display); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0; color: var(--muted-foreground);
+  }
+  .band-row__delete:hover { color: var(--danger); }
+  .band-row__delete svg { width: 12px; height: 12px; }
+
+  .band-dot {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 24px; height: 24px; border-radius: 9999px; flex-shrink: 0;
+    font-family: var(--font-display); font-size: 11px; font-weight: 600;
+    background: var(--accent-faint); color: var(--primary);
+    transition: all 150ms ease;
+  }
+  .band-dot--active {
+    width: 28px; height: 28px; background: var(--primary); color: var(--primary-foreground);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 40%, transparent);
+  }
+
+  /* Range rows (PEQ) + vertical ranges (Simple) */
+  .range-row { display: flex; align-items: center; gap: 12px; }
+  .range-row__label {
+    width: 52px; flex-shrink: 0;
+    font-family: var(--font-display); font-size: 11px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0; color: var(--muted-foreground);
+  }
+  .range { position: relative; height: 36px; flex: 1; }
+  .range__track {
+    position: absolute; inset-inline: 0; top: 50%; height: 4px;
+    transform: translateY(-50%); border-radius: 9999px; background: var(--foreground-010);
+  }
+  .range__thumb {
+    position: absolute; top: 50%; width: 12px; height: 28px; border-radius: 9999px;
+    background: var(--primary); transform: translateY(-50%); pointer-events: none;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), inset 0 0 0 1px var(--border);
+  }
+  .range__fill-track {
+    position: absolute; inset: 0; border-radius: var(--radius-sm); overflow: hidden;
+    background: var(--foreground-005); box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .range__fill { position: absolute; inset-block: 0; left: 0; background: var(--accent); }
+  .range__input {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+    appearance: none; -webkit-appearance: none; background: transparent;
+    cursor: pointer; opacity: 0;
+  }
+  .range__readout { width: 78px; flex-shrink: 0; text-align: right; }
+  .range__readout-btn, .range__readout-input {
+    width: 100%; padding: 2px 4px; border-radius: 4px; text-align: right;
+    font-family: var(--font-display); font-size: 12px; font-weight: 500;
+  }
+  .range__readout-btn { cursor: text; color: var(--foreground); }
+  .range__readout-btn:hover { background: var(--foreground-005); }
+  .range__readout-input {
+    background: var(--foreground-005); box-shadow: inset 0 0 0 1px var(--primary);
+    outline: none; appearance: textfield; -moz-appearance: textfield;
+  }
+  .range__readout-input::-webkit-outer-spin-button,
+  .range__readout-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+  .simple-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .simple-col { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .simple-col__readout { height: 24px; }
+  .simple-col__readout-btn, .simple-col__readout-input {
+    width: 56px; padding: 2px 4px; border-radius: 4px; text-align: center;
+    font-family: var(--font-display); font-size: 12px; font-weight: 500;
+  }
+  .simple-col__readout-btn { cursor: text; color: var(--foreground); }
+  .simple-col__readout-btn:hover { background: var(--foreground-005); }
+  .simple-col__readout-input {
+    background: var(--foreground-005); box-shadow: inset 0 0 0 1px var(--primary);
+    outline: none; appearance: textfield; -moz-appearance: textfield;
+  }
+  .simple-col__readout-input::-webkit-outer-spin-button,
+  .simple-col__readout-input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+  .vrange { position: relative; width: 36px; height: 168px; }
+  .vrange__track {
+    position: absolute; inset-block: 0; left: 50%; width: 4px;
+    transform: translateX(-50%); border-radius: 9999px; background: var(--foreground-010);
+  }
+  .vrange__zero {
+    position: absolute; left: 50%; top: 50%; width: 16px; height: 1px;
+    transform: translate(-50%, -50%); background: var(--foreground-020);
+  }
+  .vrange__thumb {
+    position: absolute; left: 50%; width: 28px; height: 12px; border-radius: 9999px;
+    background: var(--primary); transform: translateX(-50%); pointer-events: none;
+    box-shadow: 0 1px 2px rgb(0 0 0 / 0.08), inset 0 0 0 1px var(--border);
+  }
+  .vrange__input {
+    position: absolute; inset: 0; width: 100%; height: 100%; margin: 0;
+    appearance: none; -webkit-appearance: none; background: transparent;
+    cursor: pointer; opacity: 0; writing-mode: vertical-lr; direction: rtl;
+  }
+  .simple-col__caption { text-align: center; }
+  .simple-col__caption p { margin: 0; }
+  .simple-col__caption p:first-child { font-size: 11px; font-weight: 500; }
+  .simple-col__caption p:last-child { margin-top: 2px; font-size: 10px; color: var(--muted-foreground); }
+
+  /* Footer + naming */
+  .draft-footer { display: flex; flex-direction: column; gap: 12px; }
+  .btn-row .btn:first-child { flex: 1; }
+  .naming-card {
+    display: flex; flex-direction: column; gap: 8px; padding: 12px;
+    border-radius: var(--radius-md); background: var(--foreground-005);
+    box-shadow: inset 0 0 0 1px var(--border);
+  }
+  .naming-card input {
+    padding: 10px 12px; border-radius: var(--radius-md); background: var(--background);
+    box-shadow: inset 0 0 0 1px var(--border); font-size: 14px; font-weight: 500; outline: none;
+  }
+  .naming-card input:focus { box-shadow: inset 0 0 0 1px var(--primary); }
+
+  .status-line { min-height: 1.3em; margin-top: 16px; padding: 0 4px; font-size: 12px; color: var(--muted-foreground); }
+  .status-line.err { color: var(--danger); }
+  .meta-row { display: flex; gap: 16px; margin-top: 8px; padding: 0 4px; font-size: 11px; color: var(--muted-foreground); }
 """
 
 
-def _index_html(csrf_token: str = "") -> bytes:
-    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
-    body = (
-        _PAGE_CSS
-        + csrf
-        + """
-<p class="sub">Set the speaker's sound curve and preference EQ independently
-from room correction.</p>
-
-<div class="toolbar">
-  <div class="toolbar-title">EQ</div>
-  <label class="toggle" title="Turn preference EQ on or off">
-    <input type="checkbox" id="eq-enabled" aria-label="Turn preference EQ on or off" disabled>
-    <span class="track"></span>
-  </label>
-</div>
-
-<div class="profile-panel">
-  <div class="profile-state" id="profile-state">
-    <div><strong>Applied:</strong> <span id="applied-profile-name">Loading...</span></div>
-    <div><strong>Draft:</strong> <span id="draft-profile-state">Loading...</span></div>
-  </div>
-  <div class="profile-row">
-    <label for="profile-select">Sound profile</label>
-    <select id="profile-select" disabled></select>
-    <div class="profile-note" id="profile-description"></div>
-  </div>
-  <details class="profile-menu" id="profile-menu">
-    <summary>Profile options</summary>
-    <div class="profile-row">
-      <label for="profile-name">Profile name</label>
-      <input type="text" id="profile-name" maxlength="48" autocomplete="off"
-             placeholder="Custom Profile" disabled>
-      <div class="profile-note">
-        Use these when you want to keep, rename, or remove a reusable custom
-        profile. Save to Speaker below makes the current draft durable.
-      </div>
-    </div>
-    <div class="profile-actions" id="profile-actions">
-      <button type="button" id="save-new-profile" class="secondary" disabled>Save Copy</button>
-      <button type="button" id="update-profile" class="secondary" disabled>Update Profile</button>
-      <button type="button" id="rename-profile" class="secondary" disabled>Rename</button>
-      <button type="button" id="delete-profile" class="secondary" disabled>Delete</button>
-    </div>
-  </details>
-</div>
-
-<div class="compare-row">
-  <div>
-    <label>Live compare</label>
-    <div class="segmented" role="group" aria-label="Audition preference EQ">
-      <button type="button" id="listen-bypass" data-mode="bypass" disabled>Bypass</button>
-      <button type="button" id="listen-applied" data-mode="applied" disabled>Applied</button>
-      <button type="button" id="listen-draft" data-mode="draft" disabled>Draft</button>
-    </div>
-  </div>
-  <div class="compare-note" id="compare-note">
-    Compare uses one shared headroom anchor so louder does not win by accident.
-  </div>
-</div>
-
-<div class="eq-grid">
-  <div class="field">
-    <label for="curve">Sound curve</label>
-    <select id="curve" disabled></select>
-    <div class="curve-description" id="curve-description"></div>
-  </div>
-
-  <svg class="plot" id="plot" viewBox="0 0 620 190" role="img"
-       aria-label="EQ response preview"></svg>
-  <div class="sr-only" id="plot-summary" aria-live="polite"></div>
-  <div class="meta-row">
-    <span>Headroom: <strong id="headroom">0.0 dB</strong></span>
-    <span id="updated">Not applied yet</span>
-  </div>
-
-  <div class="mode-row" role="group" aria-label="EQ editing mode">
-    <button type="button" id="mode-basic" data-mode="basic" disabled>Basic</button>
-    <button type="button" id="mode-advanced" data-mode="advanced" disabled>Advanced PEQ</button>
-  </div>
-
-  <div id="basic-controls">
-    <div class="slider-row">
-      <label for="bass">Bass</label>
-      <input type="range" id="bass" min="-6" max="6" step="0.5" disabled>
-      <div class="value" id="bass-value">0.0 dB</div>
-    </div>
-    <div class="slider-row">
-      <label for="mid">Mid</label>
-      <input type="range" id="mid" min="-6" max="6" step="0.5" disabled>
-      <div class="value" id="mid-value">0.0 dB</div>
-    </div>
-    <div class="slider-row">
-      <label for="treble">Treble</label>
-      <input type="range" id="treble" min="-6" max="6" step="0.5" disabled>
-      <div class="value" id="treble-value">0.0 dB</div>
-    </div>
-  </div>
-
-  <section class="advanced-eq" id="advanced-controls" hidden>
-    <div class="advanced-body">
-      <div class="advanced-top">
-        <span id="band-count">No advanced bands</span>
-        <button type="button" id="add-band" class="secondary tiny" disabled>Add band</button>
-      </div>
-      <div class="band-list" id="band-list"></div>
-    </div>
-  </section>
-
-  <div class="button-row">
-    <button id="apply" disabled>Save to Speaker</button>
-    <button id="revert" class="secondary" disabled>Discard Edits</button>
-    <button id="reset" class="secondary" disabled>Reset Flat</button>
-  </div>
-  <div class="status-line" id="status" role="status" aria-live="polite"></div>
-</div>
-
-<script>
+_SOUND_JS = r"""
 (function() {
-  var savedProfile = null;
-  var draftBands = [];
-  var curvesById = {};
-  var profileLibrary = [];
-  var selectedProfileId = 'stock:flat';
-  var applying = false;
-  var previewTimer = null;
-  var previewSeq = 0;
-  var liveTimer = null;
-  var liveDesiredSeq = 0;
-  var liveInFlight = false;
-  var livePending = false;
-  var liveDebounceMs = 180;
-  var dspWriteEpoch = 'none';
-  var selectedBand = 0;
-  var liveMode = 'applied';
-  var eqMode = 'basic';
-  var legacyMixedProfile = false;
-  var controlsEnabled = false;
-  var localPreviewFreqs = null;
-  var limits = {
-    simple_gain_db: 6,
-    advanced_gain_db: 12,
-    max_parametric_bands: 8,
-    min_freq_hz: 20,
-    max_freq_hz: 20000,
-    min_q: 0.2,
-    max_q: 10
+  var LIMIT_DEFAULTS = {
+    simple_gain_db: 12, advanced_gain_db: 12, max_parametric_bands: 8,
+    min_freq_hz: 20, max_freq_hz: 20000, min_q: 0.2, max_q: 10, simple_bands: []
   };
+  var FLAT = function() {
+    return {enabled: true, curve_id: 'flat',
+            simple_eq: zeroSimple(), parametric_bands: [],
+            profile_id: '', profile_name: ''};
+  };
+
+  // Declared before FLAT() is first called below — zeroSimple() reads them.
+  var simpleBands = [];        // [{key,field,label,freq_hz,type}] from /state
+  var limits = Object.assign({}, LIMIT_DEFAULTS);
+
+  var view = 'off';            // off | saved | draft
+  var mode = 'simple';         // simple | peq
+  var selectedId = null;       // selected library id on the Saved tab
+  var draft = FLAT();          // working profile in the Draft tab
+  var editing = {kind: 'new'}; // new | {kind:'user',id,name} | {kind:'preset',id,name}
+  var activeBand = 0;
+  var allCollapsed = false;
+  var naming = false;
+  var nameMode = 'save';       // 'save' (new/copy) | 'rename'
+  var nameDraft = '';
+
+  var applied = FLAT();        // persisted profile
+  var library = [];            // [{id,name,kind,editable,description,profile,...}]
+  var curvesById = {};
+  var dspWriteEpoch = 'none';
+  var applying = false;
+  var previewTimer = null, previewSeq = 0;
+  var liveTimer = null, liveSeq = 0, liveInFlight = false, livePending = false;
+  var statusText = '', statusErr = false;
+
   function el(id) { return document.getElementById(id); }
-  {csrf_fetch_helpers_js}
-  function fmtDb(v) { return (Number(v) || 0).toFixed(1) + ' dB'; }
+  __CSRF_HELPERS__
+  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
+  function clone(o) { return JSON.parse(JSON.stringify(o || {})); }
+  function fmtDb(v) { v = Number(v) || 0; return (v > 0 ? '+' : '') + v.toFixed(1); }
   function fmtFreq(v) {
     v = Number(v) || 0;
     return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + ' kHz' : Math.round(v) + ' Hz';
   }
-  function fmtFreqInput(v) {
-    return String(Math.round(clamp(v, limits.min_freq_hz, limits.max_freq_hz)));
+  function fmtFreqShort(v) {
+    v = Number(v) || 0;
+    return v >= 1000 ? (v / 1000).toFixed(v >= 10000 ? 0 : 1) + 'k' : String(Math.round(v));
   }
   function fmtQ(v) { return 'Q ' + (Number(v) || 0).toFixed(1); }
-  function clamp(v, lo, hi) { return Math.min(hi, Math.max(lo, Number(v) || 0)); }
-  function clone(obj) { return JSON.parse(JSON.stringify(obj || {})); }
-  function zeroSimpleEq() {
-    return {bass_db: 0, mid_db: 0, treble_db: 0};
-  }
-  function simpleHasGain(profile) {
-    var simple = (normalizeProfile(profile).simple_eq || {});
-    return Math.abs(simple.bass_db || 0) >= 0.05 ||
-           Math.abs(simple.mid_db || 0) >= 0.05 ||
-           Math.abs(simple.treble_db || 0) >= 0.05;
-  }
-  function modeForProfile(profile) {
-    profile = normalizeProfile(profile);
-    return profile.parametric_bands.length ? 'advanced' : 'basic';
-  }
   function escapeHtml(value) {
     return String(value == null ? '' : value).replace(/[&<>"']/g, function(ch) {
       return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[ch];
     });
   }
-  function freqToSlider(freq) {
-    var lo = Math.log10(limits.min_freq_hz);
-    var hi = Math.log10(limits.max_freq_hz);
-    return Math.round((Math.log10(clamp(freq, limits.min_freq_hz, limits.max_freq_hz)) - lo) / (hi - lo) * 4000);
+  function zeroSimple() {
+    var out = {};
+    (simpleBands.length ? simpleBands : LIMIT_DEFAULTS.simple_bands).forEach(function(b) {
+      out[b.field] = 0;
+    });
+    if (!simpleBands.length) {
+      ['sub_bass_db', 'bass_db', 'mid_db', 'presence_db', 'treble_db'].forEach(function(f) {
+        if (!(f in out)) out[f] = 0;
+      });
+    }
+    return out;
   }
-  function sliderToFreq(pos) {
-    var lo = Math.log10(limits.min_freq_hz);
-    var hi = Math.log10(limits.max_freq_hz);
-    return Math.pow(10, lo + clamp(pos, 0, 4000) / 4000 * (hi - lo));
+  function ico(name, cls) {
+    return '<svg class="' + (cls || 'ico') + '" aria-hidden="true"><use href="#icon-' + name + '"></use></svg>';
   }
   function status(msg, isErr) {
+    statusText = msg || '';
+    statusErr = !!isErr;
     var node = el('status');
-    node.textContent = msg || '';
-    node.className = 'status-line' + (isErr ? ' err' : '');
+    if (node) {
+      node.textContent = statusText;
+      node.className = 'status-line' + (statusErr ? ' err' : '');
+    }
   }
-  function setControlsEnabled(on) {
-    controlsEnabled = !!on;
-    [
-      'eq-enabled', 'curve', 'bass', 'mid', 'treble', 'apply', 'revert', 'reset',
-      'add-band', 'listen-bypass', 'listen-applied', 'listen-draft',
-      'profile-select', 'profile-name', 'save-new-profile', 'update-profile',
-      'rename-profile', 'delete-profile',
-      'mode-basic', 'mode-advanced'
-    ].forEach(function(id) {
-      el(id).disabled = !on || applying;
-    });
-    Array.prototype.forEach.call(el('band-list').querySelectorAll('input, select, button'), function(node) {
-      node.disabled = !on || applying;
-    });
-    renderMode();
-    updateProfileActions();
-  }
+
+  // ---- profile helpers ------------------------------------------------
   function normalizeProfile(raw) {
     raw = raw || {};
     var simple = raw.simple_eq || {};
+    var normSimple = {};
+    var bands = simpleBands.length ? simpleBands : [
+      {field: 'sub_bass_db'}, {field: 'bass_db'}, {field: 'mid_db'},
+      {field: 'presence_db'}, {field: 'treble_db'}
+    ];
+    bands.forEach(function(b) { normSimple[b.field] = Number(simple[b.field] || 0); });
     return {
       enabled: raw.enabled !== false,
       curve_id: raw.curve_id || 'flat',
-      simple_eq: {
-        bass_db: Number(simple.bass_db || 0),
-        mid_db: Number(simple.mid_db || 0),
-        treble_db: Number(simple.treble_db || 0)
-      },
+      simple_eq: normSimple,
       parametric_bands: (raw.parametric_bands || []).map(function(b) {
         return {
           enabled: b.enabled !== false,
@@ -880,795 +905,803 @@ from room correction.</p>
       profile_name: raw.profile_name || ''
     };
   }
-  function profileIdentityForDraft() {
-    var entry = selectedProfileEntry();
-    if (!entry) return {profile_id: '', profile_name: ''};
-    return {profile_id: entry.id, profile_name: entry.name};
-  }
-  function profileFromInputs() {
-    var simple = eqMode === 'advanced' && !legacyMixedProfile ? zeroSimpleEq() : {
-      bass_db: Number(el('bass').value || 0),
-      mid_db: Number(el('mid').value || 0),
-      treble_db: Number(el('treble').value || 0)
-    };
-    var identity = profileIdentityForDraft();
-    return normalizeProfile({
-      enabled: el('eq-enabled').checked,
-      curve_id: el('curve').value || 'flat',
-      simple_eq: simple,
-      parametric_bands: eqMode === 'advanced' ? draftBands : [],
-      profile_id: identity.profile_id,
-      profile_name: identity.profile_name
-    });
-  }
-  function bypassProfile() {
-    var profile = profileFromInputs();
-    profile.enabled = false;
-    return profile;
-  }
-  function compareProfiles() {
-    return [
-      normalizeProfile(savedProfile),
-      profileFromInputs(),
-      bypassProfile()
-    ];
-  }
-  function compareProfileForMode(mode) {
-    if (mode === 'bypass') return bypassProfile();
-    if (mode === 'applied') return normalizeProfile(savedProfile);
-    return profileFromInputs();
-  }
   function profileKey(profile) {
     profile = normalizeProfile(profile);
     return JSON.stringify({
-      enabled: profile.enabled,
-      curve_id: profile.curve_id,
-      simple_eq: profile.simple_eq,
-      parametric_bands: profile.parametric_bands
+      enabled: profile.enabled, curve_id: profile.curve_id,
+      simple_eq: profile.simple_eq, parametric_bands: profile.parametric_bands
     });
   }
-  function profileEntry(id) {
-    return profileLibrary.find(function(entry) { return entry.id === id; }) || null;
+  function entryById(id) {
+    return library.find(function(e) { return e.id === id; }) || null;
   }
-  function selectedProfileEntry() {
-    return profileEntry(selectedProfileId);
-  }
-  function findProfileIdFor(profile) {
+  function userEntries() { return library.filter(function(e) { return e.kind === 'custom'; }); }
+  function presetEntries() { return library.filter(function(e) { return e.kind === 'stock'; }); }
+  function findIdFor(profile) {
     profile = normalizeProfile(profile);
-    if (profile.profile_id && profileEntry(profile.profile_id)) {
-      return profile.profile_id;
-    }
+    if (profile.profile_id && entryById(profile.profile_id)) return profile.profile_id;
     var key = profileKey(profile);
-    var stock = profileLibrary.find(function(entry) {
-      return entry.kind === 'stock' && profileKey(entry.profile) === key;
-    });
+    var stock = library.find(function(e) { return e.kind === 'stock' && profileKey(e.profile) === key; });
     if (stock) return stock.id;
-    var custom = profileLibrary.find(function(entry) {
-      return entry.kind === 'custom' && profileKey(entry.profile) === key;
-    });
+    var custom = library.find(function(e) { return e.kind === 'custom' && profileKey(e.profile) === key; });
     if (custom) return custom.id;
-    return 'stock:' + (normalizeProfile(profile).curve_id || 'flat');
+    return 'stock:' + (profile.curve_id || 'flat');
   }
-  function profileLabel(profile) {
-    profile = normalizeProfile(profile);
-    var matched = profile.profile_id ? profileEntry(profile.profile_id) : null;
-    if (!matched) matched = profileEntry(findProfileIdFor(profile));
-    var name = profile.profile_name || (matched ? matched.name : 'Unsaved Custom');
-    if (matched && profileKey(profile) !== profileKey(matched.profile)) {
-      return name + ' (edited)';
+  // The profile the editor sources from (for the modified/dirty check).
+  function sourceProfile() {
+    if (editing.kind === 'new') return FLAT();
+    var entry = entryById(editing.id);
+    return entry ? normalizeProfile(entry.profile) : FLAT();
+  }
+  function draftModified() {
+    return profileKey(draft) !== profileKey(sourceProfile());
+  }
+  function withIdentity(profile, id, name) {
+    profile = clone(profile);
+    profile.profile_id = id || '';
+    profile.profile_name = name || '';
+    return profile;
+  }
+  // The profile currently driving the speaker per the active tab.
+  function liveProfile() {
+    if (view === 'off') return null;
+    if (view === 'saved') {
+      var entry = entryById(selectedId);
+      return entry ? normalizeProfile(entry.profile) : null;
     }
-    return name;
+    return draft;
   }
-  function profileNameForSave(entry) {
-    if (entry && entry.kind === 'stock') return entry.name + ' Custom';
-    if (entry) return entry.name;
-    return 'Custom Profile';
+  function liveLabel() {
+    if (view === 'off') return 'Bypass';
+    if (view === 'saved') {
+      var entry = entryById(selectedId);
+      return entry ? entry.name : 'No profile selected';
+    }
+    if (editing.kind === 'new') return 'New profile' + (draftModified() ? ' · edited' : '');
+    var lead = editing.kind === 'preset' ? 'From preset: ' : 'Editing: ';
+    return lead + editing.name + (draftModified() ? ' · edited' : '');
   }
-  function syncProfileName(entry) {
-    el('profile-name').value = profileNameForSave(entry);
-  }
-  function draftDirtyFromApplied() {
-    return profileKey(profileFromInputs()) !== profileKey(savedProfile);
-  }
-  function draftDirtyFromSelected() {
-    var entry = selectedProfileEntry();
-    if (!entry) return true;
-    return profileKey(profileFromInputs()) !== profileKey(entry.profile);
-  }
-  function updateProfileState() {
-    var appliedName = profileLabel(savedProfile);
-    var entry = selectedProfileEntry();
-    var draftName = entry ? entry.name : 'Unsaved Custom';
-    var selectedDirty = draftDirtyFromSelected();
-    var appliedDirty = draftDirtyFromApplied();
-    el('applied-profile-name').textContent = appliedName;
-    el('draft-profile-state').textContent =
-      draftName + (selectedDirty ? ' with edits' : '') +
-      (appliedDirty ? ' - not applied yet' : ' - matches applied sound');
-  }
-  function updateProfileActions() {
-    var select = el('profile-select');
-    var entry = selectedProfileEntry();
-    if (select && select.value !== selectedProfileId) select.value = selectedProfileId;
-    var isCustom = !!entry && entry.kind === 'custom';
-    el('profile-description').textContent = entry
-      ? (entry.kind === 'stock' ? 'Stock curve: ' : 'Custom profile: ') + (entry.description || entry.name)
-      : '';
-    el('profile-actions').classList.toggle('stock', !isCustom);
-    el('save-new-profile').disabled = applying || !controlsEnabled;
-    ['update-profile', 'rename-profile', 'delete-profile'].forEach(function(id) {
-      el(id).hidden = !isCustom;
-      el(id).disabled = applying || !controlsEnabled || !isCustom;
-    });
-    updateProfileState();
-  }
-  function renderMode() {
-    var isAdvanced = eqMode === 'advanced';
-    var disabled = applying || !controlsEnabled;
-    el('basic-controls').hidden = isAdvanced;
-    el('advanced-controls').hidden = !isAdvanced;
-    el('mode-basic').classList.toggle('active', !isAdvanced);
-    el('mode-advanced').classList.toggle('active', isAdvanced);
-    ['bass', 'mid', 'treble'].forEach(function(id) {
-      el(id).disabled = disabled || isAdvanced;
-    });
-    Array.prototype.forEach.call(el('band-list').querySelectorAll('input, select, button'), function(node) {
-      node.disabled = disabled || !isAdvanced;
-    });
-    el('add-band').disabled = disabled || !isAdvanced;
-  }
-  function syncLabels() {
-    el('bass-value').textContent = fmtDb(el('bass').value);
-    el('mid-value').textContent = fmtDb(el('mid').value);
-    el('treble-value').textContent = fmtDb(el('treble').value);
-  }
-  function prettyUpdated(value) {
-    if (!value) return 'Not applied yet';
-    var d = new Date(value);
-    if (Number.isNaN(d.getTime())) return 'Updated';
-    return 'Updated ' + d.toLocaleString([], {
-      month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
-    });
-  }
-  function updateCurveDescription(curveId) {
-    var curve = curvesById[curveId] || null;
-    el('curve-description').textContent = curve ? curve.description || '' : '';
-  }
-  function updateAdvancedNote(profile) {
-    var bands = profile && profile.parametric_bands ? profile.parametric_bands : [];
-    var active = bands.filter(function(b) { return b && b.enabled !== false; }).length;
-    el('band-count').textContent = active ? active + ' active advanced band' + (active === 1 ? '' : 's') : 'No active advanced bands';
-  }
-  function syncInputs(payload) {
-    limits = Object.assign(limits, payload.limits || {});
-    localPreviewFreqs = null;
-    if (payload.profile_library) populateProfiles(payload.profile_library);
-    dspWriteEpoch = payload.dsp_write_epoch || 'none';
-    savedProfile = normalizeProfile(payload.profile || {});
-    selectedProfileId = findProfileIdFor(savedProfile);
-    setFormFromProfile(savedProfile);
-    syncProfileName(selectedProfileEntry());
-    renderBands();
-    el('headroom').textContent = fmtDb(payload.headroom_db || 0);
-    el('updated').textContent = prettyUpdated((payload.profile || {}).updated_at);
-    updateCurveDescription(savedProfile.curve_id || 'flat');
-    updateAdvancedNote(savedProfile);
-    renderPreview(payload, savedProfile.enabled !== false);
-    updateCompareButtons(liveMode, payload.headroom_db || 0);
-    updateProfileActions();
-  }
-  function setFormFromProfile(profile) {
-    profile = normalizeProfile(profile);
-    var simple = profile.simple_eq || {};
-    eqMode = modeForProfile(profile);
-    legacyMixedProfile = eqMode === 'advanced' && simpleHasGain(profile);
-    el('eq-enabled').checked = profile.enabled !== false;
-    el('curve').value = profile.curve_id || 'flat';
-    el('bass').value = simple.bass_db || 0;
-    el('mid').value = simple.mid_db || 0;
-    el('treble').value = simple.treble_db || 0;
-    draftBands = clone(profile.parametric_bands || []);
-    syncLabels();
-    updateCurveDescription(profile.curve_id || 'flat');
-    updateAdvancedNote(profile);
-    renderMode();
-  }
-  function renderPreview(payload, enabled) {
-    el('headroom').textContent = fmtDb(payload.headroom_db || 0);
-    drawPlot(payload.preview || [], enabled, payload.components || {});
-    var peak = (payload.preview || []).reduce(function(max, point) {
-      return Math.max(max, Number(point.db) || 0);
-    }, 0);
-    el('plot-summary').textContent = 'Preference EQ preview. Peak boost ' + fmtDb(peak) +
-      ', headroom ' + fmtDb(payload.headroom_db || 0) + '.';
-  }
-  function previewFrequencies() {
-    if (localPreviewFreqs) return localPreviewFreqs;
-    localPreviewFreqs = [];
+
+  // ---- preview math ---------------------------------------------------
+  // Optimistic client mirror of jasper/sound/profile.py's response math,
+  // for instant graph feedback before /preview returns (and for graphing a
+  // saved profile without a round-trip). Both sides are deliberately
+  // illustrative approximations; CamillaDSP owns the real biquads, and the
+  // authoritative /preview payload overwrites this within ~90 ms. Keep the
+  // two shelf/peak formulas in sync.
+  function previewFreqs() {
+    var out = [];
     for (var i = 0; i <= 120; i += 1) {
-      localPreviewFreqs.push(limits.min_freq_hz * Math.pow(limits.max_freq_hz / limits.min_freq_hz, i / 120));
+      out.push(limits.min_freq_hz * Math.pow(limits.max_freq_hz / limits.min_freq_hz, i / 120));
     }
-    return localPreviewFreqs;
+    return out;
   }
-  function specActive(spec) {
-    return Math.abs(Number(spec.gain_db || 0)) >= 0.05;
-  }
+  function specActive(s) { return Math.abs(Number(s.gain_db || 0)) >= 0.05; }
   function responseDb(spec, freq) {
-    var safeFreq = Math.max(Number(freq) || 0, 1e-6);
-    var center = Math.max(Number(spec.freq_hz || spec.freq || 1000), 1e-6);
-    var gain = Number(spec.gain_db || spec.gain || 0);
+    var f = Math.max(Number(freq) || 0, 1e-6);
+    var c = Math.max(Number(spec.freq_hz || spec.freq || 1000), 1e-6);
+    var gain = Number(spec.gain_db || 0);
     var type = spec.type || spec.biquad_type || 'Peaking';
-    var x = Math.log(safeFreq / center) / Math.log(2);
+    var x = Math.log(f / c) / Math.log(2);
     if (type === 'Lowshelf') return gain / (1 + Math.exp(3 * x));
     if (type === 'Highshelf') return gain / (1 + Math.exp(-3 * x));
     var q = Math.max(Number(spec.q || 1), 1e-3);
-    var bw = 1 / q;
-    return gain / (1 + Math.pow(x / bw, 2));
+    return gain / (1 + Math.pow(x / (1 / q), 2));
   }
+  function curveSpecs(profile) { return (curvesById[profile.curve_id] || {}).filters || []; }
   function simpleSpecs(profile) {
-    var simple = profile.simple_eq || zeroSimpleEq();
-    return [
-      {type: 'Lowshelf', freq_hz: 105, gain_db: simple.bass_db || 0},
-      {type: 'Peaking', freq_hz: 1000, gain_db: simple.mid_db || 0, q: 0.8},
-      {type: 'Highshelf', freq_hz: 4000, gain_db: simple.treble_db || 0}
-    ];
+    var simple = profile.simple_eq || {};
+    return (simpleBands.length ? simpleBands : []).map(function(b) {
+      return {type: b.type, freq_hz: b.freq_hz, gain_db: simple[b.field] || 0,
+              q: b.type === 'Peaking' ? 1.0 : undefined};
+    });
   }
   function advancedSpecs(profile) {
-    return (profile.parametric_bands || []).filter(function(band) {
-      return band && band.enabled !== false;
-    }).map(function(band) {
-      return {
-        type: band.type || band.biquad_type || 'Peaking',
-        freq_hz: band.freq_hz,
-        gain_db: band.gain_db,
-        q: band.q
-      };
-    });
+    return (profile.parametric_bands || []).filter(function(b) { return b && b.enabled !== false; })
+      .map(function(b) { return {type: b.type, freq_hz: b.freq_hz, gain_db: b.gain_db, q: b.q}; });
   }
-  function pointsForSpecs(specs, freqs, emptyWhenFlat) {
+  function pointsFor(specs, freqs, emptyWhenFlat) {
     specs = specs || [];
-    var active = specs.some(specActive);
-    if (emptyWhenFlat && !active) return [];
-    return freqs.map(function(freq) {
-      var db = specs.reduce(function(sum, spec) {
-        return specActive(spec) ? sum + responseDb(spec, freq) : sum;
-      }, 0);
-      return {freq_hz: Math.round(freq * 1000) / 1000, db: Math.round(db * 1000) / 1000};
+    if (emptyWhenFlat && !specs.some(specActive)) return [];
+    return freqs.map(function(f) {
+      var db = specs.reduce(function(sum, s) { return specActive(s) ? sum + responseDb(s, f) : sum; }, 0);
+      return {freq_hz: f, db: db};
     });
   }
-  function localPreviewPayload(profile) {
+  function previewPayload(profile) {
     profile = normalizeProfile(profile);
-    var freqs = previewFrequencies();
+    var freqs = previewFreqs();
     if (profile.enabled === false) {
-      return {preview: pointsForSpecs([], freqs, false), components: {curve: [], simple: [], advanced: []}, headroom_db: 0};
+      return {preview: [], components: {curve: [], simple: [], advanced: []}, headroom_db: 0, off: true};
     }
-    var curveSpecs = ((curvesById[profile.curve_id] || {}).filters || []);
-    var simple = simpleSpecs(profile);
-    var advanced = advancedSpecs(profile);
-    var preview = pointsForSpecs(curveSpecs.concat(simple, advanced), freqs, false);
-    var peak = preview.reduce(function(max, point) {
-      return Math.max(max, Number(point.db) || 0);
-    }, 0);
+    var all = curveSpecs(profile).concat(simpleSpecs(profile), advancedSpecs(profile));
+    var preview = pointsFor(all, freqs, false);
+    var peak = preview.reduce(function(m, p) { return Math.max(m, p.db); }, 0);
     return {
       preview: preview,
       components: {
-        curve: pointsForSpecs(curveSpecs, freqs, true),
-        simple: pointsForSpecs(simple, freqs, true),
-        advanced: (profile.parametric_bands || []).map(function(band, index) {
-          return {
-            index: index,
-            enabled: band.enabled !== false,
-            preview: pointsForSpecs(advancedSpecs({parametric_bands: [band]}), freqs, true)
-          };
+        curve: pointsFor(curveSpecs(profile), freqs, true),
+        simple: pointsFor(simpleSpecs(profile), freqs, true),
+        advanced: (profile.parametric_bands || []).map(function(b, i) {
+          return {index: i, enabled: b.enabled !== false,
+                  preview: pointsFor(advancedSpecs({parametric_bands: [b]}), freqs, true)};
         })
       },
-      headroom_db: Math.round(Math.max(0, peak) * 1000) / 1000
+      headroom_db: Math.max(0, peak)
     };
   }
-  function drawPath(points, cls, x, y, minDb, maxDb) {
-    if (!points || !points.length) return '';
-    var coords = points.map(function(p) {
-      return [x(p.freq_hz), y(Math.max(minDb, Math.min(maxDb, p.db)))];
-    });
-    var d = 'M' + coords[0][0] + ' ' + coords[0][1];
-    if (coords.length === 2) {
-      d += ' L' + coords[1][0] + ' ' + coords[1][1];
-    } else {
-      for (var i = 1; i < coords.length - 1; i += 1) {
-        var midX = (coords[i][0] + coords[i + 1][0]) / 2;
-        var midY = (coords[i][1] + coords[i + 1][1]) / 2;
-        d += ' Q' + coords[i][0] + ' ' + coords[i][1] + ' ' + midX + ' ' + midY;
-      }
-      d += ' Q' + coords[coords.length - 1][0] + ' ' + coords[coords.length - 1][1] +
-           ' ' + coords[coords.length - 1][0] + ' ' + coords[coords.length - 1][1];
-    }
-    return '<path class="' + cls + '" d="' + d + '"></path>';
+
+  // ---- graph rendering ------------------------------------------------
+  var W = 620, H = 200, padL = 38, padR = 12, padT = 12, padB = 26;
+  var MINDB = -12, MAXDB = 12, MINF = Math.log10(20), MAXF = Math.log10(20000);
+  function gx(f) { return padL + (Math.log10(f) - MINF) / (MAXF - MINF) * (W - padL - padR); }
+  function gy(db) { return padT + (MAXDB - db) / (MAXDB - MINDB) * (H - padT - padB); }
+  function pathD(points) {
+    var c = points.map(function(p) { return [gx(p.freq_hz), gy(clamp(p.db, MINDB, MAXDB))]; });
+    var d = 'M' + c[0][0].toFixed(1) + ' ' + c[0][1].toFixed(1);
+    for (var i = 1; i < c.length; i += 1) d += ' L' + c[i][0].toFixed(1) + ' ' + c[i][1].toFixed(1);
+    return d;
   }
-  function drawBandMarkers(x, y, top, bottom, minDb, maxDb) {
+  function drawPath(points, cls) {
+    if (!points || !points.length) return '';
+    return '<path class="' + cls + '" d="' + pathD(points) + '"></path>';
+  }
+  function drawArea(points) {
+    if (!points || !points.length) return '';
+    return '<path class="area" d="' + pathD(points) +
+      ' L' + gx(20000).toFixed(1) + ' ' + gy(MINDB).toFixed(1) +
+      ' L' + gx(20).toFixed(1) + ' ' + gy(MINDB).toFixed(1) + ' Z"></path>';
+  }
+  function drawBandMarkers() {
+    if (view !== 'draft' || mode !== 'peq') return '';
     var html = '';
-    if (eqMode !== 'advanced') return html;
-    draftBands.forEach(function(band, index) {
-      if (!band || band.enabled === false) return;
-      var selected = index === selectedBand ? ' selected' : '';
-      var freq = clamp(band.freq_hz, limits.min_freq_hz, limits.max_freq_hz);
-      var gain = clamp(band.gain_db, minDb, maxDb);
-      var cx = x(freq);
-      var cy = y(gain);
-      if ((band.type || 'Peaking') === 'Peaking') {
-        var q = Math.max(Number(band.q || 1), 0.2);
-        var lo = x(clamp(freq / Math.pow(2, 1 / q), limits.min_freq_hz, limits.max_freq_hz));
-        var hi = x(clamp(freq * Math.pow(2, 1 / q), limits.min_freq_hz, limits.max_freq_hz));
-        html += '<rect class="band-width' + selected + '" x="' + Math.min(lo, hi) + '" y="' + top +
-                '" width="' + Math.abs(hi - lo) + '" height="' + (bottom - top) + '"></rect>';
+    (draft.parametric_bands || []).forEach(function(b, i) {
+      if (!b || b.enabled === false) return;
+      var sel = i === activeBand ? ' selected' : '';
+      var cx = gx(clamp(b.freq_hz, 20, 20000)), cy = gy(clamp(b.gain_db, MINDB, MAXDB));
+      if ((b.type || 'Peaking') === 'Peaking') {
+        var q = Math.max(Number(b.q || 1), 0.2);
+        var lo = gx(clamp(b.freq_hz / Math.pow(2, 1 / q), 20, 20000));
+        var hi = gx(clamp(b.freq_hz * Math.pow(2, 1 / q), 20, 20000));
+        html += '<rect class="band-width' + sel + '" x="' + Math.min(lo, hi).toFixed(1) +
+                '" y="' + padT + '" width="' + Math.abs(hi - lo).toFixed(1) +
+                '" height="' + (H - padB - padT) + '"></rect>';
       }
-      html += '<line class="band-marker" x1="' + cx + '" x2="' + cx + '" y1="' + top +
-              '" y2="' + bottom + '"></line>';
-      html += '<circle class="band-dot' + selected + '" cx="' + cx + '" cy="' + cy +
-              '" r="' + (selected ? 4.5 : 3.5) + '"></circle>';
+      html += '<line class="band-marker" x1="' + cx.toFixed(1) + '" x2="' + cx.toFixed(1) +
+              '" y1="' + padT + '" y2="' + (H - padB) + '"></line>';
+      html += '<circle class="band-dot' + sel + '" cx="' + cx.toFixed(1) + '" cy="' + cy.toFixed(1) +
+              '" r="' + (sel ? 4.5 : 3.5) + '"></circle>';
     });
     return html;
   }
-  function drawPlot(points, enabled, components) {
+  function renderGraph(payload, enabled) {
     var svg = el('plot');
+    if (!svg) return;
     svg.classList.toggle('off', !enabled);
-    var w = 620, h = 190, left = 42, right = 12, top = 12, bottom = 28;
-    var minF = Math.log10(20), maxF = Math.log10(20000);
-    var minDb = -12, maxDb = 12;
-    function x(freq) {
-      return left + (Math.log10(freq) - minF) / (maxF - minF) * (w - left - right);
-    }
-    function y(db) {
-      return top + (maxDb - db) / (maxDb - minDb) * (h - top - bottom);
-    }
     var html = '';
     [-6, 0, 6].forEach(function(db) {
-      html += '<line class="' + (db === 0 ? 'zero' : 'grid') + '" x1="' + left + '" x2="' + (w - right) +
-              '" y1="' + y(db) + '" y2="' + y(db) + '"></line>';
-      html += '<text x="6" y="' + (y(db) + 4) + '">' + db + ' dB</text>';
+      html += '<line class="' + (db === 0 ? 'zero' : 'grid') + '" x1="' + padL + '" x2="' + (W - padR) +
+              '" y1="' + gy(db).toFixed(1) + '" y2="' + gy(db).toFixed(1) + '"></line>';
+      html += '<text x="6" y="' + (gy(db) + 3).toFixed(1) + '">' + fmtDb(db) + '</text>';
     });
-    [20, 100, 1000, 10000, 20000].forEach(function(freq) {
-      html += '<line class="grid" y1="' + top + '" y2="' + (h - bottom) + '" x1="' + x(freq) +
-              '" x2="' + x(freq) + '"></line>';
-      html += '<text text-anchor="middle" x="' + x(freq) + '" y="' + (h - 8) + '">' +
-              (freq >= 1000 ? (freq / 1000) + 'k' : freq) + '</text>';
+    [20, 100, 1000, 10000, 20000].forEach(function(f) {
+      html += '<line class="grid" y1="' + padT + '" y2="' + (H - padB) + '" x1="' + gx(f).toFixed(1) +
+              '" x2="' + gx(f).toFixed(1) + '"></line>';
+      html += '<text text-anchor="middle" x="' + gx(f).toFixed(1) + '" y="' + (H - 8) + '">' +
+              (f >= 1000 ? (f / 1000) + 'k' : f) + '</text>';
     });
-    html += drawPath((components || {}).curve || [], 'component', x, y, minDb, maxDb);
-    html += drawPath((components || {}).simple || [], 'component', x, y, minDb, maxDb);
-    ((components || {}).advanced || []).forEach(function(item) {
-      html += drawPath(item.preview || [], item.index === selectedBand ? 'component selected' : 'component', x, y, minDb, maxDb);
-    });
-    html += drawPath(points, 'curve', x, y, minDb, maxDb);
-    html += drawBandMarkers(x, y, top, h - bottom, minDb, maxDb);
-    svg.innerHTML = html;
-  }
-  function populateCurves(curves) {
-    curvesById = {};
-    (curves || []).forEach(function(c) { curvesById[c.id] = c; });
-    el('curve').innerHTML = (curves || []).map(function(c) {
-      return '<option value="' + c.id + '">' + c.label + '</option>';
-    }).join('');
-  }
-  function profileOptions(entries, kind, label) {
-    var items = entries.filter(function(entry) { return entry.kind === kind; });
-    if (!items.length) return '';
-    return '<optgroup label="' + escapeHtml(label) + '">' + items.map(function(entry) {
-      return '<option value="' + escapeHtml(entry.id) + '">' + escapeHtml(entry.name) + '</option>';
-    }).join('') + '</optgroup>';
-  }
-  function populateProfiles(entries) {
-    profileLibrary = entries || [];
-    el('profile-select').innerHTML =
-      profileOptions(profileLibrary, 'stock', 'Stock') +
-      profileOptions(profileLibrary, 'custom', 'Custom');
-    updateProfileActions();
-  }
-  function loadProfileEntry(entry) {
-    if (!entry) return;
-    selectedProfileId = entry.id;
-    setFormFromProfile(entry.profile);
-    syncProfileName(entry);
-    renderBands();
-    scheduleDraftChange({immediate: true});
-    updateProfileActions();
-    status('Loaded ' + entry.name + ' as draft.');
-  }
-  async function mutateProfileLibrary(path, body) {
-    applying = true;
-    setControlsEnabled(true);
-    try {
-      var resp = await fetch(path, {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(body || {})
+    var comp = payload.components || {};
+    if (enabled) {
+      html += drawArea(payload.preview || []);
+      html += drawPath(comp.curve || [], 'component');
+      html += drawPath(comp.simple || [], 'component');
+      (comp.advanced || []).forEach(function(item) {
+        html += drawPath(item.preview || [],
+          (view === 'draft' && mode === 'peq' && item.index === activeBand) ? 'component selected' : 'component');
       });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'profile update failed');
-      if (payload.profile_library) populateProfiles(payload.profile_library);
-      if (payload.profile_entry) selectedProfileId = payload.profile_entry.id;
-      if (payload.deleted_profile_id && selectedProfileId === payload.deleted_profile_id) {
-        selectedProfileId = findProfileIdFor(profileFromInputs());
-      }
-      if (!profileEntry(selectedProfileId) && profileLibrary.length) {
-        selectedProfileId = profileLibrary[0].id;
-      }
-      syncProfileName(selectedProfileEntry());
-      updateProfileActions();
-      return payload;
-    } catch (e) {
-      status('Could not update profiles: ' + e.message, true);
-      return null;
-    } finally {
-      applying = false;
-      setControlsEnabled(true);
+    }
+    var curvePts = enabled
+      ? (payload.preview || [])
+      : [{freq_hz: 20, db: 0}, {freq_hz: 20000, db: 0}];
+    html += drawPath(curvePts, 'curve');
+    html += drawBandMarkers();
+    svg.innerHTML = html;
+    var peak = (payload.preview || []).reduce(function(m, p) { return Math.max(m, p.db); }, 0);
+    var summary = el('plot-summary');
+    if (summary) {
+      summary.textContent = enabled
+        ? 'EQ response preview. Peak boost ' + fmtDb(peak) + ' dB, headroom ' + fmtDb(payload.headroom_db || 0) + ' dB.'
+        : 'EQ bypassed. Flat response.';
     }
   }
-  function bandSummary(band, index) {
-    var state = band.enabled === false ? 'off' : 'on';
-    return 'Band ' + (index + 1) + ' - ' + (band.type || 'Peaking') + ' - ' +
-      fmtFreq(band.freq_hz) + ' - ' + fmtDb(band.gain_db) + ' - ' + fmtQ(band.q) + ' - ' + state;
+  // Render the graph for whatever is the live source right now.
+  function renderLiveGraph() {
+    var profile = liveProfile();
+    el('live-label').textContent = liveLabel();
+    if (!profile) { renderGraph({preview: [], components: {}, headroom_db: 0}, false); return; }
+    renderGraph(previewPayload(profile), profile.enabled !== false);
   }
-  function renderBands() {
-    if (!draftBands.length) {
-      el('band-list').innerHTML = '<div class="band-empty">No advanced bands yet.</div>';
-      updateAdvancedNote(profileFromInputs());
-      setControlsEnabled(true);
-      return;
+
+  // ---- view rendering -------------------------------------------------
+  function renderTabs() {
+    ['off', 'saved', 'draft'].forEach(function(v) {
+      var btn = el('tab-' + v);
+      btn.setAttribute('aria-pressed', v === view ? 'true' : 'false');
+    });
+  }
+  function render() {
+    renderTabs();
+    renderLiveGraph();
+    if (view === 'off') renderOff();
+    else if (view === 'saved') renderSaved();
+    else renderDraft();
+    status(statusText, statusErr);
+  }
+
+  function renderOff() {
+    el('view-body').innerHTML =
+      '<section class="off-card">' +
+        '<div class="off-card__icon">' + ico('spark') + '</div>' +
+        '<p class="off-card__text">Create a sound profile that changes how your speaker sounds.</p>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--ghost" data-act="browse-presets">Try a stock profile</button>' +
+          '<button type="button" class="btn btn--primary" data-act="new-draft">Create custom profile</button>' +
+        '</div>' +
+      '</section>';
+  }
+
+  function profileRow(entry, live, deletable) {
+    return '<div class="profile-row">' +
+      '<button type="button" class="profile-row__select" data-act="select" data-id="' + escapeHtml(entry.id) + '">' +
+        '<span class="profile-row__dot' + (live ? ' profile-row__dot--on' : '') + '"></span>' +
+        '<span style="min-width:0">' +
+          '<p class="profile-row__name">' + escapeHtml(entry.name) + '</p>' +
+          '<p class="profile-row__meta">' + (live ? 'Now playing · ' : '') +
+            bandCountLabel(entry.profile) + '</p>' +
+        '</span>' +
+      '</button>' +
+      '<span class="profile-row__actions">' +
+        '<button type="button" class="profile-row__action" data-act="edit" data-id="' + escapeHtml(entry.id) +
+          '" aria-label="Edit ' + escapeHtml(entry.name) + '">' + ico('pencil') + '</button>' +
+        (deletable ? '<button type="button" class="profile-row__action profile-row__action--danger" data-act="delete" data-id="' +
+          escapeHtml(entry.id) + '" aria-label="Delete ' + escapeHtml(entry.name) + '">' + ico('trash') + '</button>' : '') +
+      '</span>' +
+    '</div>';
+  }
+  function bandCountLabel(profile) {
+    profile = normalizeProfile(profile);
+    var n = 0;
+    Object.keys(profile.simple_eq).forEach(function(k) { if (Math.abs(profile.simple_eq[k]) >= 0.05) n += 1; });
+    n += profile.parametric_bands.filter(function(b) { return b.enabled !== false && Math.abs(b.gain_db) >= 0.05; }).length;
+    if (profile.curve_id && profile.curve_id !== 'flat') n += 1;
+    return n === 0 ? 'Flat' : n + ' band' + (n === 1 ? '' : 's');
+  }
+  function renderSaved() {
+    var users = userEntries(), presets = presetEntries();
+    var userSection = '<section><div class="section-header">' +
+      '<h2 class="eyebrow">Your profiles</h2>' +
+      '<button type="button" class="text-button" data-act="new-draft">' + ico('plus') + 'New</button></div>' +
+      (users.length
+        ? '<div class="list-card"><div class="list-card__rows">' +
+            users.map(function(e) { return profileRow(e, e.id === selectedId, true); }).join('') + '</div></div>'
+        : '<div class="empty-card"><p>No profiles yet.</p>' +
+            '<button type="button" class="btn btn--primary" data-act="new-draft">Create your first</button></div>') +
+      '</section>';
+    var presetSection = '<section><div class="section-header"><h2 class="eyebrow">Presets</h2></div>' +
+      '<div class="list-card"><div class="list-card__rows">' +
+        presets.map(function(e) { return profileRow(e, e.id === selectedId, false); }).join('') + '</div></div></section>';
+    el('view-body').innerHTML = '<div class="saved-stack">' + userSection + presetSection + '</div>';
+  }
+
+  function rangeRow(label, value, min, max, opts) {
+    opts = opts || {};
+    var pct, thumb;
+    if (opts.log) {
+      var lmin = Math.log(min), lmax = Math.log(max);
+      pct = (Math.log(clamp(value, min, max)) - lmin) / (lmax - lmin) * 100;
+    } else {
+      pct = (clamp(value, min, max) - min) / (max - min) * 100;
     }
-    if (selectedBand >= draftBands.length) selectedBand = draftBands.length - 1;
-    if (selectedBand < 0) selectedBand = 0;
-    el('band-list').innerHTML = draftBands.map(function(band, index) {
-      band = normalizeProfile({parametric_bands: [band]}).parametric_bands[0];
-      draftBands[index] = band;
-      var selected = index === selectedBand ? ' selected' : '';
-      var checked = band.enabled !== false ? ' checked' : '';
-      var qDisabled = band.type === 'Peaking' ? '' : ' disabled';
-      return '<div class="band-item' + selected + '" data-index="' + index + '">' +
-        '<div class="band-head">' +
-          '<label><input type="checkbox" data-kind="enabled" data-index="' + index + '"' + checked + '> Band ' + (index + 1) + '</label>' +
-          '<button type="button" class="secondary tiny" data-action="delete" data-index="' + index + '">Delete</button>' +
-        '</div>' +
-        '<div class="band-controls" aria-label="' + bandSummary(band, index) + '">' +
-          '<div class="band-type-row"><label>Type</label><select data-kind="type" data-index="' + index + '">' +
-            '<option value="Peaking"' + (band.type === 'Peaking' ? ' selected' : '') + '>Peak</option>' +
-            '<option value="Lowshelf"' + (band.type === 'Lowshelf' ? ' selected' : '') + '>Low shelf</option>' +
-            '<option value="Highshelf"' + (band.type === 'Highshelf' ? ' selected' : '') + '>High shelf</option>' +
-          '</select></div>' +
-          '<div class="slider-row"><label>Freq</label><input type="range" min="0" max="4000" step="1" value="' + freqToSlider(band.freq_hz) + '" data-kind="freq-slider" data-index="' + index + '"><input class="freq-number" type="number" min="' + limits.min_freq_hz + '" max="' + limits.max_freq_hz + '" step="1" value="' + fmtFreqInput(band.freq_hz) + '" data-kind="freq-number" data-index="' + index + '" aria-label="Band ' + (index + 1) + ' frequency in Hz"></div>' +
-          '<div class="slider-row"><label>Gain</label><input type="range" min="-' + limits.advanced_gain_db + '" max="' + limits.advanced_gain_db + '" step="0.5" value="' + band.gain_db + '" data-kind="gain" data-index="' + index + '"><div class="value" data-readout="gain">' + fmtDb(band.gain_db) + '</div></div>' +
-          '<div class="slider-row"><label>Width</label><input type="range" min="' + limits.min_q + '" max="' + limits.max_q + '" step="0.1" value="' + band.q + '" data-kind="q" data-index="' + index + '"' + qDisabled + '><div class="value" data-readout="q">' + (band.type === 'Peaking' ? fmtQ(band.q) : 'Shelf') + '</div></div>' +
-        '</div>' +
+    if (opts.variant === 'thumb') {
+      thumb = '<div class="range__track"></div><div class="range__thumb" style="left:calc(' + pct + '% - 6px)"></div>';
+    } else {
+      thumb = '<div class="range__fill-track"><div class="range__fill" style="width:' + pct + '%"></div></div>';
+    }
+    return '<div class="range-row">' +
+      '<span class="range-row__label">' + escapeHtml(label) + '</span>' +
+      '<div class="range">' + thumb +
+        '<input type="range" class="range__input" min="' + (opts.log ? 0 : min) + '" max="' + (opts.log ? 1000 : max) +
+          '" step="' + (opts.step || 0.1) + '" value="' + (opts.log ? freqToSlider(value, min, max) : value) +
+          '" data-range="' + opts.kind + '" aria-label="' + escapeHtml(label) + '"></div>' +
+      '<div class="range__readout"><button type="button" class="range__readout-btn" data-readout="' + opts.kind + '">' +
+        escapeHtml(opts.format(value)) + '</button></div>' +
+    '</div>';
+  }
+  function freqToSlider(freq, min, max) {
+    var lmin = Math.log(min), lmax = Math.log(max);
+    return Math.round((Math.log(clamp(freq, min, max)) - lmin) / (lmax - lmin) * 1000);
+  }
+  function sliderToFreq(pos, min, max) {
+    var lmin = Math.log(min), lmax = Math.log(max);
+    return Math.exp(lmin + clamp(pos, 0, 1000) / 1000 * (lmax - lmin));
+  }
+  function bandRow(band, index) {
+    var open = !allCollapsed && index === activeBand;
+    var body = '';
+    if (open) {
+      body = '<div class="band-row__body">' +
+        '<div class="range-row"><span class="range-row__label">Type</span>' +
+          '<div class="segmented" data-band="' + index + '">' +
+            typeBtn('Lowshelf', 'Low', band.type) + typeBtn('Peaking', 'Peak', band.type) +
+            typeBtn('Highshelf', 'High', band.type) + '</div></div>' +
+        rangeRow('Freq', band.freq_hz, limits.min_freq_hz, limits.max_freq_hz,
+          {kind: 'freq', log: true, variant: 'thumb', step: 1, format: function(v) { return fmtFreq(v); }}) +
+        rangeRow('Gain', band.gain_db, -limits.advanced_gain_db, limits.advanced_gain_db,
+          {kind: 'gain', step: 0.1, format: function(v) { return fmtDb(v) + ' dB'; }}) +
+        rangeRow('Width', band.q, limits.min_q, limits.max_q,
+          {kind: 'q', step: 0.1, format: function(v) { return fmtQ(v); }}) +
+        '<button type="button" class="band-row__delete" data-act="del-band" data-index="' + index + '">' +
+          ico('trash') + 'Delete band</button>' +
       '</div>';
-    }).join('');
-    updateAdvancedNote(profileFromInputs());
-    setControlsEnabled(true);
+    }
+    return '<div class="band-row" data-index="' + index + '" data-open="' + (open ? 'true' : 'false') + '">' +
+      '<button type="button" class="band-row__header" data-act="toggle-band" data-index="' + index + '">' +
+        '<span class="band-row__title">' +
+          '<span class="band-dot' + (open ? ' band-dot--active' : '') + '">' + (index + 1) + '</span>' +
+          '<span><p class="band-row__name">Band ' + (index + 1) + '</p>' +
+            '<p class="band-row__meta">' + escapeHtml(band.type) + ' · ' + Math.round(band.freq_hz) +
+            ' Hz · ' + band.gain_db.toFixed(1) + ' dB · Q ' + band.q.toFixed(1) + '</p></span>' +
+        '</span>' + ico('chevron', 'band-row__chev') +
+      '</button>' + body + '</div>';
   }
-  function updateBandReadouts(index) {
-    var item = el('band-list').querySelector('[data-index="' + index + '"]');
-    var band = draftBands[index];
-    if (!item || !band) return;
-    var slider = item.querySelector('[data-kind="freq-slider"]');
-    var number = item.querySelector('[data-kind="freq-number"]');
-    if (slider && document.activeElement !== slider) slider.value = freqToSlider(band.freq_hz);
-    if (number && document.activeElement !== number) number.value = fmtFreqInput(band.freq_hz);
-    item.querySelector('[data-readout="gain"]').textContent = fmtDb(band.gain_db);
-    item.querySelector('[data-readout="q"]').textContent = band.type === 'Peaking' ? fmtQ(band.q) : 'Shelf';
+  function typeBtn(value, label, current) {
+    return '<button type="button" class="segmented__btn" data-band-type="' + value + '" aria-pressed="' +
+      (current === value ? 'true' : 'false') + '">' + label + '</button>';
+  }
+  function simpleColumn(slot, value) {
+    var min = -limits.simple_gain_db, max = limits.simple_gain_db;
+    var pct = (clamp(value, min, max) - min) / (max - min) * 100;
+    return '<div class="simple-col" data-field="' + escapeHtml(slot.field) + '">' +
+      '<div class="simple-col__readout"><button type="button" class="simple-col__readout-btn" data-readout-field="' +
+        escapeHtml(slot.field) + '">' + fmtDb(value) + '</button></div>' +
+      '<div class="vrange"><div class="vrange__track"></div><div class="vrange__zero"></div>' +
+        '<div class="vrange__thumb" style="bottom:calc(' + pct + '% - 6px)"></div>' +
+        '<input type="range" class="vrange__input" min="' + min + '" max="' + max + '" step="0.1" value="' + value +
+          '" data-field="' + escapeHtml(slot.field) + '" aria-label="' + escapeHtml(slot.label) + ' gain"></div>' +
+      '<div class="band-dot">' + (slot.idx + 1) + '</div>' +
+      '<div class="simple-col__caption"><p>' + escapeHtml(slot.label) + '</p><p>' + fmtFreqShort(slot.freq_hz) + ' Hz</p></div>' +
+    '</div>';
+  }
+  function renderDraft() {
+    var modeSection = '<section class="mode-toggle"><div class="section-header"><h2 class="eyebrow">Mode</h2></div>' +
+      '<div class="segmented" id="mode-tabs">' +
+        '<button type="button" class="segmented__btn" data-mode="simple" aria-pressed="' + (mode === 'simple' ? 'true' : 'false') + '">Simple</button>' +
+        '<button type="button" class="segmented__btn" data-mode="peq" aria-pressed="' + (mode === 'peq' ? 'true' : 'false') + '">PEQ</button>' +
+      '</div></section>';
+
+    var bandsContent;
+    if (mode === 'simple') {
+      var cols = (simpleBands.length ? simpleBands : []).map(function(slot, i) {
+        return simpleColumn(Object.assign({idx: i}, slot), draft.simple_eq[slot.field] || 0);
+      }).join('');
+      bandsContent = '<div class="bands-card bands-card--simple"><div class="simple-grid">' + cols + '</div></div>';
+    } else {
+      var rows = (draft.parametric_bands || []).map(bandRow).join('');
+      bandsContent = '<div class="bands-card"><div class="bands-card__rows">' + rows +
+        '<button type="button" class="add-band" data-act="add-band"' +
+        (draft.parametric_bands.length >= limits.max_parametric_bands ? ' disabled' : '') + '>' +
+        ico('plus') + 'Add band</button></div></div>';
+    }
+    var activeCount = mode === 'simple'
+      ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
+      : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
+    var bandsSection = '<section class="bands-section"><div class="row-between">' +
+      '<h2 class="eyebrow">Bands</h2>' +
+      '<div class="bands-meta"><span id="active-count">' + activeCount + ' active</span>' +
+      (mode === 'peq' ? '<button type="button" class="text-button text-button--muted" data-act="toggle-collapse">' +
+        (allCollapsed ? 'Expand all' : 'Collapse all') + '</button>' : '') +
+      '</div></div>' + bandsContent + '</section>';
+
+    el('view-body').innerHTML = '<div>' + modeSection + bandsSection +
+      '<section class="draft-footer">' + footerHtml() + '</section></div>';
+  }
+  function footerHtml() {
+    if (naming) {
+      var isRename = nameMode === 'rename';
+      return '<div class="naming-card">' +
+        '<label class="eyebrow">' + (isRename ? 'Rename profile' : 'Name your profile') + '</label>' +
+        '<input type="text" id="name-input" maxlength="48" autocomplete="off" value="' + escapeHtml(nameDraft) + '">' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--primary" data-act="finalize-name">' +
+            (isRename ? 'Rename' : 'Save profile') + '</button>' +
+          '<button type="button" class="btn btn--ghost" data-act="cancel-name">Cancel</button>' +
+        '</div></div>';
+    }
+    var dirty = draftModified();
+    if (editing.kind === 'user') {
+      return '<div class="btn-row">' +
+          '<button type="button" class="btn btn--primary" data-act="overwrite"' + (dirty ? '' : ' disabled') + '>Overwrite</button>' +
+          '<button type="button" class="btn btn--ghost" data-act="begin-name">Save as new</button></div>' +
+        '<div class="btn-row">' +
+          '<button type="button" class="btn btn--ghost" data-act="begin-rename">Rename</button>' +
+          '<button type="button" class="btn btn--ghost" data-act="discard"' +
+            (dirty ? '' : ' disabled') + '>Discard edits</button></div>';
+    }
+    if (editing.kind === 'preset') {
+      return '<div class="btn-row">' +
+          '<button type="button" class="btn btn--primary" data-act="begin-name">Save as new</button>' +
+          '<button type="button" class="btn btn--ghost" data-act="discard"' + (dirty ? '' : ' disabled') + '>Discard edits</button></div>';
+    }
+    return '<div class="btn-row">' +
+        '<button type="button" class="btn btn--primary" data-act="begin-name">Save profile</button>' +
+        '<button type="button" class="btn btn--ghost" data-act="discard"' + (dirty ? '' : ' disabled') + '>Discard</button></div>';
+  }
+
+  // ---- backend integration -------------------------------------------
+  function compareProfiles() {
+    return [normalizeProfile(applied), normalizeProfile(draft),
+            Object.assign(normalizeProfile(draft), {enabled: false})];
   }
   function schedulePreview() {
-    var profile = profileFromInputs();
-    syncLabels();
-    updateCurveDescription(el('curve').value || 'flat');
-    updateAdvancedNote(profile);
-    renderPreview(localPreviewPayload(profile), profile.enabled !== false);
-    updateProfileState();
-    status('Unsaved changes.');
+    renderLiveGraph();          // optimistic local graph
     window.clearTimeout(previewTimer);
     previewTimer = window.setTimeout(preview, 90);
-  }
-  function scheduleDraftChange(options) {
-    options = options || {};
-    schedulePreview();
-    scheduleLiveDraft(!!options.immediate);
   }
   async function preview() {
     var seq = ++previewSeq;
     try {
-      var profile = profileFromInputs();
-      var resp = await fetch('./preview', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(profile)
-      });
+      var resp = await fetch('./preview', {method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify(liveProfile() || Object.assign(FLAT(), {enabled: false}))});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'preview failed');
       if (seq !== previewSeq) return;
-      renderPreview(payload, profile.enabled !== false);
+      var profile = liveProfile();
+      renderGraph(payload, profile ? profile.enabled !== false : false);
     } catch (e) {
-      if (seq !== previewSeq) return;
-      status('Could not preview EQ: ' + e.message, true);
+      if (seq === previewSeq) status('Could not preview EQ: ' + e.message, true);
     }
   }
   function scheduleLiveDraft(immediate) {
-    if (!controlsEnabled || applying) return;
-    liveDesiredSeq += 1;
-    livePending = true;
+    if (applying) return;
+    liveSeq += 1; livePending = true;
     window.clearTimeout(liveTimer);
-    liveTimer = window.setTimeout(runLiveDraft, immediate ? 0 : liveDebounceMs);
+    liveTimer = window.setTimeout(runLiveDraft, immediate ? 0 : 180);
   }
-  function cancelLiveDrafts() {
-    liveDesiredSeq += 1;
-    livePending = false;
-    window.clearTimeout(liveTimer);
-  }
+  function cancelLiveDrafts() { liveSeq += 1; livePending = false; window.clearTimeout(liveTimer); }
   async function runLiveDraft() {
-    if (!livePending || applying) return;
-    if (liveInFlight) return;
-    livePending = false;
-    liveInFlight = true;
-    var seq = liveDesiredSeq;
+    if (!livePending || applying || liveInFlight) return;
+    livePending = false; liveInFlight = true;
+    var seq = liveSeq;
     try {
-      var resp = await fetch('./live-draft', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          profile: profileFromInputs(),
-          compare_profiles: compareProfiles(),
-          dsp_write_epoch: dspWriteEpoch
-        })
-      });
+      var resp = await fetch('./live-draft', {method: 'POST', headers: jsonHeaders(),
+        body: JSON.stringify({profile: draft, compare_profiles: compareProfiles(), dsp_write_epoch: dspWriteEpoch})});
       var payload = await resp.json();
       if (!resp.ok) throw new Error(payload.error || 'live draft failed');
-      if (seq === liveDesiredSeq) {
+      if (seq === liveSeq) {
         if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-        if (payload.live_status === 'live') {
-          updateCompareButtons('draft', payload.live_headroom_db || payload.audition_headroom_db || 0);
-          status('Listening to draft live.');
-        } else if (payload.live_status === 'stale') {
-          status('Speaker DSP changed. Move a control again to hear this draft.');
-        } else {
-          status('Live EQ updates are unavailable on this CamillaDSP connection.', true);
-        }
+        if (payload.live_status === 'live') status('Listening to this draft live.');
+        else if (payload.live_status === 'stale') status('Speaker DSP changed — move a control again to hear this draft.');
+        else status('Live preview unavailable on this CamillaDSP connection.', true);
       }
     } catch (e) {
-      if (seq === liveDesiredSeq) {
-        status('Could not update live draft: ' + e.message, true);
-      }
+      if (seq === liveSeq) status('Could not update live draft: ' + e.message, true);
     } finally {
       liveInFlight = false;
-      if (livePending && !applying) {
-        window.clearTimeout(liveTimer);
-        liveTimer = window.setTimeout(runLiveDraft, 0);
-      }
+      if (livePending && !applying) { window.clearTimeout(liveTimer); liveTimer = window.setTimeout(runLiveDraft, 0); }
     }
   }
-  function updateCompareButtons(mode, headroom) {
-    liveMode = mode || liveMode;
-    ['bypass', 'applied', 'draft'].forEach(function(name) {
-      el('listen-' + name).classList.toggle('active', liveMode === name);
-    });
-    el('compare-note').textContent = 'Live: ' + liveMode.charAt(0).toUpperCase() + liveMode.slice(1) +
-      '. Compare headroom anchor: ' + fmtDb(headroom || 0) + '.';
-  }
-  async function audition(mode) {
-    applying = true;
-    cancelLiveDrafts();
-    setControlsEnabled(true);
-    status('Loading ' + mode + '...');
+  async function applyProfile(profile, okMsg) {
+    applying = true; cancelLiveDrafts(); status('Applying…');
     try {
-      var resp = await fetch('./audition', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify({
-          mode: mode,
-          profile: compareProfileForMode(mode),
-          compare_profiles: compareProfiles()
-        })
-      });
+      var resp = await fetch('./apply', {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(profile)});
       var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'audition failed');
-      if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
-      updateCompareButtons(mode, payload.audition_headroom_db || 0);
-      status('Listening to ' + mode + '.');
+      if (!resp.ok) throw new Error(payload.error || 'apply failed');
+      ingestState(payload);
+      status(okMsg || 'Applied to speaker.');
     } catch (e) {
-      status('Could not audition EQ: ' + e.message, true);
-    } finally {
-      applying = false;
-      setControlsEnabled(true);
+      status('Could not apply: ' + e.message, true);
+    } finally { applying = false; render(); }
+  }
+  async function profileMutate(path, body) {
+    applying = true;
+    try {
+      var resp = await fetch(path, {method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body || {})});
+      var payload = await resp.json();
+      if (!resp.ok) throw new Error(payload.error || 'profile update failed');
+      if (payload.profile_library) library = payload.profile_library;
+      return payload;
+    } catch (e) {
+      status('Could not update profiles: ' + e.message, true);
+      return null;
+    } finally { applying = false; }
+  }
+
+  function ingestState(payload) {
+    limits = Object.assign({}, LIMIT_DEFAULTS, payload.limits || {});
+    simpleBands = limits.simple_bands || [];
+    if (payload.curves) { curvesById = {}; payload.curves.forEach(function(c) { curvesById[c.id] = c; }); }
+    if (payload.profile_library) library = payload.profile_library;
+    if (payload.dsp_write_epoch) dspWriteEpoch = payload.dsp_write_epoch;
+    applied = normalizeProfile(payload.profile || {});
+  }
+
+  // ---- tab + edit transitions ----------------------------------------
+  function setView(v) {
+    view = v;
+    render();
+    // Off and Saved are durable: clicking Off applies a bypass; tapping a
+    // saved profile applies it (see selectSaved). Draft is a live, non-
+    // persistent preview until the footer Save commits it.
+    if (v === 'off') {
+      applyProfile(Object.assign(normalizeProfile(applied), {enabled: false}), 'EQ off.');
+    } else if (v === 'draft') {
+      scheduleLiveDraft(true);
     }
   }
+  function selectSaved(id) {
+    selectedId = id;
+    var entry = entryById(id);
+    status(entry ? 'Applying ' + entry.name + '…' : '');
+    render();
+    if (entry) applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name),
+                            'Now playing: ' + entry.name + '.');
+  }
+  function newDraft() {
+    draft = FLAT(); editing = {kind: 'new'}; mode = 'simple'; activeBand = 0; naming = false;
+    view = 'draft'; status(''); render(); scheduleLiveDraft(true);
+  }
+  function editEntry(id) {
+    var entry = entryById(id);
+    if (!entry) return;
+    draft = normalizeProfile(entry.profile);
+    editing = {kind: entry.kind === 'custom' ? 'user' : 'preset', id: entry.id, name: entry.name};
+    mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    activeBand = 0; naming = false; view = 'draft';
+    status('Editing ' + entry.name + '.'); render(); scheduleLiveDraft(true);
+  }
+  // Body re-render + optimistic graph (via schedulePreview) + live audio.
+  function onDraftChanged(immediate) { renderDraft(); schedulePreview(); scheduleLiveDraft(immediate); }
+  function refreshActiveCount() {
+    var e = el('active-count');
+    if (!e) return;
+    var n = mode === 'simple'
+      ? Object.keys(draft.simple_eq).filter(function(k) { return Math.abs(draft.simple_eq[k]) >= 0.05; }).length
+      : draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).length;
+    e.textContent = n + ' active';
+  }
+
+  // ---- events ---------------------------------------------------------
+  ['off', 'saved', 'draft'].forEach(function(v) {
+    el('tab-' + v).addEventListener('click', function() { if (view !== v) setView(v); });
+  });
+  el('back').addEventListener('click', function(e) { e.preventDefault(); window.location.href = '/'; });
+
+  el('view-body').addEventListener('click', function(ev) {
+    var t = ev.target.closest('[data-act]');
+    if (!t) return;
+    var act = t.getAttribute('data-act');
+    var id = t.getAttribute('data-id');
+    var index = Number(t.getAttribute('data-index'));
+    if (act === 'browse-presets') { view = 'saved'; render(); }
+    else if (act === 'new-draft') { newDraft(); }
+    else if (act === 'select') { selectSaved(id); }
+    else if (act === 'edit') { editEntry(id); }
+    else if (act === 'delete') { deleteEntry(id); }
+    else if (act === 'add-band') { addBand(); }
+    else if (act === 'del-band') { delBand(index); }
+    else if (act === 'toggle-band') { activeBand = (activeBand === index && !allCollapsed) ? -1 : index; allCollapsed = false; renderDraft(); renderLiveGraph(); }
+    else if (act === 'toggle-collapse') { allCollapsed = !allCollapsed; renderDraft(); }
+    else if (act === 'begin-name') { naming = true; nameMode = 'save'; nameDraft = defaultName(); renderDraft(); focusNameInput(); }
+    else if (act === 'begin-rename') { naming = true; nameMode = 'rename'; nameDraft = editing.name || ''; renderDraft(); focusNameInput(); }
+    else if (act === 'cancel-name') { naming = false; renderDraft(); }
+    else if (act === 'finalize-name') { finalizeName(); }
+    else if (act === 'overwrite') { overwrite(); }
+    else if (act === 'discard') { discardEdits(); }
+  });
+  // Mode + band-type segmented buttons (delegated).
+  el('view-body').addEventListener('click', function(ev) {
+    var modeBtn = ev.target.closest('[data-mode]');
+    if (modeBtn) { switchMode(modeBtn.getAttribute('data-mode')); return; }
+    var typeBtn = ev.target.closest('[data-band-type]');
+    if (typeBtn) {
+      var wrap = typeBtn.closest('[data-band]');
+      var bi = Number(wrap.getAttribute('data-band'));
+      if (draft.parametric_bands[bi]) { draft.parametric_bands[bi].type = typeBtn.getAttribute('data-band-type'); activeBand = bi; onDraftChanged(true); }
+    }
+  });
+  el('view-body').addEventListener('input', function(ev) {
+    var field = ev.target.getAttribute('data-field');
+    var range = ev.target.getAttribute('data-range');
+    if (field) {
+      draft.simple_eq[field] = clamp(ev.target.value, -limits.simple_gain_db, limits.simple_gain_db);
+      var btn = el('view-body').querySelector('[data-readout-field="' + field + '"]');
+      if (btn) btn.textContent = fmtDb(draft.simple_eq[field]);
+      refreshActiveCount();
+      schedulePreview(); scheduleLiveDraft(false);
+    } else if (range) {
+      var row = ev.target.closest('.band-row');
+      var bi = Number(row.getAttribute('data-index'));
+      var band = draft.parametric_bands[bi];
+      if (!band) return;
+      activeBand = bi;
+      if (range === 'freq') band.freq_hz = sliderToFreq(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
+      if (range === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
+      if (range === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
+      var ro = row.querySelector('[data-readout="' + range + '"]');
+      if (ro) ro.textContent = range === 'freq' ? fmtFreq(band.freq_hz) : (range === 'gain' ? fmtDb(band.gain_db) + ' dB' : fmtQ(band.q));
+      schedulePreview(); scheduleLiveDraft(false);
+    }
+  });
+  el('view-body').addEventListener('input', function(ev) {
+    if (ev.target.id === 'name-input') nameDraft = ev.target.value;
+  });
+  el('view-body').addEventListener('keydown', function(ev) {
+    if (ev.target.id !== 'name-input') return;
+    if (ev.key === 'Enter') { ev.preventDefault(); finalizeName(); }
+    else if (ev.key === 'Escape') { ev.preventDefault(); naming = false; renderDraft(); }
+  });
+
+  function switchMode(next) {
+    if (next === mode) return;
+    if (next === 'simple') {
+      // Snap to the simple template, copying nearest gain by log-frequency.
+      var newSimple = zeroSimple();
+      (simpleBands || []).forEach(function(slot) {
+        var nearest = null, best = 1.2;
+        draft.parametric_bands.filter(function(b) { return b.enabled !== false; }).forEach(function(b) {
+          var dist = Math.abs(Math.log(b.freq_hz / slot.freq_hz) / Math.log(2));
+          if (dist < best) { best = dist; nearest = b; }
+        });
+        if (nearest) newSimple[slot.field] = clamp(nearest.gain_db, -limits.simple_gain_db, limits.simple_gain_db);
+      });
+      draft.simple_eq = newSimple;
+      draft.parametric_bands = [];
+    } else {
+      // Simple -> PEQ keeps the simple bands as gains; PEQ owns the bands going forward.
+      draft.parametric_bands = (simpleBands || []).filter(function(s) {
+        return Math.abs(draft.simple_eq[s.field] || 0) >= 0.05;
+      }).map(function(s) {
+        return {enabled: true, type: s.type, freq_hz: s.freq_hz,
+                gain_db: draft.simple_eq[s.field], q: s.type === 'Peaking' ? 1.0 : 1.0};
+      });
+      draft.simple_eq = zeroSimple();
+      activeBand = 0;
+    }
+    mode = next;
+    onDraftChanged(true);
+  }
+  function addBand() {
+    if (draft.parametric_bands.length >= limits.max_parametric_bands) {
+      status('Advanced EQ is limited to ' + limits.max_parametric_bands + ' bands.', true);
+      return;
+    }
+    draft.parametric_bands.push({enabled: true, type: 'Peaking', freq_hz: 1000, gain_db: 0, q: 1});
+    activeBand = draft.parametric_bands.length - 1;
+    onDraftChanged(true);
+  }
+  function delBand(index) {
+    draft.parametric_bands.splice(index, 1);
+    activeBand = Math.max(0, Math.min(activeBand, draft.parametric_bands.length - 1));
+    onDraftChanged(true);
+  }
+  function discardEdits() {
+    draft = sourceProfile();
+    if (editing.kind !== 'new') draft = withIdentity(draft, editing.id, editing.name);
+    mode = draft.parametric_bands.length ? 'peq' : 'simple';
+    activeBand = 0; naming = false;
+    onDraftChanged(true);
+  }
+  function defaultName() {
+    var d = new Date();
+    var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return 'Profile · ' + months[d.getMonth()] + ' ' + d.getDate();
+  }
+  function focusNameInput() { var n = el('name-input'); if (n) { n.focus(); n.select(); } }
+  async function finalizeName() {
+    naming = false;
+    if (nameMode === 'rename' && editing.kind === 'user') {
+      var newName = (nameDraft || '').trim() || editing.name || defaultName();
+      var rp = await profileMutate('./profiles/rename', {id: editing.id, name: newName});
+      if (rp && rp.profile_entry) {
+        if (selectedId === editing.id) selectedId = rp.profile_entry.id;
+        editing = {kind: 'user', id: rp.profile_entry.id, name: rp.profile_entry.name};
+        status('Renamed to ' + rp.profile_entry.name + '.');
+      }
+      render();
+      return;
+    }
+    var name = (nameDraft || '').trim() || defaultName();
+    var payload = await profileMutate('./profiles/save', {id: null, name: name, profile: draft});
+    if (payload && payload.profile_entry) {
+      var entry = payload.profile_entry;
+      library = payload.profile_library || library;
+      await applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name), 'Saved ' + entry.name + '.');
+      selectedId = entry.id; view = 'saved'; render();
+    } else { render(); }
+  }
+  async function overwrite() {
+    if (editing.kind !== 'user') return;
+    var payload = await profileMutate('./profiles/save', {id: editing.id, name: editing.name, profile: draft});
+    if (payload && payload.profile_entry) {
+      var entry = payload.profile_entry;
+      await applyProfile(withIdentity(normalizeProfile(entry.profile), entry.id, entry.name), 'Updated ' + entry.name + '.');
+      selectedId = entry.id; view = 'saved'; render();
+    }
+  }
+  async function deleteEntry(id) {
+    var entry = entryById(id);
+    if (!entry || entry.kind !== 'custom') return;
+    if (!window.confirm('Delete profile "' + entry.name + '"?')) return;
+    var payload = await profileMutate('./profiles/delete', {id: id});
+    if (payload) {
+      if (selectedId === id) selectedId = null;
+      status('Deleted ' + entry.name + '.');
+      render();
+    }
+  }
+
   async function loadState() {
     try {
       var resp = await fetch('./state', {cache: 'no-store'});
       if (!resp.ok) throw new Error('state failed');
       var payload = await resp.json();
-      populateCurves(payload.curves);
-      syncInputs(payload);
-      liveMode = 'applied';
-      updateCompareButtons('applied', payload.headroom_db || 0);
-      setControlsEnabled(true);
+      ingestState(payload);
+      // Initial view mirrors the applied profile so opening the page is a no-op.
+      if (applied.enabled === false) { view = 'off'; }
+      else { view = 'saved'; selectedId = findIdFor(applied); }
+      render();
     } catch (e) {
       status('Could not load sound profile: ' + e.message, true);
     }
   }
-  async function apply(profile) {
-    applying = true;
-    cancelLiveDrafts();
-    setControlsEnabled(true);
-    status('Applying...');
-    try {
-      var resp = await fetch('./apply', {
-        method: 'POST',
-        headers: jsonHeaders(),
-        body: JSON.stringify(profile)
-      });
-      var payload = await resp.json();
-      if (!resp.ok) throw new Error(payload.error || 'apply failed');
-      liveMode = 'applied';
-      syncInputs(payload);
-      status('Applied to speaker.');
-    } catch (e) {
-      status('Could not apply EQ: ' + e.message, true);
-    } finally {
-      applying = false;
-      setControlsEnabled(true);
-    }
-  }
-  ['bass', 'mid', 'treble'].forEach(function(id) {
-    el(id).addEventListener('input', scheduleDraftChange);
-    el(id).addEventListener('change', function() {
-      scheduleDraftChange({immediate: true});
-    });
-  });
-  el('curve').addEventListener('change', function() {
-    scheduleDraftChange({immediate: true});
-  });
-  ['basic', 'advanced'].forEach(function(mode) {
-    el('mode-' + mode).addEventListener('click', function() {
-      if (eqMode === mode && !legacyMixedProfile) return;
-      eqMode = mode;
-      legacyMixedProfile = false;
-      if (mode === 'advanced') {
-        el('bass').value = 0;
-        el('mid').value = 0;
-        el('treble').value = 0;
-      }
-      syncLabels();
-      renderBands();
-      renderMode();
-      scheduleDraftChange({immediate: true});
-    });
-  });
-  el('apply').addEventListener('click', function() { apply(profileFromInputs()); });
-  el('eq-enabled').addEventListener('change', function() {
-    schedulePreview();
-    audition(el('eq-enabled').checked ? 'draft' : 'bypass');
-  });
-  ['bypass', 'applied', 'draft'].forEach(function(mode) {
-    el('listen-' + mode).addEventListener('click', function() { audition(mode); });
-  });
-  el('profile-select').addEventListener('change', function() {
-    selectedProfileId = el('profile-select').value;
-    loadProfileEntry(selectedProfileEntry());
-  });
-  el('profile-name').addEventListener('input', updateProfileActions);
-  el('save-new-profile').addEventListener('click', async function() {
-    var entry = selectedProfileEntry();
-    var profile = profileFromInputs();
-    var name = el('profile-name').value || profileNameForSave(entry);
-    var payload = await mutateProfileLibrary('./profiles/save', {
-      id: null,
-      name: name,
-      profile: profile
-    });
-    if (payload && payload.profile_entry) {
-      status('Saved profile ' + payload.profile_entry.name + '.');
-    }
-  });
-  el('update-profile').addEventListener('click', async function() {
-    var entry = selectedProfileEntry();
-    if (!entry || entry.kind !== 'custom') return;
-    var profile = profileFromInputs();
-    var payload = await mutateProfileLibrary('./profiles/save', {
-      id: entry.id,
-      name: el('profile-name').value || entry.name,
-      profile: profile
-    });
-    if (payload && payload.profile_entry) {
-      status('Updated profile ' + payload.profile_entry.name + '.');
-    }
-  });
-  el('rename-profile').addEventListener('click', async function() {
-    var entry = selectedProfileEntry();
-    if (!entry || entry.kind !== 'custom') return;
-    var payload = await mutateProfileLibrary('./profiles/rename', {
-      id: entry.id,
-      name: el('profile-name').value || entry.name
-    });
-    if (payload && payload.profile_entry) {
-      status('Renamed profile to ' + payload.profile_entry.name + '.');
-    }
-  });
-  el('delete-profile').addEventListener('click', async function() {
-    var entry = selectedProfileEntry();
-    if (!entry || entry.kind !== 'custom') return;
-    if (!window.confirm('Delete profile "' + entry.name + '"?')) return;
-    var payload = await mutateProfileLibrary('./profiles/delete', {id: entry.id});
-    if (payload) status('Deleted profile.');
-  });
-  el('add-band').addEventListener('click', function() {
-    if (draftBands.length >= limits.max_parametric_bands) {
-      status('Advanced EQ is limited to ' + limits.max_parametric_bands + ' bands.', true);
-      return;
-    }
-    draftBands.push({enabled: true, type: 'Peaking', freq_hz: 1000, gain_db: 0, q: 1});
-    selectedBand = draftBands.length - 1;
-    eqMode = 'advanced';
-    renderBands();
-    scheduleDraftChange({immediate: true});
-  });
-  el('band-list').addEventListener('click', function(ev) {
-    var action = ev.target.getAttribute('data-action');
-    if (!action) return;
-    var index = Number(ev.target.getAttribute('data-index'));
-    if (action === 'delete') {
-      draftBands.splice(index, 1);
-      selectedBand = Math.max(0, Math.min(selectedBand, draftBands.length - 1));
-      renderBands();
-      scheduleDraftChange({immediate: true});
-    }
-  });
-  el('band-list').addEventListener('input', function(ev) {
-    var index = Number(ev.target.getAttribute('data-index'));
-    var kind = ev.target.getAttribute('data-kind');
-    var band = draftBands[index];
-    if (!band || !kind) return;
-    selectedBand = index;
-    if (kind === 'enabled') band.enabled = ev.target.checked;
-    if (kind === 'freq-slider') band.freq_hz = sliderToFreq(ev.target.value);
-    if (kind === 'freq-number') {
-      if (String(ev.target.value).trim() === '') return;
-      band.freq_hz = clamp(ev.target.value, limits.min_freq_hz, limits.max_freq_hz);
-    }
-    if (kind === 'gain') band.gain_db = clamp(ev.target.value, -limits.advanced_gain_db, limits.advanced_gain_db);
-    if (kind === 'q') band.q = clamp(ev.target.value, limits.min_q, limits.max_q);
-    updateBandReadouts(index);
-    scheduleDraftChange();
-  });
-  el('band-list').addEventListener('change', function(ev) {
-    var index = Number(ev.target.getAttribute('data-index'));
-    var kind = ev.target.getAttribute('data-kind');
-    var band = draftBands[index];
-    if (!band || !kind) return;
-    selectedBand = index;
-    if (kind === 'type') band.type = ev.target.value;
-    if (kind === 'enabled') band.enabled = ev.target.checked;
-    renderBands();
-    scheduleDraftChange({immediate: true});
-  });
-  el('revert').addEventListener('click', function() {
-    setFormFromProfile(savedProfile);
-    renderBands();
-    preview();
-    audition('applied');
-  });
-  el('reset').addEventListener('click', function() {
-    setFormFromProfile({enabled: true, curve_id: 'flat',
-                        simple_eq: {bass_db: 0, mid_db: 0, treble_db: 0},
-                        parametric_bands: []});
-    selectedProfileId = 'stock:flat';
-    syncProfileName(selectedProfileEntry());
-    updateProfileActions();
-    renderBands();
-    scheduleDraftChange({immediate: true});
-    status('Draft reset to Flat. Save to Speaker when ready.');
-  });
   loadState();
 })();
+"""
+
+
+def _index_html(csrf_token: str = "") -> bytes:
+    body = (
+        """
+<header class="app-header">
+  <div class="app-header__row">
+    <a class="icon-button" id="back" href="/" aria-label="Home">"""
+        + '<svg class="ico" aria-hidden="true"><use href="#icon-back"></use></svg>'
+        + """</a>
+    <h1 class="app-header__title">Sound profile</h1>
+    <span></span>
+  </div>
+  <div class="app-header__tabs">
+    <div class="segmented" role="tablist" aria-label="Sound source">
+      <button class="segmented__btn" id="tab-off" data-view="off" aria-pressed="true">Off</button>
+      <button class="segmented__btn" id="tab-saved" data-view="saved" aria-pressed="false">Saved</button>
+      <button class="segmented__btn" id="tab-draft" data-view="draft" aria-pressed="false">Draft</button>
+    </div>
+  </div>
+</header>
+<main class="page">
+  <section class="now-playing">
+    <div class="row-between">
+      <h2 class="eyebrow">Now playing</h2>
+      <span class="now-playing__label" id="live-label">Bypass</span>
+    </div>
+    <div class="graph-card">
+      <svg class="eq-graph" id="plot" viewBox="0 0 620 200" preserveAspectRatio="none"
+           role="img" aria-label="EQ response preview"></svg>
+    </div>
+    <div class="sr-only" id="plot-summary" aria-live="polite"></div>
+  </section>
+  <div id="view-body"></div>
+  <div class="status-line" id="status" role="status" aria-live="polite"></div>
+</main>
+<script>
+"""
+        + _SOUND_JS.replace("__CSRF_HELPERS__", csrf_fetch_helpers_js())
+        + """
 </script>
 """
     )
-    return wrap_page(
-        "Sound",
-        body.replace("{csrf_fetch_helpers_js}", csrf_fetch_helpers_js()),
+    return canonical_page(
+        "Sound profile", body, csrf_token=csrf_token, page_css=_PAGE_CSS,
     )
 
 

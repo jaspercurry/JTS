@@ -3440,6 +3440,33 @@ def _correction_root() -> Path:
     )
 
 
+def check_web_design_assets() -> CheckResult:
+    """The shared management-UI stylesheet must be installed.
+
+    The redesigned wizards and the landing page link /assets/app.css for
+    the canonical design system; nginx serves it from
+    /usr/share/jasper-web/assets/. If it's missing, pages render
+    unstyled — visible but not fatal, so warn (redeploy). On a non-Pi
+    checkout (no /usr/share/jasper-web) there's nothing to verify."""
+    web_root = Path(os.environ.get("JASPER_WEB_SHARE_DIR", "/usr/share/jasper-web"))
+    if not web_root.is_dir():
+        return CheckResult("web design assets", "ok", "not installed (skipped)")
+    app_css = web_root / "assets" / "app.css"
+    fonts = web_root / "assets" / "fonts"
+    missing = []
+    if not app_css.is_file():
+        missing.append("assets/app.css")
+    if not fonts.is_dir():
+        missing.append("assets/fonts/")
+    if missing:
+        return CheckResult(
+            "web design assets", "warn",
+            "missing: " + ", ".join(missing)
+            + " — pages render unstyled; redeploy to install",
+        )
+    return CheckResult("web design assets", "ok", str(app_css))
+
+
 def check_correction_web_service() -> CheckResult:
     """Socket activation is the liveness contract for /correction/.
 
@@ -3886,6 +3913,7 @@ async def run_async(cfg: Config) -> list[CheckResult]:
         # and the newest replay/debug bundle. These are deliberately
         # lightweight so `jasper-doctor` remains safe to run before a
         # correction session.
+        check_web_design_assets,
         check_correction_web_service,
         check_correction_state_dirs,
         check_camilla_volume_limit,

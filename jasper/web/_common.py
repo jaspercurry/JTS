@@ -399,6 +399,148 @@ def wrap_page(title: str, body: str, *, status_msg: str = "") -> bytes:
 </html>""".encode()
 
 
+# ---------------------------------------------------------------------------
+# Canonical design system (the redesigned look).
+# ---------------------------------------------------------------------------
+#
+# The management landing page (deploy/index.html) and the redesigned
+# wizards share one stylesheet — /assets/app.css — served static by nginx
+# and browser-cached. `canonical_page()` is the new-look analog of
+# `wrap_page()`: it emits the document shell (head + stylesheet link +
+# CSRF meta + the shared icon sprite) so a wizard authors only its body.
+# Page-specific CSS rides in `page_css`; shared primitives live in
+# app.css. This is the seam every migrated wizard reuses.
+
+_asset_version_cache: str | None = None
+
+
+def _asset_version() -> str:
+    """Cache-busting token for /assets/app.css.
+
+    nginx serves /assets/ with `immutable, max-age=1y`, so the linked URL
+    must change when the stylesheet does. We key it on the deployed build
+    SHA (written to /var/lib/jasper/build.txt by install.sh) — a new
+    deploy is exactly when app.css can change. Fail-soft: a missing or
+    unreadable file yields "dev", a still-valid (un-busted) URL. Read
+    once per process; the socket-activated web server is short-lived and
+    a deploy restarts it, so the cache can't go stale in practice."""
+    global _asset_version_cache
+    if _asset_version_cache is not None:
+        return _asset_version_cache
+    version = "dev"
+    try:
+        with open("/var/lib/jasper/build.txt") as f:
+            for raw in f:
+                line = raw.strip()
+                if line.startswith("JASPER_GIT_SHA="):
+                    sha = line.split("=", 1)[1].strip()
+                    if sha and sha != "unknown":
+                        version = sha
+                    break
+    except OSError:
+        pass
+    _asset_version_cache = version
+    return version
+
+
+# Curated inline icon sprite for the redesigned pages. Symbols mirror the
+# landing page's set (lucide-style, 24×24, stroked). Reference one with
+# `<svg class="ico"><use href="#icon-NAME"></use></svg>`. Add a symbol
+# here when a page needs a new glyph — keep it a shared set, not per-page.
+CANONICAL_ICON_SPRITE = """\
+<svg class="sr-only" aria-hidden="true" focusable="false">
+  <symbol id="icon-back" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m15 18-6-6 6-6"></path>
+  </symbol>
+  <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m9 18 6-6-6-6"></path>
+  </symbol>
+  <symbol id="icon-sound" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 14h4l5 5V5L8 10H4z"></path>
+    <path d="M17 9a5 5 0 0 1 0 6"></path>
+    <path d="M19.5 6.5a8.5 8.5 0 0 1 0 11"></path>
+  </symbol>
+  <symbol id="icon-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M4 6h16"></path><path d="M4 12h16"></path><path d="M4 18h16"></path>
+    <circle cx="9" cy="6" r="2"></circle><circle cx="15" cy="12" r="2"></circle>
+    <circle cx="11" cy="18" r="2"></circle>
+  </symbol>
+  <symbol id="icon-wave" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 12c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
+    <path d="M3 17c2.2-4 4.5-4 6.8 0s4.5 4 6.7 0 3.7-4 4.5-2.2"></path>
+  </symbol>
+  <symbol id="icon-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M5 12h14"></path><path d="M12 5v14"></path>
+  </symbol>
+  <symbol id="icon-trash" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M3 6h18"></path>
+    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"></path>
+    <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+    <line x1="10" x2="10" y1="11" y2="17"></line>
+    <line x1="14" x2="14" y1="11" y2="17"></line>
+  </symbol>
+  <symbol id="icon-pencil" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"></path>
+    <path d="m15 5 4 4"></path>
+  </symbol>
+  <symbol id="icon-spark" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+          stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.582a.5.5 0 0 1 0 .962L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"></path>
+  </symbol>
+</svg>"""
+
+
+def canonical_page(
+    title: str,
+    body: str,
+    *,
+    csrf_token: str = "",
+    page_css: str = "",
+) -> bytes:
+    """Wrap a body fragment in a full HTML document on the canonical
+    design system (the redesigned management look).
+
+    The new-look analog of `wrap_page()`. Shared tokens, fonts, and
+    component primitives live in the static stylesheet /assets/app.css
+    (one source of truth for every page); this helper emits the document
+    shell so a wizard authors only its body markup:
+
+      * doctype + head with the cache-busted app.css <link>,
+      * the CSRF meta tag (when `csrf_token` is given, for fetch POSTs),
+      * an optional per-page <style> for components that aren't shared
+        (`page_css`),
+      * the shared inline icon sprite,
+      * the caller's `body` (which supplies its own <header>/<main>/
+        <script>).
+
+    Returns bytes; send via `send_html_response()`."""
+    csrf = csrf_meta_html(csrf_token) if csrf_token else ""
+    style = f"<style>{page_css}</style>" if page_css else ""
+    head_extra = "\n".join(part for part in (csrf, style) if part)
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>{html.escape(title)}</title>
+<link rel="stylesheet" href="/assets/app.css?v={html.escape(_asset_version())}">
+{head_extra}
+</head>
+<body>
+{CANONICAL_ICON_SPRITE}
+{body}
+</body>
+</html>""".encode()
+
+
 def read_env_file(path: str) -> dict[str, str]:
     """Parse a systemd-style EnvironmentFile (KEY=VALUE per line, no
     quoting). Returns {} if the file is missing or unreadable.

@@ -2161,3 +2161,38 @@ def test_correction_doctor_checks_registered():
     assert "check_sound_profile" in src
     assert "check_dsp_apply_state" in src
     assert "check_correction_latest_bundle" in src
+
+
+def test_web_design_assets_ok_when_installed(monkeypatch, tmp_path: Path):
+    (tmp_path / "assets" / "fonts").mkdir(parents=True)
+    (tmp_path / "assets" / "app.css").write_text("/* css */")
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "ok"
+    assert "app.css" in r.detail
+
+
+def test_web_design_assets_warns_when_stylesheet_missing(
+    monkeypatch, tmp_path: Path,
+):
+    (tmp_path / "assets" / "fonts").mkdir(parents=True)
+    # No app.css written — the design system can't load.
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+    r = doctor.check_web_design_assets()
+    assert r.status == "warn"
+    assert "assets/app.css" in r.detail
+
+
+def test_web_design_assets_skips_when_not_installed(
+    monkeypatch, tmp_path: Path,
+):
+    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path / "nope"))
+    r = doctor.check_web_design_assets()
+    assert r.status == "ok"
+    assert "not installed" in r.detail
+
+
+def test_web_design_assets_check_registered():
+    import inspect
+    src = inspect.getsource(doctor.run_async)
+    assert "check_web_design_assets" in src
