@@ -2,8 +2,11 @@
 
 from .profile import (
     CURVE_PRESETS,
+    SIMPLE_BANDS,
+    SIMPLE_EQ_FIELDS,
     ParametricBand,
     ProfileLibraryEntry,
+    SimpleBand,
     SimpleEq,
     SoundProfile,
     delete_named_profile,
@@ -16,12 +19,16 @@ from .profile import (
     response_component_payload,
     response_preview,
     save_named_profile,
+    simple_bands_payload,
 )
 
 __all__ = [
     "CURVE_PRESETS",
+    "SIMPLE_BANDS",
+    "SIMPLE_EQ_FIELDS",
     "ParametricBand",
     "ProfileLibraryEntry",
+    "SimpleBand",
     "SimpleEq",
     "SoundProfile",
     "delete_named_profile",
@@ -34,4 +41,5 @@ __all__ = [
     "response_component_payload",
     "response_preview",
     "save_named_profile",
+    "simple_bands_payload",
 ]

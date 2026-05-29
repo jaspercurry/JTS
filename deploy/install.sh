@@ -2693,10 +2693,23 @@ install_nginx_site() {
     install -m 0644 \
         "${REPO_DIR}/deploy/index.html" \
         /usr/share/jasper-web/index.html
+    # Stamp the app.css cache-bust version (mirrors the wizards' build-SHA
+    # query string) so a deploy busts the year-immutable /assets cache.
+    # The landing page is static HTML, so we substitute at install time;
+    # build.txt was written earlier in this run.
+    app_css_ver="$(grep -E '^JASPER_GIT_SHA=' "${STATE_DIR}/build.txt" 2>/dev/null | head -1 | cut -d= -f2-)"
+    [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
+    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
     install -d -m 0755 /usr/share/jasper-web/assets/fonts
     install -m 0644 \
         "${REPO_DIR}/deploy/assets/fonts/"* \
         /usr/share/jasper-web/assets/fonts/
+    # Canonical design-system stylesheet shared by the landing page and
+    # the redesigned wizards (jasper.web._common.canonical_page links it,
+    # cache-busted by build SHA). Served by the `location /assets/` block.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/assets/app.css" \
+        /usr/share/jasper-web/assets/app.css
     # Plain-HTTP preflight before the HTTPS-only room-correction UI.
     # This gives the user context before the browser's self-signed-cert
     # interstitial while keeping the entry point on the normal HTTP

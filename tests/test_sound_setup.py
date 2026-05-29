@@ -74,66 +74,45 @@ class FakeCamillaWithoutLiveRaw:
         return True
 
 
-def test_index_html_exposes_simple_eq_language_only():
+def test_index_html_renders_canonical_sound_page():
     html = sound_setup._index_html().decode()
 
-    assert "Bass" in html
-    assert "Mid" in html
-    assert "Treble" in html
-    assert "Natural" not in html
-    assert "Warm" not in html
-    assert "Clear" not in html
-    assert "aria-label=\"Turn preference EQ on or off\"" in html
-    assert "curve-description" in html
-    assert "Live compare" in html
-    assert "Profile" in html
-    assert "Applied:" in html
-    assert "Draft:" in html
-    assert "Sound profile" in html
-    assert "Profile options" in html
-    assert "Profile name" in html
-    assert "Save Copy" in html
-    assert "Update Profile" in html
-    assert "Bypass" in html
-    assert "Applied" in html
-    assert "Draft" in html
-    assert "EQ editing mode" in html
-    assert "Basic" in html
-    assert "Advanced PEQ" in html
-    assert "legacyMixedProfile" in html
-    assert "eqMode === 'advanced' && !legacyMixedProfile" in html
-    assert "Focus" not in html
-    assert "freq-number" in html
-    assert "Save to Speaker" in html
-    assert "Discard Edits" in html
-    assert "window.prompt" not in html
-    assert "./profiles/save" in html
-    assert "./profiles/rename" in html
-    assert "./profiles/delete" in html
-    assert "./live-draft" in html
+    # Canonical design system + page shell.
+    assert "/assets/app.css" in html
+    assert 'class="app-header__title">Sound profile' in html
+
+    # Off / Saved / Draft tabs are the live source.
+    assert 'id="tab-off"' in html
+    assert 'id="tab-saved"' in html
+    assert 'id="tab-draft"' in html
+
+    # 5-band Simple model — field names ship; labels arrive from /state.
+    assert "sub_bass_db" in html
+    assert "presence_db" in html
+
+    # Backend endpoints + the epoch handshake are preserved.
+    for path in (
+        "./preview", "./live-draft", "./apply",
+        "./profiles/save", "./profiles/rename", "./profiles/delete",
+    ):
+        assert path in html
     assert "dsp_write_epoch: dspWriteEpoch" in html
     assert "function cancelLiveDrafts()" in html
-    assert "@media (max-width: 520px)" in html
-    assert ".button-row button { width: 100%; min-height: 44px; }" in html
+    assert "jsonHeaders()" in html
 
-
-def test_index_html_keeps_profile_action_buttons_truly_hidden():
-    html = sound_setup._index_html().decode()
-
-    # Older button CSS can accidentally override the browser's [hidden] default.
-    # Keep this explicit so stock profiles expose only the copy action.
-    assert ".profile-actions button[hidden] { display: none; }" in html
+    # No legacy prompt-driven flows.
+    assert "window.prompt" not in html
 
 
 def test_index_html_prefers_explicit_profile_identity_then_stock_matches():
     html = sound_setup._index_html().decode()
-    fn_start = html.index("function findProfileIdFor(profile)")
-    fn_end = html.index("function profileLabel(profile)", fn_start)
+    fn_start = html.index("function findIdFor(profile)")
+    fn_end = html.index("function sourceProfile()", fn_start)
     body = html[fn_start:fn_end]
 
-    explicit_identity = body.index("profile.profile_id && profileEntry(profile.profile_id)")
-    stock_match = body.index("entry.kind === 'stock'")
-    custom_match = body.index("entry.kind === 'custom'")
+    explicit_identity = body.index("profile.profile_id && entryById(profile.profile_id)")
+    stock_match = body.index("e.kind === 'stock'")
+    custom_match = body.index("e.kind === 'custom'")
 
     assert explicit_identity < stock_match < custom_match
 

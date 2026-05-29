@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from jasper.sound.profile import (
+    SIMPLE_EQ_FIELDS,
     ParametricBand,
     SimpleEq,
     SoundProfile,
@@ -18,6 +19,7 @@ from jasper.sound.profile import (
     response_preview,
     save_named_profile,
     save_profile,
+    simple_bands_payload,
 )
 
 
@@ -25,7 +27,10 @@ def test_profile_input_is_clamped_and_normalized():
     profile = SoundProfile.from_mapping({
         "enabled": True,
         "curve_id": "not-a-real-curve",
-        "simple_eq": {"bass_db": 99, "mid_db": -99, "treble_db": "2.5"},
+        "simple_eq": {
+            "sub_bass_db": 99, "bass_db": 99, "mid_db": -99,
+            "presence_db": -50, "treble_db": "2.5",
+        },
         "parametric_bands": [
             {"type": "low_shelf", "freq_hz": 3, "gain_db": 40, "q": 99},
             {"type": "peaking", "freq_hz": 1000, "gain_db": -3, "q": 2},
@@ -33,7 +38,11 @@ def test_profile_input_is_clamped_and_normalized():
     })
 
     assert profile.curve_id == "flat"
-    assert profile.simple_eq == SimpleEq(bass_db=6.0, mid_db=-6.0, treble_db=2.5)
+    # Simple bands clamp to ±SIMPLE_EQ_LIMIT_DB (now ±12).
+    assert profile.simple_eq == SimpleEq(
+        sub_bass_db=12.0, bass_db=12.0, mid_db=-12.0,
+        presence_db=-12.0, treble_db=2.5,
+    )
     assert profile.parametric_bands[0] == ParametricBand(
         enabled=True,
         biquad_type="Lowshelf",
@@ -41,6 +50,53 @@ def test_profile_input_is_clamped_and_normalized():
         gain_db=12.0,
         q=10.0,
     )
+
+
+def test_simple_eq_migrates_legacy_three_band_profile():
+    # Old persisted profiles only carried bass/mid/treble. They must load
+    # unchanged, with the two new bands defaulting to 0 dB.
+    eq = SimpleEq.from_mapping({"bass_db": 3.0, "mid_db": -2.0, "treble_db": 1.0})
+    assert eq == SimpleEq(
+        sub_bass_db=0.0, bass_db=3.0, mid_db=-2.0, presence_db=0.0, treble_db=1.0,
+    )
+
+
+def test_simple_eq_to_dict_round_trips_five_bands():
+    eq = SimpleEq(
+        sub_bass_db=1.0, bass_db=2.0, mid_db=3.0, presence_db=4.0, treble_db=5.0,
+    )
+    raw = eq.to_dict()
+    assert set(raw) == {
+        "sub_bass_db", "bass_db", "mid_db", "presence_db", "treble_db",
+    }
+    assert SimpleEq.from_mapping(raw) == eq
+
+
+def test_simple_bands_payload_describes_five_fixed_slots():
+    payload = simple_bands_payload()
+    assert [b["field"] for b in payload] == list(SIMPLE_EQ_FIELDS)
+    assert [b["label"] for b in payload] == [
+        "Sub-bass", "Bass", "Mid", "Presence", "Treble",
+    ]
+    # Ascending centre frequencies, matching the mockup.
+    assert [b["freq_hz"] for b in payload] == [60.0, 150.0, 1000.0, 4000.0, 10000.0]
+
+
+def test_simple_filters_emit_five_fixed_bands():
+    profile = SoundProfile(simple_eq=SimpleEq(
+        sub_bass_db=1.0, bass_db=1.0, mid_db=1.0, presence_db=1.0, treble_db=1.0,
+    ))
+    simple = [
+        s for s in build_sound_filters(profile)
+        if s.name.startswith("sound_simple_")
+    ]
+    assert [(s.name, s.biquad_type, s.freq) for s in simple] == [
+        ("sound_simple_sub_bass", "Lowshelf", 60.0),
+        ("sound_simple_bass", "Peaking", 150.0),
+        ("sound_simple_mid", "Peaking", 1000.0),
+        ("sound_simple_presence", "Peaking", 4000.0),
+        ("sound_simple_treble", "Highshelf", 10000.0),
+    ]
 
 
 def test_build_filters_uses_curve_then_simple_then_advanced():

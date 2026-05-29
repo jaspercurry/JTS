@@ -6,10 +6,10 @@ Current operational truth for the `/sound/` preference-EQ layer.
 
 The sound-preference wizard is the independent preference-tuning layer
 for users who want to shape the speaker without running room
-correction. It lets users apply stock sound curves, simple Bass / Mid /
-Treble, bounded advanced PEQ bands, and named custom profiles copied
-from any stock or edited draft. It is deliberately separate from
-`/correction/`:
+correction. It lets users apply stock sound curves, a five-band Simple
+EQ (Sub-bass / Bass / Mid / Presence / Treble), bounded advanced PEQ
+bands, and named custom profiles copied from any stock or edited draft.
+It is deliberately separate from `/correction/`:
 
 - `/correction/` measures the room and emits room PEQs.
 - `/sound/` applies user preference shaping after those room PEQs.
@@ -26,30 +26,37 @@ frequency marker and, for peaking filters, a translucent width region
 even when gain is still 0 dB, so a newly-added band has a visible place
 on the response chart before it changes the sound.
 
-The editable taste layer has two exclusive modes:
+The Draft editor has two exclusive modes:
 
-- **Basic** — Bass / Mid / Treble.
-- **Advanced PEQ** — bounded parametric bands with exact Hz entry plus
-  a log-frequency slider for fast touch adjustment.
+- **Simple** — five fixed-frequency gain sliders (Sub-bass 60 Hz,
+  Bass 150 Hz, Mid 1 kHz, Presence 4 kHz, Treble 10 kHz). Only gain is
+  editable per band; the slot table is `SIMPLE_BANDS`
+  (`jasper/sound/profile.py`) and is exposed to the UI via
+  `/state.limits.simple_bands`, so the page renders the columns from
+  data rather than hardcoding band labels.
+- **PEQ** — bounded parametric bands (a collapsible accordion) with
+  exact Hz entry plus a log-frequency slider for fast touch adjustment.
 
-The saved `SoundProfile` schema can represent both simple EQ and PEQ
-for compatibility, but the `/sound/` UI submits one mode at a time:
-Basic omits PEQ from the outgoing draft, and Advanced PEQ zeros
-Bass / Mid / Treble in the outgoing draft. Stock sound curves remain
-available in either mode. There is one compatibility exception: profiles
-created before this split that already contain both Basic EQ and PEQ are
-preserved as mixed profiles until the user explicitly taps Basic or
-Advanced PEQ, which normalizes the draft into the selected mode.
+Switching modes converts the draft rather than warning: PEQ → Simple
+snaps each Simple slot to the nearest enabled PEQ band by log-frequency
+(within ~1.2 octaves); Simple → PEQ turns each non-zero Simple band into
+a parametric band. This replaces the older Basic/Advanced "mixed
+profile" compatibility shim. Older 3-band profiles still load — the two
+new Simple bands (Sub-bass, Presence) default to 0 dB — but note the
+redesign moved the Bass centre (105 → 150 Hz) and the Treble shelf
+(4 k → 10 k), so a migrated profile's bass/treble values shape slightly
+different frequencies.
 
-The profile picker has two layers:
+The **Saved** tab lists profiles in two sections:
 
-- **Stock** profiles are generated from built-in curves: Flat,
-  Harman-style, and B&K-style. They are not persisted or editable.
-- **Custom** profiles live in `/var/lib/jasper/sound_profiles.json`.
-  Users can save a new custom profile from any stock/draft state,
-  update an existing custom profile, rename it, or delete it. Custom
-  profile library edits do not touch CamillaDSP; ordinary draft editing
-  and profile loading may separately update the live Draft through
+- **Presets** are generated from built-in curves: Flat, Harman-style,
+  and B&K-style. They are not persisted or editable, but can be opened
+  in Draft (pencil) and saved as a new custom profile.
+- **Your profiles** are custom profiles in
+  `/var/lib/jasper/sound_profiles.json`. Each row has edit (pencil) and
+  delete actions; the Draft footer adds Overwrite / Save as new /
+  Rename. Custom profile library edits do not touch CamillaDSP; ordinary
+  draft editing may separately update the live Draft through
   `/sound/live-draft`.
 
 `SoundProfile` includes optional `profile_id` / `profile_name` metadata
@@ -59,23 +66,33 @@ without making the metadata part of the DSP math. Stock identities are
 Deleting a custom library entry does not delete the currently applied
 DSP profile; it only removes that profile as a future draft template.
 
-The page now has explicit compare semantics:
+The top control is **Off / Saved / Draft**, and it is the live source:
 
-- **Applied** — the persisted `/var/lib/jasper/sound_profile.json`.
-- **Draft** — the current unsaved form state.
-- **Bypass** — preference EQ disabled while preserving room correction.
+- **Off** — preference EQ disabled (bypass) while preserving room
+  correction. Clicking Off durably applies a bypassed profile.
+- **Saved** — pick a Preset or one of Your profiles; tapping a row
+  durably applies it.
+- **Draft** — the editor. Dragging a control schedules a live Draft
+  update: the browser updates the graph immediately, coalesces audio
+  updates, and asks `/sound/live-draft` to upload a generated active
+  CamillaDSP config without changing the config file path or persisting
+  profile state. Each live request carries the current durable DSP write
+  epoch from `/var/lib/jasper/dsp_apply_state.json`; if a save or
+  room-correction apply wins the writer lock first, the stale live
+  request is skipped.
 
-Dragging editing controls schedules a live Draft update. The browser
-updates the graph immediately, coalesces audio updates, and asks
-`/sound/live-draft` to upload a generated active CamillaDSP config
-without changing the config file path or persisting profile state. Each
-live request carries the current durable DSP write epoch from
-`/var/lib/jasper/dsp_apply_state.json`; if a save or room-correction
-apply wins the writer lock first, the stale live request is skipped.
-Bypass / Applied / Draft compare buttons still emit `sound_audition.yml`
-and load it through the validation/rollback substrate. `Save to Speaker`
+Off and Saved are **durable** (they go through `/sound/apply`); Draft is
+a live, non-persistent preview until the footer Save commits it. The
+Draft footer adapts to origin: a new draft offers Save profile /
+Discard; editing a custom profile offers Overwrite / Save as new /
+Rename / Discard; editing a preset offers Save as new / Discard. Saving
 emits `sound_current.yml` and persists only after the CamillaDSP reload
 is confirmed.
+
+The `/sound/audition` endpoint and `sound_audition.yml` remain in the
+backend (level-matched A/B via the validation/rollback substrate) but
+the redesigned UI no longer drives them — it expresses the live source
+through durable apply + the live-draft preview instead.
 
 ## Files
 
@@ -153,11 +170,17 @@ applied?" `sound_profiles.json` answers "which named custom profiles can
 the user load as a draft?" This separation keeps Bypass / Applied /
 Draft and future AI proposals simple.
 
-The UI keeps profile-library management secondary. The primary user flow
-is: choose a sound profile, tune Basic or Advanced controls, compare, and
-Save to Speaker. Reusable profile actions (`Save Copy`, `Update Profile`,
-`Rename`, `Delete`) live under Profile options because they are library
-operations, not the main listening loop.
+The primary user flow is: pick Off / a Saved profile, or open Draft to
+tune Simple or PEQ controls and Save. Library operations (Save as new,
+Overwrite, Rename, Delete) live on the Saved rows and in the Draft
+footer rather than a separate menu.
+
+The page is built on the **canonical design system**: shared tokens,
+fonts, and component primitives live in `deploy/assets/app.css` (served
+static by nginx, linked via `jasper.web._common.canonical_page`), with
+only sound-specific component CSS inline. `/sound/` is the first wizard
+on this system; see AGENTS.md "Canonical design system" for the
+convention other wizards follow.
 
 ## Apply Semantics
 
@@ -269,7 +292,7 @@ confuse "profile desired" with "profile actually loaded":
       "curve_id": "flat",
       "profile_id": "stock:flat",
       "profile_name": "Flat",
-      "simple_eq": {"bass_db": 0.0, "mid_db": 0.0, "treble_db": 0.0},
+      "simple_eq": {"sub_bass_db": 0.0, "bass_db": 0.0, "mid_db": 0.0, "presence_db": 0.0, "treble_db": 0.0},
       "parametric_band_count": 0,
       "filter_count": 0,
       "headroom_db": 0.0,
@@ -306,9 +329,10 @@ can be diagnosed without scraping journal logs.
 
 - Keep `/sound/` cheap to load. The combined `jasper-web` process must
   not import NumPy/SciPy on cold start.
-- Keep preference EQ bounded. The v1 simple EQ range is ±6 dB, advanced
-  bands are capped, and generated configs add digital preamp attenuation
-  for positive boosts.
+- Keep preference EQ bounded. The Simple EQ range is ±12 dB (matching
+  the slider UI; shared with the calibration advisor via
+  `SIMPLE_EQ_LIMIT_DB`), advanced bands are capped, and generated configs
+  add digital preamp attenuation for positive boosts.
 - Do not merge room-correction target selection and preference EQ into
   one opaque layer. They can share UI affordances later, but the DSP
   contract must keep them distinct.
@@ -316,10 +340,10 @@ can be diagnosed without scraping journal logs.
   correction.
 - The graph is visualization only. The canonical editable state is the
   bounded `SoundProfile` JSON model.
-- Basic and Advanced PEQ are exclusive for newly-created drafts. Existing
-  mixed profiles from the older combined UI must not silently lose their
-  hidden Basic EQ; preserve them until an explicit mode switch normalizes
-  the draft.
+- Simple and PEQ are exclusive modes; switching converts the draft
+  (PEQ → Simple snaps to the nearest slot; Simple → PEQ expands non-zero
+  bands). Older 3-band profiles still load, with Sub-bass / Presence
+  defaulting to 0 dB.
 - Named custom profiles are draft templates. Loading, renaming, saving,
   or deleting one must not persist profile state unless the user saves to
   the speaker. Editing or loading a draft may change live audio through

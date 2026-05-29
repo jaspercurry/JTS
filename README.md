@@ -228,12 +228,14 @@ when the configured AEC mic is present with 6-channel firmware — see
   powering the adapter off would silently disconnect it. Same
   prompt fires on the Power switch at `http://jts.local/bluetooth/`.
 - ✅ Sound curve + preference EQ wizard at `http://jts.local/sound/` —
-  stock Flat / Harman-style / B&K-style curves plus Bass, Mid, and
-  Treble controls, an exclusive Basic / Advanced PEQ editing mode,
-  named custom profile library actions, and level-matched Bypass /
-  Applied / Draft auditioning. Applying emits a CamillaDSP config that
-  preserves any active room-correction PEQs; Bypass turns off only
-  preference shaping without clearing room correction. See
+  Off / Saved / Draft tabs as the live source, stock Flat / Harman-style
+  / B&K-style presets, a five-band Simple EQ (Sub-bass / Bass / Mid /
+  Presence / Treble) plus an exclusive PEQ editing mode, and named custom
+  profiles (save / overwrite / rename / delete). Built on the canonical
+  design system ([`deploy/assets/app.css`](deploy/assets/app.css)).
+  Applying emits a CamillaDSP config that preserves any active
+  room-correction PEQs; Off turns off only preference shaping without
+  clearing room correction. See
   [docs/HANDOFF-sound-preferences.md](docs/HANDOFF-sound-preferences.md)
   for the composition contract, profile semantics, and observability
   hooks.
@@ -690,10 +692,10 @@ reference. Currently:
   generation, CamillaDSP hot-swap. Active workstream — read the Status
   section first to see which phase is in flight.
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
-  — `/sound/` preference-EQ layer: stock sound curves, Bass/Mid/Treble,
-  exclusive Basic / Advanced PEQ editing, named custom profile library,
-  room-correction composition order, generated config ownership,
-  level-matched Bypass / Applied / Draft audition semantics, doctor and
+  — `/sound/` preference-EQ layer: Off / Saved / Draft live source,
+  stock curves, five-band Simple EQ + exclusive PEQ editing, named custom
+  profile library, room-correction composition order, generated config
+  ownership, durable apply + live-draft semantics, doctor and
   `/state` observability, and the future AI boundary.
 - [`HANDOFF-calibration-agent.md`](docs/HANDOFF-calibration-agent.md) —
   **Research + early substrate** (2026-05-25). Proposal

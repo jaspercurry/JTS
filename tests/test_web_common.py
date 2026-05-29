@@ -356,6 +356,56 @@ def test_restart_systemd_units_restarts_multiple_units_no_block(monkeypatch):
 
 
 # ----------------------------------------------------------------------
+# Canonical design system (canonical_page)
+# ----------------------------------------------------------------------
+
+
+def test_canonical_page_links_shared_stylesheet_with_cache_bust():
+    out = _common.canonical_page("Sound", "<main></main>").decode()
+    assert out.startswith("<!doctype html>")
+    # Links the shared stylesheet, cache-busted by a version token.
+    assert 'rel="stylesheet"' in out
+    assert "/assets/app.css?v=" in out
+    # Does NOT inline the legacy design (a PAGE_STYLE-only marker).
+    assert "max-width: 620px" not in out
+
+
+def test_canonical_page_includes_shared_icon_sprite():
+    out = _common.canonical_page("Sound", "<main></main>").decode()
+    assert 'id="icon-sound"' in out
+    assert 'id="icon-chevron"' in out
+
+
+def test_canonical_page_embeds_csrf_meta_only_when_token_given():
+    with_token = _common.canonical_page(
+        "S", "<main></main>", csrf_token="abc",
+    ).decode()
+    assert 'meta name="jts-csrf"' in with_token
+    assert 'content="abc"' in with_token
+
+    without = _common.canonical_page("S", "<main></main>").decode()
+    assert "jts-csrf" not in without
+
+
+def test_canonical_page_escapes_title():
+    out = _common.canonical_page("<script>x</script>", "<main></main>").decode()
+    assert "<title><script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_canonical_page_includes_page_specific_css():
+    out = _common.canonical_page(
+        "S", "<main></main>", page_css=".eq-graph{height:200px}",
+    ).decode()
+    assert "<style>.eq-graph{height:200px}</style>" in out
+
+
+def test_canonical_page_omits_style_block_when_no_page_css():
+    out = _common.canonical_page("S", "<main></main>").decode()
+    assert "<style>" not in out
+
+
+# ----------------------------------------------------------------------
 # Token shape validation
 # ----------------------------------------------------------------------
 

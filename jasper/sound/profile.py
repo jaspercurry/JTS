@@ -30,7 +30,11 @@ logger = logging.getLogger(__name__)
 PROFILE_PATH = "/var/lib/jasper/sound_profile.json"
 PROFILE_LIBRARY_PATH = "/var/lib/jasper/sound_profiles.json"
 
-SIMPLE_EQ_LIMIT_DB = 6.0
+# Per-band limit for Simple mode. ±12 dB matches the 5-band sliders in
+# the redesigned /sound/ UI; the headroom preamp auto-attenuates, so
+# boosts stay clip-safe. The calibration advisor shares this bound (via
+# response.py), so model-proposed simple_eq edits get the same range.
+SIMPLE_EQ_LIMIT_DB = 12.0
 ADVANCED_GAIN_LIMIT_DB = 12.0
 MAX_PARAMETRIC_BANDS = 8
 MAX_CUSTOM_PROFILES = 24
@@ -146,44 +150,107 @@ _CURVE_BY_ID = {preset.id: preset for preset in CURVE_PRESETS}
 
 @dataclass(frozen=True)
 class SimpleEq:
-    """Three-band consumer EQ.
+    """Five-band consumer EQ: Sub-bass / Bass / Mid / Presence / Treble.
 
-    Bass / Mid / Treble is the vocabulary users already know. The
-    controls are intentionally bounded to taste-shaping ranges; room
+    Fixed-frequency, taste-shaping bands where only gain is editable per
+    band; the slot definitions (frequency, filter type, Q/slope) live in
+    SIMPLE_BANDS so the model, the CamillaDSP emitter, and the web UI all
+    render from one source. Bounded to ±SIMPLE_EQ_LIMIT_DB; room
     correction and hardware fault compensation live elsewhere.
+
+    Older 3-band profiles (bass/mid/treble only) load unchanged — the two
+    new bands default to 0 dB. Note the band centres shifted with the
+    redesign (bass 105->150 Hz, treble shelf 4k->10k), so a migrated
+    profile's bass/treble values now shape slightly different frequencies.
     """
 
+    sub_bass_db: float = 0.0
     bass_db: float = 0.0
     mid_db: float = 0.0
+    presence_db: float = 0.0
     treble_db: float = 0.0
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SimpleEq":
         raw = raw if isinstance(raw, dict) else {}
+
+        def band(*keys: str) -> float:
+            for key in keys:
+                if key in raw:
+                    return _clip(
+                        _coerce_float(raw.get(key), 0.0),
+                        -SIMPLE_EQ_LIMIT_DB,
+                        SIMPLE_EQ_LIMIT_DB,
+                    )
+            return 0.0
+
         return cls(
-            bass_db=_clip(
-                _coerce_float(raw.get("bass_db", raw.get("bass", 0.0)), 0.0),
-                -SIMPLE_EQ_LIMIT_DB,
-                SIMPLE_EQ_LIMIT_DB,
-            ),
-            mid_db=_clip(
-                _coerce_float(raw.get("mid_db", raw.get("mid", 0.0)), 0.0),
-                -SIMPLE_EQ_LIMIT_DB,
-                SIMPLE_EQ_LIMIT_DB,
-            ),
-            treble_db=_clip(
-                _coerce_float(raw.get("treble_db", raw.get("treble", 0.0)), 0.0),
-                -SIMPLE_EQ_LIMIT_DB,
-                SIMPLE_EQ_LIMIT_DB,
-            ),
+            sub_bass_db=band("sub_bass_db", "sub_bass"),
+            bass_db=band("bass_db", "bass"),
+            mid_db=band("mid_db", "mid"),
+            presence_db=band("presence_db", "presence"),
+            treble_db=band("treble_db", "treble"),
         )
 
     def to_dict(self) -> dict[str, float]:
         return {
+            "sub_bass_db": round(self.sub_bass_db, 3),
             "bass_db": round(self.bass_db, 3),
             "mid_db": round(self.mid_db, 3),
+            "presence_db": round(self.presence_db, 3),
             "treble_db": round(self.treble_db, 3),
         }
+
+
+@dataclass(frozen=True)
+class SimpleBand:
+    """Fixed slot for one Simple-mode band. Only gain is user-editable;
+    frequency, filter type, and Q/slope are fixed per slot."""
+
+    key: str
+    field: str
+    label: str
+    filter_name: str
+    biquad_type: str
+    freq_hz: float
+    q: float | None = None
+    slope: float | None = None
+
+
+# The five Simple-mode slots, low to high — one source of truth for the
+# model (_simple_filters), the web UI (column rendering), and any future
+# proposer. Frequencies/types match the redesigned /sound/ mockup.
+SIMPLE_BANDS: tuple[SimpleBand, ...] = (
+    SimpleBand("sub_bass", "sub_bass_db", "Sub-bass", "sound_simple_sub_bass",
+               "Lowshelf", 60.0, slope=6.0),
+    SimpleBand("bass", "bass_db", "Bass", "sound_simple_bass",
+               "Peaking", 150.0, q=1.0),
+    SimpleBand("mid", "mid_db", "Mid", "sound_simple_mid",
+               "Peaking", 1000.0, q=1.0),
+    SimpleBand("presence", "presence_db", "Presence", "sound_simple_presence",
+               "Peaking", 4000.0, q=1.0),
+    SimpleBand("treble", "treble_db", "Treble", "sound_simple_treble",
+               "Highshelf", 10000.0, slope=6.0),
+)
+
+# Field names in canonical order. The calibration advisor's validator
+# range-checks exactly these, so deriving it here keeps the two in sync.
+SIMPLE_EQ_FIELDS: tuple[str, ...] = tuple(b.field for b in SIMPLE_BANDS)
+
+
+def simple_bands_payload() -> list[dict[str, Any]]:
+    """UI-facing slot metadata so the web page renders the Simple columns
+    from data instead of hardcoding the band list."""
+    return [
+        {
+            "key": b.key,
+            "field": b.field,
+            "label": b.label,
+            "freq_hz": b.freq_hz,
+            "type": b.biquad_type,
+        }
+        for b in SIMPLE_BANDS
+    ]
 
 
 @dataclass(frozen=True)
@@ -597,12 +664,16 @@ def _curve_filters(curve_id: str) -> tuple[FilterSpec, ...]:
 
 
 def _simple_filters(simple: SimpleEq) -> tuple[FilterSpec, ...]:
-    return (
-        FilterSpec("sound_simple_bass", "Lowshelf", 105.0, simple.bass_db, slope=6.0),
-        FilterSpec("sound_simple_mid", "Peaking", 1000.0, simple.mid_db, q=0.8),
+    return tuple(
         FilterSpec(
-            "sound_simple_treble", "Highshelf", 4000.0, simple.treble_db, slope=6.0,
-        ),
+            band.filter_name,
+            band.biquad_type,
+            band.freq_hz,
+            getattr(simple, band.field),
+            q=band.q,
+            slope=band.slope,
+        )
+        for band in SIMPLE_BANDS
     )
 
 
