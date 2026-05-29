@@ -15,9 +15,9 @@ chip-side canonical reference — full parameter space, firmware
 variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
 for raw-mic-silence symptoms, and diagnostic cookbook. This doc
 (HANDOFF-aec.md) explains the *engine* and the *why* (why software
-AEC was chosen for the variants tested, plus Option D — the one
-chip-AEC variant that remains an open-but-shelved question, see
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
+AEC is still production default, plus Option D — the chip-AEC variant
+that became a positive lab result on 2026-05-29 but is not yet
+productionized, see [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)).
 HANDOFF-xvf3800.md explains the *chip*.
 The `jasper/mics/xvf3800.py` profile module is the canonical
 source for chip-specific constants consumed at runtime.
@@ -46,7 +46,10 @@ is on the 6-channel firmware variant.** `install.sh` seeds
 reconciler flips `JASPER_MIC_DEVICE` to `udp:9876` only when the
 configured AEC mic is actually present with 6-channel firmware, then
 enables / starts `jasper-aec-init` + `jasper-aec-bridge`. The chip's
-on-board AEC is not in the audio path — this doc explains why.
+on-board AEC is not in the production audio path today. A 2026-05-29
+lab pass proved Option D can work with direct source fanout + fixed ASR
+beams, but that path still needs production integration before it can
+replace or supplement the software bridge.
 
 As of the 2026-05-28 outputd cutover branch, `jasper-outputd` owns the
 physical DAC, but the AEC bridge still consumes the old content-only
@@ -611,11 +614,11 @@ with `SHF_BYPASS=0` but also without a USB-IN reference (chip was
 running its adaptive filter blind). Option D specifically supplies
 the reference signal the chip's AEC was designed to consume and
 uses the chip's USB Adaptive Mode PLL to share clock between mic
-and reference. That variant remains an **open question** with
-shipped, **shelved** infrastructure at
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). Reframe applied
-2026-05-23: the chip-AEC question is partially answered (no-USB-IN
-variants rejected), not fully closed.
+and reference. That variant was tested on 2026-05-29 and produced a
+**positive lab result** when JTS fed the chip via direct source fanout.
+Current status: no-USB-IN variants remain rejected; USB-IN Option D is
+viable but not productionized. The test record and next steps live at
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md).
 
 ---
 
@@ -1098,24 +1101,26 @@ worst-case FP cost.
 
 ### D — Chip-AEC with USB-in reference topology
 
-> **Status: shelved indefinitely.** Not on the roadmap, no active
-> work. Software AEC3 (BEST_A) is the production-good-enough path,
-> and the cost of resolving Option D's convergence question doesn't
-> justify itself today. Infrastructure preserved on `main` in case
-> we ever revive it: [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)
-> + `scripts/chip-aec-{setup,teardown,poll-convergence,capture-comparison}.sh`
-> + `jasper/chip_aec_experiment.py`. Read the experiment doc
-> first; the setup script is the only opt-in entry point and runs
-> a pre-flight that fails loudly if the topology has drifted further.
-> Teardown fully reverts. User-authorized carve-out from the
-> "Architecture is fixed" policy in [AGENTS.md](../AGENTS.md).
+> **Status: positive lab result; not productionized.** On 2026-05-29
+> we proved the XVF3800's on-chip AEC can do useful cancellation in
+> JTS's external-DAC topology when JTS feeds the chip a clean USB-IN
+> reference. The current production default remains software AEC3
+> (BEST_A) until the chip path has a direct source-fanout implementation,
+> recorder integration, state restore safety, and wake/corpus validation.
+> Full test record and current lab recipe live in
+> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). The checked-in
+> `scripts/chip-aec-*` helpers are still lab infrastructure; teardown
+> fully reverts. User-authorized carve-out from the "Architecture is
+> fixed" policy in [AGENTS.md](../AGENTS.md).
 
-**What:** Re-architect to feed mono music to the XVF3800's USB-in
-left channel as the AEC reference signal, then read the chip's
-hardware-AEC'd mic stream from its USB-out (instead of running
-the software AEC bridge). Requires flashing the chip to 2-ch
-firmware, setting `SHF_BYPASS=0`, and routing music through
-CamillaDSP differently.
+**What:** Feed mono music to the XVF3800's USB-in left channel as the
+AEC reference signal, then read the chip's hardware-AEC'd USB capture
+stream. The winning lab shape uses the current 6-channel firmware:
+category 7 ASR output (`AEC_ASROUTONOFF=1`), fixed gated beams at
+`150°/210°`, and `AEC_AECEMPHASISONOFF=2`. A future production version
+should fan out one rendered source buffer directly to both the DAC and
+XVF3800 USB-IN reference. Do not ship the old `plug:jasper_capture`
+feeder as the architecture; it was the source of the apparent drift.
 
 **Why on the list:** The original chip-AEC rejection (documented
 in "What we found about chip-side AEC in our topology" and
@@ -1130,11 +1135,11 @@ reference at all and is not directly applicable. **This is the
 "canned worms" path — re-opening a previously-closed investigation
 with a new variable.**
 
-**Cost:** Unclear without a delay-tolerance scoping pass — see
-"Chip-AEC delay tolerance" subsection below. Could be a weekend
-of bring-up + a week of tuning, or could be a multi-month
-"won't quite ever work" if the chip's delay-tracking can't handle
-the JTS's clock-domain split.
+**Cost:** Now mostly integration work rather than feasibility research.
+Expected next slice: direct source fanout + a lab/recorder capture mode
+for the chip leg, followed by a wake/corpus validation pass. The old
+multi-month "maybe clocks make this impossible" concern is retired for
+the direct-fanout topology.
 
 **Risk:** High. Topology change touches CamillaDSP routing,
 shairport-sync output target, firmware variant, and the bridge
@@ -1143,6 +1148,19 @@ service unit. Reversible but with friction.
 **Prerequisites:** Read the chip-AEC delay-tolerance subsection
 below before scoping. Don't start the work without the delay
 budget.
+
+**2026-05-29 live gate update:** Option D moved from "maybe plausible"
+to positive lab result. The first fan-in-era chirp baseline measured
+ref→mic around `181-209 ms`, outside the chip's direct
+`AUDIO_MGR_SYS_DELAY` clamp (`[-64,+256]` samples), but that was the
+old delayed feeder harness. A direct dual-playback harness then showed
+the source-fanout topology is clock-stable (`~1 ppm` drift over 15
+minutes), and controlled direct A/B showed useful chip-AEC reduction
+with `SHF_BYPASS=0`. The best double-talk/wake-shaped output was not
+ch0 alone; it was category 7 ASR output with fixed gated `150°/210°`
+virtual beams, especially the `150°` beam. `AEC_FAR_EXTGAIN=+3/+6 dB`
+made results worse; `AEC_AECEMPHASISONOFF=2` improved the final
+strength/edge sweep.
 
 #### Chip-AEC delay tolerance — what the chip can and can't do
 
@@ -1228,12 +1246,20 @@ chip transparently SRCs" — that was wrong, corrected
 
 **Pi-side alignment plan (concrete, draft):**
 
-Current measured 40 ms ref→mic in the bridge topology = 640
-samples @ 16 kHz, well outside both the 40-sample sweet spot AND
-the `SYS_DELAY` clamp of 256. Conclusion: the chip can't eat
-40 ms of host-side delay on its own. The fix is to *minimize*
-host-side delay before it hits the chip, not to add a CamillaDSP
-delay buffer.
+Current fan-in-era measurements exposed two different paths:
+
+- The old `plug:jasper_capture` feeder path measured about `181-209 ms`
+  ref→mic before Pi-side compensation. The chip cannot eat that
+  host/speaker delay on its own. A test-only upstream reference delay of
+  `180 ms` left a residual `+114` sample chip delay, which is writable.
+- The production-shaped direct source fanout path (one source buffer to
+  DAC + XVF3800 USB-IN) removed the apparent clock drift and held about
+  `~1 ppm` over a 15-minute run. This is the path to productionize.
+
+Conclusion: if Option D graduates, do not rely on
+`AUDIO_MGR_SYS_DELAY` to compensate a late feeder tap. Feed the chip at
+the same source-fanout point as the physical DAC, then use
+`AUDIO_MGR_SYS_DELAY` only for the small residual static offset.
 
 Realistic bring-up sequence:
 
@@ -1263,13 +1289,14 @@ Realistic bring-up sequence:
 | Productionize: ALSA + CamillaDSP edits, reconciler logic (chip-AEC mode vs current bridge mode), boot-time `AUDIO_MGR_SYS_DELAY` apply, jasper-doctor `AEC_AECCONVERGED` check | 1–2 weeks |
 | Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
 
-**Verdict for future scoping:** weekend feasibility check is
-plausible. The XMOS architecture is designed for exactly this
-single-USB-host topology. The prior "delay couldn't compensate"
-intuition was correct in the dongle topology (acausal, ref invisible
-to chip) but doesn't apply when music routes through the chip's
-own USB-in. Worst-case fallback is keeping the WebRTC AEC3 bridge
-running in parallel and never deploying option D.
+**Verdict for future scoping:** feasibility is confirmed in lab. The
+next work is production-shaped integration: direct source fanout to DAC
++ XVF3800 USB-IN, state/restore safety, and a recorder/corpus leg that
+captures category-7 ASR fixed beams. Current best chip settings:
+`AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
+`AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 as the production default until
+that integration exists and the wake/corpus validation says the chip leg
+actually improves model recall / fusion.
 
 **Sources** (verified URLs as of 2026-05-21):
 - [XMOS XVF3800 User Guide v3.2.1 — Tuning the Application](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html) — `AUDIO_MGR_SYS_DELAY` definition, 40-sample target, causality / coefficient-inspection workflow
@@ -1742,6 +1769,24 @@ All of this is still in the repo, partly because the architecture
 investigation history.
 
 ### What we measured
+
+**2026-05-29 fan-in-era pre-corpus re-check:** Option D was re-run as
+a bounded gate before wake-corpus recording. The first pass used the
+current fan-in / outputd topology and fed the chip USB-IN reference from
+`plug:jasper_capture`. That feeder path measured ref→mic delay around
+`181-209 ms`, outside the chip's `AUDIO_MGR_SYS_DELAY` clamp. Adding
+`--ref-delay-ms 180` left residual chip delay at `+114` samples and
+produced a partial ch0 positive, but the setup was still too feeder-
+shaped to trust as the final architecture.
+
+The later same-day direct-fanout tests changed the conclusion. Playing
+one source buffer directly to both the external DAC and XVF3800 USB-IN
+held the acoustic reference drift around `~1 ppm` over 15 minutes.
+Controlled direct A/B then showed useful chip-AEC reduction, and
+double-talk/listening sweeps found the best wake-shaped path:
+category-7 ASR output (`AEC_ASROUTONOFF=1`) with fixed gated
+`150°/210°` beams. Final strength sweep found `AEC_AECEMPHASISONOFF=2`
+better than baseline, while `AEC_FAR_EXTGAIN=+3/+6 dB` was worse.
 
 With the bridge confirmed running and the chip's USB-IN endpoint
 in `state: RUNNING` with `appl_ptr` advancing (i.e. real audio
@@ -2481,4 +2526,4 @@ build, with reasoning so we don't keep re-litigating:
 - HA Voice PE community forum threads on XU316 AEC behavior
   (closest neighbor; same chip family)
 
-Last verified: 2026-05-28.
+Last verified: 2026-05-29.

@@ -6,9 +6,9 @@
 #
 # What gets captured:
 #   01_reference.wav     — what the chip sees as AEC reference (CamillaDSP tap)
-#   02_mic_aec_off.wav   — chip ch1 with SHF_BYPASS=1 (chip AEC bypassed)
-#   03_mic_aec_on.wav    — chip ch1 with SHF_BYPASS=0 (chip AEC engaged)
-#   04_speech_only.wav   — chip ch1 with chip AEC on, no music, user speaks
+#   02_mic_aec_off.wav   — selected chip channel with SHF_BYPASS=1
+#   03_mic_aec_on.wav    — selected chip channel with SHF_BYPASS=0
+#   04_speech_only.wav   — selected chip channel, chip AEC on, no music
 #
 # What to listen for:
 #   - 02 vs 03: chip AEC should noticeably reduce music in 03 vs 02.
@@ -30,6 +30,8 @@ set -euo pipefail
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
 SECS=${SECS:-30}
+REF_DELAY_MS="${REF_DELAY_MS:-${JASPER_CHIP_AEC_REF_DELAY_MS:-0}}"
+MIC_CHANNEL="${MIC_CHANNEL:-${JASPER_CHIP_AEC_MIC_CHANNEL:-0}}"
 
 TS=$(date +%Y%m%d-%H%M%S)
 OUTDIR="captures/chip-aec-experiment/${TS}"
@@ -38,6 +40,8 @@ mkdir -p "$OUTDIR"
 echo "=== chip-aec-experiment: Phase 4 ear test ==="
 echo "Output: ${OUTDIR}/"
 echo "Capture length: ${SECS}s each"
+echo "Reference delay: ${REF_DELAY_MS} ms"
+echo "Mic channel: ${MIC_CHANNEL}"
 echo
 
 prompt() {
@@ -79,35 +83,37 @@ daemon_set_mode() {
   local extra=""
   if [ "$mode" = "ref-only" ]; then extra="--ref-only"; fi
   ssh "${PI_USER}@${PI_HOST}" "set -e
+    module='jasper.chip_aec'_experiment
+    module_re='[j]asper[.]chip_aec_experiment'
     # Mark the log boundary so we can scope grep to lines from the
     # NEW daemon only (older 'open failed' lines from a previous
     # run shouldn't false-positive us).
     boundary=\$(wc -l < /var/log/chip-aec-experiment.log 2>/dev/null || echo 0)
 
-    sudo pkill -f 'jasper.chip_aec_experiment' 2>/dev/null || true
+    sudo pkill -f \"\$module_re\" 2>/dev/null || true
 
     # Wait up to 4 s for the daemon to actually exit (10 × 0.4 s).
     # SIGTERM → daemon's main loop wakes from sleep 0.5, joins
     # threads with 3 s timeout. In practice exit happens within 1 s,
     # but ALSA close can stall briefly if the USB endpoint is wedged.
     for _ in 1 2 3 4 5 6 7 8 9 10; do
-      pgrep -f 'jasper.chip_aec_experiment' > /dev/null || break
+      pgrep -f \"\$module_re\" > /dev/null || break
       sleep 0.4
     done
-    if pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
+    if pgrep -f \"\$module_re\" > /dev/null; then
       echo '    old daemon did not exit after SIGTERM; sending SIGKILL'
-      sudo pkill -9 -f 'jasper.chip_aec_experiment' || true
+      sudo pkill -9 -f \"\$module_re\" || true
       sleep 0.5
     fi
 
-    sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
+    sudo bash -c \"nohup /opt/jasper/.venv/bin/python -m \$module --ref-delay-ms '${REF_DELAY_MS}' --mic-channel '${MIC_CHANNEL}' ${extra} >> /var/log/chip-aec-experiment.log 2>&1 < /dev/null &\"
 
     # Give the new daemon 2 s to either get to its first log line or
     # crash trying to open a PCM. 2 s is well past the chip's USB
     # enumeration recovery window.
     sleep 2
 
-    if ! pgrep -f 'jasper.chip_aec_experiment' > /dev/null; then
+    if ! pgrep -f \"\$module_re\" > /dev/null; then
       echo '    FAILED to restart daemon in ${mode} mode (process exited) — last 20 log lines:'
       sudo tail -20 /var/log/chip-aec-experiment.log
       exit 1
@@ -124,7 +130,7 @@ daemon_set_mode() {
       exit 1
     fi
 
-    echo \"    daemon now in ${mode} mode (PID \$(pgrep -f jasper.chip_aec_experiment))\"
+    echo \"    daemon now in ${mode} mode (PID \$(pgrep -f \"\$module_re\"))\"
   "
 }
 
@@ -190,7 +196,7 @@ capture_ref() {
 
 set_bypass() {
   ssh "${PI_USER}@${PI_HOST}" \
-    "sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS $1 >/dev/null"
+    "sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS --values $1 >/dev/null"
   echo "  SHF_BYPASS = $1 ($([ "$1" = "0" ] && echo "chip AEC ON" || echo "chip AEC OFF"))"
 }
 
@@ -198,7 +204,7 @@ set_bypass() {
 prompt "STEP 1/3: Start music playing through the speaker at production volume.
 Use any source (AirPlay, Spotify, BT). Wait 30+ s for stable, full-level music.
 The script will then run two captures in series: reference (10 s into music),
-then the chip's mic ch1 with chip AEC ON.
+then the selected chip channel with chip AEC ON.
 
 NOTE: switching daemon to --ref-only for the chip-mic captures (daemon's
 mic-pump would otherwise hold hw:CARD=Array,DEV=0 exclusively → arecord
@@ -211,15 +217,15 @@ daemon_set_mode ref-only
 
 set_bypass 0
 capture_ref
-capture_chip_ch "03_mic_aec_on (chip ch1, SHF_BYPASS=0)" "03_mic_aec_on.wav" 1
+capture_chip_ch "03_mic_aec_on (chip ch${MIC_CHANNEL}, SHF_BYPASS=0)" "03_mic_aec_on.wav" "$MIC_CHANNEL"
 
 # ---------- Step 2 ----------
 prompt "STEP 2/3: KEEP MUSIC PLAYING.
-We'll flip SHF_BYPASS=1 (chip AEC bypassed) and re-capture chip ch1.
+We'll flip SHF_BYPASS=1 (chip AEC bypassed) and re-capture the same chip channel.
 This is the apples-to-apples comparison against the previous capture."
 
 set_bypass 1
-capture_chip_ch "02_mic_aec_off (chip ch1, SHF_BYPASS=1)" "02_mic_aec_off.wav" 1
+capture_chip_ch "02_mic_aec_off (chip ch${MIC_CHANNEL}, SHF_BYPASS=1)" "02_mic_aec_off.wav" "$MIC_CHANNEL"
 set_bypass 0
 echo "  restored SHF_BYPASS=0 (chip AEC ON)"
 
@@ -230,7 +236,7 @@ During the next ${SECS} s, speak a few sentences:
   'Hey Jarvis. Testing one two three. The quick brown fox jumps over the lazy dog.'
 This verifies chip AEC doesn't degrade your voice."
 
-capture_chip_ch "04_speech_only (chip ch1, AEC on, no music)" "04_speech_only.wav" 1
+capture_chip_ch "04_speech_only (chip ch${MIC_CHANNEL}, AEC on, no music)" "04_speech_only.wav" "$MIC_CHANNEL"
 
 # ---------- Restore daemon to full mode ----------
 echo

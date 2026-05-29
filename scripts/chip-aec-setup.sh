@@ -35,10 +35,14 @@ set -euo pipefail
 
 PI_HOST="${PI_HOST:-${JASPER_HOSTNAME:-jts.local}}"
 PI_USER="${PI_USER:-pi}"
+REF_DELAY_MS="${REF_DELAY_MS:-${JASPER_CHIP_AEC_REF_DELAY_MS:-0}}"
+MIC_CHANNEL="${MIC_CHANNEL:-${JASPER_CHIP_AEC_MIC_CHANNEL:-0}}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 echo "=== chip-aec-experiment: Phase 1 setup ==="
+echo "Reference delay: ${REF_DELAY_MS} ms"
+echo "Mic channel: ${MIC_CHANNEL}"
 echo
 
 # Pre-flight runs first, before the rsync, because a failure here
@@ -65,9 +69,10 @@ preflight_check() {
     fi
     pass "XVF3800 enumerated as ALSA card Array"
 
-    # 2. Chip on 6-channel firmware. The experiment needs the 6-ch
-    # capture endpoint for ch1 = ASR beam. The 2-ch firmware only
-    # exposes the chip-processed beam — no raw mics, no ch1 separation.
+    # 2. Chip on 6-channel firmware. The experiment captures the full
+    # endpoint during baseline checks and then emits one selected channel
+    # to UDP. The 2-ch firmware lacks the raw channels we use for delay
+    # sanity checks.
     ch=$(awk "/^Capture:/{c=1} c && /Channels:/{print \$2; exit}" /proc/asound/Array/stream0 2>/dev/null || echo "")
     if [[ "$ch" != "6" ]]; then
       fail "Chip on ${ch}-channel firmware, but experiment needs 6-channel (ua-io16-6ch-sqr v2.0.8 or newer). See BRINGUP.md Phase 2A.5 for DFU flash."
@@ -79,7 +84,7 @@ preflight_check() {
     # root processes can resolve user-space PCM names. The capture-
     # comparison script needs this; verify it works before relying
     # on it.
-    if ! timeout 3 arecord -D plug:jasper_capture --dump-hw-params -d 0 /dev/null > /dev/null 2>&1; then
+    if ! timeout 3 arecord -D plug:jasper_capture --dump-hw-params -d 1 /dev/null > /dev/null 2>&1; then
       fail "plug:jasper_capture does not resolve as pi user. Is /etc/asound.conf in place? (Run: sudo bash deploy/install.sh on a regular branch.)"
     fi
     pass "plug:jasper_capture resolves"
@@ -186,8 +191,8 @@ echo "==> Stopping + masking the production AEC service chain"
 ssh "${PI_USER}@${PI_HOST}" 'set -e
 for unit in jasper-aec-bridge jasper-aec-reconcile jasper-aec-init jasper-dongle-recover; do
   sudo systemctl stop "${unit}.service" 2>/dev/null || true
-  sudo systemctl mask "${unit}.service"
-  echo "  ${unit} masked"
+  sudo systemctl mask --runtime "${unit}.service"
+  echo "  ${unit} runtime-masked"
 done'
 
 echo
@@ -202,7 +207,7 @@ echo "==> Snapshotting voice-input env for clean dual/triple-stream behaviour"
 ssh "${PI_USER}@${PI_HOST}" 'set -e
 ENV=/etc/jasper/jasper.env
 BAK=/etc/jasper/jasper.env.chip-aec.bak
-if [[ -f "$ENV" ]] && grep -qE "^(JASPER_MIC_DEVICE_RAW|JASPER_MIC_DEVICE_DTLN)=" "$ENV"; then
+if [[ -f "$ENV" ]] && sudo grep -qE "^(JASPER_MIC_DEVICE_RAW|JASPER_MIC_DEVICE_DTLN)=" "$ENV"; then
   if [[ ! -f "$BAK" ]]; then
     sudo cp -a "$ENV" "$BAK"
     echo "  backed up $ENV → $BAK"
@@ -229,27 +234,29 @@ echo "  start ts: $(sudo cat /var/lib/jasper/wake-events/.chip-aec-experiment-st
 echo
 echo "==> Setting chip params (SHF_BYPASS=0, AUDIO_MGR_SYS_DELAY=12)"
 ssh "${PI_USER}@${PI_HOST}" 'set -e
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 0 > /dev/null
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY 12 > /dev/null
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS --values 0 > /dev/null
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY --values 12 > /dev/null
 echo "  current values:"
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS | grep "SHF_BYPASS:"
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY | grep "AUDIO_MGR_SYS_DELAY:"'
 
 echo
 echo "==> Killing any prior experiment daemon"
-ssh "${PI_USER}@${PI_HOST}" 'sudo pkill -f "jasper.chip_aec_experiment" 2>/dev/null || true; sleep 0.5'
+ssh "${PI_USER}@${PI_HOST}" 'sudo pkill -f "[j]asper.chip_aec_experiment" 2>/dev/null || true; sleep 0.5'
 
 echo
 echo "==> Starting experiment daemon"
-ssh "${PI_USER}@${PI_HOST}" 'sudo bash -c "nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment > /var/log/chip-aec-experiment.log 2>&1 < /dev/null &"
+ssh "${PI_USER}@${PI_HOST}" "REF_DELAY_MS='${REF_DELAY_MS}' MIC_CHANNEL='${MIC_CHANNEL}' bash -s" <<'REMOTE'
+sudo bash -c "nohup /opt/jasper/.venv/bin/python -m jasper.chip_aec_experiment --ref-delay-ms \"${REF_DELAY_MS}\" --mic-channel \"${MIC_CHANNEL}\" > /var/log/chip-aec-experiment.log 2>&1 < /dev/null &"
 sleep 2
-if pgrep -f "jasper.chip_aec_experiment" > /dev/null; then
-  echo "  daemon started (PID $(pgrep -f jasper.chip_aec_experiment))"
+if pgrep -f '[j]asper.chip_aec_experiment' > /dev/null; then
+  echo "  daemon started (PID $(pgrep -f '[j]asper.chip_aec_experiment'))"
 else
-  echo "  daemon FAILED to start. Last 30 lines of log:"
+  echo '  daemon FAILED to start. Last 30 lines of log:'
   sudo tail -30 /var/log/chip-aec-experiment.log
   exit 1
-fi'
+fi
+REMOTE
 
 echo
 echo "==> Restarting jasper-voice to clear any prior state"

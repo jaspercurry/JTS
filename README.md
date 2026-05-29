@@ -263,10 +263,10 @@ when the configured AEC mic is present with 6-channel firmware — see
   <previous>` on non-zero exit). WPA-Enterprise deferred — home-network
   case only.
 - ✅ Persistent live session with sustained-speech VAD
-- ✅ Hardware AEC investigation: production approach decided (chip
-  AEC off in the dongle topology, software AEC3 instead); Option D
-  (chip AEC with USB-IN reference) is the one remaining open variant
-  — infrastructure shipped + shelved at [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
+- ✅ Hardware AEC investigation: production approach is still software
+  AEC3, but the 2026-05-29 Option D lab pass proved chip AEC can work
+  with USB-IN reference + direct source fanout. Not productionized yet;
+  current findings live at [`docs/CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md)
 - ✅ Software AEC bridge reconciles automatically on 6-channel XVF firmware
 - ⚠️  Custom "Hey Jasper" wake-word model is a v1.1 follow-up
 - ✅ Rotary dial — volume (with on-screen volume gauge), play/pause
@@ -502,17 +502,14 @@ reference. Currently:
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture +
   investigation (engine: why software AEC, why not chip AEC)
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) —
-  **Shelved indefinitely.** Not on the roadmap, no active work.
-  Infrastructure preserved on `main` as a user-authorized carve-out
-  from the AGENTS.md "Architecture is fixed; swap the engine, not
-  the topology" rule, in case we ever revive the chip-AEC
-  convergence question ([HANDOFF-aec.md](docs/HANDOFF-aec.md)
-  Option D). The four `scripts/chip-aec-*.sh` scripts +
-  `jasper/chip_aec_experiment.py` are dormant until a human opts
-  in via `bash scripts/chip-aec-setup.sh`; `chip-aec-teardown.sh`
-  fully reverts. **Read the doc before running.** The carve-out
-  is scoped narrowly — does not re-open PipeWire `module-echo-
-  cancel`, dual-USB-sink, or custom firmware elsewhere.
+  2026-05-29 chip-AEC lab findings and next-productionization plan.
+  Option D is now a positive lab result, not a closed negative:
+  direct source fanout to the DAC + XVF3800 USB-IN reference made the
+  split-DAC topology clock-stable, and ASR fixed gated `150°/210°`
+  beams were the best tested output. The path is **not productionized**;
+  the checked-in `scripts/chip-aec-*.sh` scripts +
+  `jasper/chip_aec_experiment.py` are lab infrastructure, and
+  `chip-aec-teardown.sh` fully reverts. **Read the doc before running.**
 - [`HANDOFF-mic-quality-v2.md`](docs/HANDOFF-mic-quality-v2.md) —
   Active workstream. The sequencing + lever inventory + decision
   history for getting the mic to work reliably across whisper /
@@ -797,20 +794,14 @@ configuration we tried. See
 [`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) for the full
 investigation including the smoking-gun XMOS docs quote.
 
-The rejection above was for the variants we tested — none of
-them fed music to the chip's USB-IN as the AEC reference. **One
-chip-AEC variant remains untested**: option D in
-[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) — feed music back
-into the chip's USB-IN as the reference signal, then read its
-hardware-AEC'd mic stream. The chip's USB Adaptive Mode means
-mic and reference would share a clock, avoiding the cross-clock
-drift that's typically fatal for chip AEC in split-DAC topologies.
-We built [the infrastructure to test it](docs/CHIP-AEC-EXPERIMENT.md)
-but have **shelved** the experiment indefinitely — software AEC3
-is good enough today, and resolving Option D would take focused
-hours of speaker downtime that aren't currently justified. The
-infrastructure stays in the repo so we don't have to re-derive
-the question if AEC3 ever plateaus.
+The rejection above was for the variants we tested — none of them fed
+music to the chip's USB-IN as the AEC reference. Option D in
+[`docs/HANDOFF-aec.md`](docs/HANDOFF-aec.md) did that on 2026-05-29 and
+produced a positive lab result: direct source fanout to the external DAC
+and the XVF3800 USB-IN reference was clock-stable, and the chip's ASR
+fixed-beam path produced useful echo reduction. Software AEC3 remains
+the shipped production path until the chip-AEC path has clean source
+fanout, recorder integration, and wake/corpus validation.
 
 The chip is still useful — its **beamforming, noise suppression,
 and AGC** all run on the ASR beam channel (channel 1 of the

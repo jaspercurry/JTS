@@ -635,8 +635,9 @@ to imagine this trade landing as positive.
 
 The convergence question (does chip AEC actually adapt in the
 *current* dongle topology when fed a USB-IN reference signal?)
-has its own user-authorized carve-out, **also currently shelved**:
-see [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the four
+has its own user-authorized carve-out, with a 2026-05-29 partial
+positive on ch0 but no corpus-ready decision: see
+[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) and the five
 `scripts/chip-aec-*.sh` scripts. They live on `main` as dormant
 infrastructure — production state is untouched until `bash
 scripts/chip-aec-setup.sh` runs; `chip-aec-teardown.sh` reverts.
@@ -821,4 +822,4 @@ Internal cross-references (for the next reader):
 
 ---
 
-Last verified: 2026-05-27
+Last verified: 2026-05-29
