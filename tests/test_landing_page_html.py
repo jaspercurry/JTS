@@ -217,10 +217,16 @@ def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path)
 
 def test_landing_page_has_source_selector_buttons() -> None:
     html = _index_html()
+    style = html.split("<style>", 1)[1].split("</style>", 1)[0]
 
     assert 'aria-label="Playback source"' in html
     for source in ("auto", "airplay", "bluetooth", "spotify", "usbsink"):
         assert f'data-source="{source}"' in html
+    assert re.search(r"\.source-buttons \{[^}]*\bgap: 4px;", style)
+    assert re.search(
+        r"\.source-button\.playing::after \{[^}]*\btop: 10px;[^}]*\bright: 10px;",
+        style,
+    )
 
 
 def test_landing_page_uses_grouped_settings_rows() -> None:
