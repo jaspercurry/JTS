@@ -271,9 +271,22 @@
   validator marks every action with `execution_ready` so valid
   evidence explanations and ephemeral auditions cannot be confused
   with a persistent profile write that is still awaiting user
-  confirmation. It rejects raw audio, FIR coefficients/taps,
-  CamillaDSP YAML, volume authority, shell/command authority, unknown
-  actions, and out-of-bounds preference EQ.
+  confirmation. Validated profile payloads carry DSP shape only
+  (`enabled`, `curve_id`, simple EQ, PEQ bands); profile identity and
+  timestamps are owned by JTS. It rejects raw audio, FIR
+  coefficients/taps, CamillaDSP YAML, volume authority, shell/command
+  authority, unknown actions, and out-of-bounds preference EQ.
+- ✅ **Phase 2.19 — human-in-the-loop advisor action runner.**
+  Implemented 2026-05-29. `jasper.calibration_agent.actions` consumes
+  a validated advisor action plan and runs only known, execution-ready
+  actions. Explain and remeasure actions become presentation payloads.
+  Preference auditions and user-approved profile commits require
+  explicit executor callables supplied by the future web/voice surface;
+  without those executors they remain pending human-listening actions
+  and produce no DSP side effects. Executor failures are returned as
+  structured run issues. The run envelope states the human-in-the-loop
+  principle: preference tuning is subjective, JTS can propose safe
+  options, and the listener decides what sounds better.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -1271,7 +1284,8 @@ Current versions:
 | `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
 | `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries read-only-first bounded-action permissions/prohibitions. |
 | `jasper.calibration_agent.prompt` package | `artifact_schema_version` | `1` | Provider-neutral prompt package for a future model call. Contains system instructions, response contract, and redacted advisor context; no model call and no side effects. |
-| `jasper.calibration_agent.response` validation | `artifact_schema_version` | `1` | Deterministic validation envelope for future advisor JSON. Produces a safe action plan or rejects unsafe fields/actions; persistence remains user-confirmation-gated. |
+| `jasper.calibration_agent.response` validation | `artifact_schema_version` | `1` | Deterministic validation envelope for future advisor JSON. Produces a safe action plan or rejects unsafe fields/actions; persistence remains user-confirmation-gated and model profile payloads are DSP-shape-only. |
+| `jasper.calibration_agent.actions` run | `artifact_schema_version` | `1` | Deterministic run envelope for a validated advisor plan. Presentation actions can complete immediately; audition/commit actions require caller-owned executors and keep subjective listener judgment explicit. |
 
 Compatibility rules:
 

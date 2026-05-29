@@ -901,17 +901,23 @@ Current distilled corpus files:
   `jasper.calibration_agent.response`. The CLI can now emit
   `--advisor-prompt-json` for a future provider adapter and validate a
   proposed model response with `--validate-advisor-response <path>`.
-  This is the first action-capable harness slice, but it still makes
-  no provider call and executes no actions. The only accepted actions
-  are: explain evidence, recommend remeasurement, propose an
+  `jasper.calibration_agent.actions` adds the first deterministic run
+  envelope and CLI surface (`--run-advisor-actions <path>`). This is
+  the first action-capable harness slice, but it still makes no
+  provider call and the CLI wires no DSP executor. The only accepted
+  actions are: explain evidence, recommend remeasurement, propose an
   ephemeral preference-EQ audition through the existing `/sound/`
   substrate, or request a persistent preference-profile save after
   explicit user confirmation. Every validated action carries
   `execution_ready`; pending persistent profile commits remain
   `execution_ready=false` until the user has explicitly confirmed the
-  save. Deterministic validation rejects raw audio, CamillaDSP YAML,
-  FIR taps/coefficients, volume control, shell/command authority,
-  unknown action types, and out-of-range EQ.
+  save. Profile payloads that survive validation contain DSP shape
+  only (`enabled`, `curve_id`, simple EQ, PEQ bands); JTS owns profile
+  identity and timestamps. The run envelope keeps preference tuning
+  human-in-the-loop: JTS can propose safe auditions, but the listener
+  decides what sounds better. Deterministic validation rejects raw
+  audio, CamillaDSP YAML, FIR taps/coefficients, volume control,
+  shell/command authority, unknown action types, and out-of-range EQ.
 - Extend the markdown corpus under `docs/calibration-agent/` as
   needed. The current prompt package uses the redacted advisor context
   plus corpus snippets; a later provider adapter can add fuller corpus
@@ -921,8 +927,9 @@ Current distilled corpus files:
 - Implement deterministic tools first
   (`get_measurement_summary`, `analyze_peaks_nulls`,
   `compute_schroeder`, `look_up`, the evidence packet, and the
-  bounded response/action validator).
-  The first deterministic versions are in `jasper.calibration_agent.tools`
+  bounded response/action validator and runner).
+  The first deterministic versions are in `jasper.calibration_agent.tools`,
+  `jasper.calibration_agent.response`, `jasper.calibration_agent.actions`,
   and `jasper.correction.evidence`.
 - CLI tool: `sudo /opt/jasper/.venv/bin/jasper-calibration-agent
   <session_id>` → loads the session bundle from

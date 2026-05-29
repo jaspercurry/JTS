@@ -70,6 +70,11 @@ and volume authority excluded. `jasper.calibration_agent.prompt` and
 harness slice: prompt-package emission and deterministic validation of
 future advisor JSON for explain, remeasure, ephemeral preference-EQ
 audition, and user-approved preference-profile commit actions.
+`jasper.calibration_agent.actions` adds the first human-in-the-loop
+runner envelope: presentation actions can complete, but audition and
+commit side effects require explicit caller-owned executors so a future
+UI/voice surface can keep listening judgment and persistence approval
+with the human.
 Successful captures also write replay-grade `analysis/` artifacts:
 derived impulse responses, raw/smoothed/final response curves,
 calibration/normalization metadata, direct-arrival evidence, and
@@ -240,6 +245,8 @@ The LLM must not:
 - apply or persist DSP changes directly;
 - override safety bounds;
 - call subjective preference "accuracy";
+- claim an audition is objectively correct; it is a safe listening
+  hypothesis for the user to judge;
 - merge preference EQ into the room-correction layer silently.
 
 ## Immediate Engineering Implications

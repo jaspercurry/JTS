@@ -159,8 +159,19 @@ Every concept file should have:
   future `jts_advisor_response` JSON into a safe action plan. The
   first action surface is intentionally narrow: explain, recommend
   remeasurement, propose an ephemeral preference-EQ audition, or
-  request a user-confirmed preference-profile save. Models still
-  cannot directly apply filters, control volume, emit CamillaDSP YAML,
-  generate FIR taps, or bypass JTS safety gates.
+  request a user-confirmed preference-profile save. Validated profile
+  payloads are DSP-shape-only; JTS owns profile identity and
+  timestamps. Models still cannot directly apply filters, control
+  volume, emit CamillaDSP YAML, generate FIR taps, or bypass JTS safety
+  gates.
+- 2026-05-29: human-in-the-loop action runner added.
+  `jasper.calibration_agent.actions` consumes validated advisor action
+  plans and runs only known, execution-ready actions. Explain and
+  remeasurement actions are presentation-only. Preference auditions and
+  user-approved profile commits require caller-owned executors supplied
+  by a future web/voice surface; the CLI action runner wires none, so
+  those actions remain pending and side-effect-free. Preference tuning
+  remains subjective: JTS proposes safe options and the listener decides
+  what sounds better.
 
 Last verified: 2026-05-29
