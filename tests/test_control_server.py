@@ -900,6 +900,27 @@ def test_coordinator_failure_502(server_with_coordinator):
 # --- /state aggregation ---
 
 
+def test_sound_runtime_status_flags_base_config_mismatch() -> None:
+    import jasper.control.server as srv_mod
+
+    runtime = srv_mod._sound_runtime_status(
+        {
+            "enabled": True,
+            "filter_count": 3,
+            "last_dsp_apply": {
+                "result": "success",
+                "active_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
+            },
+        },
+        "/etc/camilladsp/outputd-cutover.yml",
+    )
+
+    assert runtime["state"] == "base"
+    assert runtime["active"] is False
+    assert runtime["matches_last_apply"] is False
+    assert "not the active" in runtime["warning"]
+
+
 def test_state_returns_snapshot_with_fail_soft_sections(
     server_with_coordinator, monkeypatch, tmp_path,
 ):
@@ -942,6 +963,8 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     assert body["audio"]["sound"]["curve_id"] == "flat"
     assert body["audio"]["sound"]["filter_count"] == 0
     assert body["audio"]["sound"]["last_dsp_apply"]["result"] == "success"
+    assert body["audio"]["sound"]["runtime_state"] == "unknown"
+    assert body["audio"]["camilla_active_config_path"] is None
     assert body["renderers"]["spotify"]["playing"] is False
     assert body["outputd"] is None
     assert body["active_source"] in {"idle", "airplay"}

@@ -117,10 +117,17 @@ def upstream_control():
                 "content": {
                     "buffer_frames": 4096,
                     "xrun_count": 0,
+                    "last_xrun_age_ms": None,
+                    "xrun_rate_per_hour": 0.0,
                     "empty_periods": 0,
                     "eagain_count": 0,
                 },
-                "dac": {"buffer_frames": 3072, "xrun_count": 0},
+                "dac": {
+                    "buffer_frames": 3072,
+                    "xrun_count": 0,
+                    "last_xrun_age_ms": None,
+                    "xrun_rate_per_hour": 0.0,
+                },
                 "mix": {"last_period_clipped_samples": 0},
                 "tts": {
                     "pending_frames": 0,
@@ -226,6 +233,9 @@ def test_root_serves_html_with_polling_script(dashboard_server) -> None:
     assert "svc-group" in text
     assert "serviceMemoryMb(services, 'jasper-outputd')" in text
     assert "'mem ' + Math.round(memoryMb) + ' MB'" in text
+    assert "content/DAC xruns" in text
+    assert "last content xrun" in text
+    assert "target/chunk" in text
     assert "System total · shown / unshown / free" in text
     assert "RSS unavailable" not in text
     assert "Math.round(capacityPercent(totalCpu, cores.length))" in text

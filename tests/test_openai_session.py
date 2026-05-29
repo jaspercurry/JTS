@@ -433,6 +433,39 @@ async def test_audio_delta_event_routes_to_active_turn_audio_queue():
         await conn.stop()
 
 
+async def test_audio_chunks_include_openai_provider_item_id():
+    conn, factory = _make_conn()
+    registry = ToolRegistry()
+    await conn.start(registry, "")
+    try:
+        sess = factory.conns[0]
+        turn = await conn.acquire_turn()
+        sess.feed({
+            "type": "response.output_item.added",
+            "item": {"type": "message", "id": "msg_abc123"},
+        })
+        sess.feed({
+            "type": "response.output_audio.delta",
+            "delta": _b64(b"audio_chunk_1"),
+            "response_id": "resp_1",
+        })
+
+        async def consume():
+            async for chunk in turn.audio_out_chunks():
+                return chunk
+            raise AssertionError("expected one audio chunk")
+
+        task = asyncio.create_task(consume())
+        await asyncio.sleep(0.05)
+        await turn.end_input()
+        await turn.release()
+        chunk = await asyncio.wait_for(task, timeout=1.0)
+        assert chunk.pcm == b"audio_chunk_1"
+        assert chunk.provider_item_id == "msg_abc123"
+    finally:
+        await conn.stop()
+
+
 async def test_response_done_pushes_sentinel_so_consumer_drains_then_exits():
     """``response.done`` is the server's "no more audio coming" signal.
     The adapter pushes a sentinel onto the audio queue so the playback

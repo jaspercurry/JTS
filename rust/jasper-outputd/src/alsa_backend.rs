@@ -215,6 +215,14 @@ impl AlsaBackend {
         self.counters.dac_frames_written += frames_total as u64;
         Ok(())
     }
+
+    pub fn dac_delay_frames(&self) -> Result<u64> {
+        let delay = self
+            .dac
+            .delay()
+            .context("reading outputd DAC playback delay")?;
+        Ok(delay.max(0) as u64)
+    }
 }
 
 fn configure_pcm(

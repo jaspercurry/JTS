@@ -174,14 +174,18 @@ It is a recent-health view, not a full diagnostics runner:
 - The same card includes the outputd final-output snapshot from
   `/run/jasper-outputd/control.sock` plus `jasper-outputd.service`
   cgroup memory from the system sampler, so cutover RAM drift is visible
-  next to the AirPlay/output chain it affects.
+  next to the AirPlay/output chain it affects. Outputd xrun counters
+  are labelled content/DAC and include last-xrun age plus
+  uptime-normalized rate when non-zero.
 - Shairport and CamillaDSP journals are scanned incrementally every
   30 s and classified into the same patterns this document uses:
   packet drops / packet order, large sync corrections, shairport ALSA
   underruns, Camilla capture short reads, and Camilla playback
   underruns.
 - MPRIS and CamillaDSP live probes run at the slower 30 s cadence.
-  These are useful context, not the hot-path truth source.
+  Camilla context includes buffer level, rate adjust, active config
+  basename, and the active config's target/chunk values when the YAML is
+  readable. These are useful context, not the hot-path truth source.
 - History is in-memory only: 10 s buckets for 30 min plus a small
   recent-event ring. There is no database and no dashboard-poll-time
   journal scan. The socket-activated `jasper-system-web` process only
@@ -1479,4 +1483,4 @@ from somewhere outside the ALSA output handle. Submit upstream.
 
 ---
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

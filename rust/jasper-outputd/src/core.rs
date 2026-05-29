@@ -83,16 +83,37 @@ impl OutputCore {
         gain: f32,
         samples: Vec<i16>,
     ) -> SegmentId {
-        assert_eq!(samples.len() % (self.format.channels as usize), 0);
+        let id = self.start_assistant_segment(provider_item_id, kind, gain);
+        self.append_assistant_audio(id, gain, samples);
+        self.end_assistant_segment(id);
+        id
+    }
+
+    pub fn start_assistant_segment(
+        &mut self,
+        provider_item_id: Option<String>,
+        kind: SegmentKind,
+        gain: f32,
+    ) -> SegmentId {
         let clamped_gain = clamp_tts_gain_db(gain);
-        let id = self
-            .ledger
-            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns);
+        self.ledger
+            .start_segment(provider_item_id, kind, clamped_gain, self.monotonic_ns)
+    }
+
+    pub fn append_assistant_audio(&mut self, id: SegmentId, gain: f32, samples: Vec<i16>) {
+        assert_eq!(samples.len() % (self.format.channels as usize), 0);
+        if samples.is_empty() {
+            return;
+        }
+        let clamped_gain = clamp_tts_gain_db(gain);
         let frames = (samples.len() / (self.format.channels as usize)) as u64;
         self.ledger.queue_frames(id, frames);
         self.assistant
             .enqueue_segment(id, samples, gain_db_to_linear(clamped_gain));
-        id
+    }
+
+    pub fn end_assistant_segment(&mut self, id: SegmentId) {
+        self.ledger.end_segment(id, self.monotonic_ns);
     }
 
     pub fn step(&mut self) -> PeriodReport {
@@ -137,17 +158,28 @@ impl OutputCore {
     }
 
     pub fn commit_prepared_period(&mut self) -> PeriodReport {
+        self.commit_prepared_period_with_dac_delay(0)
+    }
+
+    pub fn commit_prepared_period_with_dac_delay(&mut self, dac_delay_frames: u64) -> PeriodReport {
         assert!(
             self.prepared_period_ready,
             "output period must be prepared before commit"
         );
         self.dac.write_period(&self.output_buf);
 
+        let period_start_frame = self.frames_written;
+        let mut segment_cursor_frame = period_start_frame;
         for write in &self.segment_writes {
-            self.ledger.mark_written_frames(write.id, write.frames);
-            let drained = self.ledger.segment(write.id).written_frames;
-            self.ledger.mark_drained_frames(write.id, drained);
+            self.ledger
+                .mark_written_frames_at(write.id, write.frames, segment_cursor_frame);
+            segment_cursor_frame = segment_cursor_frame.saturating_add(write.frames);
         }
+        let accepted_end_frame = self
+            .frames_written
+            .saturating_add(self.period_frames as u64);
+        self.ledger
+            .mark_drained_through(accepted_end_frame.saturating_sub(dac_delay_frames));
         self.ledger
             .prune_terminal_segments(DEFAULT_TERMINAL_SEGMENT_RETENTION);
 
@@ -157,7 +189,7 @@ impl OutputCore {
             self.pending_clipped_samples,
             self.monotonic_ns,
         );
-        self.frames_written += self.period_frames as u64;
+        self.frames_written = accepted_end_frame;
         self.monotonic_ns +=
             (self.period_frames as u64) * 1_000_000_000u64 / (self.format.sample_rate as u64);
         self.prepared_period_ready = false;
@@ -332,6 +364,32 @@ mod tests {
             core.ledger().segment(segment).status,
             crate::ledger::SegmentStatus::Drained
         );
+    }
+
+    #[test]
+    fn dac_delay_defers_playout_drain_accounting() {
+        let mut core = OutputCore::new(48, 99);
+        let segment = core.enqueue_assistant_segment(
+            Some("item-1".to_string()),
+            SegmentKind::Assistant,
+            -6.0,
+            stereo(1000, 96),
+        );
+
+        core.prepare_period();
+        let _ = core.commit_prepared_period_with_dac_delay(48);
+        assert_eq!(core.ledger().segment(segment).written_frames, 48);
+        assert_eq!(core.ledger().segment(segment).estimated_drained_frames, 0);
+        assert_eq!(
+            core.ledger().segment(segment).status,
+            crate::ledger::SegmentStatus::Playing
+        );
+
+        core.prepare_period();
+        let _ = core.commit_prepared_period_with_dac_delay(48);
+        assert_eq!(core.ledger().segment(segment).written_frames, 96);
+        assert_eq!(core.ledger().segment(segment).estimated_drained_frames, 48);
+        assert_eq!(core.ledger().segment(segment).audio_played_ms, 1);
     }
 
     #[test]

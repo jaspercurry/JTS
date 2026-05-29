@@ -19,7 +19,7 @@ For historical barge-in costing, use [HANDOFF-barge-in.md](HANDOFF-barge-in.md).
 
 ## Current Operational Truth
 
-On branch `codex/outputd-cutover`, JTS has one final output owner:
+On current main, JTS has one final output owner:
 
 ```text
 MUSIC / CONTENT
@@ -42,9 +42,9 @@ ASSISTANT AUDIO
 ```
 
 The two audible paths now converge inside `jasper-outputd`, which is
-the only normal writer to the physical DAC on this branch. The legacy
-`pcm.jasper_out` dmix remains defined in `/etc/asound.conf` because
-`main` still uses it; this branch does not use it as the production
+the only normal writer to the physical DAC. The legacy `pcm.jasper_out`
+dmix remains defined in `/etc/asound.conf` for emergency rollback and
+older checkouts, but current production audio does not use it as the
 convergence point.
 
 The AEC bridge currently reads `pcm.jasper_ref`, a `plug` wrapper over
@@ -90,9 +90,9 @@ precise playout accounting.
 Rechecked against the current tree on 2026-05-28:
 
 - `jasper/audio_io.py` + `TtsPlayout` is the migration boundary for
-  assistant audio. The voice daemon expects four operations to keep
-  their semantics: `write()`, `flush()`, `expected_drain_at()`, and
-  `wait_drained()`.
+  assistant audio. The voice daemon expects a small operation set to keep
+  its semantics: `write_segment()`/`write()`, `end_segment()`,
+  `flush()`, `expected_drain_at()`, and `wait_drained()`.
 - `jasper/voice_daemon.py` + `_play_responses` races each TTS write
   against provider interruption and calls `flush()` on interruption.
   `_idle_watchdog` and `_end_turn` rely on `expected_drain_at()` to
@@ -112,16 +112,14 @@ Rechecked against the current tree on 2026-05-28:
   preallocated buffers, systemd watchdog, xrun counters, and small
   testable pure functions.
 
-## Cutover Branch State
+## Current Outputd State
 
-As of 2026-05-28, branch `codex/outputd-cutover` is a coherent
-outputd cutover branch. Deploying this branch intentionally moves the
-speaker output boundary to `jasper-outputd`. Rollback to the prior
-`jasper_out` topology is: run
-`bash scripts/disable-outputd-cutover.sh`, deploy `main`, and run the
-helper again if the DAC is still busy. The helper is necessary because
-`main` does not know about, and therefore cannot disable, a unit this
-branch enabled.
+As of 2026-05-28, outputd is the mainline output topology. Rollback to
+the prior `jasper_out` topology is explicit: run
+`bash scripts/disable-outputd-cutover.sh`, deploy a pre-outputd release
+or rollback branch, and run the helper again if the DAC is still busy.
+The helper is necessary because older code does not know about, and
+therefore cannot disable, the outputd unit.
 
 What exists:
 
@@ -135,12 +133,12 @@ What exists:
   dongle.
 - Camilla cutover config: `/etc/camilladsp/outputd-cutover.yml` after
   install, copied from `deploy/camilladsp/outputd-cutover.yml`.
-- Camilla rollback preservation: the branch's `jasper-camilla.service`
+- Camilla rollback preservation: the outputd `jasper-camilla.service`
   reads `/var/lib/camilladsp/outputd-statefile.yml`, not the normal
   `/var/lib/camilladsp/statefile.yml`. The normal statefile, including
   any active room-correction/sound-profile path, is left intact for
-  rollback by disabling outputd and deploying `main`. The outputd
-  statefile is preserved across branch redeploys when it points at an
+  rollback by disabling outputd and deploying a pre-outputd tree. The
+  outputd statefile is preserved across branch redeploys when it points at an
   outputd-safe config, and reset to the flat cutover config only when
   it is missing, stale, points at a legacy `jasper_out` playback path,
   or omits the non-positive Camilla `volume_limit` safety ceiling.
@@ -149,24 +147,35 @@ What exists:
   `JASPER_TTS_OUTPUTD_SOCKET`; the outputd transport rejects any output
   rate other than 48 kHz, and Python chunks long cached WAV payloads
   into 250 ms stereo-frame-aligned IPC messages before the daemon's
-  bounded allocation limit.
+  bounded allocation limit. Assistant response chunks may also carry a
+  provider item id over the same IPC protocol; OpenAI wires
+  `response.output_item.added.item.id` into that field today, while
+  providers without item ids leave it empty.
 - TTS interruption: outputd flushes are epoch-based. A flush advances
   the TTS epoch, clears the already-enqueued assistant buffer, and
   ignores any pre-flush audio commands that had been accepted onto the
   bounded IPC queue but not yet mixed. That keeps barge-in from
   resurrecting stale assistant audio after the interrupt path returns.
+  Python uses a synchronous `FLUSH_SYNC` path for interruption and gets
+  a compact JSON acknowledgement with per-segment `audio_played_ms`,
+  flushed frames, provider item id, and local segment id. The Python
+  client bounds this ack wait and closes the ordered TTS socket on
+  timeout so a late stale ack cannot be mistaken for a later flush.
 - Playout ledger: outputd keeps active assistant/cue segments plus a
   bounded recent terminal history, so long uptimes do not accumulate
-  one segment per TTS chunk indefinitely.
+  one segment per TTS chunk indefinitely. Written frames are not treated
+  as heard frames: the ALSA backend reads the DAC playback delay after
+  each successful write and the ledger estimates drained frames from
+  that output clock.
 - Runtime unit: `deploy/systemd/jasper-outputd.service` is enabled by
-  `deploy/install.sh` on this branch and sets the ALSA/socket defaults.
+  `deploy/install.sh` and sets the ALSA/socket defaults.
   Optional lab retuning belongs in `/var/lib/jasper/outputd.env`; the
-  unit loads it after the branch defaults, and the AirPlay renderer
+  unit loads it after the packaged defaults, and the AirPlay renderer
   reads the same file when deriving backend latency offset.
   During install, `jasper-voice` is stopped before outputd is restarted
   so an old PortAudio process cannot keep the legacy DAC path open; the
   AEC reconciler then restarts or parks voice according to current mic
-  hardware. The installer treats outputd as mandatory on this branch:
+  hardware. The installer treats outputd as mandatory:
   missing source, missing binary, failed unit restart, or failed STATUS
   probe fails the install instead of restarting voice into a silent
   output path.
@@ -174,9 +183,12 @@ What exists:
   via `jasper-control`, `/system` Outputd row, and
   `jasper-doctor` checks. The daemon reports negotiated ALSA
   period/buffer sizes, xrun counters, content empty/partial/EAGAIN
-  periods, watchdog progress, clipping, pending TTS frames, TTS
-  over-budget duration, and compact TTS flush summaries so
-  producer/playback backpressure is visible without journal spam.
+  periods, last-xrun age, uptime-normalized xrun rate, watchdog
+  progress, clipping, pending TTS frames, TTS over-budget duration,
+  and compact TTS flush summaries so producer/playback backpressure is
+  visible without journal spam. The dashboard labels the two xrun
+  counters as content/DAC, since a content-capture recovery is a
+  different risk from a physical-output recovery.
 
 What is still intentionally not done:
 
@@ -184,9 +196,13 @@ What is still intentionally not done:
 - `speaker_reference_out` is still an in-process bounded fanout, not
   a public AEC/corpus transport.
 - Provider truncation is not yet wired to outputd flush
-  acknowledgements.
-- Mainline production has not adopted the cutover yet. This branch is
-  the experiment boundary.
+  acknowledgements. The transport now returns the needed
+  `audio_played_ms` and provider item identity; provider-specific
+  truncate/cancel commands still need to consume it.
+- The latest TTS ledger refinements (provider item id over IPC,
+  synchronous flush acknowledgement, and DAC-delay-based drain
+  accounting) still need Pi validation after an operator-approved
+  deploy.
 
 ## Problem Boundaries
 
@@ -516,14 +532,12 @@ datum: how much assistant audio was actually heard.
    fake TTS, fake DAC, fake reference consumers, and no deployment
    wiring. Unit-test queue behavior, clipping, sequence numbers,
    playout ledger math, and flush semantics. **Landed 2026-05-28.**
-2. **Pi cutover branch.** Add the post-DSP loopback lane, point
+2. **Pi cutover.** Add the post-DSP loopback lane, point
    Camilla playback at it, route TTS/cues to outputd, and let outputd
    own the DAC. This is one topology cutover, not a permanent split
-   mode. **Landed on `codex/outputd-cutover` 2026-05-28:** lane aliases,
-   cutover Camilla config/statefile, outputd ALSA backend, TTS socket
-   transport, state socket, doctor, and system dashboard are in-tree.
-   Actual Pi audio validation still requires explicit operator deploy
-   consent.
+   mode. **Landed on main 2026-05-28:** lane aliases, cutover Camilla
+   config/statefile, outputd ALSA backend, TTS socket transport, state
+   socket, doctor, and system dashboard are in-tree.
 3. **Soak before AEC switch.** Verify normal music, AirPlay, Spotify,
    Bluetooth, USB input, TTS, cues, duck/restore, dongle recovery, and
    zero output xruns. Keep AEC on the old reference during this soak so
@@ -605,10 +619,14 @@ datum: how much assistant audio was actually heard.
   empty/partial/EAGAIN counters, TTS queue over-budget duration,
   aggregate `event=outputd.tts_flush` traces, and source-handoff IDs
   that correlate mux journal lines with `/source/state.last_handoff`.
-- 2026-05-28: Convert the work into branch-as-switch form. Deploying
-  `codex/outputd-cutover` enables outputd and points Camilla at a
-  separate outputd statefile. Rollback requires stopping/disabling the
-  persistent outputd unit before or immediately after deploying `main`;
-  the preserved production Camilla statefile remains intact.
+- 2026-05-28: Convert the work into branch-as-switch form for lab
+  validation. Deploying `codex/outputd-cutover` enabled outputd and
+  pointed Camilla at a separate outputd statefile. This was superseded
+  later the same day by the mainline merge; rollback now means
+  disabling outputd and deploying a pre-outputd release or branch.
+- 2026-05-28: Merge the cutover into main, then add the remaining
+  playout-ledger contract polish: provider item identity on TTS
+  segments, synchronous `FLUSH_SYNC` acknowledgements with
+  `audio_played_ms`, and DAC-delay-based drained-frame estimation.
 
-Last verified: 2026-05-28
+Last verified: 2026-05-29

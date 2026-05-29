@@ -662,16 +662,27 @@ class AirPlayHealthSampler:
     @staticmethod
     def _read_camilla_state(host: str, port: int) -> dict[str, Any] | None:
         try:
+            from ..camilla_config_contract import read_camilla_devices_config
             from camilladsp import CamillaClient
 
             client = CamillaClient(host, port)
             client.connect()
             try:
-                return {
+                out = {
                     "buffer_level": _as_int(client.query("GetBufferLevel")),
                     "rate_adjust": _as_float(client.query("GetRateAdjust")),
                     "capture_rate": _as_int(client.query("GetCaptureRate")),
                 }
+                try:
+                    config_path = str(client.config.file_path())
+                except Exception:  # noqa: BLE001
+                    config_path = None
+                if config_path:
+                    out["config_path"] = config_path
+                    devices = read_camilla_devices_config(config_path)
+                    if devices:
+                        out.update(devices)
+                return out
             finally:
                 try:
                     client.disconnect()

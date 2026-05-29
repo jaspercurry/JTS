@@ -1,8 +1,26 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import AsyncIterator, Callable, Protocol, runtime_checkable
 
 from ..tools import ToolRegistry
+
+
+@dataclass(frozen=True)
+class AudioOutChunk:
+    """Provider audio plus playout identity for outputd's ledger.
+
+    `pcm` is still the same 24 kHz mono int16 payload yielded by the
+    legacy `audio_out()` iterator. The optional provider item id is the
+    stable handle needed by provider-specific truncation later (for
+    OpenAI, `response.output_item.added.item.id`). Providers that do not
+    expose per-response item ids leave it unset; outputd still accounts
+    for the local segment and returns played duration on flush.
+    """
+
+    pcm: bytes
+    provider_item_id: str | None = None
+    kind: str = "assistant"
 
 
 @runtime_checkable
@@ -28,6 +46,14 @@ class LiveTurn(Protocol):
     def audio_out(self) -> AsyncIterator[bytes]:
         """Yield TTS audio chunks (24 kHz mono int16 PCM) until the turn
         is released or the connection drops."""
+        ...
+
+    def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
+        """Yield TTS chunks with optional provider item identity.
+
+        Default daemon code prefers this richer stream when an adapter
+        provides it, and falls back to `audio_out()` for legacy turns.
+        """
         ...
 
     async def release(self) -> None:

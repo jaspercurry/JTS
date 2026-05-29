@@ -39,6 +39,25 @@ pub enum SegmentKind {
     Chirp,
 }
 
+impl SegmentKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            SegmentKind::Assistant => "assistant",
+            SegmentKind::Cue => "cue",
+            SegmentKind::Chirp => "chirp",
+        }
+    }
+
+    pub fn from_protocol(value: &str) -> Option<Self> {
+        match value {
+            "assistant" => Some(SegmentKind::Assistant),
+            "cue" => Some(SegmentKind::Cue),
+            "chirp" => Some(SegmentKind::Chirp),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReferencePacket {
     pub stream_id: u64,

@@ -21,7 +21,7 @@ from ._supervisor import (
     FailureFingerprint,
     reconnect_backoff_delay,
 )
-from .session import LiveConnection, LiveTurn, VoiceSession
+from .session import AudioOutChunk, LiveConnection, LiveTurn, VoiceSession
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ class GeminiLiveTurn(LiveTurn):
 
     def __init__(self, conn: "GeminiLiveConnection", started_at: float) -> None:
         self._conn = conn
-        self._audio_q: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._audio_q: asyncio.Queue[AudioOutChunk | None] = asyncio.Queue()
         self._usage = {"input_tokens": 0, "output_tokens": 0}
         self._turn_count = 0
         self._interrupted = False
@@ -192,10 +192,16 @@ class GeminiLiveTurn(LiveTurn):
             await self._audio_q.put(None)
 
     async def audio_out(self) -> AsyncIterator[bytes]:
+        async for chunk in self.audio_out_chunks():
+            yield chunk.pcm
+
+    async def audio_out_chunks(self) -> AsyncIterator[AudioOutChunk]:
         while True:
             chunk = await self._audio_q.get()
             if chunk is None:
                 return
+            if isinstance(chunk, bytes):
+                chunk = AudioOutChunk(pcm=chunk)
             self._last_chunk_dequeued_at = asyncio.get_event_loop().time()
             yield chunk
 
@@ -291,7 +297,7 @@ class GeminiLiveTurn(LiveTurn):
                     "first audio chunk from Gemini in %.0fms (turn start→1st chunk)",
                     first_ms,
                 )
-            await self._audio_q.put(data)
+            await self._audio_q.put(AudioOutChunk(pcm=data))
 
         # Tool calls. The connection's dispatcher resets the idle anchor
         # inside its loop too — covers slow / chained dispatches the
