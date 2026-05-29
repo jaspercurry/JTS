@@ -229,7 +229,7 @@
       opacity: 0.42;
     }
     .source-button:focus-visible,
-    .volume-input:focus-visible,
+    .volume-wrap:focus-visible,
     .mic-action:focus-visible,
     .setting-row:focus-visible,
     .footer-pill:focus-visible {
@@ -244,12 +244,17 @@
       border-radius: var(--radius-md);
       background: var(--foreground-005);
       overflow: hidden;
+      cursor: ew-resize;
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
     }
     .volume-fill {
       position: absolute;
       inset: 0 auto 0 0;
       width: 0%;
       background: var(--accent);
+      pointer-events: none;
       transition: width 150ms ease-out;
     }
     .volume-ticks {
@@ -268,15 +273,6 @@
       background: var(--foreground-015);
     }
     .volume-ticks span:nth-child(odd) { height: 100%; }
-    .volume-input {
-      position: absolute;
-      inset: 0;
-      width: 100%;
-      height: 100%;
-      margin: 0;
-      cursor: pointer;
-      opacity: 0;
-    }
 
     .mic-row {
       display: flex;
@@ -661,15 +657,17 @@
             <h2 class="eyebrow">Volume</h2>
             <span class="status-val" id="vol-percent">50%</span>
           </div>
-          <div class="volume-wrap">
+          <div class="volume-wrap" id="vol-control"
+               role="slider" tabindex="0"
+               aria-label="Volume"
+               aria-valuemin="0" aria-valuemax="100"
+               aria-valuenow="50" aria-valuetext="50%">
             <div class="volume-fill" id="vol-fill" style="width:50%"></div>
             <div class="volume-ticks" aria-hidden="true">
               <span></span><span></span><span></span><span></span><span></span>
               <span></span><span></span><span></span><span></span><span></span>
               <span></span>
             </div>
-            <input class="volume-input" id="vol-input" type="range" min="0"
-                   max="100" value="50" aria-label="Volume">
           </div>
         </section>
 
@@ -1004,10 +1002,10 @@
 
     // Volume slider. Talks to jasper-control's /volume endpoints
     // (proxied through nginx so this stays same-origin). Optimistic UI:
-    // the fill follows local input immediately; local intent owns the
-    // slider while a write is pending.
+    // the fill follows local gestures immediately; local intent owns
+    // the slider while a write is pending.
     (function() {
-      var input = document.getElementById('vol-input');
+      var hit = document.getElementById('vol-control');
       var fill = document.getElementById('vol-fill');
       var percentEl = document.getElementById('vol-percent');
       var dragging = false;
@@ -1029,7 +1027,20 @@
         pct = clampPct(pct);
         fill.style.width = pct + '%';
         percentEl.textContent = pct + '%';
-        if (input.value !== String(pct)) input.value = String(pct);
+        hit.setAttribute('aria-valuenow', String(pct));
+        hit.setAttribute('aria-valuetext', pct + '%');
+      }
+
+      function xToPercent(clientX) {
+        var rect = hit.getBoundingClientRect();
+        if (!rect.width) return 0;
+        return ((clientX - rect.left) / rect.width) * 100;
+      }
+
+      function setFromPointer(e) {
+        var pct = clampPct(xToPercent(e.clientX));
+        setUI(pct);
+        sendThrottled(pct);
       }
 
       function localVolumeDirty() {
@@ -1081,23 +1092,50 @@
         }
       }
 
-      input.addEventListener('pointerdown', function() {
+      hit.addEventListener('pointerdown', function(e) {
+        if (e.pointerType === 'mouse' && e.button !== 0) return;
         dragging = true;
+        try { hit.focus({preventScroll: true}); } catch (_) { hit.focus(); }
+        try { hit.setPointerCapture(e.pointerId); } catch (_) {}
+        setFromPointer(e);
+        e.preventDefault();
       });
-      input.addEventListener('input', function() {
-        var pct = clampPct(Number(input.value));
-        setUI(pct);
-        sendThrottled(pct);
+      hit.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        setFromPointer(e);
+        e.preventDefault();
       });
-      function settleInput() {
+      function endDrag(e) {
         if (!dragging) return;
         dragging = false;
-        sendThrottled(Number(input.value));
+        try { hit.releasePointerCapture(e.pointerId); } catch (_) {}
+        setFromPointer(e);
       }
-      input.addEventListener('change', settleInput);
-      input.addEventListener('pointerup', settleInput);
-      input.addEventListener('pointercancel', settleInput);
-      input.addEventListener('blur', settleInput);
+      hit.addEventListener('pointerup', endDrag);
+      hit.addEventListener('pointercancel', endDrag);
+      hit.addEventListener('lostpointercapture', function() {
+        dragging = false;
+      });
+
+      hit.addEventListener('keydown', function(e) {
+        var current = parseInt(hit.getAttribute('aria-valuenow') || '0', 10);
+        var next = current;
+        switch (e.key) {
+          case 'ArrowLeft':
+          case 'ArrowDown':  next = current - 5;  break;
+          case 'ArrowRight':
+          case 'ArrowUp':    next = current + 5;  break;
+          case 'PageDown':   next = current - 10; break;
+          case 'PageUp':     next = current + 10; break;
+          case 'Home':       next = 0;            break;
+          case 'End':        next = 100;          break;
+          default: return;
+        }
+        e.preventDefault();
+        next = clampPct(next);
+        setUI(next);
+        sendThrottled(next);
+      });
 
       async function poll() {
         if (localVolumeDirty()) return;

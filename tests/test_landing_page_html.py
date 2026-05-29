@@ -7,8 +7,14 @@ still pending.
 """
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
+import textwrap
 from pathlib import Path
+
+import pytest
 
 
 _REPO = Path(__file__).resolve().parent.parent
@@ -25,6 +31,12 @@ def _index_html() -> str:
 
 def _preflight_html() -> str:
     return _PREFLIGHT_PATH.read_text(encoding="utf-8")
+
+
+def _volume_slider_script(html: str) -> str:
+    start = html.index("    // Volume slider.")
+    end = html.index("    // Source selector.", start)
+    return html[start:end]
 
 
 def test_volume_slider_suppresses_poll_while_local_write_pending() -> None:
@@ -57,6 +69,150 @@ def test_volume_slider_allows_only_one_flush_loop() -> None:
     assert "if (flushing) return;" in html
     assert "flushing = true;" in html
     assert "flushing = false;" in html
+
+
+def test_volume_slider_uses_touch_friendly_pointer_target() -> None:
+    html = _index_html()
+
+    assert 'id="vol-control"' in html
+    assert 'role="slider"' in html
+    assert "touch-action: none;" in html
+    assert "function xToPercent(clientX)" in html
+    assert "hit.setPointerCapture(e.pointerId)" in html
+    assert "hit.addEventListener('pointermove'" in html
+    assert 'id="vol-input"' not in html
+    assert 'type="range"' not in html
+
+
+def test_volume_slider_pointer_drag_updates_from_bar_coordinates(tmp_path: Path) -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("node is required for the landing-page pointer harness")
+
+    harness = textwrap.dedent(
+        f"""
+        const vm = require('node:vm');
+        const script = {json.dumps(_volume_slider_script(_index_html()))};
+        const posted = [];
+
+        function makeElement(id) {{
+          return {{
+            id,
+            style: {{}},
+            textContent: '',
+            attrs: {{}},
+            listeners: {{}},
+            setAttribute(name, value) {{ this.attrs[name] = String(value); }},
+            getAttribute(name) {{ return this.attrs[name] || null; }},
+            addEventListener(type, fn) {{
+              (this.listeners[type] ||= []).push(fn);
+            }},
+            getBoundingClientRect() {{
+              return {{ left: 100, top: 20, width: 200, height: 56 }};
+            }},
+            focus() {{ this.focused = true; }},
+            setPointerCapture(pointerId) {{ this.captured = pointerId; }},
+            releasePointerCapture(pointerId) {{ this.released = pointerId; }},
+          }};
+        }}
+
+        const elements = {{
+          'vol-control': makeElement('vol-control'),
+          'vol-fill': makeElement('vol-fill'),
+          'vol-percent': makeElement('vol-percent'),
+        }};
+
+        elements['vol-control'].setAttribute('aria-valuenow', '50');
+        elements['vol-control'].setAttribute('aria-valuetext', '50%');
+        elements['vol-fill'].style.width = '50%';
+        elements['vol-percent'].textContent = '50%';
+
+        function event(type, clientX) {{
+          return {{
+            type,
+            clientX,
+            pointerId: 7,
+            pointerType: 'touch',
+            defaultPrevented: false,
+            preventDefault() {{ this.defaultPrevented = true; }},
+          }};
+        }}
+
+        function dispatch(type, e) {{
+          for (const fn of elements['vol-control'].listeners[type] || []) {{
+            fn(e);
+          }}
+        }}
+
+        function assertEqual(actual, expected, message) {{
+          if (actual !== expected) {{
+            throw new Error(`${{message}}: expected ${{expected}}, got ${{actual}}`);
+          }}
+        }}
+
+        function delay(ms) {{
+          return new Promise((resolve) => setTimeout(resolve, ms));
+        }}
+
+        (async () => {{
+          const context = {{
+            document: {{
+              visibilityState: 'visible',
+              getElementById(id) {{ return elements[id]; }},
+            }},
+            fetch: async (url, options = {{}}) => {{
+              if (url === '/volume/set') posted.push(JSON.parse(options.body));
+              return {{ ok: true, json: async () => ({{ percent: 50 }}) }};
+            }},
+            setInterval() {{ return 1; }},
+            setTimeout,
+            Promise,
+            Date,
+            Math,
+            JSON,
+          }};
+
+          vm.runInNewContext(script, context, {{ timeout: 1000 }});
+          await delay(0);
+
+          const down = event('pointerdown', 150);
+          dispatch('pointerdown', down);
+          assertEqual(down.defaultPrevented, true, 'pointerdown prevents page gesture');
+          assertEqual(elements['vol-control'].captured, 7, 'pointer capture id');
+          assertEqual(elements['vol-control'].getAttribute('aria-valuenow'), '25', 'pointerdown value');
+          assertEqual(elements['vol-percent'].textContent, '25%', 'pointerdown label');
+          assertEqual(elements['vol-fill'].style.width, '25%', 'pointerdown fill');
+
+          const move = event('pointermove', 260);
+          dispatch('pointermove', move);
+          assertEqual(move.defaultPrevented, true, 'pointermove prevents page gesture');
+          assertEqual(elements['vol-control'].getAttribute('aria-valuenow'), '80', 'pointermove value');
+          assertEqual(elements['vol-percent'].textContent, '80%', 'pointermove label');
+          assertEqual(elements['vol-fill'].style.width, '80%', 'pointermove fill');
+
+          dispatch('pointerup', event('pointerup', 320));
+          assertEqual(elements['vol-control'].released, 7, 'pointer release id');
+          assertEqual(elements['vol-control'].getAttribute('aria-valuenow'), '100', 'pointerup clamps high');
+
+          await delay(200);
+          assertEqual(posted.at(-1).percent, 100, 'latest posted percent');
+        }})().catch((err) => {{
+          console.error(err && err.stack ? err.stack : err);
+          process.exit(1);
+        }});
+        """
+    )
+    script_path = tmp_path / "volume_slider_pointer_test.cjs"
+    script_path.write_text(harness, encoding="utf-8")
+
+    result = subprocess.run(
+        [node, str(script_path)],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def test_landing_page_has_source_selector_buttons() -> None:
