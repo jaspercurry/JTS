@@ -27,7 +27,8 @@ import pytest
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
 
-from jasper.voice_daemon import WakeLoop  # noqa: E402
+from jasper.voice_daemon import WakeLoop, _LegRuntime  # noqa: E402
+from jasper.wake_legs import by_token  # noqa: E402
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -54,14 +55,19 @@ def _make_wake_loop_triple(
     wl._cfg.wake_model = "test_model"
     wl._cfg.voice_provider = "gemini"
     wl._detector = _make_detector()
-    wl._detector_off = detector_off
-    wl._detector_dtln = detector_dtln
-    wl._recent_score_on = 0.0
-    wl._recent_score_off = 0.0
-    wl._recent_score_dtln = 0.0
-    wl._recent_score_on_at = 0.0
-    wl._recent_score_off_at = 0.0
-    wl._recent_score_dtln_at = 0.0
+    # Build the leg collection the refactored _handle_wake_frame reads.
+    # capture_ring=None is fine — _tail_frame_rms_dbfs tolerates None.
+    wl._legs = {
+        "on": _LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+    }
+    if detector_off is not None:
+        wl._legs["off"] = _LegRuntime(
+            by_token("off"), MagicMock(), detector_off, None,
+        )
+    if detector_dtln is not None:
+        wl._legs["dtln"] = _LegRuntime(
+            by_token("dtln"), MagicMock(), detector_dtln, None,
+        )
     wl._wake_fire_lock = asyncio.Lock()
     wl._refractory_until = 0.0
     wl._acquiring = False
@@ -197,10 +203,10 @@ async def test_dtln_fire_with_other_legs_above_threshold_records_all_in_fired_le
     # AEC ON + AEC OFF have very recent above-threshold scores —
     # within the STALE_SEC window (0.32 s).
     now = asyncio.get_event_loop().time()
-    wl._recent_score_on = 0.87
-    wl._recent_score_on_at = now
-    wl._recent_score_off = 0.95
-    wl._recent_score_off_at = now
+    wl._legs["on"].recent_score = 0.87
+    wl._legs["on"].recent_score_at = now
+    wl._legs["off"].recent_score = 0.95
+    wl._legs["off"].recent_score_at = now
 
     await wl._handle_wake_frame(_frame(), leg="dtln")
 

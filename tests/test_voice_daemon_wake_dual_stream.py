@@ -33,7 +33,8 @@ import pytest
 if "sounddevice" not in sys.modules:
     sys.modules["sounddevice"] = _types.ModuleType("sounddevice")
 
-from jasper.voice_daemon import WakeLoop, State  # noqa: E402
+from jasper.voice_daemon import WakeLoop, State, _LegRuntime  # noqa: E402
+from jasper.wake_legs import by_token  # noqa: E402
 
 
 def _make_detector(threshold: float = 0.5) -> MagicMock:
@@ -59,11 +60,14 @@ def _make_wake_loop(
     wl._cfg = MagicMock()
     wl._cfg.peering_enabled = False
     wl._detector = _make_detector()
-    wl._detector_off = detector_off
-    wl._recent_score_on = 0.0
-    wl._recent_score_off = 0.0
-    wl._recent_score_on_at = 0.0
-    wl._recent_score_off_at = 0.0
+    # Build the leg collection the refactored _handle_wake_frame reads.
+    wl._legs = {
+        "on": _LegRuntime(by_token("on"), MagicMock(), wl._detector, None),
+    }
+    if detector_off is not None:
+        wl._legs["off"] = _LegRuntime(
+            by_token("off"), MagicMock(), detector_off, None,
+        )
     wl._wake_fire_lock = asyncio.Lock()
     wl._refractory_until = 0.0
     wl._acquiring = False
@@ -124,7 +128,7 @@ async def test_subthreshold_frame_updates_recent_score_but_does_not_fire():
 
     await wl._handle_wake_frame(_frame(), leg="on")
 
-    assert wl._recent_score_on == pytest.approx(0.07)
+    assert wl._legs["on"].recent_score == pytest.approx(0.07)
     assert wl._refractory_until == 0.0
     wl._detector.reset.assert_not_called()
     wl._arbitrate_acquire_drain.assert_not_called()
@@ -145,8 +149,8 @@ async def test_aec_off_alone_fires_wake():
     wl = _make_wake_loop(detector_off=detector_off)
     # AEC ON's recent score was sub-threshold from a previous frame;
     # it should appear in the wake event payload regardless.
-    wl._recent_score_on = 0.08
-    wl._recent_score_on_at = asyncio.get_event_loop().time()
+    wl._legs["on"].recent_score = 0.08
+    wl._legs["on"].recent_score_at = asyncio.get_event_loop().time()
 
     await wl._handle_wake_frame(_frame(), leg="off")
 
@@ -187,8 +191,8 @@ async def test_both_legs_recent_scores_attached_when_fire(caplog):
     detector_off = _make_detector(threshold=0.5)
     detector_off.score_frame.return_value = 0.55
     wl = _make_wake_loop(detector_off=detector_off)
-    wl._recent_score_on = 0.09
-    wl._recent_score_on_at = asyncio.get_event_loop().time()
+    wl._legs["on"].recent_score = 0.09
+    wl._legs["on"].recent_score_at = asyncio.get_event_loop().time()
 
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="off")
@@ -214,8 +218,8 @@ async def test_stale_other_leg_score_reported_as_none(caplog):
     wl._detector.score_frame.return_value = 0.91
     # AEC OFF "last scored" several seconds ago — beyond the 320ms
     # staleness threshold in _handle_wake_frame.
-    wl._recent_score_off = 0.42
-    wl._recent_score_off_at = asyncio.get_event_loop().time() - 5.0
+    wl._legs["off"].recent_score = 0.42
+    wl._legs["off"].recent_score_at = asyncio.get_event_loop().time() - 5.0
 
     with caplog.at_level(logging.INFO):
         await wl._handle_wake_frame(_frame(), leg="on")
