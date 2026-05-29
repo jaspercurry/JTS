@@ -2413,5 +2413,8 @@ against OpenAI is ~$2.40 per run.
 ## Branch and remote
 
 Active branch: `main`. The user's GitHub remote is
-`jaspercurry/JTS` — accessible via `mcp__github__*` tools, not
-the `gh` CLI.
+`jaspercurry/JTS`. Use the `gh` CLI for GitHub operations (PRs,
+issues, API) — it is authenticated locally as the `jaspercurry`
+account. (A GitHub MCP may also be available in some sessions, but
+it is not reliably loaded; `gh` is the dependable path. The earlier
+"`mcp__github__*`, not `gh`" guidance here was a Codex-era artifact.)
