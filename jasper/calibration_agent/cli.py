@@ -1,4 +1,4 @@
-"""Read-only calibration-agent intake CLI."""
+"""Calibration-agent intake, prompt, and response-validation CLI."""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import tools
+from . import prompt, response, tools
 
 
 def _fmt_issue(issue: dict[str, Any]) -> str:
@@ -248,7 +248,7 @@ def render_markdown(intake: dict[str, Any]) -> str:
     elif bundle_issues:
         lines.append("- Fix bundle/doctor warnings before feeding this to an LLM.")
     else:
-        lines.append("- Bundle is ready for human review and future read-only LLM critique.")
+        lines.append("- Bundle is ready for human review and future bounded LLM critique.")
     return "\n".join(lines) + "\n"
 
 
@@ -296,6 +296,18 @@ def build_parser() -> argparse.ArgumentParser:
             "context"
         ),
     )
+    parser.add_argument(
+        "--user-message",
+        help="optional user-facing prompt text for --advisor-prompt-json",
+    )
+    parser.add_argument(
+        "--user-confirmed",
+        action="store_true",
+        help=(
+            "mark validated persistent advisor actions as user-confirmed; "
+            "only meaningful with --validate-advisor-response"
+        ),
+    )
     output = parser.add_mutually_exclusive_group()
     output.add_argument(
         "--json",
@@ -306,6 +318,20 @@ def build_parser() -> argparse.ArgumentParser:
         "--advisor-context-json",
         action="store_true",
         help="emit only the redacted LLM-ready advisor context JSON",
+    )
+    output.add_argument(
+        "--advisor-prompt-json",
+        action="store_true",
+        help="emit a provider-neutral prompt package for a future advisor call",
+    )
+    output.add_argument(
+        "--validate-advisor-response",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "validate a proposed advisor response JSON against the current "
+            "advisor context"
+        ),
     )
     return parser
 
@@ -331,6 +357,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.advisor_context_json:
         print(json.dumps(intake["advisor_context"], indent=2, sort_keys=True))
+    elif args.advisor_prompt_json:
+        package = prompt.build_advisor_prompt_package(
+            intake["advisor_context"],
+            user_message=args.user_message,
+        )
+        print(json.dumps(package, indent=2, sort_keys=True))
+    elif args.validate_advisor_response:
+        try:
+            raw = json.loads(args.validate_advisor_response.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"jasper-calibration-agent: invalid advisor response: {e}", file=sys.stderr)
+            return 2
+        validation = response.validate_advisor_response(
+            raw,
+            advisor_context=intake["advisor_context"],
+            user_confirmed=args.user_confirmed,
+        )
+        print(json.dumps(validation, indent=2, sort_keys=True))
+        if not validation["accepted"]:
+            return 1
     elif args.json:
         print(json.dumps(intake, indent=2, sort_keys=True))
     else:

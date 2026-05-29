@@ -150,7 +150,17 @@ Every concept file should have:
   shape, corpus snippets, missing evidence, and explicit advisor
   permissions. It excludes raw audio, absolute paths, secrets,
   raw mic serials, untrusted browser labels, user-entered profile
-  names, unconstrained CamillaDSP YAML, FIR taps, and all apply/reset
-  authority.
+  names, unconstrained CamillaDSP YAML, FIR taps, direct apply/reset
+  authority, and volume authority.
+- 2026-05-29: advisor prompt + bounded action contract added.
+  `jasper.calibration_agent.prompt` emits a provider-neutral prompt
+  package with system instructions, the redacted context, and the
+  response contract; `jasper.calibration_agent.response` validates
+  future `jts_advisor_response` JSON into a safe action plan. The
+  first action surface is intentionally narrow: explain, recommend
+  remeasurement, propose an ephemeral preference-EQ audition, or
+  request a user-confirmed preference-profile save. Models still
+  cannot directly apply filters, control volume, emit CamillaDSP YAML,
+  generate FIR taps, or bypass JTS safety gates.
 
 Last verified: 2026-05-29

@@ -251,12 +251,29 @@
   caution features, bass residuals, corpus snippets, and the current
   sound-profile DSP shape. It deliberately excludes raw audio,
   absolute paths, secrets, raw mic serials, browser labels, and
-  user-entered profile names. The packet carries explicit read-only
-  advisor permissions: explain, recommend remeasurement, and suggest
-  bounded PEQ only when JTS confidence gates allow it; it always
-  prohibits raw-audio access, unconstrained CamillaDSP YAML, filter
-  apply, FIR tap generation, safety-gate overrides, and silent
-  room/preference layer merging.
+  user-entered profile names. The packet is **read-only-first, not
+  read-only-forever**: it carries permissions for explain, recommend
+  remeasurement, propose bounded preference-EQ auditions, and request
+  user-approved preference-profile commits when JTS confidence gates
+  allow them. It always prohibits raw-audio access, unconstrained
+  CamillaDSP YAML, direct filter apply, FIR tap generation, safety-gate
+  overrides, volume control, and silent room/preference layer merging.
+- ✅ **Phase 2.18 — advisor prompt + bounded action contract.**
+  Implemented 2026-05-29. `jasper.calibration_agent.prompt` emits a
+  provider-neutral `jts_advisor_prompt_package` containing the system
+  instructions, response contract, and redacted advisor context; it
+  makes no model call. `jasper.calibration_agent.response` validates a
+  future model's `jts_advisor_response` into a `validated_action_plan`.
+  The first action set is deliberately narrow: explain evidence,
+  recommend remeasurement, propose an ephemeral preference-EQ audition
+  through the existing `/sound/` substrate, or request a persistent
+  preference-profile save after explicit user confirmation. The
+  validator marks every action with `execution_ready` so valid
+  evidence explanations and ephemeral auditions cannot be confused
+  with a persistent profile write that is still awaiting user
+  confirmation. It rejects raw audio, FIR coefficients/taps,
+  CamillaDSP YAML, volume authority, shell/command authority, unknown
+  actions, and out-of-bounds preference EQ.
 - ✅ **Phase 3 — power-user pass-through.** Already shipped as part
   of v1 — `camillagui.service` runs at port 5005, linked from the
   landing page. No additional work required for the originally
@@ -1252,7 +1269,9 @@ Current versions:
 | `analysis/<capture>_response.json` | `artifact_schema_version` | `1` | Optional derived replay artifact. Recomputable from raw capture WAV, sweep metadata, calibration, and deconvolution settings. |
 | `fir/<label>.json` | `artifact_schema_version` | `1` | Optional FIR-runtime metadata for imported/staged coefficients. This is evidence only, not an apply path. |
 | `jasper.correction.evidence` packet | `artifact_schema_version` | `2` | Read-only review envelope for humans and future LLMs; no side effects and no raw audio. v2 adds `capability_permissions` and `missing_evidence`. |
-| `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries explicit read-only advisor permissions/prohibitions. |
+| `jasper.calibration_agent.advisor_context` packet | `artifact_schema_version` | `1` | Redacted LLM-ready context envelope derived from the evidence packet. Excludes raw audio, absolute paths, raw serials, untrusted browser labels, and user-entered profile names; carries read-only-first bounded-action permissions/prohibitions. |
+| `jasper.calibration_agent.prompt` package | `artifact_schema_version` | `1` | Provider-neutral prompt package for a future model call. Contains system instructions, response contract, and redacted advisor context; no model call and no side effects. |
+| `jasper.calibration_agent.response` validation | `artifact_schema_version` | `1` | Deterministic validation envelope for future advisor JSON. Produces a safe action plan or rejects unsafe fields/actions; persistence remains user-confirmation-gated. |
 
 Compatibility rules:
 

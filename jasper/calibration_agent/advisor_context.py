@@ -1,10 +1,13 @@
-"""LLM-ready, read-only context for calibration-agent review.
+"""LLM-ready context for calibration-agent review and bounded actions.
 
 This module is the narrow bridge between deterministic bundle evidence
 and a future language-model advisor. The raw correction bundle remains
 the source of truth, while this packet is the intentionally curated
 view an advisor is allowed to see: compact, redacted, versioned, and
-explicit about permissions.
+explicit about permissions. The current harness is read-only-first,
+not read-only-forever: model outputs may propose bounded action plans,
+but deterministic JTS code owns validation, execution, rollback, and
+persistence.
 """
 from __future__ import annotations
 
@@ -67,7 +70,7 @@ _PROHIBITED_ACTIONS = (
     },
     {
         "id": "apply_filters",
-        "label": "may not apply filters or change active DSP state",
+        "label": "may not directly apply filters or change active DSP state",
     },
     {
         "id": "generate_fir_taps",
@@ -293,8 +296,11 @@ def _advisor_policy(evidence_packet: dict[str, Any]) -> dict[str, Any]:
         [str(reason) for reason in safe.get("reasons") or []]
         + [str(reason) for reason in balanced.get("reasons") or []]
     ))
+    commit_reasons = list(bounded_peq_reasons)
+    if not bounded_peq_allowed:
+        commit_reasons.append("bounded PEQ confidence gate is blocked")
     return {
-        "mode": "read_only_advisor",
+        "mode": "read_only_first_bounded_actions",
         "allowed_actions": [
             _allowed_action(
                 "explain",
@@ -310,9 +316,36 @@ def _advisor_policy(evidence_packet: dict[str, Any]) -> dict[str, Any]:
                 allowed=bounded_peq_allowed,
                 reasons=bounded_peq_reasons,
             ),
+            _allowed_action(
+                "propose_preference_eq_audition",
+                (
+                    "may propose an ephemeral preference-EQ audition that "
+                    "JTS can validate and load through the existing /sound/ "
+                    "audition path"
+                ),
+                allowed=bounded_peq_allowed,
+                reasons=bounded_peq_reasons,
+            ),
+            _allowed_action(
+                "request_user_approved_preference_commit",
+                (
+                    "may request saving a bounded preference-EQ profile only "
+                    "after explicit user confirmation"
+                ),
+                allowed=bounded_peq_allowed,
+                reasons=commit_reasons,
+            ),
         ],
         "prohibited_actions": list(_PROHIBITED_ACTIONS),
         "capability_permissions": permissions,
+        "execution_boundary": {
+            "model_may_propose": True,
+            "model_may_execute": False,
+            "jts_validates_actions": True,
+            "user_confirmation_required_for_persistence": True,
+            "volume_control_excluded": True,
+            "raw_camilladsp_config_excluded": True,
+        },
     }
 
 

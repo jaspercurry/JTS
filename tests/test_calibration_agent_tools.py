@@ -173,7 +173,29 @@ def test_cli_advisor_context_json_emits_context_only(tmp_path: Path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["kind"] == "llm_ready_advisor_context"
     assert "summary" not in out
-    assert out["advisor_policy"]["mode"] == "read_only_advisor"
+    assert out["advisor_policy"]["mode"] == "read_only_first_bounded_actions"
+
+
+def test_cli_advisor_prompt_json_emits_provider_neutral_package(tmp_path: Path, capsys):
+    sessions = tmp_path / "sessions"
+    _write_bundle(sessions, "abc")
+
+    rc = cli.main([
+        "abc",
+        "--sessions-dir",
+        str(sessions),
+        "--advisor-prompt-json",
+        "--user-message",
+        "Help me decide whether to audition a warmer profile.",
+    ])
+
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["kind"] == "jts_advisor_prompt_package"
+    assert out["privacy"]["no_provider_call_made"] is True
+    assert out["response_contract"]["kind"] == "jts_advisor_response_contract"
+    assert out["advisor_context"]["kind"] == "llm_ready_advisor_context"
+    assert out["side_effects"] == []
 
 
 def test_cli_markdown_renders_evidence_readiness(tmp_path: Path, capsys):

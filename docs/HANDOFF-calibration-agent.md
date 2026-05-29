@@ -1,6 +1,6 @@
 # HANDOFF: LLM-driven calibration agent
 
-> **Status: research + early substrate (2026-05-28).** This is the
+> **Status: research + early substrate (2026-05-29).** This is the
 > design-space document for the guided calibration/tuning arc. Phase
 > 0a substrate has landed: calibrated mic registry/parser,
 > Dayton/miniDSP serial lookup, manual upload fallback, input-device
@@ -11,8 +11,9 @@
 > visualization/confidence UX, a deterministic
 > `jasper.correction.evidence` v2 packet with explicit capability
 > permissions and missing-evidence reporting, replay-grade
-> `analysis/` artifacts, FIR coefficient inspect/stage substrate, a read-only
-> `jasper-calibration-agent` intake CLI, and an on-demand
+> `analysis/` artifacts, FIR coefficient inspect/stage substrate,
+> `jasper-calibration-agent` intake / prompt-package / response-validation
+> CLI modes, and an on-demand
 > `/correction/` measurement-report surface. The LLM agent itself is
 > still not implemented.
 >
@@ -890,19 +891,37 @@ Current distilled corpus files:
   browser/device metadata, acoustic/runtime/repeatability/spatial
   confidence, rejected/caution correction facts, target/strategy
   summaries, current sound-profile DSP shape without user-entered
-  names, corpus snippets, missing evidence, and explicit read-only
-  permissions/prohibitions. It excludes raw audio, absolute paths,
-  secrets, untrusted labels, unconstrained CamillaDSP YAML, FIR
-  taps, and all apply/reset authority.
+  names, corpus snippets, missing evidence, and explicit
+  read-only-first bounded-action permissions/prohibitions. It excludes
+  raw audio, absolute paths, secrets, untrusted labels, unconstrained
+  CamillaDSP YAML, FIR taps, direct apply authority, and volume
+  authority.
+- ✅ **Advisor prompt + response/action contract.** Implemented
+  2026-05-29 as `jasper.calibration_agent.prompt` and
+  `jasper.calibration_agent.response`. The CLI can now emit
+  `--advisor-prompt-json` for a future provider adapter and validate a
+  proposed model response with `--validate-advisor-response <path>`.
+  This is the first action-capable harness slice, but it still makes
+  no provider call and executes no actions. The only accepted actions
+  are: explain evidence, recommend remeasurement, propose an
+  ephemeral preference-EQ audition through the existing `/sound/`
+  substrate, or request a persistent preference-profile save after
+  explicit user confirmation. Every validated action carries
+  `execution_ready`; pending persistent profile commits remain
+  `execution_ready=false` until the user has explicitly confirmed the
+  save. Deterministic validation rejects raw audio, CamillaDSP YAML,
+  FIR taps/coefficients, volume control, shell/command authority,
+  unknown action types, and out-of-range EQ.
 - Extend the markdown corpus under `docs/calibration-agent/` as
-  needed, then build a deterministic loader that assembles it into
-  the agent prompt. The current intake CLI already includes a small
-  corpus lookup tool; a future prompt assembler can reuse it.
+  needed. The current prompt package uses the redacted advisor context
+  plus corpus snippets; a later provider adapter can add fuller corpus
+  assembly without changing the response/action contract.
 - Build `jasper/calibration_agent/` with the Anthropic adapter as
   reference.
-- Implement the read-only tools first
+- Implement deterministic tools first
   (`get_measurement_summary`, `analyze_peaks_nulls`,
-  `compute_schroeder`, `look_up`, and the read-only evidence packet).
+  `compute_schroeder`, `look_up`, the evidence packet, and the
+  bounded response/action validator).
   The first deterministic versions are in `jasper.calibration_agent.tools`
   and `jasper.correction.evidence`.
 - CLI tool: `sudo /opt/jasper/.venv/bin/jasper-calibration-agent

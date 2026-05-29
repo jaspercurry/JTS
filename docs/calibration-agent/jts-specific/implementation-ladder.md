@@ -31,7 +31,7 @@ is trustworthy enough to explain.
 | 6 | FIR runtime substrate | CamillaDSP convolution import/export, latency/headroom reporting. |
 | 7 | Minimum-phase FIR | Same conservative target and boost rules as PEQ, emitted as FIR. |
 | 8 | FDW / mixed-phase experiments | Opt-in, high measurement confidence, pre-ringing audit, power-user first. |
-| 9 | LLM advisor | Explains, asks, compares, and submits bounded strategy JSON only. |
+| 9 | LLM harness | Explains, asks, compares, and submits bounded strategy/action JSON only; JTS validates, executes, rolls back, and persists. |
 
 ## Current Main-Lane Priority
 
@@ -64,8 +64,12 @@ comparison, capability permissions, and missing-evidence reporting.
 LLM-ready v1 context packet from that evidence: redacted mic/device
 facts, acoustic/runtime/spatial confidence, bounded PEQ/FIR
 permissions, target/strategy summaries, current sound-profile DSP
-shape, and corpus snippets, with raw audio and apply authority
-excluded.
+shape, and corpus snippets, with raw audio, direct apply authority,
+and volume authority excluded. `jasper.calibration_agent.prompt` and
+`jasper.calibration_agent.response` add the first action-capable
+harness slice: prompt-package emission and deterministic validation of
+future advisor JSON for explain, remeasure, ephemeral preference-EQ
+audition, and user-approved preference-profile commit actions.
 Successful captures also write replay-grade `analysis/` artifacts:
 derived impulse responses, raw/smoothed/final response curves,
 calibration/normalization metadata, direct-arrival evidence, and
@@ -222,12 +226,18 @@ The LLM may:
 - ask clarifying listening questions;
 - map user language to a bounded preference intent;
 - recommend which deterministic strategy to run;
+- propose bounded preference-EQ auditions through the `/sound/`
+  substrate when JTS gates allow it;
+- request user-approved preference-profile saves after the user likes
+  an audition;
 - generate audit-log narration and user-facing summaries.
 
 The LLM must not:
 
 - emit FIR taps;
 - write unconstrained CamillaDSP YAML;
+- control volume;
+- apply or persist DSP changes directly;
 - override safety bounds;
 - call subjective preference "accuracy";
 - merge preference EQ into the room-correction layer silently.

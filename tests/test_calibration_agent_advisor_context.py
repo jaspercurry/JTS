@@ -136,7 +136,7 @@ def test_advisor_context_is_redacted_and_permissioned(tmp_path: Path):
     assert context["artifact_schema_version"] == 1
     assert context["privacy"]["raw_audio_excluded"] is True
     assert context["bundle"]["artifact_manifest"]["private_audio_count"] == 4
-    assert context["advisor_policy"]["mode"] == "read_only_advisor"
+    assert context["advisor_policy"]["mode"] == "read_only_first_bounded_actions"
     prohibited = {
         action["id"]
         for action in context["advisor_policy"]["prohibited_actions"]
@@ -148,9 +148,10 @@ def test_advisor_context_is_redacted_and_permissioned(tmp_path: Path):
         "generate_fir_taps",
     } <= prohibited
     assert any(
-        action["id"] == "suggest_bounded_peq_strategy" and action["allowed"]
+        action["id"] == "propose_preference_eq_audition" and action["allowed"]
         for action in context["advisor_policy"]["allowed_actions"]
     )
+    assert context["advisor_policy"]["execution_boundary"]["model_may_execute"] is False
     assert context["measurement"]["mic_calibration"]["raw_serial_redacted"] is True
     assert context["measurement"]["input_device"]["browser_labels_redacted"] is True
     assert context["preference"]["current_sound_profile"]["curve_id"] == "harman"
