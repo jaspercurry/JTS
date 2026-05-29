@@ -216,6 +216,7 @@ in `/tmp/` during a specific investigation and get promoted to
 | Tool | Status | Purpose |
 |---|---|---|
 | [`scripts/verify-ref-no-silence-bug.sh`](../scripts/verify-ref-no-silence-bug.sh) | in repo | Verifies the ref-path fixes from PRs #150 / #154 / #157 are active on the deployed build (resampler HF loss, silence fallback, drain-newest dup-frame bug). Run after any deploy that touched the bridge. |
+| [`scripts/chip-aec-baseline-check.sh`](../scripts/chip-aec-baseline-check.sh) | in repo | Chip-AEC Option D gate only. After `chip-aec-setup.sh`, injects a chirp through `correction_substream`, captures repeated reference + bypassed 6-ch chip-mic WAVs, estimates a first residual `AUDIO_MGR_SYS_DELAY` candidate from the most repeatable chip channel, and supports `REF_DELAY_MS` when Pi-side reference delay is needed to fit inside the chip's narrow tuning range. |
 | `scripts/xvf-interrogate.sh` | in repo | Deep XVF3800 diagnostic — USB descriptors, ALSA card state, all chip params, RMS levels. Tagged by chip iSerial. Run when the mic seems off and you want a full dump before changing anything. |
 | `/tmp/analyze_aec_distortion.py` | **NOT in repo** | Per-clip peak / RMS / crest / tanh-zone occupancy / hard-clip count. Promote to `scripts/_analyze_aec_distortion.py` when stable. |
 | `/tmp/analyze_tearing.py` | **NOT in repo** | NS musical noise / RS HF gating (`hf_CV`) / frame-boundary clicks / AGC pumping / HF aliasing detectors. Promote to `scripts/_analyze_tearing.py` when stable. |

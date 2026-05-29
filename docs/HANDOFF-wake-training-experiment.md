@@ -581,35 +581,38 @@ sessions on different days):**
   sweep unless explicitly doing a neural-AEC side test; the Pi budget
   and listening matrix get messy fast.
 
-**2026-05-29 pre-corpus runbook.** The tuning pilots have answered
-enough to stop chasing broad AEC3 knobs before the first training
-corpus. Tomorrow has three jobs, in this order: close the one remaining
-chip-AEC question, put the recorder into a known-good state, then record
-a clean Session A.
+**2026-05-29 pre-corpus runbook.** The tuning pilots answered enough to
+stop broad AEC3 knob chasing, and the chip-AEC carve-out produced a
+major positive result (details in
+[`CHIP-AEC-EXPERIMENT.md`](CHIP-AEC-EXPERIMENT.md)). The earlier
+`plug:jasper_capture` feeder path created misleading timing/drift
+problems; direct source fanout to both the external DAC and XVF3800
+USB-IN held about `~1 ppm` over 15 minutes and let the chip AEC produce
+useful cancellation. The best lab output is category-7 ASR fixed gated
+beams at `150°/210°`, with `AEC_AECEMPHASISONOFF=2`; the `150°` beam
+was the standout listening/metric winner.
 
-**1. Bounded chip-AEC Option D gate (~60-90 min max).** Before the big
-corpus, run the narrow hardware-AEC carve-out documented in
-[`CHIP-AEC-EXPERIMENT.md`](CHIP-AEC-EXPERIMENT.md): feed music into the
-XVF3800 USB-IN endpoint as the chip's far-end reference, enable chip
-AEC, and see whether `AEC_AECCONVERGED` flips and the A/B recordings
-sound materially better. This is worth doing because a strongly positive
-result would change what "the AEC leg" should be for the gold corpus.
-It is not permission to re-open PipeWire, dual-USB-sink, or custom
-firmware work.
+**1. Chip-AEC Option D — positive lab result, not recorder-ready.**
+Before spending gold-corpus time, decide whether to productionize enough
+of the chip-AEC path for intentional corpus capture. The path to capture
+is not the old feeder harness; it is direct source fanout:
+one source buffer to the physical DAC and the XVF3800 USB-IN reference,
+then capture category-7 ASR fixed-beam output. The recorder must be able
+to enter/exit this state cleanly and label the resulting leg explicitly.
 
 Decision:
-- If chip AEC does not converge after the documented `SYS_DELAY` probe,
-  close Option D as negative for now and proceed with software-AEC
-  corpus.
-- If it converges but `03_mic_aec_on.wav` does not materially reduce
-  music versus `02_mic_aec_off.wav`, or `04_speech_only.wav` damages
-  speech, document it and proceed with software-AEC corpus.
-- If it converges and sounds clearly better without speech damage, pause
-  corpus production and design how to capture the chip-AEC leg cleanly
-  before spending Jasper's recording time.
+- If we do **not** productionize a clean chip-AEC recorder leg first,
+  record Session A with the known-good software AEC3 / raw / DTLN /
+  USB-reference plan and keep chip AEC out of the gold corpus.
+- If we do productionize it, include the chip-AEC ASR `150°` leg as a
+  pilot candidate leg, with optional `210°` if we want a secondary beam
+  for fusion/coverage.
+- Do not record training clips from ad-hoc lab harness WAVs. They are
+  useful for tuning, but not a clean corpus surface.
 
-After the gate, always run `bash scripts/chip-aec-teardown.sh` and
-verify production services recovered before opening the wake-corpus page.
+After any chip-AEC lab gate, verify production services recovered before
+opening the wake-corpus page. On 2026-05-29, `jasper-aec-bridge`,
+`jasper-voice`, and `SHF_BYPASS=1` were restored after the lab sweeps.
 
 **2. Recorder known-good state (~10 min).** Start from production mode:
 `jasper-voice` running, recorder-owned optional bridge outputs off, no
@@ -1445,6 +1448,15 @@ capture-health deltas from the bridge where available.
 
 ## Changelog
 
+- **2026-05-29 (v28):** Chip-AEC lab result folded in:
+  - Updated the pre-corpus runbook from "partial ch0 positive" to
+    "positive lab result, not recorder-ready."
+  - Captured the direct-source-fanout finding: the old feeder path was
+    the timing/drift problem; direct DAC + XVF3800 USB-IN fanout held
+    about `~1 ppm` over 15 minutes.
+  - Recorded the current chip-AEC candidate leg for future corpus
+    design: category-7 ASR output, fixed gated `150°/210°` beams,
+    `AEC_AECEMPHASISONOFF=2`, with `150°` as the standout beam.
 - **2026-05-28 (v26):** Waveform-fusion and next-recording plan:
   - Documented the offline `scripts/_waveform_fusion_experiment.py`
     harness and first `20260528T184424Z-d205` result: best XVF
@@ -1674,4 +1686,6 @@ capture-health deltas from the bridge where available.
     Brittany, real-usage utterances, own-speaker-playback
     suppression).
 
-Last verified: 2026-05-28 (v26 — pre-corpus runbook documented)
+Last verified: 2026-05-29 (v28 — chip-AEC direct-fanout lab test
+produced a positive result; corpus capture still waits on a clean
+recorder/production integration path)

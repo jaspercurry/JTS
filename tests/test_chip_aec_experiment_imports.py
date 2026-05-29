@@ -20,6 +20,27 @@ infrastructure live on `main` instead of a feature branch.
 
 from __future__ import annotations
 
+import sys
+import types
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def fake_alsaaudio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep this dormant Pi-only module importable in hardware-free CI."""
+
+    fake = types.SimpleNamespace(
+        ALSAAudioError=Exception,
+        PCM=object,
+        PCM_CAPTURE=0,
+        PCM_NORMAL=0,
+        PCM_PLAYBACK=1,
+        PCM_FORMAT_S16_LE=2,
+    )
+    monkeypatch.setitem(sys.modules, "alsaaudio", fake)
+    monkeypatch.delitem(sys.modules, "jasper.chip_aec_experiment", raising=False)
+
 
 def test_chip_aec_experiment_module_imports() -> None:
     """The experiment module is syntactically valid + imports cleanly."""
@@ -27,7 +48,7 @@ def test_chip_aec_experiment_module_imports() -> None:
 
     module = importlib.import_module("jasper.chip_aec_experiment")
 
-    # Sanity-check the public surface the four scripts/chip-aec-*.sh
+    # Sanity-check the public surface the five scripts/chip-aec-*.sh
     # shell scripts depend on. If any of these are renamed or removed,
     # the experiment is broken even if the bare import succeeded.
     assert callable(getattr(module, "main", None)), (
@@ -40,7 +61,7 @@ def test_chip_aec_experiment_module_imports() -> None:
     )
     assert callable(getattr(module, "udp_mic_pump", None)), (
         "udp_mic_pump() missing — UDP frame emitter that delivers "
-        "chip ch1 to jasper-voice on 127.0.0.1:9876"
+        "the selected chip channel to jasper-voice on 127.0.0.1:9876"
     )
 
 
@@ -79,12 +100,14 @@ def test_chip_aec_experiment_module_constants_intact() -> None:
         "Voice daemon's mic_device default expects 9876."
     )
 
-    # ch1 is the AEC-processed ASR beam when SHF_BYPASS=0.
-    # See HANDOFF-xvf3800.md "Both 2-ch and 6-ch share channel 0 =
-    # Conference and channel 1 = ASR" for the canonical channel map.
-    assert m.MIC_CHANNEL == 1, (
-        f"MIC_CHANNEL changed: {m.MIC_CHANNEL}. "
-        "ch1 is the chip's ASR beam (AEC-processed when SHF_BYPASS=0). "
-        "ch0 is the Conference beam; ch2-5 are raw mics on 6-ch firmware. "
-        "Verify against HANDOFF-xvf3800.md."
+    # Option D tests chip-side AEC, not the production software-AEC
+    # bridge. On 2026-05-29 the live A/B showed channel 0 carrying the
+    # useful chip-AEC attenuation in this topology; keep it explicit and
+    # override with JASPER_CHIP_AEC_MIC_CHANNEL/MIC_CHANNEL when testing
+    # other chip taps.
+    assert m.DEFAULT_MIC_CHANNEL == 0, (
+        f"DEFAULT_MIC_CHANNEL changed: {m.DEFAULT_MIC_CHANNEL}. "
+        "ch0 is the Conference beam; ch1 is ASR; ch2-5 are raw mics "
+        "on 6-ch firmware. Verify against HANDOFF-xvf3800.md and the "
+        "latest CHIP-AEC-EXPERIMENT.md results."
     )

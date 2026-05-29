@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Phase 3: poll AEC_AECCONVERGED while music plays.
 #
-# The chip's AEC adaptive filter sets this flag to 1 once it has locked onto
-# the echo path. If it never flips to 1 in this topology, chip AEC won't
-# work in JTS regardless of further tuning — that's the conclusive negative
-# result the experiment is designed to produce.
+# The chip's AEC adaptive filter is expected to set this flag to 1 once it
+# has locked onto the echo path. Treat [1] as a strong positive. Treat [0]
+# as a warning, not the only verdict: the 2026-05-29 gate saw useful ch0
+# attenuation even while this flag stayed [0].
 #
 # Pre-conditions:
 #   - bash scripts/chip-aec-setup.sh has been run
@@ -71,10 +71,12 @@ else
   echo "  3. Chip USB-IN actually receiving frames?"
   echo "     ssh ${PI_USER}@${PI_HOST} 'awk \"/^Playback:/{p=1} p && /Status:/{print; exit}\" /proc/asound/Array/stream0'"
   echo "     Should say 'Status: Running' while feeder is active"
-  echo "  4. Try SYS_DELAY sweep (negative = mic delayed, positive = ref delayed):"
-  echo "     ssh ${PI_USER}@${PI_HOST} 'sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY 64'"
-  echo "     Then re-run this script. Try 32, 64, 128, 256, also -32, -64."
-  echo "  5. If no SYS_DELAY value converges: chip AEC is incompatible with this"
-  echo "     topology even with USB-IN reference. Conclusive negative result."
+  echo "  4. Run the baseline gate before sweeping blindly:"
+  echo "     bash scripts/chip-aec-baseline-check.sh"
+  echo "     The current firmware read-back clamps AUDIO_MGR_SYS_DELAY to [-64, +256]."
+  echo "  5. If no in-range value converges, still run the ch0 A/B ear test once."
+  echo "     The 2026-05-29 gate saw ch0 attenuation even while this flag stayed 0."
+  echo "     If ch0 does not sound materially better, treat chip AEC as negative"
+  echo "     for corpus purposes and return to the WebRTC AEC3 bridge."
 fi
 echo "============================================="

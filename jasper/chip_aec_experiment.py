@@ -13,9 +13,9 @@ daemon that does two things in parallel:
      is duplicated to match the endpoint's 2-channel descriptor.
 
   B) UDP mic pump — reads the chip's 6-channel mic capture stream, extracts
-     channel 1 (the ASR beam, which is chip-AEC'd when SHF_BYPASS=0), and
-     emits 16 kHz mono S16_LE PCM frames to udp://127.0.0.1:9876. jasper-voice
-     continues reading UDP — no voice-daemon changes.
+     the selected processed chip channel, and emits 16 kHz mono S16_LE PCM
+     frames to udp://127.0.0.1:9876. jasper-voice continues reading UDP — no
+     voice-daemon changes.
 
 Known limitation:
 - The reference tap is pre-CamillaDSP. The chip sees un-ducked music while
@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import socket
 import sys
@@ -48,7 +49,8 @@ SOURCE_DEVICE = "plug:jasper_capture"
 RATE = 16000
 PERIODSIZE = 160  # 10 ms @ 16 kHz
 UDP_TARGET = ("127.0.0.1", 9876)
-MIC_CHANNEL = 1  # XVF3800 ch1 = ASR beam (chip-AEC'd when SHF_BYPASS=0)
+DEFAULT_REF_DELAY_MS = float(os.environ.get("JASPER_CHIP_AEC_REF_DELAY_MS", "0"))
+DEFAULT_MIC_CHANNEL = int(os.environ.get("JASPER_CHIP_AEC_MIC_CHANNEL", "0"))
 
 
 class _Stop:
@@ -59,7 +61,19 @@ class _Stop:
         self.flag = True
 
 
-def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
+def _delay_mono_chunk(
+    chunk: np.ndarray,
+    delay_buffer: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    if delay_buffer is None or delay_buffer.size == 0:
+        return chunk, delay_buffer
+    combined = np.concatenate((delay_buffer, chunk))
+    delayed = combined[: chunk.size].copy()
+    next_buffer = combined[chunk.size :].copy()
+    return delayed, next_buffer
+
+
+def reference_feeder(stop: _Stop, source: str, chip: str, ref_delay_ms: float = 0.0) -> None:
     """Pump music chain into chip USB-IN at 16 kHz stereo S16_LE.
 
     Trips ``stop`` on any failure so the main loop exits and the
@@ -69,6 +83,8 @@ def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
     src: alsaaudio.PCM | None = None
     dst: alsaaudio.PCM | None = None
     try:
+        delay_samples = max(0, int(round(ref_delay_ms * RATE / 1000.0)))
+        delay_buffer = np.zeros(delay_samples, dtype=np.int16) if delay_samples else None
         try:
             src = alsaaudio.PCM(
                 type=alsaaudio.PCM_CAPTURE,
@@ -93,7 +109,13 @@ def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
             stop.trip()
             return
 
-        LOG.info("ref feeder: %s -> %s @ 16k stereo S16_LE", source, chip)
+        LOG.info(
+            "ref feeder: %s -> %s @ 16k stereo S16_LE ref_delay_ms=%.2f ref_delay_samples=%d",
+            source,
+            chip,
+            ref_delay_ms,
+            delay_samples,
+        )
 
         frames = 0
         underruns = 0
@@ -111,9 +133,10 @@ def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
             # Mix L+R to mono, then duplicate to both channels (chip uses
             # L only, R duplicated matches the endpoint descriptor cleanly).
             mixed = ((stereo[0::2].astype(np.int32) + stereo[1::2].astype(np.int32)) // 2).astype(np.int16)
-            out = np.empty(mixed.size * 2, dtype=np.int16)
-            out[0::2] = mixed
-            out[1::2] = mixed
+            delayed, delay_buffer = _delay_mono_chunk(mixed, delay_buffer)
+            out = np.empty(delayed.size * 2, dtype=np.int16)
+            out[0::2] = delayed
+            out[1::2] = delayed
             try:
                 dst.write(out.tobytes())
             except alsaaudio.ALSAAudioError as e:
@@ -127,9 +150,15 @@ def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
             frames += mixed.size
             if time.monotonic() >= next_log:
                 rms = float(np.sqrt(np.mean(mixed.astype(np.float32) ** 2)))
+                out_rms = float(np.sqrt(np.mean(delayed.astype(np.float32) ** 2))) if delayed.size else 0.0
                 LOG.info(
-                    "ref feeder: %d frames (%.0fs) RMS=%.0f underruns=%d",
-                    frames, frames / RATE, rms, underruns,
+                    "ref feeder: %d frames (%.0fs) RMS=%.0f out_RMS=%.0f underruns=%d ref_delay_samples=%d",
+                    frames,
+                    frames / RATE,
+                    rms,
+                    out_rms,
+                    underruns,
+                    delay_samples,
                 )
                 next_log = time.monotonic() + 5
     except Exception:
@@ -155,8 +184,8 @@ def reference_feeder(stop: _Stop, source: str, chip: str) -> None:
         LOG.info("ref feeder: stopped")
 
 
-def udp_mic_pump(stop: _Stop, chip: str) -> None:
-    """Pump chip ch1 to UDP 127.0.0.1:9876 as 16 kHz mono S16_LE.
+def udp_mic_pump(stop: _Stop, chip: str, mic_channel: int) -> None:
+    """Pump selected chip channel to UDP 127.0.0.1:9876 as 16 kHz mono S16_LE.
 
     Trips ``stop`` on any failure so the main loop exits cleanly
     instead of hanging with a dead thread.
@@ -180,7 +209,12 @@ def udp_mic_pump(stop: _Stop, chip: str) -> None:
             return
 
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        LOG.info("mic pump: %s ch%d -> udp://%s:%d", chip, MIC_CHANNEL, *UDP_TARGET)
+        if mic_channel < 0 or mic_channel >= 6:
+            LOG.error("mic pump invalid channel: %d (expected 0..5)", mic_channel)
+            stop.trip()
+            return
+
+        LOG.info("mic pump: %s ch%d -> udp://%s:%d", chip, mic_channel, *UDP_TARGET)
 
         frames = 0
         next_log = time.monotonic() + 5
@@ -194,8 +228,8 @@ def udp_mic_pump(stop: _Stop, chip: str) -> None:
             if length <= 0:
                 continue
             multi = np.frombuffer(data, dtype=np.int16)
-            # 6-channel interleaved → take channel MIC_CHANNEL.
-            ch = multi[MIC_CHANNEL::6].tobytes()
+            # 6-channel interleaved → take the selected processed channel.
+            ch = multi[mic_channel::6].tobytes()
             try:
                 sock.sendto(ch, UDP_TARGET)
             except OSError as e:
@@ -205,7 +239,7 @@ def udp_mic_pump(stop: _Stop, chip: str) -> None:
             if time.monotonic() >= next_log:
                 mono = np.frombuffer(ch, dtype=np.int16)
                 rms = float(np.sqrt(np.mean(mono.astype(np.float32) ** 2))) if mono.size else 0.0
-                LOG.info("mic pump: %d frames (%.0fs) ch%d RMS=%.0f", frames, frames / RATE, MIC_CHANNEL, rms)
+                LOG.info("mic pump: %d frames (%.0fs) ch%d RMS=%.0f", frames, frames / RATE, mic_channel, rms)
                 next_log = time.monotonic() + 5
     except Exception:
         # See reference_feeder for why we catch broad Exception here.
@@ -229,6 +263,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default=SOURCE_DEVICE)
     parser.add_argument("--chip", default=CHIP_DEVICE)
+    parser.add_argument(
+        "--ref-delay-ms",
+        type=float,
+        default=DEFAULT_REF_DELAY_MS,
+        help=(
+            "delay the reference sent to XVF3800 USB-IN before chip AEC; "
+            "test-only compensation for external speaker-path latency"
+        ),
+    )
+    parser.add_argument(
+        "--mic-channel",
+        type=int,
+        default=DEFAULT_MIC_CHANNEL,
+        help="chip USB capture channel to emit on udp://127.0.0.1:9876 (default: 0, conference)",
+    )
     parser.add_argument("--ref-only", action="store_true", help="skip UDP mic pump thread")
     parser.add_argument("--mic-only", action="store_true", help="skip reference feeder thread")
     parser.add_argument("--verbose", "-v", action="store_true")
@@ -244,11 +293,21 @@ def main() -> int:
 
     threads = []
     if not args.mic_only:
-        t = threading.Thread(target=reference_feeder, args=(stop, args.source, args.chip), name="ref-feeder", daemon=True)
+        t = threading.Thread(
+            target=reference_feeder,
+            args=(stop, args.source, args.chip, args.ref_delay_ms),
+            name="ref-feeder",
+            daemon=True,
+        )
         t.start()
         threads.append(t)
     if not args.ref_only:
-        t = threading.Thread(target=udp_mic_pump, args=(stop, args.chip), name="mic-pump", daemon=True)
+        t = threading.Thread(
+            target=udp_mic_pump,
+            args=(stop, args.chip, args.mic_channel),
+            name="mic-pump",
+            daemon=True,
+        )
         t.start()
         threads.append(t)
 

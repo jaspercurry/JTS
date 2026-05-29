@@ -1,41 +1,79 @@
 # Chip-AEC experiment — conclusive test plan
 
-**Status: shelved indefinitely; topology snapshot is historical.**
-This investigation has been put on the sidelines — no active work, not
-on the roadmap. The topology diagram below records the 2026-05-23
-dmix-era experiment shape, not the current 2026-05-26 fan-in production
-topology. Current production wiring lives in
-[`docs/audio-paths.md`](audio-paths.md). Re-verify and update this
-experiment before running it again. The four
+**Status: 2026-05-29 positive lab result; not productionized.**
+The experiment is no longer a shelved negative. A same-day lab pass
+proved that the XVF3800's on-chip AEC can produce useful cancellation
+in JTS's external-DAC topology when the chip receives a clean USB-IN
+far-end reference. The current production path is still the WebRTC
+AEC3 bridge; chip AEC is **not** yet wired into the wake-corpus
+recorder or production `jasper-voice` flow. Treat this doc as the
+canonical record of the finding and the next-productionization plan.
+
+The topology diagram below still records the original 2026-05-23
+dmix-era experiment shape, not the current 2026-05-26 fan-in /
+outputd production topology. Current production wiring lives in
+[`docs/audio-paths.md`](audio-paths.md). The five
 `scripts/chip-aec-*.sh` scripts + `jasper/chip_aec_experiment.py` +
-this doc ship to `main` so the infrastructure isn't lost if we ever
-revisit the question, but production state is untouched until someone
-explicitly opts in via [`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.sh);
+this doc remain lab infrastructure: production state is untouched until
+someone explicitly opts in via
+[`scripts/chip-aec-setup.sh`](../scripts/chip-aec-setup.sh), and
 [`scripts/chip-aec-teardown.sh`](../scripts/chip-aec-teardown.sh)
 fully reverts.
 
-**2026-05-29 temporary pre-corpus gate.** Jasper wants one bounded
-Option D pass before recording the gold wake corpus, because a positive
-chip-AEC result would change which AEC leg deserves training data. This
-does **not** unshelve chip AEC as a roadmap item. It is a timeboxed
-feasibility gate: verify convergence, capture the four A/B WAVs, decide,
-teardown, then either proceed with the software-AEC corpus or pause to
-design a chip-AEC corpus leg.
+**2026-05-29 headline result.** Option D is viable, with two important
+corrections to the earlier mental model:
 
-**Why shelved.** The software AEC3 bridge (BEST_A engine, ~85 MB
-RAM, ~3% of one Pi 5 core, runs on **6-channel XVF firmware only**)
-is the production-good-enough path today — BEST_A specifically
-rescues wake-rate on hard cells like whisper-music that the
-prior tuning silently missed. Resolving the chip-AEC convergence
-question takes time and ties up the speaker for hours of focused
-work; the expected upside doesn't justify the cost while AEC3 is
-working. The "Architecture is fixed; swap the engine, not the
-topology" rule in [AGENTS.md](../AGENTS.md) reflects that priority
-order. If AEC3 ever plateaus and chip-AEC looks worth re-examining,
-the infrastructure is here — start by re-reading this doc, then
-the rest of HANDOFF-aec.md Option D, then run pre-flight via
-`bash scripts/chip-aec-setup.sh` (which fails loudly if the
-topology has drifted further). Until then: **don't run it.**
+1. The scary ~40 ppm drift was a test-harness artifact from feeding the
+   chip reference through `plug:jasper_capture`. When the same source
+   buffer was played directly to both the external DAC and the XVF3800
+   USB-IN endpoint, the DAC→air→mic reference drift collapsed to about
+   `~1 ppm` over a 15-minute run. That means the split-DAC topology is
+   not inherently doomed by clock drift when JTS owns the source fanout.
+2. The useful output is the chip's **ASR output path** with fixed gated
+   beams around the room-facing direction, not the early ch0-only
+   hypothesis. The best tested setup routes category 7 with
+   `AEC_ASROUTONOFF=1`, fixed beams at `150°` and `210°`, gating on,
+   and `AEC_AECEMPHASISONOFF=2` (`on_eq`). The `150°` virtual beam was
+   the clear listening and metric winner in Jasper's room orientation.
+
+**Best lab configuration so far.** With the XVF3800 oriented such that
+`0°` is the USB-C side and `180°` points into the room:
+
+```text
+SHF_BYPASS=0
+AUDIO_MGR_SYS_DELAY=114              # only for the old delayed-feeder harness
+AEC_ASROUTONOFF=1
+AEC_ASROUTGAIN=1.0
+AEC_FIXEDBEAMSONOFF=1
+AEC_FIXEDBEAMSGATING=1
+AEC_FIXEDBEAMSAZIMUTH_VALUES=[2.61799, 3.66519]  # 150°, 210°
+AEC_FIXEDBEAMSELEVATION_VALUES=[0.0, 0.0]
+AEC_AECEMPHASISONOFF=2               # on_eq; best strength/edge sweep result
+AEC_FAR_EXTGAIN=0.0                  # +3/+6 dB were worse
+AUDIO_MGR_OP_L=[7, 0]
+AUDIO_MGR_OP_R=[7, 1]
+```
+
+Notes:
+- `150°` and `210°` are **virtual beam directions**, not physical
+  microphones. The chip has four physical mics; the beamformer combines
+  them to listen in chosen directions.
+- `150°` likely won because Jasper's voice/direct-room path was not
+  symmetrical: that beam caught more near speech and/or less speaker
+  reflection than `210°`. This is exactly the spatial leverage we
+  hoped the chip beamformer would provide.
+- `AEC_FAR_EXTGAIN=+3 dB` and `+6 dB` were worse than `0 dB` in the
+  strength sweep. Do not interpret "more AEC" as "more far-end gain."
+- The old `--ref-delay-ms 180` + `AUDIO_MGR_SYS_DELAY=114` alignment
+  was only needed for the **old feeder harness**. The production-shaped
+  path should fan one source buffer directly to the DAC and XVF3800
+  USB-IN reference so the long feeder delay/drift path disappears.
+
+**Production implication.** Do not collect a final gold corpus against
+chip AEC until the clean direct-fanout path exists and the recorder can
+capture this chip leg intentionally. But the conclusion changed: chip
+AEC is now a serious candidate leg for the wake corpus, not a dismissed
+side quest.
 
 > ⚠️ **Policy carve-out.** [AGENTS.md](../AGENTS.md) "AEC bridge —
 > reconciler toggle" says *"Architecture is fixed; swap the engine,
@@ -43,7 +81,7 @@ topology has drifted further). Until then: **don't run it.**
 > and "custom XVF firmware" as paths agents must not propose.
 > [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Hardware AEC, revisited"
 > repeats this as `Policy status: rejected by name`. **This doc and
-> the four `scripts/chip-aec-*.sh` scripts are the user-authorized
+> the five `scripts/chip-aec-*.sh` scripts are the user-authorized
 > exception** — narrow, scoped to empirical resolution of
 > [HANDOFF-aec.md](HANDOFF-aec.md) Option D ("Chip-AEC with USB-in
 > reference topology"). The carve-out does not re-open the rejected
@@ -52,21 +90,116 @@ topology has drifted further). Until then: **don't run it.**
 > question outside this infrastructure. Agents working on AEC
 > remain bound by the policy for everything else.
 
-**Goal:** Definitively answer whether the XVF3800's hardware AEC can
-produce useful echo cancellation in JTS's external-DAC topology when we
-feed music to the chip's USB-IN as the AEC reference signal. The 2025
-investigation that concluded "≤2 dB attenuation, won't converge" was
-done in the dongle topology with no USB-IN reference at all — the chip
-was running blind. The 2026-05-19 `SHF_BYPASS=0` wake-rate test (15%)
-also ran without USB-IN reference. **Neither result applies to the
-topology being tested here.** See [HANDOFF-aec.md option D](HANDOFF-aec.md)
-for the deeper rationale.
+**Goal:** Determine whether the XVF3800's hardware AEC can produce
+useful echo cancellation in JTS's external-DAC topology when we feed
+music to the chip's USB-IN as the AEC reference signal. The answer as
+of 2026-05-29 is **yes in lab conditions**, provided the reference is
+fed by a clean source fanout and the output uses the ASR fixed-beam
+path rather than the old default ch1 assumptions.
 
-**Decisive signal:** `AEC_AECCONVERGED` chip parameter. If the chip's
-adaptive filter converges (flag flips to 1) during steady-state music
-playback, the topology works. If it doesn't converge after sensible
-`AUDIO_MGR_SYS_DELAY` tuning, chip-AEC is dead in this topology and the
-question is closed.
+The 2025 investigation that concluded "≤2 dB attenuation, won't
+converge" was done in the dongle topology with no USB-IN reference at
+all — the chip was running blind. The 2026-05-19 `SHF_BYPASS=0`
+wake-rate test (15%) also ran without USB-IN reference. **Neither
+result applies to the topology that succeeded here.** See
+[HANDOFF-aec.md option D](HANDOFF-aec.md) for the deeper rationale.
+
+**Decisive signals:** no single chip flag was enough. The
+`AEC_AECCONVERGED` flag did flip to `[1]` in later lab state checks, but
+the more reliable truth tests were:
+
+- direct A/B audio: same source buffer to DAC + XVF3800 reference,
+  `SHF_BYPASS=0` vs bypassed;
+- reference-envelope correlation against the captured far-end tap;
+- Jasper's ear on double-talk/music segments, because wake-word
+  usefulness depends on speech shape surviving, not just residual
+  music energy disappearing.
+
+---
+
+## 2026-05-29 findings
+
+### 1. The drift problem was the feeder, not the hardware topology
+
+The first same-day tests measured roughly `37-46 ppm` ref→air→mic drift
+and made the split-DAC topology look doomed. A later dual-playback
+harness invalidated that conclusion: when one in-memory source buffer
+was played directly to both the external DAC and the XVF3800 USB-IN
+reference endpoint, the drift collapsed to about `~1 ppm` over a
+15-minute run. That points at the old `plug:jasper_capture` feeder path
+as the drift source, not the Apple DAC + XVF3800 being inherently
+clock-incoherent.
+
+Production-shaped implication: do **not** build a large Rust
+rate-matcher for this path yet. First build the direct source fanout:
+one decoded/rendered source stream duplicated to the physical DAC and
+the XVF3800 USB-IN reference endpoint. The old feeder is still useful
+for lab sweeps, but it is not the architecture to ship.
+
+### 2. The chip AEC core works
+
+With the direct source fanout, controlled A/B captures showed about
+`14.5 dB` far-end reduction with chip AEC on versus bypassed. A
+double-talk capture was also promising: the AEC-on segment reduced
+reference correlation while preserving more speech than the aggressively
+post-processed category-6 beam path.
+
+This supersedes the older "≤2 dB" chip-AEC rejection. That rejection was
+true for the old topology without a proper USB-IN reference; it is not
+true for Option D with a real reference.
+
+### 3. Category 7 ASR output beat category 6 processed beam
+
+The strongest output path was not the generic processed beam. The useful
+route was category 7 with `AEC_ASROUTONOFF=1`, which makes category 7
+carry ASR beam outputs instead of per-mic AEC residuals. In practical
+terms:
+
+- `AEC_ASROUTONOFF=0`: category 7 is the AEC core residual per mic
+  source. Useful for diagnostics.
+- `AEC_ASROUTONOFF=1`: category 7 is ASR beam output. This was the
+  best wake-word-shaped signal in the listening tests.
+- Category 6 / regular processed beam sounded over-processed in this
+  room and should not be the first candidate for wake-corpus capture.
+
+### 4. Fixed gated beams around 180° are the current winner
+
+Jasper rotated the XVF3800 so the USB-C port points away from him. Per
+the Seeed/XMOS direction convention used here, `0°` is the USB-C side
+and `180°` is the opposite side. Fixed beams around that room-facing
+direction outperformed auto/free-running beams:
+
+| Test | Result |
+|---|---|
+| Auto/free-running ASR beams | Worse reference correlation; unstable listening quality |
+| Fixed `170°/190°` gated | Too narrow; did not improve enough |
+| Fixed `160°/200°` gated | Good, but not best |
+| Fixed `150°/210°` gated | Best balance; `150°` was the standout ear winner |
+| Fixed `120°/240°` gated | Strong cancellation but thinner / more attenuated |
+
+The best `150°` beam had the lowest far-end correlation while keeping
+voice-band energy intact. The likely reason is room geometry: Jasper's
+voice and the speaker/wall reflections are not symmetric, so the `150°`
+virtual beam happens to aim more at direct near speech and/or less at a
+dominant echo/reflection path.
+
+### 5. Strength/edge tuning: `on_eq` helped, far-end gain did not
+
+Final four-way strength sweep, all with fixed gated `150°/210°` ASR
+beams:
+
+| Variant | Finding |
+|---|---|
+| Baseline: `AEC_AECEMPHASISONOFF=1`, `AEC_FAR_EXTGAIN=0 dB` | Good previous winner |
+| `AEC_FAR_EXTGAIN=+3 dB` | Worse; more reference/music leaked through |
+| `AEC_FAR_EXTGAIN=+6 dB` | Worse again; do not pursue "turn it up" this way |
+| `AEC_AECEMPHASISONOFF=2` (`on_eq`), `AEC_FAR_EXTGAIN=0 dB` | Best metric result and current recommendation |
+
+For the final sweep, `test-04-emphasis-on-eq / 150°` had the lowest
+reference correlation (`+0.158`) while keeping voice-band energy roughly
+flat versus raw (`-0.2 dB`). The `210°` sibling beam also improved but
+was not as good. Current candidate: **ASR fixed gated `150°`, with
+`on_eq` emphasis, plus optional `210°` as a secondary/backup beam.**
 
 ---
 
@@ -99,7 +232,7 @@ snd-aloop kernel    hw:Loopback,0,sub0 ─cross-wired→ hw:Loopback,1,sub0
                                             │              │ (AEC processes ref vs mic internally)
                                             ▼              ▼
                                      ─────── speaker ────  6-ch mic capture
-                                            ▲              │  ch1 = AEC'd ASR beam
+                                            ▲              │  ch0 = conference; ch1 = ASR
                                             │              ▼
                                        airborne     udp://127.0.0.1:9876  ← pumped by chip-aec-experiment
                                                           │
@@ -147,9 +280,12 @@ Key differences from production:
     `hw:CARD=Array,DEV=0` at 16 kHz S16_LE (the only rate/format the
     chip's USB-IN endpoint advertises — verified empirically and via
     XMOS docs, see [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §1)
-  - **UDP mic pump**: reads chip's 6-ch mic capture, extracts ch1,
-    sends to `udp://127.0.0.1:9876` (same UDP port the WebRTC bridge
-    normally writes to → no `jasper-voice` changes for the AEC ON leg)
+  - **UDP mic pump**: reads chip's 6-ch mic capture, extracts the
+    selected processed channel (default `ch0` for this chip-AEC
+    experiment; override with `MIC_CHANNEL` /
+    `JASPER_CHIP_AEC_MIC_CHANNEL`), and sends it to
+    `udp://127.0.0.1:9876` (same UDP port the WebRTC bridge normally
+    writes to → no `jasper-voice` changes for the AEC ON leg)
 
 ---
 
@@ -159,6 +295,7 @@ Key differences from production:
 |---|---|
 | `jasper/chip_aec_experiment.py` | The daemon (feeder + UDP pump) |
 | `scripts/chip-aec-setup.sh` | Phase 1: deploy + start daemon |
+| `scripts/chip-aec-baseline-check.sh` | Phase 2: route sanity + repeatable delay baseline |
 | `scripts/chip-aec-teardown.sh` | Revert everything to production state |
 | `scripts/chip-aec-poll-convergence.sh` | Phase 3: poll `AEC_AECCONVERGED` |
 | `scripts/chip-aec-capture-comparison.sh` | Phase 4: 4-file ear test |
@@ -177,6 +314,14 @@ mute, etc. all untouched.
 
 ## How to run
 
+The checked-in scripts are the **old feeder-harness gate**. They remain
+useful for route sanity and quick regression checks, but they do not
+implement the production-shaped direct source fanout that made the
+2026-05-29 result strong. Use them only with that limitation in mind.
+For the next serious pass, build/run a direct fanout harness first:
+one source buffer to the external DAC and to XVF3800 USB-IN, then capture
+category-7 ASR fixed-beam output.
+
 ```sh
 # 1. Run from a current checkout after re-reading the historical warning
 #    at the top of this file and reviewing the scripts below.
@@ -194,24 +339,36 @@ bash scripts/chip-aec-setup.sh
 # 3. Start music playing through the speaker at production volume.
 #    AirPlay or Spotify or BT — any source. Let it play continuously.
 
-# 4. Verify the chip AEC converges within ~60 s
-bash scripts/chip-aec-poll-convergence.sh
-# Pass criterion: AEC_AECCONVERGED flips to [1]
-# If it doesn't flip after sensible SYS_DELAY sweep, conclusive negative.
+# 4. Measure the baseline before judging chip AEC.
+#    This temporarily switches the daemon to ref-only, bypasses chip AEC,
+#    injects a short chirp train through correction_substream by default,
+#    captures reference + chip mic three times, and estimates a first
+#    AUDIO_MGR_SYS_DELAY candidate by cross-correlation. It restores
+#    SHF_BYPASS=0 and the full daemon before exiting.
+bash scripts/chip-aec-baseline-check.sh
+# If the reported candidate delay is stable and within the firmware's
+# read-back-confirmed range, apply it:
+# ssh pi@jts.local 'sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY --values <samples>'
 
-# 5. Capture the 4 audio files for ear-test A/B
+# 5. Verify the chip AEC convergence flag within ~60 s
+bash scripts/chip-aec-poll-convergence.sh
+# Positive signal: AEC_AECCONVERGED flips to [1].
+# Caveat: the flag was not the only truth source on 2026-05-29.
+# Still run an A/B capture + metrics/ear test.
+
+# 6. Capture the 4 audio files for ear-test A/B
 bash scripts/chip-aec-capture-comparison.sh
 # Walk through the prompts (start music, mute music, speak, etc.)
 # Files land under captures/chip-aec-experiment/<timestamp>/
 
-# 6. Listen with your ears. The ear test is the truth test.
+# 7. Listen with your ears. The ear test is the truth test.
 #    Recommended: open all 4 .wav files in Audacity side-by-side, or use
 #    sox -m to subtract two recordings and listen to the residual.
 
-# 7. Revert to production (WebRTC AEC bridge)
+# 8. Revert to production (WebRTC AEC bridge)
 bash scripts/chip-aec-teardown.sh
 
-# 8. Verify production recovered before recording corpus:
+# 9. Verify production recovered before recording corpus:
 #    - jasper-aec-bridge.service active
 #    - jasper-voice.service active
 #    - SHF_BYPASS back to 1
@@ -220,14 +377,53 @@ bash scripts/chip-aec-teardown.sh
 
 ---
 
+## Baseline gate before convergence
+
+`scripts/chip-aec-baseline-check.sh` exists so the experiment does not
+start by guessing `AUDIO_MGR_SYS_DELAY`. It is still a quick lab gate,
+not a production calibrator.
+
+By default the gate injects a short chirp train through
+`correction_substream`, the same dedicated fan-in lane used by correction
+tests. That gives the cross-correlation a controlled calibration signal
+while still exercising the normal fan-in → CamillaDSP → outputd → DAC →
+speaker → mic path. Set `STIMULUS=none` only when intentionally testing
+with ambient music alone; music proved too ambiguous on 2026-05-29 and
+picked different room-reflection peaks across repeats.
+
+What it verifies:
+- The experiment daemon is alive and the chip USB-IN playback endpoint
+  is active.
+- `plug:jasper_capture` carries non-silent reference audio while music
+  plays.
+- With `SHF_BYPASS=1`, the chip mic actually hears the speaker echo.
+- Repeated ref→mic cross-correlation measurements land close enough
+  together to provide a credible first `AUDIO_MGR_SYS_DELAY` candidate.
+
+Failure interpretation:
+- Near-silent reference: routing/music is wrong; do not poll
+  `AEC_AECCONVERGED`.
+- Weak mic correlation: the mic capture is not seeing a useful copy of
+  the speaker output; re-run with broader/louder music before judging.
+- Large lag spread between repeats: the path is unstable enough that a
+  short convergence result would be suspect. Fix or document before
+  spending corpus time.
+- Stable delay outside the firmware's confirmed `AUDIO_MGR_SYS_DELAY`
+  range: add a test-only upstream reference delay with
+  `REF_DELAY_MS=<ms>` / `--ref-delay-ms <ms>` and re-run. If the
+  residual still cannot land inside `[-64, +256]`, stop; the chip
+  cannot be aligned far enough with this firmware/topology.
+
+---
+
 ## What to listen for
 
 | File | What it is | What should it sound like |
 |---|---|---|
 | `01_reference.wav` | The signal we feed to chip USB-IN | Like the music you played — confirms the feeder is working |
-| `02_mic_aec_off.wav` | Chip ch1 with `SHF_BYPASS=1` | Music dominates, similar to current WebRTC bridge's *input* |
-| `03_mic_aec_on.wav` | Chip ch1 with `SHF_BYPASS=0` | **Music substantially reduced** if chip AEC is working |
-| `04_speech_only.wav` | Chip ch1, AEC on, no music | Your voice clearly, **not** muffled/robotic |
+| `02_mic_aec_off.wav` | Selected chip channel with `SHF_BYPASS=1` | Music dominates, similar to current WebRTC bridge's *input* |
+| `03_mic_aec_on.wav` | Selected chip channel with `SHF_BYPASS=0` | **Music substantially reduced** if chip AEC is working |
+| `04_speech_only.wav` | Selected chip channel, AEC on, no music | Your voice clearly, **not** muffled/robotic |
 
 The decisive comparison is **02 vs 03**:
 - 03 noticeably quieter on music than 02: ✅ chip AEC is doing useful work
@@ -244,25 +440,24 @@ The sanity comparison is **04**:
 ## Decision tree
 
 ```
-AEC_AECCONVERGED flips to 1?
-├── YES → run ear test → 03 noticeably quieter than 02?
-│         ├── YES → 04 voice quality OK?
-│         │         ├── YES → ✅ chip-AEC works. Scope productionization
-│         │         │         (Phase 5 wake-rate sweep, then CamillaDSP
-│         │         │         multi-output, reconciler mode, 2-ch firmware
-│         │         │         migration, jasper-doctor convergence check)
-│         │         └── NO → flag in HANDOFF-aec.md as "chip AEC converges
-│         │                  but residual stage damages speech — needs chip
-│         │                  param tuning". Maybe AUDIO_MGR_AEC_RER_THRESHOLD
-│         │                  or similar. Open question.
-│         └── NO → 03 doesn't cancel meaningfully despite convergence flag.
-│                  Surprising. Check ref signal level (REF_GAIN), maybe
-│                  EXTGAIN mirroring is still sabotaging. Update HANDOFF
-│                  with finding.
-└── NO (after sensible SYS_DELAY sweep ±64 around the measured value)
-         → CONCLUSIVE NEGATIVE. Update HANDOFF-aec.md option D as closed.
-           The chip cannot handle the JTS topology even with USB-IN
-           reference. WebRTC AEC3 bridge remains the production path.
+Need a production/corpus leg?
+├── NO → Keep WebRTC AEC3 as production default; preserve this doc.
+└── YES → first build direct source fanout:
+         one decoded/rendered source → DAC + XVF3800 USB-IN reference
+         ├── Long drift check still ~1 ppm?
+         │   ├── NO → revisit timing/rate matching before corpus work.
+         │   └── YES → enable chip SHF and route category 7 ASR outputs.
+         │
+         ├── Capture ASR fixed gated 150°/210° with on_eq emphasis.
+         │   ├── 150° still clearly best → use it as primary chip-AEC leg.
+         │   └── 210° adds saves / better direction coverage → keep as
+         │       secondary or fusion candidate.
+         │
+         └── Wake-corpus decision:
+             ├── Recorder can capture chip leg cleanly and restore state
+             │   → include chip-AEC pilot leg in a fresh corpus session.
+             └── No clean recorder integration yet
+                 → do not spend gold corpus time on ad-hoc lab harness WAVs.
 ```
 
 ---
@@ -383,11 +578,10 @@ they survive future doc edits (per [AGENTS.md](../AGENTS.md)
 
 ---
 
-Last reviewed as historical: 2026-05-28. Last operational verification:
-2026-05-23 (rebased onto then-current `main`; drift fixes landed for
-masking the full AEC service chain, capture-comparison EBUSY collision,
-dual/triple-stream env handling, and the wake-event corpus marker).
-2026-05-28 added the 2026-05-29 pre-corpus gate and fan-in-era
-preflight notes, but did **not** re-run the experiment. Re-verify before
-running: this doc intentionally preserves a dmix-era experiment snapshot,
-not current production topology.
+Last operational verification: 2026-05-29 (live Pi lab pass found the
+old feeder-path drift was a harness artifact; direct source fanout held
+about `~1 ppm` over 15 minutes; controlled direct A/B showed useful chip
+AEC reduction; ASR fixed gated `150°/210°` with `AEC_AECEMPHASISONOFF=2`
+was the best tested wake-shaped output, with `150°` the standout beam).
+This doc still preserves a dmix-era experiment snapshot in places; current
+production topology lives in `docs/audio-paths.md`.

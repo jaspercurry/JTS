@@ -11,10 +11,10 @@ echo "=== chip-aec-experiment: teardown (revert to WebRTC bridge) ==="
 echo
 
 echo "==> Stopping experiment daemon"
-ssh "${PI_USER}@${PI_HOST}" 'sudo pkill -f "jasper.chip_aec_experiment" 2>/dev/null || true; sleep 0.5
-if pgrep -f "jasper.chip_aec_experiment" > /dev/null; then
+ssh "${PI_USER}@${PI_HOST}" 'sudo pkill -f "[j]asper.chip_aec_experiment" 2>/dev/null || true; sleep 0.5
+if pgrep -f "[j]asper.chip_aec_experiment" > /dev/null; then
   echo "  daemon still running, sending SIGKILL"
-  sudo pkill -9 -f "jasper.chip_aec_experiment" || true
+  sudo pkill -9 -f "[j]asper.chip_aec_experiment" || true
   sleep 0.5
 fi
 echo "  daemon stopped"'
@@ -35,7 +35,7 @@ ssh "${PI_USER}@${PI_HOST}" 'set -e
 # AEC_HPFONOFF: read user override if set, else default 2 (125 Hz).
 HPF=2
 if [[ -f /etc/jasper/jasper.env ]]; then
-  hpf_hz=$(grep -E "^JASPER_AEC_CHIP_HPF_HZ=" /etc/jasper/jasper.env | tail -1 | cut -d= -f2- | tr -d "\"" || true)
+  hpf_hz=$(sudo grep -E "^JASPER_AEC_CHIP_HPF_HZ=" /etc/jasper/jasper.env | tail -1 | cut -d= -f2- | tr -d "\"" || true)
   case "$hpf_hz" in
     "")        HPF=2 ;;   # unset → default 125 Hz
     "off"|"0") HPF=0 ;;
@@ -45,13 +45,13 @@ if [[ -f /etc/jasper/jasper.env ]]; then
     *)         echo "  WARN: unknown JASPER_AEC_CHIP_HPF_HZ=$hpf_hz, leaving HPF=2"; HPF=2 ;;
   esac
 fi
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS 1 > /dev/null
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AEC_HPFONOFF "$HPF" > /dev/null
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host SHF_BYPASS --values 1 > /dev/null
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AEC_HPFONOFF --values "$HPF" > /dev/null
 # AUDIO_MGR_SYS_DELAY is no longer written by production init (the
 # write was removed pre-branch); restoring 12 puts the chip at a
 # known-quiet value rather than "what boot leaves". Reconciler chain
 # below will not overwrite this since aec_init no longer touches it.
-sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY 12 > /dev/null
+sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host AUDIO_MGR_SYS_DELAY --values 12 > /dev/null
 sudo amixer -q -c Array sset "PCM",0 60 unmute || true
 sudo amixer -q -c Array sset "PCM",1 60 unmute || true
 echo "  restored:"
