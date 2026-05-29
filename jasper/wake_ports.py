@@ -2,22 +2,26 @@
 from __future__ import annotations
 
 from jasper.aec_sweep import AEC3_SWEEP_VARIANTS
+from jasper import wake_legs
 
-# Match jasper.cli.aec_bridge's default emit ports.
-DEFAULT_AEC_ON_PORT = 9876
-DEFAULT_AEC_OFF_PORT = 9877
-DEFAULT_AEC_DTLN_PORT = 9878
+# Wire ports now have a single definition in jasper.wake_legs.REGISTRY
+# (which matches jasper.cli.aec_bridge's OUT_PORT* emit constants). These
+# module constants are kept as the stable import surface that build_ports()
+# and its callers (web/__main__, wake_corpus_setup, cli/wake_enroll) use.
+DEFAULT_AEC_ON_PORT = wake_legs.by_token("on").udp_port
+DEFAULT_AEC_OFF_PORT = wake_legs.by_token("off").udp_port
+DEFAULT_AEC_DTLN_PORT = wake_legs.by_token("dtln").udp_port
 
 # Truly-raw mic 0 (chip channel 2; no chip DSP applied). The bridge
 # always emits here; consumers opt in by binding the port.
-DEFAULT_AEC_RAW0_PORT = 9879
+DEFAULT_AEC_RAW0_PORT = wake_legs.by_token("raw0").udp_port
 
 # Corpus-only experiment legs emitted by jasper-aec-bridge when
 # explicitly enabled. These are never production wake-detection inputs.
-DEFAULT_AEC_REF_PORT = 9880
-DEFAULT_AEC_USB_RAW_PORT = 9881
-DEFAULT_AEC_USB_WEBRTC_PORT = 9882
-DEFAULT_AEC_USB_DTLN_PORT = 9883
+DEFAULT_AEC_REF_PORT = wake_legs.by_token("ref").udp_port
+DEFAULT_AEC_USB_RAW_PORT = wake_legs.by_token("usb_raw").udp_port
+DEFAULT_AEC_USB_WEBRTC_PORT = wake_legs.by_token("usb_webrtc").udp_port
+DEFAULT_AEC_USB_DTLN_PORT = wake_legs.by_token("usb_dtln").udp_port
 
 # Corpus-only parallel AEC3 tuning variants. Baseline stays on 9876;
 # these are extra same-utterance comparison legs.
