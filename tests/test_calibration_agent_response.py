@@ -66,8 +66,33 @@ def test_validate_advisor_response_accepts_ephemeral_preference_action(
     assert audition["side_effect"] == "ephemeral_audio_state"
     assert audition["execution_ready"] is True
     assert audition["requires_user_confirmation"] is False
+    assert set(audition["profile"]) == {
+        "enabled",
+        "curve_id",
+        "simple_eq",
+        "parametric_bands",
+    }
     assert audition["profile"]["curve_id"] == "harman"
     assert audition["headroom_db"] > 0.0
+
+
+def test_validate_advisor_response_strips_model_profile_identity(
+    tmp_path: Path,
+):
+    raw = _valid_response()
+    profile = raw["action_plan"][1]["profile"]
+    profile["profile_id"] = "custom_deadbeefcafe"
+    profile["profile_name"] = "Model controlled identity"
+    profile["updated_at"] = "1970-01-01T00:00:00+00:00"
+
+    result = response.validate_advisor_response(raw, advisor_context=_context(tmp_path))
+
+    assert result["accepted"] is True
+    sanitized = result["validated_action_plan"][1]["profile"]
+    assert sanitized["curve_id"] == "harman"
+    assert "profile_id" not in sanitized
+    assert "profile_name" not in sanitized
+    assert "updated_at" not in sanitized
 
 
 def test_validate_advisor_response_rejects_forbidden_model_authority(

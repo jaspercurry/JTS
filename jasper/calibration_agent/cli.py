@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from . import prompt, response, tools
+from . import actions, prompt, response, tools
 
 
 def _fmt_issue(issue: dict[str, Any]) -> str:
@@ -255,7 +255,8 @@ def render_markdown(intake: dict[str, Any]) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Read-only calibration-agent intake for a correction session bundle."
+            "Deterministic calibration-agent intake, prompt, and action substrate "
+            "for a correction session bundle."
         ),
     )
     parser.add_argument(
@@ -305,7 +306,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "mark validated persistent advisor actions as user-confirmed; "
-            "only meaningful with --validate-advisor-response"
+            "only meaningful with --validate-advisor-response or "
+            "--run-advisor-actions"
         ),
     )
     output = parser.add_mutually_exclusive_group()
@@ -331,6 +333,16 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "validate a proposed advisor response JSON against the current "
             "advisor context"
+        ),
+    )
+    output.add_argument(
+        "--run-advisor-actions",
+        type=Path,
+        metavar="PATH",
+        help=(
+            "validate a proposed advisor response JSON and run the "
+            "side-effect-free action runner; DSP executors are not wired "
+            "to this CLI"
         ),
     )
     return parser
@@ -376,6 +388,21 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(validation, indent=2, sort_keys=True))
         if not validation["accepted"]:
+            return 1
+    elif args.run_advisor_actions:
+        try:
+            raw = json.loads(args.run_advisor_actions.read_text())
+        except (OSError, json.JSONDecodeError) as e:
+            print(f"jasper-calibration-agent: invalid advisor response: {e}", file=sys.stderr)
+            return 2
+        validation = response.validate_advisor_response(
+            raw,
+            advisor_context=intake["advisor_context"],
+            user_confirmed=args.user_confirmed,
+        )
+        run = actions.run_validated_action_plan(validation)
+        print(json.dumps(run, indent=2, sort_keys=True))
+        if not validation["accepted"] or not run["accepted"]:
             return 1
     elif args.json:
         print(json.dumps(intake, indent=2, sort_keys=True))

@@ -123,6 +123,19 @@ def response_contract() -> dict[str, Any]:
             "max_q": MAX_Q,
             "curve_ids": sorted(_CURVE_IDS),
         },
+        "preference_profile_shape": {
+            "model_owned_fields": [
+                "enabled",
+                "curve_id",
+                "simple_eq",
+                "parametric_bands",
+            ],
+            "jts_owned_fields": [
+                "profile_id",
+                "profile_name",
+                "updated_at",
+            ],
+        },
         "prohibited": sorted(_PROHIBITED_KEYS),
     }
 
@@ -512,9 +525,20 @@ def _validate_profile(raw: Any, *, index: int) -> tuple[list[dict[str, Any]], di
 
     profile = SoundProfile.from_mapping(raw)
     return [], {
-        "profile": profile.to_dict(),
+        "profile": _profile_dsp_shape(profile),
         "headroom_db": estimate_headroom_db(profile),
         "sound_filter_count": len(build_sound_filters(profile)),
+    }
+
+
+def _profile_dsp_shape(profile: SoundProfile) -> dict[str, Any]:
+    """Return only the DSP shape the model is allowed to propose."""
+
+    return {
+        "enabled": profile.enabled,
+        "curve_id": profile.curve_id,
+        "simple_eq": profile.simple_eq.to_dict(),
+        "parametric_bands": [band.to_dict() for band in profile.parametric_bands],
     }
 
 
