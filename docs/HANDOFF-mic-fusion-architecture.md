@@ -234,8 +234,13 @@ def legs_for(profile: CaptureProfile, cfg: Config) -> tuple[LegSpec, ...]:
 This is the literal answer to *"design for 4 as the harder expected
 path; swaps fall out easier."* Four legs is a longer dict. Replacing
 AEC3 with chip-AEC is `legs = [CHIP_AEC, RAW, DTLN]` (drop AEC3 when
-`needs_software_reference is False`). Neither touches the fuser, the
-telemetry spine, or the consumption layer.
+`needs_software_reference is False`). Reordering or toggling
+already-registered legs touches neither the fuser, the telemetry spine,
+nor the consumption layer. Introducing a genuinely *new* leg type costs
+a bit more than the topology line: it also needs a `_LEG_DB`
+telemetry-column entry in `voice_daemon.py` and the matching additive
+`wake_events` columns (those columns are physical + irregular, so they
+can't be data-driven away — see §10's PR-plan caveat).
 
 ### 2.5 `WakeFuser` — the stable, leg-count-agnostic interface
 

@@ -40,7 +40,7 @@ from .wake_events import (
 )
 from .cues import AudioCueManager, build_cue_tts_backend
 from .vad import SpeechVAD
-from .wake_legs import by_token, wake_input_legs
+from .wake_legs import by_token
 from .camilla import CamillaController, CueDuck, Ducker
 from .config import Config
 from .watchdog import Heartbeat
@@ -1293,18 +1293,6 @@ _LEG_DB: dict[str, dict[str, str]] = {
     },
 }
 
-# Fail loud at import if a wake-input leg lacks a _LEG_DB telemetry
-# mapping. Without this, a leg added to jasper.wake_legs (and thus to
-# self._legs) but not here would raise an uncaught KeyError in the wake
-# hot path — telemetry must be fail-soft and must never block wake. Catch
-# the drift at startup, not at fire time.
-_missing_leg_db = {leg.token for leg in wake_input_legs()} - set(_LEG_DB)
-if _missing_leg_db:
-    raise RuntimeError(
-        "wake-input legs missing a _LEG_DB telemetry mapping: "
-        f"{sorted(_missing_leg_db)} (add them to _LEG_DB in voice_daemon.py)"
-    )
-
 
 class WakeLoop:
     """Mic consumer. Dispatches each primary-mic frame to either the
@@ -1530,6 +1518,18 @@ class WakeLoop:
         if mic_dtln is not None and detector_dtln is not None:
             self._legs["dtln"] = _LegRuntime(
                 by_token("dtln"), mic_dtln, detector_dtln, self._capture_ring_dtln,
+            )
+        # Fail loud at construction if a configured leg lacks a _LEG_DB
+        # telemetry mapping — otherwise it would raise an uncaught KeyError
+        # in the wake hot path (telemetry must be fail-soft, never block
+        # wake). Caught here at daemon startup, not at fire time; the
+        # registry-wide invariant is covered by
+        # test_leg_db_covers_all_wake_input_legs.
+        _unmapped = [tok for tok in self._legs if tok not in _LEG_DB]
+        if _unmapped:
+            raise RuntimeError(
+                f"wake legs missing a _LEG_DB telemetry mapping: {sorted(_unmapped)} "
+                "(add them to _LEG_DB in voice_daemon.py)"
             )
         # The wake event currently in flight, or None when in WAKE
         # state with no pending event. Set in `_handle_wake_frame` on

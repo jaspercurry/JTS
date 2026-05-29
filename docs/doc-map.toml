@@ -155,6 +155,10 @@ id = "wake-and-wake-corpus"
 title = "Wake word, wake telemetry, and corpus collection"
 safety = "voice-runtime"
 code = [
+  # voice_daemon.py hosts WakeLoop, so wake-internals changes here should
+  # route to the wake docs. It's also in voice-runtime-and-providers and is
+  # high-churn, so this intentionally accepts false positives on non-wake
+  # edits (the docs-impact bot is informational/non-blocking — see header).
   "jasper/voice_daemon.py",
   "jasper/wake.py",
   "jasper/wake_models.py",
